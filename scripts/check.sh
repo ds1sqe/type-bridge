@@ -106,6 +106,7 @@ run_node() {
     run_step "npm run build"         npm run build
     run_step "npm run typecheck"     npm run typecheck
     run_step "npm run typecheck:query-contract" npm run typecheck:query-contract
+    run_step "npm run scope:probe"    npm run scope:probe
     run_step "schema-codegen TypeScript projection acceptance" \
         node ../schema-codegen/tests/typescript_acceptance/check.mjs
     run_step "npm run test:unit"     npm run test:unit

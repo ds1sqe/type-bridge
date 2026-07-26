@@ -1,9 +1,24 @@
 import { loadNative } from "./native.js";
 import {
+  queryV2AuthorityHandle,
+  queryV2NativeCall,
+  queryV2NativePromise,
+  registerQueryV2AuthorityHandle,
+  type NativeQueryV2Authority,
+  type NativeQueryV2BuilderRuntime,
+} from "./query-v2-internals.js";
+import {
   registerRustDatabaseHandle,
   registerRustTransactionHandle,
   rustDatabaseHandle,
 } from "./typed/runtime-handles.js";
+
+export { QueryV2Error } from "./query-v2-internals.js";
+export type {
+  QueryV2ErrorCategory,
+  QueryV2ErrorDetail,
+  QueryV2ErrorPathSegment,
+} from "./query-v2-internals.js";
 
 export type ValueType =
   | "string"
@@ -472,6 +487,7 @@ interface NativeMarshalling {
 
 export interface NativeRustDatabase {
   isConnected(): boolean;
+  serverDeprecationNotice?(): TypeDBServerDeprecationNotice | null;
   close(): void;
   databaseName(): string;
   databaseExists(): boolean;
@@ -483,6 +499,21 @@ export interface NativeRustDatabase {
   relationManagerJson(descriptorJson: string): NativeDynamicRelationManager;
 }
 
+/** Structured metadata for one legacy TypeDB server warning. */
+export interface TypeDBServerDeprecationNotice {
+  readonly code: typeof TYPE_DB_SERVER_DEPRECATION_CODE;
+  readonly message: string;
+}
+
+/** TypeBridge-specific machine-readable identity for the server notice. */
+export const TYPE_DB_SERVER_DEPRECATION_CODE = "TYPE_BRIDGE_TYPEDB_LEGACY_SERVER";
+
+/** Standard Node warning type used so `--no-deprecation` remains effective.
+ * Inspect {@link TYPE_DB_SERVER_DEPRECATION_CODE} for the TypeBridge-specific
+ * machine-readable identity.
+ */
+export const TYPE_DB_SERVER_DEPRECATION_WARNING = "DeprecationWarning";
+
 export interface NativeRustTransactionContext {
   queryJson(query: string): string;
   commit(): void;
@@ -491,13 +522,6 @@ export interface NativeRustTransactionContext {
   transactionType(): TransactionType;
   entityManagerJson(descriptorJson: string): NativeDynamicEntityManager;
   relationManagerJson(descriptorJson: string): NativeDynamicRelationManager;
-}
-
-declare const nativeQueryV2AuthorityKind: unique symbol;
-
-/** @internal Opaque N-API authority; use {@link QueryV2Authority}. */
-interface NativeQueryV2Authority {
-  readonly [nativeQueryV2AuthorityKind]: "query-v2-authority";
 }
 
 interface NativePendingQueryV2Remote {
@@ -613,7 +637,12 @@ interface NativeSchemaParser {
 }
 
 export interface NativeModule
-  extends NativeRuntime, NativeMarshalling, NativeSchemaParser, NativeQueryV2Runtime {
+  extends NativeRuntime,
+    NativeMarshalling,
+    NativeSchemaParser,
+    NativeQueryV2Runtime,
+    NativeQueryV2BuilderRuntime {
+  readonly TYPE_DB_SERVER_DEPRECATION_CODE: string;
   NodeDescriptorRegistry: new () => NativeDescriptorRegistry;
   generateDefineBlockJson(schemaInfoJson: string): string;
 }
@@ -671,16 +700,14 @@ export function ensureDatabase(
 
 export { loadNative };
 
-const queryV2AuthorityHandles = new WeakMap<object, NativeQueryV2Authority>();
-
 /** Opaque declared-schema authority for prepared V2 plan execution. */
 export class QueryV2Authority {
   readonly #brand = undefined;
 
   constructor(declaredSchema: Uint8Array, scope: string, profile: string) {
-    queryV2AuthorityHandles.set(
+    registerQueryV2AuthorityHandle(
       this,
-      loadNative().queryV2Authority(declaredSchema, scope, profile),
+      queryV2NativeCall(() => loadNative().queryV2Authority(declaredSchema, scope, profile)),
     );
   }
 
@@ -692,13 +719,15 @@ export class QueryV2Authority {
     profile: string,
   ): QueryV2Authority {
     const authority = Object.create(QueryV2Authority.prototype) as QueryV2Authority;
-    queryV2AuthorityHandles.set(
+    registerQueryV2AuthorityHandle(
       authority,
-      loadNative().queryV2QueryOnlyAuthority(
-        preparedV2DatabaseHandle(database),
-        declaredSchema,
-        scope,
-        profile,
+      queryV2NativeCall(() =>
+        loadNative().queryV2QueryOnlyAuthority(
+          preparedV2DatabaseHandle(database),
+          declaredSchema,
+          scope,
+          profile,
+        ),
       ),
     );
     return authority;
@@ -729,7 +758,7 @@ function preparedV2DatabaseHandle(database: RustDatabase): NativeRustDatabase {
 }
 
 function preparedV2AuthorityHandle(authority: QueryV2Authority): NativeQueryV2Authority {
-  const native = queryV2AuthorityHandles.get(authority);
+  const native = queryV2AuthorityHandle(authority);
   if (native === undefined) {
     throw new TypeError("prepared V2 execution requires a type-bridge QueryV2Authority");
   }
@@ -744,18 +773,22 @@ export function queryV2ExecuteLocal(
   invocationJson: string,
   deadlineMs?: bigint | null,
 ): Promise<string> {
-  return loadNative().queryV2ExecuteLocal(
-    preparedV2DatabaseHandle(database),
-    preparedV2AuthorityHandle(authority),
-    plan,
-    invocationJson,
-    deadlineMs,
+  return queryV2NativePromise(
+    queryV2NativeCall(() =>
+      loadNative().queryV2ExecuteLocal(
+        preparedV2DatabaseHandle(database),
+        preparedV2AuthorityHandle(authority),
+        plan,
+        invocationJson,
+        deadlineMs,
+      ),
+    ),
   );
 }
 
 /** Decode the executor's exact prepared-query capability advertisement. */
 export function queryV2RemoteCapabilities(advertisement: Uint8Array): readonly string[] {
-  return loadNative().queryV2RemoteCapabilities(advertisement);
+  return queryV2NativeCall(() => loadNative().queryV2RemoteCapabilities(advertisement));
 }
 
 /** Prepare one request bound to the exact advertised executor epoch and expiry. */
@@ -766,20 +799,23 @@ export function queryV2PrepareRemote(
   advertisement: Uint8Array,
   limits: QueryV2RemoteLimits,
 ): PendingQueryV2Remote {
-  const pending = loadNative().queryV2PrepareRemote(
-    preparedV2AuthorityHandle(authority),
-    plan,
-    invocationJson,
-    advertisement,
-    limits.maxItems,
-    limits.maxBytes,
-    limits.maxCollectionMembers,
-    limits.deadlineMs,
+  const pending = queryV2NativeCall(() =>
+    loadNative().queryV2PrepareRemote(
+      preparedV2AuthorityHandle(authority),
+      plan,
+      invocationJson,
+      advertisement,
+      limits.maxItems,
+      limits.maxBytes,
+      limits.maxCollectionMembers,
+      limits.deadlineMs,
+    ),
   );
   return Object.freeze({
-    requestBytes: (): Uint8Array => new Uint8Array(pending.requestBytes()),
+    requestBytes: (): Uint8Array =>
+      queryV2NativeCall(() => new Uint8Array(pending.requestBytes())),
     decodeReply: (response: Uint8Array): Promise<string> =>
-      pending.decodeReply(response),
+      queryV2NativePromise(queryV2NativeCall(() => pending.decodeReply(response))),
   });
 }
 
@@ -976,18 +1012,31 @@ export class RustDatabase {
   ): RustDatabase {
     const parsed = parseConnectArguments(nativeOrAddress, addressOrDatabase, databaseOrOptions, maybeOptions);
     validateConnectionTransport(parsed.options);
-    return new RustDatabase(
-      parsed.native.connectRustDatabase(
-        parsed.address,
-        parsed.database,
-        parsed.options.username ?? null,
-        parsed.options.password ?? null,
-        parsed.options.httpPort ?? null,
-        parsed.options.serverVersion ?? null,
-        parsed.options.tlsEnabled ?? null,
-        parsed.options.tlsRootCa ?? null,
-      ),
+    const native = parsed.native.connectRustDatabase(
+      parsed.address,
+      parsed.database,
+      parsed.options.username ?? null,
+      parsed.options.password ?? null,
+      parsed.options.httpPort ?? null,
+      parsed.options.serverVersion ?? null,
+      parsed.options.tlsEnabled ?? null,
+      parsed.options.tlsRootCa ?? null,
     );
+    const database = new RustDatabase(native);
+    try {
+      const notice = native.serverDeprecationNotice?.();
+      if (notice != null && !process.throwDeprecation) {
+        process.emitWarning(notice.message, {
+          type: TYPE_DB_SERVER_DEPRECATION_WARNING,
+          code: notice.code,
+        });
+      }
+    } catch {
+      // A compatibility notice is best-effort and cannot change a successful
+      // connection into a failure when a synchronous replacement of
+      // process.emitWarning throws.
+    }
+    return database;
   }
 
   isConnected(): boolean {

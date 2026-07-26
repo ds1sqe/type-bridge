@@ -1173,6 +1173,15 @@ fn preflight_remote_reply_size(bytes: &[u8], caller_max_bytes: u64) -> Result<()
     Err(remote_envelope_too_large())
 }
 
+/// Shared authenticated-outer-envelope byte preflight for additive payload
+/// versions. This does not inspect or reconstruct a version-specific payload.
+pub(crate) fn preflight_signed_reply_size(
+    bytes: &[u8],
+    caller_max_bytes: u64,
+) -> Result<(), Diagnostic> {
+    preflight_remote_reply_size(bytes, caller_max_bytes)
+}
+
 fn verify_signed_reply<'wire>(
     bytes: &'wire [u8],
     expected_advertisement: &RemoteCapabilitiesFingerprint,
@@ -1233,6 +1242,17 @@ fn verify_signed_reply<'wire>(
     Ok(outer.payload.get().as_bytes())
 }
 
+/// Authenticate the unchanged signed outer envelope for an additive payload
+/// version. Payload dispatch remains the caller's version-specific boundary.
+pub(crate) fn verify_signed_reply_payload<'wire>(
+    bytes: &'wire [u8],
+    expected_advertisement: &RemoteCapabilitiesFingerprint,
+    trusted_key: RemoteSigningPublicKey,
+    verifier: &impl RemoteReplyVerifier,
+) -> Result<&'wire [u8], Diagnostic> {
+    verify_signed_reply(bytes, expected_advertisement, trusted_key, verifier)
+}
+
 fn encode_signed_reply(
     payload: &[u8],
     advertisement: &RemoteCapabilitiesFingerprint,
@@ -1247,6 +1267,29 @@ fn encode_signed_reply(
         ));
     }
     Ok(encoded)
+}
+
+/// Encode additive versioned payload bytes in the unchanged signed outer
+/// envelope.
+pub(crate) fn encode_signed_reply_payload(
+    payload: &[u8],
+    advertisement: &RemoteCapabilitiesFingerprint,
+    signer: &impl RemoteReplySigner,
+) -> Result<Vec<u8>, Diagnostic> {
+    encode_signed_reply(payload, advertisement, signer)
+}
+
+/// Encode already bounded, canonical additive payload bytes.
+///
+/// This is used only by the fixed internal-failure fallback after the normal
+/// checked encoder has failed. Version-specific modules must construct the
+/// payload from static text plus previously validated ASCII bindings.
+pub(crate) fn encode_signed_reply_payload_unchecked(
+    payload: &[u8],
+    advertisement: &RemoteCapabilitiesFingerprint,
+    signer: &impl RemoteReplySigner,
+) -> Vec<u8> {
+    encode_signed_reply_unchecked(payload, advertisement, signer)
 }
 
 fn encode_signed_reply_unchecked(
@@ -1324,6 +1367,16 @@ fn signed_reply_encoded_len(
         &encode_hex(&[0_u8; 64]),
     )
     .len()
+}
+
+/// Return the exact unchanged signed-envelope length for additive payload
+/// bytes without constructing a signature.
+pub(crate) fn signed_reply_payload_encoded_len(
+    payload: &[u8],
+    advertisement: &RemoteCapabilitiesFingerprint,
+    key: RemoteSigningPublicKey,
+) -> usize {
+    signed_reply_encoded_len(payload, advertisement, key)
 }
 
 fn remote_reply_signing_digest(

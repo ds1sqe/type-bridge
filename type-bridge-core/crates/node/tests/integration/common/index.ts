@@ -269,8 +269,8 @@ export function employmentDescriptor(s: CrudSchema): RelationDescriptor {
     parent_type: null,
     owned_attributes: [cardAttr("since", s.sinceAttr, "date")],
     roles: [
-      { role_name: "employee", player_type_names: [s.personType], cardinality: [1, 1] as [number, number | null], overrides: null, is_abstract: false, ordered: false, distinct: false },
-      { role_name: "employer", player_type_names: [s.companyType], cardinality: [1, 1] as [number, number | null], overrides: null, is_abstract: false, ordered: false, distinct: false },
+      { role_name: "employee", player_type_names: [s.personType], cardinality: [1, 1] as [number, number | null], plays_cardinality: null, overrides: null, is_abstract: false, ordered: false, distinct: false },
+      { role_name: "employer", player_type_names: [s.companyType], cardinality: [1, 1] as [number, number | null], plays_cardinality: null, overrides: null, is_abstract: false, ordered: false, distinct: false },
     ],
   };
 }

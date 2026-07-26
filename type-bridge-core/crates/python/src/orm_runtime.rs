@@ -599,10 +599,15 @@ impl PyRustDatabase {
 
     /// The server version detected at connect time, when known.
     ///
-    /// `None` only when the connection was established through the band-7
-    /// gRPC fallback, where the server cannot report its version.
+    /// `None` when the negotiated connection path produced no authoritative
+    /// server identity.
     fn server_version(&self) -> Option<String> {
         self.db.server_version().map(|version| version.to_string())
+    }
+
+    /// Return the core-owned legacy-server notice for this connection.
+    fn server_deprecation_notice(&self) -> Option<String> {
+        self.db.server_deprecation_notice()
     }
 
     /// Version-gate schema DDL that uses `@doc`/`@meta` annotations.

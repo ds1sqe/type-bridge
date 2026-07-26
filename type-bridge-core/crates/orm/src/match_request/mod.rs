@@ -42,5 +42,5 @@ pub use result::*;
 pub use selected_result_executor::MatchExecutionLimits;
 pub use validation::{
     StableOrderOrigin, StableOrderSpec, StableOrderTerm, ValidatedMatchRequest,
-    validate_match_request,
+    validate_match_request, validate_public_order_term_count,
 };

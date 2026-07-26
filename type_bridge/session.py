@@ -6,8 +6,13 @@ import logging
 import os
 import threading
 import warnings
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, overload
+
+from type_bridge_core import (
+    TYPEDB_LEGACY_SERVER_DEPRECATION_CODE as _TYPEDB_LEGACY_SERVER_DEPRECATION_CODE,
+)
 
 import type_bridge.typedb_driver as typedb_driver
 import type_bridge.version as version
@@ -24,6 +29,40 @@ if TYPE_CHECKING:
     from typedb.driver import Transaction as TypeDBTransaction
 
 logger = logging.getLogger(__name__)
+
+
+class TypeDBServerDeprecationWarning(FutureWarning):
+    """A connected TypeDB server line is scheduled for removal in 3.0."""
+
+    code = _TYPEDB_LEGACY_SERVER_DEPRECATION_CODE
+
+
+def _emit_server_deprecation_notice(
+    resolve: Callable[[], str | None],
+    *,
+    stacklevel: int,
+) -> None:
+    """Attempt one notice without changing a successful connection outcome."""
+    try:
+        notice = resolve()
+        if notice is not None:
+            warnings.warn(
+                notice,
+                TypeDBServerDeprecationWarning,
+                stacklevel=stacklevel,
+            )
+    except Exception:
+        logger.debug(
+            "Legacy TypeDB server notice delivery failed; preserving the successful connection",
+            exc_info=True,
+        )
+
+
+def _known_server_deprecation_notice(server_version: str) -> str | None:
+    """Resolve notice prose through the Rust version-policy SSOT."""
+    import type_bridge_core
+
+    return type_bridge_core.typedb_server_deprecation_notice(server_version)
 
 
 def _snapshot_tls_root_ca(path: str) -> tuple[Any, str]:
@@ -456,20 +495,35 @@ class Database:
 
                 if credentials:
                     logger.debug("Using provided credentials for authentication")
-                    self._driver = TypeDB.driver(identity.address, credentials, driver_options)
+                    created_driver = TypeDB.driver(identity.address, credentials, driver_options)
                 else:
                     logger.debug("Using default credentials for local connection")
-                    self._driver = TypeDB.driver(
+                    created_driver = TypeDB.driver(
                         identity.address,
                         Credentials("admin", "password"),
                         driver_options,
                     )
+                try:
+                    _emit_server_deprecation_notice(
+                        lambda: _known_server_deprecation_notice(detected_server),
+                        stacklevel=4,
+                    )
+                except BaseException:
+                    try:
+                        created_driver.close()
+                    except BaseException:
+                        pass
+                    raise
+                self._driver = created_driver
                 self._owns_driver = True
                 self._transport_committed = True
                 logger.info(f"Connected Python TypeDB driver at {self.address}")
-            except Exception as error:
+            except BaseException as error:
                 self._discard_uncommitted_transport()
-                logger.error(f"Failed to connect Python TypeDB driver at {self.address}: {error}")
+                if isinstance(error, Exception):
+                    logger.error(
+                        f"Failed to connect Python TypeDB driver at {self.address}: {error}"
+                    )
                 raise
 
     def close(self) -> None:
@@ -740,10 +794,10 @@ class Database:
     def detected_server_version(self) -> str | None:
         """The server version detected by the connect-time version gate.
 
-        Returns the version string (e.g. ``"3.12.0"``) when known. ``None``
-        only when the connection was established through the band-7 gRPC
-        fallback, where the server cannot report its version — supply
-        ``server_version=`` at construction for strict validation there.
+        Returns the version string (e.g. ``"3.12.1"``) when known. ``None``
+        means the negotiated connection path produced no authoritative server
+        identity; supply ``server_version=`` at construction when strict
+        identity validation is required.
         """
         from type_bridge._rust_runtime import rust_database_for
 

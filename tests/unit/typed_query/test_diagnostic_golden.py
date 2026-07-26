@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+import pytest
 from type_bridge_core import MatchSessionHandle, PyDescriptorRegistry
 
 GOLDEN = (
@@ -89,3 +90,52 @@ def test_public_named_page_matches_the_rust_and_node_golden() -> None:
         )
         == GOLDEN.read_text(encoding="utf-8").strip()
     )
+
+
+@pytest.mark.parametrize(
+    ("name", "value", "error_type", "message"),
+    [
+        ("min_depth", True, TypeError, "min_depth must be an exact Python int"),
+        ("max_depth", 1.5, TypeError, "max_depth must be an exact Python int"),
+        (
+            "min_depth",
+            -1,
+            ValueError,
+            "min_depth must be an integer between 0 and 255",
+        ),
+        (
+            "max_depth",
+            256,
+            ValueError,
+            "max_depth must be an integer between 0 and 255",
+        ),
+        (
+            "min_depth",
+            10**100,
+            ValueError,
+            "min_depth must be an integer between 0 and 255",
+        ),
+    ],
+)
+def test_native_reachable_requires_exact_bounded_pyints(
+    name: str,
+    value: object,
+    error_type: type[Exception],
+    message: str,
+) -> None:
+    session = MatchSessionHandle(_registry())
+    source = session.exact("person")
+    target = session.exact("company")
+    arguments = {
+        "relation_type": "employment",
+        "role_from": "employee",
+        "role_to": "employer",
+        "source": source,
+        "target": target,
+        "min_depth": 0,
+        "max_depth": 1,
+    }
+    arguments[name] = value
+
+    with pytest.raises(error_type, match=f"^{message}$"):
+        session.reachable(**arguments)

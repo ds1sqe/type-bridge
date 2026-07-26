@@ -79,10 +79,13 @@ pub mod migration_assertion;
 pub mod provider_runtime;
 pub mod query;
 pub mod query_v2;
-#[cfg(any(test, feature = "integration-tests"))]
 mod query_v2_adapter;
 #[cfg(test)]
 mod query_v2_adapter_tests;
+pub mod query_v2_builder;
+mod query_v2_compatibility;
+mod query_v2_model;
+mod query_v2_model_remote;
 pub mod query_v2_prepared;
 pub mod query_v2_remote;
 pub mod registry;
@@ -92,33 +95,48 @@ pub mod schema;
 pub mod session;
 pub mod value;
 
-/// Test-only bridge for exercising the crate-internal V1-to-V2 adapter from
-/// the live integration-test crate.
+/// Integration-test bridge for exercising the production-internal V1-to-V2
+/// adapter from the live integration-test crate.
 ///
-/// This module exists only when the explicitly test-only `integration-tests`
-/// feature is enabled. The adapter itself remains private and is absent from
-/// normal/release builds.
+/// This public test seam exists only when the explicitly test-only
+/// `integration-tests` feature is enabled. The adapter itself is compiled in
+/// normal/release builds but remains crate-private.
 #[cfg(feature = "integration-tests")]
 #[doc(hidden)]
 pub mod integration_test_support {
     use type_bridge_contract::diagnostic::Diagnostic;
     use type_bridge_contract::limits::StructuralLimits;
     use type_bridge_contract::query_plan::QueryOperation;
-    use type_bridge_query::{MigrationAssertionValidationContext, ValidatedQuery};
+    use type_bridge_query::ValidatedQuery;
 
     use crate::match_request::ValidatedMatchRequest;
-    use crate::query_v2_adapter::adapt_match_request;
+    use crate::query_v2::failure;
+    use crate::query_v2_adapter::{
+        MatchRequestAdaptation, MatchRequestAdapterAuthority, adapt_match_request,
+    };
     use crate::registry::DescriptorRegistry;
 
-    /// Adapt a validated V1 request for the live parity gate.
+    /// Adapt a validated V1 request through the production registry authority.
+    ///
+    /// Deriving the authority here keeps the live parity gate on the same
+    /// descriptor projection as public execution and proves that its V2 side
+    /// cannot silently take the retained `LegacyRequired` fallback.
     pub fn adapt_match_request_for_live_test(
         validated: &ValidatedMatchRequest,
         registry: &DescriptorRegistry,
-        context: &MigrationAssertionValidationContext<'_>,
         limits: StructuralLimits,
     ) -> Result<(ValidatedQuery, QueryOperation), Diagnostic> {
-        let adapted = adapt_match_request(validated, registry, context, limits)?;
-        Ok((adapted.validated().clone(), adapted.operation()))
+        let authority = MatchRequestAdapterAuthority::from_registry(registry)?;
+        match adapt_match_request(validated, registry, &authority.context(), limits)? {
+            MatchRequestAdaptation::Adapted(adapted) => {
+                Ok((adapted.validated().clone(), adapted.operation()))
+            }
+            MatchRequestAdaptation::LegacyRequired(_) => Err(failure(
+                type_bridge_contract::diagnostic::DiagnosticCategory::ResourceLimit,
+                "query_v2_adapter_test_resource_envelope",
+                "the live V2 parity fixture cannot fit the canonical V2 artifact envelope",
+            )),
+        }
     }
 }
 
@@ -144,6 +162,10 @@ pub use manager::{DynamicEntityManager, DynamicRelationManager, EntityManager, R
 pub use match_request::*;
 pub use provider_runtime::ProviderRuntimeOwner;
 pub use query::{EntityQuery, GroupByEntityQuery, GroupByRelationQuery, RelationQuery};
+pub use query_v2_model_remote::{
+    ClaimedRemoteModelReplyV2, PendingRemoteModelQueryV2, RemoteModelQueryV2Error,
+    prepare_remote_model_query_v2,
+};
 pub use registry::DescriptorRegistry;
 pub use relation::{RoleInfo, RolePlayerRef, TypeBridgeRelation};
 pub use runtime_projection::InstalledRuntimeProjection;

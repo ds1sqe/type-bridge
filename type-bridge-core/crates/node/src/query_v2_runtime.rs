@@ -6,8 +6,8 @@
 //! execution and the remote envelope share one authority, so a prepared
 //! plan runs identically through either path.
 //!
-//! Plans are authored in Rust in 2.0.0; the typed binding authoring
-//! facade over this surface is tracked in issue #195.
+//! Typed Node authoring delegates every transition to the shared Rust
+//! builder and passes its canonical plan bytes directly into this surface.
 
 use std::sync::Arc;
 
@@ -16,7 +16,8 @@ use napi::bindgen_prelude::{AsyncTask, BigInt, Buffer, Env, FromNapiValue, Unkno
 use napi_derive::napi;
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use type_bridge_contract::limits::{
-    MAX_CANONICAL_BYTES, MAX_CANONICAL_STRING_BYTES, MAX_INPUT_BYTES, MAX_REMOTE_ENVELOPE_BYTES,
+    MAX_CANONICAL_BYTES, MAX_CANONICAL_STRING_BYTES, MAX_QUERY_INVOCATION_BYTES,
+    MAX_REMOTE_ENVELOPE_BYTES,
 };
 use type_bridge_contract::query_remote::{
     RemoteLimits, checked_remote_deadline, checked_remote_limit, remote_deadline_limit,
@@ -24,7 +25,7 @@ use type_bridge_contract::query_remote::{
 };
 use type_bridge_orm::query_v2_prepared::{
     ClaimedRemoteReply, PendingRemoteQuery, QueryAuthority, decode_remote_capabilities,
-    execute_prepared_local, prepare_remote_query,
+    execute_prepared_local, prepare_remote_query, query_v2_host_string_unicode_error,
 };
 use type_bridge_orm::session::backend::{BoundedAnswerLimits, QueryV2AnswerLimits};
 
@@ -32,12 +33,11 @@ use crate::NodeRustDatabase;
 
 const MAX_SEMANTIC_PROFILE_ID_BYTES: usize = 255;
 
-fn napi_error(diagnostic: &Diagnostic) -> napi::Error {
-    napi::Error::from_reason(format!(
-        "{}: {}",
-        diagnostic.code().as_str(),
-        diagnostic.message(),
-    ))
+pub(crate) fn napi_error(diagnostic: &Diagnostic) -> napi::Error {
+    napi::Error::from_reason(serde_json::to_string(diagnostic).unwrap_or_else(|_| {
+        r#"{"category":"invalid_contract","code":"query_v2_diagnostic_unencodable","message":"the structured query diagnostic could not be encoded","path":[],"details":{}}"#
+            .to_owned()
+    }))
 }
 
 fn binding_diagnostic(
@@ -56,6 +56,12 @@ fn binding_diagnostic(
 #[napi]
 pub struct NodeQueryV2Authority {
     authority: Arc<QueryAuthority>,
+}
+
+impl NodeQueryV2Authority {
+    pub(crate) fn authority(&self) -> Arc<QueryAuthority> {
+        Arc::clone(&self.authority)
+    }
 }
 
 /// One prepared request with an atomic one-shot reply decoder.
@@ -79,12 +85,115 @@ enum DecodeRemoteReplyTaskState {
     },
 }
 
-fn bounded_response_snapshot(response: &[u8], limit: usize) -> Vec<u8> {
+pub(crate) fn bounded_response_snapshot(response: &[u8], limit: usize) -> Vec<u8> {
     response[..response.len().min(limit)].to_vec()
 }
 
 fn bounded_buffer(buffer: &Buffer, limit: usize) -> &[u8] {
     &buffer[..buffer.len().min(limit)]
+}
+
+pub(crate) enum BoundedNodeString {
+    Value(String),
+    Oversized,
+    InvalidUnicode,
+}
+
+/// Snapshot one JavaScript string with Python-equivalent size/error
+/// precedence. Python counts Unicode code points before attempting UTF-8
+/// conversion, and an unpaired surrogate still counts as one code point.
+/// JavaScript exposes UTF-16 code units, so count them explicitly before
+/// deciding whether size or invalid Unicode wins.
+pub(crate) unsafe fn bounded_node_string_snapshot(
+    env: napi::sys::napi_env,
+    value: napi::sys::napi_value,
+    limit: usize,
+) -> napi::Result<BoundedNodeString> {
+    let mut utf16_length = 0_usize;
+    napi::check_status!(
+        unsafe {
+            napi::sys::napi_get_value_string_utf16(
+                env,
+                value,
+                std::ptr::null_mut(),
+                0,
+                &mut utf16_length,
+            )
+        },
+        "Failed to inspect UTF-16 string input"
+    )?;
+
+    // Every Unicode code point occupies at most two UTF-16 code units. Above
+    // this bound the Python code-point preflight must also classify the value
+    // as oversized, so no UTF-16 allocation is needed.
+    if utf16_length > limit.saturating_mul(2) {
+        return Ok(BoundedNodeString::Oversized);
+    }
+
+    let mut utf16 = vec![0_u16; utf16_length.saturating_add(1)];
+    let mut written = 0_usize;
+    napi::check_status!(
+        unsafe {
+            napi::sys::napi_get_value_string_utf16(
+                env,
+                value,
+                utf16.as_mut_ptr(),
+                utf16.len(),
+                &mut written,
+            )
+        },
+        "Failed to copy UTF-16 string input"
+    )?;
+    if written != utf16_length {
+        return Ok(BoundedNodeString::InvalidUnicode);
+    }
+
+    let mut code_points = 0_usize;
+    let mut invalid_unicode = false;
+    let mut index = 0_usize;
+    while index < written {
+        let unit = utf16[index];
+        if (0xD800..=0xDBFF).contains(&unit) {
+            if index + 1 < written && (0xDC00..=0xDFFF).contains(&utf16[index + 1]) {
+                index += 2;
+            } else {
+                invalid_unicode = true;
+                index += 1;
+            }
+        } else {
+            if (0xDC00..=0xDFFF).contains(&unit) {
+                invalid_unicode = true;
+            }
+            index += 1;
+        }
+        code_points = code_points.saturating_add(1);
+    }
+
+    if code_points > limit {
+        return Ok(BoundedNodeString::Oversized);
+    }
+    if invalid_unicode {
+        return Ok(BoundedNodeString::InvalidUnicode);
+    }
+
+    let mut utf8_length = 0_usize;
+    napi::check_status!(
+        unsafe {
+            napi::sys::napi_get_value_string_utf8(
+                env,
+                value,
+                std::ptr::null_mut(),
+                0,
+                &mut utf8_length,
+            )
+        },
+        "Failed to inspect UTF-8 string input"
+    )?;
+    if utf8_length > limit {
+        return Ok(BoundedNodeString::Oversized);
+    }
+
+    unsafe { String::from_napi_value(env, value) }.map(BoundedNodeString::Value)
 }
 
 /// Measure one JavaScript string before napi-rs allocates its Rust copy.
@@ -94,29 +203,35 @@ fn bounded_buffer(buffer: &Buffer, limit: usize) -> &[u8] {
 /// before semantic code can enforce its input ceiling. Inspecting the encoded
 /// length through Node-API first keeps the boundary allocation bounded while
 /// preserving the semantic diagnostic for an oversized value.
-fn bounded_string(
+pub(crate) fn bounded_string(
     env: &Env,
     value: Unknown,
     limit: usize,
-    oversized: fn() -> Diagnostic,
+    oversized: impl FnOnce() -> Diagnostic,
 ) -> napi::Result<String> {
-    let mut length = 0_usize;
-    napi::check_status!(
-        unsafe {
-            napi::sys::napi_get_value_string_utf8(
-                env.raw(),
-                value.raw(),
-                std::ptr::null_mut(),
-                0,
-                &mut length,
-            )
-        },
-        "Failed to inspect string input"
-    )?;
-    if length > limit {
-        return Err(napi_error(&oversized()));
+    bounded_string_with_unicode_error(
+        env,
+        value,
+        limit,
+        oversized,
+        query_v2_host_string_unicode_error,
+    )
+}
+
+/// Copy one bounded JavaScript string while rejecting lone UTF-16 surrogates
+/// before Node-API can replacement-encode them into a different Rust string.
+pub(crate) fn bounded_string_with_unicode_error(
+    env: &Env,
+    value: Unknown,
+    limit: usize,
+    oversized: impl FnOnce() -> Diagnostic,
+    invalid_unicode: impl FnOnce() -> Diagnostic,
+) -> napi::Result<String> {
+    match unsafe { bounded_node_string_snapshot(env.raw(), value.raw(), limit) }? {
+        BoundedNodeString::Value(value) => Ok(value),
+        BoundedNodeString::Oversized => Err(napi_error(&oversized())),
+        BoundedNodeString::InvalidUnicode => Err(napi_error(&invalid_unicode())),
     }
-    String::from_unknown(value)
 }
 
 fn invocation_input_too_large() -> Diagnostic {
@@ -156,7 +271,7 @@ fn semantic_profile_id_too_large() -> Diagnostic {
 /// backing store through stable N-API metadata first, reject shared storage,
 /// and only then let napi-rs construct a Buffer view. The package facade may
 /// copy shared input for convenience; direct `.node` consumers fail closed.
-fn non_shared_buffer(env: &Env, value: Unknown) -> napi::Result<Buffer> {
+pub(crate) fn non_shared_buffer(env: &Env, value: Unknown) -> napi::Result<Buffer> {
     if !value.is_buffer()? {
         return Err(napi::Error::new(
             napi::Status::InvalidArg,
@@ -351,7 +466,7 @@ pub fn query_v2_execute_local(
     let invocation_json = bounded_string(
         &env,
         invocation_json,
-        MAX_INPUT_BYTES,
+        MAX_QUERY_INVOCATION_BYTES,
         invocation_input_too_large,
     )?;
     let deadline = checked_remote_deadline(
@@ -472,7 +587,7 @@ pub fn query_v2_prepare_remote(
     let invocation_json = bounded_string(
         &env,
         invocation_json,
-        MAX_INPUT_BYTES,
+        MAX_QUERY_INVOCATION_BYTES,
         invocation_input_too_large,
     )?;
     let advertisement = non_shared_buffer(&env, advertisement)?;

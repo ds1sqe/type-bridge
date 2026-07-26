@@ -12,13 +12,15 @@ use type_bridge_contract::id::{TypeId, TypeKind, is_typeql_3_12_builtin_function
 use type_bridge_contract::limits::StructuralLimits;
 use type_bridge_contract::migration_assertion::BindingId;
 use type_bridge_contract::query_plan::{
-    DocumentSource, QueryOperand, QueryOutput, QueryPattern, QueryPlan, ReadStage, Reducer,
+    DocumentSource, LocalFunction, QueryOperand, QueryOutput, QueryPattern, QueryPatternV2,
+    QueryPlan, ReadStage, Reducer,
 };
 use type_bridge_contract::schema::{AnnotationKindId, SchemaAnnotationValue};
 use type_bridge_contract::schema_delta::ManagedSchemaState;
 use type_bridge_contract::value::{CanonicalValue, ValueTypeTag};
 
 use crate::engine::{self, EngineCode, EngineCodes};
+use crate::query_v2_claims::validate_v2_schema_claims;
 use crate::{
     BindingDomain, DocumentColumn, DocumentColumnShape, DocumentSchema,
     MigrationAssertionValidationContext, OutputSchema, RowColumn, RowSchema,
@@ -190,6 +192,72 @@ impl ValidatedQuery {
     }
 }
 
+/// Return the compatibility-algebra edges that are guaranteed positive at the
+/// root, plus explicit V1 cross-join permissions.
+///
+/// The ordinary engine still owns the one topology check. Compatibility
+/// metadata contributes only edges with the released V1 meaning: conjunction
+/// unions edges, disjunction keeps their intersection, and negation exports
+/// none. This prevents an `or`-only or negated connection from laundering a
+/// disconnected product while allowing the production V1 bridge to keep its
+/// already-validated topology contract.
+fn v2_root_topology(plan: &QueryPlan) -> BTreeSet<(BindingId, BindingId)> {
+    let Some(compatibility) = plan.v2_compatibility() else {
+        return BTreeSet::new();
+    };
+    let mut edges = compatibility
+        .predicate()
+        .map(definite_v2_edges)
+        .unwrap_or_default();
+    edges.extend(
+        compatibility
+            .allowed_cross_joins()
+            .iter()
+            .map(|pair| canonical_topology_edge(pair.left(), pair.right())),
+    );
+    edges
+}
+
+fn definite_v2_edges(pattern: &QueryPatternV2) -> BTreeSet<(BindingId, BindingId)> {
+    match pattern {
+        QueryPatternV2::FieldValue { .. } => BTreeSet::new(),
+        QueryPatternV2::FieldComparison { left, right, .. } => {
+            BTreeSet::from([canonical_topology_edge(left.binding(), right.binding())])
+        }
+        QueryPatternV2::RoleEdge {
+            relation, player, ..
+        } => BTreeSet::from([canonical_topology_edge(*relation, *player)]),
+        QueryPatternV2::Reachable { source, target, .. } => {
+            BTreeSet::from([canonical_topology_edge(*source, *target)])
+        }
+        QueryPatternV2::And { patterns } => patterns
+            .iter()
+            .flat_map(definite_v2_edges)
+            .collect::<BTreeSet<_>>(),
+        QueryPatternV2::Or { patterns } => {
+            let mut patterns = patterns.iter();
+            let Some(first) = patterns.next() else {
+                return BTreeSet::new();
+            };
+            patterns.fold(definite_v2_edges(first), |common, pattern| {
+                common
+                    .intersection(&definite_v2_edges(pattern))
+                    .copied()
+                    .collect()
+            })
+        }
+        QueryPatternV2::Not { .. } => BTreeSet::new(),
+    }
+}
+
+const fn canonical_topology_edge(left: BindingId, right: BindingId) -> (BindingId, BindingId) {
+    if left.get() <= right.get() {
+        (left, right)
+    } else {
+        (right, left)
+    }
+}
+
 /// Validate one reusable plan against exact resolved schema authority.
 pub fn validate_query_plan(
     plan: &QueryPlan,
@@ -227,6 +295,10 @@ pub fn validate_query_plan(
     plan.check_structural_limits(limits)?;
 
     let schema = context.resolved_schema();
+    // V2 model metadata is untrusted wire state. Recompute its provider-facing
+    // descriptor, closure, field, role, and player claims before ordinary
+    // engine analysis or any lowering can consume it.
+    let v2_claims = validate_v2_schema_claims(plan, schema)?;
     let inputs = plan
         .inputs()
         .iter()
@@ -265,6 +337,7 @@ pub fn validate_query_plan(
         &inputs,
         schema,
         &locals,
+        &v2_root_topology(plan),
         &QUERY_ENGINE_CODES,
     )?;
 
@@ -324,6 +397,7 @@ pub fn validate_query_plan(
         if (positive.contains(&id) || optional_positive.contains(&id))
             && domains[&id].is_empty()
             && !value_bindings.contains_key(&id)
+            && !v2_claims.proves_empty_runtime_binding(id)
         {
             return Err(plan_failure(
                 DiagnosticCategory::InvalidContract,
@@ -688,6 +762,33 @@ pub fn validate_query_plan(
     })
 }
 
+/// Validate one plan-local function against exact resolved schema authority.
+///
+/// Incremental authoring calls this before committing a local-function scope
+/// claim. The ordinary whole-plan validator repeats the same analysis at
+/// finalization; this seam exists only so a rejected function cannot corrupt
+/// a mutable builder that has no root match stage yet.
+pub fn validate_query_local_function(
+    function: &LocalFunction,
+    context: &MigrationAssertionValidationContext<'_>,
+) -> Result<(), Diagnostic> {
+    let schema = context.resolved_schema();
+    if is_typeql_3_12_builtin_function_name(function.name().label().as_str())
+        || patterns_contain_typeql_builtin_function(function.body())
+    {
+        return Err(typeql_builtin_function_collision());
+    }
+    if schema.functions().contains_key(function.name()) {
+        return Err(plan_failure(
+            DiagnosticCategory::InvalidContract,
+            "query_plan_local_function_shadows_schema",
+            "a plan-local function cannot shadow a schema function",
+        ));
+    }
+    engine::analyze_local_function(function, schema, &QUERY_ENGINE_CODES)?;
+    Ok(())
+}
+
 const fn provider_sort_is_orderable(value_type: ValueTypeTag) -> bool {
     !matches!(value_type, ValueTypeTag::Duration)
 }
@@ -814,6 +915,9 @@ fn patterns_contain_typeql_builtin_function(patterns: &[QueryPattern]) -> bool {
         QueryPattern::FunctionCall { function, .. } => {
             is_typeql_3_12_builtin_function_name(function.label().as_str())
         }
+        QueryPattern::Or { branches } => branches
+            .iter()
+            .any(|branch| patterns_contain_typeql_builtin_function(branch)),
         QueryPattern::Not { patterns } | QueryPattern::Try { patterns } => {
             patterns_contain_typeql_builtin_function(patterns)
         }
@@ -839,7 +943,7 @@ fn plan_failure(
 
 #[cfg(test)]
 mod tests {
-    use type_bridge_contract::id::FunctionId;
+    use type_bridge_contract::id::{FunctionId, RoleId, TypeId, TypeKind};
 
     use super::*;
 
@@ -863,5 +967,49 @@ mod tests {
             function: FunctionId::new("absolute").expect("function ID"),
         }];
         assert!(!patterns_contain_typeql_builtin_function(&safe));
+    }
+
+    #[test]
+    fn compatibility_topology_exports_only_definite_positive_edges() {
+        let binding = |value| BindingId::new(value).expect("binding");
+        let role_edge =
+            |relation, player, relation_label: &str, role: &str| QueryPatternV2::RoleEdge {
+                include_relation_subtypes: false,
+                player: binding(player),
+                relation: binding(relation),
+                relation_type: TypeId::new(TypeKind::Relation, relation_label).expect("relation"),
+                role: RoleId::new(relation_label, role).expect("role"),
+            };
+        let edge_01 = role_edge(0, 1, "first-link", "member");
+        let edge_12 = role_edge(1, 2, "second-link", "member");
+
+        let conjunction = QueryPatternV2::And {
+            patterns: vec![edge_01.clone(), edge_12.clone()],
+        };
+        assert_eq!(
+            definite_v2_edges(&conjunction),
+            BTreeSet::from([(binding(0), binding(1)), (binding(1), binding(2))]),
+        );
+
+        let disjunction = QueryPatternV2::Or {
+            patterns: vec![
+                conjunction,
+                QueryPatternV2::And {
+                    patterns: vec![edge_01.clone()],
+                },
+            ],
+        };
+        assert_eq!(
+            definite_v2_edges(&disjunction),
+            BTreeSet::from([(binding(0), binding(1))]),
+            "an edge absent from one branch is not a root topology proof",
+        );
+        assert!(
+            definite_v2_edges(&QueryPatternV2::Not {
+                pattern: Box::new(edge_12),
+            })
+            .is_empty(),
+            "negated edges never connect the positive root graph",
+        );
     }
 }

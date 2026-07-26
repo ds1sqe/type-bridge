@@ -860,10 +860,38 @@ def test_core_sdist_excludes_only_the_closed_nested_test_package(
     )
 
 
-def test_core_sdist_optional_derive_source_is_a_transformed_workspace_member() -> None:
+def test_core_sdist_optional_derive_source_is_an_exact_raw_include() -> None:
     assert "crates/orm-derive" in validator.CORE_SDIST_SOURCE_ROOTS
-    assert "crates/orm-derive" in validator.CORE_SDIST_WORKSPACE_MEMBERS
-    assert "crates/orm-derive/Cargo.toml" in validator.CORE_SDIST_TRANSFORMED_FIRST_PARTY_MANIFESTS
+    assert "crates/orm-derive" in validator.CORE_SDIST_EXPLICIT_RAW_SOURCE_ROOTS
+    assert "crates/orm-derive" not in validator.CORE_SDIST_WORKSPACE_MEMBERS
+    assert (
+        "crates/orm-derive/Cargo.toml" not in validator.CORE_SDIST_TRANSFORMED_FIRST_PARTY_MANIFESTS
+    )
+    assert "crates/orm-derive/LICENSE" not in validator.CORE_SDIST_GENERATED_LICENSES
+
+
+def test_core_sdist_rejects_changed_raw_optional_derive_manifest(tmp_path: Path) -> None:
+    sdist = write_sdist(
+        tmp_path,
+        SPECS["core"],
+        extra_members={"crates/orm-derive/Cargo.toml": b'[package]\nname = "hostile-derive"\n'},
+    )
+
+    with pytest.raises(validator.ValidationError, match="repository checkout"):
+        validator.validate_sdist(sdist, SPECS["core"])
+
+
+def test_core_sdist_rejects_optional_derive_license_projection(tmp_path: Path) -> None:
+    sdist = write_sdist(
+        tmp_path,
+        SPECS["core"],
+        extra_members={
+            "crates/orm-derive/LICENSE": (ROOT / "type-bridge-core/LICENSE").read_bytes()
+        },
+    )
+
+    with pytest.raises(validator.ValidationError, match="source inventory disagrees"):
+        validator.validate_sdist(sdist, SPECS["core"])
 
 
 def test_sdist_rejects_historical_band9_symlink_target(tmp_path: Path) -> None:

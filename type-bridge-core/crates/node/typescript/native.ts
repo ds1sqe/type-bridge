@@ -31,6 +31,15 @@ interface NativeMatchSessionHandle {
   readonly [nativeMatchHandleKind]: "session";
   exact(typeName: string): NativeMatchBindingHandle;
   subtypes(typeName: string): NativeMatchBindingHandle;
+  reachable(
+    relationType: string,
+    roleFrom: string,
+    roleTo: string,
+    source: NativeMatchBindingHandle,
+    target: NativeMatchBindingHandle,
+    minDepth: number,
+    maxDepth: number,
+  ): NativeMatchPredicateHandle;
   positional(selections: NativeMatchSelectionHandle[]): NativeMatchShapeHandle;
   named(names: string[], selections: NativeMatchSelectionHandle[]): NativeMatchShapeHandle;
   query(shape: NativeMatchShapeHandle): NativeMatchQueryHandle;
@@ -195,6 +204,55 @@ interface NativeValidatedThingHandle {
 interface NativeMatchModule {
   NodeMatchSessionHandle: new (registry: NativeRegistryHandle) => NativeMatchSessionHandle;
   revalidateMatchDiagnostic(registry: NativeRegistryHandle, diagnosticJson: string): string;
+  validateMatchOrderTermCount(actual: number): void;
+}
+
+interface NativeRemoteModelQueryContext {}
+
+interface NativePendingRemoteModelQuery {
+  requestBytes(): Uint8Array;
+  decodeReply(response: Uint8Array): Promise<NativeValidatedMatchResultHandle>;
+}
+
+interface NativeRemoteModelQueryModule {
+  queryV2RemoteModelContext(
+    authority: ReturnType<NativeModule["queryV2Authority"]>,
+    advertisement: Uint8Array,
+    maxItems: bigint,
+    maxBytes: bigint,
+    maxCollectionMembers: bigint,
+    maxGraphNodes: bigint,
+    maxAttributeValues: bigint,
+    maxRolePlayers: bigint,
+    deadlineMs?: bigint | null,
+  ): NativeRemoteModelQueryContext;
+  queryV2PrepareRemoteModelRows(
+    query: NativeMatchQueryHandle,
+    context: NativeRemoteModelQueryContext,
+    orders: NativeMatchOrderHandle[],
+    offset: bigint,
+    limit: bigint,
+    cardinality: NativeMatchRowCardinality,
+  ): NativePendingRemoteModelQuery;
+  queryV2PrepareRemoteModelPage(
+    query: NativeMatchQueryHandle,
+    context: NativeRemoteModelQueryContext,
+    root: NativeMatchBindingHandle,
+    orders: NativeMatchOrderHandle[],
+    offset: bigint,
+    limit: bigint,
+    includeTotal: boolean,
+  ): NativePendingRemoteModelQuery;
+  queryV2PrepareRemoteModelCount(
+    query: NativeMatchQueryHandle,
+    context: NativeRemoteModelQueryContext,
+    root: NativeMatchBindingHandle,
+  ): NativePendingRemoteModelQuery;
+  queryV2PrepareRemoteModelExists(
+    query: NativeMatchQueryHandle,
+    context: NativeRemoteModelQueryContext,
+    root: NativeMatchBindingHandle,
+  ): NativePendingRemoteModelQuery;
 }
 
 interface NativeRuntimeProjectionHandle {
@@ -211,9 +269,16 @@ interface NativeRuntimeProjectionModule {
   ) => NativeRuntimeProjectionHandle;
 }
 
-type LoadedNativeModule = NativeModule & NativeMatchModule & NativeRuntimeProjectionModule;
+type LoadedNativeModule =
+  & NativeModule
+  & NativeMatchModule
+  & NativeRemoteModelQueryModule
+  & NativeRuntimeProjectionModule;
 type LoadedNativePendingQueryV2Remote = ReturnType<
   LoadedNativeModule["queryV2PrepareRemote"]
+>;
+type LoadedNativePendingRemoteModelQuery = ReturnType<
+  LoadedNativeModule["queryV2PrepareRemoteModelRows"]
 >;
 
 const MAX_CANONICAL_BYTES = 16 * 1024 * 1024;
@@ -260,6 +325,30 @@ function protectedPendingQueryV2Remote(
   });
 }
 
+function protectedPendingRemoteModelQuery(
+  pending: LoadedNativePendingRemoteModelQuery,
+): LoadedNativePendingRemoteModelQuery {
+  const requestBytes = pending.requestBytes.bind(pending);
+  const decodeReply = pending.decodeReply.bind(pending);
+  let decodeStarted = false;
+  return Object.freeze({
+    requestBytes: (): Uint8Array => requestBytes(),
+    decodeReply: (response: Uint8Array) => {
+      if (decodeStarted) {
+        return decodeReply(response);
+      }
+      decodeStarted = true;
+      let snapshot: Buffer;
+      try {
+        snapshot = ownedByteSnapshot(response, MAX_REMOTE_ENVELOPE_BYTES);
+      } catch {
+        return decodeReply(response);
+      }
+      return decodeReply(snapshot);
+    },
+  });
+}
+
 function protectedMethodDescriptor(
   native: LoadedNativeModule,
   name: keyof LoadedNativeModule,
@@ -294,6 +383,15 @@ function protectNativeV2ByteInputs(native: LoadedNativeModule): LoadedNativeModu
   const queryV2ExecuteLocal = native.queryV2ExecuteLocal.bind(native);
   const queryV2RemoteCapabilities = native.queryV2RemoteCapabilities.bind(native);
   const queryV2PrepareRemote = native.queryV2PrepareRemote.bind(native);
+  const queryV2RemoteModelContext = native.queryV2RemoteModelContext.bind(native);
+  const queryV2PrepareRemoteModelRows =
+    native.queryV2PrepareRemoteModelRows.bind(native);
+  const queryV2PrepareRemoteModelPage =
+    native.queryV2PrepareRemoteModelPage.bind(native);
+  const queryV2PrepareRemoteModelCount =
+    native.queryV2PrepareRemoteModelCount.bind(native);
+  const queryV2PrepareRemoteModelExists =
+    native.queryV2PrepareRemoteModelExists.bind(native);
   const descriptors = Object.getOwnPropertyDescriptors(native);
 
   descriptors["queryV2Authority"] = protectedMethodDescriptor(
@@ -376,6 +474,64 @@ function protectNativeV2ByteInputs(native: LoadedNativeModule): LoadedNativeModu
           maxCollectionMembers,
           deadlineMs,
         ),
+      )) as (...args: never[]) => unknown,
+  );
+  descriptors["queryV2RemoteModelContext"] = protectedMethodDescriptor(
+    native,
+    "queryV2RemoteModelContext",
+    ((
+      authority: Parameters<LoadedNativeModule["queryV2RemoteModelContext"]>[0],
+      advertisement: Uint8Array,
+      maxItems: bigint,
+      maxBytes: bigint,
+      maxCollectionMembers: bigint,
+      maxGraphNodes: bigint,
+      maxAttributeValues: bigint,
+      maxRolePlayers: bigint,
+      deadlineMs?: bigint | null,
+    ) =>
+      queryV2RemoteModelContext(
+        authority,
+        ownedByteSnapshot(advertisement, MAX_REMOTE_ENVELOPE_BYTES),
+        maxItems,
+        maxBytes,
+        maxCollectionMembers,
+        maxGraphNodes,
+        maxAttributeValues,
+        maxRolePlayers,
+        deadlineMs,
+      )) as (...args: never[]) => unknown,
+  );
+  descriptors["queryV2PrepareRemoteModelRows"] = protectedMethodDescriptor(
+    native,
+    "queryV2PrepareRemoteModelRows",
+    ((...args: Parameters<LoadedNativeModule["queryV2PrepareRemoteModelRows"]>) =>
+      protectedPendingRemoteModelQuery(
+        queryV2PrepareRemoteModelRows(...args),
+      )) as (...args: never[]) => unknown,
+  );
+  descriptors["queryV2PrepareRemoteModelPage"] = protectedMethodDescriptor(
+    native,
+    "queryV2PrepareRemoteModelPage",
+    ((...args: Parameters<LoadedNativeModule["queryV2PrepareRemoteModelPage"]>) =>
+      protectedPendingRemoteModelQuery(
+        queryV2PrepareRemoteModelPage(...args),
+      )) as (...args: never[]) => unknown,
+  );
+  descriptors["queryV2PrepareRemoteModelCount"] = protectedMethodDescriptor(
+    native,
+    "queryV2PrepareRemoteModelCount",
+    ((...args: Parameters<LoadedNativeModule["queryV2PrepareRemoteModelCount"]>) =>
+      protectedPendingRemoteModelQuery(
+        queryV2PrepareRemoteModelCount(...args),
+      )) as (...args: never[]) => unknown,
+  );
+  descriptors["queryV2PrepareRemoteModelExists"] = protectedMethodDescriptor(
+    native,
+    "queryV2PrepareRemoteModelExists",
+    ((...args: Parameters<LoadedNativeModule["queryV2PrepareRemoteModelExists"]>) =>
+      protectedPendingRemoteModelQuery(
+        queryV2PrepareRemoteModelExists(...args),
       )) as (...args: never[]) => unknown,
   );
 

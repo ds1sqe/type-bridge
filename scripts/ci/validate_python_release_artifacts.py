@@ -82,30 +82,38 @@ CORE_SDIST_WORKSPACE_MEMBERS = (
     "crates/python",
     "crates/typedb-runtime",
     "crates/orm",
-    "crates/orm-derive",
     "crates/toml-transpiler",
     "vendor/typedb-protocol-b7",
     "vendor/typedb-driver-b7",
     "vendor/typedb-protocol-b8",
     "vendor/typedb-driver-b8",
 )
-CORE_SDIST_SOURCE_ROOTS = CORE_SDIST_WORKSPACE_MEMBERS + ("python/type_bridge_core",)
+# Maturin 1.14.1 does not discover the optional orm-derive path dependency
+# while constructing the Python sdist. pyproject.toml therefore includes this
+# source root explicitly. Unlike Cargo-packaged workspace members, the explicit
+# include is copied byte-for-byte: its manifest keeps workspace inheritance,
+# and Cargo resolves license-file to the archive's canonical root LICENSE.
+CORE_SDIST_EXPLICIT_RAW_SOURCE_ROOTS = ("crates/orm-derive",)
+CORE_SDIST_SOURCE_ROOTS = (
+    CORE_SDIST_WORKSPACE_MEMBERS
+    + CORE_SDIST_EXPLICIT_RAW_SOURCE_ROOTS
+    + ("python/type_bridge_core",)
+)
 # Cargo and Maturin omit nested packages from the enclosing crate archive.
 # This unpublished workspace exists only to exercise the released rule wire
 # against an isolated serde_json feature set; it is not a core sdist input.
 CORE_SDIST_EXCLUDED_NESTED_PACKAGE_ROOTS = frozenset(
     {"crates/core/tests/fixtures/rule-wire-standalone"}
 )
-CORE_SDIST_FIRST_PARTY_CRATE_ROOTS = tuple(
-    source_root for source_root in CORE_SDIST_SOURCE_ROOTS if source_root.startswith("crates/")
+CORE_SDIST_TRANSFORMED_FIRST_PARTY_CRATE_ROOTS = tuple(
+    source_root for source_root in CORE_SDIST_WORKSPACE_MEMBERS if source_root.startswith("crates/")
 )
 CORE_SDIST_GENERATED_LICENSES = frozenset(
-    f"{source_root}/{ROOT_LICENSE_FILE}" for source_root in CORE_SDIST_FIRST_PARTY_CRATE_ROOTS
+    f"{source_root}/{ROOT_LICENSE_FILE}"
+    for source_root in CORE_SDIST_TRANSFORMED_FIRST_PARTY_CRATE_ROOTS
 )
 CORE_SDIST_TRANSFORMED_FIRST_PARTY_MANIFESTS = frozenset(
-    f"{source_root}/Cargo.toml"
-    for source_root in CORE_SDIST_WORKSPACE_MEMBERS
-    if source_root.startswith("crates/")
+    f"{source_root}/Cargo.toml" for source_root in CORE_SDIST_TRANSFORMED_FIRST_PARTY_CRATE_ROOTS
 )
 CORE_SDIST_README_TRANSFORMS = frozenset(
     {

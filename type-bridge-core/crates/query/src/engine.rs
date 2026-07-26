@@ -142,7 +142,7 @@ pub(crate) fn analyze_local_function(
         &BTreeMap::new(),
         codes,
     )?;
-    topology.retain(|id, _| references.contains(id));
+    retain_topology(&mut topology, &references);
     ensure_connected(&topology, codes)?;
 
     let returns = function.returns();
@@ -182,6 +182,7 @@ pub(crate) fn analyze_patterns(
     inputs: &[ValueTypeTag],
     schema: &ResolvedSchema,
     locals: &BTreeMap<FunctionId, LocalFunctionSignature>,
+    additional_root_topology: &BTreeSet<(BindingId, BindingId)>,
     codes: &EngineCodes,
 ) -> Result<PatternAnalysis, Diagnostic> {
     let all_constructible = schema
@@ -206,6 +207,9 @@ pub(crate) fn analyze_patterns(
         .map(|id| (*id, BTreeSet::new()))
         .collect::<BTreeMap<_, _>>();
     collect_scope_topology(patterns, &mut positive, &mut root_references, &mut topology);
+    for (left, right) in additional_root_topology {
+        connect(&mut topology, *left, *right);
+    }
     if root_references.iter().any(|id| !positive.contains(id)) {
         return Err(fail(codes.root_reference_not_positive));
     }
@@ -216,7 +220,7 @@ pub(crate) fn analyze_patterns(
         domains.insert(*binding, BTreeSet::new());
     }
     validate_function_dependencies(patterns, codes)?;
-    topology.retain(|id, _| root_references.contains(id));
+    retain_topology(&mut topology, &root_references);
     prune_singleton_function_sources(patterns, &mut topology);
     let mut scoped_positive = BTreeSet::new();
     validate_negations(
@@ -547,6 +551,12 @@ fn ensure_value_bindings_stay_scalar(
             QueryPattern::Reachable { source, target, .. } => {
                 value_bindings.contains_key(source) || value_bindings.contains_key(target)
             }
+            QueryPattern::Or { branches } => {
+                for branch in branches {
+                    ensure_value_bindings_stay_scalar(branch, value_bindings, codes)?;
+                }
+                false
+            }
             QueryPattern::Not { patterns } | QueryPattern::Try { patterns } => {
                 ensure_value_bindings_stay_scalar(patterns, value_bindings, codes)?;
                 false
@@ -738,6 +748,31 @@ fn refine_pattern(
             }
             Ok(changed)
         }
+        QueryPattern::Or { branches } => {
+            let mut union = domains
+                .keys()
+                .copied()
+                .map(|binding| (binding, BTreeSet::new()))
+                .collect::<BTreeMap<_, _>>();
+            for branch in branches {
+                let mut branch_domains = domains.clone();
+                refine_positive(branch, &mut branch_domains, schema, codes)?;
+                for (binding, domain) in branch_domains {
+                    union
+                        .get_mut(&binding)
+                        .expect("declared binding")
+                        .extend(domain);
+                }
+            }
+            let mut changed = false;
+            for (binding, allowed) in union {
+                changed |= intersect_mut(
+                    domains.get_mut(&binding).expect("declared binding"),
+                    &allowed,
+                );
+            }
+            Ok(changed)
+        }
         QueryPattern::Value { .. }
         | QueryPattern::Not { .. }
         | QueryPattern::Try { .. }
@@ -786,6 +821,50 @@ fn collect_scope_topology(
                 referenced.extend(left.into_iter().chain(right));
                 if let (Some(left), Some(right)) = (left, right) {
                     connect(topology, left, right);
+                }
+            }
+            QueryPattern::Or { branches } => {
+                let mut branch_positive = Vec::with_capacity(branches.len());
+                let mut common_references: Option<BTreeSet<BindingId>> = None;
+                let mut external_references = BTreeSet::new();
+                for branch in branches {
+                    let mut local_positive = BTreeSet::new();
+                    let mut local_referenced = BTreeSet::new();
+                    let mut local_topology = topology
+                        .keys()
+                        .copied()
+                        .map(|binding| (binding, BTreeSet::new()))
+                        .collect::<BTreeMap<_, _>>();
+                    collect_scope_topology(
+                        branch,
+                        &mut local_positive,
+                        &mut local_referenced,
+                        &mut local_topology,
+                    );
+                    external_references
+                        .extend(local_referenced.difference(&local_positive).copied());
+                    match &mut common_references {
+                        Some(common) => {
+                            common.retain(|binding| local_referenced.contains(binding));
+                        }
+                        None => common_references = Some(local_referenced),
+                    }
+                    branch_positive.push(local_positive);
+                }
+                let mut guaranteed = branch_positive.pop().unwrap_or_default();
+                for branch in branch_positive {
+                    guaranteed.retain(|binding| branch.contains(binding));
+                }
+                referenced.extend(guaranteed.iter().copied());
+                referenced.extend(external_references);
+                positive.extend(guaranteed);
+                let common_references = common_references.unwrap_or_default();
+                for left in &common_references {
+                    for right in common_references
+                        .range((std::ops::Bound::Excluded(left), std::ops::Bound::Unbounded))
+                    {
+                        connect(topology, *left, *right);
+                    }
                 }
             }
             QueryPattern::Not { .. } | QueryPattern::Try { .. } => {}
@@ -863,7 +942,73 @@ fn validate_negations(
     codes: &EngineCodes,
 ) -> Result<(), Diagnostic> {
     for pattern in patterns {
-        if let QueryPattern::Not { patterns } = pattern {
+        if let QueryPattern::Or { branches } = pattern {
+            let mut guaranteed: Option<BTreeSet<BindingId>> = None;
+            let mut branch_states = Vec::with_capacity(branches.len());
+            for branch in branches {
+                let mut branch_positive = BTreeSet::new();
+                let mut branch_references = BTreeSet::new();
+                let mut branch_topology = outer_domains
+                    .keys()
+                    .copied()
+                    .map(|id| (id, BTreeSet::new()))
+                    .collect::<BTreeMap<_, _>>();
+                collect_scope_topology(
+                    branch,
+                    &mut branch_positive,
+                    &mut branch_references,
+                    &mut branch_topology,
+                );
+                match &mut guaranteed {
+                    Some(intersection) => {
+                        intersection.retain(|binding| branch_positive.contains(binding));
+                    }
+                    None => guaranteed = Some(branch_positive.clone()),
+                }
+                branch_states.push((branch, branch_positive, branch_references, branch_topology));
+            }
+            let guaranteed = guaranteed.unwrap_or_default();
+            for (branch, branch_positive, branch_references, mut branch_topology) in branch_states {
+                let mut branch_scope = outer_positive.clone();
+                branch_scope.extend(branch_positive.iter().copied());
+                if branch_references
+                    .iter()
+                    .any(|binding| !branch_scope.contains(binding))
+                {
+                    return Err(fail(codes.root_reference_not_positive));
+                }
+                let mut branch_domains = outer_domains.clone();
+                refine_positive(branch, &mut branch_domains, schema, codes)?;
+                if branch_positive
+                    .iter()
+                    .any(|binding| branch_domains[binding].is_empty())
+                {
+                    return Err(fail(codes.empty_negated_domain));
+                }
+                validate_values_shallow(
+                    branch,
+                    &branch_domains,
+                    schema,
+                    inputs,
+                    value_bindings,
+                    codes,
+                )?;
+                retain_topology(&mut branch_topology, &branch_references);
+                ensure_connected(&branch_topology, codes)?;
+                scoped_positive.extend(branch_positive.difference(&guaranteed).copied());
+                validate_negations(
+                    branch,
+                    &branch_domains,
+                    schema,
+                    inputs,
+                    &branch_scope,
+                    all_constructible,
+                    scoped_positive,
+                    value_bindings,
+                    codes,
+                )?;
+            }
+        } else if let QueryPattern::Not { patterns } = pattern {
             let mut body_positive = BTreeSet::new();
             let mut body_references = BTreeSet::new();
             let mut topology = outer_domains
@@ -893,7 +1038,7 @@ fn validate_negations(
                 return Err(fail(codes.empty_negated_domain));
             }
             validate_values_shallow(patterns, &nested, schema, inputs, value_bindings, codes)?;
-            topology.retain(|id, _| body_references.contains(id));
+            retain_topology(&mut topology, &body_references);
             ensure_connected(&topology, codes)?;
             scoped_positive.extend(body_positive.iter().copied());
             validate_negations(
@@ -969,7 +1114,7 @@ fn validate_tries(
             return Err(fail(codes.empty_try_domain));
         }
         validate_values_shallow(body, &nested, schema, inputs, value_bindings, codes)?;
-        topology.retain(|id, _| body_references.contains(id));
+        retain_topology(&mut topology, &body_references);
         ensure_connected(&topology, codes)?;
         for id in &body_positive {
             if !outer_positive.contains(id) {
@@ -992,6 +1137,21 @@ fn validate_values_shallow(
     codes: &EngineCodes,
 ) -> Result<(), Diagnostic> {
     for pattern in patterns {
+        if let QueryPattern::Or { branches } = pattern {
+            for branch in branches {
+                let mut branch_domains = domains.clone();
+                refine_positive(branch, &mut branch_domains, schema, codes)?;
+                validate_values_shallow(
+                    branch,
+                    &branch_domains,
+                    schema,
+                    inputs,
+                    value_bindings,
+                    codes,
+                )?;
+            }
+            continue;
+        }
         if let QueryPattern::Value {
             comparator,
             left,
@@ -1064,6 +1224,11 @@ fn collect_references(patterns: &[QueryPattern], output: &mut BTreeSet<BindingId
                 output.extend(operand_binding(left));
                 output.extend(operand_binding(right));
             }
+            QueryPattern::Or { branches } => {
+                for branch in branches {
+                    collect_references(branch, output);
+                }
+            }
             QueryPattern::Not { patterns } | QueryPattern::Try { patterns } => {
                 collect_references(patterns, output);
             }
@@ -1106,6 +1271,16 @@ fn connect(
         .insert(left);
 }
 
+fn retain_topology(
+    topology: &mut BTreeMap<BindingId, BTreeSet<BindingId>>,
+    retained: &BTreeSet<BindingId>,
+) {
+    topology.retain(|binding, _| retained.contains(binding));
+    for neighbors in topology.values_mut() {
+        neighbors.retain(|binding| retained.contains(binding));
+    }
+}
+
 fn ensure_connected(
     topology: &BTreeMap<BindingId, BTreeSet<BindingId>>,
     codes: &EngineCodes,
@@ -1116,7 +1291,10 @@ fn ensure_connected(
     let mut seen = BTreeSet::from([start]);
     let mut queue = VecDeque::from([start]);
     while let Some(id) = queue.pop_front() {
-        for neighbor in &topology[&id] {
+        let Some(neighbors) = topology.get(&id) else {
+            continue;
+        };
+        for neighbor in neighbors {
             if seen.insert(*neighbor) {
                 queue.push_back(*neighbor);
             }

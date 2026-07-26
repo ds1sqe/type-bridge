@@ -1,4 +1,7 @@
 import { loadNative } from "./native.js";
+import { type NativeQueryV2Authority, type NativeQueryV2BuilderRuntime } from "./query-v2-internals.js";
+export { QueryV2Error } from "./query-v2-internals.js";
+export type { QueryV2ErrorCategory, QueryV2ErrorDetail, QueryV2ErrorPathSegment, } from "./query-v2-internals.js";
 export type ValueType = "string" | "long" | "double" | "boolean" | "date" | "datetime" | "datetime-tz" | "decimal" | "duration";
 export type Annotation = "Key" | "Unique" | "Distinct" | {
     Card: [number, number | null];
@@ -329,6 +332,7 @@ interface NativeMarshalling {
 }
 export interface NativeRustDatabase {
     isConnected(): boolean;
+    serverDeprecationNotice?(): TypeDBServerDeprecationNotice | null;
     close(): void;
     databaseName(): string;
     databaseExists(): boolean;
@@ -339,6 +343,18 @@ export interface NativeRustDatabase {
     entityManagerJson(descriptorJson: string): NativeDynamicEntityManager;
     relationManagerJson(descriptorJson: string): NativeDynamicRelationManager;
 }
+/** Structured metadata for one legacy TypeDB server warning. */
+export interface TypeDBServerDeprecationNotice {
+    readonly code: typeof TYPE_DB_SERVER_DEPRECATION_CODE;
+    readonly message: string;
+}
+/** TypeBridge-specific machine-readable identity for the server notice. */
+export declare const TYPE_DB_SERVER_DEPRECATION_CODE = "TYPE_BRIDGE_TYPEDB_LEGACY_SERVER";
+/** Standard Node warning type used so `--no-deprecation` remains effective.
+ * Inspect {@link TYPE_DB_SERVER_DEPRECATION_CODE} for the TypeBridge-specific
+ * machine-readable identity.
+ */
+export declare const TYPE_DB_SERVER_DEPRECATION_WARNING = "DeprecationWarning";
 export interface NativeRustTransactionContext {
     queryJson(query: string): string;
     commit(): void;
@@ -347,11 +363,6 @@ export interface NativeRustTransactionContext {
     transactionType(): TransactionType;
     entityManagerJson(descriptorJson: string): NativeDynamicEntityManager;
     relationManagerJson(descriptorJson: string): NativeDynamicRelationManager;
-}
-declare const nativeQueryV2AuthorityKind: unique symbol;
-/** @internal Opaque N-API authority; use {@link QueryV2Authority}. */
-interface NativeQueryV2Authority {
-    readonly [nativeQueryV2AuthorityKind]: "query-v2-authority";
 }
 interface NativePendingQueryV2Remote {
     requestBytes(): Uint8Array;
@@ -416,7 +427,8 @@ interface NativeSchemaParser {
     parseSchemaJson(input: string): string;
     renderModelsJson(input: string, target: string, optionsJson?: string | null): string;
 }
-export interface NativeModule extends NativeRuntime, NativeMarshalling, NativeSchemaParser, NativeQueryV2Runtime {
+export interface NativeModule extends NativeRuntime, NativeMarshalling, NativeSchemaParser, NativeQueryV2Runtime, NativeQueryV2BuilderRuntime {
+    readonly TYPE_DB_SERVER_DEPRECATION_CODE: string;
     NodeDescriptorRegistry: new () => NativeDescriptorRegistry;
     generateDefineBlockJson(schemaInfoJson: string): string;
 }

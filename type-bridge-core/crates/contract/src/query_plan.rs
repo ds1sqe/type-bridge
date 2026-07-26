@@ -29,12 +29,29 @@ use crate::migration_assertion::{
 use crate::schema_fingerprint::ManagedSemanticSchemaFingerprint;
 use crate::value::{CanonicalValue, ValueTypeTag};
 
+#[path = "query_plan_v2.rs"]
+mod v2;
+pub use v2::{
+    CompatibilityValueV2, HydrationBindingV2, HydrationDescriptorV2, HydrationFieldV2,
+    HydrationPlayerV2, HydrationProjectionV2, HydrationRoleV2, ModelOutputV2, ModelQueryV2,
+    QueryBindingPairV2, QueryComparatorV2, QueryFieldV2, QueryMissingOrderV2,
+    QueryModelOutputSlotV2, QueryModelOutputV2, QueryNamedOutputSlotV2, QueryOrderDirectionV2,
+    QueryOrderTermV2, QueryPatternV2, QueryPlanV2Compatibility, QueryRowCardinalityV2,
+    QueryStableOrderV2, QueryWindowV2, ReleasedValueKindV2,
+};
+
 /// The exact wire discriminator for first-format query plans.
 pub const QUERY_PLAN_FORMAT_V1: &str = "typebridge.query-plan/v1";
+/// The exact wire discriminator for additive query plans.
+pub const QUERY_PLAN_FORMAT_V2: &str = "typebridge.query-plan/v2";
 /// Domain separating query-plan fingerprints from every other digest.
 pub const QUERY_PLAN_FINGERPRINT_DOMAIN: &str = "typebridge.query.plan";
-/// Canonicalization version fingerprints commit to.
+/// V1 canonicalization version retained for source compatibility.
 pub const QUERY_PLAN_CANONICALIZATION: &str = "typebridge.query-plan-c14n/v1";
+/// The V1 canonicalization version.
+pub const QUERY_PLAN_CANONICALIZATION_V1: &str = QUERY_PLAN_CANONICALIZATION;
+/// The additive V2 canonicalization version.
+pub const QUERY_PLAN_CANONICALIZATION_V2: &str = "typebridge.query-plan-c14n/v2";
 
 const CAP_PLAN: &str = "query.plan";
 const CAP_ISA: &str = "query.pattern.isa";
@@ -43,6 +60,7 @@ const CAP_HAS: &str = "query.pattern.has";
 const CAP_LINKS: &str = "query.pattern.links";
 const CAP_VALUE: &str = "query.pattern.value";
 const CAP_NEGATION: &str = "query.pattern.negation";
+const CAP_DISJUNCTION: &str = "query.pattern.disjunction";
 const CAP_INPUT_COLUMNS: &str = "query.input.columns";
 const CAP_STAGE_SELECT: &str = "query.stage.select";
 const CAP_STAGE_REQUIRE: &str = "query.stage.require";
@@ -88,6 +106,60 @@ pub fn query_plan_capability_vocabulary() -> CapabilitySet {
     .into_iter()
     .map(|value| CapabilityId::new(value).expect("static capability id is canonical"))
     .collect()
+}
+
+/// Return every capability the public low-level V2 authoring surface can derive.
+///
+/// This is deliberately narrower than [`query_plan_v2_capability_vocabulary`]:
+/// native low-level authoring adds only the V2 plan discriminator and closed
+/// disjunction syntax to the first query-plan vocabulary. Model-query
+/// compatibility capabilities are authored through a separate facade.
+#[must_use]
+pub fn query_plan_authoring_capability_vocabulary() -> CapabilitySet {
+    query_plan_capability_vocabulary()
+        .into_iter()
+        .chain([v2::CAP_PLAN_V2, v2::CAP_DISJUNCTION].map(|value| {
+            CapabilityId::new(value).expect("static V2 authoring capability is canonical")
+        }))
+        .collect()
+}
+
+/// Return every capability an additive V2 plan can syntax-derive.
+///
+/// The V1 vocabulary stays byte- and value-exact. This V2 inventory is a
+/// separate completeness guard containing the V1 vocabulary plus the closed
+/// model-query compatibility vocabulary.
+#[must_use]
+pub fn query_plan_v2_capability_vocabulary() -> CapabilitySet {
+    query_plan_capability_vocabulary()
+        .into_iter()
+        .chain(
+            [
+                v2::CAP_PLAN_V2,
+                v2::CAP_DISJUNCTION,
+                v2::CAP_STRING_OPERATORS,
+                v2::CAP_LINKS_SUBTYPES,
+                v2::CAP_CROSS_JOIN,
+                v2::CAP_OUTPUT_NAMED,
+                v2::CAP_OUTPUT_COLLECT,
+                v2::CAP_OUTPUT_COLLECT_DISTINCT,
+                v2::CAP_OUTPUT_HYDRATED,
+                v2::CAP_EXACTLY_ONE,
+                v2::CAP_PAGE,
+                v2::CAP_DISTINCT_COUNT,
+                v2::CAP_DISTINCT_EXISTS,
+                v2::CAP_STABLE_SELECTED,
+                v2::CAP_STABLE_ROOT,
+                v2::CAP_STABLE_COLLECTION,
+                v2::CAP_SAME_SNAPSHOT_HYDRATION,
+                v2::CAP_BATCH_IDENTITY_REBIND,
+            ]
+            .into_iter()
+            .map(|value| {
+                CapabilityId::new(value).expect("static V2 query capability is canonical")
+            }),
+        )
+        .collect()
 }
 
 /// Return the transport capability exact `given` invocations require.
@@ -249,6 +321,15 @@ pub enum QueryPattern {
         /// The right operand.
         right: QueryOperand,
     },
+    /// Require at least one child pattern.
+    ///
+    /// A binding is positively established after this pattern only when every
+    /// branch establishes it. Branch-local bindings never leak into the outer
+    /// row environment.
+    Or {
+        /// Non-empty alternative conjunctions in source order.
+        branches: Vec<Vec<QueryPattern>>,
+    },
     /// Negate a closed nested conjunction.
     Not {
         /// The negated conjunction.
@@ -266,12 +347,18 @@ pub enum QueryPattern {
     },
     /// Existential bounded reachability along one role-directed relation.
     ///
-    /// Holds when the target is reachable from the source in one through
-    /// `max_depth` hops, each hop one relation instance from the `role_from`
-    /// player to the `role_to` player. The bound is mandatory and finite;
-    /// lowering unrolls it provider-side, never by repeated client queries.
+    /// Holds when the target is reachable from the source in
+    /// `min_depth..=max_depth` hops, each hop one relation instance from the
+    /// `role_from` player to the `role_to` player. A zero-hop branch is exact
+    /// concept identity. Positive branches are finite directed walks: repeated
+    /// vertices or relation instances are admitted, so cycles cannot make
+    /// execution unbounded. Proof-path identity is existential and never
+    /// enters the selected row. Lowering unrolls every admitted length
+    /// provider-side, never by repeated client queries.
     Reachable {
-        /// The mandatory finite hop bound (at least one).
+        /// The inclusive minimum hop count. Zero admits source/target identity.
+        min_depth: u8,
+        /// The inclusive finite maximum hop count.
         max_depth: u8,
         /// The exact relation type of every hop.
         relation: TypeId,
@@ -648,6 +735,8 @@ pub enum QueryOutput {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct QueryPlan {
     bindings: Vec<AssertionBinding>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    compatibility: Option<QueryPlanV2Compatibility>,
     format: String,
     functions: Vec<LocalFunction>,
     inputs: Vec<InputColumn>,
@@ -672,6 +761,7 @@ impl QueryPlan {
             inputs,
             pipeline,
             output,
+            None,
             managed_semantics,
             StructuralLimits::CANONICAL,
         )
@@ -692,25 +782,99 @@ impl QueryPlan {
             inputs,
             pipeline,
             output,
+            None,
             managed_semantics,
             StructuralLimits::CANONICAL,
         )
     }
 
+    /// Validate and construct one additive V2 low-level plan.
+    ///
+    /// This constructor carries the required empty V2 compatibility object;
+    /// there is no host-controlled format switch or legacy mode.
+    pub fn new_v2(
+        bindings: Vec<AssertionBinding>,
+        inputs: Vec<InputColumn>,
+        pipeline: Vec<ReadStage>,
+        output: QueryOutput,
+        managed_semantics: ManagedSemanticSchemaFingerprint,
+    ) -> Result<Self, Diagnostic> {
+        Self::new_v2_with_functions(
+            bindings,
+            Vec::new(),
+            inputs,
+            pipeline,
+            output,
+            QueryPlanV2Compatibility::native(),
+            managed_semantics,
+        )
+    }
+
+    /// Validate and construct one additive V2 plan with local functions and
+    /// an explicit Rust-owned compatibility contract.
+    pub fn new_v2_with_functions(
+        bindings: Vec<AssertionBinding>,
+        functions: Vec<LocalFunction>,
+        inputs: Vec<InputColumn>,
+        pipeline: Vec<ReadStage>,
+        output: QueryOutput,
+        compatibility: QueryPlanV2Compatibility,
+        managed_semantics: ManagedSemanticSchemaFingerprint,
+    ) -> Result<Self, Diagnostic> {
+        Self::new_with_limits(
+            bindings,
+            functions,
+            inputs,
+            pipeline,
+            output,
+            Some(compatibility),
+            managed_semantics,
+            StructuralLimits::CANONICAL,
+        )
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the shared constructor receives every independently versioned plan component"
+    )]
     fn new_with_limits(
         bindings: Vec<AssertionBinding>,
         functions: Vec<LocalFunction>,
         inputs: Vec<InputColumn>,
         pipeline: Vec<ReadStage>,
         output: QueryOutput,
+        compatibility: Option<QueryPlanV2Compatibility>,
         managed_semantics: ManagedSemanticSchemaFingerprint,
         limits: StructuralLimits,
     ) -> Result<Self, Diagnostic> {
-        Self::validate_plan_structure(&bindings, &functions, &inputs, &pipeline, &output, limits)?;
-        let required_capabilities = derive_capabilities(&pipeline, &functions, &inputs, &output)?;
+        if compatibility.is_none() {
+            validate_v1_reachability(&pipeline)?;
+        }
+        Self::validate_plan_structure(
+            &bindings,
+            &functions,
+            &inputs,
+            &pipeline,
+            &output,
+            compatibility.as_ref(),
+            limits,
+        )?;
+        let required_capabilities = derive_capabilities(
+            &pipeline,
+            &functions,
+            &inputs,
+            &output,
+            compatibility.as_ref(),
+        )?;
+        let format = if compatibility.is_some() {
+            QUERY_PLAN_FORMAT_V2
+        } else {
+            QUERY_PLAN_FORMAT_V1
+        };
         Ok(Self {
             bindings,
-            format: QUERY_PLAN_FORMAT_V1.to_owned(),
+            compatibility,
+            format: format.to_owned(),
             functions,
             inputs,
             managed_semantics,
@@ -733,6 +897,7 @@ impl QueryPlan {
             &self.inputs,
             &self.pipeline,
             &self.output,
+            self.compatibility.as_ref(),
             limits,
         )
     }
@@ -746,6 +911,7 @@ impl QueryPlan {
         inputs: &[InputColumn],
         pipeline: &[ReadStage],
         output: &QueryOutput,
+        compatibility: Option<&QueryPlanV2Compatibility>,
         limits: StructuralLimits,
     ) -> Result<(), Diagnostic> {
         if bindings.is_empty() || !limits.allows_bindings(bindings.len()) {
@@ -901,6 +1067,9 @@ impl QueryPlan {
                 "offset and limit require an explicit total sort order",
             ));
         }
+        if let Some(compatibility) = compatibility {
+            compatibility.validate(bindings.len(), limits)?;
+        }
 
         Ok(())
     }
@@ -915,6 +1084,15 @@ impl QueryPlan {
     #[must_use]
     pub fn bindings(&self) -> &[AssertionBinding] {
         &self.bindings
+    }
+
+    /// Return the additive V2 compatibility contract.
+    ///
+    /// V1 plans return `None`; every V2 plan returns `Some`, including native
+    /// low-level plans whose compatibility object is empty.
+    #[must_use]
+    pub const fn v2_compatibility(&self) -> Option<&QueryPlanV2Compatibility> {
+        self.compatibility.as_ref()
     }
 
     /// Return dense typed input column declarations.
@@ -954,13 +1132,311 @@ impl QueryPlan {
 
     /// Encode exact canonical bytes.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, Diagnostic> {
-        to_canonical_json(self)
+        match self.format.as_str() {
+            QUERY_PLAN_FORMAT_V1 => to_canonical_json(&QueryPlanV1Projection::new(self)?),
+            QUERY_PLAN_FORMAT_V2 => to_canonical_json(self),
+            _ => Err(failure(
+                DiagnosticCategory::InvalidContract,
+                "query_plan_format_unsupported",
+                "query plan wire format is unsupported",
+            )),
+        }
     }
 
     /// Compute the canonical domain-separated plan fingerprint.
     pub fn fingerprint(&self) -> Result<QueryPlanFingerprint, Diagnostic> {
         QueryPlanFingerprint::compute(self)
     }
+}
+
+/// A borrowed projection through the frozen V1 field set.
+///
+/// This projection must precede the bounded canonical codec. Serializing the
+/// widened in-memory V2 shape first would make V1 acceptance depend on bytes
+/// (`min_depth`) that are absent from the released V1 wire.
+#[derive(Serialize)]
+struct QueryPlanV1Projection<'a> {
+    bindings: &'a [AssertionBinding],
+    format: &'a str,
+    functions: Vec<LocalFunctionV1Projection<'a>>,
+    inputs: &'a [InputColumn],
+    managed_semantics: &'a ManagedSemanticSchemaFingerprint,
+    output: &'a QueryOutput,
+    pipeline: Vec<ReadStageV1Projection<'a>>,
+    required_capabilities: &'a CapabilitySet,
+}
+
+impl<'a> QueryPlanV1Projection<'a> {
+    fn new(plan: &'a QueryPlan) -> Result<Self, Diagnostic> {
+        Ok(Self {
+            bindings: plan.bindings(),
+            format: plan.format(),
+            functions: plan
+                .functions()
+                .iter()
+                .map(LocalFunctionV1Projection::new)
+                .collect::<Result<Vec<_>, _>>()?,
+            inputs: plan.inputs(),
+            managed_semantics: plan.managed_semantics(),
+            output: plan.output(),
+            pipeline: plan
+                .pipeline()
+                .iter()
+                .map(ReadStageV1Projection::new)
+                .collect::<Result<Vec<_>, _>>()?,
+            required_capabilities: plan.required_capabilities(),
+        })
+    }
+}
+
+#[derive(Serialize)]
+struct LocalFunctionV1Projection<'a> {
+    bindings: &'a [AssertionBinding],
+    body: Vec<QueryPatternV1Projection<'a>>,
+    name: &'a FunctionId,
+    parameters: &'a [Label],
+    returns: &'a LocalReturn,
+}
+
+impl<'a> LocalFunctionV1Projection<'a> {
+    fn new(function: &'a LocalFunction) -> Result<Self, Diagnostic> {
+        Ok(Self {
+            bindings: function.bindings(),
+            body: function
+                .body()
+                .iter()
+                .map(QueryPatternV1Projection::new)
+                .collect::<Result<Vec<_>, _>>()?,
+            name: function.name(),
+            parameters: function.parameters(),
+            returns: function.returns(),
+        })
+    }
+}
+
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum ReadStageV1Projection<'a> {
+    Match {
+        patterns: Vec<QueryPatternV1Projection<'a>>,
+    },
+    Select {
+        bindings: &'a [BindingId],
+    },
+    Require {
+        bindings: &'a [BindingId],
+    },
+    Distinct,
+    Reduce {
+        assignments: &'a [ReduceAssignment],
+        groups: &'a [BindingId],
+    },
+    Sort {
+        terms: &'a [OrderTerm],
+    },
+    Offset {
+        rows: u64,
+    },
+    Limit {
+        rows: u64,
+    },
+}
+
+impl<'a> ReadStageV1Projection<'a> {
+    fn new(stage: &'a ReadStage) -> Result<Self, Diagnostic> {
+        Ok(match stage {
+            ReadStage::Match { patterns } => Self::Match {
+                patterns: patterns
+                    .iter()
+                    .map(QueryPatternV1Projection::new)
+                    .collect::<Result<Vec<_>, _>>()?,
+            },
+            ReadStage::Select { bindings } => Self::Select { bindings },
+            ReadStage::Require { bindings } => Self::Require { bindings },
+            ReadStage::Distinct => Self::Distinct,
+            ReadStage::Reduce {
+                assignments,
+                groups,
+            } => Self::Reduce {
+                assignments,
+                groups,
+            },
+            ReadStage::Sort { terms } => Self::Sort { terms },
+            ReadStage::Offset { rows } => Self::Offset { rows: *rows },
+            ReadStage::Limit { rows } => Self::Limit { rows: *rows },
+        })
+    }
+}
+
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum QueryPatternV1Projection<'a> {
+    Isa {
+        binding: BindingId,
+        include_subtypes: bool,
+        type_id: &'a TypeId,
+    },
+    Has {
+        attribute: BindingId,
+        attribute_id: &'a AttributeId,
+        owner: BindingId,
+    },
+    Links {
+        players: &'a [AssertionRolePlayer],
+        relation: BindingId,
+        relation_id: &'a TypeId,
+    },
+    Value {
+        comparator: ValueComparator,
+        left: &'a QueryOperand,
+        right: &'a QueryOperand,
+    },
+    Not {
+        patterns: Vec<QueryPatternV1Projection<'a>>,
+    },
+    Try {
+        patterns: Vec<QueryPatternV1Projection<'a>>,
+    },
+    Reachable {
+        max_depth: u8,
+        relation: &'a TypeId,
+        role_from: &'a RoleId,
+        role_to: &'a RoleId,
+        source: BindingId,
+        target: BindingId,
+    },
+    FunctionCall {
+        arguments: &'a [QueryOperand],
+        assigned: BindingId,
+        function: &'a FunctionId,
+    },
+}
+
+impl<'a> QueryPatternV1Projection<'a> {
+    fn new(pattern: &'a QueryPattern) -> Result<Self, Diagnostic> {
+        Ok(match pattern {
+            QueryPattern::Isa {
+                binding,
+                include_subtypes,
+                type_id,
+            } => Self::Isa {
+                binding: *binding,
+                include_subtypes: *include_subtypes,
+                type_id,
+            },
+            QueryPattern::Has {
+                attribute,
+                attribute_id,
+                owner,
+            } => Self::Has {
+                attribute: *attribute,
+                attribute_id,
+                owner: *owner,
+            },
+            QueryPattern::Links {
+                players,
+                relation,
+                relation_id,
+            } => Self::Links {
+                players,
+                relation: *relation,
+                relation_id,
+            },
+            QueryPattern::Value {
+                comparator,
+                left,
+                right,
+            } => Self::Value {
+                comparator: *comparator,
+                left,
+                right,
+            },
+            QueryPattern::Or { .. } => {
+                return Err(failure(
+                    DiagnosticCategory::InvalidContract,
+                    "query_plan_v1_disjunction_unsupported",
+                    "ordinary disjunction is additive in query-plan V2",
+                ));
+            }
+            QueryPattern::Not { patterns } => Self::Not {
+                patterns: patterns
+                    .iter()
+                    .map(Self::new)
+                    .collect::<Result<Vec<_>, _>>()?,
+            },
+            QueryPattern::Try { patterns } => Self::Try {
+                patterns: patterns
+                    .iter()
+                    .map(Self::new)
+                    .collect::<Result<Vec<_>, _>>()?,
+            },
+            QueryPattern::Reachable {
+                max_depth,
+                relation,
+                role_from,
+                role_to,
+                source,
+                target,
+                ..
+            } => Self::Reachable {
+                max_depth: *max_depth,
+                relation,
+                role_from,
+                role_to,
+                source: *source,
+                target: *target,
+            },
+            QueryPattern::FunctionCall {
+                arguments,
+                assigned,
+                function,
+            } => Self::FunctionCall {
+                arguments,
+                assigned: *assigned,
+                function,
+            },
+        })
+    }
+}
+
+fn validate_v1_reachability(pipeline: &[ReadStage]) -> Result<(), Diagnostic> {
+    fn validate_patterns(patterns: &[QueryPattern]) -> Result<(), Diagnostic> {
+        for pattern in patterns {
+            match pattern {
+                QueryPattern::Or { .. } => {
+                    return Err(failure(
+                        DiagnosticCategory::InvalidContract,
+                        "query_plan_v1_disjunction_unsupported",
+                        "ordinary disjunction is additive in query-plan V2",
+                    ));
+                }
+                QueryPattern::Reachable { min_depth, .. } if *min_depth != 1 => {
+                    return Err(failure(
+                        DiagnosticCategory::InvalidContract,
+                        "query_plan_v1_reachable_min_depth",
+                        "V1 reachability always starts at one hop",
+                    ));
+                }
+                QueryPattern::Not { patterns } | QueryPattern::Try { patterns } => {
+                    validate_patterns(patterns)?;
+                }
+                QueryPattern::Isa { .. }
+                | QueryPattern::Has { .. }
+                | QueryPattern::Links { .. }
+                | QueryPattern::Value { .. }
+                | QueryPattern::Reachable { .. }
+                | QueryPattern::FunctionCall { .. } => {}
+            }
+        }
+        Ok(())
+    }
+
+    for stage in pipeline {
+        if let ReadStage::Match { patterns } = stage {
+            validate_patterns(patterns)?;
+        }
+    }
+    Ok(())
 }
 
 /// One rectangular invocation input row.
@@ -1159,9 +1635,20 @@ pub struct QueryPlanFingerprint(Fingerprint);
 impl QueryPlanFingerprint {
     /// Compute the fixed-domain fingerprint of a trusted plan.
     pub fn compute(plan: &QueryPlan) -> Result<Self, Diagnostic> {
+        let canonicalization = match plan.format() {
+            QUERY_PLAN_FORMAT_V1 => QUERY_PLAN_CANONICALIZATION_V1,
+            QUERY_PLAN_FORMAT_V2 => QUERY_PLAN_CANONICALIZATION_V2,
+            _ => {
+                return Err(failure(
+                    DiagnosticCategory::InvalidContract,
+                    "query_plan_format_unsupported",
+                    "query plan format has no fingerprint canonicalization",
+                ));
+            }
+        };
         Ok(Self(Fingerprint::compute(
             FingerprintDomain::new(QUERY_PLAN_FINGERPRINT_DOMAIN)?,
-            CanonicalizationVersion::new(QUERY_PLAN_CANONICALIZATION)?,
+            CanonicalizationVersion::new(canonicalization)?,
             None,
             &plan.canonical_bytes()?,
         )))
@@ -1177,6 +1664,18 @@ impl QueryPlanFingerprint {
 /// Decode canonical bytes through private constructor-rebuilding wire types.
 pub fn decode_query_plan(bytes: &[u8]) -> Result<QueryPlan, Diagnostic> {
     crate::query_plan_wire::decode_query_plan(bytes)
+}
+
+/// Decode exact canonical invocation bytes and bind them to one trusted plan.
+///
+/// Reconstruction checks the serialized fingerprint before rebuilding the
+/// invocation through the ordinary constructor, then requires byte-for-byte
+/// canonical round-trip identity.
+pub fn decode_query_invocation(
+    plan: &QueryPlan,
+    bytes: &[u8],
+) -> Result<QueryInvocation, Diagnostic> {
+    crate::query_invocation_wire::decode_query_invocation(plan, bytes)
 }
 
 fn validate_local_functions(
@@ -1248,7 +1747,8 @@ fn validate_local_functions(
             // The first local vocabulary keeps bodies flat.
             if matches!(
                 pattern,
-                QueryPattern::Not { .. }
+                QueryPattern::Or { .. }
+                    | QueryPattern::Not { .. }
                     | QueryPattern::Try { .. }
                     | QueryPattern::Reachable { .. }
                     | QueryPattern::FunctionCall { .. }
@@ -1629,6 +2129,26 @@ fn inspect_pattern(
             check_operand(left, binding_count, input_count)?;
             check_operand(right, binding_count, input_count)
         }
+        QueryPattern::Or { branches } => {
+            if branches.is_empty()
+                || branches.len() > limits.boolean_terms
+                || branches
+                    .iter()
+                    .any(|branch| branch.is_empty() || branch.len() > limits.boolean_terms)
+            {
+                return Err(failure(
+                    DiagnosticCategory::ResourceLimit,
+                    "query_plan_disjunction_term_limit",
+                    "disjunction branches are empty or exceed the boolean-term ceiling",
+                ));
+            }
+            for branch in branches {
+                for child in branch {
+                    inspect_pattern(child, depth + 1, binding_count, input_count, limits, nodes)?;
+                }
+            }
+            Ok(())
+        }
         QueryPattern::Not { patterns } => {
             if patterns.is_empty() || patterns.len() > limits.boolean_terms {
                 return Err(failure(
@@ -1660,7 +2180,8 @@ fn inspect_pattern(
             for child in patterns {
                 if matches!(
                     child,
-                    QueryPattern::Not { .. }
+                    QueryPattern::Or { .. }
+                        | QueryPattern::Not { .. }
                         | QueryPattern::Try { .. }
                         | QueryPattern::Reachable { .. }
                         | QueryPattern::FunctionCall { .. }
@@ -1676,6 +2197,7 @@ fn inspect_pattern(
             Ok(())
         }
         QueryPattern::Reachable {
+            min_depth,
             max_depth,
             source,
             target,
@@ -1688,21 +2210,40 @@ fn inspect_pattern(
                     "bounded reachability is admitted only in the root conjunction",
                 ));
             }
-            if *max_depth == 0 || !limits.allows_predicate_depth(usize::from(*max_depth)) {
+            if *min_depth == 1 && *max_depth == 0 {
                 return Err(failure(
                     DiagnosticCategory::ResourceLimit,
                     "query_plan_reachable_depth",
                     "reachability requires a finite hop bound within the depth ceiling",
                 ));
             }
-            // Lowering unrolls one branch per path length, so a bound of d
-            // expands into d(d+1)/2 relation clauses. Charge that expansion
-            // against the shared node budget: a compact plan cannot smuggle
-            // hundreds of thousands of emitted clauses past the ceiling by
-            // spelling them as one pattern.
+            if min_depth > max_depth {
+                return Err(failure(
+                    DiagnosticCategory::InvalidContract,
+                    "query_plan_reachable_bounds",
+                    "reachability minimum depth must not exceed its maximum depth",
+                ));
+            }
+            if !limits.allows_predicate_depth(usize::from(*max_depth)) {
+                return Err(failure(
+                    DiagnosticCategory::ResourceLimit,
+                    "query_plan_reachable_depth",
+                    "reachability requires a finite hop bound within the depth ceiling",
+                ));
+            }
+            // Lowering unrolls one branch per admitted path length. Charge
+            // every emitted hop against the shared node budget. The zero-hop
+            // identity branch is one clause, so a compact plan cannot smuggle
+            // hundreds of thousands of emitted clauses past the ceiling.
+            let first_positive = usize::from((*min_depth).max(1));
             let bound = usize::from(*max_depth);
-            let expanded_hops = bound * (bound + 1) / 2;
-            *nodes = nodes.saturating_add(expanded_hops.saturating_sub(1));
+            let expanded_hops = if first_positive <= bound {
+                (first_positive..=bound).fold(0usize, usize::saturating_add)
+            } else {
+                0
+            };
+            let expanded_clauses = expanded_hops.saturating_add(usize::from(*min_depth == 0));
+            *nodes = nodes.saturating_add(expanded_clauses.saturating_sub(1));
             if !limits.allows_predicate_nodes(*nodes) {
                 return Err(failure(
                     DiagnosticCategory::ResourceLimit,
@@ -1768,6 +2309,13 @@ fn collect_pattern_bindings(pattern: &QueryPattern, bindings: &mut BTreeSet<Bind
             operand(left);
             operand(right);
         }
+        QueryPattern::Or { branches } => {
+            for branch in branches {
+                for child in branch {
+                    collect_pattern_bindings(child, bindings);
+                }
+            }
+        }
         QueryPattern::Not { patterns } | QueryPattern::Try { patterns } => {
             for child in patterns {
                 collect_pattern_bindings(child, bindings);
@@ -1815,6 +2363,21 @@ fn collect_direct_positive_bindings(pattern: &QueryPattern, bindings: &mut BTree
         QueryPattern::FunctionCall { assigned, .. } => {
             bindings.insert(*assigned);
         }
+        QueryPattern::Or { branches } => {
+            let mut branches = branches.iter().map(|patterns| {
+                let mut branch = BTreeSet::new();
+                for pattern in patterns {
+                    collect_direct_positive_bindings(pattern, &mut branch);
+                }
+                branch
+            });
+            if let Some(mut intersection) = branches.next() {
+                for branch in branches {
+                    intersection.retain(|binding| branch.contains(binding));
+                }
+                bindings.extend(intersection);
+            }
+        }
         QueryPattern::Value { .. } | QueryPattern::Not { .. } | QueryPattern::Try { .. } => {}
     }
 }
@@ -1823,12 +2386,27 @@ fn collect_direct_positive_bindings(pattern: &QueryPattern, bindings: &mut BTree
 /// negations. Optional blocks cannot occur below a negation in this vocabulary,
 /// so every nested positive producer is a scoped witness.
 fn collect_negation_positive_bindings(pattern: &QueryPattern, bindings: &mut BTreeSet<BindingId>) {
-    let QueryPattern::Not { patterns } = pattern else {
-        return;
-    };
-    for child in patterns {
-        collect_direct_positive_bindings(child, bindings);
-        collect_negation_positive_bindings(child, bindings);
+    match pattern {
+        QueryPattern::Not { patterns } => {
+            for child in patterns {
+                collect_direct_positive_bindings(child, bindings);
+                collect_negation_positive_bindings(child, bindings);
+            }
+        }
+        QueryPattern::Or { branches } => {
+            for branch in branches {
+                for child in branch {
+                    collect_negation_positive_bindings(child, bindings);
+                }
+            }
+        }
+        QueryPattern::Isa { .. }
+        | QueryPattern::Has { .. }
+        | QueryPattern::Links { .. }
+        | QueryPattern::Value { .. }
+        | QueryPattern::Try { .. }
+        | QueryPattern::Reachable { .. }
+        | QueryPattern::FunctionCall { .. } => {}
     }
 }
 
@@ -1871,6 +2449,7 @@ fn derive_capabilities(
     functions: &[LocalFunction],
     inputs: &[InputColumn],
     output: &QueryOutput,
+    compatibility: Option<&QueryPlanV2Compatibility>,
 ) -> Result<CapabilitySet, Diagnostic> {
     let mut capabilities = CapabilitySet::new();
     insert_capability(&mut capabilities, CAP_PLAN)?;
@@ -1923,6 +2502,19 @@ fn derive_capabilities(
             }
         }
     }
+    if let Some(compatibility) = compatibility {
+        insert_capability(&mut capabilities, v2::CAP_PLAN_V2)?;
+        compatibility.add_capabilities(&mut capabilities)?;
+        let vocabulary = query_plan_v2_capability_vocabulary();
+        let unknown = capabilities.missing_from(&vocabulary);
+        if !unknown.is_empty() {
+            return Err(failure(
+                DiagnosticCategory::Integrity,
+                "query_plan_v2_capability_inventory_incomplete",
+                "V2 syntax derived a capability absent from the exhaustive vocabulary",
+            ));
+        }
+    }
     Ok(capabilities)
 }
 
@@ -1942,6 +2534,14 @@ fn collect_pattern_capabilities(
         QueryPattern::Has { .. } => insert_capability(capabilities, CAP_HAS)?,
         QueryPattern::Links { .. } => insert_capability(capabilities, CAP_LINKS)?,
         QueryPattern::Value { .. } => insert_capability(capabilities, CAP_VALUE)?,
+        QueryPattern::Or { branches } => {
+            insert_capability(capabilities, CAP_DISJUNCTION)?;
+            for branch in branches {
+                for child in branch {
+                    collect_pattern_capabilities(child, capabilities)?;
+                }
+            }
+        }
         QueryPattern::Try { patterns } => {
             insert_capability(capabilities, CAP_TRY)?;
             for child in patterns {
@@ -1964,7 +2564,7 @@ fn collect_pattern_capabilities(
     Ok(())
 }
 
-fn insert_capability(
+pub(crate) fn insert_capability(
     capabilities: &mut CapabilitySet,
     value: &'static str,
 ) -> Result<(), Diagnostic> {

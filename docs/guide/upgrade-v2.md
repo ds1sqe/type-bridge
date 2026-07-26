@@ -31,19 +31,17 @@ Update the dependency and run your existing application:
   a query the Rust compiler rejects still compiles and executes, with
   the released DEBUG-level fallback diagnostic. Sort, offset, and limit
   emission for the Python facade remains in Python.
-- Rust V1 `MatchRequest` remains on its V1 engine. Valid released requests
-  retain their public result shapes, ordering, and diagnostics; internally,
-  every provider statement has a finite resource ceiling. When the public
-  projection is exactly the provider's distinct projection, the public window
-  is placed in TypeQL and the finite stream is consumed through its terminal
-  frame. Shapes with hidden witness bindings retain the released behavior of
-  stopping after the required public prefix. Owned read transactions receive
-  bounded explicit cleanup; the remaining upstream early-stream close
-  limitation is tracked by
-  [#196](https://github.com/ds1sqe/type-bridge/issues/196). An experimental
-  adapter onto V2 plans exists but is not wired into any execution path, covers
-  only part of the released query algebra, and is **not** part of the upgrade
-  contract.
+- Rust V1 `MatchRequest` keeps its released public request, result, ordering,
+  and diagnostic contract. Internally, a valid request is checked against one
+  descriptor-registry snapshot, translated through the same Rust V2 builder
+  gate used by ordinary V2 plans, and executed and hydrated against that same
+  snapshot. The production parity corpus covers every released operation,
+  predicate, output, collection, ordering, inherited-role, and scalar family.
+  The direct V1 executor remains only for an exact representation-envelope
+  case: a released string or its escaped canonical plan can exceed V2's fixed
+  artifact-size ceiling. That fallback is selected after V1 validation and
+  cannot be requested by decoded V2 input. No source change is required in
+  either case.
 - Existing legacy migrations keep working: the released readers and checksum
   rules remain compatible, and old snapshots remain readable. Newly authored
   snapshots may carry additive declared-descriptor authority; existing
@@ -181,9 +179,10 @@ key-path = "certs/server-key.pem"
 
 Both inbound files are required and validated before the listener binds;
 omitting the block preserves the released HTTP listener. V1 response shapes,
-status codes, and error encodings remain unchanged; the one intentional
-byte-level exception is `/health.version`, whose value reflects the current
-TypeBridge package identity instead of retaining a 1.5.x version string.
+methods, status codes, headers, bodies, and error encodings remain unchanged.
+That includes `/health.version`, which remains the final released V1 HTTP
+identity, `1.5.11`; use the package metadata or `type-bridge-server --version`
+when the installed V2 package identity is required.
 
 When V2 routes are enabled, a relative `v2.declared_schema_file` also resolves
 against the server configuration directory. Every path component and the
@@ -198,13 +197,45 @@ mutating the public path field after loading is rejected.
 
 New code uses prepared V2 plans: reusable, capability-gated,
 schema-validated read programs with typed inputs, executed locally or
-through the versioned remote envelope with identical semantics. Plan
-authoring is a Rust surface in 2.0.0; the Python and Node bindings
-execute prepared plans (canonical plan bytes plus invocation) but do
-not yet offer idiomatic plan-builder facades — those ship in a later
-`2.0.x` release. V1 queries continue to work throughout 2.x and
-migrate one query at a time as the V2 authoring surface reaches your
-binding.
+through the versioned remote envelope with identical semantics. Python
+authors complete low-level plans through `type_bridge.query_v2`; Node uses
+`@type-bridge/node/query-v2`. Both expose `QueryV2Authority`,
+`QueryPlanBuilder`, `AuthoredQueryPlan`, and `AuthoredQueryInvocation`.
+Their opaque handles delegate every transition, validation, canonical byte,
+fingerprint, and capability decision to the same Rust incremental builder;
+neither binding assembles plan JSON. V1 queries continue to work throughout
+2.x, so applications can migrate one query at a time without changing
+unrelated direct-query code.
+
+For model-oriented code, keep `QuerySession` when the application owns a
+`Database` or read transaction and wants the released synchronous terminal
+types. Use `RemoteQuerySession` only when the application owns a remote
+executor exchange. Its immutable composition grammar is the same, but
+`one()`, `rows()`, `page_by()` / `pageBy()`, `count_by()` / `countBy()`, and
+`exists_by()` / `existsBy()` are explicitly awaitable. Constructing variables,
+predicates, and queries performs no I/O. One awaited terminal performs exactly
+one caller-supplied request/response exchange and no retry or client-side
+hydration query. See [Immutable Typed Queries](typed-queries.md#remote-model-queries)
+for exact Python and Node imports, limits, and examples.
+
+Adopt V2 query-by-query:
+
+1. Preserve the existing V1 query and its compatibility tests.
+2. Create one `QueryV2Authority` from the canonical declared-schema snapshot
+   for the intended scope and exact `typedb-<version>/v1` profile.
+3. Choose either the complete low-level builder or the model-oriented
+   `QuerySession` / `RemoteQuerySession`; do not translate plans through
+   hand-written JSON.
+4. Compare result shape, ordering, diagnostics, and concrete-subtype
+   materialization before switching the call site.
+5. Remove only that migrated call site's V1 construction. No V1 facade has a
+   scheduled removal, so unrelated queries may remain unchanged.
+
+The binding execution smokes now author their plans at runtime. This retires
+only the former embedded `PLAN_B64` constants in the Python and Node V2 binding
+smokes. Canonical codec goldens, fingerprint vectors, hostile remote-envelope
+fixtures, V1 wire fixtures, MatchRequest corpora, and released compatibility
+fixtures remain authoritative and are not replaced by facade-generated bytes.
 
 For remote execution, the exact capability advertisement is an explicit trust
 input: it carries the executor epoch and reply-signing identity that preparation
@@ -215,6 +246,14 @@ provision/pin its exact bytes or fingerprint out of band. A standalone server
 rotates the epoch and signing identity on restart, so clients must authenticate
 and accept the new advertisement rather than silently treating it as the old
 executor.
+
+The caller owns capability discovery, advertisement authentication,
+credentials, TLS, HTTP or other transport, application headers, response
+status handling, and retry policy. TypeBridge accepts the authenticated
+advertisement and an exchange callback; it does not construct an HTTP client
+or application context. Remote limits and the absolute deadline are pinned
+before the exchange. Preparation failure performs zero exchanges, and a
+transport failure is neither decoded nor retried by TypeBridge.
 
 Prepared execution has two explicit authority modes:
 
@@ -245,9 +284,12 @@ cancellation closes the transaction and never publishes a partial answer.
 
 As of 2.0, exactly one implementation — Rust — resolves schemas, plans
 migrations, validates queries, and emits TypeQL on every **V2** path.
-The deprecated V1 facades keep their released engines: the Python and
-TypeScript packages retain their own inheritance-resolution and
-emission code where it serves those facades, including the Python
-V1 query-compiler fallback described in Step 1. That code never
-executes on a V2 path and is removed only together with its facade,
-under the conditions in [V2 Deprecations](v2-deprecations.md).
+The deprecated V1 facades keep their released behavior and public contracts.
+Some retain their existing Python or TypeScript inheritance-resolution and
+emission code, including the Python V1 query-compiler fallback described in
+Step 1. Rust `MatchRequest` execution may instead delegate representable
+requests to the parity-proven V2 compatibility program and retain the direct
+executor for its explicit legacy-required dispositions. That internal choice
+does not schedule the V1 facade for removal. A retained implementation is
+removed only together with its facade under the conditions in
+[V2 Deprecations](v2-deprecations.md).

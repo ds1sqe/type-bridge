@@ -53,11 +53,13 @@ pub enum Capability {
     CollectDistinct,
     /// Stable order over collection members.
     StableCollectionOrder,
+    /// Finite directed reachability lowered through exact relation roles.
+    BoundedReachability,
 }
 
 impl Capability {
     /// Complete provider capability vocabulary for exhaustive implementations.
-    pub const ALL: [Self; 18] = [
+    pub const ALL: [Self; 19] = [
         Self::ResourceBoundedStreaming,
         Self::ExactEntityTarget,
         Self::ExactRelationTarget,
@@ -76,6 +78,7 @@ impl Capability {
         Self::Collect,
         Self::CollectDistinct,
         Self::StableCollectionOrder,
+        Self::BoundedReachability,
     ];
 }
 
@@ -188,6 +191,9 @@ fn add_plan_capabilities(plan: &MatchPlan, required: &mut CapabilitySet) {
 fn add_expression_capabilities(expression: &MatchExpr, required: &mut CapabilitySet) {
     match expression {
         MatchExpr::FieldValue { .. } | MatchExpr::RoleEdge { .. } => {}
+        MatchExpr::Reachable { .. } => {
+            required.insert(Capability::BoundedReachability);
+        }
         MatchExpr::FieldComparison { .. } => {
             required.insert(Capability::FieldComparison);
         }

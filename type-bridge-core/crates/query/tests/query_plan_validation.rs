@@ -8,8 +8,10 @@ use type_bridge_contract::migration_assertion::{
     AssertionBinding, BindingId, QueryVariable, ValueComparator,
 };
 use type_bridge_contract::query_plan::{
-    InputColumn, InputColumnId, OrderDirection, OrderTerm, QueryOperand, QueryOutput, QueryPattern,
-    QueryPlan, ReadStage,
+    HydrationBindingV2, HydrationDescriptorV2, HydrationFieldV2, HydrationProjectionV2,
+    InputColumn, InputColumnId, ModelQueryV2, OrderDirection, OrderTerm, QueryModelOutputSlotV2,
+    QueryModelOutputV2, QueryOperand, QueryOutput, QueryPattern, QueryPlan,
+    QueryPlanV2Compatibility, QueryRowCardinalityV2, QueryWindowV2, ReadStage,
 };
 use type_bridge_contract::schema::{
     AnnotationFact, AnnotationFactId, AnnotationKindId, AnnotationSubjectId, CanonicalValueSet,
@@ -18,7 +20,9 @@ use type_bridge_contract::schema::{
 };
 use type_bridge_contract::schema_delta::ManagedSchemaState;
 use type_bridge_contract::temporal::{CanonicalDateTimeTz, CanonicalDuration, TimeZoneDesignator};
-use type_bridge_contract::value::{CanonicalDouble, CanonicalString, CanonicalValue, ValueTypeTag};
+use type_bridge_contract::value::{
+    CanonicalDouble, CanonicalString, CanonicalValue, Cardinality, ValueTypeTag,
+};
 use type_bridge_query::{MigrationAssertionValidationContext, validate_query_plan};
 use type_bridge_schema::{ManagedDeltaContext, ResolvedSchema, managed_schema_state, resolve};
 
@@ -49,6 +53,70 @@ fn binding_id(id: u16) -> BindingId {
     BindingId::new(id).expect("binding id")
 }
 
+fn hydrated_exact_person_plan(managed: &ManagedSchemaState, cardinality: Cardinality) -> QueryPlan {
+    let person = type_id(TypeKind::Entity, "person");
+    let name = AttributeId::new("name").expect("attribute");
+    let hydration = HydrationProjectionV2::new(
+        vec![HydrationBindingV2::new(
+            binding_id(0),
+            person.clone(),
+            vec![person.clone()],
+        )],
+        vec![HydrationDescriptorV2::new(
+            person.clone(),
+            vec![HydrationFieldV2::new(
+                // This is deliberately a model-facing alias rather than the
+                // provider label. Server schema validation must ignore it and
+                // lowering must never emit it as TypeQL.
+                "display_name",
+                vec![person.clone()],
+                name,
+                ValueTypeTag::String,
+                cardinality,
+                false,
+                false,
+                true,
+            )],
+            Vec::new(),
+        )],
+    );
+    QueryPlan::new_v2_with_functions(
+        vec![binding(0, "b0")],
+        Vec::new(),
+        Vec::new(),
+        vec![
+            ReadStage::Match {
+                patterns: vec![person_isa(0)],
+            },
+            ReadStage::Select {
+                bindings: vec![binding_id(0)],
+            },
+            ReadStage::Distinct,
+        ],
+        QueryOutput::Rows {
+            columns: vec![binding_id(0)],
+        },
+        QueryPlanV2Compatibility::new(
+            None,
+            Vec::new(),
+            Some(ModelQueryV2::Rows {
+                cardinality: QueryRowCardinalityV2::ExactlyOne,
+                hydration,
+                order: None,
+                output: QueryModelOutputV2::Positional {
+                    slots: vec![QueryModelOutputSlotV2::One {
+                        binding: binding_id(0),
+                        declared: person,
+                    }],
+                },
+                window: QueryWindowV2::new(0, 1),
+            }),
+        ),
+        managed.managed_semantic_schema().clone(),
+    )
+    .expect("context-free V2 model plan")
+}
+
 struct SchemaFixture {
     managed: ManagedSchemaState,
     resolved: ResolvedSchema,
@@ -56,6 +124,30 @@ struct SchemaFixture {
 
 fn schema_fixture() -> SchemaFixture {
     schema_fixture_with_unique_name(true)
+}
+
+#[test]
+fn v2_hydration_provider_claims_are_recomputed_before_validation() {
+    let fixture = schema_fixture();
+    let person = type_id(TypeKind::Entity, "person");
+    let name = AttributeId::new("name").expect("attribute");
+    let actual = fixture.resolved.types()[&person].owns()[&name].cardinality();
+    let context = MigrationAssertionValidationContext::new(&fixture.resolved, &fixture.managed);
+
+    let valid = hydrated_exact_person_plan(&fixture.managed, actual);
+    validate_query_plan(&valid, &context, StructuralLimits::CANONICAL)
+        .expect("schema-derived hydration claims validate");
+
+    let forged = Cardinality::new(
+        u64::from(actual.min() == 0),
+        Some(if actual.max() == Some(1) { 2 } else { 1 }),
+    )
+    .expect("different valid cardinality");
+    assert_ne!(forged, actual);
+    let hostile = hydrated_exact_person_plan(&fixture.managed, forged);
+    let error = validate_query_plan(&hostile, &context, StructuralLimits::CANONICAL)
+        .expect_err("self-declared hydration cardinality cannot authorize itself");
+    assert_eq!(error.code().as_str(), "query_plan_v2_field_claim");
 }
 
 fn schema_fixture_with_unique_name(unique_name: bool) -> SchemaFixture {
@@ -794,6 +886,193 @@ fn duration_ordered_comparisons_fail_in_every_pattern_scope() {
     assert_eq!(
         local_error.code().as_str(),
         "query_plan_value_comparator_unsupported"
+    );
+}
+
+#[test]
+fn disjunction_validates_branch_local_witnesses_and_scalar_domains() {
+    let fixture = schema_fixture();
+    let context = MigrationAssertionValidationContext::new(&fixture.resolved, &fixture.managed);
+    let name = AttributeId::new("name").expect("attribute");
+    let has_name = |attribute| QueryPattern::Has {
+        attribute: binding_id(attribute),
+        attribute_id: name.clone(),
+        owner: binding_id(0),
+    };
+    let equals = |attribute, value: &str| QueryPattern::Value {
+        comparator: ValueComparator::Equal,
+        left: QueryOperand::Binding {
+            binding: binding_id(attribute),
+        },
+        right: QueryOperand::Literal {
+            value: CanonicalValue::String(CanonicalString::new(value).expect("string literal")),
+        },
+    };
+    let plan = QueryPlan::new_v2(
+        vec![
+            binding(0, "person"),
+            binding(1, "left_name"),
+            binding(2, "right_name"),
+        ],
+        Vec::new(),
+        vec![ReadStage::Match {
+            patterns: vec![QueryPattern::Or {
+                branches: vec![
+                    vec![person_isa(0), has_name(1), equals(1, "alice")],
+                    vec![
+                        person_isa(0),
+                        has_name(2),
+                        QueryPattern::Not {
+                            patterns: vec![equals(2, "bob")],
+                        },
+                    ],
+                ],
+            }],
+        }],
+        QueryOutput::Rows {
+            columns: vec![binding_id(0)],
+        },
+        fixture.managed.managed_semantic_schema().clone(),
+    )
+    .expect("structurally valid V2 disjunction");
+
+    validate_query_plan(&plan, &context, StructuralLimits::CANONICAL)
+        .expect("branch-local witnesses and scalar comparisons validate");
+}
+
+#[test]
+fn disjunction_rejects_each_disconnected_branch_without_panicking() {
+    let fixture = schema_fixture();
+    let context = MigrationAssertionValidationContext::new(&fixture.resolved, &fixture.managed);
+    let name = AttributeId::new("name").expect("attribute");
+    let plan = QueryPlan::new_v2(
+        vec![
+            binding(0, "left_person"),
+            binding(1, "name"),
+            binding(2, "right_person"),
+        ],
+        Vec::new(),
+        vec![ReadStage::Match {
+            patterns: vec![QueryPattern::Or {
+                // Unioning the two branch topologies creates the fake path
+                // left_person -- name -- right_person. Each executable
+                // branch is nevertheless disconnected and must fail alone.
+                branches: vec![
+                    vec![
+                        QueryPattern::Has {
+                            attribute: binding_id(1),
+                            attribute_id: name.clone(),
+                            owner: binding_id(0),
+                        },
+                        person_isa(2),
+                    ],
+                    vec![
+                        person_isa(0),
+                        QueryPattern::Has {
+                            attribute: binding_id(1),
+                            attribute_id: name,
+                            owner: binding_id(2),
+                        },
+                    ],
+                ],
+            }],
+        }],
+        QueryOutput::Rows {
+            columns: vec![binding_id(0)],
+        },
+        fixture.managed.managed_semantic_schema().clone(),
+    )
+    .expect("structurally valid hostile disjunction");
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        validate_query_plan(&plan, &context, StructuralLimits::CANONICAL)
+    }))
+    .expect("untrusted disjunction validation must not panic");
+    let error = result.expect_err("cross-branch connectivity cannot authorize either branch");
+    assert_eq!(error.code().as_str(), "query_plan_disconnected_topology");
+}
+
+#[test]
+fn disjunction_unions_differing_subtype_domains_for_the_same_binding() {
+    let party = type_id(TypeKind::Entity, "party");
+    let person = type_id(TypeKind::Entity, "person");
+    let company = type_id(TypeKind::Entity, "company");
+    let facts = vec![
+        SchemaFact::Type(TypeFact::new(party.clone()).expect("party type")),
+        SchemaFact::Type(TypeFact::new(person.clone()).expect("person type")),
+        SchemaFact::Type(TypeFact::new(company.clone()).expect("company type")),
+        SchemaFact::Sub(SubFact::new(
+            SubFactId::new(person.clone(), party.clone()).expect("person subtype"),
+        )),
+        SchemaFact::Sub(SubFact::new(
+            SubFactId::new(company.clone(), party).expect("company subtype"),
+        )),
+    ];
+    let sourced = facts.into_iter().enumerate().map(|(index, fact)| {
+        let byte = u64::try_from(index).expect("byte");
+        let line = u32::try_from(index + 1).expect("line");
+        SourcedSchemaFact::new(
+            fact,
+            SourceSpan::new(
+                DocumentId::new("query-plan-disjunction-subtypes").expect("document"),
+                byte,
+                byte + 1,
+                line,
+                1,
+                line,
+                2,
+            )
+            .expect("span"),
+        )
+    });
+    let declared = DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced)
+        .expect("declared schema");
+    let profile = SemanticProfileId::new("typedb-3.12.1/v1").expect("profile");
+    let delta_context = ManagedDeltaContext::new(
+        ManagedScopeId::new("query-plan-disjunction-subtypes").expect("scope"),
+        profile.clone(),
+        CapabilitySet::new(),
+    );
+    let managed = managed_schema_state(&declared, &delta_context).expect("managed state");
+    let resolved = resolve(&declared, &profile).expect("resolved schema");
+    let plan = QueryPlan::new_v2(
+        vec![binding(0, "party")],
+        Vec::new(),
+        vec![ReadStage::Match {
+            patterns: vec![QueryPattern::Or {
+                branches: vec![
+                    vec![QueryPattern::Isa {
+                        binding: binding_id(0),
+                        include_subtypes: false,
+                        type_id: person.clone(),
+                    }],
+                    vec![QueryPattern::Isa {
+                        binding: binding_id(0),
+                        include_subtypes: false,
+                        type_id: company.clone(),
+                    }],
+                ],
+            }],
+        }],
+        QueryOutput::Rows {
+            columns: vec![binding_id(0)],
+        },
+        managed.managed_semantic_schema().clone(),
+    )
+    .expect("structurally valid subtype disjunction");
+
+    let validated = validate_query_plan(
+        &plan,
+        &MigrationAssertionValidationContext::new(&resolved, &managed),
+        StructuralLimits::CANONICAL,
+    )
+    .expect("branch domains union at the disjunction boundary");
+    assert_eq!(
+        validated
+            .binding_domain(&binding_id(0))
+            .expect("party domain")
+            .type_ids(),
+        &std::collections::BTreeSet::from([person, company]),
     );
 }
 
@@ -2035,6 +2314,7 @@ fn bounded_reachability_narrows_endpoints_to_role_players() {
             Vec::new(),
             vec![ReadStage::Match {
                 patterns: vec![QueryPattern::Reachable {
+                    min_depth: 1,
                     max_depth: 2,
                     relation: edge.clone(),
                     role_from: from.clone(),

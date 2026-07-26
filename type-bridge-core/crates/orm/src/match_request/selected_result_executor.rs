@@ -7,16 +7,22 @@ use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 use serde_json::Value;
+use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticDetailValue};
 use type_bridge_contract::id::MAX_THING_IID_HEX_DIGITS;
+use type_bridge_contract::limits::StructuralLimits;
+use type_bridge_contract::query_plan::QueryInvocation;
+use type_bridge_contract::query_remote_v2::RemoteReplyDecodeLimitsV2;
 use type_bridge_core_lib::ast::{
     TypedFetchRows, TypedHydrateThings, TypedHydrationDescriptor, TypedHydrationField,
     TypedHydrationRole, TypedHydrationTarget, TypedPageRematch, TypedRootScan, TypedThingKind,
 };
 
 use super::capability::CapabilitySet;
-use super::error::{MatchError, MatchErrorCategory, MatchErrorPathSegment};
+use super::error::{MatchError, MatchErrorCategory, MatchErrorPath, MatchErrorPathSegment};
 use super::ids::{BindingId, DescriptorId, FieldId, RoleEdgeId, RoleId};
-use super::lowering::{LoweredMatchExecution, lower_match_execution};
+use super::lowering::{
+    LoweredMatchExecution, lower_match_execution, preflight_released_match_execution,
+};
 use super::model::{
     FetchShape, FetchSlot, MatchExpr, MatchOperation, RowCardinality, ThingKind, Window,
 };
@@ -26,14 +32,22 @@ use super::result::{
 };
 use super::result_validation::{
     ResultValidationLimits, exactly_one_cardinality_error, validate_provider_result_with_limits,
+    validated_match_result_from_v2,
 };
 use super::validation::ValidatedMatchRequest;
 use crate::descriptor::{TypeDescriptor, TypeDescriptorRef};
 use crate::error::OrmError;
+use crate::query_v2::{
+    QueryV2ExecutionError, execute_validated_model_query_borrowed,
+    execute_validated_model_query_with_statement_limit,
+};
+use crate::query_v2_adapter::{
+    AdaptedMatchRequest, MatchRequestAdaptation, MatchRequestAdapterAuthority, adapt_match_request,
+};
 use crate::registry::DescriptorRegistry;
 use crate::session::backend::{
     AnswerCancellation, AnswerConsumer, AnswerControl, AnswerItem, BoundedAnswerLimits,
-    MAX_ERROR_DRAIN_BYTES, MAX_ERROR_DRAIN_ITEMS, TxType,
+    MAX_ERROR_DRAIN_BYTES, MAX_ERROR_DRAIN_ITEMS, QueryV2AnswerLimits, TxType,
 };
 use crate::session::{Database, Transaction, TransactionContext};
 use crate::value::AttributeValue;
@@ -362,6 +376,236 @@ impl<'a> SelectedResultExecutor<'a> {
             available_capabilities,
             limits,
         }
+    }
+
+    /// Execute a released request through its production V2 compatibility
+    /// program, retaining the direct executor only for the two exact
+    /// representation-envelope dispositions returned by the adapter.
+    pub(crate) async fn execute_compatible_owned(
+        &self,
+        database: &Database,
+        validated: &ValidatedMatchRequest,
+    ) -> Result<ValidatedMatchResult, OrmError> {
+        let registry = self.registry.owned_registry_snapshot()?;
+        let fenced = self.with_registry(&registry);
+        fenced
+            .execute_compatible_owned_fenced(database, validated)
+            .await
+    }
+
+    async fn execute_compatible_owned_fenced(
+        &self,
+        database: &Database,
+        validated: &ValidatedMatchRequest,
+    ) -> Result<ValidatedMatchResult, OrmError> {
+        self.preflight_compatibility(validated)?;
+        let authority = MatchRequestAdapterAuthority::from_registry(self.registry)
+            .map_err(adapter_diagnostic)?;
+        match adapt_match_request(
+            validated,
+            self.registry,
+            &authority.context(),
+            StructuralLimits::CANONICAL,
+        )
+        .map_err(adapter_diagnostic)?
+        {
+            MatchRequestAdaptation::Adapted(adapted) => {
+                self.execute_adapted_owned(database, validated, &adapted)
+                    .await
+            }
+            MatchRequestAdaptation::LegacyRequired(_) => {
+                self.execute_owned(database, validated).await
+            }
+        }
+    }
+
+    /// Borrowed counterpart of [`Self::execute_compatible_owned`].
+    pub(crate) async fn execute_compatible_borrowed(
+        &self,
+        context: &TransactionContext,
+        validated: &ValidatedMatchRequest,
+    ) -> Result<ValidatedMatchResult, OrmError> {
+        let registry = self.registry.owned_registry_snapshot()?;
+        let fenced = self.with_registry(&registry);
+        fenced
+            .execute_compatible_borrowed_fenced(context, validated)
+            .await
+    }
+
+    async fn execute_compatible_borrowed_fenced(
+        &self,
+        context: &TransactionContext,
+        validated: &ValidatedMatchRequest,
+    ) -> Result<ValidatedMatchResult, OrmError> {
+        self.preflight_compatibility(validated)?;
+        if context.tx_type() != TxType::Read {
+            return Err(MatchError::new(
+                MatchErrorCategory::InvalidPlan,
+                "borrowed_target_not_read_only",
+                "selected-row execution requires a borrowed read transaction",
+            )
+            .at(MatchErrorPathSegment::Operation)
+            .into());
+        }
+        let authority = MatchRequestAdapterAuthority::from_registry(self.registry)
+            .map_err(adapter_diagnostic)?;
+        match adapt_match_request(
+            validated,
+            self.registry,
+            &authority.context(),
+            StructuralLimits::CANONICAL,
+        )
+        .map_err(adapter_diagnostic)?
+        {
+            MatchRequestAdaptation::Adapted(adapted) => {
+                self.execute_adapted_borrowed(context, validated, &adapted)
+                    .await
+            }
+            MatchRequestAdaptation::LegacyRequired(_) => {
+                self.execute_borrowed(context, validated).await
+            }
+        }
+    }
+
+    fn preflight_compatibility(&self, validated: &ValidatedMatchRequest) -> Result<(), OrmError> {
+        validated.recheck_schema(self.registry)?;
+        validated.require_capabilities(&self.available_capabilities)?;
+        preflight_released_match_execution(self.registry, validated)?;
+        Ok(())
+    }
+
+    fn with_registry<'snapshot>(
+        &self,
+        registry: &'snapshot DescriptorRegistry,
+    ) -> SelectedResultExecutor<'snapshot> {
+        SelectedResultExecutor {
+            registry,
+            available_capabilities: self.available_capabilities.clone(),
+            limits: self.limits.clone(),
+        }
+    }
+
+    async fn execute_adapted_owned(
+        &self,
+        database: &Database,
+        released: &ValidatedMatchRequest,
+        adapted: &AdaptedMatchRequest,
+    ) -> Result<ValidatedMatchResult, OrmError> {
+        let deadline = tokio::time::Instant::now()
+            .checked_add(self.limits.timeout)
+            .map(tokio::time::Instant::into_std);
+        let lifecycle = ExecutionBudget::new(&self.limits, deadline);
+        let mut transaction = lifecycle
+            .await_provider(async {
+                database
+                    .read_transaction()
+                    .await
+                    .map_err(provider_transaction_open_error)
+            })
+            .await?;
+        let execution = self
+            .execute_adapted_transaction(&mut transaction, released, adapted, deadline)
+            .await;
+        let result = match execution {
+            Err(error) => {
+                if let Some(Err(close_error)) = dispatch_failed_execution_close(transaction).await {
+                    tracing::warn!(
+                        %close_error,
+                        execution_error = %error,
+                        "owned adapted match execution failed and transaction cleanup also failed"
+                    );
+                }
+                return Err(error);
+            }
+            Ok(result) => result,
+        };
+        let close = lifecycle
+            .await_cleanup(async {
+                transaction
+                    .close()
+                    .await
+                    .map_err(provider_transaction_close_error)
+            })
+            .await;
+        match close {
+            Err(error) => Err(error),
+            Ok(()) => Ok(result),
+        }
+    }
+
+    async fn execute_adapted_transaction(
+        &self,
+        transaction: &mut Transaction,
+        released: &ValidatedMatchRequest,
+        adapted: &AdaptedMatchRequest,
+        deadline: Option<Instant>,
+    ) -> Result<ValidatedMatchResult, OrmError> {
+        let invocation =
+            QueryInvocation::new(adapted.validated().plan(), adapted.operation(), Vec::new())
+                .map_err(adapter_diagnostic)?;
+        let (limits, reply_limits) = self.compatibility_limits(deadline);
+        let outcome = execute_validated_model_query_with_statement_limit(
+            transaction,
+            adapted.validated(),
+            &invocation,
+            limits,
+            reply_limits,
+            self.limits.max_statements,
+        )
+        .await
+        .map_err(compatibility_execution_error)?;
+        validated_match_result_from_v2(self.registry, released, outcome).map_err(OrmError::from)
+    }
+
+    async fn execute_adapted_borrowed(
+        &self,
+        context: &TransactionContext,
+        released: &ValidatedMatchRequest,
+        adapted: &AdaptedMatchRequest,
+    ) -> Result<ValidatedMatchResult, OrmError> {
+        let deadline = tokio::time::Instant::now()
+            .checked_add(self.limits.timeout)
+            .map(tokio::time::Instant::into_std);
+        let invocation =
+            QueryInvocation::new(adapted.validated().plan(), adapted.operation(), Vec::new())
+                .map_err(adapter_diagnostic)?;
+        let (limits, reply_limits) = self.compatibility_limits(deadline);
+        let outcome = execute_validated_model_query_borrowed(
+            context,
+            adapted.validated(),
+            &invocation,
+            limits,
+            reply_limits,
+            self.limits.max_statements,
+        )
+        .await
+        .map_err(compatibility_execution_error)?;
+        validated_match_result_from_v2(self.registry, released, outcome).map_err(OrmError::from)
+    }
+
+    fn compatibility_limits(
+        &self,
+        deadline: Option<Instant>,
+    ) -> (QueryV2AnswerLimits, RemoteReplyDecodeLimitsV2) {
+        (
+            QueryV2AnswerLimits {
+                answer: BoundedAnswerLimits {
+                    max_items: self.limits.max_items,
+                    max_bytes: self.limits.max_bytes,
+                    deadline,
+                    cancellation: self.limits.cancellation.clone(),
+                },
+                max_collection_members: self.limits.max_collected_concepts,
+            },
+            RemoteReplyDecodeLimitsV2 {
+                max_bytes: self.limits.max_bytes,
+                max_items: self.limits.max_items,
+                max_collection_members: self.limits.max_collected_concepts,
+                max_graph_nodes: self.limits.max_hydrated_things,
+                max_attribute_values: self.limits.max_attribute_values,
+                max_role_players: self.limits.max_hydrated_things,
+            },
+        )
     }
 
     pub(crate) async fn execute_owned(
@@ -2910,7 +3154,9 @@ fn collect_role_edges<'a>(expression: &'a MatchExpr, edges: &mut Vec<RoleEdgeCon
             }
         }
         MatchExpr::Not { expression } => collect_role_edges(expression, edges),
-        MatchExpr::FieldValue { .. } | MatchExpr::FieldComparison { .. } => {}
+        MatchExpr::FieldValue { .. }
+        | MatchExpr::FieldComparison { .. }
+        | MatchExpr::Reachable { .. } => {}
     }
 }
 
@@ -3138,6 +3384,404 @@ fn canonical_provider_error(code: &'static str, message: &'static str) -> OrmErr
         .into()
 }
 
+fn adapter_diagnostic(diagnostic: Diagnostic) -> OrmError {
+    let category = match diagnostic.category() {
+        DiagnosticCategory::InvalidContract => MatchErrorCategory::InvalidPlan,
+        DiagnosticCategory::UnsupportedCapability => MatchErrorCategory::UnsupportedCapability,
+        DiagnosticCategory::ResourceLimit => MatchErrorCategory::ResourceLimit,
+        DiagnosticCategory::Integrity => MatchErrorCategory::ResultDecode,
+    };
+    MatchError::new(category, diagnostic.code().as_str(), diagnostic.message())
+        .at(MatchErrorPathSegment::Operation)
+        .into()
+}
+
+fn compatibility_execution_error(error: QueryV2ExecutionError) -> OrmError {
+    match error {
+        QueryV2ExecutionError::Provider(error) => provider_statement_error(error),
+        QueryV2ExecutionError::Validation(diagnostic)
+            if diagnostic.code().as_str() == "query_v2_model_exactly_one" =>
+        {
+            let actual = diagnostic
+                .details()
+                .get("actual")
+                .and_then(|value| match value {
+                    DiagnosticDetailValue::Long(value) => usize::try_from(*value).ok(),
+                    DiagnosticDetailValue::Text(_)
+                    | DiagnosticDetailValue::Boolean(_)
+                    | DiagnosticDetailValue::TextList(_) => None,
+                })
+                .unwrap_or(usize::MAX);
+            exactly_one_cardinality_error(actual)
+                .unwrap_or_else(|| {
+                    MatchError::new(
+                        MatchErrorCategory::ResultDecode,
+                        "result_operation_mismatch",
+                        "adapted exactly-one result lost its cardinality proof",
+                    )
+                    .at(MatchErrorPathSegment::Result)
+                })
+                .into()
+        }
+        QueryV2ExecutionError::Validation(diagnostic) => {
+            let (category, code, mapped_message) = released_execution_diagnostic(&diagnostic);
+            let path = released_execution_path(&diagnostic);
+            let message = match (category, code, path.segments()) {
+                (
+                    MatchErrorCategory::ResultDecode,
+                    _,
+                    [MatchErrorPathSegment::ProviderEvidence],
+                ) => "provider evidence failed canonical typed match decoding",
+                (
+                    MatchErrorCategory::ResourceLimit,
+                    "processed_item_counter_overflow"
+                    | "processed_item_limit"
+                    | "answer_byte_counter_overflow"
+                    | "response_byte_limit",
+                    _,
+                ) => "provider resource limits prevented complete typed match evidence",
+                _ => mapped_message,
+            };
+            MatchError::new(category, code, message)
+                .with_path(path)
+                .into()
+        }
+    }
+}
+
+fn released_execution_path(diagnostic: &Diagnostic) -> MatchErrorPath {
+    let segments = match diagnostic.code().as_str() {
+        "query_v2_model_regex" => vec![MatchErrorPathSegment::Predicate],
+        "query_v2_model_rows_collection" => vec![MatchErrorPathSegment::Operation],
+        "query_v2_model_contract_missing"
+        | "query_v2_model_provider_plan_missing"
+        | "query_v2_model_provider_plan_mismatch"
+        | "query_v2_model_tuple_plan"
+        | "query_v2_model_page_total_plan" => vec![MatchErrorPathSegment::Result],
+        "query_v2_model_predicate_equal_type"
+        | "query_v2_model_predicate_order_type"
+        | "query_v2_model_predicate_string_type" => vec![MatchErrorPathSegment::Result],
+        "query_v2_model_order_non_scalar"
+        | "query_v2_model_order_missing"
+        | "query_v2_model_order_value_type" => {
+            let owner = diagnostic.details().get("field_owner").and_then(|value| {
+                if let DiagnosticDetailValue::Text(value) = value {
+                    Some(value.clone())
+                } else {
+                    None
+                }
+            });
+            let name = diagnostic.details().get("field_name").and_then(|value| {
+                if let DiagnosticDetailValue::Text(value) = value {
+                    Some(value.clone())
+                } else {
+                    None
+                }
+            });
+            match (owner, name) {
+                (Some(owner), Some(name)) => vec![
+                    MatchErrorPathSegment::Result,
+                    MatchErrorPathSegment::Field(FieldId::new(DescriptorId::new(owner), name)),
+                ],
+                _ => vec![MatchErrorPathSegment::Result],
+            }
+        }
+        _ => vec![MatchErrorPathSegment::ProviderEvidence],
+    };
+    MatchErrorPath::from_segments(segments)
+}
+
+fn released_execution_diagnostic(
+    diagnostic: &Diagnostic,
+) -> (MatchErrorCategory, &'static str, &'static str) {
+    match diagnostic.code().as_str() {
+        "statement_count_limit" => (
+            MatchErrorCategory::ResourceLimit,
+            "statement_count_limit",
+            "match execution exceeded its statement ceiling",
+        ),
+        "provider_cancelled" => (
+            MatchErrorCategory::ResourceLimit,
+            "provider_cancelled",
+            "provider answer processing was cancelled",
+        ),
+        "transaction_deadline_exceeded" => (
+            MatchErrorCategory::ResourceLimit,
+            "transaction_deadline_exceeded",
+            "provider transaction deadline expired",
+        ),
+        "processed_item_counter_overflow" => (
+            MatchErrorCategory::ResourceLimit,
+            "processed_item_counter_overflow",
+            "processed provider item counter overflowed",
+        ),
+        "processed_item_limit" => (
+            MatchErrorCategory::ResourceLimit,
+            "processed_item_limit",
+            "provider answer exceeded the processed-item ceiling",
+        ),
+        "answer_byte_counter_overflow" => (
+            MatchErrorCategory::ResourceLimit,
+            "answer_byte_counter_overflow",
+            "provider answer byte counter overflowed",
+        ),
+        "response_byte_limit" => (
+            MatchErrorCategory::ResourceLimit,
+            "response_byte_limit",
+            "provider answer exceeded the response-byte ceiling",
+        ),
+        "query_v2_model_item_limit" => (
+            MatchErrorCategory::ResourceLimit,
+            "processed_item_limit",
+            "provider answer exceeded the processed-item ceiling",
+        ),
+        "query_v2_model_byte_limit" => (
+            MatchErrorCategory::ResourceLimit,
+            "response_byte_limit",
+            "provider answer exceeded the response-byte ceiling",
+        ),
+        "query_v2_model_collection_limit" => (
+            MatchErrorCategory::ResourceLimit,
+            "collected_concept_limit",
+            "provider result exceeded the collected-concept ceiling",
+        ),
+        "query_v2_model_graph_limit" | "query_v2_model_hydration_limit" => (
+            MatchErrorCategory::ResourceLimit,
+            "hydrated_thing_limit",
+            "provider result exceeded the hydrated-thing ceiling",
+        ),
+        "query_v2_model_attribute_limit" => (
+            MatchErrorCategory::ResourceLimit,
+            "hydrated_attribute_value_limit",
+            "provider result exceeded the hydrated attribute-value ceiling",
+        ),
+        "query_v2_model_role_player_limit" => (
+            MatchErrorCategory::ResourceLimit,
+            "hydrated_thing_limit",
+            "provider result exceeded the hydrated-thing ceiling",
+        ),
+        "query_v2_model_solution_limit" => (
+            MatchErrorCategory::ResourceLimit,
+            "solution_scan_limit",
+            "provider solution ceiling was reached before result completeness was proven",
+        ),
+        "query_v2_model_count_overflow" => (
+            MatchErrorCategory::ResourceLimit,
+            "processed_item_counter_overflow",
+            "processed provider item counter overflowed",
+        ),
+        "query_v2_model_contract_missing"
+        | "query_v2_model_provider_plan_missing"
+        | "query_v2_model_provider_plan_mismatch"
+        | "query_v2_model_tuple_plan" => (
+            MatchErrorCategory::ResultDecode,
+            "result_operation_mismatch",
+            "adapted V2 result variant does not match the validated released operation",
+        ),
+        "query_v2_model_rows_collection" => (
+            MatchErrorCategory::InvalidPlan,
+            "unsupported_collection_slot",
+            "selected-row execution does not support collected output slots",
+        ),
+        "query_v2_model_page_total_plan" => (
+            MatchErrorCategory::ResultDecode,
+            "page_operation_mismatch",
+            "typed page plan does not belong to a PageBy operation",
+        ),
+        "query_v2_model_provider_not_exhausted" => (
+            MatchErrorCategory::ResultDecode,
+            "provider_stream_not_exhausted",
+            "provider stopped before the bounded typed statement reached its terminal frame",
+        ),
+        "query_v2_model_solution_kind" => (
+            MatchErrorCategory::ResultDecode,
+            "solution_answer_kind",
+            "selected solution scan returned a document instead of a row",
+        ),
+        "query_v2_model_solution_malformed"
+        | "query_v2_model_predicate_evidence"
+        | "query_v2_model_role_edge_evidence" => (
+            MatchErrorCategory::ResultDecode,
+            "malformed_solution_row",
+            "provider solution row does not match the typed evidence shape",
+        ),
+        "query_v2_model_solution_binding" => (
+            MatchErrorCategory::ResultDecode,
+            "missing_provider_binding",
+            "provider solution omitted a required positive binding",
+        ),
+        "query_v2_model_solution_unknown_binding" => (
+            MatchErrorCategory::ResultDecode,
+            "unknown_provider_binding",
+            "provider solution contains an unknown binding",
+        ),
+        "query_v2_model_solution_duplicate_binding" => (
+            MatchErrorCategory::ResultDecode,
+            "duplicate_provider_binding",
+            "provider solution assigns one binding more than once",
+        ),
+        "query_v2_model_solution_malformed_iid" => (
+            MatchErrorCategory::ResultDecode,
+            "malformed_provider_concept_id",
+            "provider solution contains a malformed provider IID",
+        ),
+        "query_v2_model_unstable_provider_order" => (
+            MatchErrorCategory::ResultDecode,
+            "unstable_provider_order",
+            "provider solutions violate the validator-derived stable order",
+        ),
+        "query_v2_model_order_non_scalar" => (
+            MatchErrorCategory::ResultDecode,
+            "non_scalar_order_evidence",
+            "provider returned multiple values for a validated scalar order field",
+        ),
+        "query_v2_model_order_missing" => (
+            MatchErrorCategory::ResultDecode,
+            "missing_order_value",
+            "provider omitted a value required by stable ordering",
+        ),
+        "query_v2_model_order_value_type" => (
+            MatchErrorCategory::ResultDecode,
+            "order_value_type_mismatch",
+            "provider order values are not mutually comparable",
+        ),
+        "query_v2_model_predicate_equal_type" => (
+            MatchErrorCategory::ResultDecode,
+            "predicate_value_type_mismatch",
+            "provider predicate values do not have the same validated type",
+        ),
+        "query_v2_model_predicate_order_type" => (
+            MatchErrorCategory::ResultDecode,
+            "predicate_value_type_mismatch",
+            "provider predicate values are not order-compatible",
+        ),
+        "query_v2_model_predicate_string_type" => (
+            MatchErrorCategory::ResultDecode,
+            "predicate_value_type_mismatch",
+            "provider predicate values do not support the validated string operator",
+        ),
+        "query_v2_model_regex" => (
+            MatchErrorCategory::InvalidPlan,
+            "invalid_regex_pattern",
+            "validated request contains an invalid regular expression",
+        ),
+        "query_v2_model_tuple_evidence" => (
+            MatchErrorCategory::ResultDecode,
+            "malformed_tuple_row",
+            "provider tuple proof row does not match the typed evidence shape",
+        ),
+        "query_v2_model_root_kind" => (
+            MatchErrorCategory::ResultDecode,
+            "root_answer_kind",
+            "distinct-root scan returned a document instead of a row",
+        ),
+        "query_v2_model_root_binding" => (
+            MatchErrorCategory::ResultDecode,
+            "root_binding_mismatch",
+            "distinct-root row contains the wrong binding",
+        ),
+        "query_v2_model_root_malformed" => (
+            MatchErrorCategory::ResultDecode,
+            "malformed_root_row",
+            "distinct-root row does not match the typed evidence shape",
+        ),
+        "query_v2_model_page_kind" => (
+            MatchErrorCategory::ResultDecode,
+            "page_rematch_answer_kind",
+            "page re-match returned a row instead of a hydrated document",
+        ),
+        "query_v2_model_page_document" => (
+            MatchErrorCategory::ResultDecode,
+            "malformed_page_rematch_document",
+            "page re-match document does not match the typed evidence shape",
+        ),
+        "query_v2_model_page_binding" => (
+            MatchErrorCategory::ResultDecode,
+            "malformed_page_rematch_binding",
+            "page re-match omitted a required positive binding",
+        ),
+        "query_v2_model_page_root_set" => (
+            MatchErrorCategory::ResultDecode,
+            "selected_root_set_mismatch",
+            "page re-match root set does not exactly equal root selection",
+        ),
+        "query_v2_model_page_unexpected_root" => (
+            MatchErrorCategory::ResultDecode,
+            "unexpected_hydrated_root",
+            "page re-match returned a root outside the selected root set",
+        ),
+        "query_v2_model_page_total_length" => (
+            MatchErrorCategory::ResultDecode,
+            "page_total_length_mismatch",
+            "provider page length is inconsistent with its same-snapshot total and window",
+        ),
+        "query_v2_model_hydration_missing" => (
+            MatchErrorCategory::ResultDecode,
+            "missing_hydrated_concept",
+            "batched hydration omitted a requested binding/IID pair",
+        ),
+        "query_v2_model_hydration_unexpected" => (
+            MatchErrorCategory::ResultDecode,
+            "unexpected_hydrated_concept",
+            "batched hydration returned an unrequested binding/IID pair",
+        ),
+        "query_v2_model_hydration_value_type" | "query_v2_model_hydration_value_order" => (
+            MatchErrorCategory::ResultDecode,
+            "hydrated_attribute_value_type",
+            "TypeDB wildcard attribute value has the wrong value type",
+        ),
+        "query_v2_model_hydration_attributes" => (
+            MatchErrorCategory::ResultDecode,
+            "malformed_hydrated_attributes",
+            "TypeDB wildcard hydration attributes are malformed",
+        ),
+        "query_v2_model_hydration_roles" => (
+            MatchErrorCategory::ResultDecode,
+            "malformed_hydrated_roles",
+            "TypeDB nested role hydration is malformed",
+        ),
+        "query_v2_model_hydration_role_player" => (
+            MatchErrorCategory::ResultDecode,
+            "malformed_hydrated_role_player",
+            "TypeDB nested hydration role player is malformed",
+        ),
+        "query_v2_model_hydration_document"
+        | "query_v2_model_hydration_binding"
+        | "query_v2_model_hydration_iid"
+        | "query_v2_model_hydration_descriptor"
+        | "query_v2_model_hydration_kind" => (
+            MatchErrorCategory::ResultDecode,
+            "malformed_hydration_document",
+            "hydration document does not match the typed evidence shape",
+        ),
+        "query_v2_model_hydration_conflict" => (
+            MatchErrorCategory::ResultDecode,
+            "duplicate_hydrated_concept",
+            "batched hydration returned contradictory evidence for one provider concept",
+        ),
+        "query_v2_model_hydration_authority" | "query_v2_model_hydration_state" => (
+            MatchErrorCategory::ResultDecode,
+            "malformed_hydration_document",
+            "hydration document does not match the typed evidence shape",
+        ),
+        _ if diagnostic.code().as_str().starts_with("query_v2_model_") => (
+            MatchErrorCategory::ResultDecode,
+            "unmapped_model_execution_diagnostic",
+            "model execution emitted a diagnostic without a released compatibility mapping",
+        ),
+        _ if diagnostic.category() == DiagnosticCategory::ResourceLimit => (
+            MatchErrorCategory::ResourceLimit,
+            "processed_item_limit",
+            "provider answer exceeded the processed-item ceiling",
+        ),
+        _ => (
+            MatchErrorCategory::ResultDecode,
+            "malformed_solution_row",
+            "provider evidence does not match the validated request",
+        ),
+    }
+}
+
 fn sanitized_provider_statement_error(error: MatchError) -> Option<OrmError> {
     const RESOURCE_CODES: &[&str] = &[
         "answer_byte_counter_overflow",
@@ -3299,6 +3943,81 @@ mod tests {
             ),
             (3, 4, 2, 1)
         );
+    }
+
+    #[tokio::test]
+    async fn compatible_execution_preserves_released_nullable_order_error_before_provider_io() {
+        let registry = DescriptorRegistry::new();
+        registry
+            .register_entity(EntityDescriptor {
+                type_name: "person".into(),
+                is_abstract: false,
+                parent_type: None,
+                owned_attributes: vec![
+                    key("name"),
+                    OwnedAttributeDescriptor {
+                        field_name: "ranking".into(),
+                        attr_name: "person-ranking".into(),
+                        value_type: ValueType::Long,
+                        annotations: vec![Annotation::Card(0, Some(1))],
+                        is_optional: true,
+                        is_ordered: false,
+                        doc: None,
+                        meta: Default::default(),
+                    },
+                ],
+                doc: None,
+                meta: Default::default(),
+            })
+            .unwrap();
+        let nullable_field = FieldId::new(registry.descriptor_id("person").unwrap(), "ranking");
+        let mut request = person_request(&registry, RowCardinality::BoundedMany, 2);
+        let MatchOperation::FetchRows { order, .. } = &mut request.operation else {
+            unreachable!()
+        };
+        *order = vec![MatchOrder {
+            field: BoundFieldId::new(BindingId::new(0), nullable_field.clone()),
+            direction: SortDirection::Ascending,
+            missing: MissingOrder::Reject,
+        }];
+        let validated = validate_match_request(&registry, request).unwrap();
+        let (database, events) = database(CapabilitySet::all(), Vec::new(), Vec::new());
+
+        let assert_released_error = |error: &OrmError| {
+            let error = match_error(error);
+            assert_eq!(error.category(), MatchErrorCategory::UnsupportedCapability);
+            assert_eq!(error.code().as_str(), "nullable_order_field_unsupported");
+            assert_eq!(
+                error.message(),
+                "the selected provider cannot window by a nullable order field without filtering missing roots"
+            );
+            assert_eq!(
+                error.path().segments(),
+                &[MatchErrorPathSegment::Field(nullable_field.clone())]
+            );
+            assert!(error.details().is_empty());
+        };
+
+        let owned = database
+            .execute_match(&registry, &validated)
+            .await
+            .expect_err("owned compatibility execution must retain V1 lowering rejection");
+        assert_released_error(&owned);
+        assert_eq!(events.lock().unwrap().opens, 0);
+
+        let context = database.transaction_context(TxType::Read).await.unwrap();
+        let borrowed = context
+            .execute_match(&registry, &validated)
+            .await
+            .expect_err("borrowed compatibility execution must retain V1 lowering rejection");
+        assert_released_error(&borrowed);
+        {
+            let events = events.lock().unwrap();
+            assert_eq!(events.opens, 1);
+            assert!(events.solution_statements.is_empty());
+            assert!(events.hydration_statements.is_empty());
+        }
+        context.close().await.unwrap();
     }
 
     #[test]
@@ -4697,6 +5416,187 @@ mod tests {
             panic!("expected match error, got {error}")
         };
         error
+    }
+
+    #[test]
+    fn every_model_execution_diagnostic_has_an_explicit_released_mapping() {
+        let source = include_str!("../query_v2_model.rs");
+        let emitted = source
+            .split('"')
+            .filter(|value| value.starts_with("query_v2_model_"))
+            .collect::<BTreeSet<_>>();
+        assert!(
+            emitted.len() >= 50,
+            "source scan did not find the complete model diagnostic vocabulary"
+        );
+        for code in emitted {
+            // Exactly-one carries a dynamic cardinality detail and is mapped by
+            // the dedicated compatibility arm before the static mapper.
+            if code == "query_v2_model_exactly_one" {
+                continue;
+            }
+            let diagnostic =
+                crate::query_v2::failure(DiagnosticCategory::Integrity, code, "mapping probe");
+            let (_, mapped, _) = released_execution_diagnostic(&diagnostic);
+            assert_ne!(
+                mapped, "unmapped_model_execution_diagnostic",
+                "{code} has no explicit released error mapping"
+            );
+        }
+
+        let future = crate::query_v2::failure(
+            DiagnosticCategory::Integrity,
+            "query_v2_model_future_unmapped_code",
+            "mapping probe",
+        );
+        assert_eq!(
+            released_execution_diagnostic(&future).1,
+            "unmapped_model_execution_diagnostic"
+        );
+    }
+
+    #[test]
+    fn model_contract_and_claim_failures_preserve_released_error_surfaces() {
+        fn assert_surface(
+            diagnostic: Diagnostic,
+            category: MatchErrorCategory,
+            code: &str,
+            message: &str,
+            path: Vec<MatchErrorPathSegment>,
+        ) {
+            let error =
+                compatibility_execution_error(QueryV2ExecutionError::Validation(diagnostic));
+            let error = match_error(&error);
+            assert_eq!(error.category(), category);
+            assert_eq!(error.code().as_str(), code);
+            assert_eq!(error.message(), message);
+            assert_eq!(error.path().segments(), path);
+        }
+
+        let integrity = |code| {
+            crate::query_v2::failure(DiagnosticCategory::Integrity, code, "untrusted detail")
+        };
+        let invalid = |code| {
+            crate::query_v2::failure(
+                DiagnosticCategory::InvalidContract,
+                code,
+                "untrusted detail",
+            )
+        };
+        let resource = |code| {
+            crate::query_v2::failure(DiagnosticCategory::ResourceLimit, code, "untrusted detail")
+        };
+
+        for code in [
+            "query_v2_model_contract_missing",
+            "query_v2_model_provider_plan_missing",
+            "query_v2_model_provider_plan_mismatch",
+            "query_v2_model_tuple_plan",
+        ] {
+            assert_surface(
+                invalid(code),
+                MatchErrorCategory::ResultDecode,
+                "result_operation_mismatch",
+                "adapted V2 result variant does not match the validated released operation",
+                vec![MatchErrorPathSegment::Result],
+            );
+        }
+        assert_surface(
+            invalid("query_v2_model_page_total_plan"),
+            MatchErrorCategory::ResultDecode,
+            "page_operation_mismatch",
+            "typed page plan does not belong to a PageBy operation",
+            vec![MatchErrorPathSegment::Result],
+        );
+        assert_surface(
+            invalid("query_v2_model_rows_collection"),
+            MatchErrorCategory::InvalidPlan,
+            "unsupported_collection_slot",
+            "selected-row execution does not support collected output slots",
+            vec![MatchErrorPathSegment::Operation],
+        );
+        assert_surface(
+            resource("query_v2_model_count_overflow"),
+            MatchErrorCategory::ResourceLimit,
+            "processed_item_counter_overflow",
+            "provider resource limits prevented complete typed match evidence",
+            vec![MatchErrorPathSegment::ProviderEvidence],
+        );
+        for code in [
+            "query_v2_model_hydration_authority",
+            "query_v2_model_hydration_state",
+        ] {
+            assert_surface(
+                invalid(code),
+                MatchErrorCategory::ResultDecode,
+                "malformed_hydration_document",
+                "provider evidence failed canonical typed match decoding",
+                vec![MatchErrorPathSegment::ProviderEvidence],
+            );
+        }
+
+        for (code, message) in [
+            (
+                "query_v2_model_predicate_equal_type",
+                "provider predicate values do not have the same validated type",
+            ),
+            (
+                "query_v2_model_predicate_order_type",
+                "provider predicate values are not order-compatible",
+            ),
+            (
+                "query_v2_model_predicate_string_type",
+                "provider predicate values do not support the validated string operator",
+            ),
+        ] {
+            assert_surface(
+                integrity(code),
+                MatchErrorCategory::ResultDecode,
+                "predicate_value_type_mismatch",
+                message,
+                vec![MatchErrorPathSegment::Result],
+            );
+        }
+        assert_surface(
+            invalid("query_v2_model_regex"),
+            MatchErrorCategory::InvalidPlan,
+            "invalid_regex_pattern",
+            "validated request contains an invalid regular expression",
+            vec![MatchErrorPathSegment::Predicate],
+        );
+
+        let field_path = vec![
+            MatchErrorPathSegment::Result,
+            MatchErrorPathSegment::Field(FieldId::new(DescriptorId::new("entity:person"), "name")),
+        ];
+        for (code, released_code, message) in [
+            (
+                "query_v2_model_order_non_scalar",
+                "non_scalar_order_evidence",
+                "provider returned multiple values for a validated scalar order field",
+            ),
+            (
+                "query_v2_model_order_missing",
+                "missing_order_value",
+                "provider omitted a value required by stable ordering",
+            ),
+            (
+                "query_v2_model_order_value_type",
+                "order_value_type_mismatch",
+                "provider order values are not mutually comparable",
+            ),
+        ] {
+            let diagnostic = integrity(code)
+                .with_detail("field_owner", "entity:person")
+                .with_detail("field_name", "name");
+            assert_surface(
+                diagnostic,
+                MatchErrorCategory::ResultDecode,
+                released_code,
+                message,
+                field_path.clone(),
+            );
+        }
     }
 
     #[test]
@@ -7111,6 +8011,101 @@ mod tests {
         assert_eq!(events.hydration_statements.len(), 1);
         assert!(events.tuple_statements.is_empty());
         assert_eq!(events.closes, 0);
+    }
+
+    #[tokio::test]
+    async fn owned_execution_fences_one_registry_snapshot_across_concurrent_registration() {
+        let registry = Arc::new(person_registry());
+        let mut request = person_request(&registry, RowCardinality::ExactlyOne, 1);
+        request.plan.bindings[0].match_mode = MatchMode::Subtypes;
+        let validated = Arc::new(validate_match_request(&registry, request).unwrap());
+        let (database, _events, state) = database_with_proof_capability_lock();
+
+        let execution_registry = Arc::clone(&registry);
+        let execution_validated = Arc::clone(&validated);
+        let execution = tokio::spawn(async move {
+            database
+                .execute_match(&execution_registry, &execution_validated)
+                .await
+        });
+
+        // Hydration begins only after preflight, authority construction, and
+        // adaptation. A newly registered relevant subtype would make a second
+        // live-registry read stale even though the in-flight provider snapshot
+        // and result remain valid.
+        state.hydration_entered.notified().await;
+        registry
+            .register_entity(EntityDescriptor {
+                type_name: "employee".into(),
+                is_abstract: false,
+                parent_type: Some("person".into()),
+                owned_attributes: vec![key("name")],
+                doc: None,
+                meta: Default::default(),
+            })
+            .unwrap();
+        assert_eq!(
+            validated
+                .recheck_schema(&registry)
+                .unwrap_err()
+                .code()
+                .as_str(),
+            "stale_schema"
+        );
+        state.resume_hydration.notify_one();
+
+        let result = execution.await.unwrap().unwrap();
+        let super::super::result::MatchResult::Rows { rows } = result.result() else {
+            panic!("expected rows")
+        };
+        assert_eq!(rows.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn borrowed_execution_fences_one_registry_snapshot_across_concurrent_registration() {
+        let registry = Arc::new(person_registry());
+        let mut request = person_request(&registry, RowCardinality::ExactlyOne, 1);
+        request.plan.bindings[0].match_mode = MatchMode::Subtypes;
+        let validated = Arc::new(validate_match_request(&registry, request).unwrap());
+        let (database, _events, state) = database_with_proof_capability_lock();
+        let context = database.transaction_context(TxType::Read).await.unwrap();
+
+        let execution_context = context.clone();
+        let execution_registry = Arc::clone(&registry);
+        let execution_validated = Arc::clone(&validated);
+        let execution = tokio::spawn(async move {
+            execution_context
+                .execute_match(&execution_registry, &execution_validated)
+                .await
+        });
+
+        state.hydration_entered.notified().await;
+        registry
+            .register_entity(EntityDescriptor {
+                type_name: "employee".into(),
+                is_abstract: false,
+                parent_type: Some("person".into()),
+                owned_attributes: vec![key("name")],
+                doc: None,
+                meta: Default::default(),
+            })
+            .unwrap();
+        assert_eq!(
+            validated
+                .recheck_schema(&registry)
+                .unwrap_err()
+                .code()
+                .as_str(),
+            "stale_schema"
+        );
+        state.resume_hydration.notify_one();
+
+        let result = execution.await.unwrap().unwrap();
+        let super::super::result::MatchResult::Rows { rows } = result.result() else {
+            panic!("expected rows")
+        };
+        assert_eq!(rows.len(), 1);
+        context.close().await.unwrap();
     }
 
     #[tokio::test]

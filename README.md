@@ -29,11 +29,19 @@ A modern, Pythonic ORM for [TypeDB](https://github.com/typedb/typedb) with an At
 - **Chainable Operations**: Filter, delete, and bulk update with method chaining and lambda functions
 - **Query Builder**: Pythonic interface for building TypeQL queries
 - **Immutable Typed Queries**: Owner-aware multi-model rows, named/collected pages, counts, and existence checks
+- **V2 Query Facades**: Complete Rust-owned low-level plan authoring plus
+  synchronous direct and one-exchange asynchronous remote model queries in
+  Python and Node
 - **Multi-player Roles**: A single role can accept multiple entity types via `Role.multi(...)`
 - **Transaction Context**: Share transactions across multiple operations with `TransactionContext`
 - **Django-style Lookups**: Filter with `__contains`, `__gt`, `__in`, `__isnull` and more
 - **Dict Helpers**: `to_dict()` and `from_dict()` for easy serialization and API integration
 - **Bulk Operations**: `update_many()` and `delete_many()` for efficient batch processing
+
+See [Immutable Typed Queries](docs/guide/typed-queries.md) for the distinct
+`type_bridge.typed` / `@type-bridge/node/typed` model facade, the complete
+`type_bridge.query_v2` / `@type-bridge/node/query-v2` authoring facade, and the
+caller-owned remote transport contract.
 
 ## Installation
 
@@ -407,6 +415,14 @@ The ORM's embedded runtime handles band-7, band-8, and band-9-native 3.12
 servers automatically. Confirmed 3.12 connections normally negotiate band 9;
 band 8 remains available for discovery/fallback. No extra install is needed for
 3.8.x/3.10.x/3.12.x deployments.
+
+TypeDB 3.8 and 3.10 connections remain fully operational throughout
+TypeBridge 2.x but emit one filterable compatibility notice per successful
+connection; active support for those server lines is scheduled for removal in
+TypeBridge 3.0.0. Deployments that must retain them may pin
+`type-bridge>=2,<3`. TypeDB 3.11 and 3.12 do not emit that notice. See the
+exact [V2 deprecation inventory](docs/guide/v2-deprecations.md), including
+warning filtering and the surfaces that are explicitly retained.
 
 ## Release Notes
 

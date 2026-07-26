@@ -359,8 +359,31 @@ impl Database {
         limits: MatchExecutionLimits,
     ) -> Result<ValidatedMatchResult> {
         SelectedResultExecutor::new(registry, self.backend.match_capabilities(), limits)
-            .execute_owned(self, validated)
+            .execute_compatible_owned(self, validated)
             .await
+    }
+
+    /// Execute through the retained direct V1 implementation for live parity tests.
+    ///
+    /// This test-only seam is intentionally unavailable in normal builds. It
+    /// lets the integration corpus compare the released executor semantics
+    /// with the production V1-to-V2 compatibility path without changing which
+    /// path public callers use.
+    #[cfg(feature = "integration-tests")]
+    #[doc(hidden)]
+    pub async fn execute_match_v1_legacy_for_live_test(
+        &self,
+        registry: &DescriptorRegistry,
+        validated: &ValidatedMatchRequest,
+    ) -> Result<ValidatedMatchResult> {
+        let registry = registry.owned_registry_snapshot()?;
+        SelectedResultExecutor::new(
+            &registry,
+            self.backend.match_capabilities(),
+            MatchExecutionLimits::default(),
+        )
+        .execute_owned(self, validated)
+        .await
     }
 
     /// Get the database name.
@@ -397,10 +420,21 @@ impl Database {
 
     /// The server version detected at connect time, when known.
     ///
-    /// `None` for backends without a version gate and on the band-7 gRPC
-    /// fallback, where the server cannot report its version.
+    /// `None` for backends without a version gate and whenever the negotiated
+    /// connection path produced no authoritative server identity.
     pub fn server_version(&self) -> Option<type_bridge_core_lib::version::Version> {
         self.backend.server_version()
+    }
+
+    /// Return the shared legacy-server deprecation notice for this connection.
+    ///
+    /// Real TypeDB 3.8/3.10 connections and an unknown connection that
+    /// negotiated the legacy band-7 fallback return the core-owned prose.
+    /// Current negotiated bands, supported known versions, and custom
+    /// backends return `None`.
+    #[must_use]
+    pub fn server_deprecation_notice(&self) -> Option<String> {
+        self.backend.server_deprecation_notice()
     }
 
     /// Version-gate schema DDL that uses `@doc`/`@meta` annotations.

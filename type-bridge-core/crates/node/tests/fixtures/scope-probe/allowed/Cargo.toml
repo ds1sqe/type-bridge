@@ -1,0 +1,4 @@
+[dependencies]
+type-bridge-orm = { path = "../../../../orm" }
+
+# Documentation may explain why the Node facade does not own typedb-driver.

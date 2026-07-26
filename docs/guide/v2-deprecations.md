@@ -2,13 +2,15 @@
 
 `type-bridge 2.0.0` ships the V2 schema, query, and migration stack
 with Rust as the only semantic engine on every V2 path; each deprecated V1
-facade keeps its released engine until it is removed. Every V1 surface
-stays fully operational throughout every 2.x release unless an individual
-migration scope explicitly completes the irreversible V2 adoption cutover.
-That cutover closes only the adopted scope's legacy writer lane and is not a
-package-wide removal. This page is the exact removal contract: a surface absent from the
-"Scheduled for removal" list is not scheduled for removal, and nothing
-is removed under a catch-all.
+facade keeps its released behavior and public contract until it is removed.
+Its implementation may delegate to a parity-proven Rust V2 bridge, as the V1
+`MatchRequest` path does, without scheduling the facade for removal. Every V1
+surface stays fully operational throughout every 2.x release unless an
+individual migration scope explicitly completes the irreversible V2 adoption
+cutover. That cutover closes only the adopted scope's legacy writer lane and
+is not a package-wide removal. This page is the exact removal contract: a
+surface absent from the "Scheduled for removal" list is not scheduled for
+removal, and nothing is removed under a catch-all.
 
 ## Scheduled for removal in 3.0.0
 
@@ -17,6 +19,58 @@ is removed under a catch-all.
 - TypeDB 3.8 and TypeDB 3.10 provider/driver bands. TypeDB 3.11 support and
   its band-8 compatibility package remain; TypeDB 3.12.1 is the conformance
   baseline and the official upstream band-9 driver remains.
+
+Under the default warning policy, every successful 3.8/3.10 connection emits
+exactly one compatibility notice and then continues normally. Strict warning
+policies may suppress the public binding warning but cannot change the
+connection outcome. An unknown-version connection emits the conservative
+notice only when it actually negotiated the legacy band-7 fallback; missing
+HTTP identity alone is not legacy evidence. Unknown band-8/band-9 and known
+3.11/3.12 connections do not emit this deprecation code.
+
+| Connection path | Server identity | Notice behavior |
+| --- | --- | --- |
+| External Python `typedb-driver` | Known 3.8/3.10 | One Python warning after the driver connects successfully. |
+| Embedded Rust runtime, including Python and Node wrappers | Known 3.8/3.10 | One Rust tracing notice; the binding also emits its filterable public warning. |
+| Embedded gRPC band-7 legacy fallback | Exact version unavailable | One conservative notice that does not claim a server version. |
+| Embedded gRPC current band (8 or 9) | Exact version unavailable | No legacy-server notice. |
+| Any path | Known 3.11/3.12 | No legacy-server notice, including a known 3.12 server that retains the compatible discovery connection. |
+
+- Python exports `TypeDBServerDeprecationWarning`, a `FutureWarning` subclass.
+  Filter it by class rather than matching prose:
+
+  ```python
+  import warnings
+
+  from type_bridge import TypeDBServerDeprecationWarning
+
+  warnings.filterwarnings("ignore", category=TypeDBServerDeprecationWarning)
+  ```
+
+- Node calls `process.emitWarning` with standard warning type
+  `DeprecationWarning` and code
+  `TYPE_BRIDGE_TYPEDB_LEGACY_SERVER`. Applications may inspect the `warning`
+  event's `name` and `code`; Node's standard `--no-deprecation` policy also
+  suppresses it.
+- Rust emits one tracing event with code
+  `TYPE_BRIDGE_TYPEDB_LEGACY_SERVER`.
+
+The code and prose are owned by the Rust compatibility engine. Python aliases
+the native code on its warning class, and the Node package checks its public
+filter constant against the real addon's Rust export. The prose deliberately
+contains no internal protocol-band number. These notices do not change
+connection, query, or teardown behavior under any warning policy. Notice
+lookup and delivery are best-effort: a Python filter that promotes
+`TypeDBServerDeprecationWarning` to an error is caught after the delivery
+attempt, a synchronous replacement of Node's `process.emitWarning` that throws
+is caught, and Node `--throw-deprecation` suppresses this notice instead of
+turning a successful connection into an exception. An exception raised later
+by an application's asynchronous `warning` event listener remains
+application-owned, as it does for every Node warning; `connect()` has already
+returned and cannot contain it. The ordinary Python ignore filter and Node
+`--no-deprecation` remain supported. Applications that must retain 3.8/3.10
+support may pin
+`type-bridge>=2,<3`; there is no 2.1 SemVer exception.
 
 ### TOML schema authoring
 
@@ -92,9 +146,17 @@ These facades are deprecated in intent but are **not** scheduled for
 removal in `3.0.0`. No V1 query surface is removed before a complete
 V2 replacement exists for its full released algebra with a proven
 result-, order-, and diagnostic-parity corpus, announced in a later
-deprecation revision with its own notice period. The internal
-`MatchRequest`-to-V2 adapter is an incomplete experiment, is not wired
-into any execution path, and does not justify any removal.
+deprecation revision with its own notice period. The production Rust
+`MatchRequest` bridge already lowers the complete released request algebra
+through the shared V2 builder and same-snapshot model executor, retaining a
+direct V1 fallback only when the exact representation exceeds V2's fixed
+artifact-size envelope. That internal implementation change does not schedule
+or justify removal of any V1 facade. Complete low-level V2 authoring is
+available from `type_bridge.query_v2` and `@type-bridge/node/query-v2`, and the
+model-oriented remote facade is available as `RemoteQuerySession` /
+`RemoteQuery` under the typed subpaths. These additive replacements let an
+application migrate one query at a time; their availability is not a removal
+notice.
 
 ## Explicitly retained
 
@@ -104,7 +166,11 @@ These surfaces are not deprecated and carry no removal schedule:
   support.
 - `type_bridge_core.toml_to_typeql` and its frozen TOML parser.
 - Legacy Python/JSON migration readers and the legacy-frontier bridge.
-- Frozen fixtures that prove conversion fidelity.
+- Frozen fixtures that prove conversion fidelity, canonical bytes,
+  fingerprints, hostile-envelope rejection, V1 wire stability, or released
+  compatibility. Only the former embedded `PLAN_B64` constants in the two V2
+  binding execution smokes were retired after those smokes began authoring the
+  equivalent plans through the public facades.
 - The V2 `/v1` wire and document format versions
   (`typebridge.query-plan/v1`, the remote envelope formats, the
   migration manifest format): the `/v1` suffix names the wire revision
@@ -116,7 +182,7 @@ These surfaces are not deprecated and carry no removal schedule:
 | --- | --- | --- |
 | `schema.toml` authoring | Split YAML schema documents | `toml_to_typeql` review output + manual YAML translation |
 | Fused `Role[T]` | Split YAML + generated `relates()`/`plays()` | `type-bridge schema generate` projections |
-| Python/Rust/Node V1 queries | V2 query plans (prepared, capability-gated) | Manual per-query rewrite (no automated converter yet) |
+| Python/Rust/Node V1 queries | Low-level V2 plans (`type_bridge.query_v2`, `@type-bridge/node/query-v2`) or model-oriented direct/remote typed sessions | Manual per-query rewrite (no automated converter yet; unrelated V1 queries stay operational) |
 | Legacy `NNNN_*.py` migrations | Generated migration manifests | `migration adopt` (legacy-frontier bridge + ledger import) |
 | TypeDB 3.8/3.10 bands | TypeDB 3.11 or 3.12 | Band upgrade before 3.0.0 |
 

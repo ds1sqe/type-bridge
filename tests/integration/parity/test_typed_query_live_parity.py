@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import pytest
+import type_bridge_core
 
 from tests.integration.parity.cross_language import (
     read_typed_query_with_packed_node,
@@ -182,6 +183,40 @@ def test_live_typed_query_summary_and_f8_contract_match_built_artifacts(
     if expected_given is not None:
         assert expected_given in {"0", "1"}
         assert clean_db.supports_given_stage() is (expected_given == "1")
+    expected_legacy_warning = os.environ.get("TYPE_BRIDGE_PARITY_EXPECT_LEGACY_WARNING")
+    if os.environ.get("TYPE_BRIDGE_PARITY_STRICT") == "1":
+        assert expected_legacy_warning is not None, (
+            "strict artifact parity requires TYPE_BRIDGE_PARITY_EXPECT_LEGACY_WARNING"
+        )
+    if expected_legacy_warning is not None:
+        assert expected_legacy_warning in {"0", "1"}
+    server_version = clean_db.detected_server_version()
+    notice_message = type_bridge_core.typedb_server_deprecation_notice(server_version)
+    if expected_legacy_warning is not None:
+        assert (notice_message is not None) is (expected_legacy_warning == "1")
+    expected_code = type_bridge_core.TYPEDB_LEGACY_SERVER_DEPRECATION_CODE
+    expected_python_notices = (
+        []
+        if notice_message is None
+        else [
+            {
+                "message": notice_message,
+                "type": "TypeDBServerDeprecationWarning",
+                "code": expected_code,
+            }
+        ]
+    )
+    expected_node_notices = (
+        []
+        if notice_message is None
+        else [
+            {
+                "message": notice_message,
+                "type": "DeprecationWarning",
+                "code": expected_code,
+            }
+        ]
+    )
     clean_db.execute_query(SCHEMA_PATH.read_text(encoding="utf-8"), transaction_type="schema")
     clean_db.execute_query(DATA_PATH.read_text(encoding="utf-8"), transaction_type="write")
 
@@ -193,6 +228,7 @@ def test_live_typed_query_summary_and_f8_contract_match_built_artifacts(
     )
     if wheel_result is not None:
         assert wheel_result["artifact"] == "wheel"
+        assert wheel_result["legacy_notices"] == expected_python_notices
         assert wheel_result["summary"] == python_summary
 
     node_result = read_typed_query_with_packed_node(
@@ -202,6 +238,7 @@ def test_live_typed_query_summary_and_f8_contract_match_built_artifacts(
     )
 
     assert node_result["artifact"] == "packed"
+    assert node_result["legacy_notices"] == expected_node_notices
     node_summary = node_result["summary"]
     assert python_summary["relation_player"] == {"contract": "planning-time-rejection"}
     assert node_summary["relation_player"]["contract"] == "shallow-nonrecursive"

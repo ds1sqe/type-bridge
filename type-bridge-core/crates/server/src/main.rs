@@ -224,7 +224,7 @@ async fn build_v2_state(
 ) -> Result<transport::v2::V2QueryState, Box<dyn std::error::Error>> {
     use type_bridge_contract::fingerprint::SemanticProfileId;
     use type_bridge_contract::managed_scope::ManagedScopeId;
-    use type_bridge_contract::query_plan_capability_vocabulary;
+    use type_bridge_contract::query_plan::query_plan_v2_capability_vocabulary;
     use type_bridge_contract::schema::decode_declared_schema;
     use type_bridge_orm::session::backend::QueryV2AnswerLimits;
     use type_bridge_schema::{
@@ -272,11 +272,10 @@ async fn build_v2_state(
         .into());
     }
 
-    // The plan vocabulary is always executable; exact given transport is
-    // advertised only when the connected server and negotiated provider can
-    // carry explicit input rows, so capability preflight stays truthful for
-    // batches, absence, and datetime-tz invocations.
-    let mut advertised = query_plan_capability_vocabulary();
+    // The complete V2 vocabulary is executable through the validated low-level
+    // engine and the sole same-snapshot model compatibility executor. Exact
+    // `given` transport remains conditional on the negotiated provider.
+    let mut advertised = query_plan_v2_capability_vocabulary();
     if database.supports_given_stage() {
         advertised.insert(type_bridge_contract::query_given_rows_capability());
     }

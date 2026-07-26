@@ -25,7 +25,7 @@ use type_bridge_contract::query_remote::{
 use type_bridge_contract::schema::{
     AnnotationFact, AnnotationFactId, AnnotationKindId, AnnotationSubjectId, DeclaredSchema,
     DocumentId, OwnsFact, OwnsFactId, SchemaAnnotationValue, SchemaFact, SourceSpan,
-    SourcedSchemaFact, TypeFact, ValueFact, ValueFactId,
+    SourcedSchemaFact, SubFact, SubFactId, TypeFact, ValueFact, ValueFactId,
 };
 use type_bridge_contract::value::{CanonicalString, CanonicalValue, ValueTypeTag};
 use type_bridge_orm::query_v2::{QueryRowValue, QueryV2Outcome, execute_validated_query};
@@ -1533,11 +1533,15 @@ async fn bounded_reachability_executes_live() {
     let db = setup_db().await;
     let suffix = unique_schema_suffix("rust", "query-v2-reach-live");
     let node = TypeId::new(TypeKind::Entity, format!("{suffix}-node")).unwrap();
+    let node_child = TypeId::new(TypeKind::Entity, format!("{suffix}-node-child")).unwrap();
     let name = AttributeId::new(format!("{suffix}-name")).unwrap();
     let age = AttributeId::new(format!("{suffix}-age")).unwrap();
     let edge = TypeId::new(TypeKind::Relation, format!("{suffix}-edge")).unwrap();
     let from = RoleId::new(edge.label().as_str(), "origin").unwrap();
     let to = RoleId::new(edge.label().as_str(), "destination").unwrap();
+    let express_edge = TypeId::new(TypeKind::Relation, format!("{suffix}-express-edge")).unwrap();
+    let express_from = RoleId::new(express_edge.label().as_str(), "express-origin").unwrap();
+    let express_to = RoleId::new(express_edge.label().as_str(), "express-destination").unwrap();
 
     db.execute_raw(
         &format!(
@@ -1545,11 +1549,20 @@ async fn bounded_reachability_executes_live() {
              attribute {name}, value string;\n\
              attribute {age}, value integer;\n\
              relation {edge}, relates origin, relates destination;\n\
-             entity {node}, owns {name}, owns {age} @card(0..1), plays {edge}:origin, plays {edge}:destination;",
+             relation {express_edge} sub {edge}, \
+               relates express-origin as origin, \
+               relates express-destination as destination;\n\
+             entity {node}, owns {name}, owns {age} @card(0..1), \
+               plays {edge}:origin, plays {edge}:destination, \
+               plays {express_edge}:express-origin, \
+               plays {express_edge}:express-destination;\n\
+             entity {node_child} sub {node};",
             name = name.label(),
             age = age.label(),
             edge = edge.label(),
+            express_edge = express_edge.label(),
             node = node.label(),
+            node_child = node_child.label(),
         ),
         TxType::Schema,
     )
@@ -1557,27 +1570,57 @@ async fn bounded_reachability_executes_live() {
     .expect("live reach schema");
     db.execute_raw(
         &format!(
-            "insert $a isa {node}, has {name} \"na\"; \
+            "insert $a isa {node_child}, has {name} \"na\"; \
              $b isa {node}, has {name} \"nb\", has {age} 10; \
              $c isa {node}, has {name} \"nc\"; \
              $d isa {node}, has {name} \"nd\"; \
+             $e isa {node}, has {name} \"ne\"; \
              (origin: $a, destination: $b) isa {edge}; \
              (origin: $b, destination: $c) isa {edge}; \
              (origin: $a, destination: $c) isa {edge}; \
              (origin: $a, destination: $c) isa {edge}; \
-             (origin: $c, destination: $d) isa {edge};",
+             (origin: $c, destination: $d) isa {edge}; \
+             (express-origin: $a, express-destination: $e) isa {express_edge};",
             node = node.label(),
+            node_child = node_child.label(),
             name = name.label(),
             age = age.label(),
             edge = edge.label(),
+            express_edge = express_edge.label(),
         ),
         TxType::Write,
     )
     .await
     .expect("live reach data");
+    let widened_control = db
+        .execute_raw(
+            &format!(
+                "match \
+                 $a has {name} \"na\"; \
+                 $e has {name} \"ne\"; \
+                 (origin: $a, destination: $e) isa {edge}; \
+                 select $e;",
+                name = name.label(),
+                edge = edge.label(),
+            ),
+            TxType::Read,
+        )
+        .await
+        .expect("non-strict parent relation control query");
+    assert!(
+        matches!(
+            widened_control,
+            type_bridge_orm::session::backend::QueryResult::Rows(rows) if rows.len() == 1
+        ),
+        "fixture must expose the subtype edge to a non-strict parent relation match",
+    );
 
     let facts = vec![
         SchemaFact::Type(TypeFact::new(node.clone()).unwrap()),
+        SchemaFact::Type(TypeFact::new(node_child.clone()).unwrap()),
+        SchemaFact::Sub(SubFact::new(
+            SubFactId::new(node_child, node.clone()).unwrap(),
+        )),
         SchemaFact::Type(
             TypeFact::new(TypeId::new(TypeKind::Attribute, name.label().as_str()).unwrap())
                 .unwrap(),
@@ -1586,6 +1629,10 @@ async fn bounded_reachability_executes_live() {
             TypeFact::new(TypeId::new(TypeKind::Attribute, age.label().as_str()).unwrap()).unwrap(),
         ),
         SchemaFact::Type(TypeFact::new(edge.clone()).unwrap()),
+        SchemaFact::Type(TypeFact::new(express_edge.clone()).unwrap()),
+        SchemaFact::Sub(SubFact::new(
+            SubFactId::new(express_edge.clone(), edge.clone()).unwrap(),
+        )),
         SchemaFact::Value(ValueFact::new(
             ValueFactId::new(name.clone()),
             ValueTypeTag::String,
@@ -1610,11 +1657,31 @@ async fn bounded_reachability_executes_live() {
         SchemaFact::Relates(
             RelatesFact::new(RelatesFactId::new(edge.clone(), to.clone()).unwrap(), None).unwrap(),
         ),
+        SchemaFact::Relates(
+            RelatesFact::new(
+                RelatesFactId::new(express_edge.clone(), express_from.clone()).unwrap(),
+                Some(from.clone()),
+            )
+            .unwrap(),
+        ),
+        SchemaFact::Relates(
+            RelatesFact::new(
+                RelatesFactId::new(express_edge.clone(), express_to.clone()).unwrap(),
+                Some(to.clone()),
+            )
+            .unwrap(),
+        ),
         SchemaFact::Plays(PlaysFact::new(
             PlaysFactId::new(node.clone(), from.clone()).unwrap(),
         )),
         SchemaFact::Plays(PlaysFact::new(
             PlaysFactId::new(node.clone(), to.clone()).unwrap(),
+        )),
+        SchemaFact::Plays(PlaysFact::new(
+            PlaysFactId::new(node.clone(), express_from.clone()).unwrap(),
+        )),
+        SchemaFact::Plays(PlaysFact::new(
+            PlaysFactId::new(node.clone(), express_to.clone()).unwrap(),
         )),
     ];
     let sourced = facts.into_iter().enumerate().map(|(index, fact)| {
@@ -1649,10 +1716,14 @@ async fn bounded_reachability_executes_live() {
     .unwrap();
     let validation_context = MigrationAssertionValidationContext::new(&resolved, &managed);
 
-    // Every node within two hops of "na", in one provider query. `nc` has
+    // Every node within zero through three exact base-edge hops of subtype
+    // instance "na", in one provider query. This exercises the mixed
+    // identity/relation planner workaround over a validator-derived source
+    // domain containing both the base type and its concrete subtype. `nc` has
     // one indirect and two parallel direct proofs, but Reachable is
-    // existential and must expose the endpoint exactly once.
-    let plan = QueryPlan::new(
+    // existential and must expose the endpoint exactly once. The direct
+    // express-edge subtype hop to `ne` must not widen this exact relation.
+    let plan = QueryPlan::new_v2(
         vec![
             binding(0, "start"),
             binding(1, "start_name"),
@@ -1679,7 +1750,8 @@ async fn bounded_reachability_executes_live() {
                         },
                     },
                     QueryPattern::Reachable {
-                        max_depth: 2,
+                        min_depth: 0,
+                        max_depth: 3,
                         relation: edge.clone(),
                         role_from: from.clone(),
                         role_to: to.clone(),
@@ -1744,15 +1816,93 @@ async fn bounded_reachability_executes_live() {
     assert_eq!(
         names_and_ages,
         vec![
+            ("na".to_owned(), None),
             ("nb".to_owned(), Some(10)),
             ("nc".to_owned(), None),
             ("nd".to_owned(), None),
         ],
     );
 
+    let express_plan = QueryPlan::new_v2(
+        vec![
+            binding(0, "express_start"),
+            binding(1, "express_start_name"),
+            binding(2, "express_finish"),
+            binding(3, "express_finish_name"),
+        ],
+        Vec::new(),
+        vec![
+            ReadStage::Match {
+                patterns: vec![
+                    QueryPattern::Has {
+                        attribute: binding_id(1),
+                        attribute_id: name.clone(),
+                        owner: binding_id(0),
+                    },
+                    QueryPattern::Value {
+                        comparator: ValueComparator::Equal,
+                        left: QueryOperand::Binding {
+                            binding: binding_id(1),
+                        },
+                        right: QueryOperand::Literal {
+                            value: CanonicalValue::String(CanonicalString::new("na").unwrap()),
+                        },
+                    },
+                    QueryPattern::Reachable {
+                        min_depth: 1,
+                        max_depth: 1,
+                        relation: express_edge,
+                        role_from: express_from,
+                        role_to: express_to,
+                        source: binding_id(0),
+                        target: binding_id(2),
+                    },
+                    QueryPattern::Has {
+                        attribute: binding_id(3),
+                        attribute_id: name.clone(),
+                        owner: binding_id(2),
+                    },
+                ],
+            },
+            ReadStage::Sort {
+                terms: vec![OrderTerm::new(binding_id(3), OrderDirection::Ascending)],
+            },
+        ],
+        QueryOutput::Rows {
+            columns: vec![binding_id(3)],
+        },
+        managed.managed_semantic_schema().clone(),
+    )
+    .unwrap();
+    let validated = validate_query_plan(
+        &express_plan,
+        &validation_context,
+        StructuralLimits::CANONICAL,
+    )
+    .unwrap();
+    let invocation = QueryInvocation::new(&express_plan, QueryOperation::Rows, Vec::new()).unwrap();
+    let outcome = execute_validated_query(&mut transaction, &validated, &invocation, limits())
+        .await
+        .expect("exact subtype reachability execution");
+    let QueryV2Outcome::Rows(rows) = &outcome else {
+        panic!("rows outcome: {outcome:?}");
+    };
+    assert_eq!(
+        rows.iter()
+            .map(|row| match &row.values()[0] {
+                QueryRowValue::Attribute {
+                    value: CanonicalValue::String(value),
+                    ..
+                } => value.as_str(),
+                other => panic!("expected express-edge target name: {other:?}"),
+            })
+            .collect::<Vec<_>>(),
+        vec!["ne"],
+    );
+
     // A user reducer observes endpoint rows, not the multiplicity of path
     // proofs that the internal reachability aggregate discarded.
-    let count_plan = QueryPlan::new(
+    let count_plan = QueryPlan::new_v2(
         vec![
             binding(0, "start"),
             binding(1, "start_name"),
@@ -1791,7 +1941,7 @@ async fn bounded_reachability_executes_live() {
     assert_eq!(
         rows[0].values()[0],
         QueryRowValue::Value {
-            value: CanonicalValue::Long(3),
+            value: CanonicalValue::Long(4),
         },
     );
 }
@@ -2394,6 +2544,7 @@ async fn remote_envelope_parity_corpus_live() {
                             },
                         },
                         QueryPattern::Reachable {
+                            min_depth: 1,
                             max_depth: 2,
                             relation: edge.clone(),
                             role_from: origin.clone(),
@@ -2643,9 +2794,12 @@ async fn schema_fenced_transaction_blocks_schema_admission_until_close_live() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn prepared_facade_executes_locally_and_remotely_live() {
-    use type_bridge_contract::query_plan_capability_vocabulary;
+    use std::sync::Arc;
+
+    use type_bridge_contract::query_plan::query_plan_v2_capability_vocabulary;
     use type_bridge_contract::query_remote::RemoteLimits;
     use type_bridge_contract::schema::encode_declared_schema;
+    use type_bridge_orm::query_v2_builder::QueryPlanBuilder;
     use type_bridge_orm::query_v2_prepared::{
         QueryAuthority, execute_prepared_local, prepare_remote_query,
     };
@@ -2747,24 +2901,65 @@ async fn prepared_facade_executes_locally_and_remotely_live() {
             DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced).unwrap();
         encode_declared_schema(&declared).unwrap()
     };
-    let authority =
+    let authority = Arc::new(
         QueryAuthority::from_declared_bytes(&declared_bytes, "query-v2-live", "typedb-3.12.1/v1")
-            .expect("authority from declared bytes");
-    let local_authority = QueryAuthority::from_declared_bytes_query_only(
-        &declared_bytes,
-        "query-v2-live",
-        "typedb-3.12.1/v1",
-        &db,
-    )
-    .expect("query-only authority from declared bytes");
+            .expect("authority from declared bytes"),
+    );
+    let local_authority = Arc::new(
+        QueryAuthority::from_declared_bytes_query_only(
+            &declared_bytes,
+            "query-v2-live",
+            "typedb-3.12.1/v1",
+            &db,
+        )
+        .expect("query-only authority from declared bytes"),
+    );
 
-    let (_, plan) = validated_query(&fixture, OrderDirection::Ascending);
-    let plan_bytes = plan.canonical_bytes().expect("plan bytes");
-    let invocation_json = serde_json::json!({
-        "operation": "rows",
-        "rows": [[{"kind": "string", "value": "a"}]],
-    })
-    .to_string();
+    // Author the advanced plan and its fingerprint-bound invocation through
+    // the same incremental builder projected by Python and Node.
+    let mut builder = QueryPlanBuilder::new(Arc::clone(&authority));
+    let person = builder.binding("person").expect("person binding");
+    let name = builder.binding("name").expect("name binding");
+    let minimum_name = builder
+        .input("minimum_name", ValueTypeTag::String, false)
+        .expect("typed input");
+    let person_isa = builder
+        .isa(&person, fixture.person.clone(), true)
+        .expect("person isa");
+    let name_has = builder
+        .has(&person, &name, fixture.name.clone())
+        .expect("name has");
+    let name_operand = builder.binding_operand(&name).expect("name operand");
+    let minimum_operand = builder.input_operand(&minimum_name).expect("input operand");
+    let comparison = builder
+        .value(
+            ValueComparator::GreaterOrEqual,
+            &name_operand,
+            &minimum_operand,
+        )
+        .expect("typed comparison");
+    builder
+        .r#match(vec![person_isa, name_has, comparison])
+        .expect("match");
+    builder
+        .select(vec![person.clone(), name.clone()])
+        .expect("select");
+    builder.require(vec![name.clone()]).expect("require");
+    builder.distinct().expect("distinct");
+    let order = builder
+        .order(&name, OrderDirection::Ascending)
+        .expect("name order");
+    builder.sort(vec![order]).expect("sort");
+    builder.limit(10).expect("total ordered limit");
+    let plan = builder
+        .finalize_rows(vec![person, name])
+        .expect("builder-authored plan");
+    let invocation = plan
+        .rows(vec![string_row("a").values().to_vec()])
+        .expect("builder-authored invocation");
+    let plan_bytes = plan.canonical_bytes();
+    let invocation_json =
+        String::from_utf8(invocation.canonical_bytes()).expect("canonical invocation UTF-8");
 
     // Local execution through the facade.
     let local_json = execute_prepared_local(
@@ -2786,7 +2981,7 @@ async fn prepared_facade_executes_locally_and_remotely_live() {
         max_items: 100,
         max_collection_members: 1 << 16,
     };
-    let advertisement = remote_advertisement(query_plan_capability_vocabulary());
+    let advertisement = remote_advertisement(query_plan_v2_capability_vocabulary());
     let advertisement_bytes = advertisement.encode().expect("advertisement bytes");
     let pending = prepare_remote_query(
         &authority,

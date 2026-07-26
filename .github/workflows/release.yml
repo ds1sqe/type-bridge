@@ -183,7 +183,7 @@ jobs:
   # Build type-bridge-core wheels for all platforms
   build-core-wheels:
     name: Build core wheel (${{ matrix.target }})
-    needs: validate-release-identity
+    needs: [validate-release-identity, build-python]
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -193,13 +193,13 @@ jobs:
             runner: ubuntu-latest
             artifact: core-wheels-linux-x86_64
           - target: aarch64-unknown-linux-gnu
-            runner: ubuntu-latest
+            runner: ubuntu-24.04-arm
             artifact: core-wheels-linux-aarch64
           - target: x86_64-apple-darwin
-            runner: macos-latest
+            runner: macos-15-intel
             artifact: core-wheels-macos-x86_64
           - target: aarch64-apple-darwin
-            runner: macos-latest
+            runner: macos-14
             artifact: core-wheels-macos-aarch64
           - target: x86_64-pc-windows-msvc
             runner: windows-latest
@@ -208,14 +208,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - name: Set up QEMU (Linux aarch64 cross-compilation)
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
-        with:
-          platforms: arm64
-
       - name: Set up Python
-        if: runner.os != 'Linux'
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.13.5"
@@ -223,16 +216,34 @@ jobs:
       - name: Build wheel
         uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
         env:
-          # The manylinux aarch64 cross-compiler does not define the ARM ACLE
-          # macro __ARM_ARCH that ring's pregenerated assembly requires. The
-          # variable name is target-suffixed, so it only affects the aarch64
-          # Linux wheel even though it is declared on every matrix leg.
+          # The manylinux aarch64 compiler does not define the ARM ACLE macro
+          # __ARM_ARCH that ring's pregenerated assembly requires. The variable
+          # name is target-suffixed, so it only affects the aarch64 Linux wheel.
           CFLAGS_aarch64_unknown_linux_gnu: ${{ matrix.target == 'aarch64-unknown-linux-gnu' && '-D__ARM_ARCH=8' || '' }}
         with:
+          maturin-version: v1.14.1
+          rust-toolchain: 1.94.1
           target: ${{ matrix.target }}
           args: --release --out dist -i python3.13
           manylinux: auto
           working-directory: type-bridge-core
+
+      - name: Download exact root Python distribution
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: python-dist
+          path: tmp/python-v2-platform-root
+
+      - name: Execute target-native V2 authoring artifact
+        run: >-
+          python scripts/ci/run_python_v2_platform_artifact.py
+          --root-dist-dir tmp/python-v2-platform-root
+          --core-dist-dir type-bridge-core/dist
+          --work-dir "${{ runner.temp }}/type-bridge-v2-platform-artifact"
+          --expected-version "${{ env.PYTHON_RELEASE_VERSION }}"
+          --source-root "${{ github.workspace }}"
+          --declared-schema
+          tests/fixtures/query-v2-model-remote-parity-declared.json
 
       - name: Upload wheel artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -253,6 +264,8 @@ jobs:
       - name: Build sdist
         uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
         with:
+          maturin-version: v1.14.1
+          rust-toolchain: 1.94.1
           command: sdist
           args: --out dist
           working-directory: type-bridge-core
@@ -303,8 +316,9 @@ jobs:
   # Validate every immutable Python artifact produced by this workflow before
   # either distribution can reach PyPI. Archive, inventory, platform-tag,
   # metadata, and hash checks cover all five core wheels plus both wheel/sdist
-  # pairs. Runnable Linux x86_64 wheels and both sdists also execute in isolated
-  # consumers; the typed probe checks the same wheel pair's PEP 561 surface.
+  # pairs. Every wheel has already executed a V2 authoring probe on its native
+  # target; Linux x86_64 and both sdists receive the deeper isolated consumer
+  # matrix here, including the wheel pair's PEP 561 surface.
   accept-python-artifacts:
     name: Accept Python release artifacts (${{ matrix.python-version }})
     needs: [build-core-wheels, build-core-sdist, build-python]
@@ -766,6 +780,9 @@ jobs:
       - name: Unified Query contract typecheck
         run: npm run typecheck:query-contract
 
+      - name: Thin-binding scope probe
+        run: npm run scope:probe
+
       - name: Unit tests
         run: npm run test:unit
 
@@ -872,12 +889,41 @@ jobs:
           npm run smoke:legacy-package -- --artifact-directory
           "${{ github.workspace }}/tmp/release-node-package"
 
+  # Build the internal V2 smoke executor once from the exact candidate commit.
+  # Live artifact consumers use this immutable binary; it is test support, not
+  # a release payload and is never published.
+  build-v2-smoke-server:
+    name: Build V2 smoke server
+    needs: validate-release-identity
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: 1.94.1
+
+      - name: Build exact V2 smoke server
+        run: >-
+          cargo build --manifest-path type-bridge-core/Cargo.toml
+          --release -p type-bridge-server --features v2-query
+          --example v2_smoke_server
+
+      - name: Upload immutable V2 smoke server
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: v2-smoke-server
+          path: type-bridge-core/target/release/examples/v2_smoke_server
+          if-no-files-found: error
+
   # Exercise the exact Linux wheel pair and the one final multi-native npm
   # tarball against live TypeDB before any registry mutation. This job consumes
   # only uploaded release candidates: it performs no source build or repack.
   accept-live-artifact-parity:
     name: Accept live artifact parity (Python ${{ matrix.python-version }}, ${{ matrix.typedb-server }})
-    needs: [build-core-wheels, build-python, pack-node-package]
+    needs: [build-core-wheels, build-python, pack-node-package, build-v2-smoke-server]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -886,12 +932,15 @@ jobs:
           - python-version: "3.12"
             typedb-server: "typedb/typedb:3.8.3"
             expect-given: "0"
+            expect-legacy-warning: "1"
           - python-version: "3.13.5"
             typedb-server: "typedb/typedb:3.11.5"
             expect-given: "0"
+            expect-legacy-warning: "0"
           - python-version: "3.14"
             typedb-server: "typedb/typedb:3.12.1"
             expect-given: "1"
+            expect-legacy-warning: "0"
     services:
       typedb:
         image: ${{ matrix.typedb-server }}
@@ -904,6 +953,7 @@ jobs:
       TYPEDB_HTTP_PORT: "8000"
       TYPE_BRIDGE_PARITY_STRICT: "1"
       TYPE_BRIDGE_PARITY_EXPECT_GIVEN: ${{ matrix.expect-given }}
+      TYPE_BRIDGE_PARITY_EXPECT_LEGACY_WARNING: ${{ matrix.expect-legacy-warning }}
     steps:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -941,6 +991,12 @@ jobs:
           name: node-package
           path: tmp/release-live-artifacts/node
 
+      - name: Download exact V2 smoke server
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: v2-smoke-server
+          path: tmp/release-live-artifacts/server
+
       - name: Export exact release candidate paths
         run: |
           mapfile -t core_wheels < <(
@@ -954,6 +1010,10 @@ jobs:
           mapfile -t node_packages < <(
             find tmp/release-live-artifacts/node -maxdepth 1 -type f \
               -name '*.tgz' -print
+          )
+          mapfile -t smoke_servers < <(
+            find tmp/release-live-artifacts/server -maxdepth 1 -type f \
+              -name 'v2_smoke_server' -print
           )
           if [[ ${#core_wheels[@]} -ne 1 ]]; then
             printf 'Expected one Linux x64 core wheel, found %s\n' \
@@ -970,12 +1030,20 @@ jobs:
               "${#node_packages[@]}" >&2
             exit 1
           fi
+          if [[ ${#smoke_servers[@]} -ne 1 ]]; then
+            printf 'Expected one V2 smoke server, found %s\n' \
+              "${#smoke_servers[@]}" >&2
+            exit 1
+          fi
+          chmod +x "${smoke_servers[0]}"
           printf 'TYPE_BRIDGE_PARITY_CORE_WHEEL=%s\n' \
             "$(realpath "${core_wheels[0]}")" >> "$GITHUB_ENV"
           printf 'TYPE_BRIDGE_PARITY_ROOT_WHEEL=%s\n' \
             "$(realpath "${root_wheels[0]}")" >> "$GITHUB_ENV"
           printf 'TYPE_BRIDGE_PARITY_NODE_PACKAGE=%s\n' \
             "$(realpath "${node_packages[0]}")" >> "$GITHUB_ENV"
+          printf 'TYPE_BRIDGE_V2_SMOKE_SERVER=%s\n' \
+            "$(realpath "${smoke_servers[0]}")" >> "$GITHUB_ENV"
 
       - name: Prepare exact-wheel parity environment
         run: |
@@ -1084,6 +1152,92 @@ jobs:
               raise SystemExit(f"Live artifact parity did not pass exactly once: {totals}")
           if names != [expected_name]:
               raise SystemExit(f"Unexpected live artifact parity test cases: {names}")
+          PY
+
+      - name: Run exact-artifact V2 authoring and remote-model parity
+        if: matrix.typedb-server == 'typedb/typedb:3.12.1'
+        env:
+          TYPE_BRIDGE_V2_ARTIFACT_REPORT: ${{ runner.temp }}/release-v2-artifact-parity.xml
+        run: |
+          cd "$RUNNER_TEMP"
+          PATH="$RUNNER_TEMP/release-live-parity/bin:$PATH" \
+            "$RUNNER_TEMP/release-live-parity/bin/python" -I - <<'PY'
+          import importlib
+          import os
+          import sys
+          from pathlib import Path
+
+          workspace = Path(os.environ["GITHUB_WORKSPACE"]).resolve()
+          environment = Path(sys.prefix).resolve()
+          for module_name in ("type_bridge", "type_bridge_core"):
+              module = importlib.import_module(module_name)
+              module_path = Path(module.__file__).resolve()
+              if module_path == workspace or workspace in module_path.parents:
+                  raise SystemExit(
+                      f"{module_name} leaked to the source checkout: {module_path}"
+                  )
+              if module_path != environment and environment not in module_path.parents:
+                  raise SystemExit(
+                      f"{module_name} escaped the exact-wheel environment: {module_path}"
+                  )
+
+          import pytest
+
+          sys.path.insert(0, str(workspace))
+          test = (
+              workspace
+              / "tests/integration/queries/test_remote_query_session_parity.py"
+          )
+          test_node = (
+              f"{test}::test_public_remote_query_session_matches_direct_subtype_hydration"
+          )
+          raise SystemExit(
+              pytest.main(
+                  [
+                      test_node,
+                      "--rootdir",
+                      str(workspace),
+                      "--import-mode=importlib",
+                      "-o",
+                      "addopts=",
+                      "-m",
+                      "integration",
+                      "-ra",
+                      "--tb=short",
+                      f"--junitxml={os.environ['TYPE_BRIDGE_V2_ARTIFACT_REPORT']}",
+                  ]
+              )
+          )
+          PY
+
+      - name: Require one passing V2 artifact regression
+        if: matrix.typedb-server == 'typedb/typedb:3.12.1'
+        env:
+          TYPE_BRIDGE_V2_ARTIFACT_REPORT: ${{ runner.temp }}/release-v2-artifact-parity.xml
+        run: |
+          python - <<'PY'
+          import os
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+
+          report = Path(os.environ["TYPE_BRIDGE_V2_ARTIFACT_REPORT"])
+          if not report.is_file():
+              raise SystemExit(f"V2 artifact parity report is missing: {report}")
+          root = ET.parse(report).getroot()
+          suites = [root] if root.tag == "testsuite" else list(root.iter("testsuite"))
+          totals = {
+              key: sum(int(suite.get(key, "0")) for suite in suites)
+              for key in ("tests", "failures", "errors", "skipped")
+          }
+          expected_name = (
+              "test_public_remote_query_session_matches_direct_subtype_hydration"
+          )
+          names = [case.get("name") for case in root.iter("testcase")]
+          print(f"V2 artifact parity: totals={totals} tests={names}")
+          if totals != {"tests": 1, "failures": 0, "errors": 0, "skipped": 0}:
+              raise SystemExit(f"V2 artifact parity did not pass exactly once: {totals}")
+          if names != [expected_name]:
+              raise SystemExit(f"Unexpected V2 artifact parity test cases: {names}")
           PY
 
   # Publish only the accepted tarball. The stable-only channel preflight has

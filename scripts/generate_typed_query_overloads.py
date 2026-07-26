@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate and drift-check QuerySession.query overloads for slots 1 through 16."""
+"""Generate and drift-check direct/remote typed-query overload matrices."""
 
 from __future__ import annotations
 
@@ -9,13 +9,24 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SESSION_TARGET = ROOT / "type_bridge" / "typed" / "session.py"
 QUERY_TARGET = ROOT / "type_bridge" / "typed" / "query.py"
+REMOTE_SESSION_TARGET = ROOT / "type_bridge" / "typed" / "remote_session.py"
+REMOTE_QUERY_TARGET = ROOT / "type_bridge" / "typed" / "remote_query.py"
 QUERY_START = "    # BEGIN GENERATED QUERY OVERLOADS"
 QUERY_END = "    # END GENERATED QUERY OVERLOADS"
 PAGE_START = "    # BEGIN GENERATED PAGE OVERLOADS"
 PAGE_END = "    # END GENERATED PAGE OVERLOADS"
+REMOTE_QUERY_START = "    # BEGIN GENERATED REMOTE QUERY OVERLOADS"
+REMOTE_QUERY_END = "    # END GENERATED REMOTE QUERY OVERLOADS"
+REMOTE_PAGE_START = "    # BEGIN GENERATED REMOTE PAGE OVERLOADS"
+REMOTE_PAGE_END = "    # END GENERATED REMOTE PAGE OVERLOADS"
 
 
-def render_query_overloads() -> str:
+def render_query_overloads(
+    query_type: str = "Query",
+    *,
+    asynchronous: bool = False,
+) -> str:
+    function = "async def" if asynchronous else "def"
     blocks: list[str] = []
     for arity in range(1, 17):
         parameters = ",\n".join(
@@ -25,16 +36,21 @@ def render_query_overloads() -> str:
         type_parameters = ", ".join(f"T{index}" for index in range(1, arity + 1))
         blocks.append(
             "    @overload\n"
-            f"    def query[{type_parameters}](\n"
+            f"    {function} query[{type_parameters}](\n"
             "        self,\n"
             f"{parameters},\n"
             "        /,\n"
-            f"    ) -> Query[{slots}]: ..."
+            f"    ) -> {query_type}[{slots}]: ..."
         )
     return "\n\n".join(blocks)
 
 
-def render_page_overloads() -> str:
+def render_page_overloads(
+    query_type: str = "Query",
+    *,
+    asynchronous: bool = False,
+) -> str:
+    function = "async def" if asynchronous else "def"
     options = (
         "        *,\n"
         "        limit: int,\n"
@@ -44,8 +60,8 @@ def render_page_overloads() -> str:
     )
     blocks = [
         "    @overload\n"
-        "    def page_by[SlotT, RootT: TypeDBType](\n"
-        "        self: Query[SlotT],\n"
+        f"    {function} page_by[SlotT, RootT: TypeDBType](\n"
+        f"        self: {query_type}[SlotT],\n"
         "        root: BoundVar[RootT],\n"
         f"{options}"
         "    ) -> Page[SlotT]: ..."
@@ -65,8 +81,8 @@ def render_page_overloads() -> str:
             row = ", ".join(slots)
             blocks.append(
                 "    @overload\n"
-                f"    def page_by[{type_parameters}](\n"
-                f"        self: Query[{row}],\n"
+                f"    {function} page_by[{type_parameters}](\n"
+                f"        self: {query_type}[{row}],\n"
                 "        root: BoundVar[RootT],\n"
                 f"{options}"
                 f"    ) -> Page[tuple[{row}]]: ..."
@@ -98,11 +114,32 @@ def main() -> None:
         PAGE_END,
         render_page_overloads(),
     )
+    remote_session_source = REMOTE_SESSION_TARGET.read_text()
+    expected_remote_session = updated_source(
+        remote_session_source,
+        REMOTE_QUERY_START,
+        REMOTE_QUERY_END,
+        render_query_overloads("RemoteQuery"),
+    )
+    remote_query_source = REMOTE_QUERY_TARGET.read_text()
+    expected_remote_query = updated_source(
+        remote_query_source,
+        REMOTE_PAGE_START,
+        REMOTE_PAGE_END,
+        render_page_overloads("RemoteQuery", asynchronous=True),
+    )
     if arguments.write:
         SESSION_TARGET.write_text(expected_session)
         QUERY_TARGET.write_text(expected_query)
+        REMOTE_SESSION_TARGET.write_text(expected_remote_session)
+        REMOTE_QUERY_TARGET.write_text(expected_remote_query)
         return
-    if session_source != expected_session or query_source != expected_query:
+    if (
+        session_source != expected_session
+        or query_source != expected_query
+        or remote_session_source != expected_remote_session
+        or remote_query_source != expected_remote_query
+    ):
         raise SystemExit(
             "typed-query overloads drifted; run "
             "`python scripts/generate_typed_query_overloads.py --write`"

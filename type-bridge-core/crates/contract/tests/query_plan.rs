@@ -6,7 +6,8 @@ use type_bridge_contract::migration_assertion::{
 };
 use type_bridge_contract::query_plan::{
     InputColumn, InputColumnId, InputRow, OrderDirection, OrderTerm, QueryInvocation, QueryOperand,
-    QueryOperation, QueryOutput, QueryPattern, QueryPlan, ReadStage, decode_query_plan,
+    QueryOperation, QueryOutput, QueryPattern, QueryPlan, ReadStage, decode_query_invocation,
+    decode_query_plan,
 };
 use type_bridge_contract::query_plan_capability_vocabulary;
 use type_bridge_contract::schema_fingerprint::ManagedSemanticSchemaFingerprint;
@@ -194,7 +195,7 @@ fn malformed_forged_and_unknown_wire_bytes_fail_closed() {
     assert!(decode_query_plan(&serde_json::to_vec(&unknown).expect("JSON")).is_err());
 
     let mut wrong_format: Value = serde_json::from_slice(&bytes).expect("JSON");
-    wrong_format["format"] = json!("typebridge.query-plan/v2");
+    wrong_format["format"] = json!("typebridge.query-plan/v99");
     assert_eq!(
         decode_query_plan(&serde_json::to_vec(&wrong_format).expect("JSON"))
             .expect_err("unsupported format")
@@ -387,6 +388,102 @@ fn invocations_bind_the_exact_plan_and_validate_rectangular_batches() {
     let empty = QueryInvocation::new(&plan, QueryOperation::Rows, Vec::new())
         .expect_err("declared inputs require a row");
     assert_eq!(empty.code().as_str(), "query_invocation_missing_inputs");
+}
+
+#[test]
+fn canonical_invocation_wire_rebuilds_and_rejects_forgery_or_unknown_fields() {
+    use type_bridge_contract::codec::to_canonical_json;
+
+    let plan = full_pipeline_plan();
+    let invocation = QueryInvocation::new(
+        &plan,
+        QueryOperation::Rows,
+        vec![InputRow::new(vec![Some(CanonicalValue::Long(18))])],
+    )
+    .expect("invocation");
+    let bytes = to_canonical_json(&invocation).expect("canonical invocation");
+    let decoded = decode_query_invocation(&plan, &bytes).expect("trusted reconstruction");
+    assert_eq!(decoded, invocation);
+
+    let mut forged = serde_json::from_slice::<Value>(&bytes).expect("invocation value");
+    forged["plan_fingerprint"]["digest"] = json!("00".repeat(32));
+    assert_eq!(
+        decode_query_invocation(
+            &plan,
+            &to_canonical_json(&forged).expect("canonical forgery"),
+        )
+        .expect_err("forged plan binding")
+        .code()
+        .as_str(),
+        "query_invocation_plan_fingerprint_mismatch",
+    );
+
+    let mut unknown = serde_json::from_slice::<Value>(&bytes).expect("invocation value");
+    unknown["extra"] = json!(true);
+    assert!(
+        decode_query_invocation(
+            &plan,
+            &to_canonical_json(&unknown).expect("canonical unknown field"),
+        )
+        .is_err(),
+        "unknown invocation fields fail closed",
+    );
+}
+
+#[test]
+fn complete_invocation_wire_ceiling_is_attainable_and_exact() {
+    use type_bridge_contract::codec::to_canonical_json;
+    use type_bridge_contract::limits::{MAX_INPUT_BYTES, MAX_QUERY_INVOCATION_BYTES};
+
+    let source = full_pipeline_plan();
+    let plan = QueryPlan::new(
+        source.bindings().to_vec(),
+        vec![InputColumn::new(
+            InputColumnId::new(0),
+            QueryVariable::new("supplied_text").expect("input name"),
+            ValueTypeTag::String,
+            false,
+        )],
+        source.pipeline().to_vec(),
+        source.output().clone(),
+        source.managed_semantics().clone(),
+    )
+    .expect("string-input plan");
+
+    let base_chunk = "x".repeat((MAX_INPUT_BYTES / 5).saturating_sub(128));
+    let mut chunks = vec![base_chunk; 5];
+    let build_rows = |chunks: &[String]| {
+        chunks
+            .iter()
+            .map(|chunk| {
+                InputRow::new(vec![Some(CanonicalValue::String(
+                    CanonicalString::new(chunk.clone()).expect("bounded string"),
+                ))])
+            })
+            .collect::<Vec<_>>()
+    };
+    let initial_size = serde_json::to_vec(&build_rows(&chunks))
+        .expect("input rows")
+        .len();
+    assert!(initial_size < MAX_INPUT_BYTES);
+    chunks
+        .last_mut()
+        .expect("last input chunk")
+        .push_str(&"x".repeat(MAX_INPUT_BYTES - initial_size));
+    let rows = build_rows(&chunks);
+    assert_eq!(
+        serde_json::to_vec(&rows).expect("exact input rows").len(),
+        MAX_INPUT_BYTES,
+    );
+
+    let invocation = QueryInvocation::new(&plan, QueryOperation::Exists, rows)
+        .expect("maximum-size input batch");
+    let bytes = to_canonical_json(&invocation).expect("maximum-size invocation");
+    assert_eq!(bytes.len(), MAX_QUERY_INVOCATION_BYTES);
+    assert_eq!(
+        decode_query_invocation(&plan, &bytes).expect("maximum invocation round trip"),
+        invocation,
+    );
 }
 
 #[test]
@@ -970,6 +1067,7 @@ fn bounded_reachability_requires_a_finite_root_bound() {
 
     let semantics = managed_semantics(b"query-plan-reachable-fixture");
     let reachable = |max_depth: u8| QueryPattern::Reachable {
+        min_depth: 1,
         max_depth,
         relation: TypeId::new(TypeKind::Relation, "edge").expect("type id"),
         role_from: RoleId::new("edge", "origin").expect("role"),
@@ -999,7 +1097,7 @@ fn bounded_reachability_requires_a_finite_root_bound() {
     let bytes = plan.canonical_bytes().expect("canonical bytes");
     assert_eq!(decode_query_plan(&bytes).expect("decoded plan"), plan);
 
-    // The bound is mandatory: zero hops is not a reachability question.
+    // The bound is mandatory: zero hops is not a V1 reachability question.
     let error = build(vec![reachable(0)]).expect_err("zero bound");
     assert_eq!(error.code().as_str(), "query_plan_reachable_depth");
 

@@ -1,0 +1,7 @@
+{
+  "name": "scope-probe-allowed",
+  "description": "Documents typedb-driver ownership without depending on it",
+  "dependencies": {
+    "@type-bridge/node": "2.0.0-rc.0"
+  }
+}

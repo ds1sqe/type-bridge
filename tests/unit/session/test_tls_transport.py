@@ -20,6 +20,16 @@ VALID_ROOT_CA = (
 ).read_bytes()
 
 
+class _CurrentRustDatabaseHandle:
+    """Minimal successful native handle used by transport-focused test doubles."""
+
+    def server_deprecation_notice(self) -> None:
+        return None
+
+    def close(self) -> None:
+        pass
+
+
 @pytest.mark.parametrize(
     ("address", "tls", "expected_address", "expected_tls"),
     [
@@ -52,7 +62,7 @@ def test_rust_database_preserves_exact_https_inference_and_normalizes_address(
         ) -> object:
             del database, username, password
             calls.append((actual_address, kwargs))
-            return object()
+            return _CurrentRustDatabaseHandle()
 
     monkeypatch.setattr(
         rust_runtime,
@@ -110,7 +120,7 @@ def test_custom_root_is_forwarded_only_with_explicit_tls(
         def connect(*args: object, **kwargs: object) -> object:
             del args
             calls.append(kwargs)
-            return object()
+            return _CurrentRustDatabaseHandle()
 
     monkeypatch.setattr(
         rust_runtime,
@@ -453,7 +463,7 @@ def test_rust_connect_and_lazy_python_driver_share_one_custom_root_snapshot(
             del args
             snapshot_path = Path(str(kwargs["tls_root_ca"]))
             rust_observed.append((snapshot_path, snapshot_path.read_bytes()))
-            return object()
+            return _CurrentRustDatabaseHandle()
 
     monkeypatch.setattr(
         rust_runtime,
@@ -538,7 +548,7 @@ def test_python_driver_and_later_rust_connect_share_one_custom_root_snapshot(
         def connect(*args: object, **kwargs: object) -> object:
             del args
             rust_observed.append(Path(str(kwargs["tls_root_ca"])).read_bytes())
-            return object()
+            return _CurrentRustDatabaseHandle()
 
     monkeypatch.setattr(
         rust_runtime,
@@ -586,7 +596,7 @@ def test_second_backend_rejects_connection_identity_mutation(
         def connect(*args: object, **kwargs: object) -> object:
             del args
             Path(str(kwargs["tls_root_ca"])).read_bytes()
-            return object()
+            return _CurrentRustDatabaseHandle()
 
     monkeypatch.setattr(
         rust_runtime,
@@ -681,7 +691,7 @@ def test_close_waits_for_inflight_rust_connect_and_then_cleans_snapshot(
             assert Path(str(kwargs["tls_root_ca"])).read_bytes() == VALID_ROOT_CA
             connect_started.set()
             assert release_connect.wait(timeout=2)
-            return object()
+            return _CurrentRustDatabaseHandle()
 
     monkeypatch.setattr(
         rust_runtime,

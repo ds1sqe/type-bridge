@@ -15,7 +15,7 @@ use type_bridge_contract::query_plan::{
 use type_bridge_contract::schema::{
     AnnotationFact, AnnotationFactId, AnnotationKindId, AnnotationSubjectId, DeclaredSchema,
     DocumentId, OwnsFact, OwnsFactId, SchemaAnnotationValue, SchemaFact, SourceSpan,
-    SourcedSchemaFact, TypeFact, ValueFact, ValueFactId,
+    SourcedSchemaFact, SubFact, SubFactId, TypeFact, ValueFact, ValueFactId,
 };
 use type_bridge_contract::temporal::{CanonicalDateTime, CanonicalDateTimeTz, CanonicalDuration};
 use type_bridge_contract::value::{
@@ -1217,11 +1217,16 @@ fn bounded_reachability_lowers_to_unrolled_disjunctions() {
     use type_bridge_contract::schema::{PlaysFact, PlaysFactId, RelatesFact, RelatesFactId};
 
     let node = type_id(TypeKind::Entity, "node");
+    let node_child = type_id(TypeKind::Entity, "node-child");
     let edge = type_id(TypeKind::Relation, "edge");
     let from = RoleId::new("edge", "origin").expect("role");
     let to = RoleId::new("edge", "destination").expect("role");
     let facts = vec![
         SchemaFact::Type(TypeFact::new(node.clone()).expect("type fact")),
+        SchemaFact::Type(TypeFact::new(node_child.clone()).expect("type fact")),
+        SchemaFact::Sub(SubFact::new(
+            SubFactId::new(node_child, node.clone()).expect("sub fact"),
+        )),
         SchemaFact::Type(TypeFact::new(edge.clone()).expect("type fact")),
         SchemaFact::Relates(
             RelatesFact::new(
@@ -1272,11 +1277,12 @@ fn bounded_reachability_lowers_to_unrolled_disjunctions() {
     let managed = managed_schema_state(&declared, &context).expect("managed state");
     let resolved = resolve(&declared, &profile).expect("resolved schema");
 
-    let plan = QueryPlan::new(
+    let plan = QueryPlan::new_v2(
         vec![binding(0, "start"), binding(1, "finish")],
         Vec::new(),
         vec![ReadStage::Match {
             patterns: vec![QueryPattern::Reachable {
+                min_depth: 0,
                 max_depth: 3,
                 relation: edge.clone(),
                 role_from: from.clone(),
@@ -1300,12 +1306,14 @@ fn bounded_reachability_lowers_to_unrolled_disjunctions() {
     assert_eq!(
         lowered.typeql(),
         "match\n\
+         { $R0z0 isa! node; $start is $R0z0; $finish is $R0z0; } or \
+         { $R0z1 isa! node-child; $start is $R0z1; $finish is $R0z1; } or \
          { (origin: $start, destination: $finish) isa! edge; } or \
-         { (origin: $start, destination: $R0h1) isa! edge; \
-         (origin: $R0h1, destination: $finish) isa! edge; } or \
-         { (origin: $start, destination: $R0h1) isa! edge; \
-         (origin: $R0h1, destination: $R0h2) isa! edge; \
-         (origin: $R0h2, destination: $finish) isa! edge; };\n\
+         { (origin: $start, destination: $R0l2h1) isa! edge; \
+         (origin: $R0l2h1, destination: $finish) isa! edge; } or \
+         { (origin: $start, destination: $R0l3h1) isa! edge; \
+         (origin: $R0l3h1, destination: $R0l3h2) isa! edge; \
+         (origin: $R0l3h2, destination: $finish) isa! edge; };\n\
          reduce $RreachableProofCount = count groupby $start, $finish;\n\
          select $start, $finish;\n",
     );
@@ -1422,5 +1430,133 @@ fn hidden_negation_witnesses_lower_with_an_exact_root_select() {
          \x20   $hidden == \"zed\";\n\
          };\n\
          select $person, $name;\n",
+    );
+}
+
+#[test]
+fn ordinary_disjunction_lowers_conjunction_branches_with_nested_negation() {
+    let person = type_id(TypeKind::Entity, "person");
+    let name = AttributeId::new("name").expect("attribute");
+    let facts = vec![
+        SchemaFact::Type(TypeFact::new(person.clone()).expect("person type")),
+        SchemaFact::Type(TypeFact::new(type_id(TypeKind::Attribute, "name")).expect("name type")),
+        SchemaFact::Value(ValueFact::new(
+            ValueFactId::new(name.clone()),
+            ValueTypeTag::String,
+        )),
+        SchemaFact::Owns(OwnsFact::new(
+            OwnsFactId::new(person.clone(), name.clone()).expect("owns"),
+        )),
+    ];
+    let sourced = facts.into_iter().enumerate().map(|(index, fact)| {
+        let byte = u64::try_from(index).expect("byte");
+        let line = u32::try_from(index + 1).expect("line");
+        SourcedSchemaFact::new(
+            fact,
+            SourceSpan::new(
+                DocumentId::new("query-v2-disjunction-lowering").expect("document"),
+                byte,
+                byte + 1,
+                line,
+                1,
+                line,
+                2,
+            )
+            .expect("span"),
+        )
+    });
+    let declared = DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced)
+        .expect("declared schema");
+    let profile = SemanticProfileId::new("typedb-3.12.1/v1").expect("profile");
+    let context = ManagedDeltaContext::new(
+        ManagedScopeId::new("query-v2-disjunction-lowering").expect("scope"),
+        profile.clone(),
+        CapabilitySet::new(),
+    );
+    let managed = managed_schema_state(&declared, &context).expect("managed state");
+    let resolved = resolve(&declared, &profile).expect("resolved schema");
+    let plan = QueryPlan::new_v2(
+        vec![
+            binding(0, "person"),
+            binding(1, "left_name"),
+            binding(2, "right_name"),
+        ],
+        Vec::new(),
+        vec![ReadStage::Match {
+            patterns: vec![QueryPattern::Or {
+                branches: vec![
+                    vec![
+                        QueryPattern::Isa {
+                            binding: binding_id(0),
+                            include_subtypes: false,
+                            type_id: person.clone(),
+                        },
+                        QueryPattern::Has {
+                            attribute: binding_id(1),
+                            attribute_id: name.clone(),
+                            owner: binding_id(0),
+                        },
+                    ],
+                    vec![
+                        QueryPattern::Isa {
+                            binding: binding_id(0),
+                            include_subtypes: false,
+                            type_id: person,
+                        },
+                        QueryPattern::Has {
+                            attribute: binding_id(2),
+                            attribute_id: name,
+                            owner: binding_id(0),
+                        },
+                        QueryPattern::Not {
+                            patterns: vec![QueryPattern::Value {
+                                comparator: ValueComparator::Equal,
+                                left: QueryOperand::Binding {
+                                    binding: binding_id(2),
+                                },
+                                right: QueryOperand::Literal {
+                                    value: CanonicalValue::String(
+                                        CanonicalString::new("blocked").expect("literal"),
+                                    ),
+                                },
+                            }],
+                        },
+                    ],
+                ],
+            }],
+        }],
+        QueryOutput::Rows {
+            columns: vec![binding_id(0)],
+        },
+        managed.managed_semantic_schema().clone(),
+    )
+    .expect("disjunction plan");
+    let validated = validate_query_plan(
+        &plan,
+        &MigrationAssertionValidationContext::new(&resolved, &managed),
+        StructuralLimits::CANONICAL,
+    )
+    .expect("validated disjunction");
+    let invocation =
+        QueryInvocation::new(&plan, QueryOperation::Rows, Vec::new()).expect("invocation");
+    let lowered = lower_validated_query(&validated, &invocation).expect("lowered disjunction");
+
+    assert_eq!(
+        lowered.typeql(),
+        "match\n\
+         {\n\
+         \x20   $person isa! person;\n\
+         \x20   $person has name $left_name;\n\
+         \x20   $left_name isa! name;\n\
+         }\n\
+         or {\n\
+         \x20   $person isa! person;\n\
+         \x20   $person has name $right_name;\n\
+         \x20   $right_name isa! name;\n\
+         \x20   not {\n\
+         \x20       $right_name == \"blocked\";\n\
+         \x20   };\n\
+         };\n\
+         select $person;\n",
     );
 }

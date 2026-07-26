@@ -61,6 +61,14 @@ test("public loadNative snapshots every V2 byte input before N-API", async (cont
       return Promise.resolve("decoded");
     },
   };
+  const rawModelContext = Object.freeze({});
+  const rawModelPending = {
+    requestBytes: (): Uint8Array => Buffer.from([0x52]),
+    decodeReply: (response: Uint8Array): Promise<object> => {
+      captured.set("decodeModelReply", [response]);
+      return Promise.resolve(Object.freeze({}));
+    },
+  };
   const authority = Object.freeze({});
   raw["queryV2Authority"] = remember("queryV2Authority", [0], authority);
   raw["queryV2QueryOnlyAuthority"] = remember(
@@ -82,6 +90,16 @@ test("public loadNative snapshots every V2 byte input before N-API", async (cont
     "queryV2PrepareRemote",
     [1, 3],
     rawPending,
+  );
+  raw["queryV2RemoteModelContext"] = remember(
+    "queryV2RemoteModelContext",
+    [1],
+    rawModelContext,
+  );
+  raw["queryV2PrepareRemoteModelRows"] = remember(
+    "queryV2PrepareRemoteModelRows",
+    [],
+    rawModelPending,
   );
   context.after(() => {
     for (const [name, original] of originals) {
@@ -149,6 +167,40 @@ test("public loadNative snapshots every V2 byte input before N-API", async (cont
   assert.equal(await pending.decodeReply(reply), "decoded");
   assertDetachedSnapshot(captured.get("decodeReply")![0], reply, [19, 20, 21]);
 
+  const modelAdvertisement = sharedBytes([22, 23, 24]);
+  const modelContext = native["queryV2RemoteModelContext"](
+    authority,
+    modelAdvertisement,
+    1n,
+    1n,
+    1n,
+    1n,
+    1n,
+    1n,
+    null,
+  );
+  assert.equal(modelContext, rawModelContext);
+  assertDetachedSnapshot(
+    captured.get("queryV2RemoteModelContext")![0],
+    modelAdvertisement,
+    [22, 23, 24],
+  );
+  const modelPending = native["queryV2PrepareRemoteModelRows"](
+    {},
+    modelContext,
+    [],
+    0n,
+    1n,
+    "exactly_one",
+  ) as { decodeReply(response: Uint8Array): Promise<object> };
+  const modelReply = sharedBytes([25, 26, 27]);
+  assert.deepEqual(await modelPending.decodeReply(modelReply), {});
+  assertDetachedSnapshot(
+    captured.get("decodeModelReply")![0],
+    modelReply,
+    [25, 26, 27],
+  );
+
   const failingPending = native["queryV2PrepareRemote"](
     authority,
     remotePlan,
@@ -171,11 +223,11 @@ test("public loadNative snapshots every V2 byte input before N-API", async (cont
 
   const descriptor = Object.getOwnPropertyDescriptor(native, "queryV2Authority");
   assert.notEqual(descriptor?.value, raw["queryV2Authority"]);
-  const reflectedDeclared = sharedBytes([22, 23, 24]);
+  const reflectedDeclared = sharedBytes([28, 29, 30]);
   (descriptor?.value as UnknownCall)(reflectedDeclared, "scope", "profile");
   assertDetachedSnapshot(
     captured.get("queryV2Authority")![0],
     reflectedDeclared,
-    [22, 23, 24],
+    [28, 29, 30],
   );
 });

@@ -157,11 +157,17 @@ queries must register constructors that JavaScript cannot discover with
 [typed-query guide](https://ds1sqe.github.io/type-bridge/guide/typed-queries/)
 for the complete contract and transaction rules.
 
-## Prepared V2 Execution
+## V2 Plan Authoring and Prepared Execution
 
-The package root also exposes the supported prepared-plan execution boundary.
-Plans are canonical bytes authored by the Rust V2 plan API; Node validates and
-executes those bytes but does not yet provide a plan-builder facade:
+The additive `./query-v2` subpath exposes `QueryPlanBuilder`,
+`AuthoredQueryPlan`, and `AuthoredQueryInvocation`. Every operation delegates
+to the shared Rust builder through opaque native handles; Node never assembles
+mutable plan JSON or owns a second validator. The `./typed` subpath also
+provides `RemoteQuerySession`, whose composition is synchronous and whose
+awaited terminal performs exactly one caller-owned exchange.
+
+The package root retains the lower-level prepared-plan execution boundary for
+canonical plan bytes:
 
 ```ts
 import {

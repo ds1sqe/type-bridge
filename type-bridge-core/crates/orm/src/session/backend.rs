@@ -789,8 +789,18 @@ pub trait DriverBackend: Send + Sync {
     ///
     /// Defaults to `None` for backends without a version gate (mocks, embedded
     /// test backends). The real TypeDB backend reports the version the connect
-    /// gate detected; it is `None` only on the band-7 gRPC fallback.
+    /// gate detected when that path produced authoritative identity evidence.
     fn server_version(&self) -> Option<type_bridge_core_lib::version::Version> {
+        None
+    }
+
+    /// Return the core-owned legacy-server notice for this connection.
+    ///
+    /// Custom backends default to no notice because they carry no TypeDB
+    /// version-gate provenance. The real backend reports known 3.8/3.10 and
+    /// unknown connections that actually negotiated the legacy band-7
+    /// fallback.
+    fn server_deprecation_notice(&self) -> Option<String> {
         None
     }
 
@@ -1132,14 +1142,22 @@ mod tests {
         let string_fetch = typed_literal_fetch(TypedLiteral::String("Alice".into()));
         let mut consumer = |_item| Ok(AnswerControl::Continue);
 
-        let mut older_band = TypedRouteTransaction::new(false);
-        older_band
-            .query_typed_bounded(&string_fetch, BoundedAnswerLimits::default(), &mut consumer)
-            .await
-            .unwrap();
-        assert_eq!(older_band.prepared.len(), 0);
-        assert_eq!(older_band.plain.len(), 1);
-        assert!(older_band.plain[0].contains("$f0 == \"Alice\""));
+        // Both retained legacy protocol bands use the same inline typed
+        // compiler route. The adapter's internal semantic-profile identity
+        // must never select 3.12-only `given` transport for either one.
+        for band in [7_u8, 8] {
+            let mut older_band = TypedRouteTransaction::new(false);
+            older_band
+                .query_typed_bounded(&string_fetch, BoundedAnswerLimits::default(), &mut consumer)
+                .await
+                .unwrap();
+            assert_eq!(older_band.prepared.len(), 0, "band {band}");
+            assert_eq!(older_band.plain.len(), 1, "band {band}");
+            assert!(
+                older_band.plain[0].contains("$f0 == \"Alice\""),
+                "band {band}"
+            );
+        }
 
         let mut band9 = TypedRouteTransaction::new(true);
         band9

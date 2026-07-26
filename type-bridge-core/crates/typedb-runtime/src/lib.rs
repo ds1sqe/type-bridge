@@ -873,6 +873,19 @@ fn trace_band7_fallback_connected(_address: &str) {
     );
 }
 
+fn server_deprecation_notice(
+    driver_band: u8,
+    server_version: Option<core_version::Version>,
+) -> Option<String> {
+    match server_version {
+        Some(server_version) => core_version::known_server_deprecation_notice(&server_version),
+        None if driver_band == 7 => {
+            Some(core_version::unknown_legacy_fallback_deprecation_notice())
+        }
+        None => None,
+    }
+}
+
 fn trace_runtime_connected(
     _address: &str,
     driver_band: u8,
@@ -892,6 +905,13 @@ fn trace_runtime_connected(
             server_version_known = false,
             "TypeDB runtime connected"
         ),
+    }
+    if let Some(notice) = server_deprecation_notice(driver_band, server_version) {
+        tracing::warn!(
+            code = core_version::TYPEDB_LEGACY_SERVER_DEPRECATION_CODE,
+            notice,
+            "TypeDB server compatibility is deprecated"
+        );
     }
 }
 
@@ -1206,9 +1226,9 @@ pub struct TypeDBRuntime {
     driver: Arc<DriverHandle>,
     /// The server version the connect gate detected, when it could.
     ///
-    /// `Some` on the exact-version, HTTP-probe, and band-8 gRPC-fallback
-    /// paths; `None` only on the band-7 gRPC fallback, where the server
-    /// does not report its version.
+    /// `Some` whenever the exact-version, HTTP-probe, or gRPC path produced an
+    /// authoritative identity. When it is `None`, the negotiated driver band
+    /// remains the authority for legacy-fallback classification.
     server_version: Option<core_version::Version>,
 }
 
@@ -1751,10 +1771,20 @@ impl TypeDBRuntime {
 
     /// The server version detected by the connect gate, when known.
     ///
-    /// `None` only when the connection was established through the band-7
-    /// gRPC fallback, which cannot report the server version.
+    /// When this is `None`, callers must use the negotiated driver band rather
+    /// than treating missing HTTP identity as evidence of a legacy server.
     pub fn server_version(&self) -> Option<core_version::Version> {
         self.server_version
+    }
+
+    /// Return the core-owned legacy-server notice for this connection.
+    ///
+    /// The notice is present for known TypeDB 3.8/3.10 servers and for the
+    /// unknown legacy-compatible fallback. TypeDB 3.11/3.12 connections
+    /// return `None`.
+    #[must_use]
+    pub fn server_deprecation_notice(&self) -> Option<String> {
+        server_deprecation_notice(self.driver.band(), self.server_version)
     }
 
     /// Return whether the connection actually negotiated a driver that can
@@ -3889,6 +3919,65 @@ mod tests {
         assert!(
             output.contains(TRACE_CODE_BAND7_FALLBACK_CONNECTED),
             "{output}"
+        );
+    }
+
+    #[test]
+    fn legacy_server_trace_is_exactly_one_filterable_notice_per_connection() {
+        for server_version in [
+            Some(core_version::Version::new(3, 8, 3)),
+            Some(core_version::Version::new(3, 10, 4)),
+            None,
+        ] {
+            let output = capture_traces(|| trace_runtime_connected("redacted", 7, server_version));
+            assert_eq!(
+                output
+                    .matches(core_version::TYPEDB_LEGACY_SERVER_DEPRECATION_CODE)
+                    .count(),
+                1,
+                "{output}"
+            );
+            assert!(output.contains("3.0.0"), "{output}");
+            assert!(!output.contains("driver band"), "{output}");
+        }
+    }
+
+    #[test]
+    fn current_server_trace_has_no_legacy_deprecation_notice() {
+        for (driver_band, server_version) in [
+            (8, Some(core_version::Version::new(3, 11, 5))),
+            (9, Some(core_version::Version::new(3, 12, 1))),
+            // A 3.12 server may retain the validated band-8 fallback after
+            // discovery. Classification keys on the known server line, not
+            // the negotiated driver band.
+            (8, Some(core_version::Version::new(3, 12, 1))),
+            // A missing HTTP identity is not itself legacy evidence. Only an
+            // actually negotiated band-7 path gets the conservative fallback
+            // notice; current negotiated bands stay silent.
+            (8, None),
+            (9, None),
+        ] {
+            let output =
+                capture_traces(|| trace_runtime_connected("redacted", driver_band, server_version));
+            assert!(
+                !output.contains(core_version::TYPEDB_LEGACY_SERVER_DEPRECATION_CODE),
+                "{output}"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_server_notice_is_keyed_to_the_negotiated_legacy_band() {
+        let legacy = server_deprecation_notice(7, None).expect("unknown band-7 notice");
+        assert_eq!(
+            legacy,
+            core_version::unknown_legacy_fallback_deprecation_notice()
+        );
+        assert_eq!(server_deprecation_notice(8, None), None);
+        assert_eq!(server_deprecation_notice(9, None), None);
+        assert_eq!(
+            server_deprecation_notice(8, Some(core_version::Version::new(3, 12, 1))),
+            None
         );
     }
 

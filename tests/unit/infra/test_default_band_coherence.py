@@ -277,6 +277,37 @@ class TestDefaultBandCoherence:
                     f"regression must force HTTP failure with http-port: 1 and "
                     f"expect success with expect: ok"
                 )
+                assert "expect-warning: legacy" in cell_block, (
+                    f"ci.yml job '{gate_job}' cell {cell_name!r}: the live "
+                    "unknown-version band-7 fallback must assert exactly one "
+                    "filterable legacy-server warning"
+                )
+
+    def test_python_live_matrix_asserts_legacy_warning_by_server_line(self):
+        """The live Python matrix owns the expected warning count independently."""
+        workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text()
+        header = re.search(r"^  test-integration:\n", workflow, re.MULTILINE)
+        assert header is not None
+        next_job = re.search(r"^  [a-z][a-z0-9-]*:\n", workflow[header.end() :], re.MULTILINE)
+        end = header.end() + next_job.start() if next_job is not None else len(workflow)
+        block = workflow[header.start() : end]
+
+        expected = {
+            ("3.8.3", "3.10.0", "1"),
+            ("3.10.4", "3.10.0", "1"),
+            ("3.11.5", "3.11.5", "0"),
+            ("3.12.1", "3.12.1", "0"),
+        }
+        actual = set(
+            re.findall(
+                r'- typedb-server: "typedb/typedb:([\d.]+)"\n'
+                r'\s+python-driver: "([\d.]+)"\n'
+                r'\s+legacy-warning: "([01])"',
+                block,
+            )
+        )
+        assert actual == expected
+        assert "TYPE_BRIDGE_EXPECT_LEGACY_WARNING: ${{ matrix.legacy-warning }}" in block
 
     def test_dev_pin_matches_embedded_line(self):
         """The CPython 3.12–3.13 dev pin matches the embedded driver's minor line."""

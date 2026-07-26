@@ -203,7 +203,7 @@ impl TransactionContext {
         limits: MatchExecutionLimits,
     ) -> Result<ValidatedMatchResult> {
         SelectedResultExecutor::new(registry, self.match_capabilities.clone(), limits)
-            .execute_borrowed(self, validated)
+            .execute_compatible_borrowed(self, validated)
             .await
     }
 }

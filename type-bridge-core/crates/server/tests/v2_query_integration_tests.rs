@@ -3,6 +3,7 @@
 //! The V2 route test executes against a live TypeDB (TYPEDB_ADDRESS /
 //! TYPEDB_HTTP_PORT); run it explicitly with `-- --ignored`.
 
+use std::collections::BTreeMap;
 use std::fs::File;
 use std::net::{Ipv4Addr, SocketAddrV4, TcpListener};
 use std::process::{Child, Command, Stdio};
@@ -24,9 +25,8 @@ use type_bridge_contract::managed_scope::ManagedScopeId;
 use type_bridge_contract::migration_assertion::{AssertionBinding, BindingId, QueryVariable};
 use type_bridge_contract::query_plan::{
     OrderDirection, OrderTerm, QueryInvocation, QueryOperation, QueryOutput, QueryPattern,
-    QueryPlan, ReadStage,
+    QueryPlan, ReadStage, query_plan_v2_capability_vocabulary,
 };
-use type_bridge_contract::query_plan_capability_vocabulary;
 use type_bridge_contract::query_remote::{RemoteCapabilities, RemoteLimits};
 use type_bridge_contract::schema::{
     DeclaredSchema, DocumentId, OwnsFact, OwnsFactId, SchemaFact, SourceSpan, SourcedSchemaFact,
@@ -382,6 +382,74 @@ async fn wait_for_production_health(
     }
 }
 
+struct ProductionV1RouteSnapshot {
+    method: reqwest::Method,
+    path: &'static str,
+    request_body: Option<&'static [u8]>,
+    status: reqwest::StatusCode,
+    response_body: &'static [u8],
+}
+
+async fn assert_production_v1_route_snapshot(
+    client: &reqwest::Client,
+    base_url: &str,
+    snapshot: ProductionV1RouteSnapshot,
+) {
+    let method = snapshot.method.as_str().to_owned();
+    let mut request = client.request(snapshot.method, format!("{base_url}{}", snapshot.path));
+    if let Some(body) = snapshot.request_body {
+        request = request
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(body);
+    }
+    let response = request.send().await.expect("production V1 response");
+    assert_eq!(
+        response.status(),
+        snapshot.status,
+        "{method} {} status",
+        snapshot.path,
+    );
+    let mut actual_headers = response
+        .headers()
+        .iter()
+        .map(|(name, value)| {
+            (
+                name.as_str().to_owned(),
+                value
+                    .to_str()
+                    .expect("production V1 response header is ASCII")
+                    .to_owned(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let date = actual_headers
+        .remove("date")
+        .expect("production HTTP transport retains its released Date header");
+    assert_eq!(date.len(), 29, "released Date header wire width");
+    assert!(date.ends_with(" GMT"), "released Date header timezone");
+    chrono::DateTime::parse_from_rfc2822(&date)
+        .expect("production Date header remains an RFC 2822 timestamp");
+    let expected_headers = BTreeMap::from([
+        (
+            "content-length".to_owned(),
+            snapshot.response_body.len().to_string(),
+        ),
+        ("content-type".to_owned(), "application/json".to_owned()),
+    ]);
+    assert_eq!(
+        actual_headers, expected_headers,
+        "{method} {} released headers",
+        snapshot.path,
+    );
+    let body = response.bytes().await.expect("production V1 response body");
+    assert_eq!(
+        body.as_ref(),
+        snapshot.response_body,
+        "{method} {} released body",
+        snapshot.path,
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires a live TypeDB (TYPEDB_ADDRESS / TYPEDB_HTTP_PORT)"]
 async fn v2_envelope_endpoints_serve_beside_v1() {
@@ -399,7 +467,7 @@ async fn v2_envelope_endpoints_serve_beside_v1() {
 
     let state = Arc::new(
         V2QueryState::new_query_only(
-            query_plan_capability_vocabulary(),
+            query_plan_v2_capability_vocabulary(),
             QueryV2AnswerLimits::default(),
             database,
             declared,
@@ -424,7 +492,7 @@ async fn v2_envelope_endpoints_serve_beside_v1() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
 
-    // Negotiation: the executor advertises the first vocabulary.
+    // Negotiation: the executor advertises the complete V2 vocabulary.
     let response = router
         .clone()
         .oneshot(
@@ -438,6 +506,9 @@ async fn v2_envelope_endpoints_serve_beside_v1() {
     assert_eq!(response.status(), StatusCode::OK);
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     let advertised = RemoteCapabilities::decode(&bytes).expect("advertisement");
+    for capability in query_plan_v2_capability_vocabulary().iter() {
+        assert!(advertised.capabilities().contains(capability));
+    }
     for capability in plan.required_capabilities().iter() {
         assert!(advertised.capabilities().contains(capability));
     }
@@ -590,15 +661,51 @@ async fn production_binary_serves_v1_health_and_v2_query() {
         .build()
         .expect("bounded HTTP client");
     let base_url = format!("http://127.0.0.1:{port}");
-    let health = wait_for_production_health(&mut server, &client, &base_url).await;
-    assert_eq!(health["status"], "ok");
-    assert_eq!(health["typedb_connected"], true);
-    assert!(health["version"].is_string(), "V1 health version: {health}");
-    assert_eq!(
-        health.as_object().map(serde_json::Map::len),
-        Some(3),
-        "retained V1 health response shape changed: {health}"
-    );
+    wait_for_production_health(&mut server, &client, &base_url).await;
+    const QUERY_FAILURE: &[u8] = br#"{"status":"error","error":{"code":"QUERY_EXECUTION_ERROR","message":"Query execution error: Unknown transaction type: v1-wire-probe"}}"#;
+    const SCHEMA_FAILURE: &[u8] = br#"{"status":"error","error":{"code":"SCHEMA_ERROR","message":"Schema error: No schema loaded"}}"#;
+    let v1_snapshots = [
+        ProductionV1RouteSnapshot {
+            method: reqwest::Method::GET,
+            path: "/health",
+            request_body: None,
+            status: reqwest::StatusCode::OK,
+            response_body: br#"{"status":"ok","version":"1.5.11","typedb_connected":true}"#,
+        },
+        ProductionV1RouteSnapshot {
+            method: reqwest::Method::POST,
+            path: "/query",
+            request_body: Some(br#"{"transaction_type":"v1-wire-probe","clauses":[]}"#),
+            status: reqwest::StatusCode::BAD_REQUEST,
+            response_body: QUERY_FAILURE,
+        },
+        ProductionV1RouteSnapshot {
+            method: reqwest::Method::POST,
+            path: "/query/raw",
+            request_body: Some(
+                br#"{"transaction_type":"v1-wire-probe","query":"match $p isa person; fetch { \"person\": { $p.* } };"}"#,
+            ),
+            status: reqwest::StatusCode::BAD_REQUEST,
+            response_body: QUERY_FAILURE,
+        },
+        ProductionV1RouteSnapshot {
+            method: reqwest::Method::POST,
+            path: "/query/validate",
+            request_body: Some(br#"{"clauses":[]}"#),
+            status: reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+            response_body: SCHEMA_FAILURE,
+        },
+        ProductionV1RouteSnapshot {
+            method: reqwest::Method::GET,
+            path: "/schema",
+            request_body: None,
+            status: reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+            response_body: SCHEMA_FAILURE,
+        },
+    ];
+    for snapshot in v1_snapshots {
+        assert_production_v1_route_snapshot(&client, &base_url, snapshot).await;
+    }
 
     let response = client
         .get(format!("{base_url}/v2/capabilities"))
@@ -614,6 +721,9 @@ async fn production_binary_serves_v1_health_and_v2_query() {
             .expect("production capabilities body"),
     )
     .expect("production capability advertisement");
+    for capability in query_plan_v2_capability_vocabulary().iter() {
+        assert!(advertised.capabilities().contains(capability));
+    }
     for capability in plan.required_capabilities().iter() {
         assert!(advertised.capabilities().contains(capability));
     }

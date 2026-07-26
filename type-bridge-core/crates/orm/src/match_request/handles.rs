@@ -10,7 +10,7 @@ use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::descriptor::TypeDescriptorRef;
+use crate::descriptor::{RoleDescriptor, TypeDescriptorRef};
 use crate::error::{OrmError, Result};
 use crate::registry::DescriptorRegistry;
 use crate::value::AttributeValue;
@@ -20,7 +20,7 @@ use super::ids::{
     BindingId, BoundFieldId, DescriptorId, FieldId, RoleEdgeId, RoleId, SessionBindingToken,
     SessionId,
 };
-use super::limits::MAX_SELECTED_SLOTS;
+use super::limits::{MAX_PREDICATE_DEPTH, MAX_PREDICATE_NODES, MAX_SELECTED_SLOTS};
 use super::model::{
     BindingPair, ComparisonOp, FetchShape, FetchSlot, MatchBinding, MatchExpr, MatchMode,
     MatchOperation, MatchOrder, MatchPlan, MatchRequest, MissingOrder, NamedFetchSlot,
@@ -109,6 +109,79 @@ impl SessionHandle {
     /// Create a fresh subtype-inclusive binding for a registered descriptor.
     pub fn subtypes(&self, type_name: &str) -> Result<BindingHandle> {
         self.binding(type_name, MatchMode::Subtypes)
+    }
+
+    /// Require a finite directed walk between two session-owned bindings.
+    ///
+    /// The walk uses `role_from -> role_to` on the exact relation type for
+    /// every hop. Bounds are inclusive; a zero-hop branch requires exact
+    /// source/target identity. Intermediate vertices are existential and are
+    /// not exposed through the query shape.
+    #[allow(clippy::too_many_arguments)]
+    pub fn reachable(
+        &self,
+        relation_type: &str,
+        role_from: &str,
+        role_to: &str,
+        source: &BindingHandle,
+        target: &BindingHandle,
+        min_depth: u8,
+        max_depth: u8,
+    ) -> Result<PredicateHandle> {
+        self.require_session(source.session_id())?;
+        self.require_session(target.session_id())?;
+        validate_reachability_bounds(min_depth, max_depth)?;
+
+        let relation_id = self
+            .0
+            .registry
+            .descriptor_id(relation_type)
+            .ok_or_else(|| {
+                handle_error(
+                    "unknown_descriptor",
+                    format!("descriptor '{relation_type}' is not registered in this session"),
+                )
+            })?;
+        let relation = match self.0.registry.get(relation_type) {
+            Some(TypeDescriptorRef::Relation(relation)) => relation,
+            Some(TypeDescriptorRef::Entity(_)) => {
+                return Err(handle_error(
+                    "reachable_relation_not_relation",
+                    format!(
+                        "bounded reachability relation '{relation_type}' is not a relation descriptor"
+                    ),
+                ));
+            }
+            None => {
+                return Err(handle_error(
+                    "unknown_descriptor",
+                    format!("descriptor '{relation_type}' is not registered in this session"),
+                ));
+            }
+        };
+        let role_from_id = resolve_reachability_role(&self.0.registry, &relation_id, role_from)?;
+        let role_to_id = resolve_reachability_role(&self.0.registry, &relation_id, role_to)?;
+        let from_descriptor = relation
+            .role(&role_from_id.name)
+            .expect("registry-resolved role remains present");
+        let to_descriptor = relation
+            .role(&role_to_id.name)
+            .expect("registry-resolved role remains present");
+        require_reachable_endpoint(&self.0.registry, source, from_descriptor, "source")?;
+        require_reachable_endpoint(&self.0.registry, target, to_descriptor, "target")?;
+
+        Ok(PredicateHandle::new(
+            self.0.id,
+            HandleExpr::Reachable {
+                relation: relation_id,
+                role_from: role_from_id,
+                role_to: role_to_id,
+                source: source.token(),
+                target: target.token(),
+                min_depth,
+                max_depth,
+            },
+        ))
     }
 
     /// Create a positional public output shape.
@@ -269,6 +342,80 @@ fn validate_shape_arity(count: usize) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+fn validate_reachability_bounds(min_depth: u8, max_depth: u8) -> Result<()> {
+    if min_depth > max_depth {
+        return Err(handle_error(
+            "reachable_bounds",
+            "reachability minimum depth must not exceed its maximum depth",
+        ));
+    }
+    if usize::from(max_depth) > MAX_PREDICATE_DEPTH {
+        return Err(handle_error(
+            "reachable_depth_limit",
+            "reachability maximum depth exceeds the canonical predicate-depth ceiling",
+        ));
+    }
+    let expanded = reachability_expanded_clauses(min_depth, max_depth);
+    if expanded > MAX_PREDICATE_NODES {
+        return Err(handle_error(
+            "reachable_expansion_limit",
+            "reachability expansion exceeds the canonical predicate-node ceiling",
+        ));
+    }
+    Ok(())
+}
+
+fn reachability_expanded_clauses(min_depth: u8, max_depth: u8) -> usize {
+    let first_positive = usize::from(min_depth.max(1));
+    let maximum = usize::from(max_depth);
+    let positive_hops = if first_positive <= maximum {
+        (first_positive..=maximum).fold(0_usize, usize::saturating_add)
+    } else {
+        0
+    };
+    positive_hops.saturating_add(usize::from(min_depth == 0))
+}
+
+fn resolve_reachability_role(
+    registry: &DescriptorRegistry,
+    relation: &DescriptorId,
+    role_name: &str,
+) -> Result<RoleId> {
+    registry.role_id(relation, role_name).ok_or_else(|| {
+        handle_error(
+            "unknown_role",
+            format!("relation descriptor '{relation}' has no registered role '{role_name}'"),
+        )
+    })
+}
+
+fn require_reachable_endpoint(
+    registry: &DescriptorRegistry,
+    binding: &BindingHandle,
+    role: &RoleDescriptor,
+    endpoint: &str,
+) -> Result<()> {
+    let compatible = role.player_type_names.iter().any(|allowed_name| {
+        let Some(allowed) = registry.descriptor_id(allowed_name) else {
+            return false;
+        };
+        registry.is_same_or_subtype(&binding.0.descriptor_id, &allowed)
+            || (binding.0.match_mode == MatchMode::Subtypes
+                && registry.is_same_or_subtype(&allowed, &binding.0.descriptor_id))
+    });
+    if compatible {
+        Ok(())
+    } else {
+        Err(handle_error(
+            "incompatible_reachable_endpoint",
+            format!(
+                "reachability {endpoint} binding '{}' cannot play role '{}'",
+                binding.0.descriptor_id, role.role_name
+            ),
+        ))
+    }
 }
 
 impl fmt::Debug for SessionHandle {
@@ -618,6 +765,15 @@ enum HandleExpr {
         role: RoleId,
         player: SessionBindingToken,
     },
+    Reachable {
+        relation: DescriptorId,
+        role_from: RoleId,
+        role_to: RoleId,
+        source: SessionBindingToken,
+        target: SessionBindingToken,
+        min_depth: u8,
+        max_depth: u8,
+    },
     And(Vec<Arc<HandleExpr>>),
     Or(Vec<Arc<HandleExpr>>),
     Not(Arc<HandleExpr>),
@@ -694,6 +850,10 @@ fn collect_expr_bindings(expression: &HandleExpr, bindings: &mut BTreeSet<Sessio
         } => {
             bindings.insert(*relation);
             bindings.insert(*player);
+        }
+        HandleExpr::Reachable { source, target, .. } => {
+            bindings.insert(*source);
+            bindings.insert(*target);
         }
         HandleExpr::And(expressions) | HandleExpr::Or(expressions) => {
             for expression in expressions {
@@ -1217,6 +1377,23 @@ fn lower_expression(
                 player: lookup_binding_id(*player, binding_ids)?,
             })
         }
+        HandleExpr::Reachable {
+            relation,
+            role_from,
+            role_to,
+            source,
+            target,
+            min_depth,
+            max_depth,
+        } => Ok(MatchExpr::Reachable {
+            relation: relation.clone(),
+            role_from: role_from.clone(),
+            role_to: role_to.clone(),
+            source: lookup_binding_id(*source, binding_ids)?,
+            target: lookup_binding_id(*target, binding_ids)?,
+            min_depth: *min_depth,
+            max_depth: *max_depth,
+        }),
         HandleExpr::And(expressions) => Ok(MatchExpr::And {
             expressions: expressions
                 .iter()

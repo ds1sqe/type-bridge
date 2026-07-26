@@ -88,6 +88,14 @@ pub const MAX_COLLECTION_ORDER_TERMS: usize = 64;
 pub const MAX_INPUT_ROWS: usize = 4_096;
 /// Maximum encoded bytes across one invocation's input-row batch: 4 MiB.
 pub const MAX_INPUT_BYTES: usize = 4 * 1024 * 1024;
+/// Maximum canonical bytes in one complete plan-bound query invocation.
+///
+/// The owning wire object adds 234 fixed bytes around the independently
+/// bounded input-row batch: the `inputs` key, the longest operation spelling
+/// (`exists`), and the fixed-domain query-plan fingerprint. Contract tests
+/// construct an invocation whose input batch is exactly [`MAX_INPUT_BYTES`]
+/// and prove that this ceiling is both attainable and one-byte tight.
+pub const MAX_QUERY_INVOCATION_BYTES: usize = MAX_INPUT_BYTES + 234;
 /// Maximum UTF-8 bytes in one output or query-variable name.
 pub const MAX_OUTPUT_NAME_BYTES: usize = 128;
 /// Maximum UTF-8 bytes in one serialized semantic identity.

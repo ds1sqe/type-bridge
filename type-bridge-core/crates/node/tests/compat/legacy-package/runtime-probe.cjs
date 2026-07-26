@@ -8,6 +8,7 @@ const expectedPackageRoot = fs.realpathSync(process.env.TYPE_BRIDGE_EXPECTED_PAC
 const sourcePackageRoot = fs.realpathSync(process.env.TYPE_BRIDGE_SOURCE_PACKAGE_ROOT);
 const resolvedEntry = fs.realpathSync(require.resolve("@type-bridge/node"));
 const resolvedTypedEntry = fs.realpathSync(require.resolve("@type-bridge/node/typed"));
+const resolvedQueryV2Entry = fs.realpathSync(require.resolve("@type-bridge/node/query-v2"));
 const resolvedRuntimeProjectionEntry = fs.realpathSync(
   require.resolve("@type-bridge/node/runtime-projection"),
 );
@@ -32,6 +33,14 @@ assert.ok(
 assert.ok(
   !isWithin(resolvedTypedEntry, sourcePackageRoot),
   `typed import leaked to the source package: ${resolvedTypedEntry}`,
+);
+assert.ok(
+  isWithin(resolvedQueryV2Entry, expectedPackageRoot),
+  `query-v2 import escaped the packed install: ${resolvedQueryV2Entry}`,
+);
+assert.ok(
+  !isWithin(resolvedQueryV2Entry, sourcePackageRoot),
+  `query-v2 import leaked to the source package: ${resolvedQueryV2Entry}`,
 );
 assert.ok(
   isWithin(resolvedRuntimeProjectionEntry, expectedPackageRoot),
@@ -59,6 +68,7 @@ assert.equal(
 
 const typeBridge = require("@type-bridge/node");
 const typedBridge = require("@type-bridge/node/typed");
+const queryV2 = require("@type-bridge/node/query-v2");
 const runtimeProjection = require("@type-bridge/node/runtime-projection");
 assert.equal(typeof typeBridge.TypedQuery, "function", "root TypedQuery export must load");
 assert.equal(typeof typeBridge.Entity, "function", "root model export must load");
@@ -70,6 +80,16 @@ assert.equal(
 );
 assert.equal(typeof typedBridge.QuerySession, "function", "typed QuerySession export must load");
 assert.equal(typeof typedBridge.references, "function", "typed references export must load");
+assert.deepEqual(
+  Object.keys(queryV2).sort(),
+  [
+    "AuthoredQueryInvocation",
+    "AuthoredQueryPlan",
+    "QueryPlanBuilder",
+    "QueryV2Authority",
+  ],
+  "packed query-v2 subpath must expose exactly the frozen authoring values",
+);
 assert.equal(
   typeof runtimeProjection.installRuntimeProjection,
   "function",
@@ -80,8 +100,8 @@ const installedManifest = JSON.parse(
 );
 assert.deepEqual(
   Object.keys(installedManifest.exports),
-  [".", "./typed", "./runtime-projection"],
-  "packed artifact must preserve the legacy root and publish both additive subpaths",
+  [".", "./typed", "./query-v2", "./runtime-projection"],
+  "packed artifact must preserve the legacy root and publish all additive subpaths",
 );
 assert.deepEqual(
   installedManifest.exports["."],
@@ -100,6 +120,15 @@ assert.deepEqual(
     default: "./dist/typed/index.js",
   },
   "typed export must resolve only to packed dist artifacts",
+);
+assert.deepEqual(
+  installedManifest.exports["./query-v2"],
+  {
+    types: "./dist/query-v2.d.ts",
+    require: "./dist/query-v2.js",
+    default: "./dist/query-v2.js",
+  },
+  "query-v2 export must resolve only to packed dist artifacts",
 );
 assert.deepEqual(
   installedManifest.exports["./runtime-projection"],

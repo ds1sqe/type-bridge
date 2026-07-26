@@ -286,10 +286,32 @@ const database = process.env.TYPE_BRIDGE_PARITY_DATABASE ?? "type_bridge_test";
 const username = process.env.TYPEDB_USERNAME ?? "admin";
 const password = process.env.TYPEDB_PASSWORD ?? "password";
 const httpPort = Number(process.env.TYPEDB_HTTP_PORT ?? "8000");
-const db = typeBridge.RustDatabase.connect(address, database, {
-  username,
-  password,
-  httpPort,
-});
+const legacyNotices = [];
+const originalEmitWarning = process.emitWarning;
+process.emitWarning = (warning, options) => {
+  const structured = options != null && typeof options === "object" ? options : {};
+  legacyNotices.push({
+    message: warning instanceof Error ? warning.message : String(warning),
+    type: typeof structured.type === "string" ? structured.type : null,
+    code: typeof structured.code === "string" ? structured.code : null,
+  });
+};
 
-process.stdout.write(JSON.stringify({ artifact: "packed", summary: summarize(db) }));
+let db;
+try {
+  db = typeBridge.RustDatabase.connect(address, database, {
+    username,
+    password,
+    httpPort,
+  });
+} finally {
+  process.emitWarning = originalEmitWarning;
+}
+
+process.stdout.write(
+  JSON.stringify({
+    artifact: "packed",
+    legacy_notices: legacyNotices,
+    summary: summarize(db),
+  }),
+);

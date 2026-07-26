@@ -300,6 +300,7 @@ run_step "pytest tests/unit/" \
 printf "${BOLD}━━━ Node (build + offline) ━━━${RESET}\n\n"
 run_step "npm ci"            bash -c "cd '$NODE_DIR' && npm ci"
 run_step "npm run build"     bash -c "cd '$NODE_DIR' && npm run build"
+run_step "npm run scope:probe" bash -c "cd '$NODE_DIR' && npm run scope:probe"
 run_step "npm run test:unit" bash -c "cd '$NODE_DIR' && npm run test:unit"
 run_step "npm run test:dts"  bash -c "cd '$NODE_DIR' && npm run test:dts"
 run_step "npm run dts:parity" bash -c "cd '$NODE_DIR' && npm run dts:parity"
@@ -439,6 +440,18 @@ run_tls_transport_steps() {
             tests/integration/queries/test_query_v2_binding_smoke.py::test_prepared_plan_executes_locally_and_remotely \
             -m integration --tb=short -q
 
+    run_step "TLS Python and packed Node remote model parity" \
+        timeout --foreground 10m \
+        env TYPEDB_TLS_ADDRESS="$tls_address" \
+            TYPEDB_TLS_HTTP_PORT="$tls_http_port" \
+            TYPEDB_TLS_ROOT_CA="$tls_root_ca" \
+            SMOKE_TLS_CERT="$fixture_server_cert" \
+            SMOKE_TLS_KEY="$fixture_server_key" \
+            SMOKE_TLS_ROOT_CA="$fixture_root_ca" \
+        uv run pytest \
+            tests/integration/queries/test_remote_query_session_parity.py::test_public_remote_query_session_matches_direct_subtype_hydration \
+            -m integration --tb=short -q
+
     run_step "TLS Node local query + HTTPS remote envelope" \
         timeout --foreground 10m \
         env TYPE_BRIDGE_NODE_NATIVE_PATH="$node_native" \
@@ -450,6 +463,18 @@ run_tls_transport_steps() {
             NODE_EXTRA_CA_CERTS="$fixture_root_ca" \
         node --test \
             "$NODE_DIR/tests/integration/queries/query-v2-smoke.test.ts"
+
+    run_step "TLS Node remote model subtype hydration" \
+        timeout --foreground 10m \
+        env TYPE_BRIDGE_NODE_NATIVE_PATH="$node_native" \
+            TYPEDB_TLS_ADDRESS="$tls_address" \
+            TYPEDB_TLS_HTTP_PORT="$tls_http_port" \
+            TYPEDB_TLS_ROOT_CA="$tls_root_ca" \
+            SMOKE_TLS_CERT="$fixture_server_cert" \
+            SMOKE_TLS_KEY="$fixture_server_key" \
+            NODE_EXTRA_CA_CERTS="$fixture_root_ca" \
+        node --test \
+            "$NODE_DIR/tests/integration/queries/typed-remote-query-parity.test.ts"
 }
 
 if [[ "$tls" == 1 ]]; then

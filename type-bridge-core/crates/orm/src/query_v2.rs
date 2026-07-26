@@ -9,7 +9,7 @@
 use std::fmt::Write as _;
 
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
-use type_bridge_contract::limits::MAX_CANONICAL_COLLECTION_LEN;
+use type_bridge_contract::limits::{MAX_CANONICAL_BYTES, MAX_CANONICAL_COLLECTION_LEN};
 use type_bridge_contract::migration_assertion::BindingId;
 use type_bridge_contract::query_plan::{
     InputRow, QueryInvocation, QueryOperand, QueryOperation, QueryOutput, QueryPattern, QueryPlan,
@@ -20,6 +20,11 @@ use type_bridge_query::{
 };
 
 use crate::migration_assertion::{render_comparator, render_literal};
+
+pub(crate) use crate::query_v2_model::{
+    execute_validated_model_query, execute_validated_model_query_borrowed,
+    execute_validated_model_query_with_statement_limit,
+};
 
 /// Exact provider text and typed shape for one lowered invocation.
 #[derive(Clone, Debug, PartialEq)]
@@ -78,7 +83,26 @@ fn lower_validated_query_with_execution_limits(
     max_provider_items: Option<u64>,
 ) -> Result<LoweredQuery, Diagnostic> {
     let plan = validated.plan();
+    preflight_lowered_structure(validated)?;
     preflight_invocation_transport(plan, invocation)?;
+    if let Some(compatibility) = crate::query_v2_compatibility::lower_validated_compatibility_query(
+        validated,
+        invocation.operation(),
+    )? {
+        if compatibility.typeql().len() > MAX_CANONICAL_BYTES {
+            return Err(failure(
+                DiagnosticCategory::ResourceLimit,
+                "query_v2_lowered_typeql_byte_limit",
+                "lowered TypeQL exceeds the canonical protocol byte ceiling",
+            ));
+        }
+        return Ok(LoweredQuery {
+            given: None,
+            operation: compatibility.operation(),
+            output_schema: validated.output_schema().clone(),
+            typeql: compatibility.typeql().to_owned(),
+        });
+    }
     let (row, given) = match invocation.inputs() {
         [] => (None, None),
         [row] if !invocation_requires_given(invocation) => (Some(row), None),
@@ -119,6 +143,7 @@ fn lower_validated_query_with_execution_limits(
             function.body(),
             None,
             0,
+            None,
         )?;
         let keyword = match function.returns().reducer() {
             type_bridge_contract::query_plan::Reducer::Count => "count",
@@ -160,7 +185,7 @@ fn lower_validated_query_with_execution_limits(
             "a validated plan always opens with its match stage",
         ));
     };
-    render_patterns(&mut typeql, plan, patterns, row, 0)?;
+    render_patterns(&mut typeql, validated, patterns, row, 0)?;
 
     // Reachable is an existential predicate over the declared root
     // environment, not a request for one row per proof path. TypeQL distinct
@@ -341,12 +366,134 @@ fn lower_validated_query_with_execution_limits(
         typeql.push_str("};\n");
     }
 
+    if typeql.len() > MAX_CANONICAL_BYTES {
+        return Err(failure(
+            DiagnosticCategory::ResourceLimit,
+            "query_v2_lowered_typeql_byte_limit",
+            "lowered TypeQL exceeds the canonical protocol byte ceiling",
+        ));
+    }
+
     Ok(LoweredQuery {
         given,
         operation: invocation.operation(),
         output_schema: validated.output_schema().clone(),
         typeql,
     })
+}
+
+/// Charge schema-refined reachability lowering against the validated plan's
+/// aggregate predicate-node budget before any provider call.
+///
+/// Context-free plan validation charges one clause for a zero-hop identity.
+/// TypeDB's mixed identity/relation planner workaround instead emits one exact
+/// typed identity branch per concrete source-domain type, so that
+/// schema-dependent multiplicity must be charged after schema validation.
+fn preflight_lowered_structure(validated: &ValidatedQuery) -> Result<(), Diagnostic> {
+    let plan = validated.plan();
+    let mut nodes = 0usize;
+    for function in plan.functions() {
+        for pattern in function.body() {
+            charge_lowered_pattern(validated, pattern, &mut nodes)?;
+        }
+    }
+    let Some(ReadStage::Match { patterns }) = plan.pipeline().first() else {
+        return Err(failure(
+            DiagnosticCategory::Integrity,
+            "query_v2_match_not_first",
+            "a validated plan always opens with its match stage",
+        ));
+    };
+    for pattern in patterns {
+        charge_lowered_pattern(validated, pattern, &mut nodes)?;
+    }
+    Ok(())
+}
+
+fn charge_lowered_pattern(
+    validated: &ValidatedQuery,
+    pattern: &QueryPattern,
+    nodes: &mut usize,
+) -> Result<(), Diagnostic> {
+    let charge = match pattern {
+        QueryPattern::Reachable {
+            min_depth,
+            max_depth,
+            source,
+            ..
+        } => {
+            let first_positive = usize::from((*min_depth).max(1));
+            let maximum = usize::from(*max_depth);
+            let positive_hops = if first_positive <= maximum {
+                (first_positive..=maximum).try_fold(0usize, usize::checked_add)
+            } else {
+                Some(0)
+            };
+            let zero_branches = if *min_depth == 0 {
+                Some(
+                    validated
+                        .binding_domain(source)
+                        .ok_or_else(|| {
+                            failure(
+                                DiagnosticCategory::Integrity,
+                                "query_v2_reachable_source_domain",
+                                "a validated reachable source has no schema-derived domain",
+                            )
+                        })?
+                        .type_ids()
+                        .len(),
+                )
+            } else {
+                Some(0)
+            };
+            positive_hops.and_then(|hops| zero_branches.and_then(|zero| hops.checked_add(zero)))
+        }
+        QueryPattern::Or { branches } => {
+            charge_nodes(validated, nodes, 1)?;
+            for branch in branches {
+                for child in branch {
+                    charge_lowered_pattern(validated, child, nodes)?;
+                }
+            }
+            return Ok(());
+        }
+        QueryPattern::Not { patterns } | QueryPattern::Try { patterns } => {
+            charge_nodes(validated, nodes, 1)?;
+            for child in patterns {
+                charge_lowered_pattern(validated, child, nodes)?;
+            }
+            return Ok(());
+        }
+        QueryPattern::Isa { .. }
+        | QueryPattern::Has { .. }
+        | QueryPattern::Links { .. }
+        | QueryPattern::Value { .. }
+        | QueryPattern::FunctionCall { .. } => Some(1),
+    }
+    .ok_or_else(reachability_expansion_limit)?;
+    charge_nodes(validated, nodes, charge)
+}
+
+fn charge_nodes(
+    validated: &ValidatedQuery,
+    nodes: &mut usize,
+    charge: usize,
+) -> Result<(), Diagnostic> {
+    *nodes = nodes
+        .checked_add(charge)
+        .ok_or_else(reachability_expansion_limit)?;
+    if !validated.structural_limits().allows_predicate_nodes(*nodes) {
+        return Err(reachability_expansion_limit());
+    }
+    Ok(())
+}
+
+fn reachability_expansion_limit() -> Diagnostic {
+    failure(
+        DiagnosticCategory::ResourceLimit,
+        "query_v2_reachable_expansion_limit",
+        "schema-refined reachability expansion exceeds the plan pattern-node ceiling",
+    )
 }
 
 /// Build the driver-transported rows for one exact `given` invocation.
@@ -495,12 +642,21 @@ fn invocation_requires_given(invocation: &QueryInvocation) -> bool {
 
 fn render_patterns(
     output: &mut String,
-    plan: &QueryPlan,
+    validated: &ValidatedQuery,
     patterns: &[QueryPattern],
     row: Option<&InputRow>,
     depth: usize,
 ) -> Result<(), Diagnostic> {
-    render_scoped_patterns(output, plan, plan.bindings(), patterns, row, depth)
+    let plan = validated.plan();
+    render_scoped_patterns(
+        output,
+        plan,
+        plan.bindings(),
+        patterns,
+        row,
+        depth,
+        Some(validated),
+    )
 }
 
 fn render_scoped_patterns(
@@ -510,6 +666,7 @@ fn render_scoped_patterns(
     patterns: &[QueryPattern],
     row: Option<&InputRow>,
     depth: usize,
+    validated: Option<&ValidatedQuery>,
 ) -> Result<(), Diagnostic> {
     let indent = "    ".repeat(depth);
     for (pattern_index, pattern) in patterns.iter().enumerate() {
@@ -589,17 +746,55 @@ fn render_scoped_patterns(
                 )
                 .expect("writing to String cannot fail");
             }
+            QueryPattern::Or { branches } => {
+                for (index, branch) in branches.iter().enumerate() {
+                    writeln!(output, "{indent}{}{{", if index == 0 { "" } else { "or " },)
+                        .expect("writing to String cannot fail");
+                    render_scoped_patterns(
+                        output,
+                        plan,
+                        bindings,
+                        branch,
+                        row,
+                        depth + 1,
+                        validated,
+                    )?;
+                    writeln!(
+                        output,
+                        "{indent}}}{}",
+                        if index + 1 == branches.len() { ";" } else { "" },
+                    )
+                    .expect("writing to String cannot fail");
+                }
+            }
             QueryPattern::Not { patterns } => {
                 writeln!(output, "{indent}not {{").expect("writing to String cannot fail");
-                render_scoped_patterns(output, plan, bindings, patterns, row, depth + 1)?;
+                render_scoped_patterns(
+                    output,
+                    plan,
+                    bindings,
+                    patterns,
+                    row,
+                    depth + 1,
+                    validated,
+                )?;
                 writeln!(output, "{indent}}};").expect("writing to String cannot fail");
             }
             QueryPattern::Try { patterns } => {
                 writeln!(output, "{indent}try {{").expect("writing to String cannot fail");
-                render_scoped_patterns(output, plan, bindings, patterns, row, depth + 1)?;
+                render_scoped_patterns(
+                    output,
+                    plan,
+                    bindings,
+                    patterns,
+                    row,
+                    depth + 1,
+                    validated,
+                )?;
                 writeln!(output, "{indent}}};").expect("writing to String cannot fail");
             }
             QueryPattern::Reachable {
+                min_depth,
                 max_depth,
                 relation,
                 role_from,
@@ -610,12 +805,58 @@ fn render_scoped_patterns(
                 // Uppercase hop intermediates cannot collide with the
                 // lowercase plan variable space; the pattern index keeps
                 // them unique across root reachability patterns.
-                let source = local_variable(bindings, *source)?;
+                let source_id = *source;
+                let source = local_variable(bindings, source_id)?;
                 let target = local_variable(bindings, *target)?;
-                let hop_var = |hop: usize| format!("R{pattern_index}h{hop}");
-                let mut branches = Vec::with_capacity(usize::from(*max_depth));
-                for length in 1..=usize::from(*max_depth) {
+                let mut branches = Vec::with_capacity(
+                    usize::from(*max_depth)
+                        .saturating_sub(usize::from(*min_depth))
+                        .saturating_add(1),
+                );
+                for length in usize::from(*min_depth)..=usize::from(*max_depth) {
+                    if length == 0 {
+                        let validated = validated.ok_or_else(|| {
+                            failure(
+                                DiagnosticCategory::Integrity,
+                                "query_v2_reachable_scope",
+                                "a validated reachable pattern appears outside the root query scope",
+                            )
+                        })?;
+                        let source_domain =
+                            validated.binding_domain(&source_id).ok_or_else(|| {
+                                failure(
+                                    DiagnosticCategory::Integrity,
+                                    "query_v2_reachable_source_domain",
+                                    "a validated reachable source has no schema-derived domain",
+                                )
+                            })?;
+                        if source_domain.type_ids().is_empty() {
+                            return Err(failure(
+                                DiagnosticCategory::Integrity,
+                                "query_v2_reachable_source_domain",
+                                "a validated reachable source has no schema-derived domain",
+                            ));
+                        }
+                        // TypeDB 3.12 cannot plan a bare identity branch next
+                        // to relation branches. One exact typed witness per
+                        // validator-derived concrete source type preserves the
+                        // full source domain without widening it.
+                        for (type_ordinal, type_id) in source_domain.type_ids().iter().enumerate() {
+                            // Every disjunction branch owns its complete local
+                            // witness environment. Reusing one variable across
+                            // mutually exclusive concrete-type branches makes
+                            // TypeDB require that witness in sibling positive
+                            // path branches (REP44).
+                            let zero_var = format!("R{pattern_index}z{type_ordinal}");
+                            branches.push(format!(
+                                "${zero_var} isa! {}; ${source} is ${zero_var}; ${target} is ${zero_var};",
+                                type_id.label()
+                            ));
+                        }
+                        continue;
+                    }
                     let mut branch = String::new();
+                    let hop_var = |hop: usize| format!("R{pattern_index}l{length}h{hop}");
                     for hop in 1..=length {
                         if hop != 1 {
                             branch.push(' ');
@@ -684,6 +925,7 @@ fn render_scoped_patterns(
 fn contains_reachable(patterns: &[QueryPattern]) -> bool {
     patterns.iter().any(|pattern| match pattern {
         QueryPattern::Reachable { .. } => true,
+        QueryPattern::Or { branches } => branches.iter().any(|branch| contains_reachable(branch)),
         QueryPattern::Not { patterns } | QueryPattern::Try { patterns } => {
             contains_reachable(patterns)
         }
@@ -1618,7 +1860,7 @@ mod tests {
     use type_bridge_contract::capability::CapabilitySet;
     use type_bridge_contract::codec::FormatVersion;
     use type_bridge_contract::fingerprint::SemanticProfileId;
-    use type_bridge_contract::id::{AttributeId, TypeId, TypeKind};
+    use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind};
     use type_bridge_contract::limits::StructuralLimits;
     use type_bridge_contract::managed_scope::ManagedScopeId;
     use type_bridge_contract::migration_assertion::{
@@ -1630,8 +1872,9 @@ mod tests {
     };
     use type_bridge_contract::schema::{
         AnnotationFact, AnnotationFactId, AnnotationKindId, AnnotationSubjectId, DeclaredSchema,
-        DocumentId, OwnsFact, OwnsFactId, SchemaAnnotationValue, SchemaFact, SourceSpan,
-        SourcedSchemaFact, TypeFact, ValueFact, ValueFactId,
+        DocumentId, OwnsFact, OwnsFactId, PlaysFact, PlaysFactId, RelatesFact, RelatesFactId,
+        SchemaAnnotationValue, SchemaFact, SourceSpan, SourcedSchemaFact, SubFact, SubFactId,
+        TypeFact, ValueFact, ValueFactId,
     };
     use type_bridge_contract::value::{CanonicalString, CanonicalValue, ValueTypeTag};
     use type_bridge_query::{MigrationAssertionValidationContext, validate_query_plan};
@@ -1984,6 +2227,151 @@ mod tests {
             },
             max_collection_members: 1 << 16,
         }
+    }
+
+    #[tokio::test]
+    async fn schema_refined_zero_branches_are_rejected_before_provider_call() {
+        let node = TypeId::new(TypeKind::Entity, "node").expect("node");
+        let child = TypeId::new(TypeKind::Entity, "node-child").expect("child");
+        let edge = TypeId::new(TypeKind::Relation, "directed-edge").expect("edge");
+        let origin = RoleId::new(edge.label().as_str(), "origin").expect("origin");
+        let destination = RoleId::new(edge.label().as_str(), "destination").expect("destination");
+        let facts = vec![
+            SchemaFact::Type(TypeFact::new(node.clone()).expect("node type")),
+            SchemaFact::Type(TypeFact::new(child.clone()).expect("child type")),
+            SchemaFact::Sub(SubFact::new(
+                SubFactId::new(child, node.clone()).expect("node subtype"),
+            )),
+            SchemaFact::Type(TypeFact::new(edge.clone()).expect("edge type")),
+            SchemaFact::Relates(
+                RelatesFact::new(
+                    RelatesFactId::new(edge.clone(), origin.clone()).expect("origin role"),
+                    None,
+                )
+                .expect("origin relates"),
+            ),
+            SchemaFact::Relates(
+                RelatesFact::new(
+                    RelatesFactId::new(edge.clone(), destination.clone())
+                        .expect("destination role"),
+                    None,
+                )
+                .expect("destination relates"),
+            ),
+            SchemaFact::Plays(PlaysFact::new(
+                PlaysFactId::new(node.clone(), origin.clone()).expect("origin plays"),
+            )),
+            SchemaFact::Plays(PlaysFact::new(
+                PlaysFactId::new(node, destination.clone()).expect("destination plays"),
+            )),
+        ];
+        let sourced = facts.into_iter().enumerate().map(|(index, fact)| {
+            let byte = u64::try_from(index).expect("byte");
+            let line = u32::try_from(index + 1).expect("line");
+            SourcedSchemaFact::new(
+                fact,
+                SourceSpan::new(
+                    DocumentId::new("query-v2-reach-limit").expect("document"),
+                    byte,
+                    byte + 1,
+                    line,
+                    1,
+                    line,
+                    2,
+                )
+                .expect("span"),
+            )
+        });
+        let declared = DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced)
+            .expect("declared schema");
+        let profile = SemanticProfileId::new("typedb-3.12.1/v1").expect("profile");
+        let managed = managed_schema_state(
+            &declared,
+            &ManagedDeltaContext::new(
+                ManagedScopeId::new("query-v2-reach-limit").expect("scope"),
+                profile.clone(),
+                CapabilitySet::new(),
+            ),
+        )
+        .expect("managed state");
+        let resolved = resolve(&declared, &profile).expect("resolved schema");
+        let plan = QueryPlan::new_v2(
+            vec![
+                AssertionBinding::new(binding_id(0), QueryVariable::new("source").expect("source")),
+                AssertionBinding::new(binding_id(1), QueryVariable::new("target").expect("target")),
+            ],
+            Vec::new(),
+            vec![ReadStage::Match {
+                patterns: vec![QueryPattern::Reachable {
+                    min_depth: 0,
+                    max_depth: 0,
+                    relation: edge,
+                    role_from: origin,
+                    role_to: destination,
+                    source: binding_id(0),
+                    target: binding_id(1),
+                }],
+            }],
+            PlanOutput::Rows {
+                columns: vec![binding_id(0), binding_id(1)],
+            },
+            managed.managed_semantic_schema().clone(),
+        )
+        .expect("zero-hop plan");
+        let structural_limits = StructuralLimits {
+            predicate_nodes: 1,
+            ..StructuralLimits::CANONICAL
+        };
+        let validated = validate_query_plan(
+            &plan,
+            &MigrationAssertionValidationContext::new(&resolved, &managed),
+            structural_limits,
+        )
+        .expect("schema-valid zero-hop plan");
+        assert_eq!(
+            validated
+                .binding_domain(&binding_id(0))
+                .expect("source domain")
+                .type_ids()
+                .len(),
+            2
+        );
+
+        let invocation =
+            QueryInvocation::new(&plan, QueryOperation::Rows, Vec::new()).expect("invocation");
+        let canonical_validated = validate_query_plan(
+            &plan,
+            &MigrationAssertionValidationContext::new(&resolved, &managed),
+            StructuralLimits::CANONICAL,
+        )
+        .expect("canonical zero-hop plan");
+        let lowered = lower_validated_query(&canonical_validated, &invocation)
+            .expect("schema-refined zero-hop lowering");
+        assert!(
+            lowered
+                .typeql()
+                .contains("$R0z0 isa! node; $source is $R0z0; $target is $R0z0;")
+        );
+        assert!(
+            lowered
+                .typeql()
+                .contains("$R0z1 isa! node-child; $source is $R0z1; $target is $R0z1;")
+        );
+        assert!(!lowered.typeql().contains("$R0z isa!"));
+
+        let mut provider = DrainProbe::rows(Vec::new());
+        let error = execute_with_provider(&mut provider, &validated, &invocation, limits())
+            .await
+            .expect_err("two emitted identity branches exceed the one-node validation budget");
+        let QueryV2ExecutionError::Validation(diagnostic) = error else {
+            panic!("lowering must reject before the provider seam");
+        };
+        assert_eq!(
+            diagnostic.code().as_str(),
+            "query_v2_reachable_expansion_limit"
+        );
+        assert_eq!(diagnostic.category(), DiagnosticCategory::ResourceLimit);
+        assert!(provider.observed_typeql.is_empty());
     }
 
     #[test]

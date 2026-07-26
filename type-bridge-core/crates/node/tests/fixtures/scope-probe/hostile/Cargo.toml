@@ -1,0 +1,11 @@
+[dependencies]
+provider = { package = "typedb-driver", version = "3.12.1" }
+
+[dependencies.typedb-driver]
+version = "3.12.1"
+
+[target.'cfg(unix)'.dependencies."typedb-driver"]
+version = "3.12.1"
+
+[workspace.dependencies.typedb_driver]
+version = "3.12.1"

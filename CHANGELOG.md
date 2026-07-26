@@ -6,6 +6,82 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Changed
 
+- **Complete V2 query authoring and remote model facade (#195)** - Python now
+  exposes the complete low-level Rust plan builder from
+  `type_bridge.query_v2`, with the equivalent Node API at
+  `@type-bridge/node/query-v2`. Opaque handles cover the full V2 pattern,
+  function, reduction, stage, document, reachability, typed-input, and
+  invocation vocabulary while Rust alone owns validation, canonical bytes,
+  fingerprints, and capabilities. The model-oriented
+  `RemoteQuerySession` / `RemoteQuery` facade reuses the released immutable
+  direct grammar with explicitly awaitable terminals: composition performs no
+  I/O, and one awaited terminal performs exactly one caller-owned exchange
+  with no built-in discovery, authentication, HTTP client, retry, traversal,
+  or hydration query. Authenticated graph validation and caller ceilings
+  precede model construction; direct and remote paths preserve result order,
+  structured diagnostics, and registered concrete-subtype hydration. V1 query
+  facades remain operational with no removal schedule. The Python and Node V2
+  binding smokes now author plans at runtime; canonical, fingerprint, hostile,
+  V1 wire, MatchRequest, and released compatibility fixtures remain retained.
+- **Bounded typed reachability (#193)** - Python and Node typed query sessions
+  can now express an inclusive finite directed walk over an exact relation and
+  ordered endpoint roles. Zero depth is concept identity; positive depths
+  admit cycles and repeated vertices while proof paths remain existential, so
+  selected result identity and stable ordering retain the ordinary typed-query
+  contract. Bounds and expansion budgets fail during construction before
+  provider I/O, and Rust lowers the full range into one query without
+  client-side traversal.
+- **Legacy TypeDB server notices (#189)** - each successful TypeDB 3.8/3.10
+  connection now emits one filterable compatibility notice while continuing
+  normally: Python uses `TypeDBServerDeprecationWarning`, Node uses standard
+  warning type `DeprecationWarning`, and Rust tracing uses code
+  `TYPE_BRIDGE_TYPEDB_LEGACY_SERVER`. The conservative unknown-version
+  notice is limited to an actually negotiated band-7 fallback and does not
+  claim an exact server version; missing HTTP identity on band 8 or 9 does not
+  warn. TypeDB 3.11 and 3.12 connections do not emit it. Active 3.8/3.10
+  support remains operational throughout every 2.x release. Warning lookup or
+  delivery cannot turn a successful connection into a failure: Python
+  warning-to-error promotion and synchronously throwing replacements of
+  Node's `process.emitWarning` are contained, while Node
+  `--throw-deprecation` suppresses this compatibility notice. Exceptions
+  raised later by application-owned Node `warning` listeners retain ordinary
+  Node process semantics.
+  Active support is scheduled for removal in 3.0.0 under ordinary SemVer;
+  applications that must retain those server lines may pin
+  `type-bridge>=2,<3`. The exact 3.0 inventory is
+  documented in
+  [V2 Deprecations](docs/guide/v2-deprecations.md#scheduled-for-removal-in-300);
+  V1 query facades have no removal schedule, and archival migration readers,
+  checksum verification, ledger import, snapshots, converters, and the
+  legacy-frontier bridge remain retained. The exact ordinary-SemVer 3.0.0
+  removal inventory is:
+
+  - TypeDB 3.8/3.10 active provider and driver support;
+  - direct `schema.toml` desired-schema authoring,
+    `generate_models(..., format="toml")`, and Python `.toml` generator
+    auto-routing;
+  - `type_bridge_core.TypeSchema`,
+    `type_bridge_core_lib::schema::TypeSchema`,
+    `type_bridge.SchemaInfo`, `type_bridge.migration.SchemaInfo`,
+    `type_bridge_orm::SchemaInfo`, `type_bridge.SchemaManager`,
+    `type_bridge.migration.SchemaManager`, and
+    `type_bridge_orm::SchemaManager`;
+  - the fused `type_bridge.Role[T]` /
+    `type_bridge.models.Role[T]` declaration surface; and
+  - authoring new legacy root `NNNN_*.py` migrations and sibling JSON files,
+    plus treating those files as active migration authority.
+
+  `type_bridge.MigrationManager` /
+  `type_bridge.migration.SimpleMigrationManager`; the Python V1
+  `type_bridge.Query` and `type_bridge.QueryBuilder`; the Node V1
+  `TypedQuery<T, Row>` and `TypedGroupByQuery<Row>`; and the Rust V1
+  `type_bridge_orm::MatchRequest` entity, relation, and group-by query facades
+  are each deprecated without a removal schedule. Read-only TOML conversion,
+  legacy migration readers, original checksums, applied-ledger import,
+  snapshots, historical server metadata, and the legacy-frontier bridge are
+  explicitly retained. There is no 2.1 compatibility exception or calendar
+  cutoff; deployments retaining a scheduled surface can pin
+  `type-bridge>=2,<3`.
 - **Rust V2 publication boundary** - the nine V2 semantic, migration,
   projection, workspace, and CLI crates are first-party `2.0.0-rc.0`
   workspace packages with `publish = false`; they are not crates.io release

@@ -10,6 +10,7 @@ interface NativeMatchSessionHandle {
     readonly [nativeMatchHandleKind]: "session";
     exact(typeName: string): NativeMatchBindingHandle;
     subtypes(typeName: string): NativeMatchBindingHandle;
+    reachable(relationType: string, roleFrom: string, roleTo: string, source: NativeMatchBindingHandle, target: NativeMatchBindingHandle, minDepth: number, maxDepth: number): NativeMatchPredicateHandle;
     positional(selections: NativeMatchSelectionHandle[]): NativeMatchShapeHandle;
     named(names: string[], selections: NativeMatchSelectionHandle[]): NativeMatchShapeHandle;
     query(shape: NativeMatchShapeHandle): NativeMatchQueryHandle;
@@ -101,6 +102,20 @@ interface NativeValidatedThingHandle {
 interface NativeMatchModule {
     NodeMatchSessionHandle: new (registry: NativeRegistryHandle) => NativeMatchSessionHandle;
     revalidateMatchDiagnostic(registry: NativeRegistryHandle, diagnosticJson: string): string;
+    validateMatchOrderTermCount(actual: number): void;
+}
+interface NativeRemoteModelQueryContext {
+}
+interface NativePendingRemoteModelQuery {
+    requestBytes(): Uint8Array;
+    decodeReply(response: Uint8Array): Promise<NativeValidatedMatchResultHandle>;
+}
+interface NativeRemoteModelQueryModule {
+    queryV2RemoteModelContext(authority: ReturnType<NativeModule["queryV2Authority"]>, advertisement: Uint8Array, maxItems: bigint, maxBytes: bigint, maxCollectionMembers: bigint, maxGraphNodes: bigint, maxAttributeValues: bigint, maxRolePlayers: bigint, deadlineMs?: bigint | null): NativeRemoteModelQueryContext;
+    queryV2PrepareRemoteModelRows(query: NativeMatchQueryHandle, context: NativeRemoteModelQueryContext, orders: NativeMatchOrderHandle[], offset: bigint, limit: bigint, cardinality: NativeMatchRowCardinality): NativePendingRemoteModelQuery;
+    queryV2PrepareRemoteModelPage(query: NativeMatchQueryHandle, context: NativeRemoteModelQueryContext, root: NativeMatchBindingHandle, orders: NativeMatchOrderHandle[], offset: bigint, limit: bigint, includeTotal: boolean): NativePendingRemoteModelQuery;
+    queryV2PrepareRemoteModelCount(query: NativeMatchQueryHandle, context: NativeRemoteModelQueryContext, root: NativeMatchBindingHandle): NativePendingRemoteModelQuery;
+    queryV2PrepareRemoteModelExists(query: NativeMatchQueryHandle, context: NativeRemoteModelQueryContext, root: NativeMatchBindingHandle): NativePendingRemoteModelQuery;
 }
 interface NativeRuntimeProjectionHandle {
     managerForDatabase(typeKey: string, database: NativeRustDatabase): NativeProjectedManager;
@@ -109,7 +124,7 @@ interface NativeRuntimeProjectionHandle {
 interface NativeRuntimeProjectionModule {
     NodeRuntimeProjection: new (projectionJson: string, semanticFingerprintJson: string, projectionFingerprintJson: string, registrationsJson: string) => NativeRuntimeProjectionHandle;
 }
-type LoadedNativeModule = NativeModule & NativeMatchModule & NativeRuntimeProjectionModule;
+type LoadedNativeModule = NativeModule & NativeMatchModule & NativeRemoteModelQueryModule & NativeRuntimeProjectionModule;
 /**
  * Loads and returns the native .node module. The result is cached after the
  * first successful load; subsequent calls return the same object.

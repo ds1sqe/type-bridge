@@ -253,6 +253,10 @@ impl DriverBackend for RealBackend {
         self.inner.server_version()
     }
 
+    fn server_deprecation_notice(&self) -> Option<String> {
+        self.inner.server_deprecation_notice()
+    }
+
     fn supports_given_rows(&self) -> bool {
         self.inner.supports_given_rows()
     }
@@ -318,6 +322,7 @@ fn real_match_capabilities() -> CapabilitySet {
         Capability::Collect,
         Capability::CollectDistinct,
         Capability::StableCollectionOrder,
+        Capability::BoundedReachability,
     ])
 }
 

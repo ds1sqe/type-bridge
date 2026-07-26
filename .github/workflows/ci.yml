@@ -204,6 +204,7 @@ jobs:
           # Linux wheel even though it is declared on every matrix leg.
           CFLAGS_aarch64_unknown_linux_gnu: ${{ matrix.target == 'aarch64-unknown-linux-gnu' && '-D__ARM_ARCH=8' || '' }}
         with:
+          maturin-version: v1.14.1
           target: ${{ matrix.target }}
           rust-toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
           args: --release --out dist -i python3.13
@@ -264,6 +265,9 @@ jobs:
 
       - name: Unified Query contract typecheck
         run: npm run typecheck:query-contract
+
+      - name: Thin-binding scope probe
+        run: npm run scope:probe
 
       - name: Check generated TypeScript projection package
         run: node ../schema-codegen/tests/typescript_acceptance/check.mjs
@@ -533,14 +537,18 @@ jobs:
           # has this driver installed, and the gate must not spuriously fire.
           - typedb-server: "typedb/typedb:3.8.3"
             python-driver: "3.10.0"
+            legacy-warning: "1"
           - typedb-server: "typedb/typedb:3.10.4"
             python-driver: "3.10.0"
+            legacy-warning: "1"
           - typedb-server: "typedb/typedb:3.11.5"
             python-driver: "3.11.5"
+            legacy-warning: "0"
           # The 3.12 leg pairs the band-9 installed driver a 3.12 user has;
           # server 3.12 accepts it natively.
           - typedb-server: "typedb/typedb:3.12.1"
             python-driver: "3.12.1"
+            legacy-warning: "0"
 
     # Start TypeDB as a service container (runs first, before steps)
     services:
@@ -609,6 +617,7 @@ jobs:
         env:
           USE_DOCKER: false
           TYPEDB_ADDRESS: localhost:1729
+          TYPE_BRIDGE_EXPECT_LEGACY_WARNING: ${{ matrix.legacy-warning }}
         run: uv run pytest tests/integration/${{ matrix.test-group }} -m integration -v --tb=short
 
   # Rust ORM live-TypeDB integration. The ordinary rust-check job deliberately
@@ -1114,6 +1123,15 @@ jobs:
           - "typedb/typedb:3.10.4"
           - "typedb/typedb:3.11.5"
           - "typedb/typedb:3.12.1"
+        include:
+          - typedb-server: "typedb/typedb:3.8.3"
+            legacy-warning: "1"
+          - typedb-server: "typedb/typedb:3.10.4"
+            legacy-warning: "1"
+          - typedb-server: "typedb/typedb:3.11.5"
+            legacy-warning: "0"
+          - typedb-server: "typedb/typedb:3.12.1"
+            legacy-warning: "0"
 
     services:
       typedb:
@@ -1185,6 +1203,7 @@ jobs:
         env:
           USE_DOCKER: false
           TYPEDB_ADDRESS: localhost:1729
+          TYPE_BRIDGE_EXPECT_LEGACY_WARNING: ${{ matrix.legacy-warning }}
         run: npm run test:integration
 
       - name: Run generated projection live smoke
@@ -1221,24 +1240,28 @@ jobs:
             probe: connect
             http-port: 1
             expect: ok
+            expect-warning: none
           - cell: POS-grpc-fallback-band7
             typedb-server: "typedb/typedb:3.10.4"
             python-driver: "3.10.0"
             probe: connect
             http-port: 1
             expect: ok
+            expect-warning: legacy
           - cell: NEG-window
             typedb-server: "typedb/typedb:3.7.3"
             python-driver: "3.11.5"
             probe: connect
             http-port: 8000
             expect: window
+            expect-warning: none
           - cell: NEG-driver
             typedb-server: "typedb/typedb:3.11.5"
             python-driver: "3.10.0"
             probe: driver
             http-port: 8000
             expect: installed
+            expect-warning: none
           # Asymmetric band acceptance (measured live): a band-9 (3.12) driver
           # is refused by a 3.11 server even though the reverse pair —
           # band-8 driver against a 3.12 server — is served.
@@ -1248,6 +1271,7 @@ jobs:
             probe: driver
             http-port: 8000
             expect: installed
+            expect-warning: none
 
     services:
       typedb:
@@ -1303,4 +1327,4 @@ jobs:
           nc -z localhost 1729
 
       - name: Assert version-gate cell
-        run: uv run python scripts/ci/assert_gate_rejection.py --address localhost:1729 --probe ${{ matrix.probe }} --http-port ${{ matrix.http-port }} --expect ${{ matrix.expect }}
+        run: uv run python scripts/ci/assert_gate_rejection.py --address localhost:1729 --probe ${{ matrix.probe }} --http-port ${{ matrix.http-port }} --expect ${{ matrix.expect }} --expect-warning ${{ matrix.expect-warning }}

@@ -184,7 +184,9 @@ The V1 JSON `POST` endpoints below require
 ### `GET /health` — health check
 
 Returns the stable V1 object
-`{"status":"ok","version":"<package-version>","typedb_connected":true}`.
+`{"status":"ok","version":"1.5.11","typedb_connected":true}`. The version field
+is the frozen V1 HTTP identity; use `type-bridge-server --version` for the
+installed package version.
 
 ### `GET /schema` — loaded schema
 

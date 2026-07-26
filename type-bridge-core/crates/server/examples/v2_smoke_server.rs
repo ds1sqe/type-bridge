@@ -23,7 +23,7 @@ use std::sync::Arc;
 
 use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::managed_scope::ManagedScopeId;
-use type_bridge_contract::query_plan_capability_vocabulary;
+use type_bridge_contract::query_plan::query_plan_v2_capability_vocabulary;
 use type_bridge_contract::schema::decode_declared_schema;
 use type_bridge_orm::session::backend::QueryV2AnswerLimits;
 use type_bridge_schema::{ManagedDeltaContext, managed_schema_state, resolve};
@@ -167,7 +167,7 @@ async fn main() {
         .await
         .expect("database connects");
 
-    let mut advertised = query_plan_capability_vocabulary();
+    let mut advertised = query_plan_v2_capability_vocabulary();
     if database.supports_given_stage() {
         advertised.insert(type_bridge_contract::query_given_rows_capability());
     }

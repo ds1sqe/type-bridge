@@ -20,6 +20,16 @@ from type_bridge import version
 from type_bridge.typedb_driver import driver_version, server_version
 
 
+class _CurrentRustDatabaseHandle:
+    """Minimal successful native handle used by version-gate test doubles."""
+
+    def server_deprecation_notice(self) -> None:
+        return None
+
+    def close(self) -> None:
+        pass
+
+
 @pytest.fixture
 def _python313_driver_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
     """Run legacy-driver scenarios on an interpreter that supports their wheels."""
@@ -506,7 +516,8 @@ class TestPythonDriverVersionGate:
         monkeypatch.setattr(tdm, "DriverOptions", MagicMock())
 
         db = Database(address="localhost:1729", database="test_db")
-        _ = db.driver
+        with pytest.warns(session_mod.TypeDBServerDeprecationWarning):
+            _ = db.driver
         mock_typedb.driver.assert_called_once()
 
     def test_server_version_pin_skips_http_probe(self, monkeypatch: pytest.MonkeyPatch):
@@ -532,7 +543,8 @@ class TestPythonDriverVersionGate:
             database="test_db",
             server_version="3.8.3",
         )
-        _ = db.driver
+        with pytest.warns(session_mod.TypeDBServerDeprecationWarning):
+            _ = db.driver
 
         mock_typedb.driver.assert_called_once()
 
@@ -724,7 +736,7 @@ class TestConnectHttpPortForwarding:
             @staticmethod
             def connect(address, database, username, password, http_port):
                 recorded.append(http_port)
-                return _FakeRustDB()
+                return _CurrentRustDatabaseHandle()
 
         # Patch rust_core() so PyRustDatabase.connect records the port.
         fake_core = MagicMock()
@@ -754,7 +766,7 @@ class TestConnectHttpPortForwarding:
                 server_version=None,
             ):
                 recorded.append((http_port, server_version))
-                return _FakeRustDB()
+                return _CurrentRustDatabaseHandle()
 
         fake_core = MagicMock()
         fake_core.PyRustDatabase = _FakeRustDB
@@ -898,7 +910,7 @@ class TestConnectRuntimeGate:
             @staticmethod
             def connect(address, database, username, password, http_port):
                 recorded.append((address, database, http_port))
-                return _FakeRustDB()
+                return _CurrentRustDatabaseHandle()
 
         fake_core = MagicMock()
         fake_core.PyRustDatabase = _FakeRustDB

@@ -9,6 +9,12 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
 use regex::Regex;
+use type_bridge_contract::id::{TypeId, TypeKind};
+use type_bridge_contract::query_plan::{CompatibilityValueV2, ReleasedValueKindV2};
+use type_bridge_contract::query_remote_v2::{
+    HydrationGraphV2, HydrationNodeKindV2, HydrationReferenceV2, HydrationSlotV2, RemoteOutcomeV2,
+};
+use type_bridge_contract::value::CanonicalValue;
 use type_bridge_core_lib::decimal::parse_decimal;
 use unicase::UniCase;
 
@@ -18,7 +24,7 @@ use crate::registry::DescriptorRegistry;
 use crate::value::AttributeValue;
 
 use super::error::{MatchError, MatchErrorCategory, MatchErrorPathSegment};
-use super::ids::{BindingId, BoundFieldId, DescriptorId, FieldId, RoleEdgeId};
+use super::ids::{BindingId, BoundFieldId, DescriptorId, FieldId, RoleEdgeId, RoleId};
 use super::limits::MAX_SEMANTIC_ID_BYTES;
 use super::model::{
     ComparisonOp, FetchShape, FetchSlot, MatchBinding, MatchExpr, MatchMode, MatchOperation,
@@ -269,6 +275,393 @@ pub(crate) fn validate_provider_result_with_limits(
         validated.shape_id().clone(),
         result,
     ))
+}
+
+/// Convert one fully contract-validated V2 compatibility outcome back into
+/// the released result object without reconstructing omitted hidden bindings.
+///
+/// The minimal V2 hydration graph intentionally carries only selected output
+/// and shallow role-player closure. It therefore cannot safely masquerade as
+/// [`ProviderResultEvidence`], whose contract requires every positive V1
+/// binding. The V2 validator has already proven the complete model projection;
+/// this function performs only the lossless released representation mapping.
+pub(crate) fn validated_match_result_from_v2(
+    registry: &DescriptorRegistry,
+    validated: &ValidatedMatchRequest,
+    outcome: RemoteOutcomeV2,
+) -> Result<ValidatedMatchResult, MatchError> {
+    validated.recheck_schema(registry)?;
+    let result = match (&validated.request().operation, outcome) {
+        (
+            MatchOperation::FetchRows {
+                output,
+                window,
+                cardinality,
+                ..
+            },
+            RemoteOutcomeV2::HydratedRows { graph, rows },
+        ) => {
+            let rows = rows
+                .iter()
+                .map(|row| released_row_for_output(registry, &graph, row.slots(), output))
+                .collect::<Result<Vec<_>, _>>()?;
+            if *cardinality == RowCardinality::ExactlyOne
+                && let Some(error) = exactly_one_cardinality_error(rows.len())
+            {
+                return Err(error);
+            }
+            if u64::try_from(rows.len()).unwrap_or(u64::MAX) > window.limit {
+                return Err(resource_error(
+                    "row_window_exceeded",
+                    "provider returned more distinct rows than the validated window permits",
+                ));
+            }
+            MatchResult::Rows { rows }
+        }
+        (
+            MatchOperation::PageBy {
+                root: expected_root,
+                output,
+                window,
+                include_total,
+                ..
+            },
+            RemoteOutcomeV2::HydratedPage {
+                entries,
+                graph,
+                limit,
+                offset,
+                root,
+                total,
+            },
+        ) => {
+            let actual_root = BindingId::new(root.get());
+            if actual_root != *expected_root {
+                return Err(result_error(
+                    "page_root_mismatch",
+                    "provider page root does not match the validated operation",
+                )
+                .at(MatchErrorPathSegment::Binding(actual_root)));
+            }
+            if (Window { offset, limit }) != *window {
+                return Err(result_error(
+                    "page_window_mismatch",
+                    "provider page window does not match the validated operation",
+                ));
+            }
+            match (*include_total, total) {
+                (true, None) => {
+                    return Err(result_error(
+                        "missing_page_total",
+                        "provider omitted a requested same-snapshot page total",
+                    ));
+                }
+                (false, Some(_)) => {
+                    return Err(result_error(
+                        "unexpected_page_total",
+                        "provider returned a page total that was not requested",
+                    ));
+                }
+                _ => {}
+            }
+            let entries = entries
+                .iter()
+                .map(|row| released_row_for_output(registry, &graph, row.slots(), output))
+                .collect::<Result<Vec<_>, _>>()?;
+            if u64::try_from(entries.len()).unwrap_or(u64::MAX) > window.limit {
+                return Err(resource_error(
+                    "page_window_exceeded",
+                    "root selection returned more distinct roots than the validated page window permits",
+                ));
+            }
+            if let Some(total) = total {
+                let expected = window.limit.min(total.saturating_sub(window.offset));
+                let actual = u64::try_from(entries.len()).unwrap_or(u64::MAX);
+                if actual != expected {
+                    return Err(result_error(
+                        "page_total_length_mismatch",
+                        "provider page length is inconsistent with its same-snapshot total and window",
+                    ));
+                }
+            }
+            MatchResult::Page {
+                root: *expected_root,
+                entries,
+                window: *window,
+                total,
+            }
+        }
+        (
+            MatchOperation::CountBy { root: expected },
+            RemoteOutcomeV2::DistinctCount { root, value },
+        ) => {
+            let actual = BindingId::new(root.get());
+            require_root(*expected, actual, "count_root_mismatch")?;
+            MatchResult::Count {
+                root: *expected,
+                value,
+            }
+        }
+        (
+            MatchOperation::ExistsBy { root: expected },
+            RemoteOutcomeV2::DistinctExists { root, value },
+        ) => {
+            let actual = BindingId::new(root.get());
+            require_root(*expected, actual, "exists_root_mismatch")?;
+            MatchResult::Exists {
+                root: *expected,
+                value,
+            }
+        }
+        _ => {
+            return Err(result_error(
+                "result_operation_mismatch",
+                "adapted V2 result variant does not match the validated released operation",
+            ));
+        }
+    };
+    Ok(ValidatedMatchResult::new(
+        ValidatedResultSeal(()),
+        validated.request_token(),
+        validated.shape_id().clone(),
+        result,
+    ))
+}
+
+fn released_row(
+    registry: &DescriptorRegistry,
+    graph: &HydrationGraphV2,
+    slots: &[HydrationSlotV2],
+) -> Result<MatchRow, MatchError> {
+    let slots = slots
+        .iter()
+        .map(|slot| match slot {
+            HydrationSlotV2::Singular { value } => {
+                released_thing(registry, graph, value).map(SlotValue::One)
+            }
+            HydrationSlotV2::Collection { values } => values
+                .iter()
+                .map(|value| released_thing(registry, graph, value))
+                .collect::<Result<Vec<_>, _>>()
+                .map(SlotValue::Many),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(MatchRow::new(slots))
+}
+
+fn released_row_for_output(
+    registry: &DescriptorRegistry,
+    graph: &HydrationGraphV2,
+    slots: &[HydrationSlotV2],
+    output: &FetchShape,
+) -> Result<MatchRow, MatchError> {
+    let expected = output_slots(output).collect::<Vec<_>>();
+    if slots.len() != expected.len()
+        || slots.iter().zip(expected).any(|(actual, expected)| {
+            matches!(
+                (actual, expected),
+                (HydrationSlotV2::Singular { .. }, FetchSlot::Collect { .. })
+                    | (HydrationSlotV2::Collection { .. }, FetchSlot::One { .. })
+            )
+        })
+    {
+        return Err(result_error(
+            "result_operation_mismatch",
+            "adapted V2 row shape does not match the validated released output",
+        ));
+    }
+    released_row(registry, graph, slots)
+}
+
+fn released_thing(
+    registry: &DescriptorRegistry,
+    graph: &HydrationGraphV2,
+    reference: &HydrationReferenceV2,
+) -> Result<HydratedThing, MatchError> {
+    let node = graph_node(graph, reference)?;
+    let declared = released_descriptor(registry, reference.declared())?;
+    let concrete = released_descriptor(registry, node.concrete())?;
+    let attributes = released_attributes(registry, &concrete, node.attributes())?;
+    let roles = node
+        .roles()
+        .iter()
+        .map(|role| {
+            let owner = released_descriptor(
+                registry,
+                &TypeId::new(
+                    TypeKind::Relation,
+                    role.role().declaring_relation().as_str().to_owned(),
+                )
+                .map_err(|_| {
+                    result_error(
+                        "malformed_hydrated_descriptor",
+                        "hydration role owner is not a valid relation descriptor",
+                    )
+                })?,
+            )?;
+            let players = role
+                .players()
+                .iter()
+                .map(|player| released_role_player(registry, graph, player))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(HydratedRole::new(
+                RoleId::new(owner, role.role().label().as_str()),
+                players,
+            ))
+        })
+        .collect::<Result<Vec<_>, MatchError>>()?;
+    Ok(HydratedThing::new(
+        ConceptId::new(node.iid()),
+        declared,
+        concrete,
+        released_kind(node.kind()),
+        attributes,
+        roles,
+    ))
+}
+
+fn released_role_player(
+    registry: &DescriptorRegistry,
+    graph: &HydrationGraphV2,
+    reference: &HydrationReferenceV2,
+) -> Result<HydratedRolePlayer, MatchError> {
+    let node = graph_node(graph, reference)?;
+    let declared = released_descriptor(registry, reference.declared())?;
+    let concrete = released_descriptor(registry, node.concrete())?;
+    let attributes = released_attributes(registry, &concrete, node.attributes())?;
+    Ok(HydratedRolePlayer::new(
+        ConceptId::new(node.iid()),
+        declared,
+        concrete,
+        released_kind(node.kind()),
+        attributes,
+    ))
+}
+
+fn graph_node<'graph>(
+    graph: &'graph HydrationGraphV2,
+    reference: &HydrationReferenceV2,
+) -> Result<&'graph type_bridge_contract::query_remote_v2::HydrationNodeV2, MatchError> {
+    usize::try_from(reference.node().get())
+        .ok()
+        .and_then(|index| graph.nodes().get(index))
+        .ok_or_else(|| {
+            result_error(
+                "unknown_hydrated_descriptor",
+                "hydration graph reference has no dense node",
+            )
+        })
+}
+
+fn released_descriptor(
+    registry: &DescriptorRegistry,
+    descriptor: &TypeId,
+) -> Result<DescriptorId, MatchError> {
+    let released = registry
+        .descriptor_id(descriptor.label().as_str())
+        .ok_or_else(|| {
+            result_error(
+                "unknown_hydrated_descriptor",
+                "hydrated descriptor is not registered in the current schema",
+            )
+            .with_detail(
+                "descriptor",
+                format!(
+                    "{}:{}",
+                    match descriptor.kind() {
+                        TypeKind::Entity => "entity",
+                        TypeKind::Relation => "relation",
+                        TypeKind::Attribute => "attribute",
+                        TypeKind::Struct => "struct",
+                    },
+                    descriptor.label()
+                ),
+            )
+        })?;
+    let expected = match descriptor.kind() {
+        TypeKind::Entity => "entity:",
+        TypeKind::Relation => "relation:",
+        TypeKind::Attribute | TypeKind::Struct => {
+            return Err(result_error(
+                "hydrated_descriptor_kind_mismatch",
+                "hydrated model descriptor is not an entity or relation",
+            ));
+        }
+    };
+    if released.as_str().starts_with(expected) {
+        Ok(released)
+    } else {
+        Err(result_error(
+            "hydrated_descriptor_kind_mismatch",
+            "hydrated descriptor kind does not match the registered descriptor",
+        ))
+    }
+}
+
+fn released_attributes(
+    registry: &DescriptorRegistry,
+    concrete: &DescriptorId,
+    attributes: &[type_bridge_contract::query_remote_v2::HydrationAttributeEvidenceV2],
+) -> Result<Vec<HydratedAttribute>, MatchError> {
+    attributes
+        .iter()
+        .map(|attribute| {
+            let field = registry
+                .field_id(concrete, attribute.attribute().label().as_str())
+                .ok_or_else(|| {
+                    result_error(
+                        "unknown_hydrated_attribute",
+                        "hydrated attribute is not registered on its concrete descriptor",
+                    )
+                })?;
+            let values = attribute
+                .values()
+                .iter()
+                .map(released_attribute_value)
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(HydratedAttribute::new(field, values))
+        })
+        .collect()
+}
+
+fn released_attribute_value(value: &CompatibilityValueV2) -> Result<AttributeValue, MatchError> {
+    if let Some(value) = value.canonical_value() {
+        return Ok(match value {
+            CanonicalValue::String(value) => AttributeValue::String(value.as_str().to_owned()),
+            CanonicalValue::Long(value) => AttributeValue::Long(*value),
+            CanonicalValue::Double(value) => AttributeValue::Double(value.get()),
+            CanonicalValue::Boolean(value) => AttributeValue::Boolean(*value),
+            CanonicalValue::Date(value) => AttributeValue::Date(value.to_string()),
+            CanonicalValue::DateTime(value) => AttributeValue::DateTime(value.to_string()),
+            CanonicalValue::DateTimeTz(value) => AttributeValue::DateTimeTZ(value.to_string()),
+            CanonicalValue::Decimal(value) => AttributeValue::Decimal(value.to_string()),
+            CanonicalValue::Duration(value) => AttributeValue::Duration(value.to_string()),
+        });
+    }
+    let text = value.released_text().ok_or_else(|| {
+        result_error(
+            "hydrated_attribute_value_type",
+            "hydrated compatibility value has no released representation",
+        )
+    })?;
+    match value.released_kind() {
+        Some(ReleasedValueKindV2::String) => Ok(AttributeValue::String(text)),
+        Some(ReleasedValueKindV2::DateTime) => Ok(AttributeValue::DateTime(text)),
+        Some(ReleasedValueKindV2::DateTimeTz) => Ok(AttributeValue::DateTimeTZ(text)),
+        Some(ReleasedValueKindV2::Duration) => Ok(AttributeValue::Duration(text)),
+        Some(ReleasedValueKindV2::Decimal) => Ok(AttributeValue::Decimal(text)),
+        None => Err(result_error(
+            "hydrated_attribute_value_type",
+            "hydrated compatibility value has no scalar domain",
+        )),
+    }
+}
+
+const fn released_kind(kind: HydrationNodeKindV2) -> ThingKind {
+    match kind {
+        HydrationNodeKindV2::Entity => ThingKind::Entity,
+        HydrationNodeKindV2::Relation => ThingKind::Relation,
+    }
 }
 
 fn require_root(
@@ -1170,7 +1563,9 @@ fn collect_role_edge_ids(expression: &MatchExpr, edges: &mut BTreeSet<RoleEdgeId
             }
         }
         MatchExpr::Not { expression } => collect_role_edge_ids(expression, edges),
-        MatchExpr::FieldValue { .. } | MatchExpr::FieldComparison { .. } => {}
+        MatchExpr::FieldValue { .. }
+        | MatchExpr::FieldComparison { .. }
+        | MatchExpr::Reachable { .. } => {}
     }
 }
 
@@ -1184,7 +1579,8 @@ fn find_role_edge(expression: Option<&MatchExpr>, id: RoleEdgeId) -> Option<&Mat
         MatchExpr::Not { expression } => find_role_edge(Some(expression), id),
         MatchExpr::FieldValue { .. }
         | MatchExpr::FieldComparison { .. }
-        | MatchExpr::RoleEdge { .. } => None,
+        | MatchExpr::RoleEdge { .. }
+        | MatchExpr::Reachable { .. } => None,
     }
 }
 
@@ -1276,6 +1672,28 @@ fn evaluate_expression(
             Ok(false)
         }
         MatchExpr::RoleEdge { id, .. } => Ok(satisfied_role_edges.contains(id)),
+        MatchExpr::Reachable {
+            source,
+            target,
+            max_depth,
+            ..
+        } => {
+            // The zero-only case remains fully claim-checkable after proof
+            // projection: TypeQL `is` means exact concept identity.
+            if *max_depth == 0 {
+                return Ok(bindings
+                    .get(source)
+                    .zip(bindings.get(target))
+                    .is_some_and(|(source, target)| source.concept_id() == target.concept_id()));
+            }
+            // Trust boundary: positive proof variables are intentionally
+            // existential and are projected away by the typed compiler.
+            // Result validation therefore trusts the already-authenticated
+            // provider execution for path existence while independently
+            // claim-checking every public endpoint. This is not evidence that
+            // an arbitrary caller may forge after the provider boundary.
+            Ok(true)
+        }
         MatchExpr::And { expressions } => {
             for child in expressions {
                 if !evaluate_expression(child, bindings, satisfied_role_edges)? {
@@ -2914,6 +3332,119 @@ mod tests {
             error_code(&validate_provider_result(&registry, &validated, missing_edge).unwrap_err()),
             "predicate_evidence_mismatch"
         );
+    }
+
+    #[test]
+    fn zero_hop_reachability_claim_checks_exact_endpoint_identity() {
+        let registry = registry();
+        let relation = registry.descriptor_id("employment").unwrap();
+        let role = RoleId::new(relation.clone(), "employee");
+        let validated = exact_one_request(
+            &registry,
+            vec![
+                binding(&registry, 0, "person", ThingKind::Entity, MatchMode::Exact),
+                binding(&registry, 1, "person", ThingKind::Entity, MatchMode::Exact),
+            ],
+            Some(MatchExpr::Reachable {
+                relation,
+                role_from: role.clone(),
+                role_to: role,
+                source: BindingId::new(0),
+                target: BindingId::new(1),
+                min_depth: 0,
+                max_depth: 0,
+            }),
+            FetchShape::Positional {
+                slots: vec![
+                    FetchSlot::One {
+                        binding: BindingId::new(0),
+                    },
+                    FetchSlot::One {
+                        binding: BindingId::new(1),
+                    },
+                ],
+            },
+            BTreeSet::new(),
+        );
+
+        let forged = rows_evidence(
+            &validated,
+            vec![solution(
+                vec![
+                    (0, person(&registry, "person-1", "Alice")),
+                    (1, person(&registry, "person-2", "Bob")),
+                ],
+                vec![],
+            )],
+        );
+        assert_eq!(
+            error_code(&validate_provider_result(&registry, &validated, forged).unwrap_err()),
+            "predicate_evidence_mismatch"
+        );
+
+        let valid = rows_evidence(
+            &validated,
+            vec![solution(
+                vec![
+                    (0, person(&registry, "person-1", "Alice")),
+                    (1, person(&registry, "person-1", "Alice")),
+                ],
+                vec![],
+            )],
+        );
+        validate_provider_result(&registry, &validated, valid)
+            .expect("zero-hop evidence with one endpoint identity");
+    }
+
+    #[test]
+    fn positive_reachability_proof_is_a_trusted_provider_projection_boundary() {
+        let registry = registry();
+        let relation = registry.descriptor_id("employment").unwrap();
+        let role = RoleId::new(relation.clone(), "employee");
+        let validated = exact_one_request(
+            &registry,
+            vec![
+                binding(&registry, 0, "person", ThingKind::Entity, MatchMode::Exact),
+                binding(&registry, 1, "person", ThingKind::Entity, MatchMode::Exact),
+            ],
+            Some(MatchExpr::Reachable {
+                relation,
+                role_from: role.clone(),
+                role_to: role,
+                source: BindingId::new(0),
+                target: BindingId::new(1),
+                min_depth: 1,
+                max_depth: 1,
+            }),
+            FetchShape::Positional {
+                slots: vec![
+                    FetchSlot::One {
+                        binding: BindingId::new(0),
+                    },
+                    FetchSlot::One {
+                        binding: BindingId::new(1),
+                    },
+                ],
+            },
+            BTreeSet::new(),
+        );
+
+        // No positive-path proof survives projection into provider evidence.
+        // This row is admissible only because this validator consumes evidence
+        // produced inside the trusted provider execution boundary; endpoint
+        // types and identities remain independently checked above.
+        let projected = rows_evidence(
+            &validated,
+            vec![solution(
+                vec![
+                    (0, person(&registry, "person-1", "Alice")),
+                    (1, person(&registry, "person-2", "Bob")),
+                ],
+                vec![],
+            )],
+        );
+        validate_provider_result(&registry, &validated, projected)
+            .expect("trusted provider owns the projected positive path proof");
     }
 
     #[test]

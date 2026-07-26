@@ -72,6 +72,12 @@ class LiveEmployment(Relation):
     )
 
 
+class LiveComposition(Relation):
+    flags = TypeFlags(name="typed-live-composition")
+    parent: Role[LivePerson] = Role("src", LivePerson)
+    child: Role[LivePerson] = Role("dst", LivePerson)
+
+
 LIVE_PERSON_NAME = LiveName
 LIVE_PERSON_LABELS = LiveTag
 LIVE_PERSON_RANK = LiveRank
@@ -89,7 +95,13 @@ class LivePersonWorkPage:
 @pytest.fixture
 def typed_query_graph(clean_db):
     schema = SchemaManager(clean_db)
-    schema.register(LivePerson, LiveEmployee, LiveCompany, LiveEmployment)
+    schema.register(
+        LivePerson,
+        LiveEmployee,
+        LiveCompany,
+        LiveEmployment,
+        LiveComposition,
+    )
     schema.sync_schema(force=True)
     clean_db.execute_query(
         """
@@ -125,6 +137,16 @@ def typed_query_graph(clean_db):
         $e4 isa typed-live-employment,
             links (employee: $dave, employer: $acme, reviewer: $alice),
             has typed-live-code "E-04";
+        $c1 isa typed-live-composition,
+            links (src: $alice, dst: $bob);
+        $c2 isa typed-live-composition,
+            links (src: $alice, dst: $carol);
+        $c3 isa typed-live-composition,
+            links (src: $bob, dst: $dave);
+        $c4 isa typed-live-composition,
+            links (src: $carol, dst: $dave);
+        $c5 isa typed-live-composition,
+            links (src: $dave, dst: $alice);
         """,
         transaction_type="write",
     )
@@ -271,6 +293,58 @@ def test_typed_hidden_witnesses_deduplicate_selected_identity(typed_query_graph)
     )
     assert len(rows) == 1
     assert _name(rows[0]) == "Alice"
+
+
+@pytest.mark.integration
+def test_typed_bounded_reachability_depths_cycles_and_shared_subtrees(
+    typed_query_graph,
+) -> None:
+    session = QuerySession(typed_query_graph)
+    source = session.var(LivePerson, subtypes=True)
+    target = session.var(LivePerson, subtypes=True)
+    source_name = source.field(LIVE_PERSON_NAME)
+    target_name = target.field(LIVE_PERSON_NAME)
+
+    def people(
+        min_depth: int,
+        max_depth: int,
+    ) -> list[tuple[str, type[LivePerson], int | None, frozenset[str]]]:
+        path = session.reachable(
+            source,
+            target,
+            LiveComposition,
+            LiveComposition.parent,
+            LiveComposition.child,
+            min_depth=min_depth,
+            max_depth=max_depth,
+        )
+        rows = (
+            session.query(target)
+            .match(source)
+            .where(source_name.eq(LiveName("Alice")), path)
+            .rows(limit=10, order_by=(target_name.asc(),))
+        )
+        return [
+            (
+                _name(value),
+                type(value),
+                None if value.ranking is None else value.ranking.value,
+                frozenset(label.value for label in value.labels),
+            )
+            for value in rows
+        ]
+
+    alice = ("Alice", LiveEmployee, 2, frozenset({"blue", "red"}))
+    bob = ("Bob", LivePerson, 1, frozenset({"blue"}))
+    carol = ("Carol", LivePerson, None, frozenset({"green"}))
+    dave = ("Dave", LiveEmployee, 3, frozenset({"red"}))
+
+    assert people(0, 0) == [alice]
+    assert people(1, 1) == [bob, carol]
+    assert people(2, 2) == [dave]
+    assert people(3, 3) == [alice]
+    assert people(1, 2) == [bob, carol, dave]
+    assert people(0, 3) == [alice, bob, carol, dave]
 
 
 @pytest.mark.integration

@@ -17,6 +17,10 @@ use type_bridge_contract::query_remote::{
     RemoteCapabilities, RemoteExecutorBinding, RemoteLimits, RemoteOutcome, RemoteQueryRequest,
     RemoteQueryResponse, RemoteRequestFingerprint, RemoteValue,
 };
+use type_bridge_contract::query_remote_v2::{
+    RemoteLimitsV2, RemoteOutcomeV2, RemoteQueryRequestV2, RemoteQueryResponseV2,
+    RemoteRequestFingerprintV2, query_remote_v2_required_capabilities,
+};
 use type_bridge_contract::schema::{
     DeclaredSchema, DocumentId, OwnsFact, OwnsFactId, SchemaFact, SourceSpan, SourcedSchemaFact,
     TypeFact, ValueFact, ValueFactId, encode_declared_schema,
@@ -26,11 +30,12 @@ use type_bridge_contract::value::{
 };
 use type_bridge_contract::{query_given_rows_capability, query_plan_capability_vocabulary};
 use type_bridge_orm::query_v2_prepared::{
-    QueryAuthority, decode_remote_capabilities, prepare_remote_query,
+    QueryAuthority, decode_remote_capabilities, prepare_remote_query, prepare_remote_query_v2,
 };
 use type_bridge_orm::query_v2_remote::{
-    RemoteReplySigningKey, decode_remote_outcome, encode_remote_request, encode_remote_request_at,
-    preflight_remote_request, preflight_remote_request_at,
+    RemoteReplySigningKey, RemoteRequestFormat, decode_remote_outcome, encode_remote_request,
+    encode_remote_request_at, preflight_remote_request, preflight_remote_request_at,
+    preflight_remote_request_v2_at, remote_request_format,
 };
 use type_bridge_orm::session::backend::QueryV2AnswerLimits;
 use type_bridge_query::MigrationAssertionValidationContext;
@@ -93,6 +98,39 @@ fn plan_with_input(managed: &type_bridge_contract::schema_delta::ManagedSchemaSt
     plan_with_typed_input(managed, ValueTypeTag::String, false)
 }
 
+fn plan_with_input_v2(
+    managed: &type_bridge_contract::schema_delta::ManagedSchemaState,
+) -> QueryPlan {
+    QueryPlan::new_v2(
+        vec![binding(0, "person"), binding(1, "name")],
+        vec![InputColumn::new(
+            InputColumnId::new(0),
+            QueryVariable::new("wanted_name").expect("input name"),
+            ValueTypeTag::String,
+            false,
+        )],
+        vec![ReadStage::Match {
+            patterns: vec![
+                QueryPattern::Isa {
+                    binding: binding_id(0),
+                    include_subtypes: true,
+                    type_id: type_id(TypeKind::Entity, "person"),
+                },
+                QueryPattern::Has {
+                    attribute: binding_id(1),
+                    attribute_id: AttributeId::new("name").expect("attribute"),
+                    owner: binding_id(0),
+                },
+            ],
+        }],
+        QueryOutput::Rows {
+            columns: vec![binding_id(0), binding_id(1)],
+        },
+        managed.managed_semantic_schema().clone(),
+    )
+    .expect("V2 plan")
+}
+
 fn plan_with_typed_input(
     managed: &type_bridge_contract::schema_delta::ManagedSchemaState,
     value_type: ValueTypeTag,
@@ -149,6 +187,25 @@ fn remote_capabilities(with_given_rows: bool) -> RemoteCapabilities {
     )
 }
 
+fn remote_capabilities_v2(with_given_rows: bool) -> RemoteCapabilities {
+    let mut capabilities = query_plan_capability_vocabulary();
+    for capability in query_remote_v2_required_capabilities(false) {
+        capabilities.insert(capability);
+    }
+    if with_given_rows {
+        capabilities.insert(query_given_rows_capability());
+    }
+    RemoteCapabilities::new(
+        capabilities,
+        RemoteExecutorBinding::new(
+            "orm-capabilities-v2-executor",
+            "orm-capabilities-v2-epoch-0001",
+        )
+        .expect("executor binding"),
+        reply_signer().public_key(),
+    )
+}
+
 fn advertisement(with_given_rows: bool) -> Vec<u8> {
     remote_capabilities(with_given_rows)
         .encode()
@@ -161,6 +218,18 @@ fn limits() -> RemoteLimits {
         max_bytes: 1 << 20,
         max_items: 100,
         max_collection_members: 1 << 16,
+    }
+}
+
+fn limits_v2() -> RemoteLimitsV2 {
+    RemoteLimitsV2 {
+        deadline_ms: None,
+        max_bytes: 1 << 20,
+        max_items: 100,
+        max_collection_members: 1 << 16,
+        max_graph_nodes: 1 << 16,
+        max_attribute_values: 1 << 16,
+        max_role_players: 1 << 16,
     }
 }
 
@@ -193,6 +262,30 @@ fn fixture(required: CapabilitySet) -> Fixture {
     }
 }
 
+fn fixture_v2(required: CapabilitySet) -> Fixture {
+    let declared = declared_schema(required);
+    let bytes = encode_declared_schema(&declared).expect("declared bytes");
+    let authority =
+        QueryAuthority::from_declared_bytes(&bytes, SCOPE, PROFILE).expect("authority builds");
+    let profile = SemanticProfileId::new(PROFILE).expect("profile");
+    let managed = managed_schema_state(
+        &declared,
+        &ManagedDeltaContext::new(
+            ManagedScopeId::new(SCOPE).expect("scope"),
+            profile,
+            declared.required_capabilities().clone(),
+        ),
+    )
+    .expect("managed state");
+    let plan_bytes = plan_with_input_v2(&managed)
+        .canonical_bytes()
+        .expect("V2 plan bytes");
+    Fixture {
+        authority,
+        plan_bytes,
+    }
+}
+
 #[test]
 fn authorities_build_for_schemas_with_nonempty_required_capabilities() {
     let mut required = CapabilitySet::new();
@@ -201,6 +294,245 @@ fn authorities_build_for_schemas_with_nonempty_required_capabilities() {
     // capabilities are available during resolution, exactly as on the
     // server.
     fixture(required);
+}
+
+#[test]
+fn additive_v2_preparation_dispatches_before_plan_reconstruction_and_is_one_shot() {
+    let v1 = fixture(CapabilitySet::new());
+    let v1_pending = prepare_remote_query(
+        &v1.authority,
+        &v1.plan_bytes,
+        &invocation_json(&["ada"]),
+        &advertisement(true),
+        limits(),
+    )
+    .expect("V1 pending request");
+    assert_eq!(
+        remote_request_format(v1_pending.request_bytes()),
+        RemoteRequestFormat::V1
+    );
+
+    let v2 = fixture_v2(CapabilitySet::new());
+    let advertisement = remote_capabilities_v2(true);
+    let pending = prepare_remote_query_v2(
+        &v2.authority,
+        &v2.plan_bytes,
+        &invocation_json(&["ada"]),
+        &advertisement.encode().expect("V2 advertisement"),
+        limits_v2(),
+    )
+    .expect("V2 pending request");
+    assert_eq!(
+        remote_request_format(pending.request_bytes()),
+        RemoteRequestFormat::V2
+    );
+    let format_field = br#","format":"typebridge.query-remote-request/v2","#;
+    let format_end = pending
+        .request_bytes()
+        .windows(format_field.len())
+        .position(|window| window == format_field)
+        .map(|offset| offset + format_field.len())
+        .expect("canonical V2 format field is in the bounded prefix");
+    let mut hostile_maximal_body = pending.request_bytes()[..format_end].to_vec();
+    hostile_maximal_body.resize(MAX_REMOTE_ENVELOPE_BYTES, b'[');
+    assert_eq!(
+        remote_request_format(&hostile_maximal_body),
+        RemoteRequestFormat::V2,
+        "format selection must stop at the bounded canonical prefix without parsing a hostile maximal plan",
+    );
+    assert_eq!(
+        remote_request_format(
+            br#"{"format":"typebridge.query-remote-request/v2","advertisement":"late"}"#
+        ),
+        RemoteRequestFormat::V1,
+        "reordered or malformed V2 prefixes retain the historical V1 rejection path",
+    );
+    assert_eq!(
+        remote_request_format(br#"{"format":"typebridge.query-remote-request/v9"}"#),
+        RemoteRequestFormat::V1,
+        "unknown formats retain the historical rejection path"
+    );
+
+    let request_envelope =
+        RemoteQueryRequestV2::decode(pending.request_bytes()).expect("V2 request");
+    let request =
+        RemoteRequestFingerprintV2::compute(pending.request_bytes()).expect("request fingerprint");
+    let plan = type_bridge_contract::query_plan::decode_query_plan(&v2.plan_bytes)
+        .expect("V2 plan decodes");
+    let response = RemoteQueryResponseV2::new(
+        request_envelope.nonce(),
+        &plan,
+        &request,
+        request_envelope.result_kind(),
+        RemoteOutcomeV2::Rows { rows: Vec::new() },
+    )
+    .expect("V2 response")
+    .encode_signed(
+        &advertisement
+            .fingerprint()
+            .expect("advertisement fingerprint"),
+        &reply_signer(),
+    )
+    .expect("signed V2 response");
+    assert_eq!(
+        pending.decode_reply(&response).expect("first reply"),
+        r#"{"kind":"rows","rows":[]}"#
+    );
+    assert_eq!(
+        pending
+            .decode_reply(&response)
+            .expect_err("second V2 reply is replayed")
+            .code()
+            .as_str(),
+        "query_remote_v2_reply_replayed"
+    );
+}
+
+#[test]
+fn additive_v2_reply_claim_rejects_a_forged_signer_before_outcome_materialization() {
+    let fixture = fixture_v2(CapabilitySet::new());
+    let advertisement = remote_capabilities_v2(true);
+    let pending = prepare_remote_query_v2(
+        &fixture.authority,
+        &fixture.plan_bytes,
+        &invocation_json(&["ada"]),
+        &advertisement.encode().expect("V2 advertisement"),
+        limits_v2(),
+    )
+    .expect("V2 pending request");
+    let request_envelope =
+        RemoteQueryRequestV2::decode(pending.request_bytes()).expect("V2 request");
+    let request =
+        RemoteRequestFingerprintV2::compute(pending.request_bytes()).expect("request fingerprint");
+    let plan = type_bridge_contract::query_plan::decode_query_plan(&fixture.plan_bytes)
+        .expect("V2 plan decodes");
+    let response = RemoteQueryResponseV2::new(
+        request_envelope.nonce(),
+        &plan,
+        &request,
+        request_envelope.result_kind(),
+        RemoteOutcomeV2::Rows {
+            rows: vec![vec![RemoteValue::Absent, RemoteValue::Absent]],
+        },
+    )
+    .expect("V2 response");
+    let advertisement_fingerprint = advertisement
+        .fingerprint()
+        .expect("advertisement fingerprint");
+    let forged = response
+        .encode_signed(
+            &advertisement_fingerprint,
+            &RemoteReplySigningKey::from_secret_bytes([0x42; 32]),
+        )
+        .expect("forged V2 response");
+    assert_eq!(
+        pending
+            .decode_reply(&forged)
+            .expect_err("foreign signer cannot authenticate a V2 outcome")
+            .code()
+            .as_str(),
+        "query_remote_signature_invalid"
+    );
+
+    let valid = response
+        .encode_signed(&advertisement_fingerprint, &reply_signer())
+        .expect("valid V2 response");
+    assert_eq!(
+        pending
+            .decode_reply(&valid)
+            .expect_err("a failed verification still consumes the one-shot claim")
+            .code()
+            .as_str(),
+        "query_remote_v2_reply_replayed"
+    );
+}
+
+#[test]
+fn additive_v2_admission_rejects_epoch_and_expiry_before_provider_construction() {
+    const NOW_MS: u64 = 1_800_000_000_000;
+    let declared = declared_schema(CapabilitySet::new());
+    let profile = SemanticProfileId::new(PROFILE).expect("profile");
+    let managed = managed_schema_state(
+        &declared,
+        &ManagedDeltaContext::new(
+            ManagedScopeId::new(SCOPE).expect("scope"),
+            profile.clone(),
+            CapabilitySet::new(),
+        ),
+    )
+    .expect("managed state");
+    let resolved = resolve(&declared, &profile).expect("resolved schema");
+    let context = MigrationAssertionValidationContext::new(&resolved, &managed);
+    let plan = plan_with_input_v2(&managed);
+    let validated = type_bridge_query::validate_query_plan(
+        &plan,
+        &context,
+        type_bridge_contract::limits::StructuralLimits::CANONICAL,
+    )
+    .expect("validated V2 plan");
+    let invocation = QueryInvocation::new(
+        &plan,
+        QueryOperation::Rows,
+        vec![InputRow::new(vec![Some(CanonicalValue::String(
+            CanonicalString::new("ada").expect("input"),
+        ))])],
+    )
+    .expect("invocation");
+    let advertisement = remote_capabilities_v2(true);
+    let mut bounded = limits_v2();
+    bounded.deadline_ms = Some(1_000);
+    let request = type_bridge_orm::query_v2_remote::encode_remote_request_v2_at(
+        &validated,
+        &invocation,
+        &advertisement,
+        bounded,
+        "absolute-v2-expiry-nonce-0001",
+        NOW_MS,
+    )
+    .expect("V2 request");
+
+    preflight_remote_request_v2_at(
+        &request,
+        &context,
+        &advertisement,
+        QueryV2AnswerLimits::default(),
+        NOW_MS,
+    )
+    .map(|_| ())
+    .expect("live V2 request admits");
+    let expired = preflight_remote_request_v2_at(
+        &request,
+        &context,
+        &advertisement,
+        QueryV2AnswerLimits::default(),
+        NOW_MS + 1_000,
+    )
+    .map(|_| ())
+    .expect_err("expired V2 request rejects");
+    assert_eq!(expired.diagnostic_code(), "query_remote_v2_request_expired");
+
+    let restarted = RemoteCapabilities::new(
+        advertisement.capabilities().clone(),
+        RemoteExecutorBinding::new(
+            "orm-capabilities-v2-executor",
+            "orm-capabilities-v2-restarted",
+        )
+        .expect("restarted epoch"),
+        advertisement.reply_key(),
+    );
+    let mismatch = preflight_remote_request_v2_at(
+        &request,
+        &context,
+        &restarted,
+        QueryV2AnswerLimits::default(),
+        NOW_MS,
+    )
+    .map(|_| ())
+    .expect_err("captured V2 request cannot cross epoch");
+    assert_eq!(
+        mismatch.diagnostic_code(),
+        "query_remote_v2_advertisement_mismatch"
+    );
 }
 
 #[test]

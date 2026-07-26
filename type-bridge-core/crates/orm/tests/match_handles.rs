@@ -75,6 +75,48 @@ fn registry() -> Arc<DescriptorRegistry> {
             meta: Default::default(),
         })
         .unwrap();
+    registry
+        .register_entity(EntityDescriptor {
+            type_name: "node".into(),
+            is_abstract: true,
+            parent_type: None,
+            owned_attributes: vec![],
+            doc: None,
+            meta: Default::default(),
+        })
+        .unwrap();
+    registry
+        .register_entity(EntityDescriptor {
+            type_name: "leaf-node".into(),
+            is_abstract: false,
+            parent_type: Some("node".into()),
+            owned_attributes: vec![],
+            doc: None,
+            meta: Default::default(),
+        })
+        .unwrap();
+    registry
+        .register_relation(RelationDescriptor {
+            type_name: "directed-edge".into(),
+            is_abstract: false,
+            parent_type: None,
+            owned_attributes: vec![],
+            roles: vec![
+                RoleDescriptor {
+                    role_name: "origin".into(),
+                    player_type_names: vec!["leaf-node".into()],
+                    ..Default::default()
+                },
+                RoleDescriptor {
+                    role_name: "destination".into(),
+                    player_type_names: vec!["leaf-node".into()],
+                    ..Default::default()
+                },
+            ],
+            doc: None,
+            meta: Default::default(),
+        })
+        .unwrap();
     let inherited_name = OwnedAttributeDescriptor {
         annotations: vec![Annotation::Key],
         ..attribute("name", "party-name", ValueType::String)
@@ -122,6 +164,22 @@ fn registry() -> Arc<DescriptorRegistry> {
             parent_type: Some("association".into()),
             owned_attributes: vec![],
             roles: vec![inherited_participant.clone()],
+            doc: None,
+            meta: Default::default(),
+        })
+        .unwrap();
+    registry
+        .register_relation(RelationDescriptor {
+            type_name: "specialized-association".into(),
+            is_abstract: false,
+            parent_type: Some("association".into()),
+            owned_attributes: vec![],
+            roles: vec![RoleDescriptor {
+                role_name: "member".into(),
+                player_type_names: vec!["person".into()],
+                overrides: Some("participant".into()),
+                ..Default::default()
+            }],
             doc: None,
             meta: Default::default(),
         })
@@ -459,7 +517,9 @@ fn collect_role_edge_ids(expression: &MatchExpr, ids: &mut Vec<u16>) {
             }
         }
         MatchExpr::Not { expression } => collect_role_edge_ids(expression, ids),
-        MatchExpr::FieldValue { .. } | MatchExpr::FieldComparison { .. } => {}
+        MatchExpr::FieldValue { .. }
+        | MatchExpr::FieldComparison { .. }
+        | MatchExpr::Reachable { .. } => {}
     }
 }
 
@@ -527,6 +587,227 @@ fn duplicate_cross_session_and_unattached_handles_are_rejected() {
             .unwrap()
             .compare_field(ComparisonOp::Equal, &foreign_person.field("name").unwrap()),
         "cross_session_handle",
+    );
+}
+
+#[test]
+fn bounded_reachability_is_session_owned_bounded_and_subtype_aware() {
+    let registry = registry();
+    let session = SessionHandle::new(Arc::clone(&registry));
+    let other = SessionHandle::new(registry);
+    let source = session.subtypes("node").unwrap();
+    let target = session.subtypes("node").unwrap();
+    let foreign = other.subtypes("node").unwrap();
+
+    assert_match_code(
+        session.reachable(
+            "directed-edge",
+            "origin",
+            "destination",
+            &source,
+            &target,
+            3,
+            2,
+        ),
+        "reachable_bounds",
+    );
+    assert_match_code(
+        session.reachable(
+            "directed-edge",
+            "origin",
+            "destination",
+            &source,
+            &target,
+            1,
+            65,
+        ),
+        "reachable_depth_limit",
+    );
+    assert_match_code(
+        session.reachable(
+            "directed-edge",
+            "origin",
+            "destination",
+            &source,
+            &foreign,
+            0,
+            2,
+        ),
+        "cross_session_handle",
+    );
+    assert_match_code(
+        session.reachable(
+            "directed-edge",
+            "origin",
+            "destination",
+            &session.exact("node").unwrap(),
+            &target,
+            0,
+            2,
+        ),
+        "incompatible_reachable_endpoint",
+    );
+
+    let reachable = session
+        .reachable(
+            "directed-edge",
+            "origin",
+            "destination",
+            &source,
+            &target,
+            0,
+            3,
+        )
+        .unwrap();
+    let deep = session
+        .reachable(
+            "directed-edge",
+            "origin",
+            "destination",
+            &source,
+            &target,
+            1,
+            64,
+        )
+        .unwrap();
+    let deep_query = session
+        .query(session.positional([source.one(), target.one()]).unwrap())
+        .unwrap()
+        .where_predicate(deep.and(&deep).unwrap())
+        .unwrap();
+    assert_match_code(
+        deep_query.validate_count_by(&source),
+        "reachable_expansion_limit",
+    );
+    session
+        .query(session.positional([source.one(), target.one()]).unwrap())
+        .unwrap()
+        .where_predicate(reachable.and(&reachable).unwrap())
+        .unwrap()
+        .validate_count_by(&source)
+        .expect("nested root conjunction remains valid");
+    let query = session
+        .query(session.positional([source.one(), target.one()]).unwrap())
+        .unwrap()
+        .where_predicate(reachable)
+        .unwrap();
+    let validated = query.validate_count_by(&source).unwrap();
+    let MatchExpr::Reachable {
+        relation,
+        role_from,
+        role_to,
+        source,
+        target,
+        min_depth,
+        max_depth,
+    } = validated.request().plan.predicate.as_ref().unwrap()
+    else {
+        panic!("expected bounded reachability")
+    };
+    assert_eq!(relation.as_str(), "relation:directed-edge");
+    assert_eq!(role_from.name, "origin");
+    assert_eq!(role_to.name, "destination");
+    assert_eq!((*source, *target), (BindingId::new(0), BindingId::new(1)));
+    assert_eq!((*min_depth, *max_depth), (0, 3));
+    assert!(
+        validated
+            .capabilities()
+            .contains(Capability::BoundedReachability)
+    );
+}
+
+#[test]
+fn bounded_reachability_is_rejected_under_disjunction_or_negation() {
+    let session = SessionHandle::new(registry());
+    let source = session.exact("leaf-node").unwrap();
+    let target = session.exact("leaf-node").unwrap();
+    let reachable = session
+        .reachable(
+            "directed-edge",
+            "origin",
+            "destination",
+            &source,
+            &target,
+            1,
+            2,
+        )
+        .unwrap();
+
+    let query = session
+        .query(session.positional([source.one(), target.one()]).unwrap())
+        .unwrap();
+    assert_match_code(
+        query
+            .where_predicate(reachable.or(&reachable).unwrap())
+            .unwrap()
+            .validate_count_by(&source),
+        "reachable_not_root",
+    );
+    assert_match_code(
+        query
+            .where_predicate(reachable.not())
+            .unwrap()
+            .validate_count_by(&source),
+        "reachable_not_root",
+    );
+}
+
+#[test]
+fn reachable_canonicalizes_an_inherited_role_to_the_exact_child_relation() {
+    let session = SessionHandle::new(registry());
+    let child_relation = session.exact("special-association").unwrap();
+    let inherited = child_relation
+        .role_owned_by("association", "participant")
+        .expect("ancestor role reference remains effective on the child");
+    let source = session.exact("person").unwrap();
+    let target = session.exact("person").unwrap();
+
+    let reachable = session
+        .reachable(
+            "special-association",
+            &inherited.role_id().name,
+            &inherited.role_id().name,
+            &source,
+            &target,
+            1,
+            2,
+        )
+        .expect("effective inherited role is accepted by name");
+    let validated = session
+        .query(session.positional([source.one(), target.one()]).unwrap())
+        .unwrap()
+        .where_predicate(reachable)
+        .unwrap()
+        .validate_count_by(&source)
+        .unwrap();
+    let MatchExpr::Reachable {
+        relation,
+        role_from,
+        role_to,
+        ..
+    } = validated.request().plan.predicate.as_ref().unwrap()
+    else {
+        panic!("expected bounded reachability");
+    };
+    assert_eq!(relation.as_str(), "relation:special-association");
+    assert_eq!(
+        role_from.owner.as_str(),
+        "relation:special-association",
+        "provider lowering receives the exact child relation-owned role",
+    );
+    assert_eq!(role_to.owner, role_from.owner);
+
+    assert_match_code(
+        session.reachable(
+            "specialized-association",
+            &inherited.role_id().name,
+            &inherited.role_id().name,
+            &source,
+            &target,
+            1,
+            2,
+        ),
+        "unknown_role",
     );
 }
 

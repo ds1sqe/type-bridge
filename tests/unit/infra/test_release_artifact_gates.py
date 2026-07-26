@@ -81,6 +81,32 @@ def test_core_sdist_includes_optional_rust_path_dependency() -> None:
     assert {"path": "LICENSE", "format": "sdist"} in included
 
 
+def test_core_artifact_builders_pin_the_validated_maturin_contract() -> None:
+    """All release builders must retain identical sdist transformation semantics."""
+    pyproject = tomllib.loads(
+        (REPO_ROOT / "type-bridge-core/pyproject.toml").read_text(encoding="utf-8")
+    )
+    ci = CI_WORKFLOW.read_text(encoding="utf-8")
+    release = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+    action = "PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b"
+    version = "maturin-version: v1.14.1"
+    rust_toolchain = "rust-toolchain: 1.94.1"
+
+    assert pyproject["build-system"]["requires"] == ["maturin==1.14.1"]
+    assert ci.count(action) == 1
+    assert ci.count(version) == 1
+    assert 'RUST_STABLE_TOOLCHAIN: "1.94.1"' in ci
+    ci_step = ci.split(action, maxsplit=1)[1].split("\n      - name:", maxsplit=1)[0]
+    assert "rust-toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}" in ci_step
+    assert release.count(action) == 2
+    assert release.count(version) == 2
+    assert release.count(rust_toolchain) == 2
+    release_steps = [
+        suffix.split("\n      - name:", maxsplit=1)[0] for suffix in release.split(action)[1:]
+    ]
+    assert all(version in step and rust_toolchain in step for step in release_steps)
+
+
 def test_core_metadata_advertises_only_the_supported_python_implementation() -> None:
     pyproject = tomllib.loads(
         (REPO_ROOT / "type-bridge-core/pyproject.toml").read_text(encoding="utf-8")
@@ -471,13 +497,67 @@ def test_release_identity_gate_receives_all_lockstep_authorities() -> None:
 def test_artifact_builds_cannot_start_before_release_identity_passes() -> None:
     workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
 
-    for job in (
-        "build-core-wheels",
-        "build-core-sdist",
-        "build-python",
-        "build-node-native",
-    ):
+    core_wheels = job_block(workflow, "build-core-wheels")
+    assert needs_line(core_wheels) == "    needs: [validate-release-identity, build-python]"
+    for job in ("build-core-sdist", "build-python", "build-node-native"):
         assert needs_line(job_block(workflow, job)) == "    needs: validate-release-identity"
+
+
+def test_each_core_wheel_executes_v2_authoring_on_its_native_target() -> None:
+    workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+    build = job_block(workflow, "build-core-wheels")
+    legs = re.findall(
+        r"^          - target: (.+)\n"
+        r"^            runner: (.+)\n"
+        r"^            artifact: (.+)$",
+        build,
+        re.MULTILINE,
+    )
+
+    assert legs == [
+        (
+            "x86_64-unknown-linux-gnu",
+            "ubuntu-latest",
+            "core-wheels-linux-x86_64",
+        ),
+        (
+            "aarch64-unknown-linux-gnu",
+            "ubuntu-24.04-arm",
+            "core-wheels-linux-aarch64",
+        ),
+        (
+            "x86_64-apple-darwin",
+            "macos-15-intel",
+            "core-wheels-macos-x86_64",
+        ),
+        (
+            "aarch64-apple-darwin",
+            "macos-14",
+            "core-wheels-macos-aarch64",
+        ),
+        (
+            "x86_64-pc-windows-msvc",
+            "windows-latest",
+            "core-wheels-windows-x86_64",
+        ),
+    ]
+    assert "docker/setup-qemu-action" not in build
+    assert "if: runner.os != 'Linux'" not in build
+    assert "name: python-dist" in build
+    assert "path: tmp/python-v2-platform-root" in build
+    runner = "scripts/ci/run_python_v2_platform_artifact.py"
+    assert runner in build
+    for argument in (
+        "--root-dist-dir tmp/python-v2-platform-root",
+        "--core-dist-dir type-bridge-core/dist",
+        '--work-dir "${{ runner.temp }}/type-bridge-v2-platform-artifact"',
+        '--expected-version "${{ env.PYTHON_RELEASE_VERSION }}"',
+        '--source-root "${{ github.workspace }}"',
+        "tests/fixtures/query-v2-model-remote-parity-declared.json",
+    ):
+        assert argument in build
+    assert build.index("name: Build wheel") < build.index(runner)
+    assert build.index(runner) < build.index("name: Upload wheel artifact")
 
 
 def test_release_channels_have_fixed_non_attacker_controlled_identities() -> None:
@@ -773,6 +853,36 @@ def test_real_node_declaration_parity_gate_runs_in_every_acceptance_entrypoint()
         assert source.index("npm run test:dts") < source.index("npm run dts:parity")
 
 
+def test_node_scope_probe_runs_in_every_acceptance_entrypoint() -> None:
+    package = json.loads(
+        (REPO_ROOT / "type-bridge-core/crates/node/package.json").read_text(encoding="utf-8")
+    )
+    assert package["scripts"]["scope:probe"] == (
+        "node --test tests/scope-probe.test.cjs && node tests/scope-probe.cjs"
+    )
+
+    ci_node = job_block(CI_WORKFLOW.read_text(encoding="utf-8"), "node-check")
+    release_pack = job_block(
+        RELEASE_WORKFLOW.read_text(encoding="utf-8"),
+        "pack-node-package",
+    )
+    test_script = (REPO_ROOT / "test.sh").read_text(encoding="utf-8")
+    check_script = (REPO_ROOT / "scripts/check.sh").read_text(encoding="utf-8")
+    for source in (ci_node, release_pack):
+        assert source.count("npm run scope:probe") == 1
+    for source in (test_script, check_script):
+        assert source.count("npm run scope:probe") == 2
+    for source in (ci_node, release_pack, test_script, check_script):
+        assert source.index("npm run build") < source.index("npm run scope:probe")
+
+    for source in (ci_node, release_pack, check_script):
+        assert source.index("npm run typecheck:query-contract") < source.index(
+            "npm run scope:probe"
+        )
+    for source in (ci_node, release_pack, test_script, check_script):
+        assert source.index("npm run scope:probe") < source.index("npm run test:unit")
+
+
 def test_standalone_released_rule_wire_runs_in_every_acceptance_entrypoint() -> None:
     """The no-feature-unification probe is outside the parent Cargo workspace."""
     fixture = tomllib.loads(
@@ -827,24 +937,58 @@ def test_live_cli_workspace_state_machine_is_required_locally_and_in_ci() -> Non
     assert test_script.count("timeout --foreground") >= 6
 
 
+def test_remote_model_parity_is_explicitly_required_in_the_tls_lane() -> None:
+    """Both public bindings must exercise the new remote terminal over verified TLS."""
+    test_script = (REPO_ROOT / "test.sh").read_text(encoding="utf-8")
+    start = test_script.index("run_tls_transport_steps() {")
+    end = test_script.index('\n}\n\nif [[ "$tls" == 1 ]]', start)
+    tls_lane = test_script[start:end]
+
+    assert (
+        "tests/integration/queries/test_remote_query_session_parity.py"
+        "::test_public_remote_query_session_matches_direct_subtype_hydration"
+    ) in tls_lane
+    assert '"$NODE_DIR/tests/integration/queries/typed-remote-query-parity.test.ts"' in tls_lane
+    for variable in (
+        "TYPEDB_TLS_ADDRESS",
+        "TYPEDB_TLS_HTTP_PORT",
+        "TYPEDB_TLS_ROOT_CA",
+        "SMOKE_TLS_CERT",
+        "SMOKE_TLS_KEY",
+    ):
+        assert tls_lane.count(variable) >= 2
+    assert 'NODE_EXTRA_CA_CERTS="$fixture_root_ca"' in tls_lane
+
+    packed_reader = (REPO_ROOT / "tests/integration/parity/node_v2_authoring_reader.cjs").read_text(
+        encoding="utf-8"
+    )
+    assert "TYPE_BRIDGE_V2_TYPEDB_TLS_ENABLED" in packed_reader
+    assert "TYPE_BRIDGE_V2_TYPEDB_TLS_ROOT_CA" in packed_reader
+    assert "tlsEnabled: true" in packed_reader
+    assert "NODE_EXTRA_CA_CERTS" in packed_reader
+    assert "NODE_TLS_REJECT_UNAUTHORIZED" not in packed_reader
+
+
 def test_live_release_parity_consumes_exact_artifacts_before_every_publish() -> None:
-    """The live F8 gate must execute uploaded candidates without rebuilding."""
+    """The live F8 and V2 gates must execute uploaded candidates without rebuilding."""
     workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
     acceptance = job_block(workflow, "accept-live-artifact-parity")
+    smoke_server = job_block(workflow, "build-v2-smoke-server")
 
     assert needs_line(acceptance) == (
-        "    needs: [build-core-wheels, build-python, pack-node-package]"
+        "    needs: [build-core-wheels, build-python, pack-node-package, build-v2-smoke-server]"
     )
     assert re.findall(
         r'^          - python-version: "([^"]+)"\n'
         r'            typedb-server: "([^"]+)"\n'
-        r'            expect-given: "([01])"$',
+        r'            expect-given: "([01])"\n'
+        r'            expect-legacy-warning: "([01])"$',
         acceptance,
         re.MULTILINE,
     ) == [
-        ("3.12", "typedb/typedb:3.8.3", "0"),
-        ("3.13.5", "typedb/typedb:3.11.5", "0"),
-        ("3.14", "typedb/typedb:3.12.1", "1"),
+        ("3.12", "typedb/typedb:3.8.3", "0", "1"),
+        ("3.13.5", "typedb/typedb:3.11.5", "0", "0"),
+        ("3.14", "typedb/typedb:3.12.1", "1", "0"),
     ]
     assert "image: ${{ matrix.typedb-server }}" in acceptance
     assert "python-version: ${{ matrix.python-version }}" in acceptance
@@ -856,14 +1000,19 @@ def test_live_release_parity_consumes_exact_artifacts_before_every_publish() -> 
         "core-wheels-linux-x86_64",
         "python-dist",
         "node-package",
+        "v2-smoke-server",
     ):
         assert f"name: {artifact}" in acceptance
     assert "type_bridge_core-*linux*x86_64.whl" in acceptance
     assert "TYPE_BRIDGE_PARITY_CORE_WHEEL" in acceptance
     assert "TYPE_BRIDGE_PARITY_ROOT_WHEEL" in acceptance
     assert "TYPE_BRIDGE_PARITY_NODE_PACKAGE" in acceptance
+    assert "TYPE_BRIDGE_V2_SMOKE_SERVER" in acceptance
     assert 'TYPE_BRIDGE_PARITY_STRICT: "1"' in acceptance
     assert "TYPE_BRIDGE_PARITY_EXPECT_GIVEN: ${{ matrix.expect-given }}" in acceptance
+    assert (
+        "TYPE_BRIDGE_PARITY_EXPECT_LEGACY_WARNING: ${{ matrix.expect-legacy-warning }}"
+    ) in acceptance
     assert 'USE_DOCKER: "false"' in acceptance
 
     assert "uv venv" in acceptance
@@ -872,8 +1021,11 @@ def test_live_release_parity_consumes_exact_artifacts_before_every_publish() -> 
     assert "leaked to the source checkout" in acceptance
     assert "escaped the exact-wheel environment" in acceptance
     assert "test_live_typed_query_summary_and_f8_contract_match_built_artifacts" in acceptance
+    assert "test_public_remote_query_session_matches_direct_subtype_hydration" in acceptance
     assert "--import-mode=importlib" in acceptance
     assert "release-live-parity.xml" in acceptance
+    assert "release-v2-artifact-parity.xml" in acceptance
+    assert "matrix.typedb-server == 'typedb/typedb:3.12.1'" in acceptance
     assert '"tests": 1' in acceptance
     assert '"failures": 0' in acceptance
     assert '"errors": 0' in acceptance
@@ -892,6 +1044,19 @@ def test_live_release_parity_consumes_exact_artifacts_before_every_publish() -> 
     ):
         assert forbidden not in acceptance
 
+    assert needs_line(smoke_server) == "    needs: validate-release-identity"
+    assert "toolchain: 1.94.1" in smoke_server
+    assert (
+        "cargo build --manifest-path type-bridge-core/Cargo.toml "
+        "--release -p type-bridge-server --features v2-query "
+        "--example v2_smoke_server"
+    ) in " ".join(smoke_server.split())
+    assert "name: v2-smoke-server" in smoke_server
+    assert "path: type-bridge-core/target/release/examples/v2_smoke_server" in smoke_server
+    assert "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02" in smoke_server
+    assert "npm publish" not in smoke_server
+    assert "cargo publish" not in smoke_server
+
     helper = (REPO_ROOT / "tests/integration/parity/cross_language.py").read_text(encoding="utf-8")
     assert 'PARITY_NODE_PACKAGE_ENV = "TYPE_BRIDGE_PARITY_NODE_PACKAGE"' in helper
     assert "if supplied_package is None:" in helper
@@ -906,6 +1071,9 @@ def test_live_release_parity_consumes_exact_artifacts_before_every_publish() -> 
     )
     assert "TYPE_BRIDGE_PARITY_EXPECT_GIVEN" in source_reader
     assert "TYPE_BRIDGE_PARITY_EXPECT_GIVEN" in wheel_reader
+    assert "TYPE_BRIDGE_PARITY_EXPECT_LEGACY_WARNING" in source_reader
+    assert '"legacy_notices": legacy_notices' in wheel_reader
+    assert "legacy_notices: legacyNotices" in node_reader
     assert "session.var(ParityQueryEnvelope)" in source_reader
     assert "QuerySession(connection).var(Envelope)" in wheel_reader
     assert "cannot materialize nested relation role" in source_reader
@@ -936,6 +1104,7 @@ def test_live_node_reader_consumes_supplied_tarball_without_npm_pack(
             archive.addfile(info, io.BytesIO(content))
 
     monkeypatch.setenv(cross_language.PARITY_NODE_PACKAGE_ENV, str(artifact))
+    monkeypatch.setenv("NODE_OPTIONS", "--throw-deprecation")
 
     def fake_which(name: str) -> str | None:
         assert name == "node", "the supplied-artifact path must not inspect npm"
@@ -964,7 +1133,12 @@ def test_live_node_reader_consumes_supplied_tarball_without_npm_pack(
         assert env["TYPEDB_HTTP_PORT"] == "8000"
         assert env["TYPE_BRIDGE_PARITY_DATABASE"] == "artifact-parity"
         assert "TYPE_BRIDGE_NODE_NATIVE_PATH" not in env
-        payload = {"artifact": "packed", "summary": {"relation_player": "shallow"}}
+        assert "NODE_OPTIONS" not in env
+        payload = {
+            "artifact": "packed",
+            "legacy_notices": [],
+            "summary": {"relation_player": "shallow"},
+        }
         return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
 
     monkeypatch.setattr(cross_language.shutil, "which", fake_which)
@@ -976,8 +1150,193 @@ def test_live_node_reader_consumes_supplied_tarball_without_npm_pack(
         http_port=8000,
     ) == {
         "artifact": "packed",
+        "legacy_notices": [],
         "summary": {"relation_player": "shallow"},
     }
+
+
+@pytest.mark.parametrize("tls_enabled", (False, True))
+def test_live_v2_node_reader_consumes_query_v2_subpath_from_supplied_tarball(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tls_enabled: bool,
+) -> None:
+    """The V2 release path resolves every facade from the immutable tarball."""
+    artifact = tmp_path / "type-bridge-node-v2-test.tgz"
+    members = {
+        "package/dist/index.js": b"module.exports = {};\n",
+        "package/dist/query-v2.js": b"module.exports = {};\n",
+        "package/dist/query-v2.d.ts": b"export {};\n",
+        "package/dist/typed/index.js": b"module.exports = {};\n",
+        "package/dist/typed/index.d.ts": b"export {};\n",
+        "package/type_bridge_node.linux-x64-gnu.node": b"native\n",
+    }
+    with tarfile.open(artifact, "w:gz") as archive:
+        for name, content in members.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(content)
+            archive.addfile(info, io.BytesIO(content))
+    declared = tmp_path / "declared.json"
+    declared.write_text("{}\n", encoding="utf-8")
+    typedb_root = tmp_path / "typedb-root.pem"
+    remote_root = tmp_path / "remote-root.pem"
+    typedb_root.write_text("typedb root\n", encoding="utf-8")
+    remote_root.write_text("remote root\n", encoding="utf-8")
+    server_url = "https://127.0.0.1:18080" if tls_enabled else "http://127.0.0.1:18080"
+
+    monkeypatch.setenv(cross_language.PARITY_NODE_PACKAGE_ENV, str(artifact))
+    monkeypatch.setenv("NODE_EXTRA_CA_CERTS", "/ambient/must-not-leak.pem")
+
+    def fake_which(name: str) -> str | None:
+        assert name == "node", "the supplied-artifact path must not inspect npm"
+        return "/usr/bin/node"
+
+    def fake_run(
+        command: list[str],
+        *,
+        check: bool,
+        cwd: Path,
+        env: dict[str, str],
+        capture_output: bool,
+        text: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        assert command == ["node", str(cross_language.PACKED_V2_AUTHORING_READER)]
+        assert check is False
+        assert capture_output is True
+        assert text is True
+        installed = cwd / "node_modules" / "@type-bridge" / "node"
+        for member in (
+            "dist/index.js",
+            "dist/query-v2.js",
+            "dist/query-v2.d.ts",
+            "dist/typed/index.js",
+            "dist/typed/index.d.ts",
+            "type_bridge_node.linux-x64-gnu.node",
+        ):
+            assert (installed / member).is_file()
+        assert env["TYPE_BRIDGE_V2_DECLARED_FIXTURE"] == str(declared)
+        assert env["TYPE_BRIDGE_V2_SERVER_URL"] == server_url
+        assert "TYPE_BRIDGE_NODE_NATIVE_PATH" not in env
+        assert env["TYPE_BRIDGE_V2_TYPEDB_TLS_ENABLED"] == ("1" if tls_enabled else "0")
+        if tls_enabled:
+            assert env["TYPE_BRIDGE_V2_TYPEDB_TLS_ROOT_CA"] == str(typedb_root.resolve())
+            assert env["NODE_EXTRA_CA_CERTS"] == str(remote_root.resolve())
+        else:
+            assert "TYPE_BRIDGE_V2_TYPEDB_TLS_ROOT_CA" not in env
+            assert "NODE_EXTRA_CA_CERTS" not in env
+        payload = {
+            "advanced": {"exchanges": 1},
+            "artifact": "packed-v2",
+            "model": {"exchanges": 1},
+        }
+        return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
+
+    monkeypatch.setattr(cross_language.shutil, "which", fake_which)
+    monkeypatch.setattr(cross_language.subprocess, "run", fake_run)
+
+    assert cross_language.read_v2_authoring_with_packed_node(
+        "localhost:1729",
+        "artifact-parity",
+        http_port=8000,
+        declared_fixture=declared,
+        server_url=server_url,
+        typedb_tls_root_ca=typedb_root if tls_enabled else None,
+        remote_tls_root_ca=remote_root if tls_enabled else None,
+    ) == {
+        "advanced": {"exchanges": 1},
+        "artifact": "packed-v2",
+        "model": {"exchanges": 1},
+    }
+
+
+def test_live_v2_node_reader_requires_both_tls_trust_roots(
+    tmp_path: Path,
+) -> None:
+    """TypeDB TLS and remote HTTPS trust cannot be configured independently."""
+    root = tmp_path / "root.pem"
+    root.write_text("root\n", encoding="utf-8")
+
+    with pytest.raises(AssertionError, match="requires both"):
+        cross_language.read_v2_authoring_with_packed_node(
+            "localhost:1729",
+            "artifact-parity",
+            http_port=8000,
+            declared_fixture=tmp_path / "unused.json",
+            server_url="https://127.0.0.1:18080",
+            typedb_tls_root_ca=root,
+        )
+
+
+def test_strict_live_v2_node_reader_rejects_source_pack_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TYPE_BRIDGE_PARITY_STRICT", "1")
+    monkeypatch.delenv(cross_language.PARITY_NODE_PACKAGE_ENV, raising=False)
+
+    with pytest.raises(
+        AssertionError,
+        match="strict V2 artifact parity requires TYPE_BRIDGE_PARITY_NODE_PACKAGE",
+    ):
+        cross_language.read_v2_authoring_with_packed_node(
+            "localhost:1729",
+            "artifact-parity",
+            http_port=8000,
+            declared_fixture=tmp_path / "unused.json",
+            server_url="http://127.0.0.1:18080",
+        )
+
+
+@pytest.mark.parametrize(
+    ("member_type", "link_target"),
+    (
+        (tarfile.SYMTYPE, "index.js"),
+        (tarfile.LNKTYPE, "package/dist/index.js"),
+    ),
+)
+def test_live_v2_node_reader_rejects_link_members_before_node(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    member_type: bytes,
+    link_target: str,
+) -> None:
+    """A required packed entry cannot alias another archive member."""
+    artifact = tmp_path / "type-bridge-node-v2-link.tgz"
+    members = {
+        "package/dist/index.js": b"module.exports = {};\n",
+        "package/dist/query-v2.d.ts": b"export {};\n",
+        "package/dist/typed/index.js": b"module.exports = {};\n",
+        "package/dist/typed/index.d.ts": b"export {};\n",
+        "package/type_bridge_node.linux-x64-gnu.node": b"native\n",
+    }
+    with tarfile.open(artifact, "w:gz") as archive:
+        for name, content in members.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(content)
+            archive.addfile(info, io.BytesIO(content))
+        linked = tarfile.TarInfo("package/dist/query-v2.js")
+        linked.type = member_type
+        linked.linkname = link_target
+        archive.addfile(linked)
+    declared = tmp_path / "declared.json"
+    declared.write_text("{}\n", encoding="utf-8")
+
+    monkeypatch.setenv(cross_language.PARITY_NODE_PACKAGE_ENV, str(artifact))
+    monkeypatch.setattr(cross_language.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    def unexpected_run(*args: object, **kwargs: object) -> None:
+        raise AssertionError("Node must not execute for a linked package member")
+
+    monkeypatch.setattr(cross_language.subprocess, "run", unexpected_run)
+
+    with pytest.raises(AssertionError, match="non-regular member"):
+        cross_language.read_v2_authoring_with_packed_node(
+            "localhost:1729",
+            "artifact-parity",
+            http_port=8000,
+            declared_fixture=declared,
+            server_url="http://127.0.0.1:18080",
+        )
 
 
 def test_npm_publication_uses_the_accepted_tarball() -> None:
@@ -1059,6 +1418,7 @@ def test_npm_publication_uses_the_accepted_tarball() -> None:
         "npm run build:types",
         "npm run typecheck",
         "npm run typecheck:query-contract",
+        "npm run scope:probe",
         "npm run test:unit",
         "npm run test:dts",
         "npm run dts:parity",

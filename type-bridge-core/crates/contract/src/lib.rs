@@ -37,8 +37,11 @@ pub mod projection_wire;
 /// Reusable typed query plans and the first public V2 read vocabulary.
 pub mod query_plan;
 pub mod query_remote;
+/// Additive V2 remote envelopes and hydrated model-result evidence.
+pub mod query_remote_v2;
 pub mod reserved;
 
+mod query_invocation_wire;
 mod query_plan_wire;
 
 mod declared_schema_wire;

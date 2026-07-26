@@ -521,7 +521,22 @@ def rust_database_for(connection: Any) -> Any:
                 identity.password or "password",
                 **connect_kwargs,
             )
-        except Exception:
+            from type_bridge.session import (
+                _emit_server_deprecation_notice,
+            )
+
+            try:
+                _emit_server_deprecation_notice(
+                    rust_db.server_deprecation_notice,
+                    stacklevel=4,
+                )
+            except BaseException:
+                try:
+                    rust_db.close()
+                except BaseException:
+                    pass
+                raise
+        except BaseException:
             connection._discard_uncommitted_transport()
             raise
         setattr(connection, "_rust_backend_database", rust_db)

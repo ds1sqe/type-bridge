@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable
 from dataclasses import dataclass
 from typing import assert_type
 
@@ -25,7 +26,22 @@ from type_bridge import (
 )
 from type_bridge.fields import FieldDescriptor, FieldRef, NumericFieldRef, StringFieldRef
 from type_bridge.query import Query as RawQuery
-from type_bridge.typed import BoundRole, Page, Predicate, Query, QuerySession, RoleRef
+from type_bridge.query_v2 import (
+    AuthoredQueryInvocation,
+    AuthoredQueryPlan,
+    QueryPlanBuilder,
+    QueryV2Authority,
+)
+from type_bridge.typed import (
+    BoundRole,
+    Page,
+    Predicate,
+    Query,
+    QuerySession,
+    RemoteQuery,
+    RemoteQuerySession,
+    RoleRef,
+)
 
 
 class ArtifactName(String):
@@ -212,3 +228,45 @@ def assert_page_shape(page: Page[PersonWork]) -> None:
     assert_type(page.offset, int)
     assert_type(page.limit, int)
     assert_type(page.total, int | None)
+
+
+def assert_v2_artifact_shapes(
+    authority: QueryV2Authority,
+    remote_session: RemoteQuerySession,
+) -> None:
+    """Pin low-level authoring and strict three-binding remote terminal types."""
+    builder = QueryPlanBuilder(authority)
+    person = builder.binding("person")
+    name = builder.binding("name")
+    wanted = builder.input("wanted_name", "string", False)
+    builder.match(
+        (
+            builder.isa(person, "entity", "artifact-positive-person", True),
+            builder.has(person, name, "artifact-positive-name"),
+            builder.value(
+                "equal",
+                builder.binding_operand(name),
+                builder.input_operand(wanted),
+            ),
+        )
+    )
+    plan: AuthoredQueryPlan = builder.finalize_rows((person, name))
+    invocation: AuthoredQueryInvocation = plan.rows((("Alice",),))
+
+    remote_person = remote_session.var(Person)
+    remote_company = remote_session.var(Company)
+    remote_employment = remote_session.var(Employment)
+    remote = remote_session.query(
+        remote_person,
+        remote_company,
+        remote_employment,
+    ).where(
+        remote_employment.role(Employment.employee).connects(remote_person),
+        remote_employment.role(Employment.employer).connects(remote_company),
+    )
+    assert_type(remote, RemoteQuery[Person, Company, Employment])
+    pending: Awaitable[list[tuple[Person, Company, Employment]]] = remote.rows(
+        limit=10,
+        order_by=(remote_person.field(person_name).asc(),),
+    )
+    del invocation, pending

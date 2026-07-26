@@ -12,6 +12,101 @@ from type_bridge.typed import Page, Query, QuerySession
 
 For Node, import the equivalent API from `@type-bridge/node/typed`.
 
+## Two V2 Query Surfaces
+
+The model-oriented facade in this guide is the usual application API. It uses
+registered `Entity` and `Relation` classes, preserves direct terminal result
+types, and hydrates concrete model instances. A separate low-level facade
+authors the complete V2 plan vocabulary without model classes:
+
+- Python: `type_bridge.query_v2`
+- Node: `@type-bridge/node/query-v2`
+
+Both low-level facades expose exactly `QueryV2Authority`,
+`QueryPlanBuilder`, `AuthoredQueryPlan`, and `AuthoredQueryInvocation`.
+The authority consumes a canonical declared-schema descriptor snapshot, not
+raw TypeQL. Builder transitions are synchronous and perform no provider or
+network I/O. Rust owns the binding identities, semantic checks, canonical
+bytes, fingerprint, and capability set; Python and TypeScript never assemble
+plan JSON.
+
+This Python example authors a typed-input row plan:
+
+```python
+from pathlib import Path
+
+from type_bridge.query_v2 import (
+    AuthoredQueryInvocation,
+    AuthoredQueryPlan,
+    QueryPlanBuilder,
+    QueryV2Authority,
+)
+
+declared_schema_bytes = Path("declared-schema.json").read_bytes()
+authority = QueryV2Authority(
+    declared_schema_bytes,
+    "binding-smoke",
+    "typedb-3.12.1/v1",
+)
+builder = QueryPlanBuilder(authority)
+person = builder.binding("person")
+name = builder.binding("name")
+wanted = builder.input("wanted_name", "string", False)
+builder.match(
+    (
+        builder.isa(person, "entity", "smoke-person", True),
+        builder.has(person, name, "smoke-name"),
+        builder.value(
+            "equal",
+            builder.binding_operand(name),
+            builder.input_operand(wanted),
+        ),
+    )
+)
+plan: AuthoredQueryPlan = builder.finalize_rows((person, name))
+invocation: AuthoredQueryInvocation = plan.rows((("Alice",),))
+```
+
+The equivalent Node authoring uses the same operation names and order:
+
+```typescript
+import { readFileSync } from "node:fs";
+import {
+  AuthoredQueryInvocation,
+  AuthoredQueryPlan,
+  QueryPlanBuilder,
+  QueryV2Authority,
+} from "@type-bridge/node/query-v2";
+
+const declaredSchemaBytes = readFileSync("declared-schema.json");
+const authority = new QueryV2Authority(
+  declaredSchemaBytes,
+  "binding-smoke",
+  "typedb-3.12.1/v1",
+);
+const builder = new QueryPlanBuilder(authority);
+const person = builder.binding("person");
+const name = builder.binding("name");
+const wanted = builder.input("wanted_name", "string", false);
+builder.match([
+  builder.isa(person, "entity", "smoke-person", true),
+  builder.has(person, name, "smoke-name"),
+  builder.value(
+    "equal",
+    builder.bindingOperand(name),
+    builder.inputOperand(wanted),
+  ),
+]);
+const plan: AuthoredQueryPlan = builder.finalizeRows([person, name]);
+const invocation: AuthoredQueryInvocation = plan.rows([["Alice"]]);
+```
+
+The same builder also covers boolean composition, schema and plan-local
+functions, reductions, ordered windows, documents, and bounded reachability.
+Finalization is terminal. Every rejected mutating transition leaves the
+builder at its preceding valid state, so callers may correct that transition
+without rebuilding earlier handles.
+
 ## Start a Query Session
 
 A query session owns the native descriptor registry and the opaque identities of
@@ -91,6 +186,62 @@ escaping and validation.
 `contains` follows TypeDB's Unicode case-folded matching, so
 `name.contains(Name("LIC"))` matches `"Alice"`. Prefix, suffix, and regex
 matching remain case-sensitive unless the explicit regex requests otherwise.
+
+## Bounded Reachability
+
+`QuerySession.reachable()` adds one directed, bounded graph predicate without
+changing the query's inferred result type:
+
+```python
+root = session.var(Person)
+descendant = session.var(Person, subtypes=True)
+
+within_three = session.reachable(
+    root,
+    descendant,
+    Composition,
+    Composition.parent,
+    Composition.child,
+    min_depth=1,
+    max_depth=3,
+)
+
+rows: list[Person] = session.query(descendant).match(root).where(
+    root.field(Name).eq(Name("Alice")),
+    within_three,
+).rows(limit=50, order_by=(descendant.field(Name).asc(),))
+```
+
+The bounds are inclusive. One positive hop is one instance of the exact
+relation type, traversed from the first role to the second. A zero-hop branch
+means that the two endpoint variables bind the same TypeDB concept. Endpoint
+variables retain their own exact or subtype-inclusive match mode, and inherited
+owner-aware role references are accepted for a relation subtype.
+
+Positive paths are finite walks: cycles, repeated vertices, and repeated
+relation instances are allowed. The predicate is existential, so multiple
+proof paths or multiple admitted depths do not duplicate an otherwise equal
+selected identity tuple. They also do not establish an ordering; stable result
+order still comes from explicit order terms plus the engine's validated
+identity extension.
+
+Malformed, reversed, excessive, or structurally over-budget bounds fail while
+the predicate is constructed, before any provider I/O. The implementation
+unrolls the finite depth range into one provider query; it never performs a
+client-side traversal or one request per hop.
+
+Node exposes the same operation with a bounds object:
+
+```typescript
+const withinThree = session.reachable(
+  root,
+  descendant,
+  Composition,
+  compositionRefs.roles.parent,
+  compositionRefs.roles.child,
+  { minDepth: 1, maxDepth: 3 },
+);
+```
 
 ## Select One or Many Models
 
@@ -233,11 +384,137 @@ with db.transaction("read") as tx:
 
 Write, schema, inactive, and already-consumed contexts are rejected.
 
+## Remote Model Queries
+
+`RemoteQuerySession` reuses the complete model grammar above but replaces the
+direct terminal with one caller-supplied asynchronous exchange. Composition is
+immutable, synchronous, and side-effect free: `var()`, `query()`, `match()`,
+`where()`, `allow_cross_join()`, and `reachable()` make no transport call.
+Direct terminals remain synchronous and source-compatible; remote terminals
+are always awaitable.
+
+This Python fragment is extracted verbatim from the live local/remote parity
+test. Its surrounding declared-model fixture supplies `declared`, `SCOPE`,
+`PROFILE`, `advertisement`, `exchange`, and `_query`. The overloaded helper
+preserves the three-binding result type, so the awaitable needs no `Any`,
+cast, or ignore directive:
+
+```python
+remote_session = RemoteQuerySession(
+    QueryV2Authority(declared, SCOPE, PROFILE),
+    advertisement,
+    exchange,
+    RemoteQueryLimits(
+        max_items=10,
+        max_bytes=1 << 20,
+        max_collection_members=30,
+        max_graph_nodes=30,
+        max_attribute_values=30,
+        max_role_players=30,
+        deadline_ms=30_000,
+    ),
+)
+remote_query, remote_employee = _query(remote_session)
+assert exchanges == 0
+remote_rows = asyncio.run(
+    remote_query.rows(
+        limit=10,
+        order_by=(remote_employee.field(ParityPersonName).asc(),),
+    )
+)
+```
+
+The equivalent fragment is extracted verbatim from the Node live parity test.
+Its surrounding fixture supplies the declared models, owner-aware references,
+advertisement, and exchange. The awaited terminal is inferred as
+`Promise<readonly (readonly [ParityPerson, ParityProject,
+ParityAssignment])[]>`; explicit registration lets the base `ParityPerson`
+selection hydrate a concrete `ParityEmployee`:
+
+```typescript
+const remoteSession = new RemoteQuerySession(
+  new QueryV2Authority(declared, SCOPE, PROFILE),
+  advertisement,
+  postRemote,
+  {
+    maxItems: 10n,
+    maxBytes: 1n << 20n,
+    maxCollectionMembers: 30n,
+    maxGraphNodes: 30n,
+    maxAttributeValues: 30n,
+    maxRolePlayers: 30n,
+    deadlineMs: 30_000n,
+  },
+).registerModels(
+  ParityEmployee,
+  ParityProject,
+  ParityAssignment,
+);
+const remoteEmployee = remoteSession.var(ParityPerson, "subtypes");
+const remoteProject = remoteSession.var(ParityProject);
+const remoteAssignment = remoteSession.var(ParityAssignment);
+const remoteQuery = remoteSession
+  .query(remoteEmployee, remoteProject, remoteAssignment)
+  .where(
+    remoteAssignment
+      .role(assignmentRefs.roles.employee)
+      .connects(remoteEmployee),
+    remoteAssignment
+      .role(assignmentRefs.roles.project)
+      .connects(remoteProject),
+  );
+assert.equal(exchanges, 0);
+const remoteRows = await remoteQuery.rows({
+  limit: 10,
+  orderBy: [remoteEmployee.field(personRefs.fields.name).asc()],
+});
+```
+
+The caller owns capability discovery, authentication, TLS, HTTP or other
+transport, application headers, status handling, and retry policy. TypeBridge
+does not fetch `/v2/capabilities`, choose credentials, create an HTTP client,
+or attach application context. The supplied advertisement is a trust input:
+authenticate it over the intended server channel or pin it out of band before
+constructing the session.
+
+One awaited terminal prepares one nonce-bound request, calls `exchange`
+exactly once, and consumes exactly one returned byte buffer. TypeBridge does
+not retry, join, traverse, or issue a second hydration query. A caller may
+invoke a new terminal under its own retry policy, which creates a fresh
+request. Preparation failures make zero exchange calls; transport failures
+are not decoded or retried; replayed, stale, foreign-owner, forged, or
+over-budget replies fail before any model constructor runs.
+
+The six response/hydration ceilings and optional deadline are snapshotted when
+the session is created and may only be tightened by the remote contract.
+Validated remote rows preserve direct ordering and output shape. A
+subtype-inclusive base binding materializes its registered concrete subtype
+(`ParityEmployee` in the Node example) after the complete authenticated hydration
+graph passes validation, without client-side TypeDB I/O.
+
 ## Errors and Resource Safety
 
-Native match failures expose a stable `category` and `code`. The categories are
-`invalid_plan`, `cardinality`, `unsupported_capability`, `stale_schema`,
-`resource_limit`, `provider`, and `result_decode`.
+There are two intentionally distinct structured error contracts:
+
+- Model-query planning, direct execution, and result materialization use
+  Python `MatchRequestError` or Node `TypedMatchError`. Their categories are
+  `invalid_plan`, `cardinality`, `unsupported_capability`, `stale_schema`,
+  `resource_limit`, `provider`, and `result_decode`.
+- Low-level plan authoring and the V2 remote envelope use `QueryV2Error`.
+  Import it from `type_bridge_core` in Python or from the
+  `@type-bridge/node` package root in Node.
+  Its categories are `invalid_contract`, `unsupported_capability`,
+  `resource_limit`, and `integrity`. Remote authentication, nonce, replay,
+  ownership, and request-correlation failures therefore report `integrity`;
+  they do not use the model-query `invalid_plan` taxonomy.
+
+Both contracts preserve a stable `category`, `code`, human-readable message,
+ordered typed `path`, and deterministically keyed typed `details`. Python
+exposes the human-readable field as `.message`. Node `TypedMatchError` uses
+`.message`; Node `QueryV2Error` uses `.diagnosticMessage` while its inherited
+`.message` remains the conventional `"code: message"` exception text.
+Remote authentication and request-correlation failures take precedence over
+any untrusted payload diagnostic.
 
 Validation and capability failures that can be known in advance execute no data
 statement. Provider, decode, timeout, cancellation, and resource-limit failures
@@ -246,11 +523,12 @@ members, response bytes, statements, and duration while consuming the result.
 
 ## Coexisting with Legacy Queries
 
-The immutable facade lives only under `type_bridge.typed` and
-`@type-bridge/node/typed`. Existing package-root raw-TypeQL builders and mutable
-manager queries keep their current mutation, terminal, pagination, aggregation,
-update, and delete behavior. Applications can migrate query-by-query without
-renaming those APIs.
+The model-oriented immutable facade lives under `type_bridge.typed` and
+`@type-bridge/node/typed`; complete low-level plan authoring lives under the
+separate query-v2 paths listed above. Existing package-root raw-TypeQL builders
+and mutable manager queries keep their current mutation, terminal, pagination,
+aggregation, update, and delete behavior. Applications can migrate
+query-by-query without renaming or converting unrelated APIs.
 
 For the complete cross-language semantics, identity rules, and stable error
 table, see the [unified typed-query contract](../development/typed-query-contract.md).

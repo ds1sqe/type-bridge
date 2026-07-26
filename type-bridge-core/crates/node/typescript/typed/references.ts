@@ -853,6 +853,32 @@ export function nativeBindingHandle<Model extends object>(
   return boundVariableState(variable).handle;
 }
 
+/** @internal Inspect one owner-aware role reference during predicate construction. */
+export function queryRoleReference(
+  reference: object,
+): Readonly<{
+  owner: QueryModelClass;
+  ownerTypeName: string;
+  name: string;
+}> {
+  const state = roleReferenceStates.get(reference as object);
+  if (state === undefined) {
+    throw new TypedReferenceError(
+      "role reference was not created by references(model)",
+    );
+  }
+  return Object.freeze({
+    owner: state.owner,
+    ownerTypeName: stableReferenceOwnerTypeName(state),
+    name: state.name,
+  });
+}
+
+/** @internal Construct a public predicate around one opaque native handle. */
+export function createPredicate(handle: NativePredicateHandle): Predicate {
+  return new PredicateImpl(handle);
+}
+
 /** @internal Extract a native predicate for the future Query facade. */
 export function nativePredicateHandle(
   predicate: Predicate,

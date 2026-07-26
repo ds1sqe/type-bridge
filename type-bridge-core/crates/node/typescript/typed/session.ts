@@ -1,5 +1,8 @@
 import type { EntityDescriptor, RelationDescriptor } from "../index.js";
-import { modelConstructorDependencies } from "../model.js";
+import {
+  modelConstructorDependencies,
+  type ModelOwnerToken,
+} from "../model.js";
 import { loadNative } from "../native.js";
 import { isRegisteredRustConnection } from "./runtime-handles.js";
 import {
@@ -13,11 +16,17 @@ import {
 } from "./query.js";
 import {
   TypedMatchError,
+  TypedReferenceError,
   createBoundVar,
+  createPredicate,
+  nativeBindingHandle,
   nativeCall,
   nativeSelectionHandle,
+  queryRoleReference,
   type BoundVar,
+  type Predicate,
   type QueryModelClass,
+  type RoleRef,
   type Selection,
 } from "./references.js";
 
@@ -39,6 +48,34 @@ const diagnosticQuerySessionToken = Symbol(
 );
 
 export type MatchMode = "exact" | "subtypes";
+
+/** Inclusive minimum and maximum hop counts for bounded reachability. */
+export interface ReachabilityBounds {
+  readonly minDepth: number;
+  readonly maxDepth: number;
+}
+
+type ReachabilityRelationClass<Model extends object = object> =
+  QueryModelClass<Model> & {
+    descriptor(): RelationDescriptor;
+  };
+
+type CompatibleOwner<Declared extends object, Actual extends object> = [
+  ModelOwnerToken<Declared>,
+] extends [never]
+  ? false
+  : ModelOwnerToken<Declared> extends ModelOwnerToken<Actual>
+    ? true
+    : false;
+
+type CompatibleEndpoint<
+  Allowed extends object,
+  Actual extends object,
+> = Allowed extends object
+  ? CompatibleOwner<Allowed, Actual> extends true
+    ? Actual
+    : never
+  : never;
 
 /**
  * Owner of one native reference-construction session.
@@ -120,6 +157,66 @@ export class QuerySession {
         : session.subtypes(modelTypeName),
     );
     return createBoundVar(model, modelTypeName, handle);
+  }
+
+  /**
+   * Require one finite directed walk from `source` to `target`.
+   *
+   * Each hop uses the exact relation type in `roleFrom -> roleTo` order.
+   * Bounds are inclusive. Depth zero means exact concept identity; positive
+   * paths may revisit vertices or relation instances. Proof paths are
+   * existential and never alter the selected `Query` output type or ordering;
+   * stable ordering remains controlled by explicit query order terms.
+   */
+  reachable<
+    Source extends object,
+    Target extends object,
+    Relation extends ReachabilityRelationClass,
+    FromOwner extends object,
+    FromPlayer extends object,
+    ToOwner extends object,
+    ToPlayer extends object,
+  >(
+    source: BoundVar<Source> &
+      ([CompatibleEndpoint<FromPlayer, Source>] extends [never]
+        ? never
+        : object),
+    target: BoundVar<Target> &
+      ([CompatibleEndpoint<ToPlayer, Target>] extends [never] ? never : object),
+    relation: Relation &
+      (CompatibleOwner<FromOwner, InstanceType<Relation>> extends true
+        ? object
+        : never) &
+      (CompatibleOwner<ToOwner, InstanceType<Relation>> extends true
+        ? object
+        : never),
+    roleFrom: RoleRef<FromOwner, FromPlayer>,
+    roleTo: RoleRef<ToOwner, ToPlayer>,
+    bounds: ReachabilityBounds,
+  ): Predicate {
+    const { minDepth, maxDepth } = requireReachabilityBounds(bounds);
+    const sourceHandle = nativeBindingHandle(source);
+    const targetHandle = nativeBindingHandle(target);
+    const relationTypeName = requireReachabilityRelation(relation);
+    const from = queryRoleReference(roleFrom);
+    const to = queryRoleReference(roleTo);
+
+    requireReachabilityRoleOwner(relation, from, "roleFrom");
+    requireReachabilityRoleOwner(relation, to, "roleTo");
+
+    this.#register(relation);
+    const handle = nativeCall(() =>
+      querySessionState(this).session.reachable(
+        relationTypeName,
+        from.name,
+        to.name,
+        sourceHandle,
+        targetHandle,
+        minDepth,
+        maxDepth,
+      ),
+    );
+    return createPredicate(handle);
   }
 
   query<const Selections extends QuerySelections>(
@@ -243,6 +340,100 @@ function isRelationDescriptor(
   descriptor: EntityDescriptor | RelationDescriptor,
 ): descriptor is RelationDescriptor {
   return "roles" in descriptor;
+}
+
+function requireReachabilityBounds(
+  bounds: ReachabilityBounds,
+): ReachabilityBounds {
+  if (typeof bounds !== "object" || bounds === null || Array.isArray(bounds)) {
+    throw new TypeError(
+      "reachable bounds must be an object with minDepth and maxDepth",
+    );
+  }
+  return Object.freeze({
+    minDepth: requireReachabilityDepth(bounds.minDepth, "minDepth"),
+    maxDepth: requireReachabilityDepth(bounds.maxDepth, "maxDepth"),
+  });
+}
+
+function requireReachabilityDepth(value: unknown, name: string): number {
+  if (typeof value !== "number" || !Number.isInteger(value)) {
+    throw new TypeError(`${name} must be an integer`);
+  }
+  if (value < 0 || value > 255) {
+    throw new RangeError(`${name} must be between 0 and 255`);
+  }
+  return value;
+}
+
+function requireReachabilityRelation(
+  relation: ReachabilityRelationClass,
+): string {
+  if (
+    typeof relation !== "function" ||
+    typeof relation.typeName !== "string" ||
+    relation.typeName.length === 0 ||
+    typeof relation.descriptor !== "function"
+  ) {
+    throw new TypeError(
+      "reachable relation must be a declared Relation model class",
+    );
+  }
+  const descriptor = relation.descriptor();
+  if (
+    !isRelationDescriptor(descriptor) ||
+    descriptor.type_name !== relation.typeName
+  ) {
+    throw new TypeError(
+      "reachable relation must be a declared Relation model class",
+    );
+  }
+  return relation.typeName;
+}
+
+function relationModelIncludesOwner(
+  relation: ReachabilityRelationClass,
+  owner: QueryModelClass,
+): boolean {
+  const visited = new Set<object>();
+  let current: QueryModelClass | undefined = relation;
+  while (current !== undefined && !visited.has(current)) {
+    if (
+      current === owner ||
+      Object.prototype.isPrototypeOf.call(owner, current)
+    ) {
+      return true;
+    }
+    visited.add(current);
+    const descriptor = current.descriptor();
+    if (!isRelationDescriptor(descriptor) || descriptor.parent_type === null) {
+      return false;
+    }
+    current = modelConstructorDependencies(current)
+      .map((candidate) => candidate as QueryModelClass)
+      .find((candidate) => {
+        if (candidate.typeName !== descriptor.parent_type) {
+          return false;
+        }
+        return isRelationDescriptor(candidate.descriptor());
+      });
+  }
+  return false;
+}
+
+function requireReachabilityRoleOwner(
+  relation: ReachabilityRelationClass,
+  reference: Readonly<{
+    owner: QueryModelClass;
+    ownerTypeName: string;
+  }>,
+  name: "roleFrom" | "roleTo",
+): void {
+  if (!relationModelIncludesOwner(relation, reference.owner)) {
+    throw new TypedReferenceError(
+      `${name} must belong to the relation model or one of its declared ancestors; received owner '${reference.ownerTypeName}'`,
+    );
+  }
 }
 
 function requireSelectionArity(actual: number): void {

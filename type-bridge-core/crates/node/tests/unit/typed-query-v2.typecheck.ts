@@ -6,11 +6,14 @@ import type {
 import { Entity, Key, Relation, attr, field, role } from "../../typescript/index.js";
 import {
   QuerySession,
+  RemoteQuerySession,
   references,
   type Page,
   type Query,
   type QueryRow,
+  type RemoteQuery,
 } from "../../typescript/typed/index.js";
+import { prepareOneTerminal } from "../../typescript/typed/query.js";
 import { diagnosticQuerySession } from "../../typescript/typed/session.js";
 // @ts-expect-error broad selection tuples are internal and must not erase public output types
 import type { QuerySelections } from "../../typescript/typed/index.js";
@@ -40,6 +43,19 @@ class QueryEmployee extends Entity(
   {},
   { parent: QueryParty },
 ) {}
+class QueryTraversal extends Relation("query-v2-traversal", {
+  previous: role(QueryParty),
+  next: role(QueryParty),
+}) {}
+class QuerySpecialTraversal extends Relation(
+  "query-v2-special-traversal",
+  {},
+  { parent: QueryTraversal },
+) {}
+class QueryForeignTraversal extends Relation("query-v2-foreign-traversal", {
+  previous: role(QueryParty),
+  next: role(QueryParty),
+}) {}
 
 declare const database: RustDatabase;
 declare const transaction: RustTransactionContext;
@@ -65,8 +81,12 @@ const secondPerson = databaseSession.var(QueryPerson);
 const company = databaseSession.var(QueryCompany);
 const sibling = databaseSession.var(QueryPersonSibling);
 const employment = databaseSession.var(QueryEmployment);
+const queryParty = databaseSession.var(QueryParty, "subtypes");
+const queryEmployee = databaseSession.var(QueryEmployee);
 const personRefs = references(QueryPerson);
 const employmentRefs = references(QueryEmployment);
+const traversalRefs = references(QueryTraversal);
+const foreignTraversalRefs = references(QueryForeignTraversal);
 
 declare const legacyTypedQuery: TypedQuery<QueryPerson, { readonly name: string }>;
 void legacyTypedQuery;
@@ -86,6 +106,52 @@ void oneRows;
 void onePage;
 void oneCount;
 void oneExists;
+
+function remoteQueryContract(remoteSession: RemoteQuerySession): void {
+  const remotePerson = remoteSession.var(QueryPerson);
+  const remote: RemoteQuery<readonly [QueryPerson]> =
+    remoteSession.query(remotePerson);
+  const pending: Promise<QueryPerson> = remote.one();
+  void pending;
+
+  const remoteCompany = remoteSession.var(QueryCompany);
+  const remoteEmployment = remoteSession.var(QueryEmployment);
+  const remoteThree: RemoteQuery<
+    readonly [QueryPerson, QueryCompany, QueryEmployment]
+  > = remoteSession
+    .query(remotePerson, remoteCompany, remoteEmployment)
+    .where(
+      remoteEmployment
+        .role(employmentRefs.roles.employee)
+        .connects(remotePerson),
+      remoteEmployment
+        .role(employmentRefs.roles.employer)
+        .connects(remoteCompany),
+    );
+  const pendingRows: Promise<
+    readonly (readonly [QueryPerson, QueryCompany, QueryEmployment])[]
+  > = remoteThree.rows({
+    limit: 10,
+    orderBy: [remotePerson.field(personRefs.fields.name).asc()],
+  });
+  void pendingRows;
+
+  // @ts-expect-error direct terminals are values, not awaitables
+  const directPending: Promise<QueryPerson> = one.one();
+  // @ts-expect-error remote terminals require awaiting before model use
+  const remoteValue: QueryPerson = remote.one();
+  // @ts-expect-error remote sessions construct only the disjoint RemoteQuery facade
+  const directQuery: Query<readonly [QueryPerson]> = remote;
+  // @ts-expect-error released direct queries are not remote-query facades
+  const remoteQuery: RemoteQuery<readonly [QueryPerson]> = one;
+  // @ts-expect-error direct terminal preparation rejects the remote facade
+  prepareOneTerminal(remote);
+  void directPending;
+  void remoteValue;
+  void directQuery;
+  void remoteQuery;
+}
+void remoteQueryContract;
 
 const pair: Query<readonly [QueryPerson, QueryCompany]> = databaseSession.query(
   person,
@@ -132,6 +198,72 @@ const hiddenAndFiltered: Query<readonly [QueryPerson, QueryCompany]> = pair
   )
   .allowCrossJoin(person, company);
 void hiddenAndFiltered;
+
+const reachablePredicate = databaseSession.reachable(
+  queryParty,
+  queryEmployee,
+  QuerySpecialTraversal,
+  traversalRefs.roles.previous,
+  traversalRefs.roles.next,
+  { minDepth: 0, maxDepth: 3 },
+);
+const reachableQuery: Query<readonly [QueryEmployee]> = databaseSession
+  .query(queryEmployee)
+  .match(queryParty)
+  .where(reachablePredicate);
+void reachableQuery;
+
+const employmentReachability = databaseSession.reachable(
+  person,
+  company,
+  QueryEmployment,
+  employmentRefs.roles.employee,
+  employmentRefs.roles.employer,
+  { minDepth: 1, maxDepth: 1 },
+);
+const employmentReachabilityQuery: Query<readonly [QueryCompany]> =
+  databaseSession
+    .query(company)
+    .match(person)
+    .where(employmentReachability);
+void employmentReachabilityQuery;
+
+databaseSession.reachable(
+  // @ts-expect-error the source must be compatible with the ordered from-role player
+  company,
+  person,
+  QueryEmployment,
+  employmentRefs.roles.employee,
+  employmentRefs.roles.employer,
+  { minDepth: 1, maxDepth: 1 },
+);
+databaseSession.reachable(
+  queryParty,
+  queryEmployee,
+  // @ts-expect-error relation-role provenance is nominal, not name/shape based
+  QueryTraversal,
+  foreignTraversalRefs.roles.previous,
+  foreignTraversalRefs.roles.next,
+  { minDepth: 1, maxDepth: 2 },
+);
+databaseSession.reachable(
+  queryParty,
+  queryEmployee,
+  // @ts-expect-error entities cannot be used as the exact reachability relation
+  QueryParty,
+  traversalRefs.roles.previous,
+  traversalRefs.roles.next,
+  { minDepth: 1, maxDepth: 2 },
+);
+databaseSession.reachable(
+  queryParty,
+  queryEmployee,
+  QueryTraversal,
+  traversalRefs.roles.previous,
+  traversalRefs.roles.next,
+  // @ts-expect-error bounds use exact camelCase numeric members
+  { min_depth: 1, max_depth: 2 },
+);
 
 const orderedEmployments = employment
   .collect()

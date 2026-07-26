@@ -1,10 +1,11 @@
 //! Schema-aware validation for typed query foundations.
 
 mod engine;
+mod query_v2_claims;
 mod query_validation;
 mod safety_condition;
 
-pub use query_validation::{ValidatedQuery, validate_query_plan};
+pub use query_validation::{ValidatedQuery, validate_query_local_function, validate_query_plan};
 
 pub use safety_condition::{lower_condition_to_plan, safety_condition_to_assertion_plan};
 
@@ -308,6 +309,7 @@ pub fn validate_migration_assertion_plan(
         &[],
         schema,
         &BTreeMap::new(),
+        &BTreeSet::new(),
         &ASSERTION_ENGINE_CODES,
     )?;
 

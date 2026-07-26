@@ -13,6 +13,7 @@
 //! | `band` | function | Protocol-band lookup; `None` for unmapped versions |
 //! | `check_supported` | function | Window + band gate (installed driver); raises `VersionError` on failure |
 //! | `check_server_supported` | function | Embedded-runtime gate (band-set membership); raises `VersionError` on failure |
+//! | `typedb_server_deprecation_notice` | function | Core-owned notice for a known or unknown legacy server |
 //! | `embedded_driver_version` | function | The band-8 typedb-driver version compiled into the Rust runtime (back-compat) |
 //! | `embedded_driver_versions` | function | All compiled-in driver versions as `{band: version}` dict |
 //! | `server_version` | function | HTTP probe → detected server version string |
@@ -212,6 +213,24 @@ pub fn check_server_supported(server: &str) -> PyResult<()> {
     core_version::check_server_supported(&s, &embedded_bands).map_err(to_py_err)
 }
 
+/// Return the core-owned legacy-server notice, when applicable.
+///
+/// `None` as the input represents the connected legacy fallback whose exact
+/// server version is unavailable. Supported 3.11/3.12 versions return
+/// `None`; malformed versions raise [`VersionError`].
+#[pyfunction(signature = (server=None))]
+pub fn typedb_server_deprecation_notice(server: Option<&str>) -> PyResult<Option<String>> {
+    match server {
+        Some(server) => {
+            let server = server.parse::<core_version::Version>().map_err(to_py_err)?;
+            Ok(core_version::known_server_deprecation_notice(&server))
+        }
+        None => Ok(Some(
+            core_version::unknown_legacy_fallback_deprecation_notice(),
+        )),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // HTTP probe
 // ---------------------------------------------------------------------------
@@ -279,9 +298,14 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(band, m)?)?;
     m.add_function(wrap_pyfunction!(check_supported, m)?)?;
     m.add_function(wrap_pyfunction!(check_server_supported, m)?)?;
+    m.add_function(wrap_pyfunction!(typedb_server_deprecation_notice, m)?)?;
     m.add_function(wrap_pyfunction!(embedded_driver_version, m)?)?;
     m.add_function(wrap_pyfunction!(embedded_driver_versions, m)?)?;
     m.add_function(wrap_pyfunction!(server_version, m)?)?;
     m.add("DEFAULT_HTTP_PORT", core_version::DEFAULT_HTTP_PORT)?;
+    m.add(
+        "TYPEDB_LEGACY_SERVER_DEPRECATION_CODE",
+        core_version::TYPEDB_LEGACY_SERVER_DEPRECATION_CODE,
+    )?;
     Ok(())
 }

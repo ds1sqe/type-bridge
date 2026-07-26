@@ -19,6 +19,8 @@ pub mod match_runtime;
 pub mod migration_runtime;
 pub mod orm;
 pub mod orm_runtime;
+pub mod query_v2_builder_runtime;
+pub mod query_v2_model_remote_runtime;
 pub mod query_v2_runtime;
 pub mod runtime_projection;
 pub mod schema;
@@ -784,6 +786,8 @@ fn type_bridge_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     match_runtime::register(m)?;
     migration_runtime::register(m)?;
     query_v2_runtime::register(m)?;
+    query_v2_builder_runtime::register(m)?;
+    query_v2_model_remote_runtime::register(m)?;
     author::register(m)?;
     schema::register(m)?;
     version::register(m)?;

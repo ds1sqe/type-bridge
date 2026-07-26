@@ -171,6 +171,30 @@ impl DescriptorRegistry {
         descriptors
     }
 
+    /// Clone the complete registry into an independently owned immutable-use
+    /// snapshot for one prepared execution boundary.
+    ///
+    /// The returned registry has no shared lock or mutable descriptor table
+    /// with `self`. Callers may therefore retain it across an asynchronous
+    /// exchange without later registrations changing the schema authority
+    /// used to validate the reply.
+    #[doc(hidden)]
+    pub fn owned_registry_snapshot(&self) -> Result<Self> {
+        let descriptors = self.owned_snapshot()?;
+        let snapshot = Self::new();
+        for descriptor in descriptors.into_values() {
+            match descriptor {
+                TypeDescriptor::Entity(entity) => {
+                    snapshot.register_entity(entity)?;
+                }
+                TypeDescriptor::Relation(relation) => {
+                    snapshot.register_relation(relation)?;
+                }
+            }
+        }
+        Ok(snapshot)
+    }
+
     /// Return the deterministic kind-qualified identity for a registered type.
     pub fn descriptor_id(&self, type_name: &str) -> Option<DescriptorId> {
         self.get(type_name)

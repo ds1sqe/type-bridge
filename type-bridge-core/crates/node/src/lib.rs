@@ -10,6 +10,8 @@
 #[cfg(feature = "contract-test-adapter")]
 mod contract_test_adapter;
 mod match_runtime;
+mod query_v2_builder_runtime;
+mod query_v2_model_remote_runtime;
 pub mod query_v2_runtime;
 mod runtime_projection;
 
@@ -20,7 +22,12 @@ pub use match_runtime::{
     NodeMatchBindingHandle, NodeMatchFieldHandle, NodeMatchOrderHandle, NodeMatchPredicateHandle,
     NodeMatchQueryHandle, NodeMatchRoleHandle, NodeMatchSelectionHandle, NodeMatchSessionHandle,
     NodeMatchShapeHandle, NodeValidatedMatchResultHandle, NodeValidatedThingHandle,
-    revalidate_match_diagnostic,
+    revalidate_match_diagnostic, validate_match_order_term_count,
+};
+pub use query_v2_model_remote_runtime::{
+    NodePendingRemoteModelQuery, NodeRemoteModelQueryContext, query_v2_prepare_remote_model_count,
+    query_v2_prepare_remote_model_exists, query_v2_prepare_remote_model_page,
+    query_v2_prepare_remote_model_rows, query_v2_remote_model_context,
 };
 pub use runtime_projection::{NodeProjectedModelManager, NodeRuntimeProjection};
 
@@ -42,6 +49,11 @@ use type_bridge_orm::{
     OwnedAttributeDescriptor, ProviderRuntimeOwner, RelationDescriptor, SchemaInfo,
     TransactionContext, TxType, TypeDescriptor, ValueType,
 };
+
+/// Native source of truth for the public Node legacy-server warning code.
+#[napi]
+pub const TYPE_DB_SERVER_DEPRECATION_CODE: &str =
+    core_version::TYPEDB_LEGACY_SERVER_DEPRECATION_CODE;
 
 /// JSON-deserialized spec for expression-tree queries.
 ///
@@ -247,6 +259,15 @@ pub struct NodeRustDatabase {
     runtime: Arc<ProviderRuntimeOwner>,
 }
 
+/// Filterable legacy-server notice returned to the TypeScript facade.
+#[napi(object)]
+pub struct NodeServerDeprecationNotice {
+    /// Stable cross-binding warning code.
+    pub code: String,
+    /// Core-owned warning prose.
+    pub message: String,
+}
+
 impl NodeRustDatabase {
     pub(crate) fn handles(&self) -> (Arc<type_bridge_orm::Database>, Arc<ProviderRuntimeOwner>) {
         (Arc::clone(&self.db), Arc::clone(&self.runtime))
@@ -260,6 +281,17 @@ impl NodeRustDatabase {
     #[napi(js_name = "isConnected")]
     pub fn is_connected(&self) -> bool {
         self.db.is_connected()
+    }
+
+    /// Return the core-owned legacy-server notice for this connection.
+    #[napi(js_name = "serverDeprecationNotice")]
+    pub fn server_deprecation_notice(&self) -> Option<NodeServerDeprecationNotice> {
+        self.db
+            .server_deprecation_notice()
+            .map(|message| NodeServerDeprecationNotice {
+                code: core_version::TYPEDB_LEGACY_SERVER_DEPRECATION_CODE.to_owned(),
+                message,
+            })
     }
 
     /// Explicitly close the Rust provider connection.

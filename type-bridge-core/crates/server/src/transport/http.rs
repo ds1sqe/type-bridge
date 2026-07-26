@@ -12,6 +12,12 @@ use crate::error::PipelineError;
 use crate::pipeline::{QueryInput, QueryPipeline, ValidateInput};
 use crate::transport::types::*;
 
+/// The final released V1 HTTP identity.
+///
+/// `/health` is part of the released V1 wire contract, so its body cannot
+/// follow the containing package version without changing bytes in V2.
+const RELEASED_V1_HTTP_VERSION: &str = "1.5.11";
+
 // --- Axum-specific error response types ---
 
 #[derive(Debug, Serialize)]
@@ -152,7 +158,7 @@ async fn handle_validate(
 async fn handle_health(State(pipeline): State<Arc<QueryPipeline>>) -> Json<HealthResponse> {
     Json(HealthResponse {
         status: "ok".to_string(),
-        version: env!("CARGO_PKG_VERSION").to_string(),
+        version: RELEASED_V1_HTTP_VERSION.to_string(),
         typedb_connected: pipeline.is_connected(),
     })
 }

@@ -1,6 +1,10 @@
 """Integration tests for session and transaction lifecycle."""
 
+import os
+import warnings
+
 import pytest
+import type_bridge_core
 from typedb.driver import TransactionType
 
 from type_bridge import (
@@ -11,6 +15,7 @@ from type_bridge import (
     Key,
     SchemaManager,
     String,
+    TypeDBServerDeprecationWarning,
     TypeFlags,
 )
 
@@ -34,6 +39,54 @@ class SessionTestPerson(Entity):
 @pytest.mark.order(400)
 class TestDatabaseLifecycle:
     """Tests for Database connection lifecycle."""
+
+    def test_server_deprecation_notice_matches_live_embedded_and_installed_lines(
+        self,
+        test_database,
+    ):
+        """Each successful live connection warns exactly when its server line is legacy."""
+        from tests.integration.conftest import TEST_DB_ADDRESS, TEST_DB_HTTP_PORT
+
+        database = Database(
+            address=TEST_DB_ADDRESS,
+            database=test_database,
+            http_port=TEST_DB_HTTP_PORT,
+        )
+        try:
+            with warnings.catch_warnings(record=True) as embedded_warnings:
+                warnings.simplefilter("always")
+                database.connect()
+
+            server_version = database.detected_server_version()
+            assert server_version is not None
+            expected_count = int(os.environ.get("TYPE_BRIDGE_EXPECT_LEGACY_WARNING", "0"))
+            assert expected_count in (0, 1)
+            expected_notice = type_bridge_core.typedb_server_deprecation_notice(server_version)
+            assert (expected_notice is not None) is bool(expected_count)
+            embedded_notices = [
+                warning
+                for warning in embedded_warnings
+                if warning.category is TypeDBServerDeprecationWarning
+            ]
+            assert len(embedded_notices) == expected_count
+            assert [str(warning.message) for warning in embedded_notices] == (
+                [] if expected_count == 0 else [expected_notice]
+            )
+
+            with warnings.catch_warnings(record=True) as installed_warnings:
+                warnings.simplefilter("always")
+                _ = database.driver
+            installed_notices = [
+                warning
+                for warning in installed_warnings
+                if warning.category is TypeDBServerDeprecationWarning
+            ]
+            assert len(installed_notices) == expected_count
+            assert [str(warning.message) for warning in installed_notices] == (
+                [] if expected_count == 0 else [expected_notice]
+            )
+        finally:
+            database.close()
 
     def test_connect_creates_rust_handle(self, clean_db):
         """connect() should create a Rust database handle."""

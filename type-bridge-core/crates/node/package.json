@@ -16,6 +16,11 @@
       "require": "./dist/typed/index.js",
       "default": "./dist/typed/index.js"
     },
+    "./query-v2": {
+      "types": "./dist/query-v2.d.ts",
+      "require": "./dist/query-v2.js",
+      "default": "./dist/query-v2.js"
+    },
     "./runtime-projection": {
       "types": "./dist/runtime-projection.d.ts",
       "require": "./dist/runtime-projection.js",
@@ -37,7 +42,7 @@
     "build:typed-integration": "tsc -p tsconfig.typed-integration.json",
     "build:parity-reader": "tsc -p tsconfig.parity.json",
     "build:generator-parity": "tsc -p tsconfig.generator-parity.json",
-    "scope:probe": "node tests/scope-probe.cjs",
+    "scope:probe": "node --test tests/scope-probe.test.cjs && node tests/scope-probe.cjs",
     "dts:parity": "node tests/dts-parity.cjs",
     "dts:baseline": "node tests/dts-parity.cjs --update",
     "test:dts": "node --test tests/dts-parity.test.cjs",

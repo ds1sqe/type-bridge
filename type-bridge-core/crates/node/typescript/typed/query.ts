@@ -29,9 +29,9 @@ import {
 type NativeModule = ReturnType<typeof loadNative>;
 type NativeRegistry = InstanceType<NativeModule["NodeDescriptorRegistry"]>;
 type NativeSession = InstanceType<NativeModule["NodeMatchSessionHandle"]>;
-type NativeQueryHandle = ReturnType<NativeSession["query"]>;
-type NativeOrderHandle = ReturnType<typeof nativeQueryOrderHandle>;
-type NativeBindingHandle = ReturnType<typeof nativeBindingHandle>;
+export type NativeQueryHandle = ReturnType<NativeSession["query"]>;
+export type NativeOrderHandle = ReturnType<typeof nativeQueryOrderHandle>;
+export type NativeBindingHandle = ReturnType<typeof nativeBindingHandle>;
 
 /** The canonical selected-output arity accepted by every typed binding. */
 export type QuerySlotCount =
@@ -137,7 +137,7 @@ type SlotContainsCollection<Slot> = IsCollection<Slot> extends true
     ? NamedRowContainsCollection<Extract<Slot, object>>
     : false;
 
-type QueryContainsCollection<Slots extends QuerySlots> = true extends {
+export type QueryContainsCollection<Slots extends QuerySlots> = true extends {
   [Index in keyof Slots]: SlotContainsCollection<Slots[Index]>;
 }[number]
   ? true
@@ -170,7 +170,7 @@ type OnlyNamedSingular<Row extends object> = NamedSingularKeys<Row> extends infe
       : Row[Extract<Keys, keyof Row>]
   : never;
 
-type PageRootFor<Slots extends QuerySlots> = Slots extends readonly [infer Only]
+export type PageRootFor<Slots extends QuerySlots> = Slots extends readonly [infer Only]
   ? IsNamedRow<Only> extends true
     ? OnlyNamedSingular<Extract<Only, object>>
     : IsCollection<Only> extends true
@@ -180,7 +180,7 @@ type PageRootFor<Slots extends QuerySlots> = Slots extends readonly [infer Only]
     ? Root
     : never;
 
-type SingularOutputsFor<Slots extends QuerySlots> = Slots extends readonly [infer Only]
+export type SingularOutputsFor<Slots extends QuerySlots> = Slots extends readonly [infer Only]
   ? IsNamedRow<Only> extends true
     ? Extract<Only, object>[NamedSingularKeys<Extract<Only, object>>]
     : IsCollection<Only> extends true
@@ -209,12 +209,12 @@ export interface QueryRuntimeContext {
   readonly models: ReadonlyMap<string, QueryModelClass>;
 }
 
-interface QueryState {
+export interface QueryState {
   readonly handle: NativeQueryHandle;
   readonly context: QueryRuntimeContext;
 }
 
-interface TerminalWindow {
+export interface TerminalWindow {
   readonly offset: bigint;
   readonly limit: bigint;
 }
@@ -290,10 +290,7 @@ export class Query<Slots extends QuerySlots> {
   one(
     this: QueryContainsCollection<Slots> extends true ? never : Query<Slots>,
   ): QueryRow<Slots> {
-    const state = queryState(this);
-    prepareDiagnostic(state, () =>
-      state.handle.fetchRowsDiagnostic([], 0n, 1n, "exactly_one"),
-    );
+    const state = prepareOneTerminal(this);
     return terminalAdapter.one(state) as QueryRow<Slots>;
   }
 
@@ -301,17 +298,7 @@ export class Query<Slots extends QuerySlots> {
     this: QueryContainsCollection<Slots> extends true ? never : Query<Slots>,
     options: RowsOptions,
   ): readonly QueryRow<Slots>[] {
-    const state = queryState(this);
-    const window = terminalWindow(options);
-    const orders = nativeOrders(options.orderBy);
-    prepareDiagnostic(state, () =>
-      state.handle.fetchRowsDiagnostic(
-        Array.from(orders),
-        window.offset,
-        window.limit,
-        "bounded_many",
-      ),
-    );
+    const { state, orders, window } = prepareRowsTerminal(this, options);
     return terminalAdapter.rows(state, orders, window) as readonly QueryRow<Slots>[];
   }
 
@@ -320,45 +307,124 @@ export class Query<Slots extends QuerySlots> {
     root: BoundVar<Extract<PageRootFor<Slots>, object>>,
     options: PageOptions,
   ): Page<QueryRow<Slots>> {
-    const state = queryState(this);
-    const window = terminalWindow(options);
-    const orders = nativeOrders(options.orderBy);
-    const nativeRoot = nativeBindingHandle(root);
-    prepareDiagnostic(state, () =>
-      state.handle.pageByDiagnostic(
-        nativeRoot,
-        Array.from(orders),
-        window.offset,
-        window.limit,
-        options.includeTotal ?? false,
-      ),
-    );
+    const { state, nativeRoot, orders, window, includeTotal } =
+      preparePageTerminal(this, root, options);
     return terminalAdapter.pageBy(
       state,
       nativeRoot,
       orders,
       window,
-      options.includeTotal ?? false,
+      includeTotal,
     ) as Page<QueryRow<Slots>>;
   }
 
   countBy<Root extends Extract<SingularOutputsFor<Slots>, object>>(
     root: BoundVar<Root>,
   ): bigint {
-    const state = queryState(this);
-    const nativeRoot = nativeBindingHandle(root);
-    prepareDiagnostic(state, () => state.handle.countByDiagnostic(nativeRoot));
+    const { state, nativeRoot } = prepareCountTerminal(this, root);
     return terminalAdapter.countBy(state, nativeRoot);
   }
 
   existsBy<Root extends Extract<SingularOutputsFor<Slots>, object>>(
     root: BoundVar<Root>,
   ): boolean {
-    const state = queryState(this);
-    const nativeRoot = nativeBindingHandle(root);
-    prepareDiagnostic(state, () => state.handle.existsByDiagnostic(nativeRoot));
+    const { state, nativeRoot } = prepareExistsTerminal(this, root);
     return terminalAdapter.existsBy(state, nativeRoot);
   }
+}
+
+/** @internal Shared direct/remote exactly-one preparation. */
+export function prepareOneTerminal<Slots extends QuerySlots>(
+  query: Query<Slots>,
+): QueryState {
+  const state = queryState(query);
+  prepareDiagnostic(state, () =>
+    state.handle.fetchRowsDiagnostic([], 0n, 1n, "exactly_one"),
+  );
+  return state;
+}
+
+/** @internal Shared direct/remote selected-row preparation. */
+export function prepareRowsTerminal<Slots extends QuerySlots>(
+  query: Query<Slots>,
+  options: RowsOptions,
+): Readonly<{
+  state: QueryState;
+  orders: readonly NativeOrderHandle[];
+  window: TerminalWindow;
+}> {
+  const state = queryState(query);
+  const window = terminalWindow(options);
+  const orders = nativeOrders(options.orderBy);
+  prepareDiagnostic(state, () =>
+    state.handle.fetchRowsDiagnostic(
+      nativeOrderArray(orders),
+      window.offset,
+      window.limit,
+      "bounded_many",
+    ),
+  );
+  return { state, orders, window };
+}
+
+/** @internal Shared direct/remote distinct-root page preparation. */
+export function preparePageTerminal<
+  Slots extends QuerySlots,
+  Root extends object,
+>(
+  query: Query<Slots>,
+  root: BoundVar<Root>,
+  options: PageOptions,
+): Readonly<{
+  state: QueryState;
+  nativeRoot: NativeBindingHandle;
+  orders: readonly NativeOrderHandle[];
+  window: TerminalWindow;
+  includeTotal: boolean;
+}> {
+  const state = queryState(query);
+  const window = terminalWindow(options);
+  const orders = nativeOrders(options.orderBy);
+  const nativeRoot = nativeBindingHandle(root);
+  const includeTotal = options.includeTotal ?? false;
+  prepareDiagnostic(state, () =>
+    state.handle.pageByDiagnostic(
+      nativeRoot,
+      nativeOrderArray(orders),
+      window.offset,
+      window.limit,
+      includeTotal,
+    ),
+  );
+  return { state, nativeRoot, orders, window, includeTotal };
+}
+
+/** @internal Shared direct/remote distinct-root count preparation. */
+export function prepareCountTerminal<
+  Slots extends QuerySlots,
+  Root extends object,
+>(
+  query: Query<Slots>,
+  root: BoundVar<Root>,
+): Readonly<{ state: QueryState; nativeRoot: NativeBindingHandle }> {
+  const state = queryState(query);
+  const nativeRoot = nativeBindingHandle(root);
+  prepareDiagnostic(state, () => state.handle.countByDiagnostic(nativeRoot));
+  return { state, nativeRoot };
+}
+
+/** @internal Shared direct/remote distinct-root existence preparation. */
+export function prepareExistsTerminal<
+  Slots extends QuerySlots,
+  Root extends object,
+>(
+  query: Query<Slots>,
+  root: BoundVar<Root>,
+): Readonly<{ state: QueryState; nativeRoot: NativeBindingHandle }> {
+  const state = queryState(query);
+  const nativeRoot = nativeBindingHandle(root);
+  prepareDiagnostic(state, () => state.handle.existsByDiagnostic(nativeRoot));
+  return { state, nativeRoot };
 }
 
 /** @internal Construct a facade around one native persistent query handle. */
@@ -417,7 +483,22 @@ function queryState(query: object): QueryState {
 }
 
 function nativeOrders(orders: readonly QueryOrder[] | undefined): readonly NativeOrderHandle[] {
-  return orders?.map(nativeQueryOrderHandle) ?? [];
+  if (orders === undefined) {
+    return [];
+  }
+  nativeCall(() => loadNative().validateMatchOrderTermCount(orders.length));
+  return orders.map(nativeQueryOrderHandle);
+}
+
+/**
+ * @internal The order array is freshly created and never mutated after
+ * preparation. Narrow readonly away only at the N-API type boundary so
+ * terminal execution does not allocate another caller-controlled copy.
+ */
+export function nativeOrderArray(
+  orders: readonly NativeOrderHandle[],
+): NativeOrderHandle[] {
+  return orders as NativeOrderHandle[];
 }
 
 function terminalWindow(options: RowsOptions): TerminalWindow {
@@ -496,7 +577,7 @@ function executePageBy(
       state.handle.executePageByOwned(
         database,
         root,
-        Array.from(orders),
+        nativeOrderArray(orders),
         window.offset,
         window.limit,
         includeTotal,
@@ -509,7 +590,7 @@ function executePageBy(
       state.handle.executePageByBorrowed(
         transaction,
         root,
-        Array.from(orders),
+        nativeOrderArray(orders),
         window.offset,
         window.limit,
         includeTotal,
@@ -582,7 +663,7 @@ function executeFetchRows(
     return nativeCall(() =>
       state.handle.executeFetchRowsOwned(
         database,
-        Array.from(orders),
+        nativeOrderArray(orders),
         window.offset,
         window.limit,
         cardinality,
@@ -594,7 +675,7 @@ function executeFetchRows(
     return nativeCall(() =>
       state.handle.executeFetchRowsBorrowed(
         transaction,
-        Array.from(orders),
+        nativeOrderArray(orders),
         window.offset,
         window.limit,
         cardinality,

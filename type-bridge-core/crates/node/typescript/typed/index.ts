@@ -1,7 +1,14 @@
 export {
   QuerySession,
   type MatchMode,
+  type ReachabilityBounds,
 } from "./session.js";
+export { RemoteQuerySession } from "./remote-session.js";
+export type { RemoteQueryLimits } from "./remote-limits.js";
+export {
+  RemoteQuery,
+  type RemoteQueryExchange,
+} from "./remote-query.js";
 export type { Page } from "./page.js";
 export {
   Query,

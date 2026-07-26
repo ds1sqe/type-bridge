@@ -17,6 +17,9 @@
 //! | [`negotiate_server_band`] | Pick the embedded band to connect a server with |
 //! | [`check_supported`] | Installed-driver gate: window + driver band ∈ server's accepted set |
 //! | [`check_server_supported`] | Embedded-runtime gate: window + accepted ∩ embedded ≠ ∅ |
+//! | [`support_status`] | Pure supported/deprecated/unsupported server-line classification |
+//! | [`known_server_deprecation_notice`] | Core-owned notice for a known deprecated server version |
+//! | [`unknown_legacy_fallback_deprecation_notice`] | Core-owned notice for an unknown legacy fallback |
 //! | [`server_version`] | Released Boolean adapter for the HTTP version probe |
 //! | [`server_version_plaintext`] | Explicit plaintext HTTP version probe |
 //! | [`server_version_native_roots`] | HTTPS version probe using native trust roots |
@@ -356,6 +359,116 @@ pub fn check_server_supported(server: &Version, embedded_bands: &[u8]) -> Result
         // In-window, mapped, but this build embeds no driver the server accepts.
         Err(VersionError::EmbeddedUnavailable { server: *server })
     }
+}
+
+// ---------------------------------------------------------------------------
+// Server support and deprecation status
+// ---------------------------------------------------------------------------
+
+/// Stable cross-binding code for TypeDB legacy-server deprecation notices.
+///
+/// Rust tracing, Python warnings, and Node process warnings use this exact
+/// identifier so callers can filter the notice without matching prose.
+pub const TYPEDB_LEGACY_SERVER_DEPRECATION_CODE: &str = "TYPE_BRIDGE_TYPEDB_LEGACY_SERVER";
+
+/// TypeBridge release that removes active TypeDB 3.8/3.10 server support.
+///
+/// The removal follows ordinary major-version SemVer. Every TypeBridge 2.x
+/// release continues to support these server lines.
+pub const TYPEDB_LEGACY_SERVER_REMOVAL_RELEASE: &str = "3.0.0";
+
+/// Support status for one exact, known TypeDB server version.
+///
+/// This classification is pure and does not emit a warning. Bindings decide
+/// how to surface a [`Self::Deprecated`] result while sharing the stable code
+/// and core-owned prose below.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ServerSupportStatus {
+    /// The server is in the active window and has no scheduled compatibility
+    /// removal.
+    Supported,
+    /// The server remains fully supported throughout TypeBridge 2.x but its
+    /// active provider support is scheduled for removal in TypeBridge 3.0.0.
+    Deprecated,
+    /// The server is outside the active window or has no mapped accepted
+    /// protocol path.
+    Unsupported,
+}
+
+impl ServerSupportStatus {
+    /// Return the stable warning code when this status is deprecated.
+    #[must_use]
+    pub const fn deprecation_code(self) -> Option<&'static str> {
+        match self {
+            Self::Deprecated => Some(TYPEDB_LEGACY_SERVER_DEPRECATION_CODE),
+            Self::Supported | Self::Unsupported => None,
+        }
+    }
+
+    /// Return the scheduled TypeBridge removal release when deprecated.
+    #[must_use]
+    pub const fn removal_release(self) -> Option<&'static str> {
+        match self {
+            Self::Deprecated => Some(TYPEDB_LEGACY_SERVER_REMOVAL_RELEASE),
+            Self::Supported | Self::Unsupported => None,
+        }
+    }
+}
+
+/// Classify one exact, known TypeDB server version.
+///
+/// TypeDB 3.8.x and 3.10.x are deprecated but remain operational throughout
+/// TypeBridge 2.x. TypeDB 3.11.x and 3.12.x are supported without a scheduled
+/// removal. Versions rejected by the existing server gate, including the
+/// unreleased 3.9 line, classify as [`ServerSupportStatus::Unsupported`].
+#[must_use]
+pub fn support_status(server: &Version) -> ServerSupportStatus {
+    if !window_contains(server) || server_accepted_bands(server).is_empty() {
+        return ServerSupportStatus::Unsupported;
+    }
+
+    if server.major == 3 && matches!(server.minor, 8 | 10) {
+        ServerSupportStatus::Deprecated
+    } else {
+        ServerSupportStatus::Supported
+    }
+}
+
+/// Return the shared notice for one exact deprecated server version.
+///
+/// Supported and unsupported versions return `None`; unsupported versions
+/// remain the responsibility of the existing version gate.
+#[must_use]
+pub fn known_server_deprecation_notice(server: &Version) -> Option<String> {
+    if support_status(server) != ServerSupportStatus::Deprecated {
+        return None;
+    }
+
+    Some(format!(
+        "TypeDB {server} is on the 3.8/3.10 line, which is deprecated in \
+         type-bridge 2.0. Support for this server line will be removed in \
+         type-bridge {TYPEDB_LEGACY_SERVER_REMOVAL_RELEASE}. Connections keep \
+         working throughout 2.x. Upgrade the server to TypeDB 3.11 or 3.12, \
+         or pin type-bridge>=2,<3."
+    ))
+}
+
+/// Return the shared notice for a connection whose legacy fallback cannot
+/// report an exact TypeDB version.
+///
+/// The wording names the compatibility path rather than claiming that an
+/// unknown server is definitely on a particular semantic-version line.
+#[must_use]
+pub fn unknown_legacy_fallback_deprecation_notice() -> String {
+    format!(
+        "This connection uses the legacy TypeDB 3.8/3.10-compatible fallback \
+         path, which is deprecated in type-bridge 2.0. Support for this path \
+         will be removed in type-bridge {TYPEDB_LEGACY_SERVER_REMOVAL_RELEASE}. \
+         Connections keep working throughout 2.x. Upgrade the server to TypeDB \
+         3.11 or 3.12, or pin type-bridge>=2,<3. Configure an exact server \
+         version for strict validation."
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -1862,6 +1975,122 @@ mod tests {
                 !msg.contains(forbidden),
                 "window rejection leaked forbidden token {forbidden:?}: {msg}"
             );
+        }
+    }
+
+    // -- server support status / deprecation prose ---------------------------
+
+    #[test]
+    fn support_status_classifies_every_current_server_line() {
+        for version in [
+            Version::new(3, 8, 0),
+            Version::new(3, 8, 99),
+            Version::new(3, 10, 0),
+            Version::new(3, 10, 4),
+        ] {
+            assert_eq!(
+                support_status(&version),
+                ServerSupportStatus::Deprecated,
+                "{version}"
+            );
+        }
+
+        for version in [Version::new(3, 11, 5), Version::new(3, 12, 1)] {
+            assert_eq!(
+                support_status(&version),
+                ServerSupportStatus::Supported,
+                "{version}"
+            );
+        }
+    }
+
+    #[test]
+    fn support_status_does_not_reclassify_rejected_versions_as_supported() {
+        for version in [
+            Version::new(3, 7, 3),
+            Version::new(3, 9, 0),
+            Version::new(3, 13, 0),
+            Version::new(4, 0, 0),
+        ] {
+            assert_eq!(
+                support_status(&version),
+                ServerSupportStatus::Unsupported,
+                "{version}"
+            );
+        }
+    }
+
+    #[test]
+    fn deprecated_status_owns_the_stable_code_and_v3_removal_release() {
+        assert_eq!(
+            ServerSupportStatus::Deprecated.deprecation_code(),
+            Some("TYPE_BRIDGE_TYPEDB_LEGACY_SERVER")
+        );
+        assert_eq!(
+            ServerSupportStatus::Deprecated.removal_release(),
+            Some("3.0.0")
+        );
+        assert_eq!(
+            TYPEDB_LEGACY_SERVER_DEPRECATION_CODE,
+            "TYPE_BRIDGE_TYPEDB_LEGACY_SERVER"
+        );
+        assert_eq!(TYPEDB_LEGACY_SERVER_REMOVAL_RELEASE, "3.0.0");
+
+        for status in [
+            ServerSupportStatus::Supported,
+            ServerSupportStatus::Unsupported,
+        ] {
+            assert_eq!(status.deprecation_code(), None);
+            assert_eq!(status.removal_release(), None);
+        }
+    }
+
+    #[test]
+    fn known_server_deprecation_notice_is_exact_and_core_owned() {
+        let notice = known_server_deprecation_notice(&Version::new(3, 10, 4))
+            .expect("3.10 must carry the shared deprecation notice");
+        assert_eq!(
+            notice,
+            "TypeDB 3.10.4 is on the 3.8/3.10 line, which is deprecated in \
+             type-bridge 2.0. Support for this server line will be removed in \
+             type-bridge 3.0.0. Connections keep working throughout 2.x. \
+             Upgrade the server to TypeDB 3.11 or 3.12, or pin \
+             type-bridge>=2,<3."
+        );
+
+        for forbidden in ["band 7", "band 8", "band 9", "2.1.0", ">=2.0,<2.1"] {
+            assert!(!notice.contains(forbidden), "{forbidden}: {notice}");
+        }
+    }
+
+    #[test]
+    fn known_server_notice_only_exists_for_deprecated_supported_lines() {
+        assert!(
+            known_server_deprecation_notice(&Version::new(3, 8, 3))
+                .expect("3.8 must carry a notice")
+                .contains("TypeDB 3.8.3")
+        );
+        assert!(known_server_deprecation_notice(&Version::new(3, 11, 5)).is_none());
+        assert!(known_server_deprecation_notice(&Version::new(3, 12, 1)).is_none());
+        assert!(known_server_deprecation_notice(&Version::new(3, 7, 3)).is_none());
+        assert!(known_server_deprecation_notice(&Version::new(3, 13, 0)).is_none());
+    }
+
+    #[test]
+    fn unknown_legacy_fallback_notice_is_exact_without_claiming_a_server_version() {
+        let notice = unknown_legacy_fallback_deprecation_notice();
+        assert_eq!(
+            notice,
+            "This connection uses the legacy TypeDB 3.8/3.10-compatible \
+             fallback path, which is deprecated in type-bridge 2.0. Support \
+             for this path will be removed in type-bridge 3.0.0. Connections \
+             keep working throughout 2.x. Upgrade the server to TypeDB 3.11 \
+             or 3.12, or pin type-bridge>=2,<3. Configure an exact server \
+             version for strict validation."
+        );
+
+        for forbidden in ["band 7", "band 8", "band 9", "2.1.0", ">=2.0,<2.1"] {
+            assert!(!notice.contains(forbidden), "{forbidden}: {notice}");
         }
     }
 

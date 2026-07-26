@@ -13,17 +13,24 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use serde::{Deserialize, Serialize};
+use serde::de::{Error as _, IgnoredAny, MapAccess, SeqAccess, Visitor};
+use serde::{Deserialize, Deserializer, Serialize};
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory};
 use type_bridge_contract::fingerprint::SemanticProfileId;
-use type_bridge_contract::limits::{MAX_REMOTE_ENVELOPE_BYTES, StructuralLimits};
+use type_bridge_contract::limits::{
+    MAX_QUERY_INVOCATION_BYTES, MAX_REMOTE_ENVELOPE_BYTES, StructuralLimits,
+};
 use type_bridge_contract::managed_scope::ManagedScopeId;
 use type_bridge_contract::query_plan::{
-    InputRow, QueryInvocation, QueryOperation, QueryPlan, decode_query_plan,
+    InputRow, QueryInvocation, QueryOperation, QueryPlan, decode_query_invocation,
+    decode_query_plan,
 };
 use type_bridge_contract::query_remote::{
     DEFAULT_REMOTE_DEADLINE_MS, RemoteCapabilities, RemoteCapabilitiesFingerprint, RemoteLimits,
     RemoteRequestFingerprint, RemoteSigningPublicKey,
+};
+use type_bridge_contract::query_remote_v2::{
+    RemoteLimitsV2, RemoteQueryRequestV2, RemoteReplyDecodeLimitsV2, RemoteRequestFingerprintV2,
 };
 use type_bridge_contract::schema::{DeclaredSchema, DocumentId, decode_declared_schema};
 use type_bridge_contract::schema_delta::ManagedSchemaState;
@@ -34,8 +41,11 @@ use type_bridge_schema_compat::{LiveQueryControlPresence, rebuild_live_query_aut
 
 use crate::Transaction;
 use crate::query_v2::{QueryV2ExecutionError, failure};
+use crate::query_v2_builder::QueryAuthorityIdentity;
 use crate::query_v2_remote::{
-    check_advertised_capabilities, decode_remote_outcome, encode_remote_request_at, remote_outcome,
+    check_advertised_capabilities, check_advertised_capabilities_v2, decode_remote_outcome,
+    decode_remote_outcome_v2, encode_remote_request_at, encode_remote_request_v2_at,
+    remote_outcome,
 };
 use crate::session::backend::{
     MAX_QUERY_V2_SCHEMA_FENCE_DURATION, QueryResult, QueryV2AnswerLimits,
@@ -44,6 +54,28 @@ use crate::session::database::{Database, DatabaseExecutionIdentity};
 
 const PREPARED_CLOSE_GRACE: Duration = Duration::from_secs(1);
 const LIVE_AUTHORITY_REBUILD_CONCURRENCY: usize = 4;
+
+/// Return the binding-neutral diagnostic for a host string that cannot be
+/// represented as a Rust/JSON Unicode scalar sequence.
+#[doc(hidden)]
+pub fn query_v2_host_string_unicode_error() -> Diagnostic {
+    failure(
+        DiagnosticCategory::InvalidContract,
+        "query_v2_host_string_unicode",
+        "host string input must be valid Unicode without surrogate code points",
+    )
+}
+
+/// Return the stable diagnostic for a non-string value at a host text boundary.
+#[doc(hidden)]
+#[must_use]
+pub fn query_v2_host_string_type_error() -> Diagnostic {
+    failure(
+        DiagnosticCategory::InvalidContract,
+        "query_v2_host_string_type",
+        "host string input must be a string value",
+    )
+}
 
 static LIVE_AUTHORITY_REBUILD_SLOTS: LazyLock<Arc<tokio::sync::Semaphore>> = LazyLock::new(|| {
     Arc::new(tokio::sync::Semaphore::new(
@@ -68,6 +100,7 @@ pub async fn acquire_live_authority_rebuild_permit() -> Result<tokio::sync::Owne
 pub struct QueryAuthority {
     declared: DeclaredSchema,
     delta_context: ManagedDeltaContext,
+    identity: QueryAuthorityIdentity,
     managed: ManagedSchemaState,
     resolved: ResolvedSchema,
     control_policy: QueryAuthorityControlPolicy,
@@ -147,6 +180,7 @@ impl QueryAuthority {
         Ok(Self {
             declared,
             delta_context,
+            identity: QueryAuthorityIdentity::fresh(),
             managed,
             resolved,
             control_policy,
@@ -157,6 +191,12 @@ impl QueryAuthority {
     #[must_use]
     pub fn context(&self) -> MigrationAssertionValidationContext<'_> {
         MigrationAssertionValidationContext::new(&self.resolved, &self.managed)
+    }
+
+    /// Return the opaque identity of this exact authority instance.
+    #[must_use]
+    pub fn identity(&self) -> QueryAuthorityIdentity {
+        self.identity.clone()
     }
 
     fn validate(&self, plan_bytes: &[u8]) -> Result<(QueryPlan, ValidatedQuery), Diagnostic> {
@@ -192,31 +232,208 @@ impl PreparedOperation {
     }
 }
 
+fn invocation_input_byte_limit() -> Diagnostic {
+    failure(
+        DiagnosticCategory::ResourceLimit,
+        "query_invocation_input_byte_limit",
+        "invocation input rows exceed the structural byte ceiling",
+    )
+}
+
+fn prepared_invocation_malformed() -> Diagnostic {
+    failure(
+        DiagnosticCategory::InvalidContract,
+        "query_prepared_invocation_malformed",
+        "invocation payloads carry an operation and rectangular rows",
+    )
+}
+
+enum AuthoredInvocationField {
+    Inputs,
+    Operation,
+    PlanFingerprint,
+}
+
+impl<'de> Deserialize<'de> for AuthoredInvocationField {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct FieldVisitor;
+
+        impl Visitor<'_> for FieldVisitor {
+            type Value = AuthoredInvocationField;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a canonical authored invocation field")
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                match value {
+                    "inputs" => Ok(AuthoredInvocationField::Inputs),
+                    "operation" => Ok(AuthoredInvocationField::Operation),
+                    "plan_fingerprint" => Ok(AuthoredInvocationField::PlanFingerprint),
+                    _ => Err(E::unknown_field(
+                        value,
+                        &["inputs", "operation", "plan_fingerprint"],
+                    )),
+                }
+            }
+        }
+
+        deserializer.deserialize_identifier(FieldVisitor)
+    }
+}
+
+struct IgnoredSequence;
+
+impl<'de> Deserialize<'de> for IgnoredSequence {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct SequenceVisitor;
+
+        impl<'de> Visitor<'de> for SequenceVisitor {
+            type Value = IgnoredSequence;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("an input-row array")
+            }
+
+            fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+            where
+                A: SeqAccess<'de>,
+            {
+                while sequence.next_element::<IgnoredAny>()?.is_some() {}
+                Ok(IgnoredSequence)
+            }
+        }
+
+        deserializer.deserialize_seq(SequenceVisitor)
+    }
+}
+
+struct IgnoredObject;
+
+impl<'de> Deserialize<'de> for IgnoredObject {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct ObjectVisitor;
+
+        impl<'de> Visitor<'de> for ObjectVisitor {
+            type Value = IgnoredObject;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a plan-fingerprint object")
+            }
+
+            fn visit_map<A>(self, mut object: A) -> Result<Self::Value, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                while object.next_entry::<IgnoredAny, IgnoredAny>()?.is_some() {}
+                Ok(IgnoredObject)
+            }
+        }
+
+        deserializer.deserialize_map(ObjectVisitor)
+    }
+}
+
+struct AuthoredInvocationShape;
+
+impl<'de> Deserialize<'de> for AuthoredInvocationShape {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct ShapeVisitor;
+
+        impl<'de> Visitor<'de> for ShapeVisitor {
+            type Value = AuthoredInvocationShape;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("the exact canonical authored invocation shape")
+            }
+
+            fn visit_map<A>(self, mut object: A) -> Result<Self::Value, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                match object.next_key()? {
+                    Some(AuthoredInvocationField::Inputs) => {
+                        object.next_value::<IgnoredSequence>()?;
+                    }
+                    _ => return Err(A::Error::custom("inputs must be the first field")),
+                }
+                match object.next_key()? {
+                    Some(AuthoredInvocationField::Operation) => {
+                        object.next_value::<PreparedOperation>()?;
+                    }
+                    _ => return Err(A::Error::custom("operation must be the second field")),
+                }
+                match object.next_key()? {
+                    Some(AuthoredInvocationField::PlanFingerprint) => {
+                        object.next_value::<IgnoredObject>()?;
+                    }
+                    _ => {
+                        return Err(A::Error::custom("plan_fingerprint must be the third field"));
+                    }
+                }
+                if object.next_key::<AuthoredInvocationField>()?.is_some() {
+                    return Err(A::Error::custom(
+                        "authored invocation has an additional field",
+                    ));
+                }
+                Ok(AuthoredInvocationShape)
+            }
+        }
+
+        deserializer.deserialize_map(ShapeVisitor)
+    }
+}
+
+fn has_exact_authored_invocation_shape(invocation_json: &str) -> bool {
+    invocation_json.as_bytes().starts_with(br#"{"inputs":"#)
+        && serde_json::from_str::<AuthoredInvocationShape>(invocation_json).is_ok()
+}
+
 fn parse_invocation(
     plan: &QueryPlan,
     invocation_json: &str,
 ) -> Result<QueryInvocation, Diagnostic> {
-    if !StructuralLimits::CANONICAL.allows_input_bytes(invocation_json.len()) {
-        return Err(failure(
-            DiagnosticCategory::ResourceLimit,
-            "query_invocation_input_byte_limit",
-            "invocation input rows exceed the structural byte ceiling",
-        ));
+    let bytes = invocation_json.as_bytes();
+    let within_legacy_limit = StructuralLimits::CANONICAL.allows_input_bytes(bytes.len());
+    if bytes.len() > MAX_QUERY_INVOCATION_BYTES {
+        return Err(invocation_input_byte_limit());
     }
-    let parsed: PreparedInvocation = serde_json::from_str(invocation_json).map_err(|_| {
-        failure(
-            DiagnosticCategory::InvalidContract,
-            "query_prepared_invocation_malformed",
-            "invocation payloads carry an operation and rectangular rows",
-        )
-    })?;
-    let invocation = QueryInvocation::new(
-        plan,
-        parsed.operation.operation(),
-        parsed.rows.into_iter().map(InputRow::new).collect(),
-    )?;
-    crate::query_v2::preflight_invocation_transport(plan, &invocation)?;
-    Ok(invocation)
+    if within_legacy_limit
+        && let Ok(parsed) = serde_json::from_str::<PreparedInvocation>(invocation_json)
+    {
+        let invocation = QueryInvocation::new(
+            plan,
+            parsed.operation.operation(),
+            parsed.rows.into_iter().map(InputRow::new).collect(),
+        )?;
+        crate::query_v2::preflight_invocation_transport(plan, &invocation)?;
+        return Ok(invocation);
+    }
+
+    if has_exact_authored_invocation_shape(invocation_json) {
+        let invocation = decode_query_invocation(plan, bytes)?;
+        crate::query_v2::preflight_invocation_transport(plan, &invocation)?;
+        return Ok(invocation);
+    }
+    if !within_legacy_limit {
+        return Err(invocation_input_byte_limit());
+    }
+    Err(prepared_invocation_malformed())
 }
 
 /// Execute one prepared plan against a connected database, locally.
@@ -910,6 +1127,248 @@ pub fn prepare_remote_query(
     })
 }
 
+/// One additive V2 request and its one-shot authenticated reply decoder.
+pub struct PendingRemoteQueryV2 {
+    state: Arc<PendingRemoteQueryStateV2>,
+}
+
+struct PendingRemoteQueryStateV2 {
+    advertisement_fingerprint: RemoteCapabilitiesFingerprint,
+    consumed: AtomicBool,
+    limits: RemoteReplyDecodeLimitsV2,
+    request: Vec<u8>,
+    request_envelope: RemoteQueryRequestV2,
+    request_fingerprint: RemoteRequestFingerprintV2,
+    reply_deadline: Instant,
+    trusted_key: RemoteSigningPublicKey,
+    validated: ValidatedQuery,
+}
+
+/// One non-clone capability reserving the sole V2 reply accepted for a request.
+pub struct ClaimedRemoteReplyV2 {
+    state: Arc<PendingRemoteQueryStateV2>,
+}
+
+impl fmt::Debug for PendingRemoteQueryStateV2 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PendingRemoteQueryStateV2")
+            .field("consumed", &self.consumed.load(Ordering::Acquire))
+            .field("request_len", &self.request.len())
+            .field("sensitive_request_state", &"<redacted>")
+            .finish_non_exhaustive()
+    }
+}
+
+impl fmt::Debug for PendingRemoteQueryV2 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PendingRemoteQueryV2")
+            .field("state", &self.state)
+            .finish()
+    }
+}
+
+impl fmt::Debug for ClaimedRemoteReplyV2 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ClaimedRemoteReplyV2")
+            .field("state", &self.state)
+            .finish()
+    }
+}
+
+impl PendingRemoteQueryV2 {
+    /// Borrow the exact canonical V2 request bytes for one caller-owned exchange.
+    #[must_use]
+    pub fn request_bytes(&self) -> &[u8] {
+        &self.state.request
+    }
+
+    /// Atomically reserve the only reply slot before response bytes are copied.
+    pub fn claim_reply(&self) -> Result<ClaimedRemoteReplyV2, Diagnostic> {
+        self.state
+            .consumed
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map_err(|_| {
+                failure(
+                    DiagnosticCategory::Integrity,
+                    "query_remote_v2_reply_replayed",
+                    "pending V2 remote request already consumed a reply",
+                )
+            })?;
+        ensure_remote_reply_live_v2(self.state.reply_deadline)?;
+        Ok(ClaimedRemoteReplyV2 {
+            state: Arc::clone(&self.state),
+        })
+    }
+
+    /// Reserve and decode one reply through the V2 one-shot path.
+    pub fn decode_reply(&self, response_bytes: &[u8]) -> Result<String, Diagnostic> {
+        self.claim_reply()?.decode(response_bytes)
+    }
+}
+
+impl ClaimedRemoteReplyV2 {
+    /// Maximum bounded immutable response snapshot needed by the decoder.
+    #[must_use]
+    pub fn response_snapshot_limit(&self) -> usize {
+        MAX_REMOTE_ENVELOPE_BYTES.saturating_add(1)
+    }
+
+    /// Authenticate, correlate, validate, and decode the reserved V2 reply.
+    pub fn decode(self, response_bytes: &[u8]) -> Result<String, Diagnostic> {
+        let outcome = self.decode_outcome(response_bytes)?;
+        let outcome = serde_json::to_string(&outcome).map_err(|_| {
+            failure(
+                DiagnosticCategory::Integrity,
+                "query_remote_v2_outcome_unserializable",
+                "validated V2 remote outcome could not be serialized",
+            )
+        })?;
+        Ok(outcome)
+    }
+
+    /// Authenticate, correlate, and validate one reply without serializing its
+    /// typed outcome through a host-language representation.
+    ///
+    /// Model-oriented binding facades use this path so the authenticated
+    /// hydration graph becomes an ordinary native validated match-result proof
+    /// before any Python or JavaScript model constructor can run.
+    pub fn decode_outcome(
+        self,
+        response_bytes: &[u8],
+    ) -> Result<type_bridge_contract::query_remote_v2::RemoteOutcomeV2, Diagnostic> {
+        ensure_remote_reply_live_v2(self.state.reply_deadline)?;
+        let outcome = decode_remote_outcome_v2(
+            response_bytes,
+            &self.state.request_envelope,
+            &self.state.validated,
+            &self.state.request_fingerprint,
+            &self.state.advertisement_fingerprint,
+            self.state.trusted_key,
+            self.state.limits,
+        )?;
+        ensure_remote_reply_live_v2(self.state.reply_deadline)?;
+        Ok(outcome)
+    }
+}
+
+/// Prepare one additive V2 invocation and its request-bound one-shot decoder.
+pub fn prepare_remote_query_v2(
+    authority: &QueryAuthority,
+    plan_bytes: &[u8],
+    invocation_json: &str,
+    advertisement_bytes: &[u8],
+    limits: RemoteLimitsV2,
+) -> Result<PendingRemoteQueryV2, Diagnostic> {
+    let (plan, validated) = authority.validate(plan_bytes)?;
+    let invocation = parse_invocation(&plan, invocation_json)?;
+    prepare_validated_remote_query_v2(
+        authority,
+        validated,
+        invocation,
+        advertisement_bytes,
+        limits,
+    )
+}
+
+/// Prepare one already schema-validated V2 invocation.
+///
+/// This crate-private seam exists for the production V1 model-query adapter.
+/// It retains the same authority, capability, nonce, clock, limit, and
+/// one-shot decoder boundary as [`prepare_remote_query_v2`] without encoding
+/// and reparsing the adapted plan.
+pub(crate) fn prepare_validated_remote_query_v2(
+    authority: &QueryAuthority,
+    validated: ValidatedQuery,
+    invocation: QueryInvocation,
+    advertisement_bytes: &[u8],
+    limits: RemoteLimitsV2,
+) -> Result<PendingRemoteQueryV2, Diagnostic> {
+    if matches!(
+        &authority.control_policy,
+        QueryAuthorityControlPolicy::QueryOnly(_)
+    ) {
+        return Err(failure(
+            DiagnosticCategory::Integrity,
+            "query_remote_v2_query_only_authority_local_only",
+            "query-only authority is bound to local database identity and cannot prepare a V2 remote request",
+        ));
+    }
+    if validated.source_state() != &authority.managed {
+        return Err(failure(
+            DiagnosticCategory::Integrity,
+            "query_remote_v2_authority_mismatch",
+            "validated V2 query does not belong to the supplied schema authority",
+        ));
+    }
+    let advertisement = RemoteCapabilities::decode(advertisement_bytes)?;
+    check_advertised_capabilities_v2(&validated, &invocation, &advertisement)?;
+    let nonce = uuid::Uuid::new_v4().simple().to_string();
+    let monotonic_prepared = Instant::now();
+    let prepared_at_unix_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| {
+            failure(
+                DiagnosticCategory::Integrity,
+                "query_remote_v2_clock_invalid",
+                "system clock cannot establish an absolute V2 request time",
+            )
+        })?
+        .as_millis()
+        .try_into()
+        .map_err(|_| {
+            failure(
+                DiagnosticCategory::ResourceLimit,
+                "query_remote_v2_clock_limit",
+                "system clock exceeds the supported V2 timestamp range",
+            )
+        })?;
+    let lifetime = limits.deadline_ms.unwrap_or(DEFAULT_REMOTE_DEADLINE_MS);
+    let reply_deadline = monotonic_prepared
+        .checked_add(Duration::from_millis(lifetime))
+        .ok_or_else(|| {
+            failure(
+                DiagnosticCategory::ResourceLimit,
+                "query_remote_v2_deadline_limit",
+                "V2 remote deadline exceeds the maximum supported duration",
+            )
+        })?;
+    let request = encode_remote_request_v2_at(
+        &validated,
+        &invocation,
+        &advertisement,
+        limits,
+        &nonce,
+        prepared_at_unix_ms,
+    )?;
+    let request_envelope = RemoteQueryRequestV2::decode(&request)?;
+    let request_fingerprint = RemoteRequestFingerprintV2::compute(&request)?;
+    let advertisement_fingerprint = advertisement.fingerprint()?;
+    let trusted_key = advertisement.reply_key();
+    Ok(PendingRemoteQueryV2 {
+        state: Arc::new(PendingRemoteQueryStateV2 {
+            advertisement_fingerprint,
+            consumed: AtomicBool::new(false),
+            limits: RemoteReplyDecodeLimitsV2 {
+                max_bytes: limits.max_bytes,
+                max_items: limits.max_items,
+                max_collection_members: limits.max_collection_members,
+                max_graph_nodes: limits.max_graph_nodes,
+                max_attribute_values: limits.max_attribute_values,
+                max_role_players: limits.max_role_players,
+            },
+            request,
+            request_envelope,
+            request_fingerprint,
+            reply_deadline,
+            trusted_key,
+            validated,
+        }),
+    })
+}
+
 fn ensure_remote_reply_live(deadline: Instant) -> Result<(), Diagnostic> {
     if Instant::now() < deadline {
         return Ok(());
@@ -918,6 +1377,17 @@ fn ensure_remote_reply_live(deadline: Instant) -> Result<(), Diagnostic> {
         DiagnosticCategory::ResourceLimit,
         "query_remote_reply_expired",
         "the pending remote reply deadline has elapsed",
+    ))
+}
+
+fn ensure_remote_reply_live_v2(deadline: Instant) -> Result<(), Diagnostic> {
+    if Instant::now() < deadline {
+        return Ok(());
+    }
+    Err(failure(
+        DiagnosticCategory::ResourceLimit,
+        "query_remote_v2_reply_expired",
+        "pending V2 remote reply deadline has elapsed",
     ))
 }
 
@@ -960,7 +1430,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use type_bridge_contract::capability::CapabilitySet;
-    use type_bridge_contract::codec::FormatVersion;
+    use type_bridge_contract::codec::{FormatVersion, to_canonical_json};
     use type_bridge_contract::id::{TypeId, TypeKind};
     use type_bridge_contract::migration_assertion::{AssertionBinding, BindingId, QueryVariable};
     use type_bridge_contract::query_plan::{
@@ -1432,6 +1902,117 @@ mod tests {
             malformed.message(),
             "invocation payloads carry an operation and rectangular rows"
         );
+    }
+
+    #[test]
+    fn prepared_parser_accepts_authored_canonical_invocations_without_changing_legacy_shape() {
+        let (_, plan_bytes) = authority_and_plan();
+        let plan = decode_query_plan(&plan_bytes).expect("prepared plan");
+        let legacy = parse_invocation(&plan, r#"{"operation":"rows","rows":[]}"#)
+            .expect("released invocation payload");
+        let authored = QueryInvocation::new(&plan, QueryOperation::Rows, Vec::new())
+            .expect("authored invocation");
+        let canonical = to_canonical_json(&authored).expect("canonical invocation");
+        let parsed = parse_invocation(
+            &plan,
+            std::str::from_utf8(&canonical).expect("canonical UTF-8"),
+        )
+        .expect("authored canonical invocation");
+
+        assert_eq!(parsed, authored);
+        assert_eq!(parsed, legacy);
+
+        let marker_in_legacy_value =
+            r#"{"operation":"rows","rows":[],"note":"{\"inputs\":[],\"plan_fingerprint\":{}}"}"#;
+        assert_eq!(
+            parse_invocation(&plan, marker_in_legacy_value)
+                .expect_err("authored markers inside a legacy value do not change dispatch")
+                .code()
+                .as_str(),
+            "query_prepared_invocation_malformed",
+        );
+
+        let mut unknown =
+            serde_json::from_slice::<serde_json::Value>(&canonical).expect("invocation value");
+        unknown["extra"] = serde_json::json!(true);
+        let unknown = to_canonical_json(&unknown).expect("canonical unknown field");
+        assert_eq!(
+            parse_invocation(
+                &plan,
+                std::str::from_utf8(&unknown).expect("unknown-field UTF-8"),
+            )
+            .expect_err("prepared boundary keeps unknown top-level fields generic")
+            .code()
+            .as_str(),
+            "query_prepared_invocation_malformed",
+        );
+
+        let mut forged =
+            serde_json::from_slice::<serde_json::Value>(&canonical).expect("invocation value");
+        forged["plan_fingerprint"]["digest"] = serde_json::json!("00".repeat(32));
+        let forged = to_canonical_json(&forged).expect("canonical fingerprint forgery");
+        assert_eq!(
+            parse_invocation(&plan, std::str::from_utf8(&forged).expect("forgery UTF-8"),)
+                .expect_err("exact authored shape reaches plan binding verification")
+                .code()
+                .as_str(),
+            "query_invocation_plan_fingerprint_mismatch",
+        );
+    }
+
+    #[test]
+    fn authored_invocation_wire_ceiling_is_admitted_and_one_byte_tight() {
+        use type_bridge_contract::limits::{MAX_INPUT_BYTES, MAX_QUERY_INVOCATION_BYTES};
+        use type_bridge_contract::value::CanonicalString;
+
+        let (_, plan_bytes) =
+            authority_and_input_plan(type_bridge_contract::value::ValueTypeTag::String, false);
+        let plan = decode_query_plan(&plan_bytes).expect("prepared plan");
+        let base_chunk = "x".repeat((MAX_INPUT_BYTES / 5).saturating_sub(128));
+        let mut chunks = vec![base_chunk; 5];
+        let build_rows = |chunks: &[String]| {
+            chunks
+                .iter()
+                .map(|chunk| {
+                    InputRow::new(vec![Some(CanonicalValue::String(
+                        CanonicalString::new(chunk.clone()).expect("bounded string"),
+                    ))])
+                })
+                .collect::<Vec<_>>()
+        };
+        let initial_size = serde_json::to_vec(&build_rows(&chunks))
+            .expect("input rows")
+            .len();
+        assert!(initial_size < MAX_INPUT_BYTES);
+        chunks
+            .last_mut()
+            .expect("last input chunk")
+            .push_str(&"x".repeat(MAX_INPUT_BYTES - initial_size));
+        let rows = build_rows(&chunks);
+        assert_eq!(
+            serde_json::to_vec(&rows).expect("exact input rows").len(),
+            MAX_INPUT_BYTES,
+        );
+
+        let invocation = QueryInvocation::new(&plan, QueryOperation::Exists, rows)
+            .expect("maximum-size invocation");
+        let canonical = to_canonical_json(&invocation).expect("canonical invocation");
+        assert_eq!(canonical.len(), MAX_QUERY_INVOCATION_BYTES);
+        assert_eq!(
+            parse_invocation(
+                &plan,
+                std::str::from_utf8(&canonical).expect("maximum invocation UTF-8"),
+            )
+            .expect("maximum authored invocation"),
+            invocation,
+        );
+
+        let mut oversized = String::from_utf8(canonical).expect("canonical invocation is UTF-8");
+        oversized.push(' ');
+        let error = parse_invocation(&plan, &oversized)
+            .expect_err("one byte over the complete wire ceiling");
+        assert_eq!(error.code().as_str(), "query_invocation_input_byte_limit");
+        assert_eq!(error.category(), DiagnosticCategory::ResourceLimit);
     }
 
     #[test]

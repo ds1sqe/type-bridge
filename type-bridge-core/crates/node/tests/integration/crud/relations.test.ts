@@ -201,6 +201,7 @@ function traceDescriptor(m: MultiRoleSchema): RelationDescriptor {
         role_name: "origin",
         player_type_names: [m.documentType, m.emailType],
         cardinality: [1, 1] as [number, number | null],
+        plays_cardinality: null,
         overrides: null,
         is_abstract: false,
         ordered: false,
@@ -360,8 +361,8 @@ describe("abstract-role resolves concrete subtypes", () => {
       },
     ],
     roles: [
-      { role_name: "token", player_type_names: [a.tokenType], cardinality: [1, 1] as [number, number | null], overrides: null, is_abstract: false, ordered: false, distinct: false },
-      { role_name: "issue", player_type_names: [a.issueType], cardinality: [1, 1] as [number, number | null], overrides: null, is_abstract: false, ordered: false, distinct: false },
+      { role_name: "token", player_type_names: [a.tokenType], cardinality: [1, 1] as [number, number | null], plays_cardinality: null, overrides: null, is_abstract: false, ordered: false, distinct: false },
+      { role_name: "issue", player_type_names: [a.issueType], cardinality: [1, 1] as [number, number | null], plays_cardinality: null, overrides: null, is_abstract: false, ordered: false, distinct: false },
     ],
   });
 
