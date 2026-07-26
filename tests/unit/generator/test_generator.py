@@ -151,6 +151,61 @@ class TestGenerateModels:
             assert "class Customer" in entities_code
             assert "case=TypeNameCase.CLASS_NAME" in entities_code
 
+    def test_toml_format_override_emits_deprecation_warning(self) -> None:
+        """Explicit format="toml" warns that TOML authoring is removed in 2.1.0."""
+        schema_text = """
+        [attributes.name]
+        value = "string"
+
+        [entities.person]
+        owns = ["name"]
+        """
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / "models"
+            with pytest.warns(DeprecationWarning, match="TOML desired-schema authoring"):
+                generate_models(schema_text, output, format="toml")
+            assert (output / "entities.py").exists()
+
+    def test_toml_suffix_auto_routing_emits_deprecation_warning(self) -> None:
+        """A .toml source path warns even without an explicit format override."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / "models"
+            with pytest.warns(DeprecationWarning, match="removal in\\s+type-bridge 2.1.0"):
+                generate_models(FIXTURES_DIR / "doc_meta.toml", output, copy_schema=False)
+            assert (output / "entities.py").exists()
+
+    def test_tql_path_emits_no_toml_deprecation_warning(self) -> None:
+        """The default TQL path stays silent."""
+        import warnings
+
+        schema_text = """
+            define
+            attribute name, value string;
+
+            define
+            entity person,
+                owns name @key;
+        """
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / "models"
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", DeprecationWarning)
+                generate_models(schema_text, output)
+            assert (output / "entities.py").exists()
+
+    def test_permanent_toml_converter_emits_no_deprecation_warning(self) -> None:
+        """type_bridge_core.toml_to_typeql is a retained surface and must not warn."""
+        import warnings
+
+        from type_bridge_core import toml_to_typeql
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            rendered = toml_to_typeql('[attributes.name]\nvalue = "string"\n')
+        assert "attribute name" in rendered
+
     def test_doc_meta_annotations_survive_generation(self) -> None:
         """@doc/@meta from the TOML fixture reach the generated Python surface
         and re-emit through the imported models' schema definitions."""

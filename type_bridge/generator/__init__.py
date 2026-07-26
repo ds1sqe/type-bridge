@@ -104,6 +104,13 @@ def generate_models(
         format: Explicit schema format override. ``"toml"`` routes through the TOML
             transpiler; ``"tql"`` or ``None`` keeps the default TQL path. When
             ``None``, a ``.toml`` file suffix also triggers transpilation.
+
+            .. deprecated::
+                TOML desired-schema authoring (``format="toml"`` and ``.toml``
+                auto-routing) is scheduled for removal in 2.1.0; author split
+                YAML instead. Both TOML routes emit a
+                :class:`DeprecationWarning`. The read-only
+                ``type_bridge_core.toml_to_typeql`` converter is permanent.
         target: Output model language. Defaults to ``"python"`` for the historical
             Python package generator; ``"typescript"`` and ``"rust"`` use the same
             Rust-hosted bindgen engine for cross-target generation.
@@ -144,8 +151,19 @@ def generate_models(
         format is None and schema_source_path is not None and schema_source_path.suffix == ".toml"
     )
     if _is_toml:
+        import warnings
+
         from type_bridge_core import toml_to_typeql
 
+        warnings.warn(
+            "TOML desired-schema authoring (generate_models format='toml' and "
+            ".toml auto-routing) is deprecated and scheduled for removal in "
+            "type-bridge 2.1.0.  Author split YAML schema documents instead; "
+            "the read-only type_bridge_core.toml_to_typeql converter remains "
+            "permanent for rendering existing TOML schemas during migration.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         schema_text = toml_to_typeql(schema_text)
 
     # Create output directory

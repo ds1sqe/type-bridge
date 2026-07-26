@@ -10,8 +10,10 @@ is a separate, later step.
 ## Compatibility schedule
 
 The named removals in [V2 Deprecations](v2-deprecations.md) follow ordinary
-SemVer and are scheduled for `v3.0.0`, not a 2.x minor release. Every
-deprecated surface stays fully operational throughout the 2.x release line
+SemVer and are scheduled for `v3.0.0`, with one deliberate
+exception: direct TOML desired-schema authoring is removed in the `v2.1.0`
+minor release. Every other deprecated surface stays fully operational
+throughout the 2.x release line
 unless an individual migration scope explicitly completes the irreversible V2
 adoption described below. Adoption closes only that scope's legacy writer
 lane; it is not a package-wide early removal. The inventory is exact: a
@@ -121,7 +123,10 @@ Move desired-schema authoring to the split-YAML workspace when ready:
 - **From TOML**: the public read-only converter
   `type_bridge_core.toml_to_typeql` renders your `schema.toml` into
   canonical TypeQL for review; it and its frozen parser are permanent.
-  TOML authoring itself is deprecated. Translate the reviewed schema
+  TOML authoring itself is deprecated and is removed in `v2.1.0` — the
+  one deliberate exception to the 3.0.0 schedule — so translate
+  before upgrading past 2.0.x or pin `type-bridge>=2,<2.1`. Translate
+  the reviewed schema
   into split-YAML fragments by hand following the workspace format
   below. No automated TOML-, TypeQL-, or Python-to-YAML converter is part
   of 2.0.0.

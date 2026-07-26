@@ -12,6 +12,35 @@ is not a package-wide removal. This page is the exact removal contract: a
 surface absent from the "Scheduled for removal" list is not scheduled for
 removal, and nothing is removed under a catch-all.
 
+Every named removal follows the ordinary-SemVer 3.0.0 schedule with one
+deliberate exception: direct TOML desired-schema authoring is
+removed earlier, in the 2.1.0 minor release, as documented below.
+
+## Scheduled for removal in 2.1.0
+
+### TOML schema authoring
+
+- Direct `schema.toml` desired-schema authoring.
+- `generate_models(..., format="toml")`.
+- Python `.toml` generator auto-routing.
+
+This is the single exception to the ordinary-SemVer 3.0.0 removal schedule:
+TOML desired-schema authoring is scheduled for removal in the
+2.1.0 minor release. Deployments that still author TOML must either translate
+to split YAML before upgrading past 2.0.x or pin `type-bridge>=2,<2.1`.
+
+Both deprecated authoring routes — `format="toml"` and `.toml`
+auto-routing — emit one standard Python `DeprecationWarning` per
+`generate_models` call. Filter it with the ordinary
+`warnings.filterwarnings("ignore", category=DeprecationWarning)` policy;
+the warning does not change generation behavior.
+
+Read-only TOML conversion is **not** removed: the public
+`type_bridge_core.toml_to_typeql` converter and its frozen parser are
+permanent so existing schemas can always be rendered for migration, and
+calling `toml_to_typeql` directly emits no deprecation warning. No
+automated TOML-to-YAML converter ships in 2.0.0.
+
 ## Scheduled for removal in 3.0.0
 
 ### Provider and driver bands
@@ -70,18 +99,7 @@ application-owned, as it does for every Node warning; `connect()` has already
 returned and cannot contain it. The ordinary Python ignore filter and Node
 `--no-deprecation` remain supported. Applications that must retain 3.8/3.10
 support may pin
-`type-bridge>=2,<3`; there is no 2.1 SemVer exception.
-
-### TOML schema authoring
-
-- Direct `schema.toml` desired-schema authoring.
-- `generate_models(..., format="toml")`.
-- Python `.toml` generator auto-routing.
-
-Read-only TOML conversion is **not** removed: the public
-`type_bridge_core.toml_to_typeql` converter and its frozen parser are
-permanent so existing schemas can always be rendered for migration. No
-automated TOML-to-YAML converter ships in 2.0.0.
+`type-bridge>=2,<3`; the server-band schedule has no earlier 2.x cutoff.
 
 ### V1 schema and model facades
 

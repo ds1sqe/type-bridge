@@ -53,13 +53,16 @@ All notable changes to TypeBridge will be documented in this file.
   [V2 Deprecations](docs/guide/v2-deprecations.md#scheduled-for-removal-in-300);
   V1 query facades have no removal schedule, and archival migration readers,
   checksum verification, ledger import, snapshots, converters, and the
-  legacy-frontier bridge remain retained. The exact ordinary-SemVer 3.0.0
+  legacy-frontier bridge remain retained. One deliberate exception leaves
+  the ordinary-SemVer schedule: direct `schema.toml` desired-schema
+  authoring, `generate_models(..., format="toml")`, and Python `.toml`
+  generator auto-routing are scheduled for removal in the 2.1.0 minor
+  release; both authoring routes emit a filterable Python
+  `DeprecationWarning`, and deployments still authoring TOML can pin
+  `type-bridge>=2,<2.1`. The exact ordinary-SemVer 3.0.0
   removal inventory is:
 
   - TypeDB 3.8/3.10 active provider and driver support;
-  - direct `schema.toml` desired-schema authoring,
-    `generate_models(..., format="toml")`, and Python `.toml` generator
-    auto-routing;
   - `type_bridge_core.TypeSchema`,
     `type_bridge_core_lib::schema::TypeSchema`,
     `type_bridge.SchemaInfo`, `type_bridge.migration.SchemaInfo`,
@@ -79,9 +82,9 @@ All notable changes to TypeBridge will be documented in this file.
   are each deprecated without a removal schedule. Read-only TOML conversion,
   legacy migration readers, original checksums, applied-ledger import,
   snapshots, historical server metadata, and the legacy-frontier bridge are
-  explicitly retained. There is no 2.1 compatibility exception or calendar
-  cutoff; deployments retaining a scheduled surface can pin
-  `type-bridge>=2,<3`.
+  explicitly retained. Apart from the named 2.1.0 TOML-authoring removal
+  there is no other 2.x removal or calendar cutoff; deployments retaining a
+  3.0.0-scheduled surface can pin `type-bridge>=2,<3`.
 - **Rust V2 publication boundary** - the nine V2 semantic, migration,
   projection, workspace, and CLI crates are first-party `2.0.0-rc.0`
   workspace packages with `publish = false`; they are not crates.io release

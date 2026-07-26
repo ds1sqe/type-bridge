@@ -2,6 +2,16 @@
 
 Author TypeDB schemas in TOML instead of TypeQL.
 
+> **Deprecated:** direct TOML desired-schema authoring is scheduled for
+> removal in type-bridge 2.1.0 — see the
+> [V2 deprecation inventory](v2-deprecations.md#toml-schema-authoring).
+> Both authoring routes (`generate_models(..., format="toml")` and `.toml`
+> auto-routing) emit a Python `DeprecationWarning`. Author split YAML schema
+> documents for new work; deployments that still author TOML must translate
+> before upgrading past 2.0.x or pin `type-bridge>=2,<2.1`. The read-only
+> `type_bridge_core.toml_to_typeql` converter remains permanent for
+> rendering existing TOML schemas during migration.
+
 ## Overview
 
 TypeBridge accepts schemas in two formats: TypeQL (`.tql`) and a TOML
