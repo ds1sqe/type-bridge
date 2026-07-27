@@ -40,6 +40,9 @@ uuid = { version = "1", features = ["v4"] }
 anstyle = "1"
 anstream = "0.6"
 
+[target.'cfg(windows)'.dependencies]
+cap-primitives = "4.0"
+
 [dev-dependencies]
 tempfile = "3"
 

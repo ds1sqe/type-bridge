@@ -132,15 +132,22 @@ impl LegacyMetadataRevision {
         }
         #[cfg(windows)]
         {
-            use cap_fs_ext::MetadataExt as _;
+            // The Option-returning by-handle accessors are public but
+            // doc(hidden) in cap-primitives; cap_fs_ext::MetadataExt only
+            // re-exposes them as panicking dev()/ino()/nlink(), and
+            // cap_std::fs::MetadataExt carries them only under the opt-in
+            // windows_by_handle cfg, so unqualified calls are ambiguous or
+            // unresolved depending on that cfg. Call through the trait.
+            use cap_primitives::fs::_WindowsByHandle;
             use cap_std::fs::MetadataExt as _;
-            let volume_serial_number = metadata.volume_serial_number().ok_or_else(|| {
-                loader_error("legacy authority metadata has no stable Windows volume identity")
-            })?;
-            let file_index = metadata.file_index().ok_or_else(|| {
+            let volume_serial_number = _WindowsByHandle::volume_serial_number(metadata)
+                .ok_or_else(|| {
+                    loader_error("legacy authority metadata has no stable Windows volume identity")
+                })?;
+            let file_index = _WindowsByHandle::file_index(metadata).ok_or_else(|| {
                 loader_error("legacy authority metadata has no stable Windows file identity")
             })?;
-            let number_of_links = metadata.number_of_links().ok_or_else(|| {
+            let number_of_links = _WindowsByHandle::number_of_links(metadata).ok_or_else(|| {
                 loader_error("legacy authority metadata has no stable Windows link identity")
             })?;
             Ok(Self {
@@ -151,7 +158,7 @@ impl LegacyMetadataRevision {
                 volume_serial_number,
                 file_index,
                 number_of_links,
-                file_attributes: metadata.file_attributes(),
+                file_attributes: _WindowsByHandle::file_attributes(metadata),
                 creation_time: metadata.creation_time(),
                 last_write_time: metadata.last_write_time(),
             })

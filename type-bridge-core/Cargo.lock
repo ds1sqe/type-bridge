@@ -3191,6 +3191,7 @@ dependencies = [
  "anstream 0.6.21",
  "anstyle",
  "cap-fs-ext",
+ "cap-primitives",
  "cap-std",
  "chrono",
  "clap",
