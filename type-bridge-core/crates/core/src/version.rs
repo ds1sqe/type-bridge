@@ -2332,6 +2332,11 @@ mod tests {
             std::process::id()
         ));
         std::fs::create_dir(&directory).expect("create custom-root replacement directory");
+        // load() requires an already-physical path; the ambient temp
+        // directory may sit behind symlinked components (macOS /var).
+        let directory = directory
+            .canonicalize()
+            .expect("resolve physical replacement directory");
         let configured = directory.join("configured.pem");
         let moved = directory.join("loaded.pem");
         let valid_root = include_bytes!("../tests/fixtures/valid-root.pem");
@@ -2370,9 +2375,15 @@ mod tests {
             "type-bridge-core-root-parent-swap-{}-{sequence}",
             std::process::id()
         ));
+        std::fs::create_dir(&root).expect("create parent-swap root");
+        // load() requires an already-physical path; the ambient temp
+        // directory may sit behind symlinked components (macOS /var).
+        let root = root
+            .canonicalize()
+            .expect("resolve physical parent-swap root");
         let configured_parent = root.join("configured-parent");
         let moved_parent = root.join("loaded-parent");
-        std::fs::create_dir_all(&configured_parent).expect("create configured parent");
+        std::fs::create_dir(&configured_parent).expect("create configured parent");
         let configured = configured_parent.join("root.pem");
         let valid_root = include_bytes!("../tests/fixtures/valid-root.pem");
         std::fs::write(&configured, valid_root).expect("write original custom root");
@@ -2411,6 +2422,11 @@ mod tests {
             std::process::id()
         ));
         std::fs::create_dir(&directory).expect("create custom-root overwrite directory");
+        // load() requires an already-physical path; the ambient temp
+        // directory may sit behind symlinked components (macOS /var).
+        let directory = directory
+            .canonicalize()
+            .expect("resolve physical overwrite directory");
         let configured = directory.join("configured.pem");
         let valid_root = include_bytes!("../tests/fixtures/valid-root.pem");
         std::fs::write(&configured, valid_root).expect("write original custom root");
