@@ -271,7 +271,7 @@ pub fn try_acquire_migration_authoring_lock(
         if error.kind() == std::io::ErrorKind::WouldBlock {
             write_conflict()
         } else {
-            write_failed(&error)
+            write_failed("authoring lock acquisition", &error)
         }
     })
 }
@@ -293,7 +293,7 @@ pub fn write_generated_migration_under_lock(
     let preview_name = generated.preview_file_name();
     if directory
         .entry_exists(manifest_name.as_ref())
-        .map_err(|error| write_failed(&error))?
+        .map_err(|error| write_failed("manifest presence probe", &error))?
     {
         return Err(write_conflict());
     }
@@ -302,11 +302,11 @@ pub fn write_generated_migration_under_lock(
     // publication and can be recovered safely.
     if directory
         .entry_exists(preview_name.as_ref())
-        .map_err(|error| write_failed(&error))?
+        .map_err(|error| write_failed("preview presence probe", &error))?
     {
         directory
             .remove_file(preview_name.as_ref())
-            .map_err(|error| write_failed(&error))?;
+            .map_err(|error| write_failed("interrupted preview recovery", &error))?;
     }
     let manifest_temp = write_unique_temporary(
         directory,
@@ -349,7 +349,7 @@ pub fn write_generated_migration_under_lock(
         }
         Err(error) => {
             cleanup(false);
-            return Err(write_failed(&error));
+            return Err(write_failed("preview publication link", &error));
         }
     };
     if let Err(error) = publish_no_replace(directory, &manifest_temp, &manifest_name) {
@@ -357,7 +357,7 @@ pub fn write_generated_migration_under_lock(
         return Err(if error.kind() == std::io::ErrorKind::AlreadyExists {
             write_conflict()
         } else {
-            write_failed(&error)
+            write_failed("manifest publication link", &error)
         });
     }
     if let Err(error) = sync_authoring_directory(directory) {
@@ -405,17 +405,18 @@ fn write_unique_temporary(
             Ok(mut file) => {
                 if let Err(error) = file.write_all(bytes).and_then(|()| file.sync_all()) {
                     let _ = directory.remove_file(name.as_ref());
-                    return Err(write_failed(&error));
+                    return Err(write_failed("temporary write", &error));
                 }
                 return Ok(name);
             }
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(write_failed(&error)),
+            Err(error) => return Err(write_failed("temporary creation", &error)),
         }
     }
-    Err(write_failed(&std::io::Error::other(
-        "temporary name allocation exhausted",
-    )))
+    Err(write_failed(
+        "temporary name allocation",
+        &std::io::Error::other("temporary name allocation exhausted"),
+    ))
 }
 
 /// Publish a completed temporary under its final name without replacing.
@@ -432,7 +433,9 @@ fn publish_no_replace(
 }
 
 fn sync_authoring_directory(directory: &MigrationDirectory) -> Result<(), Diagnostic> {
-    directory.sync_all().map_err(|error| write_failed(&error))
+    directory
+        .sync_all()
+        .map_err(|error| write_failed("directory sync", &error))
 }
 
 fn write_conflict() -> Diagnostic {
@@ -443,14 +446,15 @@ fn write_conflict() -> Diagnostic {
     )
 }
 
-/// The integrity diagnostic names the underlying I/O failure so a
-/// production operator can distinguish permissions, exhaustion, and
-/// platform quirks without tracing the filesystem calls.
-fn write_failed(error: &std::io::Error) -> Diagnostic {
+/// The integrity diagnostic names the failing operation and its
+/// underlying I/O failure so a production operator can distinguish
+/// permissions, exhaustion, and platform quirks without tracing the
+/// filesystem calls.
+fn write_failed(operation: &'static str, error: &std::io::Error) -> Diagnostic {
     failure(
         DiagnosticCategory::Integrity,
         "migration_generation_write_failed",
-        format!("generated migration file could not be created: {error}"),
+        format!("generated migration file could not be created: {operation}: {error}"),
     )
 }
 
