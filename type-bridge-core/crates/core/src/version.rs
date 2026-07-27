@@ -46,7 +46,9 @@ use std::sync::{Arc, Mutex};
 
 #[cfg(unix)]
 use cap_fs_ext::OpenOptionsSyncExt as _;
-use cap_fs_ext::{DirExt as _, FollowSymlinks, OpenOptionsFollowExt as _};
+use cap_fs_ext::{
+    DirExt as _, FollowSymlinks, OpenOptionsFollowExt as _, OpenOptionsMaybeDirExt as _,
+};
 use cap_std::ambient_authority;
 #[cfg(windows)]
 use cap_std::fs::OpenOptionsExt as _;
@@ -1118,6 +1120,10 @@ impl RetainedCustomRootCa {
     {
         let mut options = OpenOptions::new();
         options.read(true).follow(FollowSymlinks::Yes);
+        // A directory must open (Windows needs backup semantics for that) so
+        // the not-a-file classification below comes from the opened handle's
+        // metadata on every platform, exactly as it does on Unix.
+        options.maybe_dir(true);
         #[cfg(unix)]
         options.nonblock(true);
         #[cfg(windows)]
@@ -1149,6 +1155,10 @@ impl RetainedCustomRootCa {
             open_custom_root_parent_nofollow(physical_path, configured_path)?;
         let mut options = OpenOptions::new();
         options.read(true).follow(FollowSymlinks::No);
+        // A directory must open (Windows needs backup semantics for that) so
+        // the not-a-file classification below comes from the opened handle's
+        // metadata on every platform, exactly as it does on Unix.
+        options.maybe_dir(true);
         #[cfg(unix)]
         options.nonblock(true);
         #[cfg(windows)]
@@ -2347,12 +2357,32 @@ mod tests {
         let file = std::fs::File::create(&oversized).expect("create oversized root fixture");
         file.set_len(MAX_CUSTOM_ROOT_CA_BYTES + 1)
             .expect("extend oversized root fixture");
+        // Close the writable fixture handle before validating: the loader
+        // opens the root CA denying concurrent writers, so a live writer
+        // handle on Windows is a sharing violation, not a size failure.
+        drop(file);
         let oversized_error = validate_custom_root_ca(&oversized).unwrap_err();
         std::fs::remove_file(&oversized).expect("remove oversized root fixture");
         assert_eq!(oversized_error.code(), "tls_custom_root_ca_too_large");
         assert!(matches!(
             oversized_error,
             TlsConfigurationError::CustomRootCaTooLarge { path } if path == oversized
+        ));
+    }
+
+    #[test]
+    fn physical_loader_classifies_a_directory_as_not_file() {
+        let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .canonicalize()
+            .expect("resolve physical crate directory");
+        let error = match RetainedCustomRootCa::load(&directory) {
+            Ok(_) => panic!("a directory must not load as a root CA"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code(), "tls_custom_root_ca_not_file");
+        assert!(matches!(
+            error,
+            TlsConfigurationError::CustomRootCaNotFile { path } if path == directory
         ));
     }
 
