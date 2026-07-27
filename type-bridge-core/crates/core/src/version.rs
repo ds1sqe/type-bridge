@@ -2349,10 +2349,15 @@ mod tests {
             TlsConfigurationError::CustomRootCaInvalidPem { path } if path == invalid
         ));
 
+        // Test thread names are `::`-separated paths, and `:` is not a legal
+        // filename character on Windows.
+        let discriminator = std::thread::current()
+            .name()
+            .unwrap_or("test")
+            .replace(':', "-");
         let oversized = std::env::temp_dir().join(format!(
-            "type-bridge-oversized-root-{}-{}.pem",
+            "type-bridge-oversized-root-{}-{discriminator}.pem",
             std::process::id(),
-            std::thread::current().name().unwrap_or("test")
         ));
         let file = std::fs::File::create(&oversized).expect("create oversized root fixture");
         file.set_len(MAX_CUSTOM_ROOT_CA_BYTES + 1)
