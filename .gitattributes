@@ -2,3 +2,8 @@
 # upstream line endings and trailing whitespace.
 type-bridge-core/crates/node/THIRD_PARTY_NOTICES.md -whitespace
 type-bridge-core/python/type_bridge_core/THIRD_PARTY_NOTICES.md -whitespace
+
+# Test fixtures are byte-exact inputs: canonical-byte goldens and the
+# sources their fingerprints were computed from. A CRLF checkout
+# (core.autocrlf=true on Windows runners) would corrupt both sides.
+type-bridge-core/crates/*/tests/fixtures/** -text
