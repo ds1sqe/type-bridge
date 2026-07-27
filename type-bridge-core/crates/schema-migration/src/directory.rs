@@ -154,9 +154,26 @@ impl MigrationDirectory {
             .write(true)
             .create(true)
             .follow(FollowSymlinks::No);
-        let file = self.directory.open_with(name, &options)?.into_std();
-        require_regular(&file)?;
-        Ok(file)
+        // `open(2)` with `O_CREAT` is not atomic against a concurrent
+        // creator of the same name on macOS: the process losing the
+        // creation race can observe its original lookup miss as a
+        // spurious `NotFound`. Either race outcome satisfies this
+        // call's open-or-create contract, so `NotFound` is transient
+        // by construction and retried; a directory that is genuinely
+        // gone keeps failing and surfaces after the bounded attempts.
+        let mut denied = None;
+        for _ in 0..16 {
+            match self.directory.open_with(name, &options) {
+                Ok(file) => {
+                    let file = file.into_std();
+                    require_regular(&file)?;
+                    return Ok(file);
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => denied = Some(error),
+                Err(error) => return Err(error),
+            }
+        }
+        Err(denied.expect("every exhausted attempt recorded its refusal"))
     }
 
     /// Acquire the canonical migration-authoring lock without waiting.
