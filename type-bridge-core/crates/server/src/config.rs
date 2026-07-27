@@ -11,7 +11,9 @@ use std::os::windows::fs::OpenOptionsExt as _;
 
 #[cfg(unix)]
 use cap_fs_ext::OpenOptionsSyncExt as _;
-use cap_fs_ext::{DirExt as _, FollowSymlinks, OpenOptionsFollowExt as _};
+use cap_fs_ext::{
+    DirExt as _, FollowSymlinks, OpenOptionsFollowExt as _, OpenOptionsMaybeDirExt as _,
+};
 use cap_std::ambient_authority;
 #[cfg(windows)]
 use cap_std::fs::OpenOptionsExt as _;
@@ -325,7 +327,8 @@ impl InboundTlsSection {
             use std::path::Component;
 
             use cap_fs_ext::{
-                DirExt as _, FollowSymlinks, OpenOptionsFollowExt as _, OpenOptionsSyncExt as _,
+                DirExt as _, FollowSymlinks, OpenOptionsFollowExt as _,
+                OpenOptionsMaybeDirExt as _, OpenOptionsSyncExt as _,
             };
 
             if !path.is_absolute() {
@@ -358,6 +361,10 @@ impl InboundTlsSection {
             }
             let mut options = cap_std::fs::OpenOptions::new();
             options.read(true).follow(FollowSymlinks::No).nonblock(true);
+            // A directory must open (Windows needs backup semantics for
+            // that) so the regular-file classification below comes from the
+            // opened handle's metadata, exactly as it does on Unix.
+            options.maybe_dir(true);
             let mut file = directory
                 .open_with(name, &options)
                 .map(cap_std::fs::File::into_std)
@@ -946,7 +953,12 @@ fn read_runtime_config_path(path: &Path) -> Result<String, Box<dyn std::error::E
     #[cfg(windows)]
     {
         const FILE_SHARE_READ: u32 = 0x0000_0001;
+        // Backup semantics let a directory path open so the regular-file
+        // classification comes from the opened handle's metadata, exactly
+        // as it does on Unix.
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
         options.share_mode(FILE_SHARE_READ);
+        options.custom_flags(FILE_FLAG_BACKUP_SEMANTICS);
     }
     let file = options
         .open(path)
@@ -1126,6 +1138,10 @@ impl RelativeConfigAuthority {
     fn read_config(&self) -> Result<String, Box<dyn std::error::Error>> {
         let mut options = OpenOptions::new();
         options.read(true).follow(FollowSymlinks::No);
+        // A directory must open (Windows needs backup semantics for that)
+        // so the regular-file classification comes from the opened handle's
+        // metadata, exactly as it does on Unix.
+        options.maybe_dir(true);
         #[cfg(unix)]
         options.nonblock(true);
         #[cfg(windows)]
@@ -1186,6 +1202,10 @@ impl RelativeConfigAuthority {
 
         let mut options = OpenOptions::new();
         options.read(true).follow(FollowSymlinks::No);
+        // A directory must open (Windows needs backup semantics for that)
+        // so the regular-file classification comes from the opened handle's
+        // metadata, exactly as it does on Unix.
+        options.maybe_dir(true);
         #[cfg(unix)]
         options.nonblock(true);
         #[cfg(windows)]
@@ -1313,6 +1333,10 @@ fn capture_absolute_declared_schema_file(
     }
     let mut options = OpenOptions::new();
     options.read(true).follow(FollowSymlinks::No);
+    // A directory must open (Windows needs backup semantics for that) so
+    // the regular-file classification comes from the opened handle's
+    // metadata, exactly as it does on Unix.
+    options.maybe_dir(true);
     #[cfg(unix)]
     options.nonblock(true);
     #[cfg(windows)]
@@ -1577,7 +1601,12 @@ fn capture_absolute_configured_file(
     #[cfg(windows)]
     {
         const FILE_SHARE_READ: u32 = 0x0000_0001;
+        // Backup semantics let a directory path open so the regular-file
+        // classification comes from the opened handle's metadata, exactly
+        // as it does on Unix.
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
         options.share_mode(FILE_SHARE_READ);
+        options.custom_flags(FILE_FLAG_BACKUP_SEMANTICS);
     }
     let file = options
         .open(path)
@@ -1863,6 +1892,10 @@ database = "mydb"
         let file = std::fs::File::create(&declared_path).unwrap();
         file.set_len(u64::try_from(MAX_DECLARED_SCHEMA_BYTES).unwrap() + 1)
             .unwrap();
+        // Close the writable fixture handle before loading: the capture
+        // opens the file denying concurrent writers, so a live writer
+        // handle on Windows is a sharing violation, not a size failure.
+        drop(file);
         let config_path = dir.path().join("server.toml");
         std::fs::write(
             &config_path,
@@ -2634,6 +2667,10 @@ tls-root-ca = "missing.pem"
         let root = dir.path().join("root.pem");
         let file = std::fs::File::create(&root).unwrap();
         file.set_len(MAX_TLS_MATERIAL_BYTES + 1).unwrap();
+        // Close the writable fixture handle before loading: the capture
+        // opens the file denying concurrent writers, so a live writer
+        // handle on Windows is a sharing violation, not a size failure.
+        drop(file);
         let path = dir.path().join("server.toml");
         std::fs::write(
             &path,
@@ -2895,9 +2932,39 @@ database = "db"
         let path = dir.path().join("server.toml");
         let file = std::fs::File::create(&path).unwrap();
         file.set_len(MAX_SERVER_CONFIG_BYTES + 1).unwrap();
+        // Close the writable fixture handle before loading: the reader
+        // opens the file denying concurrent writers, so a live writer
+        // handle on Windows is a sharing violation, not a size failure.
+        drop(file);
 
         let error = read_runtime_config_path(&path).unwrap_err();
         assert!(error.to_string().contains("no larger than 1 MiB"));
+    }
+
+    #[test]
+    fn non_regular_runtime_config_path_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let error = read_runtime_config_path(dir.path()).unwrap_err();
+        assert!(error.to_string().contains("regular file"), "{error}");
+    }
+
+    #[test]
+    fn non_regular_absolute_configured_file_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let error = match capture_absolute_configured_file(dir.path(), "typedb.tls-root-ca") {
+            Ok(_) => panic!("a directory must not resolve as configured TLS material"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("regular file"), "{error}");
+    }
+
+    #[cfg(feature = "v2-query")]
+    #[test]
+    fn non_regular_absolute_declared_schema_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let error = capture_absolute_declared_schema_file(dir.path())
+            .expect_err("a directory must not resolve as a declared schema");
+        assert!(error.to_string().contains("regular file"), "{error}");
     }
 
     #[test]
