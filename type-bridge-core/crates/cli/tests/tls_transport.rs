@@ -132,6 +132,10 @@ fn oversized_pem_is_rejected_before_credentials_or_provider() {
         fs::File::create(workspace.path().join("certs/root.pem")).expect("root CA fixture creates");
     root.set_len(1024 * 1024 + 1)
         .expect("root CA fixture extends");
+    // Close the writable fixture handle before spawning the CLI: the
+    // capture opens the root CA denying concurrent writers, so a live
+    // writer handle on Windows is a sharing violation, not a size failure.
+    drop(root);
 
     assert_pre_provider_failure(
         &run_verify(workspace.path()),
