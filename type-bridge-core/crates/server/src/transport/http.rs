@@ -12,6 +12,12 @@ use crate::error::PipelineError;
 use crate::pipeline::{QueryInput, QueryPipeline, ValidateInput};
 use crate::transport::types::*;
 
+/// The final released V1 HTTP identity.
+///
+/// `/health` is part of the released V1 wire contract, so its body cannot
+/// follow the containing package version without changing bytes in V2.
+const RELEASED_V1_HTTP_VERSION: &str = "1.5.11";
+
 // --- Axum-specific error response types ---
 
 #[derive(Debug, Serialize)]
@@ -152,7 +158,7 @@ async fn handle_validate(
 async fn handle_health(State(pipeline): State<Arc<QueryPipeline>>) -> Json<HealthResponse> {
     Json(HealthResponse {
         status: "ok".to_string(),
-        version: env!("CARGO_PKG_VERSION").to_string(),
+        version: RELEASED_V1_HTTP_VERSION.to_string(),
         typedb_connected: pipeline.is_connected(),
     })
 }
@@ -287,6 +293,22 @@ mod tests {
     fn into_response_internal_error() {
         let resp = PipelineError::Internal("oops".into()).into_response();
         assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    async fn commit_failure_body_pins_released_v1_bytes() {
+        // Golden merge-base contract: a commit rejection surfaces as HTTP 400
+        // with exactly this body. Released 1.5.x clients match on these bytes;
+        // the runtime-to-pipeline conversion producing this message is pinned
+        // in typedb::real_driver's tests.
+        let error = PipelineError::QueryExecution("Commit failed: constraint violated".into());
+        let resp = error.into_response();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(
+            bytes.as_ref(),
+            br#"{"status":"error","error":{"code":"QUERY_EXECUTION_ERROR","message":"Query execution error: Commit failed: constraint violated"}}"#
+        );
     }
 
     #[tokio::test]

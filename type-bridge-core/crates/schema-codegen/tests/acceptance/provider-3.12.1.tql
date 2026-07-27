@@ -1,0 +1,24 @@
+define
+attribute identifier, value string;
+attribute nickname, value string;
+attribute aliases, value string;
+
+relation membership,
+    relates member @card(1..1);
+relation employment sub membership,
+    relates employee as member @card(1..1);
+relation container,
+    relates item @card(0..2);
+relation event,
+    relates subject @card(1..1),
+    plays container:item @card(0..3) @doc("cyclic relation player");
+
+entity person,
+    owns identifier @key,
+    owns nickname @card(0..1),
+    owns aliases @unique @card(0..3),
+    plays membership:member @card(0..2) @doc("membership player"),
+    plays employment:employee @card(0..1) @doc("employment player"),
+    plays event:subject;
+entity robot,
+    plays membership:member @card(1..1) @doc("robot membership player");

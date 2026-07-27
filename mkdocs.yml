@@ -96,6 +96,7 @@ nav:
     - Queries & Expressions: guide/queries.md
     - Immutable Typed Queries: guide/typed-queries.md
     - Schema Management: guide/schema.md
+    - Split-YAML & Workspace V1: guide/split-yaml-v1.md
     - Migrations: guide/migrations.md
     - Code Generator: guide/generator.md
     - TOML Schema DSL: guide/toml.md
@@ -103,6 +104,8 @@ nav:
     - TypeScript Typed Surface: guide/typescript.md
     - Functions: guide/functions.md
     - Validation: guide/validation.md
+    - Upgrading to 2.0: guide/upgrade-v2.md
+    - V2 Deprecations: guide/v2-deprecations.md
     - Logging: guide/logging.md
   - API Reference: reference/
   - Development:

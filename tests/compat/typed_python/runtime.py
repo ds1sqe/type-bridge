@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import importlib.metadata
 import json
 import sys
@@ -12,6 +13,19 @@ from dataclasses import FrozenInstanceError, dataclass
 from pathlib import Path
 from types import ModuleType
 from typing import Any
+
+V2_DECLARED_SCHEMA = base64.b64decode(
+    "eyJkZWNsYXJlZF9pZGVudGl0eSI6eyJhbGdvcml0aG0iOiJzaGEyNTYiLCJjYW5vbmljYWxpemF0aW9u"
+    "IjoidHlwZWJyaWRnZS5zY2hlbWEtY2Fub25pY2FsLWpzb24vdjEiLCJkaWdlc3QiOiJiZGFiNzEzOGE1"
+    "NzIzOGVlMjNkZmNlYjY5ZTdmMDk4OTNjZmE3YjUzNmQ5ZTcwMzU2ZDFhOTg2YTEzMjQ5OWZlIiwiZG9t"
+    "YWluIjoidHlwZWJyaWRnZS5zY2hlbWEuZGVjbGFyZWQtaWRlbnRpdHkifSwiZmFjdHMiOlt7ImtpbmQi"
+    "OiJ0eXBlIiwidmFsdWUiOnsiaWQiOnsia2luZCI6ImVudGl0eSIsImxhYmVsIjoic21va2UtcGVyc29u"
+    "In19fSx7ImtpbmQiOiJ0eXBlIiwidmFsdWUiOnsiaWQiOnsia2luZCI6ImF0dHJpYnV0ZSIsImxhYmVs"
+    "Ijoic21va2UtbmFtZSJ9fX0seyJraW5kIjoidmFsdWUiLCJ2YWx1ZSI6eyJpZCI6InNtb2tlLW5hbWUi"
+    "LCJ2YWx1ZV90eXBlIjoic3RyaW5nIn19LHsia2luZCI6Im93bnMiLCJ2YWx1ZSI6eyJpZCI6eyJhdHRy"
+    "aWJ1dGUiOiJzbW9rZS1uYW1lIiwib3duZXIiOnsia2luZCI6ImVudGl0eSIsImxhYmVsIjoic21va2Ut"
+    "cGVyc29uIn19fX1dLCJmb3JtYXRfdmVyc2lvbiI6MSwicmVxdWlyZWRfY2FwYWJpbGl0aWVzIjpbXX0="
+)
 
 
 class ArtifactAcceptanceError(AssertionError):
@@ -133,11 +147,27 @@ def run(artifact_root: Path, source_root: Path) -> dict[str, Any]:
     import type_bridge_core
 
     import type_bridge
-    from type_bridge import Entity, Flag, Key, Relation, Role, String, TypeFlags
+    from type_bridge import (
+        Entity,
+        Flag,
+        Key,
+        Relation,
+        Role,
+        String,
+        TypeDBServerDeprecationWarning,
+        TypeFlags,
+    )
     from type_bridge.query import Query as RawQuery
+    from type_bridge.query_v2 import (
+        AuthoredQueryInvocation,
+        AuthoredQueryPlan,
+        QueryPlanBuilder,
+        QueryV2Authority,
+    )
     from type_bridge.typed import (
         Page,
         QuerySession,
+        RemoteQuerySession,
         TypedQueryConnectionError,
         TypedQueryWindowError,
     )
@@ -153,6 +183,77 @@ def run(artifact_root: Path, source_root: Path) -> dict[str, Any]:
     require(type_bridge.Query is RawQuery, "package-root Query identity changed")
     require(TypedQuery is not RawQuery, "typed Query aliases the package-root raw Query")
     require(type_bridge_core.MatchSessionHandle is not None, "native match session is absent")
+    require(
+        QueryPlanBuilder is type_bridge_core.QueryPlanBuilder,
+        "packaged authoring facade does not preserve native builder identity",
+    )
+    require(
+        QueryV2Authority is type_bridge_core.QueryV2Authority,
+        "packaged authoring facade does not preserve native authority identity",
+    )
+    require(isinstance(RemoteQuerySession, type), "packaged remote query session is absent")
+    require(
+        issubclass(TypeDBServerDeprecationWarning, FutureWarning),
+        "server warning is not a public FutureWarning subclass",
+    )
+    require(
+        TypeDBServerDeprecationWarning.code
+        == type_bridge_core.TYPEDB_LEGACY_SERVER_DEPRECATION_CODE,
+        "Python warning code differs from the packaged native SSOT",
+    )
+    legacy_notice = type_bridge_core.typedb_server_deprecation_notice("3.10.4")
+    require(
+        legacy_notice is not None
+        and "TypeDB 3.10.4" in legacy_notice
+        and "band 7" not in legacy_notice,
+        "packaged native legacy-server notice drifted",
+    )
+    require(
+        type_bridge_core.typedb_server_deprecation_notice("3.12.1") is None,
+        "packaged native helper warns for TypeDB 3.12.1",
+    )
+
+    v2_authority = QueryV2Authority(
+        V2_DECLARED_SCHEMA,
+        "binding-smoke",
+        "typedb-3.12.1/v1",
+    )
+    v2_builder = QueryPlanBuilder(v2_authority)
+    v2_person = v2_builder.binding("person")
+    v2_name = v2_builder.binding("name")
+    v2_wanted = v2_builder.input("wanted_name", "string", False)
+    v2_builder.match(
+        (
+            v2_builder.isa(v2_person, "entity", "smoke-person", True),
+            v2_builder.has(v2_person, v2_name, "smoke-name"),
+            v2_builder.value(
+                "equal",
+                v2_builder.binding_operand(v2_name),
+                v2_builder.input_operand(v2_wanted),
+            ),
+        )
+    )
+    v2_builder.select((v2_person, v2_name))
+    v2_builder.require((v2_name,))
+    v2_builder.distinct()
+    v2_builder.sort((v2_builder.order(v2_name, "ascending"),))
+    v2_plan: AuthoredQueryPlan = v2_builder.finalize_rows((v2_person, v2_name))
+    v2_invocation: AuthoredQueryInvocation = v2_plan.rows((("Alice",),))
+    require(v2_plan.format == "typebridge.query-plan/v2", "packaged V2 format drifted")
+    require(len(v2_plan.fingerprint) == 64, "packaged V2 fingerprint is malformed")
+    require(
+        v2_invocation.plan_fingerprint == v2_plan.fingerprint,
+        "packaged invocation lost its exact plan binding",
+    )
+    finalized_error = expect_error(
+        type_bridge_core.QueryV2Error,
+        lambda: v2_builder.binding("after_finalize"),
+        "packaged builder accepted use after finalization",
+    )
+    require(
+        getattr(finalized_error, "code", None) == "query_builder_finalized",
+        "packaged builder lost the shared finalized diagnostic",
+    )
 
     class ArtifactName(String):
         pass
@@ -271,6 +372,7 @@ def run(artifact_root: Path, source_root: Path) -> dict[str, Any]:
         "status": "ok",
         "root_query": f"{RawQuery.__module__}.{RawQuery.__name__}",
         "typed_query": f"{TypedQuery.__module__}.{TypedQuery.__name__}",
+        "v2_plan_fingerprint": v2_plan.fingerprint,
         "named_row": PersonWork.__name__,
         "page_items": len(page.items),
         "locations": locations,

@@ -2,15 +2,25 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
 from pathlib import Path
 
 import pytest
 
+import type_bridge.generator as generator_module
 from type_bridge.generator import generate_models, parse_tql_schema
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 BOOKSTORE_SCHEMA = FIXTURES_DIR / "bookstore.tql"
+_DEFENSIVE_SCHEMA_BYTES = 16 * 1024 * 1024
+
+
+def _released_schema_with_trailing_comment(total_bytes: int) -> str:
+    prefix = "define\nentity person;\n#"
+    source = prefix + ("x" * (total_bytes - len(prefix)))
+    assert len(source.encode()) == total_bytes
+    return source
 
 
 class TestGenerateModels:
@@ -40,6 +50,46 @@ class TestGenerateModels:
             for py_file in output.glob("*.py"):
                 content = py_file.read_text()
                 compile(content, py_file.name, "exec")
+
+    def test_trusted_released_input_above_defensive_ceiling_reaches_native_renderer(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The wrapper passes large trusted input through; Rust owns the expensive parse proof."""
+        schema_text = _released_schema_with_trailing_comment(_DEFENSIVE_SCHEMA_BYTES + 1)
+        output = tmp_path / "large_released_models"
+        captured_sources: list[str] = []
+        captured_targets: list[str] = []
+        captured_options: list[dict[str, object]] = []
+
+        def render_models_json(source: str, target: str, options_json: str) -> str:
+            captured_sources.append(source)
+            captured_targets.append(target)
+            captured_options.append(json.loads(options_json))
+            return json.dumps(
+                {
+                    "files": [
+                        {
+                            "path": "boundary_marker.py",
+                            "contents": "LARGE_TRUSTED_INPUT_REACHED_NATIVE = True\n",
+                        }
+                    ]
+                }
+            )
+
+        monkeypatch.setattr(
+            generator_module,
+            "extract_annotations",
+            lambda _source: ({}, {}, {}, {}),
+        )
+        monkeypatch.setattr(generator_module, "_rust_render_models_json", render_models_json)
+        generate_models(schema_text, output, copy_schema=False)
+
+        assert captured_sources == [schema_text]
+        assert captured_targets == ["python"]
+        assert captured_options[0]["schema_text"] == schema_text
+        assert (output / "boundary_marker.py").read_text(encoding="utf-8") == (
+            "LARGE_TRUSTED_INPUT_REACHED_NATIVE = True\n"
+        )
 
     def test_case_annotation_inference_and_overrides(self) -> None:
         """Test that TypeNameCase inference and @case overrides work correctly."""
@@ -100,6 +150,61 @@ class TestGenerateModels:
             entities_code = (output / "entities.py").read_text()
             assert "class Customer" in entities_code
             assert "case=TypeNameCase.CLASS_NAME" in entities_code
+
+    def test_toml_format_override_emits_deprecation_warning(self) -> None:
+        """Explicit format="toml" warns that TOML authoring is removed in 2.1.0."""
+        schema_text = """
+        [attributes.name]
+        value = "string"
+
+        [entities.person]
+        owns = ["name"]
+        """
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / "models"
+            with pytest.warns(DeprecationWarning, match="TOML desired-schema authoring"):
+                generate_models(schema_text, output, format="toml")
+            assert (output / "entities.py").exists()
+
+    def test_toml_suffix_auto_routing_emits_deprecation_warning(self) -> None:
+        """A .toml source path warns even without an explicit format override."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / "models"
+            with pytest.warns(DeprecationWarning, match="removal in\\s+type-bridge 2.1.0"):
+                generate_models(FIXTURES_DIR / "doc_meta.toml", output, copy_schema=False)
+            assert (output / "entities.py").exists()
+
+    def test_tql_path_emits_no_toml_deprecation_warning(self) -> None:
+        """The default TQL path stays silent."""
+        import warnings
+
+        schema_text = """
+            define
+            attribute name, value string;
+
+            define
+            entity person,
+                owns name @key;
+        """
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / "models"
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", DeprecationWarning)
+                generate_models(schema_text, output)
+            assert (output / "entities.py").exists()
+
+    def test_permanent_toml_converter_emits_no_deprecation_warning(self) -> None:
+        """type_bridge_core.toml_to_typeql is a retained surface and must not warn."""
+        import warnings
+
+        from type_bridge_core import toml_to_typeql
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            rendered = toml_to_typeql('[attributes.name]\nvalue = "string"\n')
+        assert "attribute name" in rendered
 
     def test_doc_meta_annotations_survive_generation(self) -> None:
         """@doc/@meta from the TOML fixture reach the generated Python surface

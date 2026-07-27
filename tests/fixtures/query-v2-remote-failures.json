@@ -1,0 +1,57 @@
+{
+  "format": "typebridge.query-remote-binding-failure-corpus/v1",
+  "declared_b64": "eyJkZWNsYXJlZF9pZGVudGl0eSI6eyJhbGdvcml0aG0iOiJzaGEyNTYiLCJjYW5vbmljYWxpemF0aW9uIjoidHlwZWJyaWRnZS5zY2hlbWEtY2Fub25pY2FsLWpzb24vdjEiLCJkaWdlc3QiOiJiZGFiNzEzOGE1NzIzOGVlMjNkZmNlYjY5ZTdmMDk4OTNjZmE3YjUzNmQ5ZTcwMzU2ZDFhOTg2YTEzMjQ5OWZlIiwiZG9tYWluIjoidHlwZWJyaWRnZS5zY2hlbWEuZGVjbGFyZWQtaWRlbnRpdHkifSwiZmFjdHMiOlt7ImtpbmQiOiJ0eXBlIiwidmFsdWUiOnsiaWQiOnsia2luZCI6ImVudGl0eSIsImxhYmVsIjoic21va2UtcGVyc29uIn19fSx7ImtpbmQiOiJ0eXBlIiwidmFsdWUiOnsiaWQiOnsia2luZCI6ImF0dHJpYnV0ZSIsImxhYmVsIjoic21va2UtbmFtZSJ9fX0seyJraW5kIjoidmFsdWUiLCJ2YWx1ZSI6eyJpZCI6InNtb2tlLW5hbWUiLCJ2YWx1ZV90eXBlIjoic3RyaW5nIn19LHsia2luZCI6Im93bnMiLCJ2YWx1ZSI6eyJpZCI6eyJhdHRyaWJ1dGUiOiJzbW9rZS1uYW1lIiwib3duZXIiOnsia2luZCI6ImVudGl0eSIsImxhYmVsIjoic21va2UtcGVyc29uIn19fX1dLCJmb3JtYXRfdmVyc2lvbiI6MSwicmVxdWlyZWRfY2FwYWJpbGl0aWVzIjpbXX0=",
+  "plan_b64": "eyJiaW5kaW5ncyI6W3siaWQiOjAsInZhcmlhYmxlIjoicGVyc29uIn0seyJpZCI6MSwidmFyaWFibGUiOiJuYW1lIn1dLCJmb3JtYXQiOiJ0eXBlYnJpZGdlLnF1ZXJ5LXBsYW4vdjEiLCJmdW5jdGlvbnMiOltdLCJpbnB1dHMiOltdLCJtYW5hZ2VkX3NlbWFudGljcyI6eyJhbGdvcml0aG0iOiJzaGEyNTYiLCJjYW5vbmljYWxpemF0aW9uIjoidHlwZWJyaWRnZS5tYW5hZ2VkLXNlbWFudGljL3YxIiwiZGlnZXN0IjoiNTE2MDViOWYyNWQ5MDFiNjlhOGVkMmIwNGQ2NGZkN2IwMWJkZTZjOTIwYzJiMzA3YzJiMDE2NDRhMDc2ODk0YiIsImRvbWFpbiI6InR5cGVicmlkZ2Uuc2NoZW1hLm1hbmFnZWQtc2VtYW50aWMiLCJzZW1hbnRpY19wcm9maWxlIjoidHlwZWRiLTMuMTIuMS92MSJ9LCJvdXRwdXQiOnsiY29sdW1ucyI6WzAsMV0sImtpbmQiOiJyb3dzIn0sInBpcGVsaW5lIjpbeyJraW5kIjoibWF0Y2giLCJwYXR0ZXJucyI6W3siYmluZGluZyI6MCwiaW5jbHVkZV9zdWJ0eXBlcyI6dHJ1ZSwia2luZCI6ImlzYSIsInR5cGVfaWQiOnsia2luZCI6ImVudGl0eSIsImxhYmVsIjoic21va2UtcGVyc29uIn19LHsiYXR0cmlidXRlIjoxLCJhdHRyaWJ1dGVfaWQiOiJzbW9rZS1uYW1lIiwia2luZCI6ImhhcyIsIm93bmVyIjowfV19LHsia2luZCI6InNvcnQiLCJ0ZXJtcyI6W3siYmluZGluZyI6MSwiZGlyZWN0aW9uIjoiYXNjZW5kaW5nIn1dfV0sInJlcXVpcmVkX2NhcGFiaWxpdGllcyI6WyJxdWVyeS5vdXRwdXQucm93cyIsInF1ZXJ5LnBhdHRlcm4uaGFzIiwicXVlcnkucGF0dGVybi5pc2EiLCJxdWVyeS5wYXR0ZXJuLmlzYS1zdWJ0eXBlcyIsInF1ZXJ5LnBsYW4iLCJxdWVyeS5zdGFnZS5zb3J0Il19",
+  "scope": "binding-smoke",
+  "profile": "typedb-3.12.1/v1",
+  "invocation": { "operation": "rows", "rows": [] },
+  "capabilities": [
+    "query.output.rows",
+    "query.pattern.has",
+    "query.pattern.isa",
+    "query.pattern.isa-subtypes",
+    "query.plan",
+    "query.stage.sort"
+  ],
+  "bound_case": {
+    "diagnostic": {
+      "category": "resource_limit",
+      "code": "processed_item_limit",
+      "format": "typebridge.query-remote-failure/v1",
+      "message": "provider answer exceeded the processed-item ceiling"
+    },
+    "fingerprint_canonicalization": "typebridge.query-remote-request/v1",
+    "fingerprint_domain": "typebridge.query.remote-request",
+    "max_items": 1,
+    "name": "bound-processed-item-limit",
+    "replay_expected": "query_remote_reply_replayed"
+  },
+  "cases": [
+    {
+      "name": "unbound-failure",
+      "reply": {
+        "category": "resource_limit",
+        "code": "query_remote_deadline_exceeded",
+        "format": "typebridge.query-remote-failure/v1",
+        "message": "the executor deadline elapsed",
+        "nonce": null,
+        "request": null
+      },
+      "expected": "query_remote_failure_unbound",
+      "replay_expected": "query_remote_reply_replayed"
+    },
+    {
+      "name": "foreign-nonce",
+      "reply": {
+        "category": "resource_limit",
+        "code": "query_remote_deadline_exceeded",
+        "format": "typebridge.query-remote-failure/v1",
+        "message": "the executor deadline elapsed",
+        "nonce": "some-other-nonce-9876543210zz",
+        "request": null
+      },
+      "expected": "query_remote_nonce_mismatch",
+      "replay_expected": "query_remote_reply_replayed"
+    }
+  ]
+}

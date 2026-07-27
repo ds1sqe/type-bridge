@@ -81,6 +81,49 @@ def test_parse_probe_report_uses_final_nonempty_json_line() -> None:
         runner.parse_probe_report('{"status": "failed"}')
 
 
+def test_probe_distribution_versions_bind_released_root_to_candidate_core() -> None:
+    report = {
+        "package_version": "1.5.11",
+        "locations": {
+            "distributions": {
+                "type-bridge": {"version": "1.5.11"},
+                "type-bridge-core": {"version": "2.0.0"},
+            }
+        },
+        "locations_after_probe": {
+            "distributions": {
+                "type-bridge": {"version": "1.5.11"},
+                "type-bridge-core": {"version": "2.0.0"},
+            }
+        },
+    }
+
+    runner.validate_distribution_versions(
+        report,
+        expected_root_version="1.5.11",
+        expected_core_version="2.0.0",
+    )
+    report["locations"]["distributions"]["type-bridge-core"]["version"] = "1.5.11"
+    with pytest.raises(runner.RunnerError, match="wrong released-root/candidate-core pair"):
+        runner.validate_distribution_versions(
+            report,
+            expected_root_version="1.5.11",
+            expected_core_version="2.0.0",
+        )
+
+
+def test_expected_distribution_versions_must_be_provided_together() -> None:
+    with pytest.raises(runner.RunnerError, match="must be provided together"):
+        runner.main(
+            [
+                "--python",
+                sys.executable,
+                "--expected-root-version",
+                "1.5.11",
+            ]
+        )
+
+
 def test_execute_probe_copies_outside_source_and_uses_isolated_mode(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

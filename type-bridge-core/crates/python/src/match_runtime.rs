@@ -4,17 +4,20 @@
 //! canonical diagnostics only. Python never owns a match plan, binding map,
 //! validated request, provider row, TypeQL string, or invocation token here.
 
-use pyo3::exceptions::{PyException, PyRuntimeError, PyValueError};
+use pyo3::exceptions::{PyException, PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
+use pyo3::types::{PyAny, PyInt};
 use pythonize::pythonize;
 use type_bridge_orm::{
     BindingHandle, ComparisonOp, FieldHandle, MatchError, MissingOrder, OrderHandle, OrmError,
     PredicateHandle, QueryHandle, RoleHandle, RowCardinality, SelectionHandle, SessionHandle,
     ShapeHandle, SortDirection, UnvalidatedMatchRequest, ValidatedMatchRequest, Window,
+    validate_public_order_term_count,
 };
 
 use crate::orm_runtime::{
     PyDescriptorRegistry, PyDynamicValue, PyRustDatabase, PyRustTransactionContext,
+    provider_block_on,
 };
 use crate::validated_result_runtime::PyValidatedMatchResultHandle;
 
@@ -33,7 +36,7 @@ struct PyMatchSessionHandle {
 
 #[pyclass(name = "MatchBindingHandle", frozen)]
 #[derive(Clone)]
-struct PyMatchBindingHandle {
+pub(crate) struct PyMatchBindingHandle {
     inner: BindingHandle,
 }
 
@@ -57,7 +60,7 @@ struct PyMatchPredicateHandle {
 
 #[pyclass(name = "MatchOrderHandle", frozen)]
 #[derive(Clone)]
-struct PyMatchOrderHandle {
+pub(crate) struct PyMatchOrderHandle {
     inner: OrderHandle,
 }
 
@@ -75,8 +78,20 @@ struct PyMatchShapeHandle {
 
 #[pyclass(name = "MatchQueryHandle", frozen)]
 #[derive(Clone)]
-struct PyMatchQueryHandle {
+pub(crate) struct PyMatchQueryHandle {
     inner: QueryHandle,
+}
+
+impl PyMatchBindingHandle {
+    pub(crate) const fn inner(&self) -> &BindingHandle {
+        &self.inner
+    }
+}
+
+impl PyMatchQueryHandle {
+    pub(crate) const fn inner(&self) -> &QueryHandle {
+        &self.inner
+    }
 }
 
 #[pymethods]
@@ -99,6 +114,33 @@ impl PyMatchSessionHandle {
         self.inner
             .subtypes(type_name)
             .map(|inner| PyMatchBindingHandle { inner })
+            .map_err(py_match_orm_error)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn reachable(
+        &self,
+        relation_type: &str,
+        role_from: &str,
+        role_to: &str,
+        source: PyRef<'_, PyMatchBindingHandle>,
+        target: PyRef<'_, PyMatchBindingHandle>,
+        min_depth: &Bound<'_, PyAny>,
+        max_depth: &Bound<'_, PyAny>,
+    ) -> PyResult<PyMatchPredicateHandle> {
+        let min_depth = python_reachability_depth(min_depth, "min_depth")?;
+        let max_depth = python_reachability_depth(max_depth, "max_depth")?;
+        self.inner
+            .reachable(
+                relation_type,
+                role_from,
+                role_to,
+                &source.inner,
+                &target.inner,
+                min_depth,
+                max_depth,
+            )
+            .map(|inner| PyMatchPredicateHandle { inner })
             .map_err(py_match_orm_error)
     }
 
@@ -166,6 +208,18 @@ impl PyMatchSessionHandle {
             .map(|inner| PyMatchQueryHandle { inner })
             .map_err(py_match_orm_error)
     }
+}
+
+fn python_reachability_depth(value: &Bound<'_, PyAny>, name: &str) -> PyResult<u8> {
+    let value = value
+        .downcast_exact::<PyInt>()
+        .map_err(|_| PyTypeError::new_err(format!("{name} must be an exact Python int")))?
+        .extract::<i128>()
+        .map_err(|_| {
+            PyValueError::new_err(format!("{name} must be an integer between 0 and 255"))
+        })?;
+    u8::try_from(value)
+        .map_err(|_| PyValueError::new_err(format!("{name} must be an integer between 0 and 255")))
 }
 
 #[pymethods]
@@ -401,7 +455,7 @@ impl PyMatchQueryHandle {
             )
             .map_err(py_match_orm_error)?;
         let registry = self.inner.registry_arc();
-        execute_validated_owned(database, validated, registry)
+        execute_validated_owned(py, database, validated, registry)
     }
 
     fn execute_fetch_rows_borrowed(
@@ -423,7 +477,7 @@ impl PyMatchQueryHandle {
             )
             .map_err(py_match_orm_error)?;
         let registry = self.inner.registry_arc();
-        execute_validated_borrowed(transaction, validated, registry)
+        execute_validated_borrowed(py, transaction, validated, registry)
     }
 
     // PyO3 exposes these operation-local arguments as the stable Python terminal contract.
@@ -448,7 +502,7 @@ impl PyMatchQueryHandle {
                 include_total,
             )
             .map_err(py_match_orm_error)?;
-        execute_validated_owned(database, validated, self.inner.registry_arc())
+        execute_validated_owned(py, database, validated, self.inner.registry_arc())
     }
 
     // PyO3 exposes these operation-local arguments as the stable Python terminal contract.
@@ -473,11 +527,12 @@ impl PyMatchQueryHandle {
                 include_total,
             )
             .map_err(py_match_orm_error)?;
-        execute_validated_borrowed(transaction, validated, self.inner.registry_arc())
+        execute_validated_borrowed(py, transaction, validated, self.inner.registry_arc())
     }
 
     fn execute_count_by_owned(
         &self,
+        py: Python<'_>,
         database: &PyRustDatabase,
         root: PyRef<'_, PyMatchBindingHandle>,
     ) -> PyResult<PyValidatedMatchResultHandle> {
@@ -485,11 +540,12 @@ impl PyMatchQueryHandle {
             .inner
             .validate_count_by(&root.inner)
             .map_err(py_match_orm_error)?;
-        execute_validated_owned(database, validated, self.inner.registry_arc())
+        execute_validated_owned(py, database, validated, self.inner.registry_arc())
     }
 
     fn execute_count_by_borrowed(
         &self,
+        py: Python<'_>,
         transaction: &PyRustTransactionContext,
         root: PyRef<'_, PyMatchBindingHandle>,
     ) -> PyResult<PyValidatedMatchResultHandle> {
@@ -497,11 +553,12 @@ impl PyMatchQueryHandle {
             .inner
             .validate_count_by(&root.inner)
             .map_err(py_match_orm_error)?;
-        execute_validated_borrowed(transaction, validated, self.inner.registry_arc())
+        execute_validated_borrowed(py, transaction, validated, self.inner.registry_arc())
     }
 
     fn execute_exists_by_owned(
         &self,
+        py: Python<'_>,
         database: &PyRustDatabase,
         root: PyRef<'_, PyMatchBindingHandle>,
     ) -> PyResult<PyValidatedMatchResultHandle> {
@@ -509,11 +566,12 @@ impl PyMatchQueryHandle {
             .inner
             .validate_exists_by(&root.inner)
             .map_err(py_match_orm_error)?;
-        execute_validated_owned(database, validated, self.inner.registry_arc())
+        execute_validated_owned(py, database, validated, self.inner.registry_arc())
     }
 
     fn execute_exists_by_borrowed(
         &self,
+        py: Python<'_>,
         transaction: &PyRustTransactionContext,
         root: PyRef<'_, PyMatchBindingHandle>,
     ) -> PyResult<PyValidatedMatchResultHandle> {
@@ -521,39 +579,47 @@ impl PyMatchQueryHandle {
             .inner
             .validate_exists_by(&root.inner)
             .map_err(py_match_orm_error)?;
-        execute_validated_borrowed(transaction, validated, self.inner.registry_arc())
+        execute_validated_borrowed(py, transaction, validated, self.inner.registry_arc())
     }
 }
 
 fn execute_validated_owned(
+    py: Python<'_>,
     database: &PyRustDatabase,
     validated: ValidatedMatchRequest,
     registry: std::sync::Arc<type_bridge_orm::DescriptorRegistry>,
 ) -> PyResult<PyValidatedMatchResultHandle> {
     let (database, runtime) = database.handles();
-    let result = runtime
-        .block_on(database.execute_match(&registry, &validated))
-        .map_err(py_match_orm_error)?;
+    let result = provider_block_on(
+        py,
+        runtime.as_ref(),
+        database.execute_match(&registry, &validated),
+    )
+    .map_err(py_match_orm_error)?;
     Ok(PyValidatedMatchResultHandle::new(
         validated, result, registry,
     ))
 }
 
 fn execute_validated_borrowed(
+    py: Python<'_>,
     transaction: &PyRustTransactionContext,
     validated: ValidatedMatchRequest,
     registry: std::sync::Arc<type_bridge_orm::DescriptorRegistry>,
 ) -> PyResult<PyValidatedMatchResultHandle> {
     let (transaction, runtime) = transaction.handles();
-    let result = runtime
-        .block_on(transaction.execute_match(&registry, &validated))
-        .map_err(py_match_orm_error)?;
+    let result = provider_block_on(
+        py,
+        runtime.as_ref(),
+        transaction.execute_match(&registry, &validated),
+    )
+    .map_err(py_match_orm_error)?;
     Ok(PyValidatedMatchResultHandle::new(
         validated, result, registry,
     ))
 }
 
-fn order_handles(py: Python<'_>, values: &[Py<PyMatchOrderHandle>]) -> Vec<OrderHandle> {
+pub(crate) fn order_handles(py: Python<'_>, values: &[Py<PyMatchOrderHandle>]) -> Vec<OrderHandle> {
     values
         .iter()
         .map(|value| value.borrow(py).inner.clone())
@@ -628,7 +694,7 @@ fn parse_missing_order(value: &str) -> PyResult<MissingOrder> {
     }
 }
 
-fn parse_cardinality(value: &str) -> PyResult<RowCardinality> {
+pub(crate) fn parse_cardinality(value: &str) -> PyResult<RowCardinality> {
     match value {
         "exactly_one" => Ok(RowCardinality::ExactlyOne),
         "bounded_many" => Ok(RowCardinality::BoundedMany),
@@ -638,7 +704,7 @@ fn parse_cardinality(value: &str) -> PyResult<RowCardinality> {
     }
 }
 
-fn py_match_orm_error(error: OrmError) -> PyErr {
+pub(crate) fn py_match_orm_error(error: OrmError) -> PyErr {
     match error {
         OrmError::Match(error) => py_match_error(error),
         other => PyRuntimeError::new_err(other.to_string()),
@@ -664,6 +730,13 @@ pub(crate) fn py_match_error(error: MatchError) -> PyErr {
     })
 }
 
+/// Apply the canonical public-order ceiling before a Python iterable is
+/// materialized into native order handles.
+#[pyfunction]
+pub(crate) fn validate_match_order_term_count(actual: usize) -> PyResult<()> {
+    validate_public_order_term_count(actual).map_err(py_match_error)
+}
+
 /// Register the native typed-match handle seam on the extension module.
 pub fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add(
@@ -681,6 +754,7 @@ pub fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyMatchQueryHandle>()?;
     crate::validated_result_runtime::register(module)?;
     module.add_function(wrap_pyfunction!(revalidate_match_diagnostic, module)?)?;
+    module.add_function(wrap_pyfunction!(validate_match_order_term_count, module)?)?;
     Ok(())
 }
 

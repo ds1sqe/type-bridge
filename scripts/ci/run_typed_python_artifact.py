@@ -35,12 +35,17 @@ ROOT_REQUIRED_MEMBERS = frozenset(
     {
         "type_bridge/__init__.py",
         "type_bridge/py.typed",
+        "type_bridge/query_v2.py",
         "type_bridge/typed/__init__.py",
         "type_bridge/typed/_descriptors.py",
+        "type_bridge/typed/_remote_terminal.py",
         "type_bridge/typed/_terminal.py",
         "type_bridge/typed/page.py",
         "type_bridge/typed/query.py",
         "type_bridge/typed/references.py",
+        "type_bridge/typed/remote_limits.py",
+        "type_bridge/typed/remote_query.py",
+        "type_bridge/typed/remote_session.py",
         "type_bridge/typed/results.py",
         "type_bridge/typed/session.py",
     }

@@ -226,6 +226,27 @@ class TestFormatValueParity:
 class TestCoerceValue:
     """Test coerce_value(value, target_type) for all TypeDB value types."""
 
+    @pytest.mark.parametrize(
+        ("value", "target_type", "expected", "expected_python_type"),
+        [
+            ("hello", "string", "hello", str),
+            (42, "long", 42, int),
+            (42, "integer", 42, int),
+            (3.5, "double", 3.5, float),
+            (True, "boolean", True, bool),
+        ],
+    )
+    def test_scalar_result_shapes(
+        self,
+        value: object,
+        target_type: str,
+        expected: object,
+        expected_python_type: type[object],
+    ) -> None:
+        result = coerce_value(value, target_type)
+        assert result["value"] == expected
+        assert type(result["value"]) is expected_python_type
+
     def test_string(self) -> None:
         result = coerce_value("hello", "string")
         assert result["value"] == "hello"
@@ -335,10 +356,27 @@ class TestCoerceValue:
 class TestValueCoercer:
     """Test the ValueCoercer class."""
 
-    def test_coerce(self) -> None:
+    @pytest.mark.parametrize(
+        ("value", "target_type", "expected", "expected_python_type"),
+        [
+            ("hello", "string", "hello", str),
+            (42, "long", 42, int),
+            (42, "integer", 42, int),
+            (3.5, "double", 3.5, float),
+            (True, "boolean", True, bool),
+        ],
+    )
+    def test_coerce(
+        self,
+        value: object,
+        target_type: str,
+        expected: object,
+        expected_python_type: type[object],
+    ) -> None:
         vc = ValueCoercer()
-        result = vc.coerce(42, "long")
-        assert result["value"] == 42
+        result = vc.coerce(value, target_type)
+        assert result["value"] == expected
+        assert type(result["value"]) is expected_python_type
 
     def test_format_typeql_string(self) -> None:
         vc = ValueCoercer()
@@ -371,10 +409,26 @@ class TestCoerceBatch:
 
     def test_batch_all_valid(self) -> None:
         vc = ValueCoercer()
-        results = vc.coerce_batch([("hello", "string"), (42, "long")])
-        assert len(results) == 2
-        assert results[0]["value"] == "hello"
-        assert results[1]["value"] == 42
+        results = vc.coerce_batch(
+            [
+                ("hello", "string"),
+                (42, "long"),
+                (42, "integer"),
+                (3.5, "double"),
+                (True, "boolean"),
+            ]
+        )
+        expected = [
+            ("hello", str),
+            (42, int),
+            (42, int),
+            (3.5, float),
+            (True, bool),
+        ]
+        assert len(results) == len(expected)
+        for result, (expected_value, expected_type) in zip(results, expected, strict=True):
+            assert result["value"] == expected_value
+            assert type(result["value"]) is expected_type
 
 
 # ---------------------------------------------------------------------------
@@ -384,6 +438,17 @@ class TestCoerceBatch:
 
 class TestEdgeCases:
     """Edge cases: overflow, precision, timezone, unicode, empty strings."""
+
+    @pytest.mark.parametrize("value", [-(1 << 63), (1 << 63) - 1])
+    def test_long_i64_boundaries(self, value: int) -> None:
+        result = coerce_value(value, "long")
+        assert result["value"] == value
+        assert type(result["value"]) is int
+
+    @pytest.mark.parametrize("value", [-(1 << 63) - 1, 1 << 63, 1 << 100])
+    def test_long_outside_i64_stays_an_error(self, value: int) -> None:
+        with pytest.raises(ValueError, match="Type mismatch"):
+            coerce_value(value, "long")
 
     def test_large_integer(self) -> None:
         result = coerce_value(9999999999, "long")

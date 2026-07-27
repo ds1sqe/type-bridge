@@ -1,0 +1,2 @@
+format: typebridge.schema-set/v1
+sources: [fixture.yaml]

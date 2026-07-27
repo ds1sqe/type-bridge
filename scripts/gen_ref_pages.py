@@ -46,8 +46,10 @@ for path in sorted(src.rglob("*.py")):
 with mkdocs_gen_files.open("reference/SUMMARY.md", "w") as nav_file:
     nav_file.writelines(nav.build_literate_nav())
 
-# Copy CHANGELOG.md into docs at build time
+# Copy CHANGELOG.md into docs at build time. The repo file links doc pages as
+# `docs/guide/...` (GitHub-relative); the copy lives at the docs-site root, so
+# rewrite those links to site-relative `guide/...` or strict mode breaks.
 changelog = Path("CHANGELOG.md")
 if changelog.exists():
     with mkdocs_gen_files.open("changelog.md", "w") as dst:
-        dst.write(changelog.read_text())
+        dst.write(changelog.read_text().replace("(docs/guide/", "(guide/"))

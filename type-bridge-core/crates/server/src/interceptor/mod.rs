@@ -10,3 +10,5 @@ pub use crud_interceptor::{CrudInterceptor, CrudInterceptorAdapter};
 #[allow(unused_imports)] // re-exported for downstream use
 pub use traits::InterceptError;
 pub use traits::{Interceptor, RequestContext};
+#[cfg(feature = "v2-query")]
+pub use traits::{V2PolicyOutcome, V2PolicyRequest};

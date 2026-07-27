@@ -1,0 +1,93 @@
+## type-define
+define
+entity person;
+## type-undefine
+undefine
+person;
+## sub-define
+define
+employee sub person;
+## sub-undefine
+undefine
+sub person from employee;
+## value-define
+define
+name value string;
+## value-redefine
+redefine
+name value integer;
+## value-undefine
+undefine
+value string from name;
+## owns-define
+define
+person owns name;
+## owns-undefine
+undefine
+owns name from person;
+## relates-define
+define
+friendship relates friend;
+## relates-undefine
+undefine
+relates friend from friendship;
+## specialization-define
+define
+child-relation relates child-role as parent-role-a;
+## specialization-redefine
+redefine
+child-relation relates child-role as parent-role-b;
+## specialization-undefine
+undefine
+as parent-role-b from child-relation relates child-role;
+## plays-define
+define
+person plays friendship:friend;
+## plays-undefine
+undefine
+plays friendship:friend from person;
+## doc-define
+define
+entity person @doc("line\n\"quoted\"");
+## doc-redefine
+redefine
+person @doc("changed");
+## doc-undefine
+undefine
+@doc from person;
+## regex-redefine
+redefine
+name value string @regex("^b+$");
+## card-redefine
+redefine
+person owns name @card(0..2);
+## range-define
+define
+name value string @range(1..10);
+## values-define
+define
+name value integer @values(1, 2);
+## sub-meta-fallback
+undefine
+@meta("owner") from employee sub person;
+-- atomic-next --
+define
+employee sub person @meta("owner", "new");
+## meta-keyed-undefine
+undefine
+@meta("owner") from employee sub person;
+## function-define-with-metadata
+define
+fun answer($seed: integer) -> integer @doc("answer docs") @meta("owner", "core"):
+match
+  let $value = $seed;
+return first $value;
+## function-redefine
+redefine
+fun answer($seed: integer) -> integer:
+match
+  let $value = 2;
+return first $value;
+## function-undefine
+undefine
+fun answer;

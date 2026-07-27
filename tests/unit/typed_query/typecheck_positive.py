@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable
 from dataclasses import dataclass
 from typing import NamedTuple, assert_type
 
@@ -27,6 +28,9 @@ from type_bridge.typed import (
     Query,
     QueryOrder,
     QuerySession,
+    RemoteQuery,
+    RemoteQueryExchange,
+    RemoteQuerySession,
     RoleRef,
     Selection,
 )
@@ -80,6 +84,12 @@ class Interaction(Relation):
     actor: Role[Person | Bot] = Role.multi("actor", Person, Bot)
 
 
+class Composition(Relation):
+    flags = TypeFlags(name="typed-positive-composition")
+    parent: Role[Person] = Role("src", Person)
+    child: Role[Person] = Role("dst", Person)
+
+
 @dataclass(frozen=True, slots=True)
 class PersonOnly:
     person: Person
@@ -96,6 +106,49 @@ class PersonWorkTuple(NamedTuple):
     person: Person
     employments: tuple[Employment, ...]
     companies: tuple[Company, ...]
+
+
+async def _remote_exchange(request: bytes, /) -> bytes:
+    return request
+
+
+remote_exchange: RemoteQueryExchange = _remote_exchange
+
+
+def positive_remote_exchange_contract(exchange: RemoteQueryExchange) -> None:
+    pending: Awaitable[bytes] = exchange(b"request")
+    del pending
+
+
+def positive_remote_query_contract(
+    direct_session: QuerySession,
+    remote_session: RemoteQuerySession,
+) -> None:
+    direct_person = direct_session.var(Person)
+    direct = direct_session.query(direct_person)
+    direct_value: Person = direct.one()
+
+    remote_person = remote_session.var(Person)
+    remote = remote_session.query(remote_person)
+    assert_type(remote, RemoteQuery[Person])
+    remote_value: Awaitable[Person] = remote.one()
+
+    remote_company = remote_session.var(Company)
+    remote_employment = remote_session.var(Employment)
+    remote_three = remote_session.query(
+        remote_person,
+        remote_company,
+        remote_employment,
+    ).where(
+        remote_employment.role(Employment.employee).connects(remote_person),
+        remote_employment.role(Employment.employer).connects(remote_company),
+    )
+    assert_type(remote_three, RemoteQuery[Person, Company, Employment])
+    remote_rows: Awaitable[list[tuple[Person, Company, Employment]]] = remote_three.rows(
+        limit=10,
+        order_by=(remote_person.field(Name).asc(),),
+    )
+    del direct_value, remote_value, remote_rows
 
 
 # Bound variables derive the field owner from their model, so hand-written
@@ -156,6 +209,17 @@ def positive_reference_contract(connection: Database | TransactionContext) -> No
     )
     assert_type(interaction.role(Interaction.actor).connects(first), Predicate)
     assert_type(interaction.role(Interaction.actor).connects(bot), Predicate)
+    reachable = session.reachable(
+        employee,
+        second,
+        Composition,
+        Composition.parent,
+        Composition.child,
+        min_depth=0,
+        max_depth=3,
+    )
+    assert_type(reachable, Predicate)
+    assert_type(session.query(second).match(employee).where(reachable), Query[Person])
 
 
 def positive_query_contract(connection: Database | TransactionContext) -> None:

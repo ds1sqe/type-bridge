@@ -1,0 +1,15 @@
+# The repository's canonical text encoding is LF. Pinning checkout to LF
+# keeps byte-sensitive tests (source audits over include_str!, canonical
+# goldens, fingerprint sources) deterministic across platforms instead of
+# depending on each runner's core.autocrlf setting.
+* text=auto eol=lf
+
+# Generated notices preserve third-party license text byte-for-byte, including
+# upstream line endings and trailing whitespace.
+type-bridge-core/crates/node/THIRD_PARTY_NOTICES.md -text -whitespace
+type-bridge-core/python/type_bridge_core/THIRD_PARTY_NOTICES.md -text -whitespace
+
+# Test fixtures are byte-exact inputs: canonical-byte goldens and the
+# sources their fingerprints were computed from. A CRLF checkout
+# (core.autocrlf=true on Windows runners) would corrupt both sides.
+type-bridge-core/crates/*/tests/fixtures/** -text

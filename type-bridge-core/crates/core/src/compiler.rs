@@ -9,6 +9,7 @@ use crate::ast::{
 use crate::decimal::parse_decimal;
 use crate::reserved_words::is_reserved_word;
 use std::sync::OnceLock;
+use type_bridge_contract::limits::{MAX_PREDICATE_DEPTH, MAX_PREDICATE_NODES};
 use unicode_ident::{is_xid_continue, is_xid_start};
 
 /// Return whether a string is one safe, non-reserved TypeQL label.
@@ -186,6 +187,87 @@ impl QueryCompiler {
         Ok(parameters.finish(typeql))
     }
 
+    /// Compile a provider-bounded scan over distinct public tuple identities.
+    ///
+    /// Unlike [`Self::compile_typed_fetch_rows`], this intentionally projects
+    /// only `query.projection`. It is a cardinality/window proof, not complete
+    /// provider evidence; callers must run a separate complete-evidence query
+    /// before materializing a successful result.
+    pub fn compile_typed_tuple_scan(
+        &self,
+        query: &TypedFetchRows,
+    ) -> Result<String, TypedCompileError> {
+        let mut parameters = TypedParameterMode::Inline;
+        self.render_typed_tuple_scan(query, &mut parameters)
+    }
+
+    /// Prepare a distinct public-tuple scan for TypeDB 3.12 `given` transport.
+    pub fn prepare_typed_tuple_scan(
+        &self,
+        query: &TypedFetchRows,
+    ) -> Result<PreparedTypedStatement, TypedCompileError> {
+        let mut parameters = TypedParameterMode::Prepared(Vec::new());
+        let typeql = self.render_typed_tuple_scan(query, &mut parameters)?;
+        Ok(parameters.finish(typeql))
+    }
+
+    fn render_typed_tuple_scan(
+        &self,
+        query: &TypedFetchRows,
+        parameters: &mut TypedParameterMode,
+    ) -> Result<String, TypedCompileError> {
+        validate_typed_fetch_rows(query)?;
+        if !query.distinct || !query.order.is_empty() || query.offset != 0 || query.limit != 2 {
+            return Err(TypedCompileError::new(
+                "typed tuple scan requires distinct unordered identities at offset zero and limit two",
+            ));
+        }
+
+        let mut patterns = query
+            .targets
+            .iter()
+            .map(|target| {
+                format!(
+                    "{} {} {}",
+                    binding_variable(target.binding),
+                    if target.exact { "isa!" } else { "isa" },
+                    target.type_name
+                )
+            })
+            .collect::<Vec<_>>();
+        if let Some(predicate) = &query.predicate {
+            let mut next_reachability = 0;
+            patterns.push(self.render_typed_predicate(
+                &query.targets,
+                &query.fields,
+                predicate,
+                parameters,
+                &mut next_reachability,
+            )?);
+        }
+        let projection = query
+            .projection
+            .iter()
+            .map(|binding| binding_variable(*binding))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut rendered = format!("match\n{};", patterns.join(";\n"));
+        if query.predicate.as_ref().is_some_and(contains_reachable) {
+            append_reachability_reduce(
+                &mut rendered,
+                query
+                    .targets
+                    .iter()
+                    .map(|target| binding_variable(target.binding)),
+            );
+        }
+        rendered.push_str(&format!(
+            "\nselect {projection};\ndistinct;\nlimit {};",
+            query.limit
+        ));
+        Ok(rendered)
+    }
+
     fn render_typed_fetch_rows(
         &self,
         query: &TypedFetchRows,
@@ -221,11 +303,17 @@ impl QueryCompiler {
             ));
         }
         if let Some(predicate) = &query.predicate {
-            patterns.push(self.render_typed_predicate(&query.fields, predicate, parameters)?);
+            let mut next_reachability = 0;
+            patterns.push(self.render_typed_predicate(
+                &query.targets,
+                &query.fields,
+                predicate,
+                parameters,
+                &mut next_reachability,
+            )?);
         }
 
         let mut rendered = format!("match\n{};", patterns.join(";\n"));
-        rendered.push_str("\nselect ");
         // Provider evidence must retain every positive binding. Canonical
         // selected-tuple projection/distinctness remains in the typed AST and
         // is applied by the Rust executor/result validator.
@@ -236,6 +324,10 @@ impl QueryCompiler {
             .collect::<Vec<_>>();
         selected.extend(query.order.iter().map(|order| field_variable(order.field)));
         selected.dedup();
+        if query.predicate.as_ref().is_some_and(contains_reachable) {
+            append_reachability_reduce(&mut rendered, selected.iter().cloned());
+        }
+        rendered.push_str("\nselect ");
         rendered.push_str(&selected.join(", "));
         rendered.push(';');
         if query.distinct {
@@ -308,17 +400,31 @@ impl QueryCompiler {
             ));
         }
         if let Some(predicate) = &query.predicate {
-            patterns.push(self.render_typed_predicate(&query.fields, predicate, parameters)?);
+            let mut next_reachability = 0;
+            patterns.push(self.render_typed_predicate(
+                &query.targets,
+                &query.fields,
+                predicate,
+                parameters,
+                &mut next_reachability,
+            )?);
         }
 
         let mut selected = vec![binding_variable(query.root)];
         selected.extend(query.order.iter().map(|order| field_variable(order.field)));
         selected.dedup();
-        let mut rendered = format!(
-            "match\n{};\nselect {};\ndistinct;",
-            patterns.join(";\n"),
-            selected.join(", ")
-        );
+        let mut rendered = format!("match\n{};", patterns.join(";\n"));
+        if query.predicate.as_ref().is_some_and(contains_reachable) {
+            let mut environment = query
+                .targets
+                .iter()
+                .map(|target| binding_variable(target.binding))
+                .collect::<Vec<_>>();
+            environment.extend(query.order.iter().map(|order| field_variable(order.field)));
+            environment.dedup();
+            append_reachability_reduce(&mut rendered, environment);
+        }
+        rendered.push_str(&format!("\nselect {};\ndistinct;", selected.join(", ")));
         if !query.order.is_empty() {
             rendered.push_str("\nsort ");
             rendered.push_str(&compile_typed_order(&query.order));
@@ -339,7 +445,18 @@ impl QueryCompiler {
         query: &TypedPageRematch,
     ) -> Result<String, TypedCompileError> {
         let mut parameters = TypedParameterMode::Inline;
-        self.render_typed_page_rematch(query, &mut parameters)
+        self.render_typed_page_rematch(query, None, &mut parameters)
+    }
+
+    /// Compile one exact root-IID page re-match with a provider-owned answer
+    /// ceiling before its document fetch.
+    pub fn compile_typed_page_rematch_bounded(
+        &self,
+        query: &TypedPageRematch,
+        limit: u64,
+    ) -> Result<String, TypedCompileError> {
+        let mut parameters = TypedParameterMode::Inline;
+        self.render_typed_page_rematch(query, Some(limit), &mut parameters)
     }
 
     /// Prepare one exact root-IID page re-match with deterministic `given`
@@ -349,19 +466,39 @@ impl QueryCompiler {
         query: &TypedPageRematch,
     ) -> Result<PreparedTypedStatement, TypedCompileError> {
         let mut parameters = TypedParameterMode::Prepared(Vec::new());
-        let typeql = self.render_typed_page_rematch(query, &mut parameters)?;
+        let typeql = self.render_typed_page_rematch(query, None, &mut parameters)?;
+        Ok(parameters.finish(typeql))
+    }
+
+    /// Prepare one exact root-IID page re-match with a provider-owned answer
+    /// ceiling before its document fetch.
+    pub fn prepare_typed_page_rematch_bounded(
+        &self,
+        query: &TypedPageRematch,
+        limit: u64,
+    ) -> Result<PreparedTypedStatement, TypedCompileError> {
+        let mut parameters = TypedParameterMode::Prepared(Vec::new());
+        let typeql = self.render_typed_page_rematch(query, Some(limit), &mut parameters)?;
         Ok(parameters.finish(typeql))
     }
 
     fn render_typed_page_rematch(
         &self,
         query: &TypedPageRematch,
+        limit: Option<u64>,
         parameters: &mut TypedParameterMode,
     ) -> Result<String, TypedCompileError> {
         validate_typed_page_rematch(query)?;
         let mut patterns = typed_target_patterns(&query.targets);
         if let Some(predicate) = &query.predicate {
-            patterns.push(self.render_typed_predicate(&query.fields, predicate, parameters)?);
+            let mut next_reachability = 0;
+            patterns.push(self.render_typed_predicate(
+                &query.targets,
+                &query.fields,
+                predicate,
+                parameters,
+                &mut next_reachability,
+            )?);
         }
         patterns.push(
             query
@@ -401,10 +538,26 @@ impl QueryCompiler {
             })
             .collect::<Vec<_>>()
             .join(", ");
-        Ok(format!(
-            "match\n{};\nfetch {{ {bindings} }};",
-            patterns.join(";\n")
-        ))
+        let mut rendered = format!("match\n{};", patterns.join(";\n"));
+        if query.predicate.as_ref().is_some_and(contains_reachable) {
+            let mut environment = query
+                .targets
+                .iter()
+                .map(|target| binding_variable(target.binding))
+                .collect::<Vec<_>>();
+            environment.extend(
+                query
+                    .targets
+                    .iter()
+                    .map(|target| type_variable(target.binding)),
+            );
+            append_reachability_reduce(&mut rendered, environment);
+        }
+        if let Some(limit) = limit {
+            rendered.push_str(&format!("\nlimit {limit};"));
+        }
+        rendered.push_str(&format!("\nfetch {{ {bindings} }};"));
+        Ok(rendered)
     }
 
     /// Compile one canonical batched IID hydration statement.
@@ -485,6 +638,11 @@ impl QueryCompiler {
             }
         }
 
+        let answer_limit = u64::try_from(identities.len()).map_err(|_| {
+            TypedCompileError::new(
+                "typed hydration identity count exceeds the provider limit range",
+            )
+        })?;
         let branches = query
             .targets
             .iter()
@@ -505,15 +663,17 @@ impl QueryCompiler {
             }
         };
         Ok(format!(
-            "match\n{branches};\n$thing isa! $type;\nfetch {{ \"binding\": $binding, \"concept_id\": iid($thing), \"concrete_type\": label($type), \"attributes\": {{ $thing.* }}{roles} }};"
+            "match\n{branches};\n$thing isa! $type;\nlimit {answer_limit};\nfetch {{ \"binding\": $binding, \"concept_id\": iid($thing), \"concrete_type\": label($type), \"attributes\": {{ $thing.* }}{roles} }};"
         ))
     }
 
     fn render_typed_predicate(
         &self,
+        targets: &[TypedMatchTarget],
         fields: &[crate::ast::TypedFieldBinding],
         predicate: &TypedMatchPredicate,
         parameters: &mut TypedParameterMode,
+        next_reachability: &mut usize,
     ) -> Result<String, TypedCompileError> {
         match predicate {
             TypedMatchPredicate::FieldValue {
@@ -562,21 +722,93 @@ impl QueryCompiler {
                 role_name,
                 binding_variable(*player)
             )),
+            TypedMatchPredicate::Reachable {
+                relation_type,
+                role_from,
+                role_to,
+                source,
+                target,
+                min_depth,
+                max_depth,
+            } => {
+                let reachability = *next_reachability;
+                *next_reachability = (*next_reachability).saturating_add(1);
+                let zero_witness = format!("$R{reachability}z");
+                let source_target = typed_target(targets, *source)?;
+                let mut branches = Vec::with_capacity(
+                    usize::from(*max_depth)
+                        .saturating_sub(usize::from(*min_depth))
+                        .saturating_add(1),
+                );
+                for length in usize::from(*min_depth)..=usize::from(*max_depth) {
+                    if length == 0 {
+                        // TypeDB 3.12 cannot plan a bare identity branch beside
+                        // relation branches. Anchor one fresh witness to the
+                        // canonical source descriptor while the source's own
+                        // target pattern retains its exact/subtype semantics.
+                        branches.push(format!(
+                            "{{ {zero_witness} isa {}; {} is {zero_witness}; {} is {zero_witness}; }}",
+                            source_target.type_name,
+                            binding_variable(*source),
+                            binding_variable(*target)
+                        ));
+                        continue;
+                    }
+                    // TypeDB requires variables introduced inside disjunction
+                    // branches to remain branch-local. A hop ordinal alone is
+                    // reused by paths of different lengths (for example h1 in
+                    // both the two-hop and three-hop branches), which makes
+                    // the variable spuriously required across sibling scopes.
+                    let intermediate = |hop: usize| format!("$R{reachability}l{length}h{hop}");
+                    let mut hops = Vec::with_capacity(length);
+                    for hop in 1..=length {
+                        let from = if hop == 1 {
+                            binding_variable(*source)
+                        } else {
+                            intermediate(hop - 1)
+                        };
+                        let to = if hop == length {
+                            binding_variable(*target)
+                        } else {
+                            intermediate(hop)
+                        };
+                        hops.push(format!(
+                            "({role_from}: {from}, {role_to}: {to}) isa! {relation_type};"
+                        ));
+                    }
+                    branches.push(format!("{{ {} }}", hops.join(" ")));
+                }
+                Ok(branches.join(" or "))
+            }
             TypedMatchPredicate::And { expressions } => expressions
                 .iter()
-                .map(|child| self.render_typed_predicate(fields, child, parameters))
+                .map(|child| {
+                    self.render_typed_predicate(
+                        targets,
+                        fields,
+                        child,
+                        parameters,
+                        next_reachability,
+                    )
+                })
                 .collect::<Result<Vec<_>, _>>()
                 .map(|children| children.join("; ")),
             TypedMatchPredicate::Or { expressions } => expressions
                 .iter()
                 .map(|child| {
-                    self.render_typed_predicate(fields, child, parameters)
-                        .map(|child| format!("{{ {child}; }}"))
+                    self.render_typed_predicate(
+                        targets,
+                        fields,
+                        child,
+                        parameters,
+                        next_reachability,
+                    )
+                    .map(|child| format!("{{ {child}; }}"))
                 })
                 .collect::<Result<Vec<_>, _>>()
                 .map(|children| children.join(" or ")),
             TypedMatchPredicate::Not { expression } => self
-                .render_typed_predicate(fields, expression, parameters)
+                .render_typed_predicate(targets, fields, expression, parameters, next_reachability)
                 .map(|child| format!("not {{ {child}; }}")),
         }
     }
@@ -966,6 +1198,31 @@ fn type_variable(binding: u16) -> String {
     format!("$t{binding}")
 }
 
+fn contains_reachable(predicate: &TypedMatchPredicate) -> bool {
+    match predicate {
+        TypedMatchPredicate::Reachable { .. } => true,
+        TypedMatchPredicate::And { expressions } | TypedMatchPredicate::Or { expressions } => {
+            expressions.iter().any(contains_reachable)
+        }
+        TypedMatchPredicate::Not { expression } => contains_reachable(expression),
+        TypedMatchPredicate::FieldValue { .. }
+        | TypedMatchPredicate::FieldComparison { .. }
+        | TypedMatchPredicate::RoleEdge { .. } => false,
+    }
+}
+
+fn append_reachability_reduce(rendered: &mut String, variables: impl IntoIterator<Item = String>) {
+    let mut seen = std::collections::BTreeSet::new();
+    let variables = variables
+        .into_iter()
+        .filter(|variable| seen.insert(variable.clone()))
+        .collect::<Vec<_>>();
+    debug_assert!(!variables.is_empty());
+    rendered.push_str("\nreduce $RreachableProofCount = count groupby ");
+    rendered.push_str(&variables.join(", "));
+    rendered.push(';');
+}
+
 fn typed_target_patterns(targets: &[TypedMatchTarget]) -> Vec<String> {
     targets
         .iter()
@@ -1008,6 +1265,16 @@ fn typed_field(
         .iter()
         .find(|candidate| candidate.id == field)
         .ok_or_else(|| TypedCompileError::new(format!("unknown typed field ID {field}")))
+}
+
+fn typed_target(
+    targets: &[TypedMatchTarget],
+    binding: u16,
+) -> Result<&TypedMatchTarget, TypedCompileError> {
+    targets
+        .iter()
+        .find(|candidate| candidate.binding == binding)
+        .ok_or_else(|| TypedCompileError::new(format!("unknown typed target binding {binding}")))
 }
 
 fn validate_typed_fetch_rows(query: &TypedFetchRows) -> Result<(), TypedCompileError> {
@@ -1056,6 +1323,18 @@ fn validate_typed_fetch_rows(query: &TypedFetchRows) -> Result<(), TypedCompileE
     {
         return Err(TypedCompileError::new(
             "typed selected-row projection references an unknown binding",
+        ));
+    }
+    if query
+        .projection
+        .iter()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>()
+        .len()
+        != query.projection.len()
+    {
+        return Err(TypedCompileError::new(
+            "typed selected-row projection contains duplicate bindings",
         ));
     }
     let fields = query
@@ -1192,6 +1471,90 @@ fn validate_typed_predicate(
     fields: &std::collections::BTreeSet<u16>,
     query: &TypedFetchRows,
 ) -> Result<(), TypedCompileError> {
+    let mut nodes = 0_usize;
+    inspect_typed_predicate_structure(predicate, 1, true, &mut nodes)?;
+    validate_typed_predicate_semantics(predicate, targets, fields, query)
+}
+
+fn inspect_typed_predicate_structure(
+    predicate: &TypedMatchPredicate,
+    depth: usize,
+    reachable_allowed: bool,
+    nodes: &mut usize,
+) -> Result<(), TypedCompileError> {
+    *nodes = (*nodes).saturating_add(1);
+    if depth > MAX_PREDICATE_DEPTH || *nodes > MAX_PREDICATE_NODES {
+        return Err(TypedCompileError::new(
+            "typed predicate exceeds canonical size or depth limits",
+        ));
+    }
+    match predicate {
+        TypedMatchPredicate::Reachable {
+            min_depth,
+            max_depth,
+            ..
+        } => {
+            if !reachable_allowed {
+                return Err(TypedCompileError::new(
+                    "typed reachability is admitted only in the root conjunction",
+                ));
+            }
+            if min_depth > max_depth {
+                return Err(TypedCompileError::new(
+                    "typed reachability minimum depth exceeds its maximum depth",
+                ));
+            }
+            if usize::from(*max_depth) > MAX_PREDICATE_DEPTH {
+                return Err(TypedCompileError::new(
+                    "typed reachability exceeds the canonical depth ceiling",
+                ));
+            }
+            let first_positive = usize::from((*min_depth).max(1));
+            let maximum = usize::from(*max_depth);
+            let expanded_hops = if first_positive <= maximum {
+                (first_positive..=maximum).fold(0_usize, usize::saturating_add)
+            } else {
+                0
+            };
+            let expanded = expanded_hops.saturating_add(usize::from(*min_depth == 0));
+            *nodes = (*nodes).saturating_add(expanded.saturating_sub(1));
+            if *nodes > MAX_PREDICATE_NODES {
+                return Err(TypedCompileError::new(
+                    "typed reachability expansion exceeds the canonical predicate-node ceiling",
+                ));
+            }
+        }
+        TypedMatchPredicate::And { expressions } => {
+            for child in expressions {
+                inspect_typed_predicate_structure(
+                    child,
+                    depth.saturating_add(1),
+                    reachable_allowed,
+                    nodes,
+                )?;
+            }
+        }
+        TypedMatchPredicate::Or { expressions } => {
+            for child in expressions {
+                inspect_typed_predicate_structure(child, depth.saturating_add(1), false, nodes)?;
+            }
+        }
+        TypedMatchPredicate::Not { expression } => {
+            inspect_typed_predicate_structure(expression, depth.saturating_add(1), false, nodes)?
+        }
+        TypedMatchPredicate::FieldValue { .. }
+        | TypedMatchPredicate::FieldComparison { .. }
+        | TypedMatchPredicate::RoleEdge { .. } => {}
+    }
+    Ok(())
+}
+
+fn validate_typed_predicate_semantics(
+    predicate: &TypedMatchPredicate,
+    targets: &std::collections::BTreeSet<u16>,
+    fields: &std::collections::BTreeSet<u16>,
+    query: &TypedFetchRows,
+) -> Result<(), TypedCompileError> {
     match predicate {
         TypedMatchPredicate::FieldValue { field, value, .. } => {
             if !fields.contains(field) {
@@ -1232,6 +1595,28 @@ fn validate_typed_predicate(
                 ));
             }
         }
+        TypedMatchPredicate::Reachable {
+            relation_type,
+            role_from,
+            role_to,
+            source,
+            target,
+            ..
+        } => {
+            if !is_valid_typeql_label(relation_type)
+                || !is_valid_typeql_label(role_from)
+                || !is_valid_typeql_label(role_to)
+            {
+                return Err(TypedCompileError::new(
+                    "typed reachability contains an invalid TypeQL label",
+                ));
+            }
+            if !targets.contains(source) || !targets.contains(target) {
+                return Err(TypedCompileError::new(
+                    "typed reachability references an unknown endpoint binding",
+                ));
+            }
+        }
         TypedMatchPredicate::And { expressions } | TypedMatchPredicate::Or { expressions } => {
             if expressions.is_empty() {
                 return Err(TypedCompileError::new(
@@ -1239,11 +1624,11 @@ fn validate_typed_predicate(
                 ));
             }
             for child in expressions {
-                validate_typed_predicate(child, targets, fields, query)?;
+                validate_typed_predicate_semantics(child, targets, fields, query)?;
             }
         }
         TypedMatchPredicate::Not { expression } => {
-            validate_typed_predicate(expression, targets, fields, query)?
+            validate_typed_predicate_semantics(expression, targets, fields, query)?
         }
     }
     Ok(())
@@ -3210,6 +3595,217 @@ mod tests {
     }
 
     #[test]
+    fn typed_bounded_reachability_unrolls_stably_and_collapses_proof_paths() {
+        let query = TypedFetchRows {
+            targets: vec![
+                TypedMatchTarget {
+                    binding: 0,
+                    kind: TypedThingKind::Entity,
+                    type_name: "node".into(),
+                    exact: false,
+                },
+                TypedMatchTarget {
+                    binding: 1,
+                    kind: TypedThingKind::Entity,
+                    type_name: "node".into(),
+                    exact: false,
+                },
+            ],
+            fields: vec![],
+            predicate: Some(TypedMatchPredicate::Reachable {
+                relation_type: "edge".into(),
+                role_from: "origin".into(),
+                role_to: "destination".into(),
+                source: 0,
+                target: 1,
+                min_depth: 0,
+                max_depth: 3,
+            }),
+            projection: vec![0, 1],
+            distinct: true,
+            order: vec![],
+            offset: 0,
+            limit: 5,
+        };
+
+        assert_eq!(
+            compiler().compile_typed_fetch_rows(&query).unwrap(),
+            "match\n\
+             $b0 isa node;\n\
+             $b1 isa node;\n\
+             { $R0z isa node; $b0 is $R0z; $b1 is $R0z; } or \
+             { (origin: $b0, destination: $b1) isa! edge; } or \
+             { (origin: $b0, destination: $R0l2h1) isa! edge; \
+             (origin: $R0l2h1, destination: $b1) isa! edge; } or \
+             { (origin: $b0, destination: $R0l3h1) isa! edge; \
+             (origin: $R0l3h1, destination: $R0l3h2) isa! edge; \
+             (origin: $R0l3h2, destination: $b1) isa! edge; };\n\
+             reduce $RreachableProofCount = count groupby $b0, $b1;\n\
+             select $b0, $b1;\n\
+             distinct;\n\
+             limit 5;"
+        );
+    }
+
+    #[test]
+    fn typed_zero_hop_reachability_uses_source_descriptor_and_retains_target_constraints() {
+        let query = TypedFetchRows {
+            targets: vec![
+                TypedMatchTarget {
+                    binding: 0,
+                    kind: TypedThingKind::Entity,
+                    type_name: "base-node".into(),
+                    exact: false,
+                },
+                TypedMatchTarget {
+                    binding: 1,
+                    kind: TypedThingKind::Entity,
+                    type_name: "different-node".into(),
+                    exact: true,
+                },
+            ],
+            fields: vec![],
+            predicate: Some(TypedMatchPredicate::Reachable {
+                relation_type: "edge".into(),
+                role_from: "origin".into(),
+                role_to: "destination".into(),
+                source: 0,
+                target: 1,
+                min_depth: 0,
+                max_depth: 0,
+            }),
+            projection: vec![0, 1],
+            distinct: true,
+            order: vec![],
+            offset: 0,
+            limit: 1,
+        };
+
+        // The source remains subtype-aware (`isa`), while the independently
+        // declared exact target still makes identity impossible when these
+        // schema types are disjoint.
+        assert_eq!(
+            compiler().compile_typed_fetch_rows(&query).unwrap(),
+            "match\n\
+             $b0 isa base-node;\n\
+             $b1 isa! different-node;\n\
+             { $R0z isa base-node; $b0 is $R0z; $b1 is $R0z; };\n\
+             reduce $RreachableProofCount = count groupby $b0, $b1;\n\
+             select $b0, $b1;\n\
+             distinct;\n\
+             limit 1;"
+        );
+    }
+
+    #[test]
+    fn typed_bounded_reachability_rejects_bounds_nesting_and_label_injection() {
+        let predicate =
+            |min_depth, max_depth, relation_type: &str| TypedMatchPredicate::Reachable {
+                relation_type: relation_type.into(),
+                role_from: "origin".into(),
+                role_to: "destination".into(),
+                source: 0,
+                target: 0,
+                min_depth,
+                max_depth,
+            };
+        assert!(
+            compiler()
+                .compile_typed_fetch_rows(&typed_predicate_query(predicate(2, 1, "edge")))
+                .unwrap_err()
+                .message()
+                .contains("minimum depth")
+        );
+        assert!(
+            compiler()
+                .compile_typed_fetch_rows(&typed_predicate_query(predicate(
+                    0,
+                    1,
+                    "edge; match $x isa thing"
+                )))
+                .unwrap_err()
+                .message()
+                .contains("invalid TypeQL label")
+        );
+        let nested = TypedMatchPredicate::Not {
+            expression: Box::new(predicate(0, 1, "edge")),
+        };
+        assert!(
+            compiler()
+                .compile_typed_fetch_rows(&typed_predicate_query(nested))
+                .unwrap_err()
+                .message()
+                .contains("root conjunction")
+        );
+    }
+
+    #[test]
+    fn typed_tuple_scan_selects_the_complete_public_tuple_and_keeps_hidden_witnesses() {
+        let query = TypedFetchRows {
+            targets: vec![
+                TypedMatchTarget {
+                    binding: 0,
+                    kind: TypedThingKind::Entity,
+                    type_name: "person".into(),
+                    exact: true,
+                },
+                TypedMatchTarget {
+                    binding: 1,
+                    kind: TypedThingKind::Relation,
+                    type_name: "employment".into(),
+                    exact: false,
+                },
+                TypedMatchTarget {
+                    binding: 2,
+                    kind: TypedThingKind::Entity,
+                    type_name: "company".into(),
+                    exact: true,
+                },
+            ],
+            fields: vec![],
+            predicate: Some(TypedMatchPredicate::RoleEdge {
+                edge: 0,
+                relation: 1,
+                role_name: "employee".into(),
+                player: 0,
+            }),
+            projection: vec![2, 0],
+            distinct: true,
+            order: vec![],
+            offset: 0,
+            limit: 2,
+        };
+
+        let expected = concat!(
+            "match\n",
+            "$b0 isa! person;\n",
+            "$b1 isa employment;\n",
+            "$b2 isa! company;\n",
+            "$b1 links (employee: $b0);\n",
+            "select $b2, $b0;\n",
+            "distinct;\n",
+            "limit 2;",
+        );
+        assert_eq!(
+            compiler().compile_typed_tuple_scan(&query).unwrap(),
+            expected
+        );
+        let prepared = compiler().prepare_typed_tuple_scan(&query).unwrap();
+        assert!(prepared.parameters.is_empty());
+        assert_eq!(prepared.typeql, expected);
+
+        let mut wrong_limit = query;
+        wrong_limit.limit = 3;
+        assert_eq!(
+            compiler()
+                .compile_typed_tuple_scan(&wrong_limit)
+                .unwrap_err()
+                .message(),
+            "typed tuple scan requires distinct unordered identities at offset zero and limit two"
+        );
+    }
+
+    #[test]
     fn typed_fetch_rows_rejects_lossy_unknown_references() {
         let query = TypedFetchRows {
             targets: vec![TypedMatchTarget {
@@ -3497,6 +4093,14 @@ mod tests {
         assert_eq!(rendered.matches("fetch {").count(), 2);
         assert!(rendered.contains("\"b0\""));
         assert!(rendered.contains("\"b1\""));
+        let bounded = compiler()
+            .compile_typed_page_rematch_bounded(&rematch, 7)
+            .unwrap();
+        assert!(bounded.contains("\nlimit 7;\nfetch {"));
+        let prepared = compiler()
+            .prepare_typed_page_rematch_bounded(&rematch, 7)
+            .unwrap();
+        assert!(prepared.typeql.contains("\nlimit 7;\nfetch {"));
 
         let mut invalid = rematch;
         invalid.root_concept_ids = vec!["0x01; match $evil isa thing".into()];
@@ -3562,6 +4166,7 @@ mod tests {
         assert!(rendered.contains("$thing iid 0x01; $thing isa employment; let $binding = 3"));
         assert!(rendered.contains("$thing iid 0x0a; $thing isa employment; let $binding = 3"));
         assert!(rendered.contains("$thing isa! $type"));
+        assert!(rendered.contains("\nlimit 2;\nfetch {"));
         assert!(rendered.contains("$thing links ($role: $player)"));
         assert!(!rendered.contains("relation $type"));
         assert!(rendered.contains("$player isa! $player_type"));
@@ -3572,6 +4177,7 @@ mod tests {
         let rendered = compiler().compile_typed_hydrate_things(&entity).unwrap();
         assert!(rendered.contains("$thing iid 0x02; $thing isa person; let $binding = 4"));
         assert!(rendered.contains("$thing isa! $type"));
+        assert!(rendered.contains("\nlimit 1;\nfetch {"));
         assert!(!rendered.contains("links"));
         assert!(!rendered.contains("\"roles\""));
 

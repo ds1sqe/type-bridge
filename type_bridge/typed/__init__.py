@@ -5,6 +5,7 @@ The package-root legacy ``Query`` remains separate and unchanged.
 
 from type_bridge.fields import FieldRef
 from type_bridge.fields.role import RoleRef
+from type_bridge.typed._remote_terminal import RemoteQueryExchange
 from type_bridge.typed._terminal import (
     TypedQueryCapabilityError,
     TypedQueryConnectionError,
@@ -21,6 +22,9 @@ from type_bridge.typed.references import (
     QueryOrder,
     Selection,
 )
+from type_bridge.typed.remote_limits import RemoteQueryLimits
+from type_bridge.typed.remote_query import RemoteQuery
+from type_bridge.typed.remote_session import RemoteQuerySession
 from type_bridge.typed.results import TypedQueryMaterializationError
 from type_bridge.typed.session import QuerySession
 
@@ -35,6 +39,10 @@ __all__ = [
     "Query",
     "QueryOrder",
     "QuerySession",
+    "RemoteQuery",
+    "RemoteQueryExchange",
+    "RemoteQueryLimits",
+    "RemoteQuerySession",
     "RoleRef",
     "Selection",
     "TypedQueryCapabilityError",

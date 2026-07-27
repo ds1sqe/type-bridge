@@ -87,7 +87,30 @@ pub fn render_snapshot(request: &SnapshotRenderRequest<'_>) -> crate::Result<Ren
         schema_text: Some(schema_text.clone()),
         ..BindgenOptions::default()
     };
-    let package = BindgenPlan::from_schema(&type_schema).render(TargetLanguage::Python, &options);
+    // Match the live generator byte-for-byte: every snapshot attaches the
+    // declared descriptor set exactly like `generate_models` does. A
+    // complete teardown attaches the canonical empty closed world, so the
+    // snapshot file contract does not depend on schema cardinality.
+    let package = if is_empty_schema {
+        let mut package =
+            BindgenPlan::from_schema(&type_schema).render(TargetLanguage::Python, &options);
+        let descriptors = type_bridge_schema_compat::empty_generated_declared_descriptors_json()
+            .map_err(|message| MigrationError::SchemaGeneration { message })?;
+        type_bridge_schema_compat::attach_declared_descriptors(
+            &mut package,
+            descriptors,
+            TargetLanguage::Python,
+        )
+        .map_err(|message| MigrationError::SchemaGeneration { message })?;
+        package
+    } else {
+        type_bridge_schema_compat::generate_package_with_declared_descriptors(
+            &schema_text,
+            TargetLanguage::Python,
+            &options,
+        )
+        .map_err(|message| MigrationError::SchemaGeneration { message })?
+    };
 
     let mut modules: BTreeMap<String, String> = BTreeMap::new();
     for file in package.files {

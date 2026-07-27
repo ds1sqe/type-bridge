@@ -28,6 +28,14 @@
     {
       "symbol": "FieldSpec.ordered() / ListFieldSpec.distinct() (model.d.ts)",
       "rationale": "TypeDB 3.12 alignment: generated and hand-written Node models can express bare or explicitly cardinalized ordered ownerships, retain composed annotations, and add @distinct without an untyped escape hatch."
+    },
+    {
+      "symbol": "QueryV2Authority / PendingQueryV2Remote / prepared V2 helpers (index.d.ts)",
+      "rationale": "Plan 06: additive typed-plan execution surface, including an explicit database-bound query-only authority and one-shot request-bound remote reply decoding."
+    },
+    {
+      "symbol": "RustDatabase.close() / tlsEnabled / tlsRootCa (index.d.ts)",
+      "rationale": "Landing remediation: expose deterministic native connection closure and the explicit TLS/custom-root transport contract in the generated Node declarations."
     }
   ],
   "allowedDiffs": []

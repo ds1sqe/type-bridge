@@ -1,9 +1,11 @@
 """Unit tests for Query Compiler."""
 
+import logging
 from datetime import datetime
 
 import pytest
 
+from type_bridge.query import compiler as compiler_module
 from type_bridge.query.ast import (
     EntityPattern,
     FunctionCallValue,
@@ -37,6 +39,35 @@ def test_compile_simple_match(compiler):
 
     result = compiler.compile(match)
     assert result == "match\n$p isa person;"
+
+
+def test_rust_fallback_preserves_released_debug_only_logging(monkeypatch, caplog):
+    """A successful V1 fallback must not create a warning/error signal."""
+
+    class RejectingCompiler:
+        def compile_dicts(self, _clauses):
+            raise RuntimeError("provider diagnostic containing query data")
+
+    monkeypatch.setattr(compiler_module, "_core_compiler", RejectingCompiler())
+    clause = MatchClause(
+        patterns=[EntityPattern(variable="$p", type_name="person", constraints=[])]
+    )
+
+    with caplog.at_level(logging.DEBUG, logger="type_bridge.query.compiler"):
+        assert QueryCompiler().compile(clause) == "match\n$p isa person;"
+        assert QueryCompiler().compile_batch([clause]) == "match\n$p isa person;"
+
+    records = [record for record in caplog.records if record.name == "type_bridge.query.compiler"]
+    assert [record.levelno for record in records] == [
+        logging.DEBUG,
+        logging.DEBUG,
+        logging.DEBUG,
+    ]
+    assert [record.getMessage() for record in records] == [
+        "Rust compiler failed, falling back to Python",
+        "Rust compiler failed, falling back to Python",
+        "Rust compiler failed, falling back to Python",
+    ]
 
 
 def test_compile_match_with_constraints(compiler):

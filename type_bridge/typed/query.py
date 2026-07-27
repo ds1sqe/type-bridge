@@ -10,6 +10,7 @@ from type_bridge_core import (
     MatchQueryHandle,
     PyDescriptorRegistry,
     ValidatedMatchResultHandle,
+    validate_match_order_term_count,
 )
 
 from type_bridge.models.base import TypeDBType
@@ -1756,6 +1757,7 @@ def _native_orders(values: Iterable[QueryOrder]) -> list[MatchOrderHandle]:
     for value in values:
         if not isinstance(value, QueryOrder):
             raise TypeError("order_by entries must be QueryOrder values")
+        validate_match_order_term_count(len(orders) + 1)
         orders.append(value._native_order())
     return orders
 

@@ -14,6 +14,7 @@ Example:
 from __future__ import annotations
 
 import importlib.metadata
+import os
 import sys
 from enum import Enum
 from typing import TYPE_CHECKING, Any
@@ -94,12 +95,28 @@ def _ensure_driver_interpreter_supported(installed: str) -> int | None:
         raise _version.UnsupportedVersionError(
             f"Installed typedb-driver {installed!r} has no compatible native wheel "
             "for CPython 3.14. Install `type-bridge[typedb-driver]` "
-            "(driver 3.12.0) and target TypeDB 3.12."
+            "(driver 3.12.1) and target TypeDB 3.12."
         )
     return driver_band
 
 
-def create_driver_options(is_tls_enabled: bool = False) -> DriverOptions:
+def _root_ca_path(tls_root_ca: str | os.PathLike[str]) -> str:
+    try:
+        path = os.fspath(tls_root_ca)
+    except TypeError as error:
+        raise TypeError("tls_root_ca must be a string or path-like object") from error
+    if not isinstance(path, str):
+        raise TypeError("tls_root_ca must resolve to a string path")
+    if not path:
+        raise ValueError("tls_root_ca must not be empty")
+    return path
+
+
+def create_driver_options(
+    is_tls_enabled: bool = False,
+    *,
+    tls_root_ca: str | os.PathLike[str] | None = None,
+) -> DriverOptions:
     """Create TypeDB driver options using explicit band-keyed dispatch.
 
     The same band map that drives the version gate drives option construction:
@@ -109,6 +126,7 @@ def create_driver_options(is_tls_enabled: bool = False) -> DriverOptions:
 
     Args:
         is_tls_enabled: Whether to enable TLS for the driver connection.
+        tls_root_ca: Optional PEM root-CA path for an enabled TLS connection.
 
     Returns:
         Configured ``DriverOptions`` instance.
@@ -116,19 +134,28 @@ def create_driver_options(is_tls_enabled: bool = False) -> DriverOptions:
     Raises:
         UnsupportedVersionError: When the installed driver version is outside
             the supported range (no known band).
+        ValueError: When a root path is supplied while TLS is disabled or the
+            root path is empty.
     """
+    if tls_root_ca is not None and not is_tls_enabled:
+        raise ValueError("tls_root_ca contradicts explicit TLS disablement")
+    root_ca_path = None if tls_root_ca is None else _root_ca_path(tls_root_ca)
+
     installed = driver_version()
     b = _ensure_driver_interpreter_supported(installed)
 
     if b == 7:
+        if root_ca_path is not None:
+            return DriverOptions(is_tls_enabled=True, tls_root_ca_path=root_ca_path)
         return DriverOptions(is_tls_enabled=is_tls_enabled)
     elif b in (8, 9):
         driver_tls_config = _load_tls_config()
-        tls_config = (
-            driver_tls_config.enabled_with_native_root_ca()
-            if is_tls_enabled
-            else driver_tls_config.disabled()
-        )
+        if root_ca_path is not None:
+            tls_config = driver_tls_config.enabled_with_root_ca(root_ca_path)
+        elif is_tls_enabled:
+            tls_config = driver_tls_config.enabled_with_native_root_ca()
+        else:
+            tls_config = driver_tls_config.disabled()
         return DriverOptions(tls_config)
     else:
         import type_bridge.version as _version  # local import avoids circular dependency
@@ -137,7 +164,7 @@ def create_driver_options(is_tls_enabled: bool = False) -> DriverOptions:
         max_l = _version.max_supported_line()
         if sys.version_info >= (3, 14):
             remediation = (
-                "Install `type-bridge[typedb-driver]` (driver 3.12.0 on "
+                "Install `type-bridge[typedb-driver]` (driver 3.12.1 on "
                 "CPython 3.14) and target TypeDB 3.12."
             )
         else:
@@ -180,13 +207,19 @@ def embedded_driver_versions() -> dict[int, str]:
     """Return all driver versions compiled into the Rust runtime, keyed by band.
 
     Delegates to ``type_bridge_core.embedded_driver_versions``.  The default
-    build returns ``{7: "3.8.1", 8: "3.11.5", 9: "3.12.0"}``; a
+    build returns ``{7: "3.8.1", 8: "3.11.5", 9: "3.12.1"}``; a
     single-band build returns only the one entry for its compiled band.
     """
     return _core.embedded_driver_versions()
 
 
-def server_version(address: str, *, http_port: int = DEFAULT_HTTP_PORT, tls: bool = False) -> str:
+def server_version(
+    address: str,
+    *,
+    http_port: int = DEFAULT_HTTP_PORT,
+    tls: bool = False,
+    tls_root_ca: str | os.PathLike[str] | None = None,
+) -> str:
     """Return the TypeDB server version by probing its HTTP API.
 
     Delegates entirely to ``type_bridge_core.server_version``; no HTTP code
@@ -197,6 +230,8 @@ def server_version(address: str, *, http_port: int = DEFAULT_HTTP_PORT, tls: boo
         address: Connect address in ``"host:port"`` form (e.g. ``"localhost:1729"``).
         http_port: HTTP API port (default 8000).
         tls: Whether to use HTTPS for the version probe.
+        tls_root_ca: Optional PEM root-CA path for an explicitly enabled HTTPS
+            probe. The root path does not enable TLS implicitly.
 
     Returns:
         Version string reported by the server (e.g. ``"3.10.4"``).
@@ -204,8 +239,15 @@ def server_version(address: str, *, http_port: int = DEFAULT_HTTP_PORT, tls: boo
     Raises:
         type_bridge_core.VersionError: When the endpoint is unreachable or the
             response cannot be parsed.
+        ValueError: When custom-root TLS configuration is contradictory or
+            invalid.
     """
-    return _core.server_version(address, http_port, tls)
+    if tls_root_ca is None:
+        return _core.server_version(address, http_port, tls)
+    if not tls:
+        raise ValueError("tls_root_ca requires explicit tls=True")
+    root_ca_path = _root_ca_path(tls_root_ca)
+    return _core.server_version(address, http_port, tls, root_ca_path)
 
 
 __all__ = [

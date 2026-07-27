@@ -1,8 +1,24 @@
 import { loadNative } from "./native.js";
 import {
+  queryV2AuthorityHandle,
+  queryV2NativeCall,
+  queryV2NativePromise,
+  registerQueryV2AuthorityHandle,
+  type NativeQueryV2Authority,
+  type NativeQueryV2BuilderRuntime,
+} from "./query-v2-internals.js";
+import {
   registerRustDatabaseHandle,
   registerRustTransactionHandle,
+  rustDatabaseHandle,
 } from "./typed/runtime-handles.js";
+
+export { QueryV2Error } from "./query-v2-internals.js";
+export type {
+  QueryV2ErrorCategory,
+  QueryV2ErrorDetail,
+  QueryV2ErrorPathSegment,
+} from "./query-v2-internals.js";
 
 export type ValueType =
   | "string"
@@ -471,6 +487,8 @@ interface NativeMarshalling {
 
 export interface NativeRustDatabase {
   isConnected(): boolean;
+  serverDeprecationNotice?(): TypeDBServerDeprecationNotice | null;
+  close(): void;
   databaseName(): string;
   databaseExists(): boolean;
   createDatabase(): void;
@@ -481,6 +499,21 @@ export interface NativeRustDatabase {
   relationManagerJson(descriptorJson: string): NativeDynamicRelationManager;
 }
 
+/** Structured metadata for one legacy TypeDB server warning. */
+export interface TypeDBServerDeprecationNotice {
+  readonly code: typeof TYPE_DB_SERVER_DEPRECATION_CODE;
+  readonly message: string;
+}
+
+/** TypeBridge-specific machine-readable identity for the server notice. */
+export const TYPE_DB_SERVER_DEPRECATION_CODE = "TYPE_BRIDGE_TYPEDB_LEGACY_SERVER";
+
+/** Standard Node warning type used so `--no-deprecation` remains effective.
+ * Inspect {@link TYPE_DB_SERVER_DEPRECATION_CODE} for the TypeBridge-specific
+ * machine-readable identity.
+ */
+export const TYPE_DB_SERVER_DEPRECATION_WARNING = "DeprecationWarning";
+
 export interface NativeRustTransactionContext {
   queryJson(query: string): string;
   commit(): void;
@@ -489,6 +522,51 @@ export interface NativeRustTransactionContext {
   transactionType(): TransactionType;
   entityManagerJson(descriptorJson: string): NativeDynamicEntityManager;
   relationManagerJson(descriptorJson: string): NativeDynamicRelationManager;
+}
+
+interface NativePendingQueryV2Remote {
+  requestBytes(): Uint8Array;
+  decodeReply(response: Uint8Array): Promise<string>;
+}
+
+/** Opaque one-shot decoder for one exact prepared V2 remote request. */
+export interface PendingQueryV2Remote {
+  /** Exact canonical bytes to send to the executor's `/v2/query` route. */
+  requestBytes(): Uint8Array;
+  /** Atomically consume and decode the only accepted request-bound reply off-thread. */
+  decodeReply(response: Uint8Array): Promise<string>;
+}
+
+interface NativeQueryV2Runtime {
+  queryV2Authority(
+    declaredSchema: Uint8Array,
+    scope: string,
+    profile: string,
+  ): NativeQueryV2Authority;
+  queryV2QueryOnlyAuthority(
+    database: NativeRustDatabase,
+    declaredSchema: Uint8Array,
+    scope: string,
+    profile: string,
+  ): NativeQueryV2Authority;
+  queryV2ExecuteLocal(
+    database: NativeRustDatabase,
+    authority: NativeQueryV2Authority,
+    plan: Uint8Array,
+    invocationJson: string,
+    deadlineMs?: bigint | null,
+  ): Promise<string>;
+  queryV2RemoteCapabilities(advertisement: Uint8Array): string[];
+  queryV2PrepareRemote(
+    authority: NativeQueryV2Authority,
+    plan: Uint8Array,
+    invocationJson: string,
+    advertisement: Uint8Array,
+    maxItems: bigint,
+    maxBytes: bigint,
+    maxCollectionMembers: bigint,
+    deadlineMs?: bigint | null,
+  ): NativePendingQueryV2Remote;
 }
 
 export interface NativeDynamicEntityManager {
@@ -538,6 +616,8 @@ export interface NativeRuntime {
     password?: string | null,
     httpPort?: number | null,
     serverVersion?: string | null,
+    tlsEnabled?: boolean | null,
+    tlsRootCa?: string | null,
   ): void;
   connectRustDatabase(
     address: string,
@@ -546,6 +626,8 @@ export interface NativeRuntime {
     password?: string | null,
     httpPort?: number | null,
     serverVersion?: string | null,
+    tlsEnabled?: boolean | null,
+    tlsRootCa?: string | null,
   ): NativeRustDatabase;
 }
 
@@ -554,7 +636,13 @@ interface NativeSchemaParser {
   renderModelsJson(input: string, target: string, optionsJson?: string | null): string;
 }
 
-export interface NativeModule extends NativeRuntime, NativeMarshalling, NativeSchemaParser {
+export interface NativeModule
+  extends NativeRuntime,
+    NativeMarshalling,
+    NativeSchemaParser,
+    NativeQueryV2Runtime,
+    NativeQueryV2BuilderRuntime {
+  readonly TYPE_DB_SERVER_DEPRECATION_CODE: string;
   NodeDescriptorRegistry: new () => NativeDescriptorRegistry;
   generateDefineBlockJson(schemaInfoJson: string): string;
 }
@@ -566,6 +654,10 @@ export interface RustDatabaseConnectOptions {
   httpPort?: number;
   /** Exact TypeDB server version; skips HTTP probing for gRPC-only deployments. */
   serverVersion?: string | null;
+  /** Enable TLS using native trust roots, or a custom root when tlsRootCa is set. */
+  tlsEnabled?: boolean;
+  /** PEM root-CA path. Requires an explicit tlsEnabled: true. */
+  tlsRootCa?: string;
 }
 
 export interface EnsureDatabaseOptions {
@@ -575,6 +667,10 @@ export interface EnsureDatabaseOptions {
   httpPort?: number;
   /** Exact TypeDB server version; skips HTTP probing for gRPC-only deployments. */
   serverVersion?: string | null;
+  /** Enable TLS using native trust roots, or a custom root when tlsRootCa is set. */
+  tlsEnabled?: boolean;
+  /** PEM root-CA path. Requires an explicit tlsEnabled: true. */
+  tlsRootCa?: string;
 }
 
 /**
@@ -589,6 +685,7 @@ export function ensureDatabase(
   database: string,
   options?: EnsureDatabaseOptions,
 ): void {
+  validateConnectionTransport(options ?? {});
   loadNative().ensureRustDatabase(
     address,
     database,
@@ -596,10 +693,131 @@ export function ensureDatabase(
     options?.password ?? null,
     options?.httpPort ?? null,
     options?.serverVersion ?? null,
+    options?.tlsEnabled ?? null,
+    options?.tlsRootCa ?? null,
   );
 }
 
 export { loadNative };
+
+/** Opaque declared-schema authority for prepared V2 plan execution. */
+export class QueryV2Authority {
+  readonly #brand = undefined;
+
+  constructor(declaredSchema: Uint8Array, scope: string, profile: string) {
+    registerQueryV2AuthorityHandle(
+      this,
+      queryV2NativeCall(() => loadNative().queryV2Authority(declaredSchema, scope, profile)),
+    );
+  }
+
+  /** Build a local-only authority for an exact database with no migration controls. */
+  static queryOnly(
+    database: RustDatabase,
+    declaredSchema: Uint8Array,
+    scope: string,
+    profile: string,
+  ): QueryV2Authority {
+    const authority = Object.create(QueryV2Authority.prototype) as QueryV2Authority;
+    registerQueryV2AuthorityHandle(
+      authority,
+      queryV2NativeCall(() =>
+        loadNative().queryV2QueryOnlyAuthority(
+          preparedV2DatabaseHandle(database),
+          declaredSchema,
+          scope,
+          profile,
+        ),
+      ),
+    );
+    return authority;
+  }
+}
+
+/** Caller ceilings bound into one prepared V2 remote request.
+ * `deadlineMs` is resolved once into an absolute expiry (30 seconds by
+ * default, maximum five minutes).
+ */
+export interface QueryV2RemoteLimits {
+  readonly maxItems: bigint;
+  /** Maximum signed bytes for a successful typed response. Authenticated
+   * failure envelopes use the protocol hard ceiling so their diagnostic is
+   * still available when this success budget is zero or otherwise tiny.
+   */
+  readonly maxBytes: bigint;
+  readonly maxCollectionMembers: bigint;
+  readonly deadlineMs?: bigint | null;
+}
+
+function preparedV2DatabaseHandle(database: RustDatabase): NativeRustDatabase {
+  const native = rustDatabaseHandle(database);
+  if (native === undefined) {
+    throw new TypeError("queryV2ExecuteLocal requires a type-bridge RustDatabase");
+  }
+  return native;
+}
+
+function preparedV2AuthorityHandle(authority: QueryV2Authority): NativeQueryV2Authority {
+  const native = queryV2AuthorityHandle(authority);
+  if (native === undefined) {
+    throw new TypeError("prepared V2 execution requires a type-bridge QueryV2Authority");
+  }
+  return native;
+}
+
+/** Execute canonical prepared-plan bytes against a local Rust database. */
+export function queryV2ExecuteLocal(
+  database: RustDatabase,
+  authority: QueryV2Authority,
+  plan: Uint8Array,
+  invocationJson: string,
+  deadlineMs?: bigint | null,
+): Promise<string> {
+  return queryV2NativePromise(
+    queryV2NativeCall(() =>
+      loadNative().queryV2ExecuteLocal(
+        preparedV2DatabaseHandle(database),
+        preparedV2AuthorityHandle(authority),
+        plan,
+        invocationJson,
+        deadlineMs,
+      ),
+    ),
+  );
+}
+
+/** Decode the executor's exact prepared-query capability advertisement. */
+export function queryV2RemoteCapabilities(advertisement: Uint8Array): readonly string[] {
+  return queryV2NativeCall(() => loadNative().queryV2RemoteCapabilities(advertisement));
+}
+
+/** Prepare one request bound to the exact advertised executor epoch and expiry. */
+export function queryV2PrepareRemote(
+  authority: QueryV2Authority,
+  plan: Uint8Array,
+  invocationJson: string,
+  advertisement: Uint8Array,
+  limits: QueryV2RemoteLimits,
+): PendingQueryV2Remote {
+  const pending = queryV2NativeCall(() =>
+    loadNative().queryV2PrepareRemote(
+      preparedV2AuthorityHandle(authority),
+      plan,
+      invocationJson,
+      advertisement,
+      limits.maxItems,
+      limits.maxBytes,
+      limits.maxCollectionMembers,
+      limits.deadlineMs,
+    ),
+  );
+  return Object.freeze({
+    requestBytes: (): Uint8Array =>
+      queryV2NativeCall(() => new Uint8Array(pending.requestBytes())),
+    decodeReply: (response: Uint8Array): Promise<string> =>
+      queryV2NativePromise(queryV2NativeCall(() => pending.decodeReply(response))),
+  });
+}
 
 export function generateDefineBlock(info: SchemaInfo): string {
   return loadNative().generateDefineBlockJson(JSON.stringify(info));
@@ -793,20 +1011,40 @@ export class RustDatabase {
     maybeOptions: RustDatabaseConnectOptions = {},
   ): RustDatabase {
     const parsed = parseConnectArguments(nativeOrAddress, addressOrDatabase, databaseOrOptions, maybeOptions);
-    return new RustDatabase(
-      parsed.native.connectRustDatabase(
-        parsed.address,
-        parsed.database,
-        parsed.options.username ?? null,
-        parsed.options.password ?? null,
-        parsed.options.httpPort ?? null,
-        parsed.options.serverVersion ?? null,
-      ),
+    validateConnectionTransport(parsed.options);
+    const native = parsed.native.connectRustDatabase(
+      parsed.address,
+      parsed.database,
+      parsed.options.username ?? null,
+      parsed.options.password ?? null,
+      parsed.options.httpPort ?? null,
+      parsed.options.serverVersion ?? null,
+      parsed.options.tlsEnabled ?? null,
+      parsed.options.tlsRootCa ?? null,
     );
+    const database = new RustDatabase(native);
+    try {
+      const notice = native.serverDeprecationNotice?.();
+      if (notice != null && !process.throwDeprecation) {
+        process.emitWarning(notice.message, {
+          type: TYPE_DB_SERVER_DEPRECATION_WARNING,
+          code: notice.code,
+        });
+      }
+    } catch {
+      // A compatibility notice is best-effort and cannot change a successful
+      // connection into a failure when a synchronous replacement of
+      // process.emitWarning throws.
+    }
+    return database;
   }
 
   isConnected(): boolean {
     return this.#native.isConnected();
+  }
+
+  close(): void {
+    this.#native.close();
   }
 
   databaseName(): string {
@@ -1100,6 +1338,36 @@ function parseConnectArguments(
     database: databaseOrOptions,
     options: maybeOptions ?? {},
   };
+}
+
+function validateConnectionTransport(
+  options: Pick<RustDatabaseConnectOptions, "tlsEnabled" | "tlsRootCa">,
+): void {
+  for (const key in options) {
+    const normalized = key.replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
+    if (normalized.startsWith("tls") && key !== "tlsEnabled" && key !== "tlsRootCa") {
+      throw new TypeError(`unknown TLS connection option ${JSON.stringify(key)}`);
+    }
+  }
+  const tlsEnabled = options.tlsEnabled;
+  const tlsRootCa = options.tlsRootCa;
+  if (tlsEnabled !== undefined && typeof tlsEnabled !== "boolean") {
+    throw new TypeError("tlsEnabled must be a boolean when provided");
+  }
+  if (tlsRootCa !== undefined && typeof tlsRootCa !== "string") {
+    throw new TypeError("tlsRootCa must be a string path when provided");
+  }
+  if (tlsRootCa !== undefined) {
+    if (tlsEnabled === undefined) {
+      throw new TypeError("tlsRootCa requires explicit tlsEnabled=true");
+    }
+    if (!tlsEnabled) {
+      throw new TypeError("tlsRootCa contradicts explicit tlsEnabled=false");
+    }
+    if (tlsRootCa.length === 0) {
+      throw new TypeError("tlsRootCa must not be empty");
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------

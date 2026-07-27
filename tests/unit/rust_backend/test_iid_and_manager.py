@@ -354,6 +354,37 @@ def test_rust_manager_marshals_entity_aggregates(
     )
 
 
+def test_database_manager_does_not_retain_a_native_connection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created: list[object] = []
+    monkeypatch.setattr(
+        "type_bridge.crud.rust_manager.register_model_descriptor",
+        lambda model_class: {"type_name": model_class.get_type_name(), "owned_attributes": []},
+    )
+
+    def manager_for_entity(connection: object, descriptor: dict[str, Any]) -> object:
+        del connection, descriptor
+        manager = object()
+        created.append(manager)
+        return manager
+
+    monkeypatch.setattr(
+        "type_bridge.crud.rust_manager.rust_manager_for_entity",
+        manager_for_entity,
+    )
+
+    manager = RustTypeDBManager(Database(), RustManagerPerson)
+
+    first = manager._manager
+    second = manager._manager
+
+    assert first is created[0]
+    assert second is created[1]
+    assert first is not second
+    assert manager._manager_instance is None
+
+
 def test_rust_manager_runs_entity_hooks_before_marshalling(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

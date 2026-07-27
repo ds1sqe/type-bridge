@@ -75,12 +75,70 @@ pub mod filter;
 pub mod hooks;
 pub mod manager;
 pub mod match_request;
+pub mod migration_assertion;
+pub mod provider_runtime;
 pub mod query;
+pub mod query_v2;
+mod query_v2_adapter;
+#[cfg(test)]
+mod query_v2_adapter_tests;
+pub mod query_v2_builder;
+mod query_v2_compatibility;
+mod query_v2_model;
+mod query_v2_model_remote;
+pub mod query_v2_prepared;
+pub mod query_v2_remote;
 pub mod registry;
 pub mod relation;
+pub mod runtime_projection;
 pub mod schema;
 pub mod session;
 pub mod value;
+
+/// Integration-test bridge for exercising the production-internal V1-to-V2
+/// adapter from the live integration-test crate.
+///
+/// This public test seam exists only when the explicitly test-only
+/// `integration-tests` feature is enabled. The adapter itself is compiled in
+/// normal/release builds but remains crate-private.
+#[cfg(feature = "integration-tests")]
+#[doc(hidden)]
+pub mod integration_test_support {
+    use type_bridge_contract::diagnostic::Diagnostic;
+    use type_bridge_contract::limits::StructuralLimits;
+    use type_bridge_contract::query_plan::QueryOperation;
+    use type_bridge_query::ValidatedQuery;
+
+    use crate::match_request::ValidatedMatchRequest;
+    use crate::query_v2::failure;
+    use crate::query_v2_adapter::{
+        MatchRequestAdaptation, MatchRequestAdapterAuthority, adapt_match_request,
+    };
+    use crate::registry::DescriptorRegistry;
+
+    /// Adapt a validated V1 request through the production registry authority.
+    ///
+    /// Deriving the authority here keeps the live parity gate on the same
+    /// descriptor projection as public execution and proves that its V2 side
+    /// cannot silently take the retained `LegacyRequired` fallback.
+    pub fn adapt_match_request_for_live_test(
+        validated: &ValidatedMatchRequest,
+        registry: &DescriptorRegistry,
+        limits: StructuralLimits,
+    ) -> Result<(ValidatedQuery, QueryOperation), Diagnostic> {
+        let authority = MatchRequestAdapterAuthority::from_registry(registry)?;
+        match adapt_match_request(validated, registry, &authority.context(), limits)? {
+            MatchRequestAdaptation::Adapted(adapted) => {
+                Ok((adapted.validated().clone(), adapted.operation()))
+            }
+            MatchRequestAdaptation::LegacyRequired(_) => Err(failure(
+                type_bridge_contract::diagnostic::DiagnosticCategory::ResourceLimit,
+                "query_v2_adapter_test_resource_envelope",
+                "the live V2 parity fixture cannot fit the canonical V2 artifact envelope",
+            )),
+        }
+    }
+}
 
 // Re-exports for convenient access
 pub use attribute::{TypeBridgeAttribute, ValueType};
@@ -93,7 +151,7 @@ pub use dynamic::{
     DynamicRelationRow, DynamicRolePlayer, DynamicRolePlayerInput, DynamicSort,
 };
 pub use entity::{Annotation, OwnedAttributeInfo, TypeBridgeEntity};
-pub use error::{OrmError, Result};
+pub use error::{ClassifiedCommitError, CommitFailureCertainty, OrmError, Result};
 pub use expr::{Agg, AggResult, Expr, GroupByResult, SortDir};
 pub use field_ref::{FieldRef, RolePlayerFieldRef, RoleRef};
 pub use filter::Filter;
@@ -102,18 +160,35 @@ pub use hooks::{
 };
 pub use manager::{DynamicEntityManager, DynamicRelationManager, EntityManager, RelationManager};
 pub use match_request::*;
+pub use provider_runtime::ProviderRuntimeOwner;
 pub use query::{EntityQuery, GroupByEntityQuery, GroupByRelationQuery, RelationQuery};
+pub use query_v2_model_remote::{
+    ClaimedRemoteModelReplyV2, PendingRemoteModelQueryV2, RemoteModelQueryV2Error,
+    prepare_remote_model_query_v2,
+};
 pub use registry::DescriptorRegistry;
 pub use relation::{RoleInfo, RolePlayerRef, TypeBridgeRelation};
+pub use runtime_projection::InstalledRuntimeProjection;
 pub use schema::{SchemaDiff, SchemaInfo, SchemaManager};
-#[cfg(feature = "typedb")]
-pub use session::ConnectOptions;
 pub use session::backend::AnswerCancellation;
 #[cfg(feature = "typedb")]
 pub use session::embedded_driver_versions;
 #[cfg(feature = "typedb")]
-pub use session::ensure_database_exists;
-pub use session::{Database, GivenRowsSpec, GivenValue, Transaction, TransactionContext, TxType};
+pub use session::{
+    ConnectOptions, PreparedSecureConnectOptions, SecureConnectError, SecureConnectOptions,
+    SecureResult, TlsMode,
+};
+pub use session::{
+    Database, DatabaseConnectionAuthority, GivenRowsSpec, GivenValue, Transaction,
+    TransactionContext, TxType, require_legacy_writer_open,
+    require_legacy_writer_open_in_transaction,
+};
+#[cfg(feature = "typedb")]
+pub use session::{
+    database_exists, database_exists_prepared_secure, database_exists_secure,
+    delete_database_prepared_secure, delete_database_secure, ensure_database_exists,
+    ensure_database_exists_prepared_secure, ensure_database_exists_secure,
+};
 pub use value::AttributeValue;
 
 // Re-export derive macros when the `derive` feature is enabled.

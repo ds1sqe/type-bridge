@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import sys
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
@@ -74,7 +75,7 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
         TypeFlags,
     )
     from type_bridge.models.base import TypeDBType
-    from type_bridge.session import TransactionContext
+    from type_bridge.session import TransactionContext, TypeDBServerDeprecationWarning
     from type_bridge.typed import QuerySession
 
     contract = json.loads(args.fixture.read_text(encoding="utf-8"))
@@ -215,7 +216,18 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
         password=args.password,
         http_port=args.http_port,
     )
-    database.connect()
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always", TypeDBServerDeprecationWarning)
+        database.connect()
+    legacy_notices = [
+        {
+            "message": str(item.message),
+            "type": item.category.__name__,
+            "code": getattr(item.category, "code", None),
+        }
+        for item in caught
+        if item.category is TypeDBServerDeprecationWarning
+    ]
     expected_given = os.environ.get("TYPE_BRIDGE_PARITY_EXPECT_GIVEN")
     if expected_given is not None:
         if expected_given not in {"0", "1"}:
@@ -306,7 +318,12 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
         "borrowed": borrowed,
     }
     _assert_artifact_imports(artifact_root, source_root)
-    return {"status": "ok", "artifact": "wheel", "summary": summary}
+    return {
+        "status": "ok",
+        "artifact": "wheel",
+        "legacy_notices": legacy_notices,
+        "summary": summary,
+    }
 
 
 def _parser() -> argparse.ArgumentParser:

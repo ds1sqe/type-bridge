@@ -1,0 +1,8 @@
+conditional|schema_lowering_requires_assertion
+backfill|schema_lowering_requires_backfill
+destructive|schema_lowering_destructive
+opaque|schema_lowering_opaque
+struct-unsupported|schema_lowering_unsupported
+persistent-function-metadata|schema_lowering_unsupported
+capability|schema_lowering_capability_mismatch
+profile|schema_lowering_profile_mismatch

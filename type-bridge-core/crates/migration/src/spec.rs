@@ -31,6 +31,9 @@ pub struct MigrationSpec {
     /// Optional loader checksum for later drift detection.
     #[serde(default)]
     pub checksum: Option<String>,
+    /// Optional exact raw Python-source digest for locale-independent drift checks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_sha256: Option<String>,
     /// Whether the migration is declared reversible by Python.
     pub reversible: bool,
 }
@@ -575,6 +578,7 @@ mod tests {
                     dependencies: vec![],
                     operations: vec![OperationSpec::DefineSchema { schema: schema() }],
                     checksum: Some("aaa".to_string()),
+                    source_sha256: None,
                     reversible: true,
                 },
                 MigrationSpec {
@@ -589,6 +593,7 @@ mod tests {
                         reverse: None,
                     }],
                     checksum: Some("bbb".to_string()),
+                    source_sha256: None,
                     reversible: false,
                 },
             ],
@@ -600,6 +605,24 @@ mod tests {
         assert_eq!(parsed.migrations[0].name, "0001_initial");
         assert_eq!(parsed.migrations[1].name, "0002_custom");
         assert_eq!(parsed, graph);
+    }
+
+    #[test]
+    fn absent_raw_digest_preserves_the_legacy_sidecar_wire_shape() {
+        let spec = MigrationSpec {
+            app_label: "app".to_string(),
+            name: "0001_initial".to_string(),
+            dependencies: vec![],
+            operations: vec![],
+            checksum: Some("aaa".to_string()),
+            source_sha256: None,
+            reversible: true,
+        };
+
+        assert_eq!(
+            serde_json::to_string(&spec).unwrap(),
+            r#"{"app_label":"app","name":"0001_initial","dependencies":[],"operations":[],"checksum":"aaa","reversible":true}"#,
+        );
     }
 
     #[test]

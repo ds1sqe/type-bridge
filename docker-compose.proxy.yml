@@ -1,6 +1,6 @@
 services:
   typedb:
-    image: ${TYPEDB_IMAGE:-typedb/typedb:3.11.5}
+    image: ${TYPEDB_IMAGE:-typedb/typedb:3.12.1}
     ports:
       - "${TYPEDB_PORT:-0}:1729"
     healthcheck:

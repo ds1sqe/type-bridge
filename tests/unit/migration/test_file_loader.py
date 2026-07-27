@@ -11,6 +11,8 @@ Covers:
 
 from __future__ import annotations
 
+import codecs
+import os
 from pathlib import Path
 
 import pytest
@@ -334,3 +336,170 @@ class LegacyMigration(Migration):
 
     assert spec_new["operations"][0]["kind"] == "run_typeql"
     assert spec_legacy["operations"][0]["kind"] == "run_typeql"
+
+
+def test_migration_source_read_is_bounded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(MigrationLoader, "MAX_MIGRATION_FILE_BYTES", 32)
+    (tmp_path / "0001_oversized.py").write_bytes(b"x" * 33)
+
+    with pytest.raises(MigrationLoadError, match="byte ceiling"):
+        MigrationLoader(tmp_path, adoption_limits=True).discover()
+
+
+def test_migration_directory_enumeration_is_bounded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(MigrationLoader, "MAX_MIGRATION_FILES", 1)
+    (tmp_path / "README.md").write_text("history")
+    _write_py(tmp_path, "0001_initial.py")
+
+    with pytest.raises(MigrationLoadError, match="file entries"):
+        MigrationLoader(tmp_path, adoption_limits=True).discover()
+
+
+def test_migration_source_aggregate_is_bounded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_bytes = len(_MIGRATION_PY_TEMPLATE.encode())
+    monkeypatch.setattr(MigrationLoader, "MAX_MIGRATION_HISTORY_BYTES", source_bytes + 1)
+    _write_py(tmp_path, "0001_initial.py")
+    _write_py(tmp_path, "0002_next.py")
+
+    with pytest.raises(MigrationLoadError, match="history exceeds"):
+        MigrationLoader(tmp_path, adoption_limits=True).discover()
+
+
+def test_released_loader_accepts_valid_source_larger_than_16_mib(tmp_path: Path) -> None:
+    oversized_but_valid = _MIGRATION_PY_TEMPLATE + "\n#" + ("x" * (16 * 1024 * 1024))
+    _write_py(tmp_path, "0001_large.py", oversized_but_valid)
+
+    migrations = MigrationLoader(tmp_path).discover()
+
+    assert [loaded.migration.name for loaded in migrations] == ["0001_large"]
+
+
+def test_released_loader_ignores_more_than_65536_unrelated_entries(tmp_path: Path) -> None:
+    # Hard links provide real directory entries without duplicating payloads
+    # or spending the runtime needed to create 65k independent file bodies.
+    # Cycle across enough seed inodes to stay below conservative per-file
+    # hard-link ceilings (notably NTFS) on every release platform.
+    seeds = [tmp_path / f"unrelated-seed-{index:03}.txt" for index in range(128)]
+    for seed in seeds:
+        seed.write_text("not a migration")
+    for index in range(65_537):
+        os.link(seeds[index % len(seeds)], tmp_path / f"unrelated-{index:05}.txt")
+    _write_py(tmp_path, "0001_initial.py")
+
+    migrations = MigrationLoader(tmp_path).discover()
+
+    assert [loaded.migration.name for loaded in migrations] == ["0001_initial"]
+
+
+def test_released_loader_follows_source_symlink_but_adoption_reader_rejects_it(
+    tmp_path: Path,
+) -> None:
+    source = _write_py(tmp_path, "source.py")
+    linked = tmp_path / "0001_linked.py"
+    try:
+        linked.symlink_to(source.name)
+    except OSError as error:
+        pytest.skip(f"symlink creation unavailable: {error}")
+
+    migrations = MigrationLoader(tmp_path).discover()
+
+    assert [loaded.migration.name for loaded in migrations] == ["0001_linked"]
+    with pytest.raises(MigrationLoadError, match="regular file"):
+        MigrationLoader(tmp_path, adoption_limits=True).discover()
+
+
+def test_adoption_rejects_a_source_replaced_after_its_bounded_capture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original_source = _MIGRATION_PY_TEMPLATE
+    replacement_source = original_source.replace("loader-name", "swapped-name")
+    path = _write_py(tmp_path, "0001_initial.py", original_source)
+    read_adoption_source = MigrationLoader._read_adoption_source
+
+    def read_then_replace(loader: MigrationLoader, source_path: Path) -> bytes:
+        captured = read_adoption_source(loader, source_path)
+        replacement = tmp_path / "replacement.py"
+        replacement.write_text(replacement_source)
+        replacement.replace(source_path)
+        return captured
+
+    monkeypatch.setattr(MigrationLoader, "_read_adoption_source", read_then_replace)
+
+    with pytest.raises(
+        MigrationLoadError,
+        match="authority changed during bounded adoption discovery",
+    ):
+        MigrationLoader(tmp_path, use_sidecars=False, adoption_limits=True).discover()
+
+    assert path.read_text() == replacement_source
+
+
+def test_adoption_rejects_in_place_source_drift_after_directory_enumeration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original_source = _MIGRATION_PY_TEMPLATE
+    replacement_source = original_source.replace("loader-name", "reader-name")
+    assert len(replacement_source.encode()) == len(original_source.encode())
+    path = _write_py(tmp_path, "0001_initial.py", original_source)
+    read_adoption_source = MigrationLoader._read_adoption_source
+    mutated = False
+
+    def mutate_then_read(loader: MigrationLoader, source_path: Path) -> bytes:
+        nonlocal mutated
+        if not mutated:
+            mutated = True
+            path.write_text(replacement_source)
+        return read_adoption_source(loader, source_path)
+
+    monkeypatch.setattr(MigrationLoader, "_read_adoption_source", mutate_then_read)
+
+    with pytest.raises(MigrationLoadError, match="changed or is not a regular file"):
+        MigrationLoader(tmp_path, use_sidecars=False, adoption_limits=True).discover()
+
+
+def test_adoption_private_mirror_preserves_utf8_bom_and_never_writes_source_bytecode(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "0001_bom.py"
+    path.write_bytes(codecs.BOM_UTF8 + _MIGRATION_PY_TEMPLATE.encode("utf-8"))
+
+    [loaded] = MigrationLoader(
+        tmp_path,
+        use_sidecars=False,
+        adoption_limits=True,
+    ).discover()
+
+    assert loaded.checksum == _rust_runtime.migration_file_checksum(path.read_text())
+    assert loaded.source_sha256 is not None
+    assert not (tmp_path / "__pycache__").exists()
+
+
+def test_adoption_private_mirror_honors_utf8_pep263_source(tmp_path: Path) -> None:
+    source = "# -*- coding: utf-8 -*-\n# café\n" + _MIGRATION_PY_TEMPLATE
+    _write_py(tmp_path, "0001_cookie.py", source)
+
+    [loaded] = MigrationLoader(
+        tmp_path,
+        use_sidecars=False,
+        adoption_limits=True,
+    ).discover()
+
+    assert loaded.migration.name == "0001_cookie"
+
+
+def test_released_and_adoption_discovery_accept_empty_migration_suffix(tmp_path: Path) -> None:
+    _write_py(tmp_path, "0001_.py")
+
+    released = MigrationLoader(tmp_path, use_sidecars=False).discover()
+    adopted = MigrationLoader(
+        tmp_path,
+        use_sidecars=False,
+        adoption_limits=True,
+    ).discover()
+
+    assert [item.migration.name for item in released] == ["0001_"]
+    assert [item.migration.name for item in adopted] == ["0001_"]

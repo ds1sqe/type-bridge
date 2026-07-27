@@ -45,6 +45,19 @@ run_rust() {
     run_step "cargo test --all-targets" \
         cargo test --manifest-path type-bridge-core/Cargo.toml --all-targets
 
+    run_step "contract alternate serde_json backend conformance" \
+        cargo test --manifest-path type-bridge-core/Cargo.toml \
+        -p type-bridge-contract --features serde-backend-conformance
+
+    run_step "released validation-rule wire without feature unification" \
+        env CARGO_TARGET_DIR=type-bridge-core/target/rule-wire-standalone \
+        cargo test --locked \
+        --manifest-path type-bridge-core/crates/core/tests/fixtures/rule-wire-standalone/Cargo.toml
+
+    run_step "schema-codegen Rust projection acceptance" \
+        cargo test --manifest-path type-bridge-core/Cargo.toml \
+        -p type-bridge-schema-codegen --test rust_acceptance
+
     run_step "cargo clippy --all-targets -- -D warnings" \
         cargo clippy --manifest-path type-bridge-core/Cargo.toml --all-targets -- -D warnings
 }
@@ -68,6 +81,15 @@ run_python() {
     run_step "typed Query negative Pyright contract" \
         uv run python tests/contracts/typed_query/python/check_negative.py
 
+    run_step "owner-aware negative Pyright contract" \
+        uv run python tests/unit/typed_query/check_negative.py
+
+    run_step "typed Query API negative Pyright contract" \
+        uv run python tests/unit/typed_query/check_query_negative.py
+
+    run_step "schema-codegen Python projection acceptance" \
+        uv run python type-bridge-core/crates/schema-codegen/tests/acceptance/check.py
+
     run_step "pytest tests/unit/" \
         uv run pytest tests/unit/ -x --tb=short -q
 }
@@ -84,10 +106,15 @@ run_node() {
     run_step "npm run build"         npm run build
     run_step "npm run typecheck"     npm run typecheck
     run_step "npm run typecheck:query-contract" npm run typecheck:query-contract
+    run_step "npm run scope:probe"    npm run scope:probe
+    run_step "schema-codegen TypeScript projection acceptance" \
+        node ../schema-codegen/tests/typescript_acceptance/check.mjs
     run_step "npm run test:unit"     npm run test:unit
     run_step "npm run test:dts"      npm run test:dts
+    run_step "npm run dts:parity"    npm run dts:parity
     run_step "npm run smoke:package" npm run smoke:package
     run_step "npm run smoke:legacy-package" npm run smoke:legacy-package
+    run_step "npm run test:contract-adapter" npm run test:contract-adapter
 
     popd >/dev/null
 }

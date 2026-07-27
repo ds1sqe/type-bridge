@@ -14,8 +14,10 @@
 //! logged executor from `crates/migration` are reused without re-implementation
 //! (invariant 2: one engine, two bootstraps).
 
+#[path = "display.rs"]
 mod display;
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -49,6 +51,9 @@ enum CliError {
     /// Shelling out to a Python entrypoint failed.
     #[error("{0}")]
     Subprocess(String),
+    /// A command already reported its result and selected an exact exit code.
+    #[error("command exited with status {0}")]
+    ReportedExit(i32),
 }
 
 type CliResult<T> = std::result::Result<T, CliError>;
@@ -229,16 +234,45 @@ enum Command {
 
 // ── Entry point ──────────────────────────────────────────────────────────────
 
+#[allow(dead_code)] // This source is also compiled as the library's embedded runner.
 fn main() {
-    if let Err(error) = run() {
-        eprintln!("error: {error}");
-        std::process::exit(2);
+    let exit_code = run_cli(std::env::args_os());
+    if exit_code != 0 {
+        std::process::exit(exit_code);
     }
 }
 
-fn run() -> CliResult<()> {
-    let cli = Cli::parse();
+/// Run the released V1 migration CLI over process-style arguments.
+///
+/// The first argument is the executable name. Parser help, parser failures,
+/// command output, and operational errors are written to the same process
+/// streams as the standalone binary. The return value is the exact process
+/// exit code; this function never terminates its host process.
+pub fn run_cli<I, T>(arguments: I) -> i32
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString> + Clone,
+{
+    let cli = match Cli::try_parse_from(arguments) {
+        Ok(cli) => cli,
+        Err(error) => {
+            let exit_code = error.exit_code();
+            let _ = error.print();
+            return exit_code;
+        }
+    };
 
+    match run(cli) {
+        Ok(()) => 0,
+        Err(CliError::ReportedExit(exit_code)) => exit_code,
+        Err(error) => {
+            eprintln!("error: {error}");
+            2
+        }
+    }
+}
+
+fn run(cli: Cli) -> CliResult<()> {
     // Apply the requested color mode globally so anstream respects it.
     match cli.color {
         ColorMode::Always => ColorChoice::AlwaysAnsi.write_global(),
@@ -489,7 +523,7 @@ fn cmd_migrate(
     }
 
     if any_failure {
-        std::process::exit(1);
+        return Err(CliError::ReportedExit(1));
     }
 
     Ok(())
@@ -613,7 +647,31 @@ fn cmd_makemigrations(
 
     let code = status.code().unwrap_or(1);
     if code != 0 {
-        std::process::exit(code);
+        return Err(CliError::ReportedExit(code));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::run_cli;
+
+    #[test]
+    fn embeddable_runner_returns_parser_exit_codes_without_terminating_host() {
+        assert_eq!(run_cli(["type-bridge-migration", "--version"]), 0);
+        assert_eq!(run_cli(["type-bridge-migration", "unknown-verb"]), 2);
+    }
+
+    #[test]
+    fn embeddable_runner_returns_operational_error_code() {
+        assert_eq!(
+            run_cli([
+                "type-bridge-migration",
+                "plan",
+                "--migrations-dir",
+                "/definitely/missing/type-bridge-migrations",
+            ]),
+            2,
+        );
+    }
 }

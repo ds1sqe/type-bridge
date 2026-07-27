@@ -13,11 +13,15 @@
 //! | `band` | function | Protocol-band lookup; `None` for unmapped versions |
 //! | `check_supported` | function | Window + band gate (installed driver); raises `VersionError` on failure |
 //! | `check_server_supported` | function | Embedded-runtime gate (band-set membership); raises `VersionError` on failure |
+//! | `typedb_server_deprecation_notice` | function | Core-owned notice for a known or unknown legacy server |
 //! | `embedded_driver_version` | function | The band-8 typedb-driver version compiled into the Rust runtime (back-compat) |
 //! | `embedded_driver_versions` | function | All compiled-in driver versions as `{band: version}` dict |
 //! | `server_version` | function | HTTP probe → detected server version string |
 
-use pyo3::exceptions::PyException;
+use std::path::PathBuf;
+use std::sync::Mutex;
+
+use pyo3::exceptions::{PyException, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use type_bridge_core_lib::version as core_version;
@@ -36,6 +40,52 @@ pyo3::create_exception!(
 /// Map a core [`core_version::VersionError`] to the Python `VersionError` exception.
 fn to_py_err(e: core_version::VersionError) -> PyErr {
     VersionError::new_err(e.to_string())
+}
+
+/// Python-owned lifetime guard for one Rust-validated custom-root snapshot.
+#[pyclass(name = "_CustomRootCaSnapshot", module = "type_bridge_core")]
+pub struct PyCustomRootCaSnapshot {
+    material: Mutex<Option<core_version::RetainedCustomRootCa>>,
+}
+
+#[pymethods]
+impl PyCustomRootCaSnapshot {
+    #[new]
+    fn capture(py: Python<'_>, configured_path: PathBuf) -> PyResult<Self> {
+        let material = py
+            .allow_threads(move || {
+                core_version::RetainedCustomRootCa::load_configured_alias(&configured_path)
+            })
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        Ok(Self {
+            material: Mutex::new(Some(material)),
+        })
+    }
+
+    #[getter]
+    fn path(&self) -> PyResult<PathBuf> {
+        let material = self
+            .material
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("custom root CA snapshot lock is poisoned"))?;
+        material
+            .as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("custom root CA snapshot has been closed"))?
+            .with_driver_root_path(|path| path.to_path_buf())
+            .map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
+    fn cleanup(&self) -> PyResult<()> {
+        self.material
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("custom root CA snapshot lock is poisoned"))?
+            .take();
+        Ok(())
+    }
+
+    fn __repr__(&self) -> &'static str {
+        "<type_bridge_core._CustomRootCaSnapshot>"
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -116,7 +166,7 @@ pub fn embedded_driver_version() -> &'static str {
 ///
 /// Returns a Python `dict` mapping `int` band → `str` version for every band
 /// feature compiled into this build.  The default build embeds all supported
-/// bands and returns `{7: "3.8.1", 8: "3.11.5", 9: "3.12.0"}`.  A
+/// bands and returns `{7: "3.8.1", 8: "3.11.5", 9: "3.12.1"}`.  A
 /// single-band build returns only the one entry for its compiled band — the
 /// dict is cfg-derived, never hardcoded (master-plan I6).
 ///
@@ -163,6 +213,24 @@ pub fn check_server_supported(server: &str) -> PyResult<()> {
     core_version::check_server_supported(&s, &embedded_bands).map_err(to_py_err)
 }
 
+/// Return the core-owned legacy-server notice, when applicable.
+///
+/// `None` as the input represents the connected legacy fallback whose exact
+/// server version is unavailable. Supported 3.11/3.12 versions return
+/// `None`; malformed versions raise [`VersionError`].
+#[pyfunction(signature = (server=None))]
+pub fn typedb_server_deprecation_notice(server: Option<&str>) -> PyResult<Option<String>> {
+    match server {
+        Some(server) => {
+            let server = server.parse::<core_version::Version>().map_err(to_py_err)?;
+            Ok(core_version::known_server_deprecation_notice(&server))
+        }
+        None => Ok(Some(
+            core_version::unknown_legacy_fallback_deprecation_notice(),
+        )),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // HTTP probe
 // ---------------------------------------------------------------------------
@@ -180,15 +248,38 @@ pub fn check_server_supported(server: &str) -> PyResult<()> {
 /// # Errors
 ///
 /// Raises `VersionError` when the endpoint is unreachable, returns an
-/// unexpected response, or the version string cannot be parsed.
+/// unexpected response, or the version string cannot be parsed. Raises
+/// `ValueError` when a custom root is supplied without TLS or its trust
+/// material is unusable.
 #[pyfunction]
-#[pyo3(signature = (address, http_port = core_version::DEFAULT_HTTP_PORT, tls = false))]
+#[pyo3(signature = (address, http_port = core_version::DEFAULT_HTTP_PORT, tls = false, tls_root_ca = None))]
 pub fn server_version(
     py: Python<'_>,
     address: String,
     http_port: u16,
     tls: bool,
+    tls_root_ca: Option<PathBuf>,
 ) -> PyResult<String> {
+    if let Some(root_ca) = tls_root_ca {
+        if !tls {
+            return Err(PyValueError::new_err(
+                "tls_root_ca requires explicit tls=True",
+            ));
+        }
+        if root_ca.as_os_str().is_empty() {
+            return Err(PyValueError::new_err("tls_root_ca must not be empty"));
+        }
+        let result = py.allow_threads(move || {
+            let material = core_version::RetainedCustomRootCa::load_configured_alias(&root_ca)?;
+            core_version::server_version_retained_custom_root_ca(&address, http_port, &material)
+        });
+        return result.map(|v| v.to_string()).map_err(|error| match error {
+            core_version::VersionProbeError::Probe(error) => to_py_err(error),
+            core_version::VersionProbeError::TlsConfiguration(error) => {
+                PyValueError::new_err(error.to_string())
+            }
+        });
+    }
     // Release the GIL across the blocking HTTP call.
     let result = py.allow_threads(move || core_version::server_version(&address, http_port, tls));
     result.map(|v| v.to_string()).map_err(to_py_err)
@@ -201,14 +292,20 @@ pub fn server_version(
 /// Register version gate symbols on the `type_bridge_core` Python module.
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("VersionError", m.py().get_type::<VersionError>())?;
+    m.add_class::<PyCustomRootCaSnapshot>()?;
     m.add_function(wrap_pyfunction!(min_supported_version, m)?)?;
     m.add_function(wrap_pyfunction!(max_supported_line, m)?)?;
     m.add_function(wrap_pyfunction!(band, m)?)?;
     m.add_function(wrap_pyfunction!(check_supported, m)?)?;
     m.add_function(wrap_pyfunction!(check_server_supported, m)?)?;
+    m.add_function(wrap_pyfunction!(typedb_server_deprecation_notice, m)?)?;
     m.add_function(wrap_pyfunction!(embedded_driver_version, m)?)?;
     m.add_function(wrap_pyfunction!(embedded_driver_versions, m)?)?;
     m.add_function(wrap_pyfunction!(server_version, m)?)?;
     m.add("DEFAULT_HTTP_PORT", core_version::DEFAULT_HTTP_PORT)?;
+    m.add(
+        "TYPEDB_LEGACY_SERVER_DEPRECATION_CODE",
+        core_version::TYPEDB_LEGACY_SERVER_DEPRECATION_CODE,
+    )?;
     Ok(())
 }

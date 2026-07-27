@@ -1,9 +1,10 @@
 [package]
 name = "type-bridge-migration"
-version = "1.5.11"
+version = "2.0.0-rc.0"
 edition = "2024"
 description = "Migration IR and planning substrate for type-bridge"
 license.workspace = true
+license-file.workspace = true
 repository.workspace = true
 authors.workspace = true
 # The CLI bin is declared explicitly below; src/bin/display.rs is a module of
@@ -20,19 +21,27 @@ name = "type-bridge-migration"
 path = "src/bin/type_bridge_migration.rs"
 
 [dependencies]
-type-bridge-core-lib = { path = "../core", version = "1.5.11" }
-type-bridge-orm = { path = "../orm", version = "1.5.11", default-features = false, features = ["band7", "band8", "band9"] }
+cap-fs-ext = "4.0"
+cap-std = "4.0"
+type-bridge-contract = { path = "../contract", version = "2.0.0-rc.0" }
+type-bridge-core-lib = { path = "../core", version = "2.0.0-rc.0" }
+type-bridge-schema-compat = { path = "../schema-compat", version = "2.0.0-rc.0" }
+type-bridge-orm = { path = "../orm", version = "2.0.0-rc.0", default-features = false, features = ["band7", "band8", "band9"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 clap = { version = "4.5", features = ["derive"] }
 network-interface = "2.0.5"
 serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
+serde_json = { version = "1.0", features = ["raw_value"] }
 sha2 = "0.10"
+rustix = { version = "1", features = ["fs"] }
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+uuid = { version = "1", features = ["v4"] }
 anstyle = "1"
 anstream = "0.6"
-uuid = { version = "1", features = ["v4"] }
+
+[target.'cfg(windows)'.dependencies]
+cap-primitives = "4.0"
 
 [dev-dependencies]
 tempfile = "3"

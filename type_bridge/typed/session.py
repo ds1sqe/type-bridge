@@ -15,12 +15,13 @@ from type_bridge_core import (
 )
 
 from type_bridge._rust_runtime import descriptor_for_model
+from type_bridge.fields.role import RoleRef, _typed_query_role_reference_owner
 from type_bridge.models.base import TypeDBType
 from type_bridge.models.entity import Entity
 from type_bridge.models.relation import Relation
 from type_bridge.session import Database, TransactionContext
 from type_bridge.typed.query import Query
-from type_bridge.typed.references import BoundVar, Selection
+from type_bridge.typed.references import BoundVar, Predicate, Selection, _PlayerBinding
 
 ModelT = TypeVar("ModelT", bound=TypeDBType)
 _FRAMEWORK_MODEL_ROOTS = (TypeDBType, Entity, Relation)
@@ -87,6 +88,57 @@ class QuerySession:
     def subtypes(self, model: type[ModelT]) -> BoundVar[ModelT]:
         """Create a fresh subtype-inclusive variable for ``model``."""
         return self.var(model, subtypes=True)
+
+    def reachable[
+        SourcePlayerT: TypeDBType,
+        TargetPlayerT: TypeDBType,
+        RelationT: Relation,
+    ](
+        self,
+        source: _PlayerBinding[SourcePlayerT],
+        target: _PlayerBinding[TargetPlayerT],
+        relation: type[RelationT],
+        role_from: RoleRef[SourcePlayerT, RelationT],
+        role_to: RoleRef[TargetPlayerT, RelationT],
+        *,
+        min_depth: int,
+        max_depth: int,
+    ) -> Predicate:
+        """Require one bounded directed walk from ``source`` to ``target``.
+
+        Bounds are inclusive. Depth zero means exact concept identity; positive
+        paths may revisit vertices or relation instances and remain
+        existential, so proof paths never change the selected ``Query`` type.
+        """
+        _require_reachability_depth(min_depth, "min_depth")
+        _require_reachability_depth(max_depth, "max_depth")
+        if not isinstance(source, BoundVar) or not isinstance(target, BoundVar):
+            raise TypeError("reachable endpoints must be BoundVar values")
+        if (
+            not isinstance(relation, type)
+            or not issubclass(relation, Relation)
+            or relation is Relation
+            or relation.is_base()
+        ):
+            raise TypeError("reachable relation must be a declared Relation model class")
+
+        role_from_owner = _require_reachability_role_owner(role_from, relation, "role_from")
+        role_to_owner = _require_reachability_role_owner(role_to, relation, "role_to")
+        del role_from_owner, role_to_owner
+
+        registered: set[type[TypeDBType]] = set()
+        subtype_roots: set[type[TypeDBType]] = set()
+        self._register_descriptor_closure(relation, registered, subtype_roots)
+        handle = self.__handle.reachable(
+            relation.get_type_name(),
+            role_from.role_name,
+            role_to.role_name,
+            source._native_binding(),
+            target._native_binding(),
+            min_depth,
+            max_depth,
+        )
+        return Predicate._from_native(handle)
 
     # BEGIN GENERATED QUERY OVERLOADS
     @overload
@@ -456,6 +508,29 @@ def _reject_nested_relation_player_model(model: type[TypeDBType]) -> None:
                         f"{model.__name__}.{role.role_name} with relation player "
                         f"{player.__name__}; a cycle-safe result contract is required"
                     )
+
+
+def _require_reachability_depth(value: object, name: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{name} must be an integer")
+    if not 0 <= value <= 255:
+        raise ValueError(f"{name} must be between 0 and 255")
+
+
+def _require_reachability_role_owner[
+    RelationT: Relation,
+](
+    reference: object,
+    relation: type[RelationT],
+    name: str,
+) -> tuple[type[TypeDBType], str]:
+    owner = _typed_query_role_reference_owner(reference)
+    if owner is None:
+        raise TypeError(f"{name} must be an owner-aware RoleRef")
+    owner_type, owner_type_name = owner
+    if not issubclass(owner_type, Relation) or not issubclass(relation, owner_type):
+        raise TypeError(f"{name} does not belong to the reachable relation model")
+    return owner_type, owner_type_name
 
 
 def _named_declaration(

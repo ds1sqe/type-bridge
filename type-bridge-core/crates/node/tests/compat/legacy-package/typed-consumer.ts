@@ -1,19 +1,32 @@
 import {
   Entity,
   Key,
+  QueryV2Error,
   Relation,
   attr,
   field,
   loadNative,
+  queryV2ExecuteLocal,
+  queryV2PrepareRemote,
+  queryV2RemoteCapabilities,
   role,
   type EntityDescriptor,
   type ModelClass,
   type ModelInstance,
   type ParentModelClass,
+  type PendingQueryV2Remote,
+  type QueryV2RemoteLimits,
   type ResolvedTypeFlags,
   type RustDatabase,
+  type RustDatabaseConnectOptions,
   type RustTransactionContext,
 } from "@type-bridge/node";
+import {
+  AuthoredQueryInvocation,
+  AuthoredQueryPlan,
+  QueryPlanBuilder,
+  QueryV2Authority,
+} from "@type-bridge/node/query-v2";
 import {
   QuerySession,
   references,
@@ -48,6 +61,12 @@ type Equal<Left, Right> =
       : false
     : false;
 type Expect<Condition extends true> = Condition;
+
+const secureConnectOptions: RustDatabaseConnectOptions = {
+  tlsEnabled: true,
+  tlsRootCa: "/run/secrets/type-db-root.pem",
+};
+void secureConnectOptions;
 
 function invariant(condition: unknown, message: string): asserts condition {
   if (!condition) {
@@ -178,6 +197,110 @@ function assertPackedStaticSurface(
 }
 
 void assertPackedStaticSurface;
+
+function assertPackedPreparedV2Surface(
+  database: RustDatabase,
+  authority: QueryV2Authority,
+  plan: Uint8Array,
+  advertisement: Uint8Array,
+  response: Uint8Array,
+): void {
+  const invocation = JSON.stringify({ operation: "rows", rows: [] });
+  const limits: QueryV2RemoteLimits = {
+    maxItems: 100n,
+    maxBytes: 1_048_576n,
+    maxCollectionMembers: 1_000n,
+    deadlineMs: 30_000n,
+  };
+  const local: Promise<string> = queryV2ExecuteLocal(
+    database,
+    authority,
+    plan,
+    invocation,
+    limits.deadlineMs,
+  );
+  const capabilities: readonly string[] = queryV2RemoteCapabilities(advertisement);
+  const pending: PendingQueryV2Remote = queryV2PrepareRemote(
+    authority,
+    plan,
+    invocation,
+    advertisement,
+    limits,
+  );
+  const request: Uint8Array = pending.requestBytes();
+  const outcome: Promise<string> = pending.decodeReply(response);
+  void local;
+  void capabilities;
+  void request;
+  void outcome;
+}
+
+void assertPackedPreparedV2Surface;
+
+const packedDeclaredText =
+  '{"declared_identity":{"algorithm":"sha256","canonicalization":' +
+  '"typebridge.schema-canonical-json/v1","digest":' +
+  '"bdab7138a57238ee23dfceb69e7f09893cfa7b536d9e70356d1a986a132499fe",' +
+  '"domain":"typebridge.schema.declared-identity"},"facts":[{"kind":"type",' +
+  '"value":{"id":{"kind":"entity","label":"smoke-person"}}},{"kind":"type",' +
+  '"value":{"id":{"kind":"attribute","label":"smoke-name"}}},{"kind":"value",' +
+  '"value":{"id":"smoke-name","value_type":"string"}},{"kind":"owns","value":' +
+  '{"id":{"attribute":"smoke-name","owner":{"kind":"entity","label":' +
+  '"smoke-person"}}}}],"format_version":1,"required_capabilities":[]}';
+const packedDeclaredSchema = Uint8Array.from(
+  packedDeclaredText,
+  (character) => character.charCodeAt(0),
+);
+const authoredAuthority = new QueryV2Authority(
+  packedDeclaredSchema,
+  "binding-smoke",
+  "typedb-3.12.1/v1",
+);
+const authoredBuilder = new QueryPlanBuilder(authoredAuthority);
+const authoredPerson = authoredBuilder.binding("person");
+const authoredName = authoredBuilder.binding("name");
+const authoredWanted = authoredBuilder.input("wanted_name", "string", false);
+authoredBuilder.match([
+  authoredBuilder.isa(authoredPerson, "entity", "smoke-person", true),
+  authoredBuilder.has(authoredPerson, authoredName, "smoke-name"),
+  authoredBuilder.value(
+    "equal",
+    authoredBuilder.bindingOperand(authoredName),
+    authoredBuilder.inputOperand(authoredWanted),
+  ),
+]);
+authoredBuilder.select([authoredPerson, authoredName]);
+authoredBuilder.require([authoredName]);
+authoredBuilder.distinct();
+authoredBuilder.sort([authoredBuilder.order(authoredName, "ascending")]);
+const authoredPlan: AuthoredQueryPlan = authoredBuilder.finalizeRows([
+  authoredPerson,
+  authoredName,
+]);
+const authoredInvocation: AuthoredQueryInvocation = authoredPlan.rows([["Alice"]]);
+invariant(
+  authoredPlan.format === "typebridge.query-plan/v2",
+  "packed query-v2 facade must author the canonical V2 format",
+);
+invariant(
+  authoredPlan.fingerprint.length === 64,
+  "packed query-v2 facade must return a SHA-256 fingerprint",
+);
+invariant(
+  authoredInvocation.planFingerprint === authoredPlan.fingerprint,
+  "packed invocation must remain bound to its authored plan",
+);
+let finalizedError: unknown;
+try {
+  authoredBuilder.binding("after_finalize");
+} catch (error) {
+  finalizedError = error;
+}
+invariant(
+  finalizedError instanceof QueryV2Error
+    && finalizedError.code === "query_builder_finalized",
+  "packed builder must preserve the shared structured finalized diagnostic",
+);
 
 function assertLegacyRootStructuralSurface(
   instanceShape: Readonly<{

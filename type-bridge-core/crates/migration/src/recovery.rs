@@ -28,6 +28,7 @@ use crate::plan::{
     plan,
 };
 use crate::spec::MigrationGraph;
+use crate::state::{require_legacy_writer_open, require_legacy_writer_open_in_transaction};
 
 /// Boxed future returned by [`StepRecoveryController`] callbacks.
 pub type RecoveryFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -439,6 +440,14 @@ async fn execute_recovery_migration<C: StepRecoveryController + ?Sized>(
             error: Some(format!("{} is not reversible", migration.identity.name)),
         };
     }
+    if let Err(error) = require_legacy_writer_open(db).await {
+        return RecoveryMigrationResult {
+            migration: migration.identity.clone(),
+            status: RecoveryMigrationStatus::Failed,
+            steps: Vec::new(),
+            error: Some(error.to_string()),
+        };
+    }
 
     let mut results = Vec::new();
     for step in &migration.steps {
@@ -551,6 +560,12 @@ async fn execute_pending_step<C: StepRecoveryController + ?Sized>(
             .await;
         }
     };
+    if let Err(error) = require_legacy_writer_open_in_transaction(&transaction).await {
+        let _ = transaction.rollback().await;
+        return StepExecutionOutcome::FailedBeforeCommit {
+            error: error.to_string(),
+        };
+    }
     if let Err(error) = transaction.query(typeql).await {
         let _ = transaction.rollback().await;
         return failed_before_commit(controller, step, format!("query failed: {error}"), None)
@@ -932,6 +947,7 @@ mod tests {
                     reverse: None,
                 }],
                 checksum: Some("artifact-checksum".to_string()),
+                source_sha256: None,
                 reversible: false,
             }],
         };
@@ -975,10 +991,36 @@ mod tests {
         assert_eq!(
             *log.lock().unwrap(),
             vec![
+                MockEvent::OpenTx(TxType::Read),
+                MockEvent::Close,
                 MockEvent::OpenTx(TxType::Write),
                 MockEvent::Query(TxType::Write, "insert $p isa person;".to_string()),
                 MockEvent::Commit,
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn cutover_rejects_recovery_before_controller_or_typeql() {
+        let plan = checked_plan(vec![write_step("insert $p isa person;")]);
+        let controller = TestController::new(vec![pending()]);
+        let (backend, log) = MockMigrationBackend::with_legacy_cutover();
+        let db = Database::with_backend(Box::new(backend), "test");
+
+        let result = execute_recovery_plan(&db, &plan, &controller).await;
+
+        assert_eq!(result.status, RecoveryPlanStatus::Failed);
+        assert!(result.migrations[0].steps.is_empty());
+        assert!(
+            result.migrations[0]
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains(crate::LEGACY_WRITER_CUTOVER_MESSAGE))
+        );
+        assert!(controller.event_kinds().is_empty());
+        assert_eq!(
+            *log.lock().unwrap(),
+            vec![MockEvent::OpenTx(TxType::Read), MockEvent::Close]
         );
     }
 
@@ -998,7 +1040,10 @@ mod tests {
             result.migrations[0].steps[0].outcome,
             StepExecutionOutcome::Indeterminate { .. }
         ));
-        assert!(log.lock().unwrap().is_empty());
+        assert_eq!(
+            *log.lock().unwrap(),
+            vec![MockEvent::OpenTx(TxType::Read), MockEvent::Close]
+        );
         assert!(controller.event_kinds().is_empty());
     }
 
@@ -1029,6 +1074,29 @@ mod tests {
                 StepRecoveryEventKind::BeforeCommit,
                 StepRecoveryEventKind::Committed,
                 StepRecoveryEventKind::FailedBeforeCommit,
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn definitely_aborted_commit_response_remains_indeterminate_in_v1_recovery() {
+        let plan = checked_plan(vec![schema_step("define attribute a, value string;")]);
+        let controller = TestController::new(vec![pending()]);
+        let (backend, _log) = MockMigrationBackend::with_definitely_aborted_commit_failure(0);
+        let db = Database::with_backend(Box::new(backend), "test");
+
+        let result = execute_recovery_plan(&db, &plan, &controller).await;
+
+        assert_eq!(result.status, RecoveryPlanStatus::Indeterminate);
+        assert!(matches!(
+            result.migrations[0].steps[0].outcome,
+            StepExecutionOutcome::Indeterminate { .. }
+        ));
+        assert_eq!(
+            controller.event_kinds(),
+            vec![
+                StepRecoveryEventKind::BeforeCommit,
+                StepRecoveryEventKind::UnknownCommitOutcome,
             ]
         );
     }
@@ -1109,7 +1177,10 @@ mod tests {
                 .iter()
                 .all(|step| matches!(step.outcome, StepExecutionOutcome::Applied { .. }))
         );
-        assert!(log.lock().unwrap().is_empty());
+        assert_eq!(
+            *log.lock().unwrap(),
+            vec![MockEvent::OpenTx(TxType::Read), MockEvent::Close]
+        );
     }
 
     #[tokio::test]

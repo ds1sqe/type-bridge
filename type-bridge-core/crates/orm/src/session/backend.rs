@@ -5,7 +5,7 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
@@ -14,9 +14,16 @@ use type_bridge_core_lib::ast::{
 };
 use type_bridge_core_lib::compiler::{PreparedTypedStatement, QueryCompiler};
 
-use crate::error::OrmError;
+use crate::error::{ClassifiedCommitError, OrmError};
 use crate::match_request::CapabilitySet;
 use crate::match_request::{MatchError, MatchErrorCategory, MatchErrorPathSegment};
+
+/// Maximum provider items consumed after the first sticky decode failure.
+pub(crate) const MAX_ERROR_DRAIN_ITEMS: u64 = 16;
+/// Maximum encoded provider bytes consumed after the first sticky decode failure.
+pub(crate) const MAX_ERROR_DRAIN_BYTES: u64 = 64 * 1024;
+/// Maximum server-side lifetime of a V2 schema-excluding query transaction.
+pub const MAX_QUERY_V2_SCHEMA_FENCE_DURATION: Duration = Duration::from_secs(5 * 60);
 
 /// Result of a query execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -39,7 +46,7 @@ pub enum AnswerItem {
 }
 
 impl AnswerItem {
-    fn encoded_bytes(&self) -> Result<u64, OrmError> {
+    pub(crate) fn encoded_bytes(&self) -> Result<u64, OrmError> {
         let value = match self {
             Self::Row(value) | Self::Document(value) => value,
         };
@@ -139,6 +146,28 @@ impl Default for BoundedAnswerLimits {
             max_bytes: 64 * 1024 * 1024,
             deadline: None,
             cancellation: AnswerCancellation::default(),
+        }
+    }
+}
+
+/// V2-only answer limits layered over the released bounded-answer shape.
+///
+/// Keeping the collection ceiling in this additive wrapper preserves source
+/// compatibility for 1.5.x callers that construct or destructure
+/// [`BoundedAnswerLimits`] exhaustively.
+#[derive(Debug, Clone)]
+pub struct QueryV2AnswerLimits {
+    /// Released row/document, byte, deadline, and cancellation limits.
+    pub answer: BoundedAnswerLimits,
+    /// Maximum aggregate list members decoded across fetched documents.
+    pub max_collection_members: u64,
+}
+
+impl Default for QueryV2AnswerLimits {
+    fn default() -> Self {
+        Self {
+            answer: BoundedAnswerLimits::default(),
+            max_collection_members: 65_536,
         }
     }
 }
@@ -256,11 +285,13 @@ pub enum TxType {
 
 /// A single value bound to a `given` variable.
 ///
-/// Temporal variants carry ISO-8601 text; the real backend parses them when
-/// lowering onto the driver, mirroring how [`QueryResult`] renders temporal
-/// values back to strings.
+/// Released temporal variants retain their ISO-8601 text representation.
+/// Additive V2 variants carry exact components when text alone would erase
+/// provider semantics.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum GivenValue {
+    /// Explicit absence for an optional `given` cell.
+    Empty,
     /// TypeQL `boolean`.
     Boolean(bool),
     /// TypeQL `integer`.
@@ -275,6 +306,27 @@ pub enum GivenValue {
     Datetime(String),
     /// TypeQL `datetime-tz`, RFC 3339 with offset.
     DatetimeTz(String),
+    /// Exact V2 TypeQL `datetime-tz`, retaining an optional authored IANA zone
+    /// and the already-validated effective offset.
+    DatetimeTzExact {
+        /// Canonical local datetime.
+        local: String,
+        /// Authored IANA name, or `None` for UTC/fixed-offset values.
+        named_zone: Option<String>,
+        /// Effective offset selected for this local value.
+        effective_offset_seconds: i32,
+    },
+    /// TypeQL fixed-point `decimal`.
+    Decimal(String),
+    /// Exact non-negative TypeDB duration components.
+    Duration {
+        /// Calendar months.
+        months: u32,
+        /// Calendar days.
+        days: u32,
+        /// Absolute nanoseconds.
+        nanos: u64,
+    },
 }
 
 /// Input rows for a `given`-stage query: a variable header plus value rows.
@@ -356,6 +408,23 @@ pub(crate) fn typed_fetch_provider_statement(
         .map_err(|error| OrmError::Compilation(error.to_string()))
 }
 
+pub(crate) fn typed_tuple_provider_statement(
+    query: &TypedFetchRows,
+    supports_given_rows: bool,
+) -> Result<TypedProviderStatement, OrmError> {
+    let compiler = QueryCompiler::new();
+    if supports_given_rows {
+        return compiler
+            .prepare_typed_tuple_scan(query)
+            .map_err(|error| OrmError::Compilation(error.to_string()))
+            .and_then(TypedProviderStatement::prepared);
+    }
+    compiler
+        .compile_typed_tuple_scan(query)
+        .map(TypedProviderStatement::inline)
+        .map_err(|error| OrmError::Compilation(error.to_string()))
+}
+
 pub(crate) fn typed_root_provider_statement(
     query: &TypedRootScan,
     supports_given_rows: bool,
@@ -375,17 +444,18 @@ pub(crate) fn typed_root_provider_statement(
 
 pub(crate) fn typed_rematch_provider_statement(
     query: &TypedPageRematch,
+    limit: u64,
     supports_given_rows: bool,
 ) -> Result<TypedProviderStatement, OrmError> {
     let compiler = QueryCompiler::new();
     if supports_given_rows {
         return compiler
-            .prepare_typed_page_rematch(query)
+            .prepare_typed_page_rematch_bounded(query, limit)
             .map_err(|error| OrmError::Compilation(error.to_string()))
             .and_then(TypedProviderStatement::prepared);
     }
     compiler
-        .compile_typed_page_rematch(query)
+        .compile_typed_page_rematch_bounded(query, limit)
         .map(TypedProviderStatement::inline)
         .map_err(|error| OrmError::Compilation(error.to_string()))
 }
@@ -419,6 +489,16 @@ pub trait TransactionOps: Send {
     /// backends on their existing unsupported/fallback behavior.
     fn supports_given_rows(&self) -> bool {
         false
+    }
+
+    /// Export the schema while this already-open transaction retains its
+    /// provider-side schema exclusion, when the backend can prove that
+    /// relationship.
+    ///
+    /// The compatibility default returns no authority. Callers must not infer
+    /// managed ownership from a separately observed export or from labels.
+    fn schema_snapshot(&mut self) -> BoxFuture<'_, Result<Option<String>, OrmError>> {
+        Box::pin(async { Ok(None) })
     }
 
     /// Execute a TypeQL query string.
@@ -512,6 +592,33 @@ pub trait TransactionOps: Send {
         })
     }
 
+    /// Execute a V2 query with its additive collection-member budget.
+    ///
+    /// The default preserves third-party backend implementations by routing
+    /// through their released bounded seam. The V2 TypeQL lowering already
+    /// caps every fetched list before provider materialization; real drivers
+    /// override this method to repeat the aggregate check while converting
+    /// provider documents.
+    fn query_v2_bounded<'a>(
+        &'a mut self,
+        typeql: &'a str,
+        limits: QueryV2AnswerLimits,
+        consumer: &'a mut dyn AnswerConsumer,
+    ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
+        self.query_bounded(typeql, limits.answer, consumer)
+    }
+
+    /// Execute a V2 `given` query with its additive collection-member budget.
+    fn query_v2_with_rows_bounded<'a>(
+        &'a mut self,
+        typeql: &'a str,
+        rows: GivenRowsSpec,
+        limits: QueryV2AnswerLimits,
+        consumer: &'a mut dyn AnswerConsumer,
+    ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
+        self.query_with_rows_bounded(typeql, rows, limits.answer, consumer)
+    }
+
     /// Compile and execute one canonical typed selected-row statement.
     fn query_typed_bounded<'a>(
         &'a mut self,
@@ -522,6 +629,31 @@ pub trait TransactionOps: Send {
         Box::pin(async move {
             let statement = typed_fetch_provider_statement(query, self.supports_given_rows())?;
             execute_typed_provider_statement(self, statement, limits, consumer).await
+        })
+    }
+
+    /// Whether this backend implements the exact distinct-public-tuple proof.
+    ///
+    /// The default is deliberately false so released custom backends that
+    /// override [`Self::query_typed_bounded`] retain their original full-scan
+    /// execution path. Opting in also requires overriding
+    /// [`Self::query_tuple_typed_bounded`].
+    fn supports_exactly_one_tuple_proof(&self) -> bool {
+        false
+    }
+
+    /// Compile and execute one provider-bounded distinct selected-tuple scan.
+    fn query_tuple_typed_bounded<'a>(
+        &'a mut self,
+        query: &'a TypedFetchRows,
+        limits: BoundedAnswerLimits,
+        consumer: &'a mut dyn AnswerConsumer,
+    ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
+        let _ = (query, limits, consumer);
+        Box::pin(async {
+            Err(OrmError::QueryExecution(
+                "exactly-one tuple proof is not supported by this backend".into(),
+            ))
         })
     }
 
@@ -546,7 +678,11 @@ pub trait TransactionOps: Send {
         consumer: &'a mut dyn AnswerConsumer,
     ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
         Box::pin(async move {
-            let statement = typed_rematch_provider_statement(query, self.supports_given_rows())?;
+            let statement = typed_rematch_provider_statement(
+                query,
+                limits.max_items,
+                self.supports_given_rows(),
+            )?;
             execute_typed_provider_statement(self, statement, limits, consumer).await
         })
     }
@@ -568,6 +704,16 @@ pub trait TransactionOps: Send {
 
     /// Commit this transaction. Only meaningful for write/schema transactions.
     fn commit(&mut self) -> BoxFuture<'_, Result<(), OrmError>>;
+
+    /// Commit while retaining provider durability certainty when available.
+    ///
+    /// The default preserves source compatibility for third-party backends and
+    /// classifies their released [`Self::commit`] errors as unknown. Providers
+    /// with stronger evidence may override this method.
+    fn commit_classified(&mut self) -> BoxFuture<'_, Result<(), ClassifiedCommitError>> {
+        let commit = self.commit();
+        Box::pin(async move { commit.await.map_err(ClassifiedCommitError::from) })
+    }
 
     /// Roll back this transaction.
     fn rollback(&mut self) -> BoxFuture<'_, Result<(), OrmError>>;
@@ -602,15 +748,59 @@ pub trait DriverBackend: Send + Sync {
         tx_type: TxType,
     ) -> BoxFuture<'_, Result<Box<dyn TransactionOps>, OrmError>>;
 
+    /// Open a read-capable V2 transaction that excludes schema commits until
+    /// the transaction reaches a terminal state.
+    ///
+    /// The explicit seam is fail-closed: an ordinary read transaction does
+    /// not prove that its schema snapshot matches an export observed before
+    /// or after it. The returned export must be captured after acquiring the
+    /// guard and before releasing it, and must describe the exact schema
+    /// snapshot used by the returned transaction. Implementations must also
+    /// enforce `timeout` both while acquiring the schema lock and over the
+    /// transaction lifetime, so a lost client cannot retain or later acquire
+    /// schema exclusion indefinitely.
+    fn open_schema_fenced_read_transaction(
+        &self,
+        database: &str,
+        timeout: Duration,
+    ) -> BoxFuture<'_, Result<SchemaFencedReadTransaction, OrmError>> {
+        let _ = (database, timeout);
+        Box::pin(async {
+            Err(OrmError::QueryExecution(
+                "V2 schema-fenced read transactions are not supported by this backend".into(),
+            ))
+        })
+    }
+
     /// Check if the underlying connection is still alive.
     fn is_open(&self) -> bool;
+
+    /// Make the underlying connection terminal and request backend shutdown.
+    ///
+    /// The default is a no-op so released custom backends remain source
+    /// compatible. Real network backends override this at binding-owned close
+    /// boundaries; repeated calls must be harmless. Final worker release may
+    /// remain tied to the backend's last shared lease.
+    fn close_connection(&self) -> Result<(), OrmError> {
+        Ok(())
+    }
 
     /// The server version detected at connect time, when the backend knows it.
     ///
     /// Defaults to `None` for backends without a version gate (mocks, embedded
     /// test backends). The real TypeDB backend reports the version the connect
-    /// gate detected; it is `None` only on the band-7 gRPC fallback.
+    /// gate detected when that path produced authoritative identity evidence.
     fn server_version(&self) -> Option<type_bridge_core_lib::version::Version> {
+        None
+    }
+
+    /// Return the core-owned legacy-server notice for this connection.
+    ///
+    /// Custom backends default to no notice because they carry no TypeDB
+    /// version-gate provenance. The real backend reports known 3.8/3.10 and
+    /// unknown connections that actually negotiated the legacy band-7
+    /// fallback.
+    fn server_deprecation_notice(&self) -> Option<String> {
         None
     }
 
@@ -664,6 +854,31 @@ pub trait DriverBackend: Send + Sync {
                 "Schema export is not supported by this backend for database '{database}'"
             )))
         })
+    }
+}
+
+/// One V2 read-capable transaction and the exact schema export captured under
+/// its retained schema-exclusion guard.
+pub struct SchemaFencedReadTransaction {
+    transaction: Box<dyn TransactionOps>,
+    schema_text: String,
+}
+
+impl SchemaFencedReadTransaction {
+    /// Bind one transaction to the schema export its backend captured after
+    /// acquiring schema exclusion and before releasing that guard.
+    #[must_use]
+    pub fn new(transaction: Box<dyn TransactionOps>, schema_text: String) -> Self {
+        Self {
+            transaction,
+            schema_text,
+        }
+    }
+
+    /// Consume the proof and return its transaction and fenced schema export.
+    #[must_use]
+    pub fn into_parts(self) -> (Box<dyn TransactionOps>, String) {
+        (self.transaction, self.schema_text)
     }
 }
 
@@ -854,6 +1069,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn transaction_defaults_to_no_raw_tuple_proof_seam() {
+        let mut transaction = UnsupportedGivenTransaction;
+        let query = typed_literal_fetch(TypedLiteral::String("Alice".into()));
+        let mut consumer = |_item| Ok(AnswerControl::Continue);
+
+        assert!(!transaction.supports_exactly_one_tuple_proof());
+        let error = transaction
+            .query_tuple_typed_bounded(&query, BoundedAnswerLimits::default(), &mut consumer)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, OrmError::QueryExecution(message) if message == "exactly-one tuple proof is not supported by this backend")
+        );
+    }
+
+    #[tokio::test]
     async fn bounded_given_fallback_stops_while_consuming_materialized_mock_rows() {
         let mut transaction = MaterializedGivenTransaction;
         let mut accepted = Vec::new();
@@ -911,14 +1142,22 @@ mod tests {
         let string_fetch = typed_literal_fetch(TypedLiteral::String("Alice".into()));
         let mut consumer = |_item| Ok(AnswerControl::Continue);
 
-        let mut older_band = TypedRouteTransaction::new(false);
-        older_band
-            .query_typed_bounded(&string_fetch, BoundedAnswerLimits::default(), &mut consumer)
-            .await
-            .unwrap();
-        assert_eq!(older_band.prepared.len(), 0);
-        assert_eq!(older_band.plain.len(), 1);
-        assert!(older_band.plain[0].contains("$f0 == \"Alice\""));
+        // Both retained legacy protocol bands use the same inline typed
+        // compiler route. The adapter's internal semantic-profile identity
+        // must never select 3.12-only `given` transport for either one.
+        for band in [7_u8, 8] {
+            let mut older_band = TypedRouteTransaction::new(false);
+            older_band
+                .query_typed_bounded(&string_fetch, BoundedAnswerLimits::default(), &mut consumer)
+                .await
+                .unwrap();
+            assert_eq!(older_band.prepared.len(), 0, "band {band}");
+            assert_eq!(older_band.plain.len(), 1, "band {band}");
+            assert!(
+                older_band.plain[0].contains("$f0 == \"Alice\""),
+                "band {band}"
+            );
+        }
 
         let mut band9 = TypedRouteTransaction::new(true);
         band9

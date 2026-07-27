@@ -14,8 +14,9 @@ fallback rather than being enumerated here.
 ``schema.attributes[...]`` and ``"x" in schema.attributes``.
 """
 
-from collections.abc import Mapping
-from typing import Any, Never
+from collections.abc import Mapping, Sequence
+from os import PathLike
+from typing import Any, Literal, Never, Protocol, TypedDict, final, overload
 
 class ValueCoercer:
     def __init__(self) -> None: ...
@@ -70,6 +71,405 @@ def format_value(value: Any) -> str: ...
 def parse_typeql_query(input: str) -> Any: ...
 def render_models_json(input: str, target: str, options_json: str | None = ...) -> str: ...
 def toml_to_typeql(toml_text: str) -> str: ...
+def run_v2_cli(arguments: list[str]) -> int: ...
+def run_legacy_migration_cli(arguments: list[str]) -> int: ...
+
+class PyAdoptionRevision: ...
+
+class PyAdoptionDirectoryEntry:
+    @property
+    def name(self) -> str: ...
+    def name_bytes(self) -> bytes: ...
+    def is_file(self) -> bool: ...
+    def is_directory(self) -> bool: ...
+    def is_symlink(self) -> bool: ...
+
+class PyAdoptionDirectoryAuthority:
+    @staticmethod
+    def open(path: str) -> PyAdoptionDirectoryAuthority: ...
+    def directory_revision(self) -> PyAdoptionRevision: ...
+    def require_directory_revision(self, revision: PyAdoptionRevision) -> None: ...
+    def entries(
+        self,
+        relative: str,
+        maximum_entries: int,
+        expected_directory: PyAdoptionDirectoryEntry | None = ...,
+    ) -> list[PyAdoptionDirectoryEntry]: ...
+    def inspect(
+        self,
+        relative: str,
+        expected_parent: PyAdoptionDirectoryEntry | None = ...,
+    ) -> PyAdoptionDirectoryEntry | None: ...
+    def read_bounded(
+        self,
+        relative: str,
+        limit: int,
+        expected: PyAdoptionDirectoryEntry | None = ...,
+    ) -> bytes: ...
+    def write_atomic_no_replace(self, name: str, contents: bytes) -> None: ...
+    def validate_publication_name(self, name: str) -> None: ...
+    def remove_if_matches(
+        self,
+        name: str,
+        expected: PyAdoptionDirectoryEntry,
+        expected_bytes: bytes,
+    ) -> bool: ...
+
+# Prepared V2 query facade — opaque authority handle plus canonical
+# plan/envelope bytes; limits accept any int and are range-checked
+# against the unsigned 64-bit wire contract.
+class QueryV2Authority:
+    def __init__(self, declared_schema: bytes, scope: str, profile: str) -> None: ...
+    @staticmethod
+    def query_only(
+        database: PyRustDatabase,
+        declared_schema: bytes,
+        scope: str,
+        profile: str,
+    ) -> QueryV2Authority: ...
+
+type QueryV2ValueType = Literal[
+    "string",
+    "long",
+    "double",
+    "boolean",
+    "date",
+    "datetime",
+    "datetime_tz",
+    "decimal",
+    "duration",
+]
+type QueryV2TypeKind = Literal["entity", "relation", "attribute"]
+type QueryV2Comparator = Literal[
+    "equal",
+    "not_equal",
+    "less",
+    "less_or_equal",
+    "greater",
+    "greater_or_equal",
+]
+type QueryV2OrderDirection = Literal["ascending", "descending"]
+type QueryV2Reducer = Literal["count", "max", "mean", "min", "sum"]
+type QueryV2Scalar = str | int | float | bool
+
+class _QueryV2ExactFloat(Protocol):
+    """Static marker accepted by ordinary ``float`` values but not ``int``."""
+
+    def hex(self) -> str: ...
+
+@final
+class _QueryV2AuthorityIdentity:
+    def __new__(cls) -> Never: ...
+    def same_authority(self, other: _QueryV2AuthorityIdentity) -> bool: ...
+
+@final
+class _QueryV2BindingHandle:
+    def __new__(cls) -> Never: ...
+
+@final
+class _QueryV2InputHandle:
+    def __new__(cls) -> Never: ...
+
+@final
+class _QueryV2OperandHandle:
+    def __new__(cls) -> Never: ...
+
+@final
+class _QueryV2PatternHandle:
+    def __new__(cls) -> Never: ...
+
+@final
+class _QueryV2OrderHandle:
+    def __new__(cls) -> Never: ...
+
+@final
+class _QueryV2ReduceAssignmentHandle:
+    def __new__(cls) -> Never: ...
+
+@final
+class _QueryV2LocalReturnHandle:
+    def __new__(cls) -> Never: ...
+
+@final
+class _QueryV2LocalFunctionHandle:
+    def __new__(cls) -> Never: ...
+
+@final
+class _QueryV2DocumentFieldHandle:
+    def __new__(cls) -> Never: ...
+
+@final
+class AuthoredQueryInvocation:
+    def __new__(cls) -> Never: ...
+    @property
+    def canonical_bytes(self) -> bytes: ...
+    @property
+    def operation(self) -> Literal["rows", "count", "exists"]: ...
+    @property
+    def plan_fingerprint(self) -> str: ...
+    @property
+    def authority_identity(self) -> _QueryV2AuthorityIdentity: ...
+    @property
+    def required_transport_capabilities(self) -> tuple[str, ...]: ...
+
+@final
+class AuthoredQueryPlan:
+    def __new__(cls) -> Never: ...
+    @property
+    def canonical_bytes(self) -> bytes: ...
+    @property
+    def format(self) -> Literal["typebridge.query-plan/v2"]: ...
+    @property
+    def fingerprint(self) -> str: ...
+    @property
+    def required_capabilities(self) -> tuple[str, ...]: ...
+    @property
+    def authority_identity(self) -> _QueryV2AuthorityIdentity: ...
+    def rows(self, rows: Sequence[Sequence[QueryV2Scalar | None]]) -> AuthoredQueryInvocation: ...
+    def documents(
+        self, rows: Sequence[Sequence[QueryV2Scalar | None]]
+    ) -> AuthoredQueryInvocation: ...
+    def count(self, rows: Sequence[Sequence[QueryV2Scalar | None]]) -> AuthoredQueryInvocation: ...
+    def exists(self, rows: Sequence[Sequence[QueryV2Scalar | None]]) -> AuthoredQueryInvocation: ...
+
+@final
+class QueryPlanBuilder:
+    def __init__(self, authority: QueryV2Authority) -> None: ...
+    def binding(self, variable: str) -> _QueryV2BindingHandle: ...
+    def input(
+        self, public_name: str, value_type: QueryV2ValueType, optional: bool
+    ) -> _QueryV2InputHandle: ...
+    def binding_operand(self, binding: _QueryV2BindingHandle) -> _QueryV2OperandHandle: ...
+    @overload
+    def literal_operand(
+        self,
+        value_type: Literal[
+            "string",
+            "date",
+            "datetime",
+            "datetime_tz",
+            "decimal",
+            "duration",
+        ],
+        value: str,
+    ) -> _QueryV2OperandHandle: ...
+    @overload
+    def literal_operand(self, value_type: Literal["long"], value: int) -> _QueryV2OperandHandle: ...
+    @overload
+    def literal_operand(
+        self, value_type: Literal["double"], value: _QueryV2ExactFloat
+    ) -> _QueryV2OperandHandle: ...
+    @overload
+    def literal_operand(
+        self, value_type: Literal["boolean"], value: bool
+    ) -> _QueryV2OperandHandle: ...
+    def input_operand(self, input: _QueryV2InputHandle) -> _QueryV2OperandHandle: ...
+    def isa(
+        self,
+        binding: _QueryV2BindingHandle,
+        type_kind: QueryV2TypeKind,
+        type_label: str,
+        include_subtypes: bool,
+    ) -> _QueryV2PatternHandle: ...
+    def has(
+        self,
+        owner: _QueryV2BindingHandle,
+        attribute: _QueryV2BindingHandle,
+        attribute_label: str,
+    ) -> _QueryV2PatternHandle: ...
+    def links(
+        self,
+        relation: _QueryV2BindingHandle,
+        relation_label: str,
+        roles: Sequence[str],
+        players: Sequence[_QueryV2BindingHandle],
+    ) -> _QueryV2PatternHandle: ...
+    def value(
+        self,
+        comparator: QueryV2Comparator,
+        left: _QueryV2OperandHandle,
+        right: _QueryV2OperandHandle,
+    ) -> _QueryV2PatternHandle: ...
+    def not_(self, patterns: Sequence[_QueryV2PatternHandle]) -> _QueryV2PatternHandle: ...
+    def or_(self, branches: Sequence[Sequence[_QueryV2PatternHandle]]) -> _QueryV2PatternHandle: ...
+    def try_(self, patterns: Sequence[_QueryV2PatternHandle]) -> _QueryV2PatternHandle: ...
+    def reachable(
+        self,
+        source: _QueryV2BindingHandle,
+        target: _QueryV2BindingHandle,
+        relation_label: str,
+        role_from: str,
+        role_to: str,
+        min_depth: int,
+        max_depth: int,
+    ) -> _QueryV2PatternHandle: ...
+    @overload
+    def function_call(
+        self,
+        assigned: _QueryV2BindingHandle,
+        arguments: Sequence[_QueryV2OperandHandle],
+        function_name: str,
+        local_function: None = ...,
+    ) -> _QueryV2PatternHandle: ...
+    @overload
+    def function_call(
+        self,
+        assigned: _QueryV2BindingHandle,
+        arguments: Sequence[_QueryV2OperandHandle],
+        function_name: None,
+        local_function: _QueryV2LocalFunctionHandle,
+    ) -> _QueryV2PatternHandle: ...
+    @overload
+    def function_call(
+        self,
+        assigned: _QueryV2BindingHandle,
+        arguments: Sequence[_QueryV2OperandHandle],
+        *,
+        local_function: _QueryV2LocalFunctionHandle,
+    ) -> _QueryV2PatternHandle: ...
+    def order(
+        self, binding: _QueryV2BindingHandle, direction: QueryV2OrderDirection
+    ) -> _QueryV2OrderHandle: ...
+    @overload
+    def reduce_assignment(
+        self,
+        assigned: _QueryV2BindingHandle,
+        reducer: Literal["count"],
+        input: None = ...,
+    ) -> _QueryV2ReduceAssignmentHandle: ...
+    @overload
+    def reduce_assignment(
+        self,
+        assigned: _QueryV2BindingHandle,
+        reducer: Literal["max", "mean", "min", "sum"],
+        input: _QueryV2BindingHandle,
+    ) -> _QueryV2ReduceAssignmentHandle: ...
+    @overload
+    def local_return(
+        self,
+        reducer: Literal["count"],
+        input: _QueryV2BindingHandle,
+        value_type: Literal["long"],
+    ) -> _QueryV2LocalReturnHandle: ...
+    @overload
+    def local_return(
+        self,
+        reducer: Literal["sum"],
+        input: _QueryV2BindingHandle,
+        value_type: Literal["long", "double"],
+    ) -> _QueryV2LocalReturnHandle: ...
+    def local_function(
+        self,
+        name: str,
+        bindings: Sequence[_QueryV2BindingHandle],
+        parameter_bindings: Sequence[_QueryV2BindingHandle],
+        parameter_labels: Sequence[str],
+        body: Sequence[_QueryV2PatternHandle],
+        returns: _QueryV2LocalReturnHandle,
+    ) -> _QueryV2LocalFunctionHandle: ...
+    def match(self, patterns: Sequence[_QueryV2PatternHandle]) -> None: ...
+    def select(self, bindings: Sequence[_QueryV2BindingHandle]) -> None: ...
+    def require(self, bindings: Sequence[_QueryV2BindingHandle]) -> None: ...
+    def distinct(self) -> None: ...
+    def reduce(
+        self,
+        assignments: Sequence[_QueryV2ReduceAssignmentHandle],
+        groups: Sequence[_QueryV2BindingHandle],
+    ) -> None: ...
+    def sort(self, terms: Sequence[_QueryV2OrderHandle]) -> None: ...
+    def offset(self, rows: int) -> None: ...
+    def limit(self, rows: int) -> None: ...
+    def document_binding(
+        self, key: str, binding: _QueryV2BindingHandle
+    ) -> _QueryV2DocumentFieldHandle: ...
+    def document_attribute_list(
+        self, key: str, owner: _QueryV2BindingHandle, attribute_label: str
+    ) -> _QueryV2DocumentFieldHandle: ...
+    def finalize_rows(self, columns: Sequence[_QueryV2BindingHandle]) -> AuthoredQueryPlan: ...
+    def finalize_documents(
+        self, fields: Sequence[_QueryV2DocumentFieldHandle]
+    ) -> AuthoredQueryPlan: ...
+
+class _QueryV2ErrorTextPathSegment(TypedDict):
+    kind: Literal["field", "identifier"]
+    value: str
+
+class _QueryV2ErrorIndexPathSegment(TypedDict):
+    kind: Literal["index"]
+    value: int
+
+type _QueryV2ErrorPathSegment = _QueryV2ErrorTextPathSegment | _QueryV2ErrorIndexPathSegment
+
+class _QueryV2ErrorTextDetail(TypedDict):
+    kind: Literal["text", "long"]
+    value: str
+
+class _QueryV2ErrorBooleanDetail(TypedDict):
+    kind: Literal["boolean"]
+    value: bool
+
+class _QueryV2ErrorTextListDetail(TypedDict):
+    kind: Literal["text_list"]
+    value: list[str]
+
+type _QueryV2ErrorDetail = (
+    _QueryV2ErrorTextDetail | _QueryV2ErrorBooleanDetail | _QueryV2ErrorTextListDetail
+)
+
+class QueryV2Error(ValueError):
+    category: Literal[
+        "invalid_contract",
+        "unsupported_capability",
+        "resource_limit",
+        "integrity",
+    ]
+    code: str
+    message: str
+    path: list[_QueryV2ErrorPathSegment]
+    details: Mapping[str, _QueryV2ErrorDetail]
+
+class PendingQueryV2Remote:
+    def request_bytes(self) -> bytes: ...
+    def decode_reply(self, response: bytes | bytearray) -> str:
+        """Claim once, snapshot a bounded reply, and verify its request binding."""
+        ...
+
+def query_v2_authority(declared_schema: bytes, scope: str, profile: str) -> QueryV2Authority: ...
+def query_v2_query_only_authority(
+    database: PyRustDatabase,
+    declared_schema: bytes,
+    scope: str,
+    profile: str,
+) -> QueryV2Authority:
+    """Bind a local-only authority to one exact database with no migration controls."""
+    ...
+
+def query_v2_execute_local(
+    database: PyRustDatabase,
+    authority: QueryV2Authority,
+    plan: bytes,
+    invocation_json: str,
+    deadline_ms: int | None = ...,
+) -> str:
+    """Runs with the GIL released; the optional deadline bounds the round trip."""
+    ...
+
+def query_v2_remote_capabilities(advertisement: bytes) -> list[str]:
+    """Inspect an advertisement already trusted through TLS or out-of-band pinning."""
+    ...
+
+def query_v2_prepare_remote(
+    authority: QueryV2Authority,
+    plan: bytes,
+    invocation_json: str,
+    advertisement: bytes,
+    max_items: int,
+    max_bytes: int,
+    max_collection_members: int,
+    deadline_ms: int | None = ...,
+) -> PendingQueryV2Remote:
+    """Bind a trusted executor advertisement and absolute expiry into one request."""
+    ...
 
 # Version gate — SSOT in crates/core/src/version.rs, re-exported here.
 class VersionError(Exception):
@@ -112,7 +512,7 @@ def embedded_driver_versions() -> dict[int, str]:
 
     Returns a dict mapping ``int`` band → ``str`` version for every band
     feature compiled into this build.  The default build returns
-    ``{7: "3.8.1", 8: "3.11.5", 9: "3.12.0"}``.
+    ``{7: "3.8.1", 8: "3.11.5", 9: "3.12.1"}``.
     """
     ...
 
@@ -128,14 +528,33 @@ def check_server_supported(server: str) -> None:
     """
     ...
 
-def server_version(address: str, http_port: int = 8000, tls: bool = False) -> str:
+TYPEDB_LEGACY_SERVER_DEPRECATION_CODE: str
+
+def typedb_server_deprecation_notice(server: str | None = None) -> str | None:
+    """Return the shared notice for a deprecated or unknown legacy server."""
+    ...
+
+def server_version(
+    address: str,
+    http_port: int = 8000,
+    tls: bool = False,
+    tls_root_ca: str | PathLike[str] | None = ...,
+) -> str:
     """Query the TypeDB HTTP API for the server version.
 
     Returns the detected version as a string (e.g. ``"3.10.4"``).
     Raises ``VersionError`` when the endpoint is unreachable or the response
-    cannot be parsed.
+    cannot be parsed, and ``ValueError`` for invalid custom-root configuration.
     """
     ...
+
+class _CustomRootCaSnapshot:
+    """Private owner for one Rust-validated immutable CA snapshot."""
+
+    def __init__(self, configured_path: str | PathLike[str]) -> None: ...
+    @property
+    def path(self) -> PathLike[str]: ...
+    def cleanup(self) -> None: ...
 
 class PyRustDatabase:
     """Rust-backed TypeDB database connection."""
@@ -148,13 +567,19 @@ class PyRustDatabase:
         password: str | None = ...,
         http_port: int = 8000,
         server_version: str | None = ...,
+        tls: bool | None = ...,
+        tls_root_ca: str | PathLike[str] | None = ...,
     ) -> PyRustDatabase: ...
+    def close(self) -> None: ...
+    def server_version(self) -> str | None: ...
+    def server_deprecation_notice(self) -> str | None: ...
     def transaction(self, transaction_type: str = "read") -> PyRustTransactionContext: ...
     def __getattr__(self, name: str) -> Any: ...
 
 class PyRustTransactionContext:
     """Rust-backed TypeDB transaction context."""
 
+    def require_legacy_writer_open(self) -> None: ...
     def __getattr__(self, name: str) -> Any: ...
 
 # Internal native typed-match seam. Public authoring types live in
@@ -348,6 +773,16 @@ class MatchSessionHandle:
     def __init__(self, registry: PyDescriptorRegistry) -> None: ...
     def exact(self, type_name: str) -> MatchBindingHandle: ...
     def subtypes(self, type_name: str) -> MatchBindingHandle: ...
+    def reachable(
+        self,
+        relation_type: str,
+        role_from: str,
+        role_to: str,
+        source: MatchBindingHandle,
+        target: MatchBindingHandle,
+        min_depth: int,
+        max_depth: int,
+    ) -> MatchPredicateHandle: ...
     def positional(self, slots: list[MatchSelectionHandle]) -> MatchShapeHandle: ...
     def named(
         self, names: list[str], selections: list[MatchSelectionHandle]
@@ -360,6 +795,55 @@ class MatchSessionHandle:
     ) -> MatchShapeHandle: ...
     def query(self, shape: MatchShapeHandle) -> MatchQueryHandle: ...
 
+@final
+class RemoteModelQueryContext:
+    def __new__(cls) -> Never: ...
+
+@final
+class PendingRemoteModelQuery:
+    def __new__(cls) -> Never: ...
+    def request_bytes(self) -> bytes: ...
+    def decode_reply(self, response: bytes | bytearray) -> ValidatedMatchResultHandle: ...
+
+def query_v2_remote_model_context(
+    authority: QueryV2Authority,
+    advertisement: bytes | bytearray,
+    max_items: int,
+    max_bytes: int,
+    max_collection_members: int,
+    max_graph_nodes: int,
+    max_attribute_values: int,
+    max_role_players: int,
+    deadline_ms: int | None = ...,
+) -> RemoteModelQueryContext: ...
+def query_v2_prepare_remote_model_rows(
+    query: MatchQueryHandle,
+    context: RemoteModelQueryContext,
+    order: list[MatchOrderHandle],
+    offset: int,
+    limit: int,
+    cardinality: Literal["exactly_one", "bounded_many"],
+) -> PendingRemoteModelQuery: ...
+def query_v2_prepare_remote_model_page(
+    query: MatchQueryHandle,
+    context: RemoteModelQueryContext,
+    root: MatchBindingHandle,
+    order: list[MatchOrderHandle],
+    offset: int,
+    limit: int,
+    include_total: bool,
+) -> PendingRemoteModelQuery: ...
+def query_v2_prepare_remote_model_count(
+    query: MatchQueryHandle,
+    context: RemoteModelQueryContext,
+    root: MatchBindingHandle,
+) -> PendingRemoteModelQuery: ...
+def query_v2_prepare_remote_model_exists(
+    query: MatchQueryHandle,
+    context: RemoteModelQueryContext,
+    root: MatchBindingHandle,
+) -> PendingRemoteModelQuery: ...
+
 class MatchRequestError(Exception):
     category: str
     code: str
@@ -368,4 +852,5 @@ class MatchRequestError(Exception):
     details: dict[str, object]
 
 def revalidate_match_diagnostic(registry: PyDescriptorRegistry, diagnostic: str) -> str: ...
+def validate_match_order_term_count(actual: int) -> None: ...
 def __getattr__(name: str) -> Any: ...

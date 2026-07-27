@@ -14,7 +14,7 @@ use type_bridge_orm::{
     HydratedThing, MatchError, MatchErrorCategory, MatchRequest, MatchResult, MissingOrder,
     OrderHandle, PredicateHandle, QueryHandle, RoleHandle, RowCardinality, SelectionHandle,
     SessionHandle, ShapeHandle, SlotValue, SortDirection, ThingKind, UnvalidatedMatchRequest,
-    ValidatedMatchRequest, ValidatedMatchResult, Window,
+    ValidatedMatchRequest, ValidatedMatchResult, Window, validate_public_order_term_count,
 };
 
 use crate::{NodeDescriptorRegistry, NodeRustDatabase, NodeRustTransactionContext};
@@ -105,7 +105,7 @@ fn parse_missing(value: &str) -> Result<MissingOrder> {
     }
 }
 
-fn parse_cardinality(value: &str) -> Result<RowCardinality> {
+pub(crate) fn parse_cardinality(value: &str) -> Result<RowCardinality> {
     match value {
         "exactly_one" => Ok(RowCardinality::ExactlyOne),
         "bounded_many" => Ok(RowCardinality::BoundedMany),
@@ -115,7 +115,7 @@ fn parse_cardinality(value: &str) -> Result<RowCardinality> {
     }
 }
 
-fn bigint_u64(value: &BigInt, name: &str) -> Result<u64> {
+pub(crate) fn bigint_u64(value: &BigInt, name: &str) -> Result<u64> {
     let (negative, value, lossless) = value.get_u64();
     if negative || !lossless {
         return Err(invalid_arg(format!(
@@ -139,7 +139,7 @@ fn diagnostic(request: MatchRequest) -> Result<String> {
         .map_err(|_| Error::new(Status::GenericFailure, "diagnostic JSON was not UTF-8"))
 }
 
-fn order_handles(orders: &[Reference<NodeMatchOrderHandle>]) -> Vec<OrderHandle> {
+pub(crate) fn order_handles(orders: &[Reference<NodeMatchOrderHandle>]) -> Vec<OrderHandle> {
     orders.iter().map(|order| order.inner.clone()).collect()
 }
 
@@ -161,6 +161,13 @@ pub fn revalidate_match_diagnostic(
         .map_err(napi_match_error)?;
     String::from_utf8(canonical)
         .map_err(|_| Error::new(Status::GenericFailure, "diagnostic JSON was not UTF-8"))
+}
+
+/// Apply the canonical public-order ceiling before JavaScript maps a caller
+/// array into native order handles.
+#[napi(js_name = "validateMatchOrderTermCount")]
+pub fn validate_match_order_term_count(actual: u32) -> Result<()> {
+    validate_public_order_term_count(actual as usize).map_err(napi_match_error)
 }
 
 /// Opaque owner of one native match-handle construction session.
@@ -191,6 +198,34 @@ impl NodeMatchSessionHandle {
         self.inner
             .subtypes(&type_name)
             .map(|inner| NodeMatchBindingHandle { inner })
+            .map_err(crate::napi_orm_error)
+    }
+
+    #[napi]
+    #[allow(clippy::too_many_arguments)]
+    pub fn reachable(
+        &self,
+        relation_type: String,
+        role_from: String,
+        role_to: String,
+        source: &NodeMatchBindingHandle,
+        target: &NodeMatchBindingHandle,
+        min_depth: f64,
+        max_depth: f64,
+    ) -> Result<NodeMatchPredicateHandle> {
+        let min_depth = node_reachability_depth(min_depth, "minDepth")?;
+        let max_depth = node_reachability_depth(max_depth, "maxDepth")?;
+        self.inner
+            .reachable(
+                &relation_type,
+                &role_from,
+                &role_to,
+                &source.inner,
+                &target.inner,
+                min_depth,
+                max_depth,
+            )
+            .map(|inner| NodeMatchPredicateHandle { inner })
             .map_err(crate::napi_orm_error)
     }
 
@@ -247,10 +282,29 @@ impl NodeMatchSessionHandle {
     }
 }
 
+fn node_reachability_depth(value: f64, name: &str) -> Result<u8> {
+    if !value.is_finite()
+        || value.fract() != 0.0
+        || value < f64::from(u8::MIN)
+        || value > f64::from(u8::MAX)
+    {
+        return Err(invalid_arg(format!(
+            "{name} must be an integer between 0 and 255"
+        )));
+    }
+    Ok(value as u8)
+}
+
 /// Opaque native binding handle.
 #[napi]
 pub struct NodeMatchBindingHandle {
     inner: BindingHandle,
+}
+
+impl NodeMatchBindingHandle {
+    pub(crate) const fn inner(&self) -> &BindingHandle {
+        &self.inner
+    }
 }
 
 #[napi]
@@ -499,6 +553,17 @@ pub struct NodeMatchQueryHandle {
 }
 
 impl NodeMatchQueryHandle {
+    pub(crate) const fn inner(&self) -> &QueryHandle {
+        &self.inner
+    }
+
+    pub(crate) fn result_context(&self) -> NodeMatchResultContext {
+        NodeMatchResultContext {
+            output: Arc::clone(&self.output),
+            lineage: Arc::clone(&self.lineage),
+        }
+    }
+
     fn derived(&self, inner: QueryHandle) -> Self {
         Self {
             inner,
@@ -844,6 +909,28 @@ pub struct NodeValidatedMatchResultHandle {
     request: ValidatedMatchRequest,
     output: Arc<NodeOutputShape>,
     lineage: Arc<()>,
+}
+
+/// Immutable materialization metadata retained while a remote reply is decoded.
+#[derive(Clone)]
+pub(crate) struct NodeMatchResultContext {
+    output: Arc<NodeOutputShape>,
+    lineage: Arc<()>,
+}
+
+impl NodeMatchResultContext {
+    pub(crate) fn attach(
+        self,
+        request: ValidatedMatchRequest,
+        inner: ValidatedMatchResult,
+    ) -> NodeValidatedMatchResultHandle {
+        NodeValidatedMatchResultHandle {
+            inner,
+            request,
+            output: self.output,
+            lineage: self.lineage,
+        }
+    }
 }
 
 impl NodeValidatedMatchResultHandle {

@@ -2,6 +2,13 @@
 
 Generate TypeBridge models from TypeDB schema files (`.tql`).
 
+The released TypeQL input remains available during the 2.0 compatibility
+window; TOML authoring input is deprecated and is removed in 2.1.0 (it
+emits a `DeprecationWarning` — see [TOML Schema DSL](toml.md)). New
+canonical V2 workspaces use `type-bridge schema generate`; their
+closed authoring grammar and executable example are in the
+[Split-YAML and Workspace V1 Reference](split-yaml-v1.md).
+
 ## Overview
 
 The generator eliminates manual synchronization between TypeDB schemas and model code. Instead of writing both `.tql` and language classes, you write the schema once in TypeQL and generate type-safe models. Rust is the bindgen single source of truth for Python, TypeScript, and Rust target rendering.
@@ -33,7 +40,8 @@ python -m type_bridge.generator schema.tql \
     --target rust
 ```
 
-Schemas can also be authored in TOML — see [TOML Schema DSL](toml.md).
+Schemas can also be authored in TOML, though that route is deprecated and
+removed in 2.1.0 — see [TOML Schema DSL](toml.md).
 
 ### TOML Bindgen and Migrations
 

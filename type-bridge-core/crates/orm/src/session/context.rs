@@ -52,6 +52,16 @@ impl TransactionContext {
         tx.query(typeql).await
     }
 
+    /// Export the schema under this transaction's provider-side schema fence,
+    /// when supported by the backend.
+    pub(crate) async fn schema_snapshot(&self) -> Result<Option<String>> {
+        let mut guard = self.inner.lock().await;
+        let tx = guard
+            .as_mut()
+            .ok_or_else(|| OrmError::Transaction("Transaction already consumed".into()))?;
+        tx.schema_snapshot().await
+    }
+
     /// Execute a `given`-stage query with input rows on the shared transaction.
     ///
     /// Requires a band-9 (TypeDB 3.12+) connection; see
@@ -77,6 +87,28 @@ impl TransactionContext {
             .as_mut()
             .ok_or_else(|| OrmError::Transaction("Transaction already consumed".into()))?;
         tx.query_typed_bounded(query, limits, consumer).await
+    }
+
+    pub(crate) async fn supports_exactly_one_tuple_proof(&self) -> Result<bool> {
+        let guard = self.inner.lock().await;
+        let tx = guard
+            .as_ref()
+            .ok_or_else(|| OrmError::Transaction("Transaction already consumed".into()))?;
+        Ok(tx.supports_exactly_one_tuple_proof())
+    }
+
+    /// Execute one distinct selected-tuple identity scan without consuming this context.
+    pub(crate) async fn query_tuple_typed_bounded(
+        &self,
+        query: &TypedFetchRows,
+        limits: BoundedAnswerLimits,
+        consumer: &mut dyn AnswerConsumer,
+    ) -> Result<BoundedAnswerStats> {
+        let mut guard = self.inner.lock().await;
+        let tx = guard
+            .as_mut()
+            .ok_or_else(|| OrmError::Transaction("Transaction already consumed".into()))?;
+        tx.query_tuple_typed_bounded(query, limits, consumer).await
     }
 
     /// Execute one complete batched hydration without consuming this context.
@@ -171,7 +203,7 @@ impl TransactionContext {
         limits: MatchExecutionLimits,
     ) -> Result<ValidatedMatchResult> {
         SelectedResultExecutor::new(registry, self.match_capabilities.clone(), limits)
-            .execute_borrowed(self, validated)
+            .execute_compatible_borrowed(self, validated)
             .await
     }
 }

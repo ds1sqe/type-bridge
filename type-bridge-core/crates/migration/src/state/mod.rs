@@ -21,7 +21,13 @@ pub use schema::{
     MigrationStateSchemaKind, applied_migration_entity_label, is_migration_state_type,
     migration_state_schema,
 };
-pub use typedb::TypeDbStateStore;
+pub use typedb::{
+    LEGACY_CUTOVER_SENTINEL_APP_LABEL, LEGACY_CUTOVER_SENTINEL_APPLIED_AT,
+    LEGACY_CUTOVER_SENTINEL_MIGRATION_ID, LEGACY_CUTOVER_SENTINEL_NAME,
+    LEGACY_WRITER_CUTOVER_MESSAGE, LegacyCutoverSentinelError, LegacyCutoverSentinelExpectation,
+    TypeDbStateStore, VerifiedLegacyAppliedPartition, require_legacy_writer_open,
+    require_legacy_writer_open_in_transaction,
+};
 
 use std::net::UdpSocket;
 

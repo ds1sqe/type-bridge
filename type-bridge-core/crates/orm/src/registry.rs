@@ -171,6 +171,30 @@ impl DescriptorRegistry {
         descriptors
     }
 
+    /// Clone the complete registry into an independently owned immutable-use
+    /// snapshot for one prepared execution boundary.
+    ///
+    /// The returned registry has no shared lock or mutable descriptor table
+    /// with `self`. Callers may therefore retain it across an asynchronous
+    /// exchange without later registrations changing the schema authority
+    /// used to validate the reply.
+    #[doc(hidden)]
+    pub fn owned_registry_snapshot(&self) -> Result<Self> {
+        let descriptors = self.owned_snapshot()?;
+        let snapshot = Self::new();
+        for descriptor in descriptors.into_values() {
+            match descriptor {
+                TypeDescriptor::Entity(entity) => {
+                    snapshot.register_entity(entity)?;
+                }
+                TypeDescriptor::Relation(relation) => {
+                    snapshot.register_relation(relation)?;
+                }
+            }
+        }
+        Ok(snapshot)
+    }
+
     /// Return the deterministic kind-qualified identity for a registered type.
     pub fn descriptor_id(&self, type_name: &str) -> Option<DescriptorId> {
         self.get(type_name)
@@ -186,6 +210,20 @@ impl DescriptorRegistry {
     pub fn descriptor_type_name(&self, descriptor_id: &DescriptorId) -> Option<String> {
         self.descriptor_by_id(descriptor_id)
             .map(|descriptor| descriptor.type_name().to_owned())
+    }
+
+    /// Resolve the provider-facing TypeDB attribute label of a registered field.
+    ///
+    /// The binding-facing field name and the TypeDB attribute label may
+    /// differ (renamed members); consumers emitting provider syntax must use
+    /// this canonical label, never the field name.
+    pub fn provider_attribute_name(&self, field: &FieldId) -> Option<String> {
+        let descriptor = self.descriptor_by_id(&field.owner)?;
+        let attribute = match &descriptor {
+            TypeDescriptorRef::Entity(descriptor) => descriptor.attribute(&field.name),
+            TypeDescriptorRef::Relation(descriptor) => descriptor.attribute(&field.name),
+        }?;
+        Some(attribute.attr_name.clone())
     }
 
     /// Resolve an owner-qualified field identity by binding-facing field name

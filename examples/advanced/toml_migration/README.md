@@ -1,5 +1,10 @@
 # TOML Schema Migrations
 
+> **Deprecated:** TOML desired-schema authoring is scheduled for removal in
+> type-bridge 2.1.0 and emits a `DeprecationWarning`; author split YAML for
+> new work. See the
+> [V2 deprecation inventory](../../../docs/guide/v2-deprecations.md).
+
 This example shows the Django-style workflow for a `schema.toml` project:
 
 1. Edit `schema.toml`.

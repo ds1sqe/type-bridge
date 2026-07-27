@@ -2,6 +2,11 @@
 
 Complete reference for schema operations, conflict detection, and migrations in TypeBridge.
 
+This page documents the retained Python model-driven API. For canonical V2
+desired-schema authoring, see the versioned
+[Split-YAML and Workspace V1 Reference](split-yaml-v1.md), including its
+offline executable fixture.
+
 ## Overview
 
 TypeBridge provides comprehensive schema management with automatic conflict detection to prevent accidental data loss during schema changes. The schema system ensures safe evolution of your database schema over time.

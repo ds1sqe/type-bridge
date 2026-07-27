@@ -54,9 +54,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     installed_driver = driver_version()
     line = driver_line(installed_driver)
     if sys.version_info >= (3, 14):
-        if installed_driver != "3.12.0":
+        if installed_driver != "3.12.1":
             raise ProbeError(
-                f"Python 3.14 must resolve typedb-driver 3.12.0, got {installed_driver}"
+                f"Python 3.14 must resolve typedb-driver 3.12.1, got {installed_driver}"
             )
     elif not (line[0] == 3 and 8 <= line[1] < 13):
         raise ProbeError(

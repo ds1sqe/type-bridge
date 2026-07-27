@@ -52,16 +52,22 @@ from type_bridge.migration.simple_migration import MigrationManager
 from type_bridge.models import Entity, Relation, Role, TypeDBType
 from type_bridge.proxy import ProxyDatabase, ProxyError
 from type_bridge.query import Query, QueryBuilder
-from type_bridge.session import Connection, Database, TransactionContext
+from type_bridge.session import (
+    Connection,
+    Database,
+    TransactionContext,
+    TypeDBServerDeprecationWarning,
+)
 from type_bridge.typedb_driver import Credentials, TransactionType, TypeDB, create_driver_options
 
-__version__ = "1.5.11"
+__version__ = "2.0.0rc0"
 
 __all__ = [
     # Database and session
     "Connection",
     "Database",
     "TransactionContext",
+    "TypeDBServerDeprecationWarning",
     # TypeDB driver (re-exported for convenience)
     "Credentials",
     "TransactionType",

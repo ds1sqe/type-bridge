@@ -554,9 +554,8 @@ def test_bin_migrate_applies_migration_and_showmigrations_reports_applied(clean_
 
 @pytest.mark.integration
 @pytest.mark.order(411)
-@_skip_if_no_bin()
-def test_bin_makemigrations_via_shim_generates_py_and_json(clean_db, tmp_path: Path):
-    """makemigrations through the Python shim generates .py + .json sidecar.
+def test_wheel_makemigrations_via_native_dispatch_generates_py_and_json(clean_db, tmp_path: Path):
+    """makemigrations through the wheel entry point generates both files.
 
     This test exercises the full F1 + F2 compose path through the shim:
       python -m type_bridge.migration makemigrations
@@ -588,12 +587,20 @@ def test_bin_makemigrations_via_shim_generates_py_and_json(clean_db, tmp_path: P
     # Importable as: tests.integration.migration.fixtures.v1.models
     models_module = "tests.integration.migration.fixtures.v1.models"
 
-    # Invoke the shim as a subprocess so the full shim → bin → _generate chain
-    # is exercised end-to-end. The dev-tree bin lives under target/debug rather
-    # than the venv bin dir, so put it on PATH for the shim's discovery.
-    assert _BIN is not None
+    # Invoke the console module as a subprocess so the full wheel dispatcher →
+    # native legacy parser → _generate chain is exercised end-to-end. Remove
+    # the Cargo target directories from PATH: no helper binary is part of the
+    # installed artifact contract.
     env = {**os.environ}
-    env["PATH"] = f"{_BIN.parent}{os.pathsep}{env.get('PATH', '')}"
+    cargo_target_dirs = {
+        str(Path(__file__).parents[3] / "type-bridge-core" / "target" / profile)
+        for profile in ("debug", "release")
+    }
+    env["PATH"] = os.pathsep.join(
+        entry
+        for entry in env.get("PATH", "").split(os.pathsep)
+        if entry and entry not in cargo_target_dirs
+    )
 
     result = subprocess.run(
         [

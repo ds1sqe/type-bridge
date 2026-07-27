@@ -25,6 +25,13 @@ with `-I`. The probe also inspects `sys.path`, every loaded TypeBridge module,
 and installed distribution roots; any path resolving into the source checkout
 fails the run.
 
+Release acceptance additionally downloads the immutable published
+`type_bridge-1.5.11-py3-none-any.whl`, validates its PyPI hash and its released
+unbounded `type-bridge-core>=1.5.11` metadata, installs that old root directly
+beside the candidate native wheel with dependency resolution disabled, and
+runs this same probe. PyPI has no 1.5.7 files, so 1.5.11 is the frozen 1.5.x
+published-root authority for the reverse-compatibility gate.
+
 Pinned behavior includes:
 
 - package-root raw `Query`/`QueryBuilder`, in-place mutation, and exact TypeQL;

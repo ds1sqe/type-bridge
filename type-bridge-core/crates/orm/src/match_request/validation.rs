@@ -291,7 +291,7 @@ fn validate_version_and_structure(request: &MatchRequest) -> Result<(), MatchErr
 
     if let Some(predicate) = &request.plan.predicate {
         let mut stats = PredicateStats::default();
-        inspect_predicate_structure(predicate, 1, &mut stats)?;
+        inspect_predicate_structure(predicate, 1, true, &mut stats)?;
         check_limit(
             "predicate_nodes",
             stats.nodes,
@@ -331,9 +331,10 @@ struct PredicateStats {
 fn inspect_predicate_structure(
     expression: &MatchExpr,
     depth: usize,
+    reachable_allowed: bool,
     stats: &mut PredicateStats,
 ) -> Result<(), MatchError> {
-    stats.nodes += 1;
+    stats.nodes = stats.nodes.saturating_add(1);
     stats.max_depth = stats.max_depth.max(depth);
     if stats.nodes > MAX_PREDICATE_NODES || depth > MAX_PREDICATE_DEPTH {
         return Err(resource(
@@ -361,7 +362,56 @@ fn inspect_predicate_structure(
             validate_bound_field_id(left)?;
             validate_bound_field_id(right)?;
         }
-        MatchExpr::And { expressions } | MatchExpr::Or { expressions } => {
+        MatchExpr::Reachable {
+            relation,
+            role_from,
+            role_to,
+            min_depth,
+            max_depth,
+            ..
+        } => {
+            if !reachable_allowed {
+                return Err(invalid(
+                    "reachable_not_root",
+                    "bounded reachability is admitted only in the root conjunction",
+                )
+                .at(MatchErrorPathSegment::Predicate));
+            }
+            validate_semantic_id("relation descriptor", relation.as_str())?;
+            validate_qualified_member("role", role_from.owner.as_str(), &role_from.name)?;
+            validate_qualified_member("role", role_to.owner.as_str(), &role_to.name)?;
+            if min_depth > max_depth {
+                return Err(invalid(
+                    "reachable_bounds",
+                    "reachability minimum depth must not exceed its maximum depth",
+                )
+                .at(MatchErrorPathSegment::Predicate));
+            }
+            if usize::from(*max_depth) > MAX_PREDICATE_DEPTH {
+                return Err(resource(
+                    "reachable_depth_limit",
+                    "reachability maximum depth exceeds the canonical predicate-depth ceiling",
+                )
+                .at(MatchErrorPathSegment::Predicate));
+            }
+            let first_positive = usize::from((*min_depth).max(1));
+            let maximum = usize::from(*max_depth);
+            let expanded_hops = if first_positive <= maximum {
+                (first_positive..=maximum).fold(0_usize, usize::saturating_add)
+            } else {
+                0
+            };
+            let expanded = expanded_hops.saturating_add(usize::from(*min_depth == 0));
+            stats.nodes = stats.nodes.saturating_add(expanded.saturating_sub(1));
+            if stats.nodes > MAX_PREDICATE_NODES {
+                return Err(resource(
+                    "reachable_expansion_limit",
+                    "reachability expansion exceeds the canonical predicate-node ceiling",
+                )
+                .at(MatchErrorPathSegment::Predicate));
+            }
+        }
+        MatchExpr::And { expressions } => {
             if expressions.is_empty() {
                 return Err(invalid(
                     "empty_boolean_expression",
@@ -376,10 +426,30 @@ fn inspect_predicate_structure(
                 MatchErrorPathSegment::Predicate,
             )?;
             for child in expressions {
-                inspect_predicate_structure(child, depth + 1, stats)?;
+                inspect_predicate_structure(child, depth + 1, reachable_allowed, stats)?;
             }
         }
-        MatchExpr::Not { expression } => inspect_predicate_structure(expression, depth + 1, stats)?,
+        MatchExpr::Or { expressions } => {
+            if expressions.is_empty() {
+                return Err(invalid(
+                    "empty_boolean_expression",
+                    "and/or expressions must contain at least one child",
+                )
+                .at(MatchErrorPathSegment::Predicate));
+            }
+            check_limit(
+                "boolean_terms",
+                expressions.len(),
+                MAX_BOOLEAN_TERMS,
+                MatchErrorPathSegment::Predicate,
+            )?;
+            for child in expressions {
+                inspect_predicate_structure(child, depth + 1, false, stats)?;
+            }
+        }
+        MatchExpr::Not { expression } => {
+            inspect_predicate_structure(expression, depth + 1, false, stats)?
+        }
     }
     Ok(())
 }
@@ -431,12 +501,7 @@ fn validate_operation_structure(request: &MatchRequest) -> Result<(), MatchError
         })?;
     }
     if let Some(order) = order {
-        check_limit(
-            "order_terms",
-            order.len(),
-            MAX_ORDER_TERMS,
-            MatchErrorPathSegment::Operation,
-        )?;
+        validate_public_order_term_count(order.len())?;
         for term in order {
             validate_bound_field_id(&term.field)?;
         }
@@ -549,13 +614,14 @@ fn validate_expression(
     let Some(predicate) = &request.plan.predicate else {
         return Ok(());
     };
-    validate_expr_node(registry, predicate, bindings)?;
+    validate_expr_node(registry, request, predicate, bindings)?;
     validate_or_exports(predicate)?;
     Ok(())
 }
 
 fn validate_expr_node(
     registry: &DescriptorRegistry,
+    request: &MatchRequest,
     expression: &MatchExpr,
     bindings: &BTreeMap<BindingId, TypeDescriptorRef>,
 ) -> Result<(), MatchError> {
@@ -677,12 +743,95 @@ fn validate_expr_node(
                 .at(MatchErrorPathSegment::RoleEdge(*id)));
             }
         }
-        MatchExpr::And { expressions } | MatchExpr::Or { expressions } => {
-            for child in expressions {
-                validate_expr_node(registry, child, bindings)?;
+        MatchExpr::Reachable {
+            relation,
+            role_from,
+            role_to,
+            source,
+            target,
+            ..
+        } => {
+            let relation_descriptor = resolve_descriptor(registry, relation)
+                .map_err(|error| error.at(MatchErrorPathSegment::Predicate))?;
+            let TypeDescriptorRef::Relation(relation_descriptor) = relation_descriptor else {
+                return Err(invalid(
+                    "reachable_relation_not_relation",
+                    "bounded reachability requires an exact relation descriptor",
+                )
+                .at(MatchErrorPathSegment::Predicate));
+            };
+            let canonical_relation = registry
+                .descriptor_id(&relation_descriptor.type_name)
+                .expect("resolved descriptor remains registered");
+            if canonical_relation != *relation {
+                return Err(invalid(
+                    "non_canonical_reachable_relation",
+                    "bounded reachability relation identity is not canonical",
+                )
+                .at(MatchErrorPathSegment::Predicate));
+            }
+            for (role, endpoint, endpoint_name) in
+                [(role_from, source, "source"), (role_to, target, "target")]
+            {
+                if role.owner != *relation {
+                    return Err(invalid(
+                        "reachable_role_owner_mismatch",
+                        "bounded reachability roles must be owned by its exact relation descriptor",
+                    )
+                    .at(MatchErrorPathSegment::Role(role.clone())));
+                }
+                let canonical_role = registry.role_id(relation, &role.name).ok_or_else(|| {
+                    invalid(
+                        "unknown_role",
+                        "bounded reachability role is not present on the relation descriptor",
+                    )
+                    .at(MatchErrorPathSegment::Role(role.clone()))
+                })?;
+                if canonical_role != *role {
+                    return Err(
+                        invalid("non_canonical_role", "role identity is not canonical")
+                            .at(MatchErrorPathSegment::Role(role.clone())),
+                    );
+                }
+                let endpoint_descriptor = bindings.get(endpoint).ok_or_else(|| {
+                    invalid(
+                        "unknown_binding",
+                        "bounded reachability references an undeclared endpoint binding",
+                    )
+                    .at(MatchErrorPathSegment::Binding(*endpoint))
+                })?;
+                let endpoint_binding = request
+                    .plan
+                    .bindings
+                    .iter()
+                    .find(|binding| binding.id == *endpoint)
+                    .expect("resolved endpoint binding remains declared");
+                let descriptor_role = relation_descriptor
+                    .role(&role.name)
+                    .expect("registry-resolved role remains present");
+                if !role_accepts_binding(
+                    registry,
+                    endpoint_descriptor.type_name(),
+                    endpoint_binding.match_mode,
+                    &descriptor_role.player_type_names,
+                ) {
+                    return Err(invalid(
+                        "incompatible_reachable_endpoint",
+                        "bounded reachability endpoint binding is not compatible with its relation role",
+                    )
+                    .at(MatchErrorPathSegment::Role(role.clone()))
+                    .with_detail("endpoint", endpoint_name));
+                }
             }
         }
-        MatchExpr::Not { expression } => validate_expr_node(registry, expression, bindings)?,
+        MatchExpr::And { expressions } | MatchExpr::Or { expressions } => {
+            for child in expressions {
+                validate_expr_node(registry, request, child, bindings)?;
+            }
+        }
+        MatchExpr::Not { expression } => {
+            validate_expr_node(registry, request, expression, bindings)?
+        }
     }
     Ok(())
 }
@@ -696,6 +845,7 @@ fn validate_or_exports(expression: &MatchExpr) -> Result<BTreeSet<BindingId>, Ma
         MatchExpr::RoleEdge {
             relation, player, ..
         } => Ok(BTreeSet::from([*relation, *player])),
+        MatchExpr::Reachable { source, target, .. } => Ok(BTreeSet::from([*source, *target])),
         MatchExpr::And { expressions } => {
             let mut definite = BTreeSet::new();
             for child in expressions {
@@ -789,6 +939,9 @@ fn definite_positive_edges(
         MatchExpr::RoleEdge {
             relation, player, ..
         } => BTreeSet::from([canonical_edge(*relation, *player)]),
+        MatchExpr::Reachable { source, target, .. } => {
+            BTreeSet::from([canonical_edge(*source, *target)])
+        }
         MatchExpr::And { expressions } => expressions
             .iter()
             .flat_map(|child| definite_positive_edges(child, false))
@@ -1109,6 +1262,25 @@ fn is_type_or_subtype(registry: &DescriptorRegistry, actual: &str, expected: &st
     false
 }
 
+fn role_accepts_binding(
+    registry: &DescriptorRegistry,
+    binding_type: &str,
+    match_mode: MatchMode,
+    allowed_types: &[String],
+) -> bool {
+    let Some(binding) = registry.descriptor_id(binding_type) else {
+        return false;
+    };
+    allowed_types.iter().any(|allowed| {
+        let Some(allowed) = registry.descriptor_id(allowed) else {
+            return false;
+        };
+        registry.is_same_or_subtype(&binding, &allowed)
+            || (match_mode == MatchMode::Subtypes
+                && registry.is_same_or_subtype(&allowed, &binding))
+    })
+}
+
 fn validate_operator(
     operator: ComparisonOp,
     value_type: ValueType,
@@ -1276,15 +1448,24 @@ fn fingerprint_for_request(
     registry: &DescriptorRegistry,
     request: &MatchRequest,
 ) -> Result<SchemaFingerprint, MatchError> {
-    let roots = request
+    let mut root_specs = request
         .plan
         .bindings
         .iter()
         .map(|binding| {
-            DescriptorFingerprintRoot::new(
+            (
                 binding.descriptor.clone(),
                 binding.match_mode == MatchMode::Subtypes,
             )
+        })
+        .collect::<BTreeSet<_>>();
+    if let Some(predicate) = &request.plan.predicate {
+        collect_reachability_descriptors(predicate, &mut root_specs);
+    }
+    let roots = root_specs
+        .into_iter()
+        .map(|(descriptor, include_subtypes)| {
+            DescriptorFingerprintRoot::new(descriptor, include_subtypes)
         })
         .collect::<Vec<_>>();
     registry
@@ -1297,6 +1478,26 @@ fn fingerprint_for_request(
             .at(MatchErrorPathSegment::Request)
             .with_detail("cause", error.to_string())
         })
+}
+
+fn collect_reachability_descriptors(
+    expression: &MatchExpr,
+    roots: &mut BTreeSet<(DescriptorId, bool)>,
+) {
+    match expression {
+        MatchExpr::Reachable { relation, .. } => {
+            roots.insert((relation.clone(), false));
+        }
+        MatchExpr::And { expressions } | MatchExpr::Or { expressions } => {
+            for expression in expressions {
+                collect_reachability_descriptors(expression, roots);
+            }
+        }
+        MatchExpr::Not { expression } => collect_reachability_descriptors(expression, roots),
+        MatchExpr::FieldValue { .. }
+        | MatchExpr::FieldComparison { .. }
+        | MatchExpr::RoleEdge { .. } => {}
+    }
 }
 
 fn result_shape_id(request: &MatchRequest) -> Result<ResultShapeId, MatchError> {
@@ -1401,6 +1602,20 @@ fn canonical_edge(left: BindingId, right: BindingId) -> (BindingId, BindingId) {
     }
 }
 
+/// Validate a public terminal's order count before a language binding
+/// materializes an untrusted foreign sequence.
+///
+/// Request validation calls the same preflight so raw FFI callers and
+/// already-materialized requests receive one stable structured diagnostic.
+pub fn validate_public_order_term_count(actual: usize) -> Result<(), MatchError> {
+    check_limit(
+        "order_terms",
+        actual,
+        MAX_ORDER_TERMS,
+        MatchErrorPathSegment::Operation,
+    )
+}
+
 fn check_limit(
     label: &'static str,
     actual: usize,
@@ -1451,11 +1666,26 @@ const _: () = {
 mod tests {
     use std::collections::BTreeSet;
 
+    use type_bridge_contract::query_plan::CompatibilityValueV2;
+    use type_bridge_contract::temporal::{CanonicalDateTime, CanonicalDateTimeTz};
+
     use super::*;
-    use crate::descriptor::{EntityDescriptor, OwnedAttributeDescriptor};
+    use crate::descriptor::{
+        EntityDescriptor, OwnedAttributeDescriptor, RelationDescriptor, RoleDescriptor,
+    };
     use crate::entity::Annotation;
     use crate::match_request::ids::FieldId;
     use crate::match_request::model::{FetchSlot, MissingOrder, Window};
+
+    #[test]
+    fn public_order_preflight_matches_request_validation_ceiling() {
+        validate_public_order_term_count(MAX_ORDER_TERMS).expect("canonical maximum");
+        let error = validate_public_order_term_count(MAX_ORDER_TERMS + 1)
+            .expect_err("first excess term must fail before FFI materialization");
+        assert_eq!(error.category(), MatchErrorCategory::ResourceLimit);
+        assert_eq!(error.code().as_str(), "structural_limit_exceeded");
+        assert_eq!(error.path().segments(), &[MatchErrorPathSegment::Operation]);
+    }
 
     fn person_registry() -> DescriptorRegistry {
         let registry = DescriptorRegistry::new();
@@ -1481,6 +1711,70 @@ mod tests {
         registry
     }
 
+    fn reachability_registry(role_cardinality: Option<(u32, Option<u32>)>) -> DescriptorRegistry {
+        let registry = person_registry();
+        registry
+            .register_relation(RelationDescriptor {
+                type_name: "directed-edge".into(),
+                is_abstract: false,
+                parent_type: None,
+                owned_attributes: vec![],
+                roles: vec![
+                    RoleDescriptor {
+                        role_name: "origin".into(),
+                        player_type_names: vec!["person".into()],
+                        cardinality: role_cardinality,
+                        ..Default::default()
+                    },
+                    RoleDescriptor {
+                        role_name: "destination".into(),
+                        player_type_names: vec!["person".into()],
+                        ..Default::default()
+                    },
+                ],
+                doc: None,
+                meta: Default::default(),
+            })
+            .unwrap();
+        registry
+    }
+
+    fn reachability_count_request(registry: &DescriptorRegistry) -> MatchRequest {
+        let person = registry.descriptor_id("person").unwrap();
+        let relation = registry.descriptor_id("directed-edge").unwrap();
+        MatchRequest::v1(
+            super::super::model::MatchPlan {
+                bindings: vec![
+                    super::super::model::MatchBinding {
+                        id: BindingId::new(0),
+                        descriptor: person.clone(),
+                        thing_kind: ThingKind::Entity,
+                        match_mode: MatchMode::Exact,
+                    },
+                    super::super::model::MatchBinding {
+                        id: BindingId::new(1),
+                        descriptor: person,
+                        thing_kind: ThingKind::Entity,
+                        match_mode: MatchMode::Exact,
+                    },
+                ],
+                predicate: Some(MatchExpr::Reachable {
+                    relation: relation.clone(),
+                    role_from: super::super::ids::RoleId::new(relation.clone(), "origin"),
+                    role_to: super::super::ids::RoleId::new(relation, "destination"),
+                    source: BindingId::new(0),
+                    target: BindingId::new(1),
+                    min_depth: 0,
+                    max_depth: 2,
+                }),
+                allowed_cross_joins: BTreeSet::new(),
+            },
+            MatchOperation::CountBy {
+                root: BindingId::new(0),
+            },
+        )
+    }
+
     fn one_person(
         operation: impl FnOnce(BindingId, BoundFieldId) -> MatchOperation,
     ) -> (DescriptorRegistry, MatchRequest) {
@@ -1502,6 +1796,51 @@ mod tests {
             operation(binding, field),
         );
         (registry, request)
+    }
+
+    fn v2_datetime_lexical_is_accepted(value: &str, timezone_required: bool) -> bool {
+        if timezone_required {
+            value.parse::<CanonicalDateTimeTz>().is_ok()
+                || CompatibilityValueV2::released_datetime_tz(value).is_ok()
+        } else {
+            value.parse::<CanonicalDateTime>().is_ok()
+                || CompatibilityValueV2::released_datetime(value).is_ok()
+        }
+    }
+
+    #[test]
+    fn v2_compatibility_datetime_lexicals_match_released_v1_validation() {
+        let mut cases = vec![
+            ("2024-01-01T12".to_owned(), false),
+            ("2024-01-01T12:34".to_owned(), false),
+            ("2024-01-01T12:34.".to_owned(), false),
+            ("2024-01-01T12:34.1".to_owned(), false),
+            ("2024-01-01T12:34:59.1234567891".to_owned(), false),
+            ("2024-01-01T12:34:59.1.2".to_owned(), false),
+            ("2024-01-01T12:34:59:00".to_owned(), false),
+            ("2024-01-01T12:34Z".to_owned(), true),
+            ("2024-01-01T12:34".to_owned(), true),
+            ("2024-01-01T12:34+05:30".to_owned(), true),
+            ("2024-01-01T12:34+05:30.1".to_owned(), true),
+            ("2024-01-01T12:34+24:00".to_owned(), true),
+            ("2024-01-01T12:34+05:30:00:01".to_owned(), true),
+        ];
+        for second in [0, 1, 58, 59, 60, 99] {
+            cases.extend([
+                (format!("2024-01-01T12:34:{second:02}"), false),
+                (format!("2024-01-01T12:34:{second:02}:00"), false),
+                (format!("2024-01-01T12:34:{second:02}Z"), true),
+                (format!("2024-01-01T12:34+05:30:{second:02}"), true),
+            ]);
+        }
+
+        for (value, timezone_required) in cases {
+            assert_eq!(
+                v2_datetime_lexical_is_accepted(&value, timezone_required),
+                valid_datetime(&value, timezone_required),
+                "V2 compatibility lexical acceptance drifted from released V1 for {value:?}",
+            );
+        }
     }
 
     #[test]
@@ -1631,6 +1970,18 @@ mod tests {
             .unwrap();
 
         let error = validated.recheck_schema(&registry).unwrap_err();
+        assert_eq!(error.category(), MatchErrorCategory::StaleSchema);
+        assert_eq!(error.code().as_str(), "stale_schema");
+    }
+
+    #[test]
+    fn unbound_reachability_relation_participates_in_schema_staleness() {
+        let original = reachability_registry(None);
+        let request = reachability_count_request(&original);
+        let validated = validate_match_request(&original, request).unwrap();
+        let changed = reachability_registry(Some((1, Some(1))));
+
+        let error = validated.recheck_schema(&changed).unwrap_err();
         assert_eq!(error.category(), MatchErrorCategory::StaleSchema);
         assert_eq!(error.code().as_str(), "stale_schema");
     }

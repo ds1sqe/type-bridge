@@ -1,0 +1,11 @@
+[package]
+name = "type-bridge-rule-wire-standalone"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "=1.0.149", default-features = true }

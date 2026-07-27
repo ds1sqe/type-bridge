@@ -12,7 +12,7 @@ use super::error::{MatchError, MatchErrorCategory, MatchErrorPathSegment};
 use super::ids::{BoundFieldId, DescriptorId, FieldId};
 use super::model::{
     ComparisonOp, FetchShape, FetchSlot, MatchExpr, MatchMode, MatchOperation, MissingOrder,
-    SortDirection, ThingKind,
+    RowCardinality, SortDirection, ThingKind,
 };
 use super::validation::{StableOrderSpec, ValidatedMatchRequest};
 use crate::descriptor::TypeDescriptorRef;
@@ -23,6 +23,10 @@ use crate::value::AttributeValue;
 #[derive(Debug, Clone)]
 pub(crate) enum LoweredMatchExecution {
     FetchRows(TypedFetchRows),
+    ExactlyOneBy {
+        selection: TypedFetchRows,
+        evidence: TypedFetchRows,
+    },
     CountBy {
         root: super::ids::BindingId,
         scan: TypedRootScan,
@@ -54,6 +58,20 @@ pub(crate) fn lower_match_execution(
 ) -> Result<LoweredMatchExecution, MatchError> {
     let request = validated.request();
     match &request.operation {
+        MatchOperation::FetchRows {
+            cardinality: RowCardinality::ExactlyOne,
+            ..
+        } => {
+            let evidence = lower_fetch_rows(registry, validated)?;
+            let mut selection = evidence.clone();
+            selection.order.clear();
+            selection.offset = 0;
+            selection.limit = 2;
+            Ok(LoweredMatchExecution::ExactlyOneBy {
+                selection,
+                evidence,
+            })
+        }
         MatchOperation::FetchRows { .. } => Ok(LoweredMatchExecution::FetchRows(lower_fetch_rows(
             registry, validated,
         )?)),
@@ -134,6 +152,18 @@ pub(crate) fn lower_match_execution(
             })
         }
     }
+}
+
+/// Re-run the released provider-lowering checks without retaining a statement.
+///
+/// Compatibility execution must preserve failures which historically occurred
+/// while lowering V1 requests, even when the validated request can otherwise
+/// be represented by an additive V2 plan.
+pub(crate) fn preflight_released_match_execution(
+    registry: &DescriptorRegistry,
+    validated: &ValidatedMatchRequest,
+) -> Result<(), MatchError> {
+    lower_match_execution(registry, validated).map(|_| ())
 }
 
 /// Lower one current validated request into a typed provider statement.
@@ -234,7 +264,7 @@ fn lower_graph(
         .plan
         .predicate
         .as_ref()
-        .map(|predicate| lower_predicate(predicate, &field_ids))
+        .map(|predicate| lower_predicate(registry, predicate, &field_ids))
         .transpose()?;
     Ok(LoweredGraph {
         targets,
@@ -316,6 +346,7 @@ fn root_scan(
 }
 
 fn lower_predicate(
+    registry: &DescriptorRegistry,
     predicate: &MatchExpr,
     fields: &BTreeMap<BoundFieldId, u16>,
 ) -> Result<TypedMatchPredicate, MatchError> {
@@ -349,20 +380,43 @@ fn lower_predicate(
             role_name: role.name.clone(),
             player: player.get(),
         }),
+        MatchExpr::Reachable {
+            relation,
+            role_from,
+            role_to,
+            source,
+            target,
+            min_depth,
+            max_depth,
+        } => Ok(TypedMatchPredicate::Reachable {
+            relation_type: registry.descriptor_type_name(relation).ok_or_else(|| {
+                unsupported(
+                    "missing_lowered_reachability_relation",
+                    "validated reachability relation is no longer registered",
+                )
+                .at(MatchErrorPathSegment::Predicate)
+            })?,
+            role_from: role_from.name.clone(),
+            role_to: role_to.name.clone(),
+            source: source.get(),
+            target: target.get(),
+            min_depth: *min_depth,
+            max_depth: *max_depth,
+        }),
         MatchExpr::And { expressions } => Ok(TypedMatchPredicate::And {
             expressions: expressions
                 .iter()
-                .map(|expression| lower_predicate(expression, fields))
+                .map(|expression| lower_predicate(registry, expression, fields))
                 .collect::<Result<_, _>>()?,
         }),
         MatchExpr::Or { expressions } => Ok(TypedMatchPredicate::Or {
             expressions: expressions
                 .iter()
-                .map(|expression| lower_predicate(expression, fields))
+                .map(|expression| lower_predicate(registry, expression, fields))
                 .collect::<Result<_, _>>()?,
         }),
         MatchExpr::Not { expression } => Ok(TypedMatchPredicate::Not {
-            expression: Box::new(lower_predicate(expression, fields)?),
+            expression: Box::new(lower_predicate(registry, expression, fields)?),
         }),
     }
 }
@@ -421,7 +475,7 @@ fn collect_fields(predicate: &MatchExpr, fields: &mut BTreeSet<BoundFieldId>) {
             }
         }
         MatchExpr::Not { expression } => collect_fields(expression, fields),
-        MatchExpr::RoleEdge { .. } => {}
+        MatchExpr::RoleEdge { .. } | MatchExpr::Reachable { .. } => {}
     }
 }
 
@@ -506,6 +560,7 @@ mod tests {
     };
     use crate::match_request::validation::validate_match_request;
     use crate::registry::DescriptorRegistry;
+    use type_bridge_core_lib::compiler::QueryCompiler;
 
     fn key(name: &str) -> OwnedAttributeDescriptor {
         OwnedAttributeDescriptor {
@@ -724,6 +779,43 @@ mod tests {
     }
 
     #[test]
+    fn exactly_one_lowers_every_public_slot_into_one_distinct_tuple_proof() {
+        let registry = registry();
+        let mut request = graph_request(&registry, MatchMode::Subtypes);
+        let MatchOperation::FetchRows {
+            window,
+            cardinality,
+            ..
+        } = &mut request.operation
+        else {
+            unreachable!()
+        };
+        *window = Window {
+            offset: 0,
+            limit: 1,
+        };
+        *cardinality = RowCardinality::ExactlyOne;
+        let validated = validate_match_request(&registry, request).unwrap();
+
+        let LoweredMatchExecution::ExactlyOneBy {
+            selection,
+            evidence,
+        } = lower_match_execution(&registry, &validated).unwrap()
+        else {
+            panic!("expected exactly-one tuple proof")
+        };
+        assert_eq!(selection.projection, vec![2, 0, 1]);
+        assert_eq!(selection.projection, evidence.projection);
+        assert_eq!(selection.targets, evidence.targets);
+        assert_eq!(selection.predicate, evidence.predicate);
+        assert!(selection.distinct);
+        assert!(selection.order.is_empty());
+        assert_eq!(selection.offset, 0);
+        assert_eq!(selection.limit, 2);
+        assert_eq!(evidence.limit, 1);
+    }
+
+    #[test]
     fn exact_relation_target_lowers_to_strict_typed_target() {
         let registry = registry();
         let validated =
@@ -731,6 +823,69 @@ mod tests {
         let lowered = lower_fetch_rows(&registry, &validated).unwrap();
         assert_eq!(lowered.targets[1].kind, TypedThingKind::Relation);
         assert!(lowered.targets[1].exact);
+    }
+
+    #[test]
+    fn bounded_reachability_lowers_through_the_typed_ast_compiler() {
+        let registry = registry();
+        let person = registry.descriptor_id("person").unwrap();
+        let company = registry.descriptor_id("company").unwrap();
+        let relation = registry.descriptor_id("employment").unwrap();
+        let request = MatchRequest::v1(
+            MatchPlan {
+                bindings: vec![
+                    MatchBinding {
+                        id: BindingId::new(0),
+                        descriptor: person,
+                        thing_kind: ThingKind::Entity,
+                        match_mode: MatchMode::Exact,
+                    },
+                    MatchBinding {
+                        id: BindingId::new(1),
+                        descriptor: company,
+                        thing_kind: ThingKind::Entity,
+                        match_mode: MatchMode::Exact,
+                    },
+                ],
+                predicate: Some(MatchExpr::Reachable {
+                    relation: relation.clone(),
+                    role_from: RoleId::new(relation.clone(), "employee"),
+                    role_to: RoleId::new(relation, "employer"),
+                    source: BindingId::new(0),
+                    target: BindingId::new(1),
+                    min_depth: 1,
+                    max_depth: 2,
+                }),
+                allowed_cross_joins: BTreeSet::new(),
+            },
+            MatchOperation::CountBy {
+                root: BindingId::new(0),
+            },
+        );
+        let validated = validate_match_request(&registry, request).unwrap();
+        let LoweredMatchExecution::CountBy { scan, .. } =
+            lower_match_execution(&registry, &validated).unwrap()
+        else {
+            panic!("expected count scan")
+        };
+        assert!(matches!(
+            scan.predicate.as_ref(),
+            Some(TypedMatchPredicate::Reachable {
+                relation_type,
+                role_from,
+                role_to,
+                min_depth: 1,
+                max_depth: 2,
+                ..
+            }) if relation_type == "employment"
+                && role_from == "employee"
+                && role_to == "employer"
+        ));
+        let typeql = QueryCompiler::new()
+            .compile_typed_root_scan(&scan)
+            .expect("typed reachability compiles");
+        assert!(typeql.contains("(employee: $b0, employer: $b1) isa! employment"));
+        assert!(typeql.contains("reduce $RreachableProofCount = count groupby $b0, $b1"));
     }
 
     #[test]

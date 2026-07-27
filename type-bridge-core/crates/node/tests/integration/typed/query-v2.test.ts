@@ -17,6 +17,8 @@ const {
   Entity,
   Key,
   Relation,
+  TYPE_DB_SERVER_DEPRECATION_CODE,
+  TYPE_DB_SERVER_DEPRECATION_WARNING,
   attr,
   field,
   role,
@@ -35,6 +37,7 @@ const employeeType = `${suffix}-employee`;
 const contractorType = `${suffix}-contractor`;
 const companyType = `${suffix}-company`;
 const employmentType = `${suffix}-employment`;
+const compositionType = `${suffix}-composition`;
 const partyIdAttr = `${suffix}-party-id`;
 const partyNameAttr = `${suffix}-party-name`;
 const rankAttr = `${suffix}-rank`;
@@ -79,6 +82,11 @@ class Employment extends Relation(employmentType, {
   employer: role(Company, { cardinality: Card(1, 1) }),
 }) {}
 
+class Composition extends Relation(compositionType, {
+  src: role(Party, { cardinality: Card(1, 1) }),
+  dst: role(Party, { cardinality: Card(1, 1) }),
+}) {}
+
 type FixtureThing = Employee | Contractor | Company | Employment;
 type IdentityKind = "employee" | "contractor" | "company" | "employment";
 
@@ -91,6 +99,37 @@ describe("public ./typed selected-query integration", () => {
   const db = connectIntegration();
   defineSchema(db, schemaTypeql());
   const fixture = insertFixture(db);
+
+  test("live server warning is exact, filterable, and line-classified", () => {
+    const emitted: Array<{ message: string; type?: string; code?: string }> = [];
+    const original = process.emitWarning;
+    let warningDatabase: ReturnType<typeof connectIntegration> | undefined;
+    process.emitWarning = ((
+      warning: string | Error,
+      options?: string | { type?: string; code?: string },
+    ): void => {
+      const structured = typeof options === "object" ? options : {};
+      emitted.push({
+        message: typeof warning === "string" ? warning : warning.message,
+        ...structured,
+      });
+    }) as typeof process.emitWarning;
+    try {
+      warningDatabase = connectIntegration();
+    } finally {
+      process.emitWarning = original;
+      warningDatabase?.close();
+    }
+
+    const expected = process.env.TYPE_BRIDGE_EXPECT_LEGACY_WARNING === "1";
+    assert.equal(emitted.length, expected ? 1 : 0);
+    if (expected) {
+      assert.equal(emitted[0]?.type, TYPE_DB_SERVER_DEPRECATION_WARNING);
+      assert.equal(emitted[0]?.code, TYPE_DB_SERVER_DEPRECATION_CODE);
+      assert.match(emitted[0]?.message ?? "", /3\.8\/3\.10/);
+      assert.doesNotMatch(emitted[0]?.message ?? "", /\bband [789]\b/i);
+    }
+  });
 
   test("owned selected rows preserve exact/subtype constructors and order", () => {
     const session = registeredSession(db);
@@ -137,6 +176,47 @@ describe("public ./typed selected-query integration", () => {
       subtypeRows.map(identity),
       [identity(fixture.alice), identity(fixture.bob), identity(fixture.carol)],
     );
+  });
+
+  test("bounded reachability preserves subtype hydration across cycles and shared subtrees", () => {
+    const session = registeredSession(db);
+    const partyRefs = references(Party);
+    const compositionRefs = references(Composition);
+    const source = session.var(Party, "subtypes");
+    const target = session.var(Party, "subtypes");
+
+    const people = (minDepth: number, maxDepth: number) => {
+      const path = session.reachable(
+        source,
+        target,
+        Composition,
+        compositionRefs.roles.src,
+        compositionRefs.roles.dst,
+        { minDepth, maxDepth },
+      );
+      return session
+        .query(target)
+        .match(source)
+        .where(
+          source.field(partyRefs.fields.id).eq(new PartyId("alice")),
+          path,
+        )
+        .rows({
+          limit: 10,
+          orderBy: [target.field(partyRefs.fields.name).asc()],
+        })
+        .map(partyEvidence);
+    };
+
+    const alice = partyEvidence(fixture.alice);
+    const bob = partyEvidence(fixture.bob);
+    const carol = partyEvidence(fixture.carol);
+
+    assert.deepEqual(people(0, 0), [alice]);
+    assert.deepEqual(people(1, 1), [bob, carol]);
+    assert.deepEqual(people(2, 2), [alice]);
+    assert.deepEqual(people(3, 3), [bob, carol]);
+    assert.deepEqual(people(0, 3), [alice, bob, carol]);
   });
 
   test("named collected pages deduplicate roots and values, order each collection, and hydrate roles", () => {
@@ -283,7 +363,34 @@ function registeredSession(
     Contractor,
     Company,
     Employment,
+    Composition,
   );
+}
+
+function partyEvidence(thing: Party) {
+  assert.ok(thing._iid !== null, "hydrated parties must carry an IID");
+  if (thing instanceof Employee) {
+    return Object.freeze({
+      kind: "employee",
+      name: thing.name.value,
+      iid: thing._iid,
+      detail: thing.rank.value,
+    });
+  }
+  if (thing instanceof Contractor) {
+    return Object.freeze({
+      kind: "contractor",
+      name: thing.name.value,
+      iid: thing._iid,
+      detail: thing.specialty.value,
+    });
+  }
+  return Object.freeze({
+    kind: "party",
+    name: thing.name.value,
+    iid: thing._iid,
+    detail: null,
+  });
 }
 
 function identity(thing: FixtureThing): IdentitySummary {
@@ -327,6 +434,7 @@ function insertFixture(db: ReturnType<typeof connectIntegration>) {
   const contractorManager = Contractor.manager(db);
   const companyManager = Company.manager(db);
   const employmentManager = Employment.manager(db);
+  const compositionManager = Composition.manager(db);
 
   const alice = employeeManager.insert(new Employee({
     id: new PartyId("alice"),
@@ -367,6 +475,13 @@ function insertFixture(db: ReturnType<typeof connectIntegration>) {
   const e3 = insertEmployment("E-3", alice, acme);
   const e4 = insertEmployment("E-4", bob, acme);
 
+  const insertComposition = (src: Party, dst: Party) =>
+    compositionManager.insert(new Composition({ src, dst }));
+  insertComposition(alice, bob);
+  insertComposition(alice, carol);
+  insertComposition(bob, alice);
+  insertComposition(carol, alice);
+
   return Object.freeze({ alice, bob, carol, acme, zulu, e1, e2, e3, e4 });
 }
 
@@ -379,10 +494,11 @@ attribute ${specialtyAttr}, value string;
 attribute ${companyIdAttr}, value string;
 attribute ${companyNameAttr}, value string;
 attribute ${employmentCodeAttr}, value string;
-entity ${partyType}, owns ${partyIdAttr} @key, owns ${partyNameAttr}, plays ${employmentType}:employee;
+entity ${partyType}, owns ${partyIdAttr} @key, owns ${partyNameAttr}, plays ${employmentType}:employee, plays ${compositionType}:src, plays ${compositionType}:dst;
 entity ${employeeType} sub ${partyType}, owns ${rankAttr};
 entity ${contractorType} sub ${partyType}, owns ${specialtyAttr};
 entity ${companyType}, owns ${companyIdAttr} @key, owns ${companyNameAttr}, plays ${employmentType}:employer;
 relation ${employmentType}, relates employee, relates employer, owns ${employmentCodeAttr} @key;
+relation ${compositionType}, relates src, relates dst;
 `;
 }

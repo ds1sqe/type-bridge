@@ -1,0 +1,28 @@
+[package]
+name = "type-bridge-schema-migration-typedb"
+version = "2.0.0-rc.0"
+edition = "2024"
+description = "TypeDB-backed fenced execution store for type-bridge schema migrations"
+license.workspace = true
+license-file.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+type-bridge-contract = { path = "../contract", version = "2.0.0-rc.0" }
+type-bridge-migration = { path = "../migration", version = "2.0.0-rc.0" }
+type-bridge-orm = { path = "../orm", version = "2.0.0-rc.0" }
+type-bridge-query = { path = "../query", version = "2.0.0-rc.0" }
+type-bridge-schema = { path = "../schema", version = "2.0.0-rc.0" }
+type-bridge-schema-compat = { path = "../schema-compat", version = "2.0.0-rc.0" }
+type-bridge-schema-migration = { path = "../schema-migration", version = "2.0.0-rc.0" }
+
+[dev-dependencies]
+tokio = { version = "1.48", features = ["macros", "rt-multi-thread", "time"] }
+
+[lints]
+workspace = true

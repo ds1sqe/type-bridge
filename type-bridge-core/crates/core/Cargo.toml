@@ -1,9 +1,10 @@
 [package]
 name = "type-bridge-core-lib"
-version = "1.5.11"
+version = "2.0.0-rc.0"
 edition = "2024"
 description = "TypeQL AST, schema parser, query compiler, and validation engine for type-bridge"
 license.workspace = true
+license-file.workspace = true
 repository.workspace = true
 authors.workspace = true
 
@@ -12,6 +13,7 @@ default = []
 pyo3 = ["dep:pyo3", "dep:pythonize"]
 
 [dependencies]
+type-bridge-contract = { path = "../contract", version = "2.0.0-rc.0" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"
@@ -19,14 +21,28 @@ once_cell = "1.19"
 regex = "1"
 unicode-ident = "1.0"
 winnow = "0.7"
+cap-fs-ext = "4.0"
+cap-std = "4.0"
 # Minimal blocking HTTP client for the server-version probe (GET /v1/version).
-# ureq 2.x ships with rustls TLS built-in so https works without openssl.
+# The explicit rustls dependencies pin native-root and custom-PEM semantics;
+# ureq's default HTTPS client uses webpki roots and is not used for typed TLS.
 ureq = "2"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-native-certs = "0.8"
+rustls-pemfile = "2"
+tempfile = "3"
 pyo3 = { version = "0.23", optional = true }
 pythonize = { version = "0.23", optional = true }
 
+[target.'cfg(windows)'.dependencies]
+# Resolve the current filesystem path from the retained CA file handle.  The
+# vendored TypeDB drivers only accept a path, so Windows lowering combines this
+# handle-derived path with no-delete parent/file handles.
+winx = "0.36"
+
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
+rustix = { version = "1", features = ["fs"] }
 
 [[bench]]
 name = "validation"

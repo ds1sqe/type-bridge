@@ -81,6 +81,12 @@ class TypedCollaboration(Relation):
     participant: Role[TypedPerson] = Role("participant", TypedPerson)
 
 
+class TypedComposition(Relation):
+    flags = TypeFlags(name="typed-ref-composition")
+    parent: Role[TypedParty] = Role("src", TypedParty)
+    child: Role[TypedParty] = Role("dst", TypedParty)
+
+
 PERSON_NAME = TypedName
 PERSON_AGE = TypedAge
 PERSON_ACTIVE = TypedActive
@@ -150,6 +156,111 @@ def test_relation_variable_registers_player_closure_and_connects_roles() -> None
     assert (raised.value.category, raised.value.code) == corpus_error(
         "references.incompatible-role-player"
     )
+
+
+def test_bounded_reachability_is_session_owned_and_validates_before_execution() -> None:
+    session = diagnostic_session()
+    source = session.var(TypedEmployee)
+    target = session.var(TypedParty)
+
+    predicate = session.reachable(
+        source,
+        target,
+        TypedComposition,
+        TypedComposition.parent,
+        TypedComposition.child,
+        min_depth=0,
+        max_depth=3,
+    )
+    assert isinstance(predicate, Predicate)
+    assert session.query(target).match(source).where(predicate) is not None
+
+    with pytest.raises(type_bridge_core.MatchRequestError) as reversed_bounds:
+        session.reachable(
+            source,
+            target,
+            TypedComposition,
+            TypedComposition.parent,
+            TypedComposition.child,
+            min_depth=2,
+            max_depth=1,
+        )
+    assert reversed_bounds.value.code == "reachable_bounds"
+
+    with pytest.raises(type_bridge_core.MatchRequestError) as depth_limit:
+        session.reachable(
+            source,
+            target,
+            TypedComposition,
+            TypedComposition.parent,
+            TypedComposition.child,
+            min_depth=0,
+            max_depth=65,
+        )
+    assert depth_limit.value.code == "reachable_depth_limit"
+
+
+@pytest.mark.parametrize(
+    ("name", "value", "error"),
+    [
+        ("min_depth", True, TypeError),
+        ("max_depth", 1.5, TypeError),
+        ("min_depth", -1, ValueError),
+        ("max_depth", 256, ValueError),
+    ],
+)
+def test_bounded_reachability_rejects_noncanonical_depths(
+    name: str,
+    value: object,
+    error: type[Exception],
+) -> None:
+    session = diagnostic_session()
+    source = session.var(TypedParty)
+    target = session.var(TypedParty)
+    arguments: dict[str, object] = {"min_depth": 0, "max_depth": 1}
+    arguments[name] = value
+
+    with pytest.raises(error):
+        invoke_untyped(
+            session.reachable,
+            source,
+            target,
+            TypedComposition,
+            TypedComposition.parent,
+            TypedComposition.child,
+            **arguments,
+        )
+
+
+def test_bounded_reachability_rejects_forged_roles_and_cross_session_endpoints() -> None:
+    session = diagnostic_session()
+    source = session.var(TypedParty)
+    target = session.var(TypedParty)
+
+    with pytest.raises(TypeError, match="role_from does not belong"):
+        invoke_untyped(
+            session.reachable,
+            source,
+            target,
+            TypedComposition,
+            TypedAssociation.participant,
+            TypedComposition.child,
+            min_depth=1,
+            max_depth=1,
+        )
+
+    foreign = diagnostic_session().var(TypedParty)
+    with pytest.raises(type_bridge_core.MatchRequestError) as cross_session:
+        session.reachable(
+            source,
+            foreign,
+            TypedComposition,
+            TypedComposition.parent,
+            TypedComposition.child,
+            min_depth=1,
+            max_depth=1,
+        )
+    assert cross_session.value.code == "cross_session_handle"
 
 
 def test_reference_owner_identity_is_enforced_by_native_handles() -> None:

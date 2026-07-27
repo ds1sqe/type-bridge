@@ -51,6 +51,7 @@ WRITE_DATA = Path(__file__).with_name("fixtures") / "write-data.json"
 # canonicalize_typed_reader_output for the descriptor-gate vs value-gate split.
 TYPED_NODE_READER = REPO_ROOT / "tmp" / "node-parity" / "tests" / "parity" / "typed-reader.js"
 PACKED_TYPED_QUERY_READER = Path(__file__).with_name("node_typed_query_reader.cjs")
+PACKED_V2_AUTHORING_READER = Path(__file__).with_name("node_v2_authoring_reader.cjs")
 TYPED_QUERY_FIXTURE = Path(__file__).with_name("fixtures") / "typed-query" / "contract.json"
 TYPED_PYTHON_ARTIFACT_RUNNER = REPO_ROOT / "scripts" / "ci" / "run_typed_python_artifact.py"
 PARITY_ROOT_WHEEL_ENV = "TYPE_BRIDGE_PARITY_ROOT_WHEEL"
@@ -248,6 +249,109 @@ def read_typed_query_with_packed_node(
     extracted into a fresh ignored consumer and resolved only by its public
     package subpaths.
     """
+    return _read_with_packed_node(
+        address,
+        database,
+        http_port=http_port,
+        reader=PACKED_TYPED_QUERY_READER,
+        required_paths={
+            "dist/index.js",
+            "dist/typed/index.js",
+            "dist/typed/index.d.ts",
+        },
+        extra_environment={
+            "TYPE_BRIDGE_PARITY_TYPED_QUERY_FIXTURE": str(TYPED_QUERY_FIXTURE),
+        },
+        temp_prefix="node-typed-query-parity-",
+        description="typed-query parity",
+    )
+
+
+def read_v2_authoring_with_packed_node(
+    address: str,
+    database: str,
+    *,
+    http_port: int,
+    declared_fixture: Path,
+    server_url: str,
+    typedb_tls_root_ca: Path | None = None,
+    remote_tls_root_ca: Path | None = None,
+) -> dict[str, Any] | None:
+    """Run advanced V2 authoring and model parity from one packed Node artifact."""
+    if (typedb_tls_root_ca is None) != (remote_tls_root_ca is None):
+        raise AssertionError("packed Node V2 TLS requires both TypeDB and remote-server root CAs")
+    tls_environment = {"TYPE_BRIDGE_V2_TYPEDB_TLS_ENABLED": "0"}
+    if typedb_tls_root_ca is not None and remote_tls_root_ca is not None:
+        typedb_root = typedb_tls_root_ca.expanduser().resolve()
+        remote_root = remote_tls_root_ca.expanduser().resolve()
+        for label, root in (
+            ("TypeDB", typedb_root),
+            ("remote-server", remote_root),
+        ):
+            if not root.is_file():
+                raise AssertionError(
+                    f"packed Node V2 {label} TLS root must be a regular file: {root}"
+                )
+        tls_environment = {
+            "TYPE_BRIDGE_V2_TYPEDB_TLS_ENABLED": "1",
+            "TYPE_BRIDGE_V2_TYPEDB_TLS_ROOT_CA": str(typedb_root),
+            # Node reads this trust extension only when the child process starts.
+            "NODE_EXTRA_CA_CERTS": str(remote_root),
+        }
+    strict = os.environ.get("TYPE_BRIDGE_PARITY_STRICT") == "1"
+    supplied_package = os.environ.get(PARITY_NODE_PACKAGE_ENV)
+    if strict and supplied_package is None:
+        raise AssertionError(f"strict V2 artifact parity requires {PARITY_NODE_PACKAGE_ENV}")
+    unavailable = shutil.which("node") is None or (
+        supplied_package is None
+        and (
+            shutil.which("npm") is None
+            or not (NODE_PACKAGE_DIR / "dist" / "index.js").is_file()
+            or not (NODE_PACKAGE_DIR / "dist" / "query-v2.js").is_file()
+            or not (NODE_PACKAGE_DIR / "dist" / "typed" / "index.js").is_file()
+            or not any(NODE_PACKAGE_DIR.glob("*.node"))
+        )
+    )
+    if unavailable:
+        if strict:
+            raise AssertionError(
+                "strict V2 artifact parity requires Node plus one complete packed artifact"
+            )
+        return None
+    return _read_with_packed_node(
+        address,
+        database,
+        http_port=http_port,
+        reader=PACKED_V2_AUTHORING_READER,
+        required_paths={
+            "dist/index.js",
+            "dist/query-v2.js",
+            "dist/query-v2.d.ts",
+            "dist/typed/index.js",
+            "dist/typed/index.d.ts",
+        },
+        extra_environment={
+            "TYPE_BRIDGE_V2_DECLARED_FIXTURE": str(declared_fixture),
+            "TYPE_BRIDGE_V2_SERVER_URL": server_url,
+            **tls_environment,
+        },
+        temp_prefix="node-v2-authoring-parity-",
+        description="V2 authoring parity",
+    )
+
+
+def _read_with_packed_node(
+    address: str,
+    database: str,
+    *,
+    http_port: int,
+    reader: Path,
+    required_paths: set[str],
+    extra_environment: dict[str, str],
+    temp_prefix: str,
+    description: str,
+) -> dict[str, Any]:
+    """Extract one exact tarball and invoke a source-owned artifact reader."""
     if shutil.which("node") is None:
         pytest.skip("node executable is not installed")
 
@@ -276,7 +380,7 @@ def read_typed_query_with_packed_node(
 
     repo_tmp = REPO_ROOT / "tmp"
     repo_tmp.mkdir(exist_ok=True)
-    temp_root = Path(tempfile.mkdtemp(prefix="node-typed-query-parity-", dir=repo_tmp))
+    temp_root = Path(tempfile.mkdtemp(prefix=temp_prefix, dir=repo_tmp))
     try:
         pack_root = temp_root / "pack"
         unpack_root = temp_root / "unpack"
@@ -313,8 +417,13 @@ def read_typed_query_with_packed_node(
         else:
             tarball = supplied_package
             packed_paths: set[str] = set()
+            seen_paths: set[str] = set()
             with tarfile.open(tarball, "r:gz") as archive:
                 for member in archive.getmembers():
+                    if not (member.isfile() or member.isdir()):
+                        raise AssertionError(
+                            f"prebuilt Node artifact has a non-regular member: {member.name}"
+                        )
                     if member.name.rstrip("/") == "package":
                         continue
                     if not member.name.startswith("package/"):
@@ -333,14 +442,17 @@ def read_typed_query_with_packed_node(
                         raise AssertionError(
                             f"prebuilt Node artifact has an unsafe path: {member.name}"
                         )
-                    if relative in packed_paths:
+                    if relative in seen_paths:
                         raise AssertionError(
                             f"prebuilt Node artifact has a duplicate path: {relative}"
                         )
-                    packed_paths.add(relative)
+                    seen_paths.add(relative)
+                    if member.isfile():
+                        packed_paths.add(relative)
 
-        required = {"dist/index.js", "dist/typed/index.js", "dist/typed/index.d.ts"}
-        if not required <= packed_paths or not any(path.endswith(".node") for path in packed_paths):
+        if not required_paths <= packed_paths or not any(
+            path.endswith(".node") for path in packed_paths
+        ):
             raise AssertionError(f"packed Node artifact is incomplete: {sorted(packed_paths)}")
 
         with tarfile.open(tarball, "r:gz") as archive:
@@ -351,15 +463,19 @@ def read_typed_query_with_packed_node(
 
         env = dict(os.environ)
         env.pop("NODE_PATH", None)
+        env.pop("NODE_OPTIONS", None)
         env.pop("TYPE_BRIDGE_NODE_NATIVE_PATH", None)
+        env.pop("NODE_EXTRA_CA_CERTS", None)
+        env.pop("TYPE_BRIDGE_V2_TYPEDB_TLS_ENABLED", None)
+        env.pop("TYPE_BRIDGE_V2_TYPEDB_TLS_ROOT_CA", None)
         env["TYPEDB_ADDRESS"] = address
         env["TYPEDB_HTTP_PORT"] = str(http_port)
         env["TYPE_BRIDGE_PARITY_DATABASE"] = database
         env["TYPE_BRIDGE_PACKED_CONSUMER_ROOT"] = str(consumer_root)
         env["TYPE_BRIDGE_SOURCE_PACKAGE_ROOT"] = str(NODE_PACKAGE_DIR)
-        env["TYPE_BRIDGE_PARITY_TYPED_QUERY_FIXTURE"] = str(TYPED_QUERY_FIXTURE)
+        env.update(extra_environment)
         completed = subprocess.run(
-            ["node", str(PACKED_TYPED_QUERY_READER)],
+            ["node", str(reader)],
             check=False,
             cwd=consumer_root,
             env=env,
@@ -368,7 +484,7 @@ def read_typed_query_with_packed_node(
         )
         if completed.returncode != 0:
             raise AssertionError(
-                "Packed Node typed-query parity reader failed\n"
+                f"Packed Node {description} reader failed\n"
                 f"stdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
             )
         return json.loads(completed.stdout)

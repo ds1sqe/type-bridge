@@ -1,0 +1,884 @@
+//! Canonical V2 discovery and pure migration-history graph planning.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
+use std::path::{Path, PathBuf};
+
+use serde_json::Value;
+use type_bridge_contract::codec::from_canonical_json;
+use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
+use type_bridge_contract::migration::{MIGRATION_FORMAT_V1, MigrationId, MigrationManifestDigest};
+use type_bridge_contract::schema::DeclaredSchema;
+use type_bridge_schema::ManagedDeltaContext;
+
+use crate::manifest::{peek_manifest_declares_legacy_bridge, peek_manifest_identity};
+use crate::{
+    MigrationDirectory, VerifiedSchemaMigrationManifest, decode_verified_manifest,
+    encode_verified_manifest,
+};
+
+const CANONICAL_MIGRATION_SUFFIX: &str = ".tbmigration.json";
+
+#[derive(Clone, Eq, PartialEq)]
+struct CanonicalMigrationFileEvidence {
+    bytes: Vec<u8>,
+    digest: MigrationManifestDigest,
+}
+
+/// Exact canonical-file authority retained from one successful discovery.
+///
+/// The evidence binds direct canonical membership, the exact bytes used for
+/// verification, and their raw SHA-256 digests. Revalidation always reads
+/// through the same caller-retained [`MigrationDirectory`] capability, so a
+/// later ambient pathname replacement cannot redirect the comparison.
+#[derive(Clone, Eq, PartialEq)]
+pub struct CanonicalMigrationHistoryEvidence {
+    files: BTreeMap<PathBuf, CanonicalMigrationFileEvidence>,
+}
+
+impl fmt::Debug for CanonicalMigrationHistoryEvidence {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let files = self
+            .files
+            .iter()
+            .map(|(path, evidence)| (path, evidence.bytes.len(), evidence.digest.to_hex()))
+            .collect::<Vec<_>>();
+        formatter
+            .debug_struct("CanonicalMigrationHistoryEvidence")
+            .field("files", &files)
+            .finish()
+    }
+}
+
+impl CanonicalMigrationHistoryEvidence {
+    fn from_candidates(candidates: Vec<CanonicalCandidate>) -> Self {
+        let files = candidates
+            .into_iter()
+            .map(|candidate| {
+                let digest = MigrationManifestDigest::compute(&candidate.bytes);
+                (
+                    candidate.path,
+                    CanonicalMigrationFileEvidence {
+                        digest,
+                        bytes: candidate.bytes,
+                    },
+                )
+            })
+            .collect();
+        Self { files }
+    }
+
+    /// Require canonical membership and every discovered byte to remain exact.
+    pub fn require_unchanged(&self, directory: &MigrationDirectory) -> Result<(), Diagnostic> {
+        let candidates = collect_canonical_candidates(directory).map_err(|cause| {
+            failure(
+                DiagnosticCategory::Integrity,
+                "migration_history_authority_revalidation_failed",
+                "canonical migration authority cannot be revalidated through its retained directory",
+            )
+            .with_detail("cause_code", cause.code().as_str().to_owned())
+            .with_detail("cause", cause.to_string())
+        })?;
+
+        let expected_names = self.files.keys().cloned().collect::<BTreeSet<_>>();
+        let observed_names = candidates
+            .iter()
+            .map(|candidate| candidate.path.clone())
+            .collect::<BTreeSet<_>>();
+        if expected_names != observed_names {
+            let added = observed_names
+                .difference(&expected_names)
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>();
+            let removed = expected_names
+                .difference(&observed_names)
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>();
+            return Err(failure(
+                DiagnosticCategory::Integrity,
+                "migration_history_authority_membership_changed",
+                "canonical migration file membership changed after discovery",
+            )
+            .with_detail("added", added)
+            .with_detail("removed", removed));
+        }
+
+        for candidate in candidates {
+            let path = candidate.path;
+            let expected = &self.files[&path];
+            let observed_digest = MigrationManifestDigest::compute(&candidate.bytes);
+            if observed_digest != expected.digest {
+                return Err(failure(
+                    DiagnosticCategory::Integrity,
+                    "migration_history_authority_digest_changed",
+                    "canonical migration file digest changed after discovery",
+                )
+                .with_detail("file", path.display().to_string())
+                .with_detail("expected_digest", expected.digest.to_hex())
+                .with_detail("observed_digest", observed_digest.to_hex()));
+            }
+            // The byte comparison remains authoritative even in the presence
+            // of a hypothetical digest collision.
+            if candidate.bytes != expected.bytes {
+                return Err(failure(
+                    DiagnosticCategory::Integrity,
+                    "migration_history_authority_bytes_changed",
+                    "canonical migration file bytes changed after discovery",
+                )
+                .with_detail("file", path.display().to_string()));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// A validated DAG whose only node authority is a verified canonical manifest.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MigrationHistoryGraph {
+    children: BTreeMap<MigrationId, BTreeSet<MigrationId>>,
+    heads: Vec<MigrationId>,
+    manifests: BTreeMap<MigrationId, VerifiedSchemaMigrationManifest>,
+    parents: BTreeMap<MigrationId, BTreeSet<MigrationId>>,
+    topological: Vec<MigrationId>,
+}
+
+impl MigrationHistoryGraph {
+    /// Build and validate a complete history graph from verified manifests only.
+    pub fn from_verified(
+        manifests: impl IntoIterator<Item = VerifiedSchemaMigrationManifest>,
+    ) -> Result<Self, Diagnostic> {
+        let mut by_id = BTreeMap::new();
+        for manifest in manifests {
+            let id = manifest.id().clone();
+            if by_id.insert(id, manifest).is_some() {
+                return Err(graph_failure(
+                    "migration_history_duplicate_id",
+                    "migration history contains a duplicate compound identity",
+                ));
+            }
+        }
+
+        // The legacy-frontier bridge is unique per lineage and, when present,
+        // is the sole root: every other manifest must descend from it so the
+        // scope has one graph frontier rather than two competing histories.
+        let bridges = by_id
+            .values()
+            .filter(|manifest| manifest.is_legacy_bridge())
+            .map(|manifest| manifest.id().clone())
+            .collect::<Vec<_>>();
+        if bridges.len() > 1 {
+            return Err(graph_failure(
+                "migration_history_multiple_legacy_bridges",
+                "migration history contains more than one legacy-frontier bridge",
+            ));
+        }
+        if let Some(bridge) = bridges.first() {
+            for (id, manifest) in &by_id {
+                if manifest.parents().is_empty() && id != bridge {
+                    return Err(graph_failure(
+                        "migration_history_root_beside_legacy_bridge",
+                        "a bridged lineage admits no root other than its legacy bridge",
+                    ));
+                }
+            }
+        }
+
+        let mut parents = BTreeMap::new();
+        let mut children = by_id
+            .keys()
+            .cloned()
+            .map(|id| (id, BTreeSet::new()))
+            .collect::<BTreeMap<_, _>>();
+        for (id, manifest) in &by_id {
+            let direct = manifest.parents().iter().cloned().collect::<BTreeSet<_>>();
+            if direct.contains(id) {
+                return Err(graph_failure(
+                    "migration_history_self_parent",
+                    "migration history contains a self-parent edge",
+                ));
+            }
+            for parent in &direct {
+                if !by_id.contains_key(parent) {
+                    return Err(graph_failure(
+                        "migration_history_missing_parent",
+                        "migration history references a missing parent",
+                    ));
+                }
+                children
+                    .get_mut(parent)
+                    .expect("validated parent has a child set")
+                    .insert(id.clone());
+            }
+            parents.insert(id.clone(), direct);
+        }
+
+        let topological = topological_order(&parents, &children)?;
+        let heads = children
+            .iter()
+            .filter(|(_, children)| children.is_empty())
+            .map(|(id, _)| id.clone())
+            .collect();
+        Ok(Self {
+            children,
+            heads,
+            manifests: by_id,
+            parents,
+            topological,
+        })
+    }
+
+    /// Return the number of verified history nodes.
+    pub fn len(&self) -> usize {
+        self.manifests.len()
+    }
+
+    /// Return whether the history is empty.
+    pub fn is_empty(&self) -> bool {
+        self.manifests.is_empty()
+    }
+
+    /// Return one verified manifest by compound identity.
+    pub fn manifest(&self, id: &MigrationId) -> Option<&VerifiedSchemaMigrationManifest> {
+        self.manifests.get(id)
+    }
+
+    /// Iterate verified manifests in compound-identity order.
+    pub fn manifests(
+        &self,
+    ) -> impl ExactSizeIterator<Item = (&MigrationId, &VerifiedSchemaMigrationManifest)> {
+        self.manifests.iter()
+    }
+
+    /// Return deterministic topological order with compound-ID ready-node ties.
+    pub fn topological_order(&self) -> &[MigrationId] {
+        &self.topological
+    }
+
+    /// Return every graph head in compound-identity order.
+    pub fn heads(&self) -> &[MigrationId] {
+        &self.heads
+    }
+
+    /// Return the implicit default head, rejecting ambiguous multi-head history.
+    pub fn default_head(&self) -> Result<Option<&MigrationId>, Diagnostic> {
+        match self.heads.as_slice() {
+            [] => Ok(None),
+            [head] => Ok(Some(head)),
+            _ => Err(graph_failure(
+                "migration_history_ambiguous_default_head",
+                "implicit default head is ambiguous in a multi-head history",
+            )),
+        }
+    }
+
+    /// Require an applied set to contain every ancestor of every applied node.
+    pub fn validate_applied(&self, applied: &BTreeSet<MigrationId>) -> Result<(), Diagnostic> {
+        for id in applied {
+            let direct = self.parents.get(id).ok_or_else(|| {
+                graph_failure(
+                    "migration_history_unknown_applied_id",
+                    "applied set contains an identity outside verified history",
+                )
+            })?;
+            if direct.iter().any(|parent| !applied.contains(parent)) {
+                return Err(graph_failure(
+                    "migration_history_applied_not_downward_closed",
+                    "applied set omits an ancestor of an applied migration",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Return maximal applied nodes, which form the applied reachability frontier.
+    pub fn applied_frontier(
+        &self,
+        applied: &BTreeSet<MigrationId>,
+    ) -> Result<Vec<MigrationId>, Diagnostic> {
+        self.validate_applied(applied)?;
+        Ok(applied
+            .iter()
+            .filter(|id| {
+                self.children[*id]
+                    .iter()
+                    .all(|child| !applied.contains(child))
+            })
+            .cloned()
+            .collect())
+    }
+
+    /// Plan the missing ancestor closure for explicit target nodes.
+    pub fn plan_apply(
+        &self,
+        applied: &BTreeSet<MigrationId>,
+        targets: &BTreeSet<MigrationId>,
+    ) -> Result<Vec<MigrationId>, Diagnostic> {
+        self.validate_applied(applied)?;
+        let mut closure = BTreeSet::new();
+        let mut pending = targets.iter().cloned().collect::<Vec<_>>();
+        while let Some(id) = pending.pop() {
+            let direct = self.parents.get(&id).ok_or_else(|| {
+                graph_failure(
+                    "migration_history_unknown_apply_target",
+                    "apply target is outside verified history",
+                )
+            })?;
+            if closure.insert(id) {
+                pending.extend(direct.iter().cloned());
+            }
+        }
+        let required = closure
+            .difference(applied)
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        order_apply_subset(&required, applied, &self.parents, &self.children)
+    }
+
+    /// Plan application to the sole implicit head.
+    pub fn plan_apply_to_default_head(
+        &self,
+        applied: &BTreeSet<MigrationId>,
+    ) -> Result<Vec<MigrationId>, Diagnostic> {
+        let Some(head) = self.default_head()? else {
+            self.validate_applied(applied)?;
+            return Ok(Vec::new());
+        };
+        self.plan_apply(applied, &BTreeSet::from([head.clone()]))
+    }
+
+    /// Reverse-topologically order an explicit rollback set.
+    ///
+    /// A node cannot be rolled back while any applied descendant remains.
+    pub fn plan_rollback(
+        &self,
+        applied: &BTreeSet<MigrationId>,
+        removals: &BTreeSet<MigrationId>,
+    ) -> Result<Vec<MigrationId>, Diagnostic> {
+        self.validate_applied(applied)?;
+        for id in removals {
+            if !self.manifests.contains_key(id) {
+                return Err(graph_failure(
+                    "migration_history_unknown_rollback_target",
+                    "rollback target is outside verified history",
+                ));
+            }
+            if !applied.contains(id) {
+                return Err(graph_failure(
+                    "migration_history_rollback_not_applied",
+                    "rollback target is not in the applied set",
+                ));
+            }
+            if self.children[id]
+                .iter()
+                .any(|child| applied.contains(child) && !removals.contains(child))
+            {
+                return Err(graph_failure(
+                    "migration_history_remaining_applied_descendant",
+                    "rollback would leave an applied descendant without its ancestor",
+                ));
+            }
+        }
+        order_rollback_subset(removals, &self.parents, &self.children)
+    }
+}
+
+/// Return whether any direct canonical candidate declares a legacy bridge.
+///
+/// The result is routing evidence only, never manifest authority. Every
+/// candidate still has to replay-verify through normal chain discovery before
+/// graph, planning, or execution use.
+pub fn canonical_history_declares_legacy_bridge_in(
+    directory: &MigrationDirectory,
+) -> Result<bool, Diagnostic> {
+    canonical_history_declared_legacy_bridge_count_in(directory).map(|count| count != 0)
+}
+
+/// Count direct canonical candidates that declare a legacy bridge.
+///
+/// Like [`canonical_history_declares_legacy_bridge_in`], this is routing
+/// evidence only and does not replace replay verification.
+pub fn canonical_history_declared_legacy_bridge_count_in(
+    directory: &MigrationDirectory,
+) -> Result<usize, Diagnostic> {
+    let mut count = 0usize;
+    for candidate in collect_canonical_candidates(directory)? {
+        sniff_v1_format(&candidate.bytes)?;
+        if peek_manifest_declares_legacy_bridge(&candidate.bytes)? {
+            count = count.saturating_add(1);
+        }
+    }
+    Ok(count)
+}
+
+/// Require adopted genesis and the unique canonical legacy bridge to exist as
+/// one inseparable authority pair.
+pub fn require_adoption_authority_pair(
+    graph: &MigrationHistoryGraph,
+    adopted_genesis_present: bool,
+) -> Result<(), Diagnostic> {
+    let bridge_count = graph
+        .manifests()
+        .filter(|(_, manifest)| manifest.is_legacy_bridge())
+        .count();
+    require_adoption_authority_pair_state(adopted_genesis_present, bridge_count)
+}
+
+/// Require the raw adoption-authority presence state to be complete.
+///
+/// This entry point lets discovery reject bridge-without-genesis before it
+/// attempts replay against an empty genesis. A verified graph should use
+/// [`require_adoption_authority_pair`] instead.
+pub fn require_adoption_authority_pair_state(
+    adopted_genesis_present: bool,
+    legacy_bridge_count: usize,
+) -> Result<(), Diagnostic> {
+    if (adopted_genesis_present && legacy_bridge_count == 1)
+        || (!adopted_genesis_present && legacy_bridge_count == 0)
+    {
+        return Ok(());
+    }
+    Err(failure(
+        DiagnosticCategory::Integrity,
+        "migration_adoption_authority_incomplete",
+        "adopted genesis and one sole-root legacy bridge must be present together",
+    )
+    .with_detail("adopted_genesis_present", adopted_genesis_present)
+    .with_detail(
+        "legacy_bridge_count",
+        i64::try_from(legacy_bridge_count).unwrap_or(i64::MAX),
+    ))
+}
+
+/// Discover only direct canonical V2 children and verify each before graph use.
+///
+/// The callback is the context provider: it must call `decode_verified_manifest`
+/// with the honest source/context for the candidate bytes. Discovery additionally
+/// requires the returned verified artifact to re-encode byte-identically.
+pub fn discover_verified_migrations<F>(
+    directory: &Path,
+    verify: F,
+) -> Result<MigrationHistoryGraph, Diagnostic>
+where
+    F: FnMut(&Path, &[u8]) -> Result<VerifiedSchemaMigrationManifest, Diagnostic>,
+{
+    let directory = open_directory(directory)?;
+    discover_verified_migrations_in(&directory, verify)
+}
+
+/// Discover through a retained directory capability.
+pub fn discover_verified_migrations_in<F>(
+    directory: &MigrationDirectory,
+    mut verify: F,
+) -> Result<MigrationHistoryGraph, Diagnostic>
+where
+    F: FnMut(&Path, &[u8]) -> Result<VerifiedSchemaMigrationManifest, Diagnostic>,
+{
+    let mut verified = Vec::new();
+    for candidate in collect_canonical_candidates(directory)? {
+        sniff_v1_format(&candidate.bytes)?;
+        let manifest = verify(&candidate.path, &candidate.bytes)?;
+        if encode_verified_manifest(&manifest)? != candidate.bytes {
+            return Err(discovery_failure(
+                "migration_discovery_verifier_bytes_mismatch",
+                "injected verifier returned an artifact for different bytes",
+            ));
+        }
+        require_stem_binding(&manifest, &candidate.stem)?;
+        verified.push(manifest);
+    }
+    MigrationHistoryGraph::from_verified(verified)
+}
+
+/// Discover, order, and replay-verify one complete canonical migration chain.
+///
+/// Each manifest verifies against its authoring source schema: `genesis_source`
+/// for parentless manifests, otherwise its parents' verified target. Decoding
+/// therefore runs in dependency order regardless of filename order. A manifest
+/// with several parents is accepted only when every parent reached the same
+/// verified target state; divergent-branch merge sources are rejected until the
+/// merge-generation contract defines their recorded source. Every candidate
+/// must re-encode byte-identically through `decode_verified_manifest`.
+pub fn discover_verified_migration_chain(
+    directory: &Path,
+    genesis_source: &DeclaredSchema,
+    context: &ManagedDeltaContext,
+) -> Result<MigrationHistoryGraph, Diagnostic> {
+    let directory = open_directory(directory)?;
+    discover_verified_migration_chain_in(&directory, genesis_source, context)
+}
+
+/// Discover and replay-verify through a retained directory capability.
+pub fn discover_verified_migration_chain_in(
+    directory: &MigrationDirectory,
+    genesis_source: &DeclaredSchema,
+    context: &ManagedDeltaContext,
+) -> Result<MigrationHistoryGraph, Diagnostic> {
+    discover_verified_migration_chain_with_evidence_in(directory, genesis_source, context)
+        .map(|(graph, _)| graph)
+}
+
+/// Discover and replay-verify through a retained directory while preserving
+/// the exact canonical-file authority used to build the graph.
+pub fn discover_verified_migration_chain_with_evidence_in(
+    directory: &MigrationDirectory,
+    genesis_source: &DeclaredSchema,
+    context: &ManagedDeltaContext,
+) -> Result<(MigrationHistoryGraph, CanonicalMigrationHistoryEvidence), Diagnostic> {
+    let candidates = collect_canonical_candidates(directory)?;
+    let mut headers = Vec::with_capacity(candidates.len());
+    let mut index_by_id = BTreeMap::new();
+    for (index, candidate) in candidates.iter().enumerate() {
+        sniff_v1_format(&candidate.bytes)?;
+        let (id, parents) = peek_manifest_identity(&candidate.bytes)?;
+        if index_by_id.insert(id.clone(), index).is_some() {
+            return Err(discovery_failure(
+                "migration_discovery_duplicate_id",
+                "two canonical migration files claim the same migration identity",
+            ));
+        }
+        headers.push((id, parents));
+    }
+    for (_, parents) in &headers {
+        for parent in parents {
+            if !index_by_id.contains_key(parent) {
+                return Err(discovery_failure(
+                    "migration_discovery_unknown_parent",
+                    "canonical migration references a parent absent from the directory",
+                ));
+            }
+        }
+    }
+    let order = order_candidate_headers(&headers, &index_by_id)?;
+
+    let mut verified_by_id: BTreeMap<MigrationId, VerifiedSchemaMigrationManifest> =
+        BTreeMap::new();
+    for id in order {
+        let index = index_by_id[&id];
+        let candidate = &candidates[index];
+        let parents = &headers[index].1;
+        let source = match parents.split_first() {
+            None => genesis_source,
+            Some((first, rest)) => {
+                let first_parent = &verified_by_id[first];
+                for parent in rest {
+                    if verified_by_id[parent].target_state() != first_parent.target_state() {
+                        return Err(discovery_failure(
+                            "migration_discovery_divergent_merge_sources",
+                            "merge manifest parents reached different verified target states",
+                        ));
+                    }
+                }
+                first_parent.target_schema()
+            }
+        };
+        let manifest = decode_verified_manifest(&candidate.bytes, (source, context))?;
+        require_stem_binding(&manifest, &candidate.stem)?;
+        verified_by_id.insert(id, manifest);
+    }
+    let graph =
+        MigrationHistoryGraph::from_verified(verified_by_id.into_values().collect::<Vec<_>>())?;
+    let evidence = CanonicalMigrationHistoryEvidence::from_candidates(candidates);
+    Ok((graph, evidence))
+}
+
+fn require_stem_binding(
+    manifest: &VerifiedSchemaMigrationManifest,
+    stem: &str,
+) -> Result<(), Diagnostic> {
+    if manifest.id().name().as_str() != stem {
+        return Err(discovery_failure(
+            "migration_discovery_filename_manifest_mismatch",
+            "filename stem does not equal the verified manifest name",
+        ));
+    }
+    Ok(())
+}
+
+fn order_candidate_headers(
+    headers: &[(MigrationId, Vec<MigrationId>)],
+    index_by_id: &BTreeMap<MigrationId, usize>,
+) -> Result<Vec<MigrationId>, Diagnostic> {
+    let mut parents = BTreeMap::new();
+    let mut children: BTreeMap<MigrationId, BTreeSet<MigrationId>> = index_by_id
+        .keys()
+        .map(|id| (id.clone(), BTreeSet::new()))
+        .collect();
+    for (id, parent_ids) in headers {
+        let parent_set = parent_ids.iter().cloned().collect::<BTreeSet<_>>();
+        for parent in &parent_set {
+            children
+                .get_mut(parent)
+                .expect("unknown parents are rejected before ordering")
+                .insert(id.clone());
+        }
+        parents.insert(id.clone(), parent_set);
+    }
+    let all = parents.keys().cloned().collect::<BTreeSet<_>>();
+    order_apply_subset(&all, &BTreeSet::new(), &parents, &children)
+}
+
+struct CanonicalCandidate {
+    path: PathBuf,
+    stem: String,
+    bytes: Vec<u8>,
+}
+
+/// Maximum entries one canonical history directory may contain.
+const MAX_HISTORY_DIRECTORY_ENTRIES: usize = 65_536;
+/// Maximum aggregate candidate bytes retained during discovery: 256 MiB.
+const MAX_HISTORY_AGGREGATE_BYTES: usize = 256 * 1024 * 1024;
+
+/// Read at most `limit` bytes, failing before the allocation grows past it.
+fn read_bounded(
+    directory: &MigrationDirectory,
+    name: &std::ffi::OsStr,
+    limit: usize,
+) -> Result<Vec<u8>, Diagnostic> {
+    use std::io::Read;
+
+    let file = directory.open_regular_readonly(name).map_err(|_| {
+        discovery_failure(
+            "migration_discovery_file_unreadable",
+            "canonical migration file cannot be read",
+        )
+    })?;
+    let mut bytes = Vec::new();
+    let limit_u64 = u64::try_from(limit).unwrap_or(u64::MAX);
+    file.take(limit_u64.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|_| {
+            discovery_failure(
+                "migration_discovery_file_unreadable",
+                "canonical migration file cannot be read",
+            )
+        })?;
+    if bytes.len() > limit {
+        return Err(failure(
+            DiagnosticCategory::ResourceLimit,
+            "migration_discovery_file_oversized",
+            "canonical migration file exceeds the document byte ceiling",
+        ));
+    }
+    Ok(bytes)
+}
+
+fn collect_canonical_candidates(
+    directory: &MigrationDirectory,
+) -> Result<Vec<CanonicalCandidate>, Diagnostic> {
+    let mut entries = directory
+        .entries(MAX_HISTORY_DIRECTORY_ENTRIES)
+        .map_err(|error| {
+            if error.kind() == std::io::ErrorKind::InvalidData {
+                failure(
+                    DiagnosticCategory::ResourceLimit,
+                    "migration_discovery_entry_limit",
+                    "canonical migration directory exceeds the entry ceiling",
+                )
+            } else {
+                discovery_failure(
+                    "migration_discovery_directory_unreadable",
+                    "canonical migration directory cannot be read",
+                )
+            }
+        })?;
+    entries.sort_by(|left, right| left.file_name().cmp(right.file_name()));
+
+    let mut aggregate_bytes = 0usize;
+    let mut candidates = Vec::new();
+    for entry in entries {
+        if entry.is_directory() {
+            return Err(discovery_failure(
+                "migration_discovery_nested_authority",
+                "nested directories cannot contain canonical migration authority",
+            ));
+        }
+        if !entry.is_regular() {
+            return Err(discovery_failure(
+                "migration_discovery_non_regular_entry",
+                "canonical migration directory contains a non-regular entry",
+            ));
+        }
+        let file_name = entry.file_name().to_owned().into_string().map_err(|_| {
+            discovery_failure(
+                "migration_discovery_non_utf8_filename",
+                "canonical migration filename is not valid UTF-8",
+            )
+        })?;
+        let Some(stem) = file_name.strip_suffix(CANONICAL_MIGRATION_SUFFIX) else {
+            continue;
+        };
+        if stem.is_empty() {
+            return Err(discovery_failure(
+                "migration_discovery_empty_stem",
+                "canonical migration filename has an empty manifest-name stem",
+            ));
+        }
+        let path = PathBuf::from(&file_name);
+        let bytes = read_bounded(
+            directory,
+            std::ffi::OsStr::new(&file_name),
+            type_bridge_contract::limits::MAX_CANONICAL_BYTES,
+        )?;
+        // Candidate bytes for the whole history are retained together, so
+        // the aggregate is capped before the next allocation, not after.
+        aggregate_bytes = aggregate_bytes.saturating_add(bytes.len());
+        if aggregate_bytes > MAX_HISTORY_AGGREGATE_BYTES {
+            return Err(failure(
+                DiagnosticCategory::ResourceLimit,
+                "migration_discovery_history_limit",
+                "canonical migration history exceeds the aggregate byte ceiling",
+            ));
+        }
+        candidates.push(CanonicalCandidate {
+            path,
+            stem: stem.to_owned(),
+            bytes,
+        });
+    }
+    Ok(candidates)
+}
+
+fn open_directory(path: &Path) -> Result<MigrationDirectory, Diagnostic> {
+    MigrationDirectory::open_ambient(path).map_err(|_| {
+        discovery_failure(
+            "migration_discovery_directory_unreadable",
+            "canonical migration directory cannot be read",
+        )
+    })
+}
+
+fn sniff_v1_format(bytes: &[u8]) -> Result<(), Diagnostic> {
+    let value = from_canonical_json::<Value>(bytes)?;
+    let format = value
+        .as_object()
+        .and_then(|object| object.get("format"))
+        .and_then(Value::as_str);
+    if format != Some(MIGRATION_FORMAT_V1) {
+        return Err(discovery_failure(
+            "migration_discovery_unknown_format",
+            "canonical migration format is absent or unsupported",
+        ));
+    }
+    Ok(())
+}
+
+fn topological_order(
+    parents: &BTreeMap<MigrationId, BTreeSet<MigrationId>>,
+    children: &BTreeMap<MigrationId, BTreeSet<MigrationId>>,
+) -> Result<Vec<MigrationId>, Diagnostic> {
+    let all = parents.keys().cloned().collect::<BTreeSet<_>>();
+    let applied = BTreeSet::new();
+    let order = order_apply_subset(&all, &applied, parents, children)?;
+    if order.len() != parents.len() {
+        return Err(graph_failure(
+            "migration_history_cycle",
+            "migration history contains a parent cycle",
+        ));
+    }
+    Ok(order)
+}
+
+fn order_apply_subset(
+    required: &BTreeSet<MigrationId>,
+    applied: &BTreeSet<MigrationId>,
+    parents: &BTreeMap<MigrationId, BTreeSet<MigrationId>>,
+    children: &BTreeMap<MigrationId, BTreeSet<MigrationId>>,
+) -> Result<Vec<MigrationId>, Diagnostic> {
+    let mut remaining = required
+        .iter()
+        .map(|id| {
+            let count = parents[id]
+                .iter()
+                .filter(|parent| required.contains(*parent) && !applied.contains(*parent))
+                .count();
+            (id.clone(), count)
+        })
+        .collect::<BTreeMap<_, _>>();
+    let mut ready = remaining
+        .iter()
+        .filter(|(_, count)| **count == 0)
+        .map(|(id, _)| id.clone())
+        .collect::<BTreeSet<_>>();
+    let mut order = Vec::with_capacity(required.len());
+    while let Some(id) = ready.iter().next().cloned() {
+        ready.remove(&id);
+        order.push(id.clone());
+        for child in &children[&id] {
+            if let Some(count) = remaining.get_mut(child) {
+                *count -= 1;
+                if *count == 0 {
+                    ready.insert(child.clone());
+                }
+            }
+        }
+        remaining.remove(&id);
+    }
+    if !remaining.is_empty() {
+        return Err(graph_failure(
+            "migration_history_cycle",
+            "migration history contains a parent cycle",
+        ));
+    }
+    Ok(order)
+}
+
+fn order_rollback_subset(
+    removals: &BTreeSet<MigrationId>,
+    parents: &BTreeMap<MigrationId, BTreeSet<MigrationId>>,
+    children: &BTreeMap<MigrationId, BTreeSet<MigrationId>>,
+) -> Result<Vec<MigrationId>, Diagnostic> {
+    let mut remaining = removals
+        .iter()
+        .map(|id| {
+            (
+                id.clone(),
+                children[id]
+                    .iter()
+                    .filter(|child| removals.contains(*child))
+                    .count(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let mut ready = remaining
+        .iter()
+        .filter(|(_, count)| **count == 0)
+        .map(|(id, _)| id.clone())
+        .collect::<BTreeSet<_>>();
+    let mut order = Vec::with_capacity(removals.len());
+    while let Some(id) = ready.iter().next().cloned() {
+        ready.remove(&id);
+        order.push(id.clone());
+        for parent in &parents[&id] {
+            if let Some(count) = remaining.get_mut(parent) {
+                *count -= 1;
+                if *count == 0 {
+                    ready.insert(parent.clone());
+                }
+            }
+        }
+        remaining.remove(&id);
+    }
+    if !remaining.is_empty() {
+        return Err(graph_failure(
+            "migration_history_cycle",
+            "rollback subset contains a parent cycle",
+        ));
+    }
+    Ok(order)
+}
+
+fn graph_failure(code: &'static str, message: &'static str) -> Diagnostic {
+    failure(DiagnosticCategory::Integrity, code, message)
+}
+
+fn discovery_failure(code: &'static str, message: &'static str) -> Diagnostic {
+    failure(DiagnosticCategory::InvalidContract, code, message)
+}
+
+fn failure(category: DiagnosticCategory, code: &'static str, message: &'static str) -> Diagnostic {
+    Diagnostic::new(
+        category,
+        DiagnosticCode::new(code).expect("static history diagnostic code is canonical"),
+        message,
+    )
+}

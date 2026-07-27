@@ -5,6 +5,8 @@ import type {
   NativeRustDatabase,
   NativeRustTransactionContext,
 } from "./index.js";
+import { ownedByteSnapshot } from "./owned-bytes.js";
+import type { NativeProjectedManager } from "./runtime-projection.js";
 
 type NativeRegistryHandle = InstanceType<NativeModule["NodeDescriptorRegistry"]>;
 
@@ -29,6 +31,15 @@ interface NativeMatchSessionHandle {
   readonly [nativeMatchHandleKind]: "session";
   exact(typeName: string): NativeMatchBindingHandle;
   subtypes(typeName: string): NativeMatchBindingHandle;
+  reachable(
+    relationType: string,
+    roleFrom: string,
+    roleTo: string,
+    source: NativeMatchBindingHandle,
+    target: NativeMatchBindingHandle,
+    minDepth: number,
+    maxDepth: number,
+  ): NativeMatchPredicateHandle;
   positional(selections: NativeMatchSelectionHandle[]): NativeMatchShapeHandle;
   named(names: string[], selections: NativeMatchSelectionHandle[]): NativeMatchShapeHandle;
   query(shape: NativeMatchShapeHandle): NativeMatchQueryHandle;
@@ -193,9 +204,85 @@ interface NativeValidatedThingHandle {
 interface NativeMatchModule {
   NodeMatchSessionHandle: new (registry: NativeRegistryHandle) => NativeMatchSessionHandle;
   revalidateMatchDiagnostic(registry: NativeRegistryHandle, diagnosticJson: string): string;
+  validateMatchOrderTermCount(actual: number): void;
 }
 
-type LoadedNativeModule = NativeModule & NativeMatchModule;
+interface NativeRemoteModelQueryContext {}
+
+interface NativePendingRemoteModelQuery {
+  requestBytes(): Uint8Array;
+  decodeReply(response: Uint8Array): Promise<NativeValidatedMatchResultHandle>;
+}
+
+interface NativeRemoteModelQueryModule {
+  queryV2RemoteModelContext(
+    authority: ReturnType<NativeModule["queryV2Authority"]>,
+    advertisement: Uint8Array,
+    maxItems: bigint,
+    maxBytes: bigint,
+    maxCollectionMembers: bigint,
+    maxGraphNodes: bigint,
+    maxAttributeValues: bigint,
+    maxRolePlayers: bigint,
+    deadlineMs?: bigint | null,
+  ): NativeRemoteModelQueryContext;
+  queryV2PrepareRemoteModelRows(
+    query: NativeMatchQueryHandle,
+    context: NativeRemoteModelQueryContext,
+    orders: NativeMatchOrderHandle[],
+    offset: bigint,
+    limit: bigint,
+    cardinality: NativeMatchRowCardinality,
+  ): NativePendingRemoteModelQuery;
+  queryV2PrepareRemoteModelPage(
+    query: NativeMatchQueryHandle,
+    context: NativeRemoteModelQueryContext,
+    root: NativeMatchBindingHandle,
+    orders: NativeMatchOrderHandle[],
+    offset: bigint,
+    limit: bigint,
+    includeTotal: boolean,
+  ): NativePendingRemoteModelQuery;
+  queryV2PrepareRemoteModelCount(
+    query: NativeMatchQueryHandle,
+    context: NativeRemoteModelQueryContext,
+    root: NativeMatchBindingHandle,
+  ): NativePendingRemoteModelQuery;
+  queryV2PrepareRemoteModelExists(
+    query: NativeMatchQueryHandle,
+    context: NativeRemoteModelQueryContext,
+    root: NativeMatchBindingHandle,
+  ): NativePendingRemoteModelQuery;
+}
+
+interface NativeRuntimeProjectionHandle {
+  managerForDatabase(typeKey: string, database: NativeRustDatabase): NativeProjectedManager;
+  managerForTransaction(typeKey: string, transaction: NativeRustTransactionContext): NativeProjectedManager;
+}
+
+interface NativeRuntimeProjectionModule {
+  NodeRuntimeProjection: new (
+    projectionJson: string,
+    semanticFingerprintJson: string,
+    projectionFingerprintJson: string,
+    registrationsJson: string,
+  ) => NativeRuntimeProjectionHandle;
+}
+
+type LoadedNativeModule =
+  & NativeModule
+  & NativeMatchModule
+  & NativeRemoteModelQueryModule
+  & NativeRuntimeProjectionModule;
+type LoadedNativePendingQueryV2Remote = ReturnType<
+  LoadedNativeModule["queryV2PrepareRemote"]
+>;
+type LoadedNativePendingRemoteModelQuery = ReturnType<
+  LoadedNativeModule["queryV2PrepareRemoteModelRows"]
+>;
+
+const MAX_CANONICAL_BYTES = 16 * 1024 * 1024;
+const MAX_REMOTE_ENVELOPE_BYTES = 32 * 1024 * 1024;
 
 // This module compiles to dist/native.js (CommonJS). __dirname is therefore
 // the dist/ directory. The .node artifacts are placed at the package root
@@ -205,6 +292,251 @@ type LoadedNativeModule = NativeModule & NativeMatchModule;
 // fallback for atypical build layouts.
 
 let _cached: LoadedNativeModule | null = null;
+
+function protectedPendingQueryV2Remote(
+  pending: LoadedNativePendingQueryV2Remote,
+): LoadedNativePendingQueryV2Remote {
+  const requestBytes = pending.requestBytes.bind(pending);
+  const decodeReply = pending.decodeReply.bind(pending);
+  let decodeStarted = false;
+  return Object.freeze({
+    requestBytes: (): Uint8Array => requestBytes(),
+    decodeReply: (response: Uint8Array): Promise<string> => {
+      if (decodeStarted) {
+        // The native one-shot claim rejects replay before inspecting this
+        // argument, so do not snapshot attacker-sized replay input.
+        return decodeReply(response);
+      }
+      decodeStarted = true;
+      let snapshot: Buffer;
+      try {
+        snapshot = ownedByteSnapshot(response, MAX_REMOTE_ENVELOPE_BYTES);
+      } catch {
+        // Preserve the native claim-first contract for an invalid first
+        // argument. The addon consumes the one-shot before its metadata check,
+        // while a replay returns without inspecting this value.
+        return decodeReply(response);
+      }
+      // Do not catch a synchronous native rejection here. The claim has
+      // already been consumed, so retrying would mask the original diagnostic
+      // with the one-shot replay error.
+      return decodeReply(snapshot);
+    },
+  });
+}
+
+function protectedPendingRemoteModelQuery(
+  pending: LoadedNativePendingRemoteModelQuery,
+): LoadedNativePendingRemoteModelQuery {
+  const requestBytes = pending.requestBytes.bind(pending);
+  const decodeReply = pending.decodeReply.bind(pending);
+  let decodeStarted = false;
+  return Object.freeze({
+    requestBytes: (): Uint8Array => requestBytes(),
+    decodeReply: (response: Uint8Array) => {
+      if (decodeStarted) {
+        return decodeReply(response);
+      }
+      decodeStarted = true;
+      let snapshot: Buffer;
+      try {
+        snapshot = ownedByteSnapshot(response, MAX_REMOTE_ENVELOPE_BYTES);
+      } catch {
+        return decodeReply(response);
+      }
+      return decodeReply(snapshot);
+    },
+  });
+}
+
+function protectedMethodDescriptor(
+  native: LoadedNativeModule,
+  name: keyof LoadedNativeModule,
+  value: (...args: never[]) => unknown,
+): PropertyDescriptor {
+  const original = Object.getOwnPropertyDescriptor(native, name);
+  return {
+    configurable: original?.configurable ?? true,
+    enumerable: original?.enumerable ?? true,
+    value,
+    writable: original !== undefined && "writable" in original
+      ? original.writable
+      : false,
+  };
+}
+
+/**
+ * Hide every raw N-API V2 byte boundary behind an owned JavaScript snapshot.
+ *
+ * A Node Buffer may alias SharedArrayBuffer storage that another Worker can
+ * mutate. N-API exposes that storage to Rust as an ordinary borrowed slice,
+ * for which concurrent mutation would be undefined behaviour. The public
+ * loader therefore returns a facade whose byte-bearing V2 calls take bounded
+ * copies before entering the addon. The addon independently rejects shared
+ * backing storage so direct artifact loads remain safe; the facade preserves
+ * Uint8Array convenience and reflective property access without weakening
+ * that native boundary.
+ */
+function protectNativeV2ByteInputs(native: LoadedNativeModule): LoadedNativeModule {
+  const queryV2Authority = native.queryV2Authority.bind(native);
+  const queryV2QueryOnlyAuthority = native.queryV2QueryOnlyAuthority.bind(native);
+  const queryV2ExecuteLocal = native.queryV2ExecuteLocal.bind(native);
+  const queryV2RemoteCapabilities = native.queryV2RemoteCapabilities.bind(native);
+  const queryV2PrepareRemote = native.queryV2PrepareRemote.bind(native);
+  const queryV2RemoteModelContext = native.queryV2RemoteModelContext.bind(native);
+  const queryV2PrepareRemoteModelRows =
+    native.queryV2PrepareRemoteModelRows.bind(native);
+  const queryV2PrepareRemoteModelPage =
+    native.queryV2PrepareRemoteModelPage.bind(native);
+  const queryV2PrepareRemoteModelCount =
+    native.queryV2PrepareRemoteModelCount.bind(native);
+  const queryV2PrepareRemoteModelExists =
+    native.queryV2PrepareRemoteModelExists.bind(native);
+  const descriptors = Object.getOwnPropertyDescriptors(native);
+
+  descriptors["queryV2Authority"] = protectedMethodDescriptor(
+    native,
+    "queryV2Authority",
+    ((declaredSchema: Uint8Array, scope: string, profile: string) =>
+      queryV2Authority(
+        ownedByteSnapshot(declaredSchema, MAX_CANONICAL_BYTES),
+        scope,
+        profile,
+      )) as (
+      ...args: never[]
+    ) => unknown,
+  );
+  descriptors["queryV2QueryOnlyAuthority"] = protectedMethodDescriptor(
+    native,
+    "queryV2QueryOnlyAuthority",
+    ((
+      database: NativeRustDatabase,
+      declaredSchema: Uint8Array,
+      scope: string,
+      profile: string,
+    ) =>
+      queryV2QueryOnlyAuthority(
+        database,
+        ownedByteSnapshot(declaredSchema, MAX_CANONICAL_BYTES),
+        scope,
+        profile,
+      )) as (...args: never[]) => unknown,
+  );
+  descriptors["queryV2ExecuteLocal"] = protectedMethodDescriptor(
+    native,
+    "queryV2ExecuteLocal",
+    ((
+      database: NativeRustDatabase,
+      authority: Parameters<LoadedNativeModule["queryV2ExecuteLocal"]>[1],
+      plan: Uint8Array,
+      invocationJson: string,
+      deadlineMs?: bigint | null,
+    ) =>
+      queryV2ExecuteLocal(
+        database,
+        authority,
+        ownedByteSnapshot(plan, MAX_CANONICAL_BYTES),
+        invocationJson,
+        deadlineMs,
+      )) as (...args: never[]) => unknown,
+  );
+  descriptors["queryV2RemoteCapabilities"] = protectedMethodDescriptor(
+    native,
+    "queryV2RemoteCapabilities",
+    ((advertisement: Uint8Array) =>
+      queryV2RemoteCapabilities(
+        ownedByteSnapshot(advertisement, MAX_REMOTE_ENVELOPE_BYTES),
+      )) as (
+      ...args: never[]
+    ) => unknown,
+  );
+  descriptors["queryV2PrepareRemote"] = protectedMethodDescriptor(
+    native,
+    "queryV2PrepareRemote",
+    ((
+      authority: Parameters<LoadedNativeModule["queryV2PrepareRemote"]>[0],
+      plan: Uint8Array,
+      invocationJson: string,
+      advertisement: Uint8Array,
+      maxItems: bigint,
+      maxBytes: bigint,
+      maxCollectionMembers: bigint,
+      deadlineMs?: bigint | null,
+    ) =>
+      protectedPendingQueryV2Remote(
+        queryV2PrepareRemote(
+          authority,
+          ownedByteSnapshot(plan, MAX_CANONICAL_BYTES),
+          invocationJson,
+          ownedByteSnapshot(advertisement, MAX_REMOTE_ENVELOPE_BYTES),
+          maxItems,
+          maxBytes,
+          maxCollectionMembers,
+          deadlineMs,
+        ),
+      )) as (...args: never[]) => unknown,
+  );
+  descriptors["queryV2RemoteModelContext"] = protectedMethodDescriptor(
+    native,
+    "queryV2RemoteModelContext",
+    ((
+      authority: Parameters<LoadedNativeModule["queryV2RemoteModelContext"]>[0],
+      advertisement: Uint8Array,
+      maxItems: bigint,
+      maxBytes: bigint,
+      maxCollectionMembers: bigint,
+      maxGraphNodes: bigint,
+      maxAttributeValues: bigint,
+      maxRolePlayers: bigint,
+      deadlineMs?: bigint | null,
+    ) =>
+      queryV2RemoteModelContext(
+        authority,
+        ownedByteSnapshot(advertisement, MAX_REMOTE_ENVELOPE_BYTES),
+        maxItems,
+        maxBytes,
+        maxCollectionMembers,
+        maxGraphNodes,
+        maxAttributeValues,
+        maxRolePlayers,
+        deadlineMs,
+      )) as (...args: never[]) => unknown,
+  );
+  descriptors["queryV2PrepareRemoteModelRows"] = protectedMethodDescriptor(
+    native,
+    "queryV2PrepareRemoteModelRows",
+    ((...args: Parameters<LoadedNativeModule["queryV2PrepareRemoteModelRows"]>) =>
+      protectedPendingRemoteModelQuery(
+        queryV2PrepareRemoteModelRows(...args),
+      )) as (...args: never[]) => unknown,
+  );
+  descriptors["queryV2PrepareRemoteModelPage"] = protectedMethodDescriptor(
+    native,
+    "queryV2PrepareRemoteModelPage",
+    ((...args: Parameters<LoadedNativeModule["queryV2PrepareRemoteModelPage"]>) =>
+      protectedPendingRemoteModelQuery(
+        queryV2PrepareRemoteModelPage(...args),
+      )) as (...args: never[]) => unknown,
+  );
+  descriptors["queryV2PrepareRemoteModelCount"] = protectedMethodDescriptor(
+    native,
+    "queryV2PrepareRemoteModelCount",
+    ((...args: Parameters<LoadedNativeModule["queryV2PrepareRemoteModelCount"]>) =>
+      protectedPendingRemoteModelQuery(
+        queryV2PrepareRemoteModelCount(...args),
+      )) as (...args: never[]) => unknown,
+  );
+  descriptors["queryV2PrepareRemoteModelExists"] = protectedMethodDescriptor(
+    native,
+    "queryV2PrepareRemoteModelExists",
+    ((...args: Parameters<LoadedNativeModule["queryV2PrepareRemoteModelExists"]>) =>
+      protectedPendingRemoteModelQuery(
+        queryV2PrepareRemoteModelExists(...args),
+      )) as (...args: never[]) => unknown,
+  );
+
+  return Object.create(Object.getPrototypeOf(native), descriptors) as LoadedNativeModule;
+}
 
 /**
  * Returns the platform triple used in the built .node filename, or null when
@@ -290,7 +622,8 @@ export function loadNative(): LoadedNativeModule {
     tried.push(candidate);
     if (fs.existsSync(candidate)) {
       // eslint-disable-next-line @typescript-eslint/no-require-imports
-      _cached = require(candidate) as LoadedNativeModule;
+      const native = require(candidate) as LoadedNativeModule;
+      _cached = protectNativeV2ByteInputs(native);
       return _cached;
     }
   }

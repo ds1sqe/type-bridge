@@ -403,6 +403,7 @@ class MigrationExecutor:
         migration = loaded.migration
         action = "rolled_back" if reverse else "applied"
         direction = "rollback" if reverse else "apply"
+        self._require_legacy_writer_open()
         run = self.state_manager.record_run_started(
             migration.app_label,
             migration.name,
@@ -465,6 +466,7 @@ class MigrationExecutor:
 
     def _execute_operation_forward(self, operation: ops.Operation) -> None:
         if isinstance(operation, ops.RunPython):
+            self._require_legacy_writer_open()
             operation.run(self.db)
             return
 
@@ -473,6 +475,7 @@ class MigrationExecutor:
 
     def _execute_operation_reverse(self, operation: ops.Operation) -> None:
         if isinstance(operation, ops.RunPython):
+            self._require_legacy_writer_open()
             operation.rollback(self.db)
             return
 
@@ -488,7 +491,42 @@ class MigrationExecutor:
             raise MigrationError(
                 "Cannot execute TypeQL migration operation: database object has no execute_query()"
             )
+
+        # The released executor accepts duck-typed test/extension databases;
+        # retain that path unchanged. A real Database must inspect the durable
+        # cutover pair through the very transaction that will mutate, closing
+        # the preflight-to-write race left by Database.execute_query().
+        from type_bridge.session import Database
+
+        if isinstance(self.db, Database):
+            with self.db.transaction(transaction_type) as tx:
+                try:
+                    _rust_runtime.require_legacy_writer_open_in_transaction(tx)
+                except Exception as error:  # noqa: BLE001 - normalize the native boundary
+                    raise MigrationError(str(error)) from error
+                tx.execute(typeql)
+                if transaction_type in ("write", "schema"):
+                    tx.commit()
+            return
+
+        self._require_legacy_writer_open()
         execute_query(typeql, transaction_type=transaction_type)
+
+    def _require_legacy_writer_open(self) -> None:
+        """Guard Python-hosted legacy writes against permanent V2 cutover.
+
+        Test doubles historically pass duck-typed placeholders here; the
+        released runtime contract is the concrete ``Database`` class, whose
+        native handle performs the target-database check.
+        """
+        from type_bridge.session import Database
+
+        if not isinstance(self.db, Database):
+            return
+        try:
+            _rust_runtime.require_legacy_writer_open(self.db)
+        except Exception as error:  # noqa: BLE001 - normalize the native boundary
+            raise MigrationError(str(error)) from error
 
     def _record_result(
         self,

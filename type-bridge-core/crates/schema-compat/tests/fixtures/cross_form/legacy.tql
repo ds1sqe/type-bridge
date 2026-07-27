@@ -1,0 +1,3 @@
+define
+attribute name, value string;
+entity person, owns name;

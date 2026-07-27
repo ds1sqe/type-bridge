@@ -1,6 +1,15 @@
 [workspace]
 resolver = "3"
 members = [
+    "crates/contract",
+    "crates/schema",
+    "crates/query",
+    "crates/schema-migration",
+    "crates/schema-migration-typedb",
+    "crates/schema-codegen",
+    "crates/schema-compat",
+    "crates/workspace",
+    "crates/cli",
     "crates/core",
     "crates/migration",
     "crates/python",
@@ -12,12 +21,17 @@ members = [
     "crates/toml-transpiler",
     "vendor/typedb-protocol-b7",
     "vendor/typedb-driver-b7",
+    "vendor/typedb-protocol-b8",
+    "vendor/typedb-driver-b8",
+]
+exclude = [
     "vendor/typedb-protocol-b9",
     "vendor/typedb-driver-b9",
 ]
 
 [workspace.package]
 license = "MIT"
+license-file = "LICENSE"
 repository = "https://github.com/ds1sqe/type-bridge"
 authors = ["ds1sqe"]
 

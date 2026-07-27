@@ -123,12 +123,14 @@ def clean_db(docker_typedb, test_database):
     database = Database(
         address=TEST_DB_ADDRESS, database=test_database, http_port=TEST_DB_HTTP_PORT
     )
-    database.connect()
-    if database.database_exists():
-        database.delete_database()
-    database.create_database()
-    yield database
-    database.close()
+    try:
+        database.connect()
+        if database.database_exists():
+            database.delete_database()
+        database.create_database()
+        yield database
+    finally:
+        database.close()
 
 
 @pytest.fixture(scope="function")

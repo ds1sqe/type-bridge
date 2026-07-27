@@ -36,7 +36,8 @@ abi3 wheels do not require the variable.
 ### Project Dependencies
 
 The project requires:
-- `type-bridge-core>=1.5.11`: Rust runtime for ORM connectivity and query execution
+- `type-bridge-core==2.0.0rc0`: same-version Rust runtime for ORM connectivity and query execution;
+  the facade and native semantic engine release in exact lockstep
 - `pydantic>=2.12.4`: For validation and type coercion
 - `isodate==0.7.2`: For Duration type support (ISO 8601)
 - `jinja2>=3.1.0`: Template engine for code generation
@@ -46,7 +47,7 @@ The project requires:
 `typedb-driver` is not a default runtime dependency. It is available through
 the `dev` and `typedb-driver` extras for integration tests and direct driver
 calls. The development extra selects driver 3.11.5 on CPython 3.12–3.13 and
-driver 3.12.0 on CPython 3.14. The public extra permits supported 3.8–3.12
+driver 3.12.1 on CPython 3.14. The public extra permits supported 3.8–3.12
 driver lines on CPython 3.12–3.13 so callers can match their server; CPython
 3.14 direct driver calls require driver and server 3.12.
 The ORM's embedded runtime

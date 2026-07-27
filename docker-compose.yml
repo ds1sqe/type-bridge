@@ -1,6 +1,6 @@
 services:
   typedb:
-    image: ${TYPEDB_IMAGE:-typedb/typedb:3.11.5}
+    image: ${TYPEDB_IMAGE:-typedb/typedb:3.12.1}
     ports:
       - "${TYPEDB_PORT:-0}:1729"
       # TypeDB HTTP API; the ORM's connect-time version gate probes /v1/version here.
@@ -11,6 +11,32 @@ services:
       timeout: 3s
       retries: 10
       start_period: 10s
+    networks:
+      - typedb_network
+
+  # Opt-in TLS termination for `./test.sh --tls`.  HAProxy decrypts the
+  # published gRPC and HTTP endpoints and forwards their exact byte streams to
+  # the ordinary plaintext TypeDB service on the private compose network.
+  typedb-tls:
+    image: haproxy:3.2.21-alpine
+    depends_on:
+      - typedb
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        umask 077
+        cat /certs/server-cert.pem /certs/server-key.pem > /tmp/type-bridge-server.pem
+        exec haproxy -W -db -f /usr/local/etc/haproxy/haproxy.cfg
+    ports:
+      # The checked-in key is intentionally test-only; never expose this
+      # terminator beyond the local host running the isolated suite.
+      - "127.0.0.1:${TYPEDB_TLS_PORT:-0}:1729"
+      - "127.0.0.1:${TYPEDB_TLS_HTTP_PORT:-0}:8000"
+    volumes:
+      - ./tests/fixtures/tls/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+      - ./tests/fixtures/tls/server-cert.pem:/certs/server-cert.pem:ro
+      - ./tests/fixtures/tls/server-key.pem:/certs/server-key.pem:ro
     networks:
       - typedb_network
 

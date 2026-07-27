@@ -1,0 +1,52 @@
+format: typebridge.schema/v2
+
+attributes:
+  name:
+    value:
+      type: string
+      regex: '^[A-Z][a-z]+$'
+      values: [Ada, Grace]
+
+entities:
+  participant:
+    abstract: true
+    doc: Shared participant.
+    meta:
+      domain: people
+
+  person:
+    sub: participant
+    owns:
+      name:
+        card: {min: 0, max: 1}
+
+relations:
+  friendship:
+    relates:
+      friend:
+        card: {min: 0, max: 1}
+
+plays:
+  person:
+    friendship:
+      friend:
+        card: {min: 0, max: 1}
+
+structs:
+  score:
+    fields:
+      - name: points
+        type: integer
+      - name: note
+        type: string
+        optional: true
+
+functions:
+  people:
+    parameters:
+      - name: candidate
+        type: person
+    returns:
+      stream: [person]
+    body:
+      typeql: 'match $candidate isa person; return { $candidate };'

@@ -1,0 +1,7 @@
+define
+attribute name, value string @regex("^[A-Z][a-z]+$") @values("Ada", "Grace");
+entity participant @abstract @doc("Shared participant.") @meta("domain", "people");
+entity person sub participant, owns name @card(0..1), plays friendship:friend @card(0..1);
+relation friendship, relates friend @card(0..1);
+struct score: points value integer, note value string?;
+fun people($candidate: person) -> { person }: match $candidate isa person; return { $candidate };

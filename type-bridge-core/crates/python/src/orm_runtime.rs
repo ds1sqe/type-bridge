@@ -4,6 +4,8 @@
 //! validation, query construction, execution, and hydration live in
 //! `type_bridge_orm`.
 
+use std::future::Future;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::version::VersionError;
@@ -11,16 +13,57 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyString};
 use pythonize::{depythonize, pythonize};
 use serde_json::{Map, Value};
-use tokio::runtime::Runtime;
 use type_bridge_core_lib::version as core_version;
 use type_bridge_orm::session::backend::QueryResult;
 use type_bridge_orm::{
     AttributeValue, DescriptorRegistry, DynamicAggregate, DynamicAttributeMap, DynamicComparisonOp,
     DynamicEntityManager, DynamicEntityRow, DynamicExpr, DynamicRelationManager,
     DynamicRelationRow, DynamicRolePlayerInput, DynamicSort, EntityDescriptor, Filter,
-    GivenRowsSpec, GivenValue, OrmError, RelationDescriptor, SchemaInfo, SortDir,
-    TransactionContext, TxType, ValueType,
+    GivenRowsSpec, GivenValue, OrmError, ProviderRuntimeOwner, RelationDescriptor, SchemaInfo,
+    SortDir, TransactionContext, TxType, ValueType, require_legacy_writer_open_in_transaction,
 };
+
+fn drive_provider_future<F>(runtime: &ProviderRuntimeOwner, future: F) -> F::Output
+where
+    F: Future,
+{
+    runtime.block_on(future)
+}
+
+/// Drive one provider future without monopolising the Python interpreter.
+///
+/// Boundary decoding happens before this helper and Python result conversion
+/// happens after it returns, so no GIL-bound object enters the suspended-GIL
+/// region. A Python extension can be invoked by a host thread that is already
+/// driving an unrelated Tokio runtime; the provider wait moves to a scoped OS
+/// worker in that case so Tokio's nested-`block_on` panic cannot cross the FFI
+/// boundary. Keeping the sole provider `Runtime::block_on` call in this module
+/// also makes it difficult for a new binding method to accidentally
+/// reintroduce a terminal-close deadlock.
+pub(crate) fn provider_block_on<F>(
+    py: Python<'_>,
+    runtime: &ProviderRuntimeOwner,
+    future: F,
+) -> F::Output
+where
+    F: Future + Send,
+    F::Output: Send,
+{
+    py.allow_threads(move || {
+        if tokio::runtime::Handle::try_current().is_ok() {
+            return std::thread::scope(|scope| {
+                match scope
+                    .spawn(move || drive_provider_future(runtime, future))
+                    .join()
+                {
+                    Ok(output) => output,
+                    Err(panic) => std::panic::resume_unwind(panic),
+                }
+            });
+        }
+        drive_provider_future(runtime, future)
+    })
+}
 
 /// Python-facing descriptor registry wrapper.
 #[pyclass]
@@ -439,53 +482,99 @@ fn compare_expr(
 #[pyclass]
 pub struct PyRustDatabase {
     db: Arc<type_bridge_orm::Database>,
-    runtime: Arc<Runtime>,
+    runtime: Arc<ProviderRuntimeOwner>,
 }
 
 impl PyRustDatabase {
-    /// Return shared `Arc` clones of the database and runtime handles.
+    /// Return shared `Arc` clones of the database and runtime-owner handles.
     ///
     /// Exposes the capability to drive work on this database's connection and
-    /// runtime without widening the struct fields to `pub`. Callers (e.g. the
-    /// migration runner) must `block_on` the returned runtime so every Rust
+    /// runtime owner without widening the struct fields to `pub`. Callers (e.g.
+    /// the migration runner) must `block_on` the returned owner so every Rust
     /// path shares one connection and one runtime.
-    pub(crate) fn handles(&self) -> (Arc<type_bridge_orm::Database>, Arc<Runtime>) {
+    pub(crate) fn handles(&self) -> (Arc<type_bridge_orm::Database>, Arc<ProviderRuntimeOwner>) {
         (Arc::clone(&self.db), Arc::clone(&self.runtime))
     }
+}
+
+fn python_tls_mode(
+    tls: Option<bool>,
+    tls_root_ca: Option<PathBuf>,
+) -> PyResult<type_bridge_orm::TlsMode> {
+    match (tls, tls_root_ca) {
+        (None | Some(false), None) => Ok(type_bridge_orm::TlsMode::Disabled),
+        (Some(true), None) => Ok(type_bridge_orm::TlsMode::NativeRoots),
+        (Some(true), Some(path)) if path.as_os_str().is_empty() => {
+            Err(py_value_error("tls_root_ca must not be empty"))
+        }
+        (Some(true), Some(path)) => Ok(type_bridge_orm::TlsMode::CustomRootCa(path)),
+        (Some(false), Some(_)) => Err(py_value_error("tls_root_ca contradicts explicit tls=False")),
+        (None, Some(_)) => Err(py_value_error("tls_root_ca requires explicit tls=True")),
+    }
+}
+
+fn exact_optional_tls(value: Option<Bound<'_, PyAny>>) -> PyResult<Option<bool>> {
+    value
+        .map(|value| {
+            value
+                .downcast_exact::<PyBool>()
+                .map_err(|_| py_type_error("tls must be True, False, or None"))?
+                .extract::<bool>()
+        })
+        .transpose()
 }
 
 #[pymethods]
 impl PyRustDatabase {
     /// Connect to TypeDB using the shared Rust ORM session layer.
     #[staticmethod]
-    #[pyo3(signature = (address, database, username=None, password=None, http_port=core_version::DEFAULT_HTTP_PORT, server_version=None))]
+    #[pyo3(signature = (address, database, username=None, password=None, http_port=core_version::DEFAULT_HTTP_PORT, server_version=None, tls=None, tls_root_ca=None))]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the stable Python function keeps the released connection parameters and appends optional TLS controls"
+    )]
     fn connect(
+        py: Python<'_>,
         address: &str,
         database: &str,
         username: Option<&str>,
         password: Option<&str>,
         http_port: u16,
         server_version: Option<&str>,
+        tls: Option<Bound<'_, PyAny>>,
+        tls_root_ca: Option<PathBuf>,
     ) -> PyResult<Self> {
-        let runtime = Runtime::new().map(Arc::new).map_err(|error| {
-            py_runtime_error(format!("Failed to create Tokio runtime: {error}"))
-        })?;
-        let username = username.unwrap_or("admin").to_string();
-        let password = password.unwrap_or("password").to_string();
+        // Resolve every caller-controlled configuration value before creating
+        // a runtime or allowing the connection path to perform network I/O.
+        let tls_mode = python_tls_mode(exact_optional_tls(tls)?, tls_root_ca)?;
         let server_version: Option<core_version::Version> =
             server_version.map(str::parse).transpose().map_err(
                 |error: core_version::VersionError| VersionError::new_err(error.to_string()),
             )?;
-        let options = type_bridge_orm::ConnectOptions {
+        let options = type_bridge_orm::SecureConnectOptions {
             http_port,
+            tls_mode,
             server_version,
-            ..type_bridge_orm::ConnectOptions::default()
         };
-        let db = runtime
-            .block_on(type_bridge_orm::Database::connect_with_options(
-                address, database, &username, &password, options,
-            ))
-            .map_err(py_orm_error)?;
+        let prepared = py
+            .allow_threads(move || options.prepare_transport())
+            .map_err(py_secure_connect_error)?;
+        let runtime = ProviderRuntimeOwner::new().map(Arc::new).map_err(|error| {
+            py_runtime_error(format!("Failed to create Tokio runtime: {error}"))
+        })?;
+        let username = username.unwrap_or("admin").to_string();
+        let password = password.unwrap_or("password").to_string();
+        let connection_runtime = Arc::clone(&runtime);
+        let address = address.to_owned();
+        let database = database.to_owned();
+        let db = provider_block_on(
+            py,
+            connection_runtime.as_ref(),
+            type_bridge_orm::Database::connect_prepared_secure_with_options(
+                &address, &database, &username, &password, prepared,
+            ),
+        )
+        .map_err(py_secure_connect_error)?;
 
         Ok(Self {
             db: Arc::new(db),
@@ -498,12 +587,27 @@ impl PyRustDatabase {
         self.db.is_connected()
     }
 
+    /// Explicitly close the Rust provider connection.
+    ///
+    /// The ORM close path is synchronous and idempotently makes admission
+    /// terminal while dispatching upstream shutdown. Release the GIL for that
+    /// call; final worker release remains tied to the last native driver lease.
+    fn close(&self, py: Python<'_>) -> PyResult<()> {
+        let db = Arc::clone(&self.db);
+        py.allow_threads(move || db.close()).map_err(py_orm_error)
+    }
+
     /// The server version detected at connect time, when known.
     ///
-    /// `None` only when the connection was established through the band-7
-    /// gRPC fallback, where the server cannot report its version.
+    /// `None` when the negotiated connection path produced no authoritative
+    /// server identity.
     fn server_version(&self) -> Option<String> {
         self.db.server_version().map(|version| version.to_string())
+    }
+
+    /// Return the core-owned legacy-server notice for this connection.
+    fn server_deprecation_notice(&self) -> Option<String> {
+        self.db.server_deprecation_notice()
     }
 
     /// Version-gate schema DDL that uses `@doc`/`@meta` annotations.
@@ -543,47 +647,43 @@ impl PyRustDatabase {
     ) -> PyResult<PyObject> {
         let tx_type = parse_tx_type(transaction_type)?;
         let spec = given_rows_from_py(variables, &column_types, &rows)?;
-        let result = self
-            .runtime
-            .block_on(self.db.execute_with_rows(query, tx_type, spec))
-            .map_err(py_orm_error)?;
+        let query = query.to_owned();
+        let result = provider_block_on(
+            py,
+            self.runtime.as_ref(),
+            self.db.execute_with_rows(&query, tx_type, spec),
+        )
+        .map_err(py_orm_error)?;
         query_result_to_py(py, result)
     }
 
     /// Return whether the configured database exists.
-    fn database_exists(&self) -> PyResult<bool> {
-        self.runtime
-            .block_on(self.db.database_exists())
+    fn database_exists(&self, py: Python<'_>) -> PyResult<bool> {
+        provider_block_on(py, self.runtime.as_ref(), self.db.database_exists())
             .map_err(py_orm_error)
     }
 
     /// Create the configured database if it does not already exist.
-    fn create_database(&self) -> PyResult<()> {
-        self.runtime
-            .block_on(self.db.create_database())
+    fn create_database(&self, py: Python<'_>) -> PyResult<()> {
+        provider_block_on(py, self.runtime.as_ref(), self.db.create_database())
             .map_err(py_orm_error)
     }
 
     /// Delete the configured database if it exists.
-    fn delete_database(&self) -> PyResult<()> {
-        self.runtime
-            .block_on(self.db.delete_database())
+    fn delete_database(&self, py: Python<'_>) -> PyResult<()> {
+        provider_block_on(py, self.runtime.as_ref(), self.db.delete_database())
             .map_err(py_orm_error)
     }
 
     /// Export the live TypeDB schema as TypeQL text.
-    fn schema_text(&self) -> PyResult<String> {
-        self.runtime
-            .block_on(self.db.schema_text())
-            .map_err(py_orm_error)
+    fn schema_text(&self, py: Python<'_>) -> PyResult<String> {
+        provider_block_on(py, self.runtime.as_ref(), self.db.schema_text()).map_err(py_orm_error)
     }
 
     /// Introspect the live TypeDB schema through the Rust schema manager.
     fn introspect_schema(&self, py: Python<'_>) -> PyResult<PyObject> {
         let manager = type_bridge_orm::SchemaManager::new(self.db.as_ref());
-        let info = self
-            .runtime
-            .block_on(manager.introspect())
+        let info = provider_block_on(py, self.runtime.as_ref(), manager.introspect())
             .map_err(py_orm_error)?;
         pythonize(py, &info)
             .map(|obj| obj.unbind())
@@ -592,12 +692,18 @@ impl PyRustDatabase {
 
     /// Open a Rust-owned transaction context.
     #[pyo3(signature = (transaction_type="read"))]
-    fn transaction(&self, transaction_type: &str) -> PyResult<PyRustTransactionContext> {
+    fn transaction(
+        &self,
+        py: Python<'_>,
+        transaction_type: &str,
+    ) -> PyResult<PyRustTransactionContext> {
         let tx_type = parse_tx_type(transaction_type)?;
-        let context = self
-            .runtime
-            .block_on(self.db.transaction_context(tx_type))
-            .map_err(py_orm_error)?;
+        let context = provider_block_on(
+            py,
+            self.runtime.as_ref(),
+            self.db.transaction_context(tx_type),
+        )
+        .map_err(py_orm_error)?;
         Ok(PyRustTransactionContext {
             context,
             runtime: Arc::clone(&self.runtime),
@@ -609,22 +715,32 @@ impl PyRustDatabase {
 #[pyclass]
 pub struct PyRustTransactionContext {
     context: TransactionContext,
-    runtime: Arc<Runtime>,
+    runtime: Arc<ProviderRuntimeOwner>,
 }
 
 impl PyRustTransactionContext {
-    pub(crate) fn handles(&self) -> (TransactionContext, Arc<Runtime>) {
+    pub(crate) fn handles(&self) -> (TransactionContext, Arc<ProviderRuntimeOwner>) {
         (self.context.clone(), Arc::clone(&self.runtime))
     }
 }
 
 #[pymethods]
 impl PyRustTransactionContext {
+    /// Reject a TypeBridge-owned legacy writer before it mutates through this
+    /// already-open transaction.
+    fn require_legacy_writer_open(&self, py: Python<'_>) -> PyResult<()> {
+        provider_block_on(
+            py,
+            self.runtime.as_ref(),
+            require_legacy_writer_open_in_transaction(&self.context),
+        )
+        .map_err(py_orm_error)
+    }
+
     /// Execute a raw TypeQL query in this Rust transaction.
     fn execute(&self, py: Python<'_>, query: &str) -> PyResult<PyObject> {
-        let result = self
-            .runtime
-            .block_on(self.context.query(query))
+        let query = query.to_owned();
+        let result = provider_block_on(py, self.runtime.as_ref(), self.context.query(&query))
             .map_err(py_orm_error)?;
         query_result_to_py(py, result)
     }
@@ -642,32 +758,29 @@ impl PyRustTransactionContext {
         rows: Bound<'_, PyAny>,
     ) -> PyResult<PyObject> {
         let spec = given_rows_from_py(variables, &column_types, &rows)?;
-        let result = self
-            .runtime
-            .block_on(self.context.query_with_rows(query, spec))
-            .map_err(py_orm_error)?;
+        let query = query.to_owned();
+        let result = provider_block_on(
+            py,
+            self.runtime.as_ref(),
+            self.context.query_with_rows(&query, spec),
+        )
+        .map_err(py_orm_error)?;
         query_result_to_py(py, result)
     }
 
     /// Commit this Rust transaction.
-    fn commit(&self) -> PyResult<()> {
-        self.runtime
-            .block_on(self.context.commit())
-            .map_err(py_orm_error)
+    fn commit(&self, py: Python<'_>) -> PyResult<()> {
+        provider_block_on(py, self.runtime.as_ref(), self.context.commit()).map_err(py_orm_error)
     }
 
     /// Roll back this Rust transaction.
-    fn rollback(&self) -> PyResult<()> {
-        self.runtime
-            .block_on(self.context.rollback())
-            .map_err(py_orm_error)
+    fn rollback(&self, py: Python<'_>) -> PyResult<()> {
+        provider_block_on(py, self.runtime.as_ref(), self.context.rollback()).map_err(py_orm_error)
     }
 
     /// Close this Rust transaction without committing.
-    fn close(&self) -> PyResult<()> {
-        self.runtime
-            .block_on(self.context.close())
-            .map_err(py_orm_error)
+    fn close(&self, py: Python<'_>) -> PyResult<()> {
+        provider_block_on(py, self.runtime.as_ref(), self.context.close()).map_err(py_orm_error)
     }
 
     /// Return this transaction's type name.
@@ -681,7 +794,7 @@ impl PyRustTransactionContext {
 pub struct PyDynamicEntityManager {
     db: Option<Arc<type_bridge_orm::Database>>,
     tx: Option<TransactionContext>,
-    runtime: Arc<Runtime>,
+    runtime: Arc<ProviderRuntimeOwner>,
     descriptor: Arc<EntityDescriptor>,
 }
 
@@ -717,49 +830,53 @@ impl PyDynamicEntityManager {
     }
 
     /// Insert one entity and return its IID.
-    fn insert(&self, attributes: Bound<'_, PyAny>) -> PyResult<String> {
+    fn insert(&self, py: Python<'_>, attributes: Bound<'_, PyAny>) -> PyResult<String> {
         let attributes = entity_attributes_from_py(&self.descriptor, attributes)?;
         let manager = self.manager()?;
-        self.runtime
-            .block_on(manager.insert(&attributes))
+        provider_block_on(py, self.runtime.as_ref(), manager.insert(&attributes))
             .map_err(py_orm_error)
     }
 
     /// Insert multiple entities in one Rust transaction and return their IIDs.
-    fn insert_many(&self, attributes: Bound<'_, PyAny>) -> PyResult<Vec<String>> {
+    fn insert_many(&self, py: Python<'_>, attributes: Bound<'_, PyAny>) -> PyResult<Vec<String>> {
         let attributes = entity_attribute_list_from_py(&self.descriptor, attributes)?;
         let manager = self.manager()?;
-        self.runtime
-            .block_on(manager.insert_many(&attributes))
+        provider_block_on(py, self.runtime.as_ref(), manager.insert_many(&attributes))
             .map_err(py_orm_error)
     }
 
     /// Put one entity and return its IID.
-    fn put(&self, attributes: Bound<'_, PyAny>) -> PyResult<String> {
+    fn put(&self, py: Python<'_>, attributes: Bound<'_, PyAny>) -> PyResult<String> {
         let attributes = entity_attributes_from_py(&self.descriptor, attributes)?;
         let manager = self.manager()?;
-        self.runtime
-            .block_on(manager.put(&attributes))
-            .map_err(py_orm_error)
+        provider_block_on(py, self.runtime.as_ref(), manager.put(&attributes)).map_err(py_orm_error)
     }
 
     /// Put multiple entities in one Rust transaction and return their IIDs.
-    fn put_many(&self, attributes: Bound<'_, PyAny>) -> PyResult<Vec<String>> {
+    fn put_many(&self, py: Python<'_>, attributes: Bound<'_, PyAny>) -> PyResult<Vec<String>> {
         let attributes = entity_attribute_list_from_py(&self.descriptor, attributes)?;
         let manager = self.manager()?;
-        self.runtime
-            .block_on(manager.put_many(&attributes))
+        provider_block_on(py, self.runtime.as_ref(), manager.put_many(&attributes))
             .map_err(py_orm_error)
     }
 
     /// Update one entity's non-key attributes.
     #[pyo3(signature = (attributes, iid=None))]
-    fn update(&self, attributes: Bound<'_, PyAny>, iid: Option<&str>) -> PyResult<()> {
+    fn update(
+        &self,
+        py: Python<'_>,
+        attributes: Bound<'_, PyAny>,
+        iid: Option<&str>,
+    ) -> PyResult<()> {
         let attributes = entity_attributes_from_py(&self.descriptor, attributes)?;
+        let iid = iid.map(str::to_owned);
         let manager = self.manager()?;
-        self.runtime
-            .block_on(manager.update(iid, &attributes))
-            .map_err(py_orm_error)
+        provider_block_on(
+            py,
+            self.runtime.as_ref(),
+            manager.update(iid.as_deref(), &attributes),
+        )
+        .map_err(py_orm_error)
     }
 
     /// Fetch entities matching equality filters.
@@ -767,9 +884,7 @@ impl PyDynamicEntityManager {
     fn get(&self, py: Python<'_>, filters: Option<Bound<'_, PyAny>>) -> PyResult<PyObject> {
         let filters = entity_filters_from_py(&self.descriptor, filters)?;
         let manager = self.manager()?;
-        let rows = self
-            .runtime
-            .block_on(manager.get(&filters))
+        let rows = provider_block_on(py, self.runtime.as_ref(), manager.get(&filters))
             .map_err(py_orm_error)?;
         entity_rows_to_py(py, &rows)
     }
@@ -787,19 +902,20 @@ impl PyDynamicEntityManager {
         let expressions = dynamic_exprs_from_py_list(expressions)?;
         let sorts = dynamic_sorts_from_py_list(sorts)?;
         let manager = self.manager()?;
-        let rows = self
-            .runtime
-            .block_on(manager.get_with_query(&expressions, &sorts, limit, offset))
-            .map_err(py_orm_error)?;
+        let rows = provider_block_on(
+            py,
+            self.runtime.as_ref(),
+            manager.get_with_query(&expressions, &sorts, limit, offset),
+        )
+        .map_err(py_orm_error)?;
         entity_rows_to_py(py, &rows)
     }
 
     /// Fetch one entity by TypeDB IID.
     fn get_by_iid(&self, py: Python<'_>, iid: &str) -> PyResult<PyObject> {
+        let iid = iid.to_owned();
         let manager = self.manager()?;
-        let row = self
-            .runtime
-            .block_on(manager.get_by_iid(iid))
+        let row = provider_block_on(py, self.runtime.as_ref(), manager.get_by_iid(&iid))
             .map_err(py_orm_error)?;
         optional_entity_row_to_py(py, row.as_ref())
     }
@@ -811,22 +927,32 @@ impl PyDynamicEntityManager {
 
     /// Count entities matching equality filters.
     #[pyo3(signature = (filters=None))]
-    fn count(&self, filters: Option<Bound<'_, PyAny>>) -> PyResult<u64> {
+    fn count(&self, py: Python<'_>, filters: Option<Bound<'_, PyAny>>) -> PyResult<u64> {
         let filters = entity_filters_from_py(&self.descriptor, filters)?;
         let manager = self.manager()?;
-        self.runtime
-            .block_on(manager.count_with_filters(&filters))
-            .map_err(py_orm_error)
+        provider_block_on(
+            py,
+            self.runtime.as_ref(),
+            manager.count_with_filters(&filters),
+        )
+        .map_err(py_orm_error)
     }
 
     /// Count entities matching dynamic expression specs.
     #[pyo3(signature = (expressions=None))]
-    fn count_with_query(&self, expressions: Option<Bound<'_, PyList>>) -> PyResult<u64> {
+    fn count_with_query(
+        &self,
+        py: Python<'_>,
+        expressions: Option<Bound<'_, PyList>>,
+    ) -> PyResult<u64> {
         let expressions = dynamic_exprs_from_py_list(expressions)?;
         let manager = self.manager()?;
-        self.runtime
-            .block_on(manager.count_with_query(&expressions))
-            .map_err(py_orm_error)
+        provider_block_on(
+            py,
+            self.runtime.as_ref(),
+            manager.count_with_query(&expressions),
+        )
+        .map_err(py_orm_error)
     }
 
     /// Run aggregate reductions over entities matching equality filters.
@@ -840,10 +966,12 @@ impl PyDynamicEntityManager {
         let filters = entity_filters_from_py(&self.descriptor, filters)?;
         let aggregates = aggregates_from_py(&self.descriptor.owned_attributes, aggregates)?;
         let manager = self.manager()?;
-        let rows = self
-            .runtime
-            .block_on(manager.aggregate(&filters, &aggregates))
-            .map_err(py_orm_error)?;
+        let rows = provider_block_on(
+            py,
+            self.runtime.as_ref(),
+            manager.aggregate(&filters, &aggregates),
+        )
+        .map_err(py_orm_error)?;
         pythonize(py, &rows)
             .map(|obj| obj.unbind())
             .map_err(|error| py_value_error(error.to_string()))
@@ -862,20 +990,22 @@ impl PyDynamicEntityManager {
         let group_fields = group_fields_from_py(&self.descriptor.owned_attributes, group_fields)?;
         let aggregates = aggregates_from_py(&self.descriptor.owned_attributes, aggregates)?;
         let manager = self.manager()?;
-        let rows = self
-            .runtime
-            .block_on(manager.group_by_aggregate(&filters, &group_fields, &aggregates))
-            .map_err(py_orm_error)?;
+        let rows = provider_block_on(
+            py,
+            self.runtime.as_ref(),
+            manager.group_by_aggregate(&filters, &group_fields, &aggregates),
+        )
+        .map_err(py_orm_error)?;
         pythonize(py, &rows)
             .map(|obj| obj.unbind())
             .map_err(|error| py_value_error(error.to_string()))
     }
 
     /// Delete one entity by IID.
-    fn delete_by_iid(&self, iid: &str) -> PyResult<()> {
+    fn delete_by_iid(&self, py: Python<'_>, iid: &str) -> PyResult<()> {
+        let iid = iid.to_owned();
         let manager = self.manager()?;
-        self.runtime
-            .block_on(manager.delete_by_iid(iid))
+        provider_block_on(py, self.runtime.as_ref(), manager.delete_by_iid(&iid))
             .map_err(py_orm_error)
     }
 }
@@ -901,7 +1031,7 @@ impl PyDynamicEntityManager {
 pub struct PyDynamicRelationManager {
     db: Option<Arc<type_bridge_orm::Database>>,
     tx: Option<TransactionContext>,
-    runtime: Arc<Runtime>,
+    runtime: Arc<ProviderRuntimeOwner>,
     descriptor: Arc<RelationDescriptor>,
 }
 
@@ -939,63 +1069,73 @@ impl PyDynamicRelationManager {
     /// Insert one relation and return its IID.
     fn insert(
         &self,
+        py: Python<'_>,
         attributes: Bound<'_, PyAny>,
         role_players: Bound<'_, PyAny>,
     ) -> PyResult<String> {
         let attributes = relation_attributes_from_py(&self.descriptor, attributes)?;
         let role_players = role_players_from_py(&self.descriptor, role_players)?;
         let manager = self.manager()?;
-        self.runtime
-            .block_on(manager.insert(&attributes, &role_players))
-            .map_err(py_orm_error)
+        provider_block_on(
+            py,
+            self.runtime.as_ref(),
+            manager.insert(&attributes, &role_players),
+        )
+        .map_err(py_orm_error)
     }
 
     /// Insert multiple relations in one Rust transaction and return their IIDs.
-    fn insert_many(&self, items: Bound<'_, PyAny>) -> PyResult<Vec<String>> {
+    fn insert_many(&self, py: Python<'_>, items: Bound<'_, PyAny>) -> PyResult<Vec<String>> {
         let items = relation_write_batch_from_py(&self.descriptor, items)?;
         let manager = self.manager()?;
-        self.runtime
-            .block_on(manager.insert_many(&items))
+        provider_block_on(py, self.runtime.as_ref(), manager.insert_many(&items))
             .map_err(py_orm_error)
     }
 
     /// Put one relation and return its IID.
     fn put(
         &self,
+        py: Python<'_>,
         attributes: Bound<'_, PyAny>,
         role_players: Bound<'_, PyAny>,
     ) -> PyResult<String> {
         let attributes = relation_attributes_from_py(&self.descriptor, attributes)?;
         let role_players = role_players_from_py(&self.descriptor, role_players)?;
         let manager = self.manager()?;
-        self.runtime
-            .block_on(manager.put(&attributes, &role_players))
-            .map_err(py_orm_error)
+        provider_block_on(
+            py,
+            self.runtime.as_ref(),
+            manager.put(&attributes, &role_players),
+        )
+        .map_err(py_orm_error)
     }
 
     /// Put multiple relations in one Rust transaction and return their IIDs.
-    fn put_many(&self, items: Bound<'_, PyAny>) -> PyResult<Vec<String>> {
+    fn put_many(&self, py: Python<'_>, items: Bound<'_, PyAny>) -> PyResult<Vec<String>> {
         let items = relation_write_batch_from_py(&self.descriptor, items)?;
         let manager = self.manager()?;
-        self.runtime
-            .block_on(manager.put_many(&items))
-            .map_err(py_orm_error)
+        provider_block_on(py, self.runtime.as_ref(), manager.put_many(&items)).map_err(py_orm_error)
     }
 
     /// Update one relation's scalar non-key attributes.
     #[pyo3(signature = (attributes, role_players, iid=None))]
     fn update(
         &self,
+        py: Python<'_>,
         attributes: Bound<'_, PyAny>,
         role_players: Bound<'_, PyAny>,
         iid: Option<&str>,
     ) -> PyResult<()> {
         let attributes = relation_attributes_from_py(&self.descriptor, attributes)?;
         let role_players = role_players_from_py(&self.descriptor, role_players)?;
+        let iid = iid.map(str::to_owned);
         let manager = self.manager()?;
-        self.runtime
-            .block_on(manager.update(iid, &attributes, &role_players))
-            .map_err(py_orm_error)
+        provider_block_on(
+            py,
+            self.runtime.as_ref(),
+            manager.update(iid.as_deref(), &attributes, &role_players),
+        )
+        .map_err(py_orm_error)
     }
 
     /// Fetch relations matching equality filters.
@@ -1003,9 +1143,7 @@ impl PyDynamicRelationManager {
     fn get(&self, py: Python<'_>, filters: Option<Bound<'_, PyAny>>) -> PyResult<PyObject> {
         let filters = relation_filters_from_py(&self.descriptor, filters)?;
         let manager = self.manager()?;
-        let rows = self
-            .runtime
-            .block_on(manager.get(&filters))
+        let rows = provider_block_on(py, self.runtime.as_ref(), manager.get(&filters))
             .map_err(py_orm_error)?;
         relation_rows_to_py(py, &rows)
     }
@@ -1023,10 +1161,12 @@ impl PyDynamicRelationManager {
         let expressions = dynamic_exprs_from_py_list(expressions)?;
         let sorts = dynamic_sorts_from_py_list(sorts)?;
         let manager = self.manager()?;
-        let rows = self
-            .runtime
-            .block_on(manager.get_with_query(&expressions, &sorts, limit, offset))
-            .map_err(py_orm_error)?;
+        let rows = provider_block_on(
+            py,
+            self.runtime.as_ref(),
+            manager.get_with_query(&expressions, &sorts, limit, offset),
+        )
+        .map_err(py_orm_error)?;
         relation_rows_to_py(py, &rows)
     }
 
@@ -1046,19 +1186,20 @@ impl PyDynamicRelationManager {
             _ => vec![],
         };
         let manager = self.manager()?;
-        let rows = self
-            .runtime
-            .block_on(manager.get_with_role_filters(&filters, &role_players))
-            .map_err(py_orm_error)?;
+        let rows = provider_block_on(
+            py,
+            self.runtime.as_ref(),
+            manager.get_with_role_filters(&filters, &role_players),
+        )
+        .map_err(py_orm_error)?;
         relation_rows_to_py(py, &rows)
     }
 
     /// Fetch one relation by TypeDB IID.
     fn get_by_iid(&self, py: Python<'_>, iid: &str) -> PyResult<PyObject> {
+        let iid = iid.to_owned();
         let manager = self.manager()?;
-        let rows = self
-            .runtime
-            .block_on(manager.get_by_iid(iid))
+        let rows = provider_block_on(py, self.runtime.as_ref(), manager.get_by_iid(&iid))
             .map_err(py_orm_error)?;
         relation_rows_to_py(py, &rows)
     }
@@ -1070,22 +1211,32 @@ impl PyDynamicRelationManager {
 
     /// Count relations matching equality filters.
     #[pyo3(signature = (filters=None))]
-    fn count(&self, filters: Option<Bound<'_, PyAny>>) -> PyResult<u64> {
+    fn count(&self, py: Python<'_>, filters: Option<Bound<'_, PyAny>>) -> PyResult<u64> {
         let filters = relation_filters_from_py(&self.descriptor, filters)?;
         let manager = self.manager()?;
-        self.runtime
-            .block_on(manager.count_with_filters(&filters))
-            .map_err(py_orm_error)
+        provider_block_on(
+            py,
+            self.runtime.as_ref(),
+            manager.count_with_filters(&filters),
+        )
+        .map_err(py_orm_error)
     }
 
     /// Count relations matching dynamic expression specs.
     #[pyo3(signature = (expressions=None))]
-    fn count_with_query(&self, expressions: Option<Bound<'_, PyList>>) -> PyResult<u64> {
+    fn count_with_query(
+        &self,
+        py: Python<'_>,
+        expressions: Option<Bound<'_, PyList>>,
+    ) -> PyResult<u64> {
         let expressions = dynamic_exprs_from_py_list(expressions)?;
         let manager = self.manager()?;
-        self.runtime
-            .block_on(manager.count_with_query(&expressions))
-            .map_err(py_orm_error)
+        provider_block_on(
+            py,
+            self.runtime.as_ref(),
+            manager.count_with_query(&expressions),
+        )
+        .map_err(py_orm_error)
     }
 
     /// Run aggregate reductions over relations matching equality filters.
@@ -1099,10 +1250,12 @@ impl PyDynamicRelationManager {
         let filters = relation_filters_from_py(&self.descriptor, filters)?;
         let aggregates = aggregates_from_py(&self.descriptor.owned_attributes, aggregates)?;
         let manager = self.manager()?;
-        let rows = self
-            .runtime
-            .block_on(manager.aggregate(&filters, &aggregates))
-            .map_err(py_orm_error)?;
+        let rows = provider_block_on(
+            py,
+            self.runtime.as_ref(),
+            manager.aggregate(&filters, &aggregates),
+        )
+        .map_err(py_orm_error)?;
         pythonize(py, &rows)
             .map(|obj| obj.unbind())
             .map_err(|error| py_value_error(error.to_string()))
@@ -1121,20 +1274,22 @@ impl PyDynamicRelationManager {
         let group_fields = group_fields_from_py(&self.descriptor.owned_attributes, group_fields)?;
         let aggregates = aggregates_from_py(&self.descriptor.owned_attributes, aggregates)?;
         let manager = self.manager()?;
-        let rows = self
-            .runtime
-            .block_on(manager.group_by_aggregate(&filters, &group_fields, &aggregates))
-            .map_err(py_orm_error)?;
+        let rows = provider_block_on(
+            py,
+            self.runtime.as_ref(),
+            manager.group_by_aggregate(&filters, &group_fields, &aggregates),
+        )
+        .map_err(py_orm_error)?;
         pythonize(py, &rows)
             .map(|obj| obj.unbind())
             .map_err(|error| py_value_error(error.to_string()))
     }
 
     /// Delete one relation by IID.
-    fn delete_by_iid(&self, iid: &str) -> PyResult<()> {
+    fn delete_by_iid(&self, py: Python<'_>, iid: &str) -> PyResult<()> {
+        let iid = iid.to_owned();
         let manager = self.manager()?;
-        self.runtime
-            .block_on(manager.delete_by_iid(iid))
+        provider_block_on(py, self.runtime.as_ref(), manager.delete_by_iid(&iid))
             .map_err(py_orm_error)
     }
 }
@@ -1759,7 +1914,7 @@ fn required_string(obj: &Map<String, Value>, key: &str) -> PyResult<String> {
         .ok_or_else(|| py_value_error(format!("Missing string field '{key}'")))
 }
 
-fn py_orm_error(error: OrmError) -> PyErr {
+pub(crate) fn py_orm_error(error: OrmError) -> PyErr {
     match error {
         OrmError::UnsupportedVersion(error) => VersionError::new_err(error.to_string()),
         OrmError::DescriptorValidation { .. } | OrmError::DescriptorConflict { .. } => {
@@ -1771,6 +1926,16 @@ fn py_orm_error(error: OrmError) -> PyErr {
         OrmError::Connection(_) | OrmError::QueryExecution(_) | OrmError::Transaction(_) => {
             py_runtime_error(error.to_string())
         }
+        _ => py_runtime_error(error.to_string()),
+    }
+}
+
+fn py_secure_connect_error(error: type_bridge_orm::SecureConnectError) -> PyErr {
+    if error.configuration_code().is_some() {
+        return py_value_error(error.to_string());
+    }
+    match error {
+        type_bridge_orm::SecureConnectError::Runtime(error) => py_orm_error(error.into()),
         _ => py_runtime_error(error.to_string()),
     }
 }
@@ -1803,6 +1968,183 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let _ = PyDict::new(m.py());
     let _ = PyList::empty(m.py());
     Ok(())
+}
+
+#[cfg(test)]
+mod provider_wait_tests {
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
+
+    use tokio::runtime::Runtime;
+
+    use super::*;
+
+    #[test]
+    fn provider_block_on_releases_the_gil() {
+        pyo3::prepare_freethreaded_python();
+        let worker = Python::with_gil(|py| {
+            let runtime = ProviderRuntimeOwner::new().expect("provider runtime should start");
+            let (sender, receiver) = mpsc::channel();
+            let worker = thread::spawn(move || {
+                Python::with_gil(|_| {
+                    sender
+                        .send(())
+                        .expect("provider wait receiver should remain alive");
+                });
+            });
+
+            provider_block_on(py, &runtime, async move {
+                receiver.recv_timeout(Duration::from_secs(5))
+            })
+            .expect("another Python thread must acquire the GIL during a provider wait");
+            worker
+        });
+        worker.join().expect("GIL probe worker should not panic");
+    }
+
+    fn assert_provider_wait_survives_nested_runtime(outer: Runtime) {
+        pyo3::prepare_freethreaded_python();
+        let output = outer.block_on(async {
+            let provider = ProviderRuntimeOwner::new().expect("provider runtime should start");
+            Python::with_gil(|py| provider_block_on(py, &provider, async { 42_u8 }))
+        });
+        assert_eq!(output, 42);
+    }
+
+    #[test]
+    fn provider_block_on_survives_a_nested_current_thread_runtime() {
+        let outer = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("current-thread host runtime should start");
+        assert_provider_wait_survives_nested_runtime(outer);
+    }
+
+    #[test]
+    fn provider_block_on_survives_a_nested_multi_thread_runtime() {
+        let outer = Runtime::new().expect("multi-thread host runtime should start");
+        assert_provider_wait_survives_nested_runtime(outer);
+    }
+
+    #[test]
+    fn provider_runtime_blocking_is_centralized_in_the_gil_releasing_helper() {
+        let source = include_str!("orm_runtime.rs");
+        let (production, _) = source
+            .split_once("\n#[cfg(test)]\nmod provider_wait_tests")
+            .expect("the audit must find its own test-module marker");
+        let direct_block_on = [".block", "_on("].concat();
+
+        assert_eq!(
+            production.matches(&direct_block_on).count(),
+            1,
+            "provider waits must route through provider_block_on"
+        );
+        assert!(production.contains("fn provider_block_on"));
+    }
+
+    #[test]
+    fn every_production_provider_wait_uses_the_gil_releasing_helper() {
+        let direct_block_on = [".block", "_on("].concat();
+        let associated_block_on = ["Runtime::block", "_on("].concat();
+        let sources = [
+            (
+                "runtime_projection.rs",
+                include_str!("runtime_projection.rs"),
+            ),
+            ("match_runtime.rs", include_str!("match_runtime.rs")),
+            (
+                "validated_result_runtime.rs",
+                include_str!("validated_result_runtime.rs"),
+            ),
+            ("migration_runtime.rs", include_str!("migration_runtime.rs")),
+            ("query_v2_runtime.rs", include_str!("query_v2_runtime.rs")),
+        ];
+
+        for (name, source) in sources {
+            let production = match source.split_once("\n#[cfg(test)]\nmod tests") {
+                Some((production, _)) => production,
+                // A source without any test code is audited in full; a test
+                // module the marker fails to match must fail the audit loudly
+                // rather than silently widening it over test code.
+                None => {
+                    assert!(
+                        !source.contains("#[cfg(test)]"),
+                        "{name} has test code the audit marker does not match"
+                    );
+                    source
+                }
+            };
+            assert_eq!(
+                production.matches(&direct_block_on).count(),
+                0,
+                "{name} must route production provider waits through provider_block_on"
+            );
+            assert_eq!(
+                production.matches(&associated_block_on).count(),
+                0,
+                "{name} must not call Runtime::block_on directly in production code"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tls_mode_tests {
+    use pyo3::ffi;
+
+    use super::*;
+
+    #[test]
+    fn explicit_python_tls_inputs_follow_the_canonical_truth_table() {
+        assert!(matches!(
+            python_tls_mode(None, None).unwrap(),
+            type_bridge_orm::TlsMode::Disabled
+        ));
+        assert!(matches!(
+            python_tls_mode(Some(false), None).unwrap(),
+            type_bridge_orm::TlsMode::Disabled
+        ));
+        assert!(matches!(
+            python_tls_mode(Some(true), None).unwrap(),
+            type_bridge_orm::TlsMode::NativeRoots
+        ));
+        assert!(matches!(
+            python_tls_mode(Some(true), Some(PathBuf::from("ca.pem"))).unwrap(),
+            type_bridge_orm::TlsMode::CustomRootCa(path)
+                if path == std::path::Path::new("ca.pem")
+        ));
+        assert!(python_tls_mode(Some(false), Some(PathBuf::from("ca.pem"))).is_err());
+        assert!(python_tls_mode(None, Some(PathBuf::from("ca.pem"))).is_err());
+        let omitted = python_tls_mode(None, Some(PathBuf::new())).unwrap_err();
+        assert!(omitted.to_string().contains("requires explicit tls=True"));
+        let disabled = python_tls_mode(Some(false), Some(PathBuf::new())).unwrap_err();
+        assert!(
+            disabled
+                .to_string()
+                .contains("contradicts explicit tls=False")
+        );
+        let enabled = python_tls_mode(Some(true), Some(PathBuf::new())).unwrap_err();
+        assert!(enabled.to_string().contains("must not be empty"));
+    }
+
+    #[test]
+    fn python_tls_switch_rejects_truthy_non_boole() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            assert_eq!(
+                exact_optional_tls(Some(py.eval(ffi::c_str!("True"), None, None).unwrap()))
+                    .unwrap(),
+                Some(true)
+            );
+            assert!(
+                exact_optional_tls(Some(py.eval(ffi::c_str!("1"), None, None).unwrap())).is_err()
+            );
+            assert!(
+                exact_optional_tls(Some(py.eval(ffi::c_str!("'true'"), None, None).unwrap()))
+                    .is_err()
+            );
+        });
+    }
 }
 
 #[cfg(test)]

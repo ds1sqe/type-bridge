@@ -1,8 +1,8 @@
-"""Unit tests verifying __main__.py is a pure subprocess shim (P3b D5).
+"""Unit tests verifying __main__.py stays a thin native CLI dispatcher.
 
-No TypeDB connection required.  Tests assert the shim's structural properties:
+No TypeDB connection required. Tests assert the dispatcher's structure:
 - No Typer, no Command class, no MigrationExecutor imports.
-- The module's source contains only bin discovery + subprocess.run + sys.exit.
+- Both released and V2 parsers come from the required native extension.
 """
 
 from __future__ import annotations
@@ -31,8 +31,8 @@ def test_main_shim_has_no_typer_import() -> None:
     )
 
 
-def test_main_shim_imports_subprocess() -> None:
-    """__main__.py must import subprocess (the shim mechanism)."""
+def test_main_shim_uses_native_runners_without_an_external_binary() -> None:
+    """The wheel entry point must not depend on a separately installed bin."""
     module_name = "type_bridge.migration.__main__"
     if module_name in sys.modules:
         del sys.modules[module_name]
@@ -40,5 +40,9 @@ def test_main_shim_imports_subprocess() -> None:
     mod = importlib.import_module(module_name)
     source = inspect.getsource(mod)
 
-    assert "subprocess" in source, "__main__.py must use subprocess to forward to the bin"
-    assert "sys.exit" in source, "__main__.py must propagate the bin's exit code via sys.exit"
+    assert "subprocess" not in source
+    assert "shutil" not in source
+    assert "_find_bin" not in source
+    assert "run_legacy_migration_cli" in source
+    assert "run_v2_cli" in source
+    assert "sys.exit" in source, "__main__.py must propagate the native exit code"

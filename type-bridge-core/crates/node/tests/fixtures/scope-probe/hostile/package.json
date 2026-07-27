@@ -1,0 +1,7 @@
+{
+  "name": "scope-probe-hostile",
+  "dependencies": {
+    "@typedb/driver": "3.12.1",
+    "provider": "npm:@typedb/driver@3.12.1"
+  }
+}

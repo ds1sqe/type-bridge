@@ -1,0 +1,304 @@
+"""Cross-binding smoke: one publicly authored V2 plan, local and remote.
+
+The declared-schema bytes remain a canonical authority fixture. The plan and
+invocation are authored at runtime through ``type_bridge.query_v2``. Local
+execution runs through the native module against a fresh isolated database;
+remote execution travels the versioned envelope over HTTP (or verified HTTPS
+in the TLS lane) to the ``v2_smoke_server`` example serving the same database,
+and both paths must return byte-identical typed outcome JSON.
+"""
+
+from __future__ import annotations
+
+import base64
+import hashlib
+import json
+import os
+import socket
+import ssl
+import subprocess
+import time
+import uuid
+from pathlib import Path
+
+import pytest
+import type_bridge_core as core
+
+from type_bridge.query_v2 import QueryPlanBuilder, QueryV2Authority
+
+pytestmark = pytest.mark.integration
+
+DECLARED_B64 = (
+    "eyJkZWNsYXJlZF9pZGVudGl0eSI6eyJhbGdvcml0aG0iOiJzaGEyNTYiLCJjYW5vbmljYWxpemF0aW9u"
+    "IjoidHlwZWJyaWRnZS5zY2hlbWEtY2Fub25pY2FsLWpzb24vdjEiLCJkaWdlc3QiOiJiZGFiNzEzOGE1"
+    "NzIzOGVlMjNkZmNlYjY5ZTdmMDk4OTNjZmE3YjUzNmQ5ZTcwMzU2ZDFhOTg2YTEzMjQ5OWZlIiwiZG9t"
+    "YWluIjoidHlwZWJyaWRnZS5zY2hlbWEuZGVjbGFyZWQtaWRlbnRpdHkifSwiZmFjdHMiOlt7ImtpbmQi"
+    "OiJ0eXBlIiwidmFsdWUiOnsiaWQiOnsia2luZCI6ImVudGl0eSIsImxhYmVsIjoic21va2UtcGVyc29u"
+    "In19fSx7ImtpbmQiOiJ0eXBlIiwidmFsdWUiOnsiaWQiOnsia2luZCI6ImF0dHJpYnV0ZSIsImxhYmVs"
+    "Ijoic21va2UtbmFtZSJ9fX0seyJraW5kIjoidmFsdWUiLCJ2YWx1ZSI6eyJpZCI6InNtb2tlLW5hbWUi"
+    "LCJ2YWx1ZV90eXBlIjoic3RyaW5nIn19LHsia2luZCI6Im93bnMiLCJ2YWx1ZSI6eyJpZCI6eyJhdHRy"
+    "aWJ1dGUiOiJzbW9rZS1uYW1lIiwib3duZXIiOnsia2luZCI6ImVudGl0eSIsImxhYmVsIjoic21va2Ut"
+    "cGVyc29uIn19fX1dLCJmb3JtYXRfdmVyc2lvbiI6MSwicmVxdWlyZWRfY2FwYWJpbGl0aWVzIjpbXX0="
+)
+SCOPE = "binding-smoke"
+PROFILE = "typedb-3.12.1/v1"
+CROSS_BINDING_PLAN_FINGERPRINT = "d605b3bc6e8a9c59a03d2a79d7ec497dd637109b2cbf70ebaa5ac4b951f53502"
+CROSS_BINDING_INVOCATION_SHA256 = "ca5bc9a7657a21c5cf330e99a678a4c0fc25d803828f456c8b520625f54143b7"
+
+CORE_DIR = Path(__file__).resolve().parents[3] / "type-bridge-core"
+
+
+def _free_port() -> int:
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
+def _wait_for_port(port: int, process: subprocess.Popen, timeout: float) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            raise AssertionError(f"smoke server exited early with code {process.returncode}")
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=1):
+                return
+        except OSError:
+            time.sleep(0.2)
+    raise AssertionError("smoke server never became reachable")
+
+
+def _author_plan(authority: QueryV2Authority) -> tuple[bytes, str, str, str]:
+    builder = QueryPlanBuilder(authority)
+    person = builder.binding("person")
+    name = builder.binding("name")
+    wanted_name = builder.input("wanted_name", "string", False)
+    builder.match(
+        (
+            builder.isa(person, "entity", "smoke-person", True),
+            builder.has(person, name, "smoke-name"),
+            builder.value(
+                "equal",
+                builder.binding_operand(name),
+                builder.input_operand(wanted_name),
+            ),
+        )
+    )
+    builder.select((person, name))
+    builder.require((name,))
+    builder.distinct()
+    builder.sort((builder.order(name, "ascending"),))
+    authored = builder.finalize_rows((person, name))
+    invocation = authored.rows((("ada",), ("bob",)))
+    return (
+        authored.canonical_bytes,
+        invocation.canonical_bytes.decode("utf-8"),
+        authored.fingerprint,
+        hashlib.sha256(invocation.canonical_bytes).hexdigest(),
+    )
+
+
+def test_prepared_plan_executes_locally_and_remotely() -> None:
+    import urllib.request
+
+    tls_values = {
+        "TYPEDB_TLS_ADDRESS": os.getenv("TYPEDB_TLS_ADDRESS"),
+        "TYPEDB_TLS_HTTP_PORT": os.getenv("TYPEDB_TLS_HTTP_PORT"),
+        "TYPEDB_TLS_ROOT_CA": os.getenv("TYPEDB_TLS_ROOT_CA"),
+    }
+    tls_enabled = any(value is not None for value in tls_values.values())
+    if tls_enabled and not all(tls_values.values()):
+        pytest.fail(
+            "TLS binding smoke requires TYPEDB_TLS_ADDRESS, "
+            "TYPEDB_TLS_HTTP_PORT, and TYPEDB_TLS_ROOT_CA together"
+        )
+    if tls_enabled:
+        address = tls_values["TYPEDB_TLS_ADDRESS"]
+        tls_http_port = tls_values["TYPEDB_TLS_HTTP_PORT"]
+        tls_root_ca = tls_values["TYPEDB_TLS_ROOT_CA"]
+        assert address is not None and tls_http_port is not None and tls_root_ca is not None
+        http_port = int(tls_http_port)
+    else:
+        address = os.getenv("TYPEDB_ADDRESS", "localhost:1730")
+        http_port = int(os.getenv("TYPEDB_HTTP_PORT", "8000"))
+        tls_root_ca = None
+    username = os.getenv("TYPEDB_USERNAME", "admin")
+    password = os.getenv("TYPEDB_PASSWORD", "password")
+    database = f"tb_v2_binding_smoke_{uuid.uuid4().hex[:12]}"
+
+    server_tls: dict[str, str] = {}
+    ssl_context: ssl.SSLContext | None = None
+    remote_scheme = "http"
+    if tls_enabled:
+        server_cert = os.getenv("SMOKE_TLS_CERT")
+        server_key = os.getenv("SMOKE_TLS_KEY")
+        inbound_root_ca = os.getenv("SMOKE_TLS_ROOT_CA")
+        if not server_cert or not server_key or not inbound_root_ca:
+            pytest.fail(
+                "TLS binding smoke requires SMOKE_TLS_CERT, SMOKE_TLS_KEY, and SMOKE_TLS_ROOT_CA"
+            )
+        assert tls_root_ca is not None
+        server_tls = {
+            "SMOKE_TYPEDB_TLS": "true",
+            "SMOKE_TYPEDB_TLS_ROOT_CA": tls_root_ca,
+            "SMOKE_TLS_CERT": server_cert,
+            "SMOKE_TLS_KEY": server_key,
+            "SMOKE_TLS_ROOT_CA": inbound_root_ca,
+        }
+        ssl_context = ssl.create_default_context(cafile=inbound_root_ca)
+        remote_scheme = "https"
+
+    declared = base64.b64decode(DECLARED_B64)
+
+    if tls_enabled:
+        assert tls_root_ca is not None
+        rust_db = core.PyRustDatabase.connect(
+            address,
+            database,
+            username,
+            password,
+            http_port=http_port,
+            tls=True,
+            tls_root_ca=tls_root_ca,
+        )
+    else:
+        rust_db = core.PyRustDatabase.connect(
+            address, database, username, password, http_port=http_port
+        )
+    server_version = rust_db.server_version()
+    if server_version is not None:
+        major, minor = (int(part) for part in server_version.split(".")[:2])
+        if (major, minor) < (3, 12):
+            pytest.skip("the prepared V2 smoke requires the TypeDB 3.12+ native given transport")
+    rust_db.create_database()
+    try:
+        schema_tx = rust_db.transaction("schema")
+        schema_tx.execute(
+            "define attribute smoke-name, value string; entity smoke-person, owns smoke-name;"
+        )
+        schema_tx.commit()
+        write_tx = rust_db.transaction("write")
+        write_tx.execute(
+            'insert $a isa smoke-person, has smoke-name "ada"; '
+            '$b isa smoke-person, has smoke-name "bob";'
+        )
+        write_tx.commit()
+
+        authority = QueryV2Authority(declared, SCOPE, PROFILE)
+        plan, invocation, plan_fingerprint, invocation_digest = _author_plan(authority)
+        assert plan_fingerprint == CROSS_BINDING_PLAN_FINGERPRINT
+        assert invocation_digest == CROSS_BINDING_INVOCATION_SHA256
+        local_authority = QueryV2Authority.query_only(
+            rust_db,
+            declared,
+            SCOPE,
+            PROFILE,
+        )
+        for invalid_deadline in (1 << 200, -(1 << 200)):
+            with pytest.raises(ValueError, match="query_remote_limit_invalid"):
+                core.query_v2_execute_local(
+                    rust_db, local_authority, plan, invocation, invalid_deadline
+                )
+        with pytest.raises(ValueError, match="query_remote_deadline_limit"):
+            core.query_v2_execute_local(rust_db, local_authority, plan, invocation, 86_400_001)
+        local = core.query_v2_execute_local(rust_db, local_authority, plan, invocation)
+        assert '"ada"' in local
+        assert '"bob"' in local
+
+        port = _free_port()
+        server = subprocess.Popen(
+            [
+                "cargo",
+                "run",
+                "--quiet",
+                "-p",
+                "type-bridge-server",
+                "--features",
+                "v2-query",
+                "--example",
+                "v2_smoke_server",
+            ],
+            cwd=CORE_DIR,
+            env={
+                **os.environ,
+                "SMOKE_TYPEDB_ADDRESS": address,
+                "SMOKE_TYPEDB_USERNAME": username,
+                "SMOKE_TYPEDB_PASSWORD": password,
+                "SMOKE_TYPEDB_HTTP_PORT": str(http_port),
+                "SMOKE_DATABASE": database,
+                "SMOKE_DECLARED_B64": DECLARED_B64,
+                "SMOKE_SCOPE": SCOPE,
+                "SMOKE_PROFILE": PROFILE,
+                "SMOKE_PORT": str(port),
+                **server_tls,
+            },
+        )
+        try:
+            _wait_for_port(port, server, timeout=300.0)
+            with urllib.request.urlopen(
+                f"{remote_scheme}://127.0.0.1:{port}/v2/capabilities",
+                timeout=30,
+                context=ssl_context,
+            ) as response:
+                advertisement = response.read()
+            capabilities = core.query_v2_remote_capabilities(advertisement)
+            assert "query.plan" in capabilities
+
+            def post_remote(request: bytes) -> bytes:
+                http_request = urllib.request.Request(
+                    f"{remote_scheme}://127.0.0.1:{port}/v2/query",
+                    data=request,
+                    headers={"content-type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(
+                    http_request, timeout=30, context=ssl_context
+                ) as response:
+                    return response.read()
+
+            limited = core.query_v2_prepare_remote(
+                authority,
+                plan,
+                invocation,
+                advertisement,
+                1,
+                1 << 20,
+                1_000,
+                30_000,
+            )
+            limited_request = bytes(limited.request_bytes())
+            limited_body = post_remote(limited_request)
+            limited_reply = json.loads(limited_body)["payload"]
+            assert limited_reply["code"] == "processed_item_limit"
+            assert limited_reply["nonce"] == json.loads(limited_request)["nonce"]
+            assert len(limited_reply["request"]) == 64
+            with pytest.raises(ValueError) as error:
+                limited.decode_reply(limited_body)
+            assert str(error.value) == (
+                "processed_item_limit: provider answer exceeded the processed-item ceiling"
+            )
+            with pytest.raises(ValueError, match="query_remote_reply_replayed"):
+                limited.decode_reply(limited_body)
+
+            # A failure drains and closes its own request transaction; a fresh
+            # nonce/request must still execute successfully on the same server.
+            pending = core.query_v2_prepare_remote(
+                authority,
+                plan,
+                invocation,
+                advertisement,
+                100,
+                1 << 20,
+                1_000,
+                30_000,
+            )
+            request = bytes(pending.request_bytes())
+            body = post_remote(request)
+            remote = pending.decode_reply(body)
+            assert remote == local
+            with pytest.raises(ValueError, match="query_remote_reply_replayed"):
+                pending.decode_reply(body)
+        finally:
+            server.kill()
+            server.wait(timeout=30)
+    finally:
+        rust_db.delete_database()

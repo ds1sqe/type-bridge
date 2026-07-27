@@ -1,11 +1,10 @@
-"""Default-band coherence: every default-band declaration must agree.
+"""Driver-band and default-server coherence.
 
 The GitHub Actions ``services:`` block cannot read the ``env`` context, so the
-default-band server image is necessarily repeated as a literal in several
-places (three CI job matrices, two compose files, the dev-extra driver pin).
-This test is the enforcement that replaces a "keep in sync" comment: any
-single literal drifting from the wheel's embedded driver version fails the
-unit suite.
+default server image is necessarily repeated as a literal in several places.
+These tests keep the current band-9 server baseline, the three embedded driver
+identities, compatibility matrices, and direct-Python-driver extras explicit
+without pretending server and driver patch releases share one version.
 
 Phase 4 extension: also asserts both embedded pins (band-7 and band-8) via
 ``embedded_driver_versions()``, and that band-7 CI/compose literals trace the
@@ -25,7 +24,8 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 # Expected embedded pins for the default (all-bands) build.
 EXPECTED_BAND7_VERSION = "3.8.1"
 EXPECTED_BAND8_VERSION = "3.11.5"
-EXPECTED_BAND9_VERSION = "3.12.0"
+EXPECTED_BAND9_VERSION = "3.12.1"
+EXPECTED_DEFAULT_SERVER_VERSION = "3.12.1"
 
 
 def _embedded_version() -> str:
@@ -49,21 +49,21 @@ class TestEmbeddedPins:
         assert 9 in versions, f"band-9 pin missing from embedded_driver_versions(): {versions}"
 
     def test_band7_pin_value(self):
-        """Band-7 embedded pin must equal the expected fork version."""
+        """Band-7 embedded pin must equal the expected renamed-driver version."""
         versions = _embedded_versions()
         assert versions[7] == EXPECTED_BAND7_VERSION, (
             f"band-7 embedded pin is {versions[7]!r}; expected {EXPECTED_BAND7_VERSION!r}"
         )
 
     def test_band8_pin_value(self):
-        """Band-8 embedded pin must equal the expected upstream version."""
+        """Band-8 embedded pin must equal the expected compatibility-fork version."""
         versions = _embedded_versions()
         assert versions[8] == EXPECTED_BAND8_VERSION, (
             f"band-8 embedded pin is {versions[8]!r}; expected {EXPECTED_BAND8_VERSION!r}"
         )
 
     def test_band9_pin_value(self):
-        """Band-9 embedded pin must equal the expected fork version."""
+        """Band-9 embedded pin must equal the expected official upstream version."""
         versions = _embedded_versions()
         assert versions[9] == EXPECTED_BAND9_VERSION, (
             f"band-9 embedded pin is {versions[9]!r}; expected {EXPECTED_BAND9_VERSION!r}"
@@ -85,19 +85,82 @@ class TestEmbeddedPins:
 
 
 class TestDefaultBandCoherence:
-    """All default-band literals equal the embedded runtime driver version."""
+    """Default server literals use the current band-9 conformance baseline."""
 
-    def test_compose_defaults_match_embedded(self):
-        """Both compose files default to the embedded driver's server version."""
-        expected = f"typedb/typedb:{_embedded_version()}"
+    def test_compose_defaults_match_band9_server_baseline(self):
+        """Both compose files default to the frozen 3.12.1 server baseline."""
+        expected = f"typedb/typedb:{EXPECTED_DEFAULT_SERVER_VERSION}"
         for name in ("docker-compose.yml", "docker-compose.proxy.yml"):
             text = (REPO_ROOT / name).read_text()
             match = re.search(r"\$\{TYPEDB_IMAGE:-(typedb/typedb:[\w.\-]+)\}", text)
             assert match, f"{name}: TYPEDB_IMAGE default not found"
             assert match.group(1) == expected, (
-                f"{name} defaults to {match.group(1)} but the wheel embeds "
-                f"driver {_embedded_version()}; flip every default together"
+                f"{name} defaults to {match.group(1)} instead of the "
+                f"band-9 server baseline {expected}; flip every default together"
             )
+
+    def test_isolated_suite_defaults_to_band9_server_baseline(self):
+        """The source-tree integration harness uses the same default server."""
+        script = (REPO_ROOT / "test.sh").read_text()
+        expected = f"${{TYPEDB_IMAGE:-typedb/typedb:{EXPECTED_DEFAULT_SERVER_VERSION}}}"
+        assert script.count(expected) == 2
+
+    def test_isolated_tls_suite_requires_the_complete_band9_topology(self):
+        """The local TLS lane must not silently skip native-root or plaintext proofs."""
+        script = (REPO_ROOT / "test.sh").read_text()
+        expected_assignments = {
+            'SSL_CERT_FILE="$fixture_root_ca"',
+            "TYPE_BRIDGE_TLS_LIVE_REQUIRED=1",
+            "TYPE_BRIDGE_TLS_NATIVE_ROOTS=1",
+            f"TYPE_BRIDGE_TLS_EXPECTED_SERVER_VERSION={EXPECTED_DEFAULT_SERVER_VERSION}",
+            "TYPE_BRIDGE_TLS_EXPECTED_DRIVER_BAND=9",
+            f"TYPE_BRIDGE_TLS_EXPECTED_DRIVER_VERSION={EXPECTED_BAND9_VERSION}",
+            "-- --nocapture --test-threads=1",
+        }
+        for assignment in expected_assignments:
+            assert assignment in script
+        assert "External TLS runtime proof is custom-root only" in script
+
+    def test_required_tls_matrix_covers_each_driver_topology(self):
+        """The focused TLS gate must cover every shipped band without suite duplication."""
+        workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text()
+        header = re.search(r"^  tls-transport-matrix:\n", workflow, re.MULTILINE)
+        assert header is not None, "ci.yml: required tls-transport-matrix job is missing"
+        next_job = re.search(r"^  [a-z][a-z0-9-]*:\n", workflow[header.end() :], re.MULTILINE)
+        end = header.end() + next_job.start() if next_job is not None else len(workflow)
+        block = workflow[header.start() : end]
+
+        expected_cells = {
+            ("band7-packaging", "3.8.3", "3.8.3", "7", EXPECTED_BAND7_VERSION),
+            ("band8-packaging", "3.11.5", "3.11.5", "8", EXPECTED_BAND8_VERSION),
+            (
+                "band9-upstream",
+                EXPECTED_DEFAULT_SERVER_VERSION,
+                EXPECTED_DEFAULT_SERVER_VERSION,
+                "9",
+                EXPECTED_BAND9_VERSION,
+            ),
+        }
+        actual_cells = set(
+            re.findall(
+                r"- lane: ([^\n]+)\n"
+                r'\s+typedb-server: "typedb/typedb:([\d.]+)"\n'
+                r'\s+server-version: "([\d.]+)"\n'
+                r'\s+driver-band: "(\d+)"\n'
+                r'\s+driver-version: "([\d.]+)"',
+                block,
+            )
+        )
+        assert actual_cells == expected_cells
+        assert "timeout-minutes: 20" in block
+        assert "continue-on-error" not in block
+        assert 'TYPE_BRIDGE_TLS_LIVE_REQUIRED: "1"' in block
+        assert 'TYPE_BRIDGE_TLS_NATIVE_ROOTS: "1"' in block
+        assert "SSL_CERT_FILE:" in block
+        assert 'CARGO_NET_OFFLINE: "true"' in block
+        assert "cargo fetch --locked" in block
+        assert "-p type-bridge-typedb-runtime --test tls_live" in block
+        assert "test.sh" not in block, "the focused TLS gate must not duplicate the full suite"
 
     def test_ci_default_band_matrices_match_embedded(self):
         """Live CI matrices contain the band-8 embedded image; band-7 images trace band-7 pin.
@@ -214,6 +277,37 @@ class TestDefaultBandCoherence:
                     f"regression must force HTTP failure with http-port: 1 and "
                     f"expect success with expect: ok"
                 )
+                assert "expect-warning: legacy" in cell_block, (
+                    f"ci.yml job '{gate_job}' cell {cell_name!r}: the live "
+                    "unknown-version band-7 fallback must assert exactly one "
+                    "filterable legacy-server warning"
+                )
+
+    def test_python_live_matrix_asserts_legacy_warning_by_server_line(self):
+        """The live Python matrix owns the expected warning count independently."""
+        workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text()
+        header = re.search(r"^  test-integration:\n", workflow, re.MULTILINE)
+        assert header is not None
+        next_job = re.search(r"^  [a-z][a-z0-9-]*:\n", workflow[header.end() :], re.MULTILINE)
+        end = header.end() + next_job.start() if next_job is not None else len(workflow)
+        block = workflow[header.start() : end]
+
+        expected = {
+            ("3.8.3", "3.10.0", "1"),
+            ("3.10.4", "3.10.0", "1"),
+            ("3.11.5", "3.11.5", "0"),
+            ("3.12.1", "3.12.1", "0"),
+        }
+        actual = set(
+            re.findall(
+                r'- typedb-server: "typedb/typedb:([\d.]+)"\n'
+                r'\s+python-driver: "([\d.]+)"\n'
+                r'\s+legacy-warning: "([01])"',
+                block,
+            )
+        )
+        assert actual == expected
+        assert "TYPE_BRIDGE_EXPECT_LEGACY_WARNING: ${{ matrix.legacy-warning }}" in block
 
     def test_dev_pin_matches_embedded_line(self):
         """The CPython 3.12–3.13 dev pin matches the embedded driver's minor line."""
@@ -236,11 +330,11 @@ class TestDefaultBandCoherence:
         expected = {
             "dev": {
                 "typedb-driver~=3.11.5; python_version < '3.14'",
-                "typedb-driver==3.12.0; python_version >= '3.14'",
+                "typedb-driver==3.12.1; python_version >= '3.14'",
             },
             "typedb-driver": {
                 "typedb-driver>=3.8,<3.13; python_version < '3.14'",
-                "typedb-driver==3.12.0; python_version >= '3.14'",
+                "typedb-driver==3.12.1; python_version >= '3.14'",
             },
         }
         for group, requirements in expected.items():

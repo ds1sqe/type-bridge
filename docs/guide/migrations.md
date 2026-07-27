@@ -7,6 +7,23 @@ state must have one durable source of truth. Standalone TypeBridge stores that
 state in TypeDB by default; embedding orchestrators can inject an externally
 owned ledger instead.
 
+This page documents the retained legacy Python migration lane. Canonical V2
+workspaces author binding-neutral history under `migrations/v2`; see the
+[Split-YAML and Workspace V1 Reference](split-yaml-v1.md) for the manifest
+contract and executable fixture, and [Upgrading to 2.0](upgrade-v2.md) for
+legacy-history adoption.
+
+The V2 workspace CLI pairs each managed database `NAME` with a dedicated
+`NAME__tbv2_journal` database. Treat `__tbv2_journal` as reserved within that
+TypeDB deployment: do not configure or pre-create the derived name for user
+schema or another managed database, and back up, restore, clone, or delete the
+pair together. TypeBridge records an exact managed-database and managed-scope
+owner identity when it atomically bootstraps an empty companion; any non-empty
+foreign schema, partial control schema, or missing/different owner is rejected
+without modification. TypeDB cannot distinguish a pre-existing empty database
+from one just created by the idempotent database API, so operators must enforce
+the suffix reservation for empty databases as well.
+
 ## Workflow
 
 For a generated model package, the normal loop is:

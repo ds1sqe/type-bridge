@@ -286,6 +286,27 @@ db.deleteDatabase();
 The top-level `ensureDatabase(address, database, options?)` helper remains
 available for setup code that does not need to keep a bound handle.
 
+Call `db.close()` when the bound handle is no longer needed. It synchronously
+marks the connection terminal, prevents new work, and dispatches the upstream
+driver's shutdown request. The unmodified upstream 3.12.1 driver releases its
+final callback worker when the last native driver lease drops, not necessarily
+before a retained closed handle's `close()` call returns. Close also cannot
+serve as an out-of-band escape hatch while a released synchronous manager or
+query call occupies the JavaScript event-loop thread, because JavaScript cannot
+dispatch it concurrently. Use the Promise-returning
+`queryV2ExecuteLocal(...)` API with its `deadlineMs` argument when V2 execution
+needs a cancellable deadline; remote V2 requests carry the corresponding
+`QueryV2RemoteLimits.deadlineMs` expiry.
+
+Scheme-free `host:port` addresses are recommended. Released matching URI forms
+remain accepted: `http://host:port` with TLS disabled and
+`https://host:port` with `tlsEnabled: true`. The upstream driver rejects a
+scheme that contradicts `tlsEnabled`. Add
+`tlsRootCa: "/path/to/root.pem"` to use a custom PEM bundle instead of
+operating-system roots. Custom bundles are validated under a 1 MiB pre-I/O
+ceiling. A root with omitted or false `tlsEnabled` is rejected before
+connection I/O.
+
 ## Queries and expressions
 
 Build expression-form queries with `manager.query()`. Comparison operators are

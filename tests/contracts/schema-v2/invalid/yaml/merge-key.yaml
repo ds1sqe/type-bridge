@@ -1,0 +1,4 @@
+format: typebridge.schema/v2
+target:
+  <<:
+    doc: base

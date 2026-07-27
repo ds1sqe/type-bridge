@@ -1,9 +1,10 @@
 [package]
 name = "type-bridge-server"
-version = "1.5.11"
+version = "2.0.0-rc.0"
 edition = "2024"
 description = "Query-intercepting proxy server for TypeDB with validation and audit logging"
 license.workspace = true
+license-file.workspace = true
 repository.workspace = true
 authors.workspace = true
 
@@ -22,15 +23,33 @@ typedb = ["dep:type-bridge-typedb-runtime"]
 band7 = ["typedb", "type-bridge-typedb-runtime/band7"]
 band8 = ["typedb", "type-bridge-typedb-runtime/band8"]
 band9 = ["typedb", "type-bridge-typedb-runtime/band9"]
-axum-transport = ["dep:axum", "dep:tower-http"]
+axum-transport = [
+    "dep:axum",
+    "dep:tower-http",
+    "dep:axum-server",
+]
+v2-query = [
+    "axum-transport",
+    "dep:type-bridge-contract",
+    "dep:type-bridge-query",
+    "dep:type-bridge-orm",
+    "dep:type-bridge-schema",
+    "dep:type-bridge-schema-migration-typedb",
+]
 test-helpers = []
 
 [dependencies]
-type-bridge-core-lib = { path = "../core", version = "1.5.11" }
-type-bridge-typedb-runtime = { path = "../typedb-runtime", version = "1.5.11", default-features = false, optional = true }
+type-bridge-core-lib = { path = "../core", version = "2.0.0-rc.0" }
+type-bridge-typedb-runtime = { path = "../typedb-runtime", version = "2.0.0-rc.0", default-features = false, optional = true }
+type-bridge-contract = { path = "../contract", version = "2.0.0-rc.0", optional = true }
+type-bridge-query = { path = "../query", version = "2.0.0-rc.0", optional = true }
+type-bridge-orm = { path = "../orm", version = "2.0.0-rc.0", optional = true }
+type-bridge-schema = { path = "../schema", version = "2.0.0-rc.0", optional = true }
+type-bridge-schema-migration-typedb = { path = "../schema-migration-typedb", version = "2.0.0-rc.0", optional = true }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+futures = "0.3"
 toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
@@ -38,16 +57,28 @@ uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 thiserror = "2"
 clap = { version = "4", features = ["derive"] }
+cap-fs-ext = "4.0"
+cap-std = "4.0"
 
 # Optional: Axum HTTP transport
 axum = { version = "0.8", optional = true }
+axum-server = { version = "0.7", features = ["tls-rustls-no-provider"], optional = true }
 tower-http = { version = "0.6", features = ["cors", "trace"], optional = true }
 
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", features = ["fs"] }
+
+[[example]]
+name = "v2_smoke_server"
+required-features = ["v2-query"]
+
 [dev-dependencies]
-type-bridge-server = { path = ".", features = ["test-helpers", "axum-transport"] }
+type-bridge-server = { path = ".", version = "2.0.0-rc.0", features = ["test-helpers", "axum-transport", "v2-query"] }
 tempfile = "3"
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
+rcgen = "0.13"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 
 [lints]
 workspace = true

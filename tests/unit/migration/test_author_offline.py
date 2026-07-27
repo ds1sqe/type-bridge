@@ -112,6 +112,7 @@ def test_authors_complete_artifact_set_in_memory() -> None:
         "snapshots/__init__.py",
         "snapshots/v0002/__init__.py",
         "snapshots/v0002/attributes.py",
+        "snapshots/v0002/declared-schema.json",
         "snapshots/v0002/entities.py",
         "snapshots/v0002/registry.py",
         "snapshots/v0002/relations.py",

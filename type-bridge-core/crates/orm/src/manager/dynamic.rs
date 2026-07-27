@@ -91,6 +91,15 @@ impl<'db> DynamicEntityManager<'db> {
         self.hydrate_documents(result)
     }
 
+    /// Fetch only entities whose concrete type exactly matches this descriptor.
+    pub async fn get_exact(&self, filters: &[Filter]) -> Result<Vec<DynamicEntityRow>> {
+        let typeql =
+            query_builder::build_dynamic_entity_fetch_exact(&self.descriptor, filters, "$e")?;
+        tracing::debug!(typeql = %typeql, entity_type = %self.descriptor.type_name, "DYNAMIC EXACT FETCH");
+        let result = self.target.execute(&typeql, TxType::Read).await?;
+        self.hydrate_documents(result)
+    }
+
     /// Fetch entities matching dynamic expressions, sorting, and pagination.
     pub async fn get_with_query(
         &self,
@@ -150,9 +159,37 @@ impl<'db> DynamicEntityManager<'db> {
         }
     }
 
+    /// Fetch one exact-type entity by its TypeDB IID.
+    pub async fn get_by_iid_exact(&self, iid: &str) -> Result<Option<DynamicEntityRow>> {
+        let typeql =
+            query_builder::build_dynamic_entity_fetch_by_iid_exact(&self.descriptor, iid, "$e")?;
+        tracing::debug!(typeql = %typeql, entity_type = %self.descriptor.type_name, "DYNAMIC EXACT FETCH BY IID");
+        let result = self.target.execute(&typeql, TxType::Read).await?;
+        match result {
+            QueryResult::Documents(docs) => match docs.len() {
+                0 => Ok(None),
+                1 => hydrate_dynamic_entity(&self.descriptor, &docs[0]).map(Some),
+                n => Err(OrmError::Hydration {
+                    type_name: self.descriptor.type_name.clone(),
+                    message: format!("Expected 0 or 1 exact result for IID lookup, got {n}"),
+                }),
+            },
+            QueryResult::Ok => Ok(None),
+            QueryResult::Rows(_) => Err(OrmError::Hydration {
+                type_name: self.descriptor.type_name.clone(),
+                message: "Expected Documents from exact fetch query, got Rows".into(),
+            }),
+        }
+    }
+
     /// Fetch all entities for this descriptor.
     pub async fn all(&self) -> Result<Vec<DynamicEntityRow>> {
         self.get(&[]).await
+    }
+
+    /// Fetch all exact-type entities for this descriptor.
+    pub async fn all_exact(&self) -> Result<Vec<DynamicEntityRow>> {
+        self.get_exact(&[]).await
     }
 
     /// Count entities for this descriptor.
@@ -448,6 +485,15 @@ impl<'db> DynamicRelationManager<'db> {
         self.hydrate_documents(result)
     }
 
+    /// Fetch only relations whose concrete type exactly matches this descriptor.
+    pub async fn get_exact(&self, filters: &[Filter]) -> Result<Vec<DynamicRelationRow>> {
+        let typeql =
+            query_builder::build_dynamic_relation_fetch_exact(&self.descriptor, filters, "$r")?;
+        tracing::debug!(typeql = %typeql, relation_type = %self.descriptor.type_name, "DYNAMIC RELATION EXACT FETCH");
+        let result = self.target.execute(&typeql, TxType::Read).await?;
+        self.hydrate_documents(result)
+    }
+
     /// Fetch relations matching dynamic expressions, sorting, and pagination.
     pub async fn get_with_query(
         &self,
@@ -521,9 +567,33 @@ impl<'db> DynamicRelationManager<'db> {
         }
     }
 
+    /// Fetch exact-type relation rows by TypeDB IID.
+    pub async fn get_by_iid_exact(&self, iid: &str) -> Result<Vec<DynamicRelationRow>> {
+        let typeql =
+            query_builder::build_dynamic_relation_fetch_by_iid_exact(&self.descriptor, iid, "$r")?;
+        tracing::debug!(typeql = %typeql, relation_type = %self.descriptor.type_name, "DYNAMIC RELATION EXACT FETCH BY IID");
+        let result = self.target.execute(&typeql, TxType::Read).await?;
+        match result {
+            QueryResult::Documents(docs) => docs
+                .iter()
+                .map(|doc| hydrate_dynamic_relation(&self.descriptor, doc))
+                .collect(),
+            QueryResult::Ok => Ok(vec![]),
+            QueryResult::Rows(_) => Err(OrmError::Hydration {
+                type_name: self.descriptor.type_name.clone(),
+                message: "Expected Documents from exact fetch query, got Rows".into(),
+            }),
+        }
+    }
+
     /// Fetch all relations for this descriptor.
     pub async fn all(&self) -> Result<Vec<DynamicRelationRow>> {
         self.get(&[]).await
+    }
+
+    /// Fetch all exact-type relations for this descriptor.
+    pub async fn all_exact(&self) -> Result<Vec<DynamicRelationRow>> {
+        self.get_exact(&[]).await
     }
 
     /// Count relations for this descriptor.

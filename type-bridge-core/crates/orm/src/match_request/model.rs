@@ -185,6 +185,27 @@ pub enum MatchExpr {
         /// Player binding.
         player: BindingId,
     },
+    /// Require a finite directed walk between two bound endpoints.
+    ///
+    /// The relation and roles are exact schema identities. Intermediate
+    /// vertices and relation instances are existential proof variables and
+    /// never become part of the public result shape.
+    Reachable {
+        /// Exact relation descriptor used for every hop.
+        relation: DescriptorId,
+        /// Ordered role played by each hop's source endpoint.
+        role_from: RoleId,
+        /// Ordered role played by each hop's target endpoint.
+        role_to: RoleId,
+        /// Bound walk source.
+        source: BindingId,
+        /// Bound walk target.
+        target: BindingId,
+        /// Inclusive minimum hop count. Zero means exact endpoint identity.
+        min_depth: u8,
+        /// Inclusive finite maximum hop count.
+        max_depth: u8,
+    },
     /// Require every child expression.
     And {
         /// Child expressions in canonical source order.

@@ -971,6 +971,7 @@ mod tests {
                 .collect(),
             operations: ops,
             checksum: Some(format!("{name}-csum")),
+            source_sha256: None,
             reversible: true,
         }
     }

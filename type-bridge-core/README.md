@@ -8,18 +8,39 @@ Rust core for the **type-bridge** TypeDB ORM — high-performance AST, schema pa
 type-bridge-core/
 ├── Cargo.toml          # Workspace root
 └── crates/
-    ├── core/           # type-bridge-core-lib  (pure Rust, no runtime deps)
-    ├── python/         # type-bridge-core      (PyO3 bindings → Python)
-    └── server/         # type-bridge-server    (query pipeline + HTTP API)
+    ├── contract/, schema/, query/          # canonical V2 contracts and engines
+    ├── schema-migration*/                  # offline and TypeDB migration execution
+    ├── schema-compat/, schema-codegen/     # compatibility input and projections
+    ├── typedb-runtime/, orm/, orm-derive/  # provider bands and ORM
+    ├── workspace/, cli/, server/           # workspace and executable products
+    ├── python/, node/                      # native bindings
+    └── core/, migration/, toml-transpiler/ # released engines and converters
 ```
 
-## Crates
+## Crate groups
 
-| Crate | Description |
-|-------|-------------|
-| [`type-bridge-core-lib`](crates/core/) | Pure-Rust TypeQL AST, schema parser, query compiler, validation engine, and value coercer |
-| [`type-bridge-core`](crates/python/) | PyO3 bindings exposing the Rust core to Python via serde-tagged-enum dicts |
-| [`type-bridge-server`](crates/server/) | Transport-agnostic query pipeline with validation, interceptors, and HTTP API |
+The workspace has 18 first-party crates. `contract`, `schema`, `query`, and the
+schema-migration crates own the canonical V2 semantics; `schema-compat` and
+`schema-codegen` project those semantics into released and generated surfaces;
+`typedb-runtime`, `orm`, and `orm-derive` own provider execution; and
+`workspace`, `cli`, `server`, `python`, and `node` expose the product surfaces.
+The released core, migration reader, and TOML converter remain separate
+compatibility boundaries.
+
+## Rust publication boundary
+
+The nine V2 implementation crates are workspace-internal: `contract`,
+`schema`, `query`, `schema-migration`, `schema-migration-typedb`,
+`schema-codegen`, `schema-compat`, `workspace`, and `cli`. Their first-party
+versions track the repository release identity (currently `2.0.0-rc.0`), but every
+manifest remains `publish = false`. They are built into the Python and Node
+products from workspace source and are not crates.io release identities.
+
+Existing public Rust crates keep their established package identities. The
+current source graph, however, makes several of them depend on the unpublished
+V2 crates, so the release-identity gate blocks Rust crates.io publication until
+an explicit owner-level packaging decision closes that graph. The gate neither
+publishes the V2 crates nor silently marks additional released crates private.
 
 ## Building
 
@@ -32,7 +53,7 @@ cd type-bridge-core
 PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 maturin develop
 
 # Run tests
-cargo test -p type-bridge-core-lib -p type-bridge-server
+cargo test --workspace
 
 # Generate docs
 PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 cargo doc --no-deps --open
@@ -50,4 +71,15 @@ Use the project-level check script to mirror CI locally:
 
 ## License
 
-MIT
+TypeBridge-authored code is MIT licensed. The native distributions also embed
+Apache-2.0 TypeDB driver code, MPL-2.0 TypeDB protocol code, and the
+BSD-3-Clause `ed25519-dalek`/`curve25519-dalek` reply-authentication
+implementation. Legacy bands 7 and 8 are explicitly disclosed, namespaced
+packaging-only packages with
+upstream-identical Rust source behavior; their names exist solely for Cargo
+multi-band coexistence, and they contain no downstream close patch. The default
+band-9 path uses official upstream packages and exact-pins the latest
+non-yanked stable 3.12.x driver at release cutoff (currently 3.12.1). See
+[`vendor/README.md`](vendor/README.md) and the packaged
+`THIRD_PARTY_NOTICES.md` for exact versions, immutable source, and license
+texts.

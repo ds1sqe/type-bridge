@@ -3,6 +3,8 @@
 const assert = require("assert");
 const typeBridge = require("../");
 
+assert.strictEqual(typeof typeBridge.QueryV2Error, "function");
+
 // ---------------------------------------------------------------------------
 // Low-level facade — DescriptorRegistry, Marshalling, value builders
 // ---------------------------------------------------------------------------
@@ -163,6 +165,60 @@ assert.deepStrictEqual(attrs, [
 // ---------------------------------------------------------------------------
 
 assert.strictEqual(typeof typeBridge.loadNative, "function", "loadNative must be a function");
+assert.strictEqual(
+  typeBridge.TYPE_DB_SERVER_DEPRECATION_WARNING,
+  "DeprecationWarning",
+  "the packaged warning must retain Node's filterable standard type",
+);
+assert.strictEqual(
+  typeBridge.TYPE_DB_SERVER_DEPRECATION_CODE,
+  "TYPE_BRIDGE_TYPEDB_LEGACY_SERVER",
+  "the packaged warning code must remain stable",
+);
+assert.strictEqual(
+  typeBridge.loadNative().TYPE_DB_SERVER_DEPRECATION_CODE,
+  typeBridge.TYPE_DB_SERVER_DEPRECATION_CODE,
+  "the packaged warning code must equal the real addon's Rust export",
+);
+for (const preparedV2Export of [
+  "QueryV2Authority",
+  "queryV2ExecuteLocal",
+  "queryV2RemoteCapabilities",
+  "queryV2PrepareRemote",
+]) {
+  assert.strictEqual(
+    typeof typeBridge[preparedV2Export],
+    "function",
+    `${preparedV2Export} must be a public prepared V2 export`,
+  );
+}
+const queryV2Authoring = require("@type-bridge/node/query-v2");
+assert.deepStrictEqual(
+  Object.keys(queryV2Authoring).sort(),
+  [
+    "AuthoredQueryInvocation",
+    "AuthoredQueryPlan",
+    "QueryPlanBuilder",
+    "QueryV2Authority",
+  ],
+  "the query-v2 subpath must expose exactly the four frozen authoring values",
+);
+assert.strictEqual(
+  queryV2Authoring.QueryV2Authority,
+  typeBridge.QueryV2Authority,
+  "the query-v2 subpath must re-export the existing authority by identity",
+);
+const typedQuery = require("@type-bridge/node/typed");
+assert.strictEqual(
+  typeof typedQuery.RemoteQuerySession,
+  "function",
+  "the typed subpath must expose the remote query session",
+);
+assert.strictEqual(
+  typeof typedQuery.RemoteQuery,
+  "function",
+  "the typed subpath must expose the distinct remote query facade",
+);
 
 // ---------------------------------------------------------------------------
 // Typed layer — presence assertions
@@ -214,6 +270,23 @@ const packed = JSON.parse(execSync("npm pack --dry-run --json", { encoding: "utf
 const packedFiles = packed[0].files.map((f) => f.path);
 assert.ok(packedFiles.includes("dist/index.js"), "tarball must include dist/index.js");
 assert.ok(packedFiles.includes("dist/native.js"), "tarball must include dist/native.js (the loader)");
+assert.ok(
+  packedFiles.includes("dist/query-v2.js") &&
+    packedFiles.includes("dist/query-v2.d.ts"),
+  "tarball must include the typed query-v2 authoring subpath",
+);
+assert.ok(
+  packedFiles.includes("dist/typed/remote-session.js") &&
+    packedFiles.includes("dist/typed/remote-session.d.ts") &&
+    packedFiles.includes("dist/typed/remote-query.js") &&
+    packedFiles.includes("dist/typed/remote-query.d.ts") &&
+    packedFiles.includes("dist/typed/remote-limits.d.ts"),
+  "tarball must include the remote typed-query facade",
+);
+assert.ok(
+  packedFiles.includes("THIRD_PARTY_NOTICES.md"),
+  "tarball must include third-party license, fork, and source notices",
+);
 assert.ok(
   packedFiles.some((f) => f.endsWith(".node")),
   "tarball must include the native .node module",

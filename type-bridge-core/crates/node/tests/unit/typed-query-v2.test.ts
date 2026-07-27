@@ -51,6 +51,22 @@ class RuntimeQueryEmployee extends Entity(
 class RuntimeQueryPartyAssociation extends Relation("runtime-query-v2-party-association", {
   party: role(RuntimeQueryParty),
 }) {}
+class RuntimeQueryTraversal extends Relation("runtime-query-v2-traversal", {
+  previous: role(RuntimeQueryParty),
+  next: role(RuntimeQueryParty),
+}) {}
+class RuntimeQuerySpecialTraversal extends Relation(
+  "runtime-query-v2-special-traversal",
+  {},
+  { parent: RuntimeQueryTraversal },
+) {}
+class RuntimeQueryForeignTraversal extends Relation(
+  "runtime-query-v2-foreign-traversal",
+  {
+    previous: role(RuntimeQueryParty),
+    next: role(RuntimeQueryParty),
+  },
+) {}
 class RuntimeMaterializedLong extends attr.Integer("runtime-materialized-long") {}
 class RuntimeOrderedText extends attr.String("runtime-ordered-text") {}
 class RuntimeOptionalOrderedText extends attr.String("runtime-optional-ordered-text") {}
@@ -78,6 +94,8 @@ class RuntimeMaterializedEnvelope extends Relation("runtime-materialized-envelop
 
 const personRefs = references(RuntimeQueryPerson);
 const employmentRefs = references(RuntimeQueryEmployment);
+const traversalRefs = references(RuntimeQueryTraversal);
+const foreignTraversalRefs = references(RuntimeQueryForeignTraversal);
 const envelopeRefs = references(RuntimeMaterializedEnvelope);
 
 function expectMatchError(
@@ -152,6 +170,150 @@ test("query construction is immutable, opaque, and preserves distinct repeated m
     () => base.allowCrossJoin(person, company).one(),
     "invalid_plan",
     "execution_connection_required",
+  );
+});
+
+test("bounded reachability is construction-time, inherited-role aware, and output-neutral", () => {
+  const session = diagnosticQuerySession();
+  const source = session.var(RuntimeQueryParty, "subtypes");
+  const target = session.var(RuntimeQueryEmployee);
+  const reachable = session.reachable(
+    source,
+    target,
+    RuntimeQuerySpecialTraversal,
+    traversalRefs.roles.previous,
+    traversalRefs.roles.next,
+    { minDepth: 0, maxDepth: 2 },
+  );
+  const query = session.query(target).match(source).where(reachable);
+  const identity = session.reachable(
+    source,
+    source,
+    RuntimeQueryTraversal,
+    traversalRefs.roles.previous,
+    traversalRefs.roles.next,
+    { minDepth: 0, maxDepth: 0 },
+  );
+
+  assert.ok(Object.isFrozen(reachable));
+  assert.ok(Object.isFrozen(identity));
+  expectMatchError(
+    () => query.one(),
+    "invalid_plan",
+    "execution_connection_required",
+  );
+  expectMatchError(
+    () => session.query(source).where(identity).one(),
+    "invalid_plan",
+    "execution_connection_required",
+  );
+});
+
+test("bounded reachability rejects malformed bounds and preserves native diagnostics before terminals", () => {
+  const session = diagnosticQuerySession();
+  const source = session.var(RuntimeQueryParty);
+  const target = session.var(RuntimeQueryEmployee);
+  const invoke = (bounds: unknown): unknown =>
+    (
+      session.reachable as unknown as (
+        ...args: readonly unknown[]
+      ) => unknown
+    )(
+      source,
+      target,
+      RuntimeQueryTraversal,
+      traversalRefs.roles.previous,
+      traversalRefs.roles.next,
+      bounds,
+    );
+
+  for (const bounds of [
+    null,
+    [],
+    { minDepth: "0", maxDepth: 1 },
+    { minDepth: 0.5, maxDepth: 1 },
+    { minDepth: Number.NaN, maxDepth: 1 },
+    { minDepth: 0, maxDepth: Number.POSITIVE_INFINITY },
+  ]) {
+    assert.throws(() => invoke(bounds), TypeError);
+  }
+  for (const bounds of [
+    { minDepth: -1, maxDepth: 1 },
+    { minDepth: 0, maxDepth: 256 },
+  ]) {
+    assert.throws(() => invoke(bounds), RangeError);
+  }
+
+  expectMatchError(
+    () => invoke({ minDepth: 2, maxDepth: 1 }),
+    "invalid_plan",
+    "reachable_bounds",
+  );
+  expectMatchError(
+    () => invoke({ minDepth: 0, maxDepth: 65 }),
+    "invalid_plan",
+    "reachable_depth_limit",
+  );
+
+  const foreignSource = diagnosticQuerySession().var(RuntimeQueryParty);
+  expectMatchError(
+    () =>
+      session.reachable(
+        foreignSource,
+        target,
+        RuntimeQueryTraversal,
+        traversalRefs.roles.previous,
+        traversalRefs.roles.next,
+        { minDepth: 1, maxDepth: 1 },
+      ),
+    "invalid_plan",
+    "cross_session_handle",
+  );
+});
+
+test("bounded reachability rejects forged relation and role provenance at construction", () => {
+  const session = diagnosticQuerySession();
+  const source = session.var(RuntimeQueryParty);
+  const target = session.var(RuntimeQueryEmployee);
+  const invoke = session.reachable as unknown as (
+    ...args: readonly unknown[]
+  ) => unknown;
+
+  assert.throws(
+    () =>
+      invoke(
+        source,
+        target,
+        RuntimeQueryTraversal,
+        foreignTraversalRefs.roles.previous,
+        foreignTraversalRefs.roles.next,
+        { minDepth: 1, maxDepth: 2 },
+      ),
+    /must belong to the relation model/,
+  );
+  assert.throws(
+    () =>
+      invoke(
+        source,
+        target,
+        RuntimeQueryParty,
+        traversalRefs.roles.previous,
+        traversalRefs.roles.next,
+        { minDepth: 1, maxDepth: 2 },
+      ),
+    /must be a declared Relation model class/,
+  );
+  assert.throws(
+    () =>
+      invoke(
+        source,
+        target,
+        RuntimeQueryTraversal,
+        Object.freeze({}),
+        traversalRefs.roles.next,
+        { minDepth: 1, maxDepth: 2 },
+      ),
+    /role reference was not created by references/,
   );
 });
 

@@ -478,6 +478,23 @@ pub enum TypedMatchPredicate {
         /// Player binding ordinal.
         player: u16,
     },
+    /// Require a finite directed walk between two bound endpoints.
+    Reachable {
+        /// Exact validated relation type label used for every hop.
+        relation_type: String,
+        /// Ordered role played by each hop's source endpoint.
+        role_from: String,
+        /// Ordered role played by each hop's target endpoint.
+        role_to: String,
+        /// Bound walk source ordinal.
+        source: u16,
+        /// Bound walk target ordinal.
+        target: u16,
+        /// Inclusive minimum hop count. Zero is exact endpoint identity.
+        min_depth: u8,
+        /// Inclusive finite maximum hop count.
+        max_depth: u8,
+    },
     /// Require every child expression.
     And {
         /// Child predicates in canonical source order.

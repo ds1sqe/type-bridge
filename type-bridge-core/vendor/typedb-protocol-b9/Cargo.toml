@@ -1,9 +1,13 @@
+# Historical quarantine only. This manifest must remain publish=false,
+# workspace-excluded, and forbidden for every TypeBridge dependency graph.
 [package]
 name = "type-bridge-typedb-protocol-b9"
 version = "3.12.0"
+publish = false
 edition = "2024"
 license = "MPL-2.0"
-description = "Renamed vendor of upstream typedb-protocol 3.12.0 (TypeDB protocol band 9), republished unmodified for type-bridge multi-band server support"
+license-file = "LICENSE"
+description = "Historical quarantined TypeDB protocol 3.12.0 snapshot; workspace-excluded and forbidden for current TypeBridge consumption"
 readme = "README.md"
 repository = "https://github.com/ds1sqe/type-bridge"
 homepage = "https://github.com/typedb/typedb-protocol"

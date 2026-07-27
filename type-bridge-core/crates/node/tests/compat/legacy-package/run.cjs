@@ -115,6 +115,10 @@ if (prebuiltArtifact === null) {
     "dist/index.js",
     "dist/index.d.ts",
     "dist/native.js",
+    "dist/query-v2-internals.js",
+    "dist/query-v2-internals.d.ts",
+    "dist/query-v2.js",
+    "dist/query-v2.d.ts",
     "dist/typed/index.js",
     "dist/typed/index.d.ts",
   ]) {
@@ -182,6 +186,10 @@ try {
     "dist/index.js",
     "dist/index.d.ts",
     "dist/native.js",
+    "dist/query-v2-internals.js",
+    "dist/query-v2-internals.d.ts",
+    "dist/query-v2.js",
+    "dist/query-v2.d.ts",
     "dist/typed/index.js",
     "dist/typed/index.d.ts",
   ]) {

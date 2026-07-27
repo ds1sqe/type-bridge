@@ -1,0 +1,77 @@
+format: typebridge.schema/v2
+
+attributes:
+  identifier:
+    abstract: true
+    value:
+      type: string
+      regex: '^[A-Z][A-Z0-9-]*$'
+
+  employee-id:
+    sub: identifier
+    doc: Stable employee identifier.
+
+  display-name:
+    value: string
+
+  audit-note:
+    independent: true
+    value: string
+
+entities:
+  person:
+    owns:
+      employee-id: {key: true}
+      display-name: {card: 1}
+
+  company:
+    owns: [display-name]
+
+  automated-agent: {}
+
+  temporary-worker: {}
+
+  father:
+    sub:
+      type: person
+      doc: A person specialization used by fathership.
+
+relations:
+  employment:
+    doc: Binds an employee to an employer.
+    meta:
+      domain: hr
+    owns:
+      audit-note:
+        card: {min: 0, max: 3}
+    relates:
+      employee: {card: 1}
+      employer: {card: 1}
+
+  parentship:
+    abstract: true
+    relates: [parent, child]
+
+  fathership:
+    sub: parentship
+    relates:
+      father: {as: parent}
+
+plays:
+  person:
+    employment:
+      employee:
+        card: {min: 0, max: 1}
+    parentship: [parent, child]
+
+  company:
+    employment: [employer]
+
+  automated-agent:
+    employment: [employee, employer]
+
+  temporary-worker:
+    employment: [employee]
+
+  father:
+    fathership: [father]

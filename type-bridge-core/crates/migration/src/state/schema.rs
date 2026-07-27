@@ -18,21 +18,26 @@ use type_bridge_orm::{Annotation, ValueType};
 /// Keeping the storage queries and the canonical schema on these constants
 /// prevents either surface from acquiring a private copy of the label set.
 pub(crate) mod labels {
+    use type_bridge_contract::reserved::{
+        LEGACY_LEDGER_APP_LABEL, LEGACY_LEDGER_APPLIED_AT, LEGACY_LEDGER_APPLIED_ENTITY,
+        LEGACY_LEDGER_CHECKSUM, LEGACY_LEDGER_MIGRATION_ID, LEGACY_LEDGER_NAME,
+    };
+
     /// Entity storing the applied-migration projection.
-    pub const APPLIED_ENTITY: &str = "type_bridge_migration";
+    pub const APPLIED_ENTITY: &str = LEGACY_LEDGER_APPLIED_ENTITY;
     /// Entity storing individual migration execution attempts.
     pub const RUN_ENTITY: &str = "type_bridge_migration_run";
 
     /// Composite applied-migration identifier attribute.
-    pub const MIGRATION_ID: &str = "migration_id";
+    pub const MIGRATION_ID: &str = LEGACY_LEDGER_MIGRATION_ID;
     /// Migration application/package label attribute.
-    pub const APP_LABEL: &str = "migration_app_label";
+    pub const APP_LABEL: &str = LEGACY_LEDGER_APP_LABEL;
     /// Migration name attribute.
-    pub const NAME: &str = "migration_name";
+    pub const NAME: &str = LEGACY_LEDGER_NAME;
     /// Applied timestamp attribute.
-    pub const APPLIED_AT: &str = "migration_applied_at";
+    pub const APPLIED_AT: &str = LEGACY_LEDGER_APPLIED_AT;
     /// Migration checksum attribute.
-    pub const CHECKSUM: &str = "migration_checksum";
+    pub const CHECKSUM: &str = LEGACY_LEDGER_CHECKSUM;
     /// Execution-attempt identifier attribute.
     pub const RUN_ID: &str = "migration_run_id";
     /// Execution direction attribute.

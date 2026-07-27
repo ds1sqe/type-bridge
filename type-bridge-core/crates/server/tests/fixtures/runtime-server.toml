@@ -1,0 +1,38 @@
+[server]
+host = "0.0.0.0"
+port = 8080
+
+[server.tls]
+cert-path = "certs/server.pem"
+key-path = "certs/server.key"
+
+[typedb]
+address = "localhost:1729"
+database = "my_database"
+username = "admin"
+password = "password"
+http_port = 8000
+server_version = "3.12.1"
+tls = true
+tls-root-ca = "certs/root.pem"
+
+[schema]
+source_file = "schema.tql"
+
+[interceptors]
+enabled = ["audit-log"]
+
+[interceptors.audit-log]
+output = "file"
+file_path = "/var/log/audit.jsonl"
+
+[logging]
+level = "info"
+format = "json"
+
+[v2]
+enabled = true
+declared_schema_file = "declared-schema.json"
+scope = "production"
+profile = "typedb-3.12.1/v1"
+authority_mode = "managed"

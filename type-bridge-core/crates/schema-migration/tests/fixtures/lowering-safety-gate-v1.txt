@@ -1,0 +1,8 @@
+formal_only|accepted
+schema_metadata|accepted
+additive|accepted
+conditional|schema_lowering_requires_assertion|schema transition requires an explicit data assertion
+backfill_required|schema_lowering_requires_backfill|schema transition requires an explicit backfill plan
+destructive|schema_lowering_destructive|destructive schema transition requires an identity-bound approval
+opaque|schema_lowering_opaque|opaque schema transition requires explicit operator intent
+unsupported|schema_lowering_unsupported|schema transition is unsupported by the TypeDB 3.12.1 lowering profile
