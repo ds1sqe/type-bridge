@@ -788,8 +788,11 @@ fn parse_custom_root_store(
 /// instead supply already-captured bytes. Both paths copy the accepted bytes
 /// once into a private snapshot. HTTP trust is built from cached parsed roots.
 /// Driver-band lowering is allowed to read only the snapshot handle:
-/// `/dev/fd/<fd>` on Unix, or the current handle-derived path while Windows
-/// no-write/no-delete handles keep both the snapshot parent and file pinned.
+/// `/dev/fd/<fd>` where that path is `/proc`-backed (Linux), a private named
+/// snapshot file on the remaining Unixes (macOS `/dev/fd` shares the open
+/// file description, so re-opening it would inherit the descriptor offset),
+/// or the current handle-derived path while Windows no-write/no-delete
+/// handles keep both the snapshot parent and file pinned.
 #[doc(hidden)]
 #[derive(Clone)]
 pub struct RetainedCustomRootCa(Arc<RetainedCustomRootCaInner>);
@@ -806,7 +809,10 @@ struct RetainedCustomRootCaInner {
     snapshot_file: Mutex<Option<std::fs::File>>,
     #[cfg(windows)]
     snapshot_directory: Option<Dir>,
-    #[cfg(windows)]
+    #[cfg(any(
+        windows,
+        all(unix, not(any(target_os = "linux", target_os = "android")))
+    ))]
     snapshot_path: PathBuf,
 }
 
@@ -828,17 +834,29 @@ impl Drop for RetainedCustomRootCaInner {
                 let _ = std::fs::remove_dir(parent);
             }
         }
+        #[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
+        {
+            // The named snapshot lives in a private single-use directory;
+            // remove both once no retained path is exposed anymore.
+            let _ = std::fs::remove_file(&self.snapshot_path);
+            if let Some(parent) = self.snapshot_path.parent() {
+                let _ = std::fs::remove_dir(parent);
+            }
+        }
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 fn create_custom_root_snapshot(
     configured_path: &Path,
     bytes: &[u8],
 ) -> Result<std::fs::File, TlsConfigurationError> {
     // `tempfile()` is anonymous on Unix. Only the retained descriptor can
     // reach this immutable-by-convention snapshot; configured-path writes,
-    // renames, and parent swaps cannot change what a driver reads.
+    // renames, and parent swaps cannot change what a driver reads. This
+    // requires the `/proc`-backed `/dev/fd` that hands every open of the
+    // snapshot path an independent open file description, which only Linux
+    // provides — the remaining Unixes use the named snapshot below.
     let mut snapshot =
         tempfile::tempfile().map_err(|_| TlsConfigurationError::CustomRootCaUnreadable {
             path: configured_path.to_path_buf(),
@@ -859,6 +877,53 @@ fn create_custom_root_snapshot(
         }
     })?;
     Ok(snapshot)
+}
+
+/// Create a private named snapshot for Unixes without a `/proc`-backed
+/// `/dev/fd` (macOS and the BSDs), where opening `/dev/fd/<fd>` duplicates
+/// the retained descriptor and would share its file offset. The snapshot
+/// lives under a fresh mode-0700 temporary directory, so the configured
+/// path's owner cannot influence what a driver reads from it.
+#[cfg_attr(
+    any(target_os = "linux", target_os = "android"),
+    allow(dead_code, reason = "exercised directly by unit tests on Linux")
+)]
+#[cfg(unix)]
+fn create_named_custom_root_snapshot(
+    configured_path: &Path,
+    bytes: &[u8],
+) -> Result<(std::fs::File, PathBuf), TlsConfigurationError> {
+    let unreadable = || TlsConfigurationError::CustomRootCaUnreadable {
+        path: configured_path.to_path_buf(),
+    };
+    let temporary_directory = tempfile::Builder::new()
+        .prefix("type-bridge-root-ca-")
+        .tempdir()
+        .map_err(|_| unreadable())?;
+    let directory = Dir::open_ambient_dir(temporary_directory.path(), ambient_authority())
+        .map_err(|_| unreadable())?;
+    let snapshot_path = temporary_directory.path().join("root-ca.pem");
+    let mut options = OpenOptions::new();
+    options
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .follow(FollowSymlinks::No);
+    let mut snapshot = directory
+        .open_with(Path::new("root-ca.pem"), &options)
+        .map(cap_std::fs::File::into_std)
+        .map_err(|_| unreadable())?;
+    snapshot.write_all(bytes).map_err(|_| unreadable())?;
+    snapshot.flush().map_err(|_| unreadable())?;
+    snapshot
+        .seek(SeekFrom::Start(0))
+        .map_err(|_| unreadable())?;
+
+    // Disable TempDir cleanup only after the complete snapshot exists; Drop
+    // removes the private name and directory when the material retires.
+    let retained_directory = temporary_directory.keep();
+    debug_assert_eq!(snapshot_path.parent(), Some(retained_directory.as_path()));
+    Ok((snapshot, snapshot_path))
 }
 
 #[cfg(windows)]
@@ -1190,8 +1255,11 @@ impl RetainedCustomRootCa {
         }
         let roots = parse_custom_root_store(configured_path, &bytes)?;
 
-        #[cfg(unix)]
+        #[cfg(any(target_os = "linux", target_os = "android"))]
         let snapshot_file = create_custom_root_snapshot(configured_path, &bytes)?;
+        #[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
+        let (snapshot_file, snapshot_path) =
+            create_named_custom_root_snapshot(configured_path, &bytes)?;
         #[cfg(windows)]
         let (snapshot_file, snapshot_directory, snapshot_path) =
             create_custom_root_snapshot(configured_path, &bytes)?;
@@ -1207,7 +1275,10 @@ impl RetainedCustomRootCa {
             snapshot_file: Mutex::new(Some(snapshot_file)),
             #[cfg(windows)]
             snapshot_directory: Some(snapshot_directory),
-            #[cfg(windows)]
+            #[cfg(any(
+                windows,
+                all(unix, not(any(target_os = "linux", target_os = "android")))
+            ))]
             snapshot_path,
         })))
     }
@@ -1240,11 +1311,17 @@ impl RetainedCustomRootCa {
             }
         })?;
 
-        #[cfg(unix)]
+        // Only the `/proc`-backed `/dev/fd` gives every open of the retained
+        // path an independent open file description at offset zero; on the
+        // remaining Unixes that open duplicates this descriptor, offset
+        // included, so lowering hands out the named snapshot path instead.
+        #[cfg(any(target_os = "linux", target_os = "android"))]
         let retained_path = {
             use std::os::fd::AsRawFd as _;
             PathBuf::from(format!("/dev/fd/{}", file.as_raw_fd()))
         };
+        #[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
+        let retained_path = self.0.snapshot_path.clone();
 
         #[cfg(windows)]
         let retained_path = winx::file::get_file_path(file).map_err(|_| {
@@ -2451,6 +2528,38 @@ mod tests {
 
         drop(material);
         std::fs::remove_dir_all(&directory).expect("remove overwrite directory");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn named_custom_root_snapshot_path_rereads_independently_of_the_handle() {
+        use std::io::Read as _;
+
+        let valid_root = include_bytes!("../tests/fixtures/valid-root.pem");
+        let (mut snapshot, snapshot_path) =
+            create_named_custom_root_snapshot(Path::new("/configured/root.pem"), valid_root)
+                .expect("create named custom-root snapshot");
+
+        // Exhaust the retained handle the way an eager driver read does; a
+        // dup-semantics path (macOS /dev/fd) would then read back empty.
+        let mut consumed = Vec::new();
+        snapshot
+            .read_to_end(&mut consumed)
+            .expect("consume the retained snapshot handle");
+        assert_eq!(consumed, valid_root);
+        assert_eq!(
+            std::fs::read(&snapshot_path).expect("first independent path read"),
+            valid_root
+        );
+        assert_eq!(
+            std::fs::read(&snapshot_path).expect("second independent path read"),
+            valid_root
+        );
+
+        drop(snapshot);
+        std::fs::remove_file(&snapshot_path).expect("remove named snapshot");
+        std::fs::remove_dir(snapshot_path.parent().expect("snapshot parent"))
+            .expect("remove named snapshot directory");
     }
 
     #[cfg(unix)]
