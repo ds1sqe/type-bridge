@@ -184,13 +184,16 @@ fn manifest_relative_paths_are_normalized_but_cannot_escape_workspace_root() {
         .unwrap()
         .resolve(&services(&source, &secrets, &extensions))
         .unwrap();
+    // Compare the spelling, not just the components: resolution must keep
+    // the portable forward-slash form on every platform, or the confined-
+    // path validators reject the resolver's own output on Windows.
     assert_eq!(
-        config.schema_set().as_path(),
-        Path::new("schema/schema.yaml")
+        config.schema_set().as_path().to_str(),
+        Some("schema/schema.yaml")
     );
     assert_eq!(
-        config.migration_v2_directory().as_path(),
-        Path::new("migrations/v2")
+        config.migration_v2_directory().as_path().to_str(),
+        Some("migrations/v2")
     );
 
     let escaping = WORKSPACE_YAML.replace("../schema/schema.yaml", "../../schema/schema.yaml");

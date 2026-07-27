@@ -442,7 +442,11 @@ impl WorkspaceRootCa {
             ));
         }
 
-        let candidate = canonical_root.join(relative_path);
+        // Extend component-wise: joining the whole portable relative path
+        // onto a Windows verbatim (`\\?\`) root would keep its forward
+        // slashes, which verbatim paths exempt from separator normalization.
+        let mut candidate = canonical_root.clone();
+        candidate.extend(relative_path.components());
         let canonical_path = sources
             .canonicalize_workspace_path(&candidate)
             .map_err(|error| {
@@ -977,9 +981,12 @@ impl TypeBridgeConfig {
     /// Return the schema-set manifest path resolved under the root.
     #[must_use]
     pub fn schema_set_absolute_path(&self) -> PathBuf {
-        self.workspace_root
-            .as_path()
-            .join(self.schema_set.as_path())
+        // Extend component-wise: joining the whole portable relative path
+        // onto a Windows verbatim (`\\?\`) root would keep its forward
+        // slashes, which verbatim paths exempt from separator normalization.
+        let mut path = self.workspace_root.as_path().to_path_buf();
+        path.extend(self.schema_set.as_path().components());
+        path
     }
 
     /// Return the validated migration application label.

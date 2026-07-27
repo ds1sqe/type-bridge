@@ -627,7 +627,10 @@ fn resolve_owned_path(
             &authored.span,
         ));
     }
-    Ok(segments.into_iter().collect())
+    // Keep the resolved path in portable forward-slash spelling: collecting
+    // segments into a PathBuf would join them with the platform separator,
+    // and the confined-path validators reject a backslash spelling.
+    Ok(PathBuf::from(segments.join("/")))
 }
 
 fn parse_wire(
