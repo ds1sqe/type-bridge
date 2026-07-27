@@ -164,6 +164,11 @@ def test_prepared_plan_executes_locally_and_remotely() -> None:
         rust_db = core.PyRustDatabase.connect(
             address, database, username, password, http_port=http_port
         )
+    server_version = rust_db.server_version()
+    if server_version is not None:
+        major, minor = (int(part) for part in server_version.split(".")[:2])
+        if (major, minor) < (3, 12):
+            pytest.skip("the prepared V2 smoke requires the TypeDB 3.12+ native given transport")
     rust_db.create_database()
     try:
         schema_tx = rust_db.transaction("schema")

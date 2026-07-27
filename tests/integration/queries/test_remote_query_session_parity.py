@@ -322,6 +322,11 @@ def test_public_remote_query_session_matches_direct_subtype_hydration() -> None:
         tls=True if tls_enabled else None,
         tls_root_ca=tls_root_ca,
     )
+    server_version = database.detected_server_version()
+    if server_version is not None:
+        major, minor = (int(part) for part in server_version.split(".")[:2])
+        if (major, minor) < (3, 12):
+            pytest.skip("the remote parity smoke prepares the typedb-3.12.1/v1 semantic profile")
     database.create_database()
     try:
         with database.transaction("schema") as transaction:
