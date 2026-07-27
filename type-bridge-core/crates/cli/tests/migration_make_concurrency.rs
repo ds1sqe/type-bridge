@@ -139,9 +139,19 @@ fn different_names_in_independent_processes_publish_one_unambiguous_head() {
         "unexpected winning migration: {migration_stem}",
     );
     let success = String::from_utf8_lossy(&successes[0].stdout);
+    // The CLI prints the migration directory's native display path, so the
+    // expected spelling is platform-dependent (backslashes on Windows).
+    let published_path = |file_name: String| {
+        ["migrations", "v2", file_name.as_str()]
+            .iter()
+            .collect::<std::path::PathBuf>()
+            .display()
+            .to_string()
+    };
     assert!(
-        success.contains(&format!("migrations/v2/{migration_stem}.tbmigration.json"))
-            && success.contains(&format!("migrations/v2/{migration_stem}.typeql")),
+        success.contains(&published_path(format!(
+            "{migration_stem}.tbmigration.json"
+        ))) && success.contains(&published_path(format!("{migration_stem}.typeql"))),
         "success output does not identify the committed manifest and preview: {success}",
     );
     let preview =
