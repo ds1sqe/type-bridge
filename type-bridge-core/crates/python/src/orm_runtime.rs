@@ -2029,10 +2029,9 @@ mod provider_wait_tests {
     #[test]
     fn provider_runtime_blocking_is_centralized_in_the_gil_releasing_helper() {
         let source = include_str!("orm_runtime.rs");
-        let production = source
-            .split("\n#[cfg(test)]\nmod provider_wait_tests")
-            .next()
-            .expect("split always returns the production source prefix");
+        let (production, _) = source
+            .split_once("\n#[cfg(test)]\nmod provider_wait_tests")
+            .expect("the audit must find its own test-module marker");
         let direct_block_on = [".block", "_on("].concat();
 
         assert_eq!(
@@ -2062,10 +2061,19 @@ mod provider_wait_tests {
         ];
 
         for (name, source) in sources {
-            let production = source
-                .split("\n#[cfg(test)]\nmod tests")
-                .next()
-                .expect("split always returns the production source prefix");
+            let production = match source.split_once("\n#[cfg(test)]\nmod tests") {
+                Some((production, _)) => production,
+                // A source without any test code is audited in full; a test
+                // module the marker fails to match must fail the audit loudly
+                // rather than silently widening it over test code.
+                None => {
+                    assert!(
+                        !source.contains("#[cfg(test)]"),
+                        "{name} has test code the audit marker does not match"
+                    );
+                    source
+                }
+            };
             assert_eq!(
                 production.matches(&direct_block_on).count(),
                 0,
