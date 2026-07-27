@@ -1034,6 +1034,10 @@ async fn try_blocks_carry_optional_columns_live() {
 async fn multi_row_given_invocations_correlate_inputs_live() {
     let _guard = crate::common::integration_test_guard().await;
     let db = setup_db().await;
+    if !crate::common::rust_binding::server_supports_v2_conformance(&db) {
+        eprintln!("skipping: the native given transport requires a proven TypeDB 3.12+ server");
+        return;
+    }
     let suffix = unique_schema_suffix("rust", "query-v2-given-live");
     let fixture = live_fixture(&suffix);
 
@@ -2586,7 +2590,15 @@ async fn remote_envelope_parity_corpus_live() {
         .fingerprint()
         .expect("advertisement fingerprint");
     let signer = remote_signer();
+    let server_is_v2_conformant = crate::common::rust_binding::server_supports_v2_conformance(&db);
     for (index, (label, plan, rows)) in corpus.iter().enumerate() {
+        if !rows.is_empty() && !server_is_v2_conformant {
+            eprintln!(
+                "skipping {label}: the native given transport requires a proven \
+                 TypeDB 3.12+ server"
+            );
+            continue;
+        }
         let validated = validate_query_plan(plan, &context, StructuralLimits::CANONICAL)
             .unwrap_or_else(|error| panic!("{label}: validation: {error}"));
         let invocation = QueryInvocation::new(plan, QueryOperation::Rows, rows.clone())
@@ -2821,6 +2833,10 @@ async fn prepared_facade_executes_locally_and_remotely_live() {
     )
     .await
     .expect("prepared V2 fixture should connect");
+    if !crate::common::rust_binding::server_supports_v2_conformance(&db) {
+        eprintln!("skipping: prepared semantic profiles require a proven TypeDB 3.12+ server");
+        return;
+    }
     db.create_database()
         .await
         .expect("prepared V2 fixture database should be created");

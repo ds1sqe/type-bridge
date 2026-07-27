@@ -58,6 +58,10 @@ async fn exact_zero_cardinality_is_rejected_for_every_interface() {
 async fn function_and_sub_annotations_preserve_multiple_meta_keys() {
     let _guard = crate::common::integration_test_guard().await;
     let db = setup_db().await;
+    if !crate::common::rust_binding::server_supports_v2_conformance(&db) {
+        eprintln!("skipping: sub/function @doc/@meta require a proven TypeDB 3.12+ server");
+        return;
+    }
     let suffix = unique_schema_suffix("rust", "schema-v2-doc-meta");
     let base = format!("{suffix}-base");
     let child = format!("{suffix}-child");

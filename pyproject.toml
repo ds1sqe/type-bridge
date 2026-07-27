@@ -65,7 +65,10 @@ dev = [
     "pytest-cov>=6.0.0",
     "pytest-benchmark>=5.1.0",
     "pyyaml>=6.0.3",
-    "ruff>=0.14.5",
+    # Exact-pinned: uv.lock is intentionally untracked, so an open range lets
+    # CI resolve a newer ruff whose formatter output drifts from the committed
+    # style. Bump deliberately, reformatting in the same commit.
+    "ruff==0.15.21",
     "pyright>=1.1.407",
 ]
 docs = [

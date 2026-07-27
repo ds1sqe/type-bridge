@@ -44,6 +44,18 @@ pub async fn setup_db() -> Database {
     })
 }
 
+/// True when the live server proved a TypeDB 3.12+ identity at connect time.
+///
+/// The V2 conformance probes (native `given` transport, prepared semantic
+/// profiles, `@doc`/`@meta` on subtypes and functions) are defined against the
+/// TypeDB 3.12.1 baseline. On the legacy 3.8/3.10/3.11 lanes production
+/// rejects those capabilities before I/O instead of emulating them, so the
+/// conformance probes skip rather than assert 3.12 behavior.
+pub fn server_supports_v2_conformance(db: &Database) -> bool {
+    db.server_version()
+        .is_some_and(|version| version.major > 3 || (version.major == 3 && version.minor >= 12))
+}
+
 pub async fn sync_person_schema(db: &Database) {
     let mut schema = SchemaManager::new(db);
     schema.register_entity::<Person>();

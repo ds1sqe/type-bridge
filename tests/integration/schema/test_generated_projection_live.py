@@ -60,6 +60,11 @@ def test_generated_projection_round_trips_live_models(
     generated_package: ModuleType,
 ) -> None:
     generated = generated_package
+    server_version = clean_db.detected_server_version()
+    if server_version is not None:
+        major, minor = (int(part) for part in server_version.split(".")[:2])
+        if (major, minor) < (3, 12):
+            pytest.skip("the generated projection fixture uses TypeDB 3.12+ annotation placements")
     clean_db.execute_query(PROVIDER_SCHEMA.read_text(encoding="utf-8"), transaction_type="schema")
 
     runtime_projection = json.loads(generated.RUNTIME_PROJECTION_JSON)

@@ -255,7 +255,15 @@ async function waitForPort(
   throw new Error("smoke server never became reachable");
 }
 
-test("public remote model query matches local three-binding subtype hydration", async () => {
+// The remote model exchange binds the 3.12.1 semantic profile into its
+// prepared authority; legacy servers reject the profile before I/O, so the
+// parity proof is meaningful only against a 3.12+ lane.
+const parityServerVersion = process.env.TYPEDB_VERSION ?? "3.12.1";
+const [parityMajor = 0, parityMinor = 0] = parityServerVersion.split(".").map(Number);
+const parityServerIsV2Conformant = parityMajor > 3 || (parityMajor === 3 && parityMinor >= 12);
+const paritySkip = parityServerIsV2Conformant ? false : "requires a TypeDB 3.12+ server";
+
+test("public remote model query matches local three-binding subtype hydration", { skip: paritySkip }, async () => {
   const tlsEnvironment = [
     process.env.TYPEDB_TLS_ADDRESS,
     process.env.TYPEDB_TLS_HTTP_PORT,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import pickle
+import sys
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -286,16 +287,22 @@ def test_driver_options_lower_custom_roots_for_each_driver_api(
 ) -> None:
     options = MagicMock()
     monkeypatch.setattr(typedb_driver, "DriverOptions", options)
-    monkeypatch.setattr(typedb_driver, "driver_version", lambda: "3.10.0")
 
-    typedb_driver.create_driver_options(True, tls_root_ca="root.pem")
-    options.assert_called_once_with(is_tls_enabled=True, tls_root_ca_path="root.pem")
+    if sys.version_info < (3, 14):
+        # The band-7 keyword form only exists where a band-7 driver is
+        # installable; on CPython 3.14+ the interpreter gate rejects driver
+        # 3.10 before option dispatch, so that form is unreachable there.
+        monkeypatch.setattr(typedb_driver, "driver_version", lambda: "3.10.0")
 
-    options.reset_mock()
+        typedb_driver.create_driver_options(True, tls_root_ca="root.pem")
+        options.assert_called_once_with(is_tls_enabled=True, tls_root_ca_path="root.pem")
+        options.reset_mock()
+
     custom_tls = object()
     tls_config = MagicMock()
     tls_config.enabled_with_root_ca.return_value = custom_tls
-    monkeypatch.setattr(typedb_driver, "driver_version", lambda: "3.11.5")
+    banded_version = "3.11.5" if sys.version_info < (3, 14) else "3.12.1"
+    monkeypatch.setattr(typedb_driver, "driver_version", lambda: banded_version)
     monkeypatch.setattr(typedb_driver, "_load_tls_config", lambda: tls_config)
 
     typedb_driver.create_driver_options(True, tls_root_ca="root.pem")

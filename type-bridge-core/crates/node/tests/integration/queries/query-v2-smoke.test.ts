@@ -134,7 +134,16 @@ function authorPlan(authority: InstanceType<typeof queryV2.QueryV2Authority>) {
   };
 }
 
-test("prepared plan executes locally and remotely", async () => {
+// The prepared exchange asserts the 3.12.1 semantic profile and the native
+// given transport; legacy servers reject both before I/O, so the smoke is
+// meaningful only against a 3.12+ lane.
+const smokeServerVersion = process.env.TYPEDB_VERSION ?? "3.12.1";
+const [smokeMajor = 0, smokeMinor = 0] = smokeServerVersion.split(".").map(Number);
+const smokeServerIsV2Conformant = smokeMajor > 3 || (smokeMajor === 3 && smokeMinor >= 12);
+
+const smokeSkip = smokeServerIsV2Conformant ? false : "requires a TypeDB 3.12+ server";
+
+test("prepared plan executes locally and remotely", { skip: smokeSkip }, async () => {
   const tlsEnvironment = [
     process.env.TYPEDB_TLS_ADDRESS,
     process.env.TYPEDB_TLS_HTTP_PORT,

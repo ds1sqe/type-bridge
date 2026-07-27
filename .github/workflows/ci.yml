@@ -36,7 +36,7 @@ jobs:
 
       - name: Install pinned cargo-about
         if: runner.os == 'Linux'
-        uses: taiki-e/install-action@fd2f5e3d644b484055ebf4268f474c565f148f25 # v2
+        uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf # v2.85.2
         with:
           tool: cargo-about@0.9.1
 
@@ -132,7 +132,7 @@ jobs:
           components: llvm-tools-preview
 
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@fd2f5e3d644b484055ebf4268f474c565f148f25 # v2
+        uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf # v2.85.2
         with:
           tool: cargo-llvm-cov
 
@@ -436,6 +436,12 @@ jobs:
 
       - name: Install pyright
         run: uv pip install pyright
+
+      # The generated-projection acceptance check (tests target) shells out to
+      # `maturin develop`; pin the same Maturin the artifact contract pins.
+      - name: Install maturin
+        if: matrix.target == 'tests'
+        run: uv pip install maturin==1.14.1
 
       - name: Run pyright on ${{ matrix.target }}
         run: uv run pyright ${{ matrix.target }}/
@@ -945,13 +951,22 @@ jobs:
           - "typedb/typedb:3.11.5"
           - "typedb/typedb:3.12.1"
         include:
-          # Band-7 leg pairs the band-7 installed Python driver.
+          # Band-7 leg pairs the band-7 installed Python driver. The strict
+          # parity gate requires the per-lane legacy-warning expectation, and
+          # the given expectation pins the band's native transport claim:
+          # only the band-9 3.12 leg serves native `given` rows.
           - typedb-server: "typedb/typedb:3.8.3"
             python-driver: "3.10.0"
+            legacy-warning: "1"
+            expect-given: "0"
           - typedb-server: "typedb/typedb:3.11.5"
             python-driver: "3.11.5"
+            legacy-warning: "0"
+            expect-given: "0"
           - typedb-server: "typedb/typedb:3.12.1"
             python-driver: "3.12.1"
+            legacy-warning: "0"
+            expect-given: "1"
 
     services:
       typedb:
@@ -1074,6 +1089,8 @@ jobs:
           USE_DOCKER: false
           TYPEDB_ADDRESS: localhost:1729
           TYPE_BRIDGE_PARITY_STRICT: "1"
+          TYPE_BRIDGE_PARITY_EXPECT_LEGACY_WARNING: ${{ matrix.legacy-warning }}
+          TYPE_BRIDGE_PARITY_EXPECT_GIVEN: ${{ matrix.expect-given }}
         # The `integration or not integration` marker overrides pyproject's default
         # `-m 'not integration'` filter so this gate runs BOTH the live-TypeDB parity
         # tests and the offline cross-language ones (descriptor snapshots, generator
@@ -1126,12 +1143,16 @@ jobs:
         include:
           - typedb-server: "typedb/typedb:3.8.3"
             legacy-warning: "1"
+            typedb-version: "3.8.3"
           - typedb-server: "typedb/typedb:3.10.4"
             legacy-warning: "1"
+            typedb-version: "3.10.4"
           - typedb-server: "typedb/typedb:3.11.5"
             legacy-warning: "0"
+            typedb-version: "3.11.5"
           - typedb-server: "typedb/typedb:3.12.1"
             legacy-warning: "0"
+            typedb-version: "3.12.1"
 
     services:
       typedb:
@@ -1203,6 +1224,7 @@ jobs:
         env:
           USE_DOCKER: false
           TYPEDB_ADDRESS: localhost:1729
+          TYPEDB_VERSION: ${{ matrix.typedb-version }}
           TYPE_BRIDGE_EXPECT_LEGACY_WARNING: ${{ matrix.legacy-warning }}
         run: npm run test:integration
 

@@ -6,6 +6,10 @@ use type_bridge_orm::TxType;
 async fn typedb_3121_accepts_schema_v2_annotation_registry() {
     let _guard = crate::common::integration_test_guard().await;
     let db = setup_db().await;
+    if !crate::common::rust_binding::server_supports_v2_conformance(&db) {
+        eprintln!("skipping: the V2 annotation registry requires a proven TypeDB 3.12+ server");
+        return;
+    }
     let prefix = unique_schema_suffix("rust", "schema-v2-annotations");
     let query = format!(
         r#"define
