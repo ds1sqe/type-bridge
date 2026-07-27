@@ -177,11 +177,23 @@ impl MigrationDirectory {
     }
 
     /// Acquire the canonical migration-authoring lock without waiting.
+    ///
+    /// A lock held by another publisher surfaces as [`io::ErrorKind::WouldBlock`]
+    /// on every platform.
     pub fn try_acquire_authoring_lock(&self) -> io::Result<MigrationAuthoringLock<'_>> {
         use fs2::FileExt as _;
 
         let file = self.open_regular_lock(".typebridge-authoring.lock".as_ref())?;
-        file.try_lock_exclusive()?;
+        file.try_lock_exclusive().map_err(|error| {
+            // Windows reports a held lock as ERROR_LOCK_VIOLATION, which the
+            // standard library does not classify as WouldBlock; normalize the
+            // platform contention error so callers can match a single kind.
+            if error.raw_os_error() == fs2::lock_contended_error().raw_os_error() {
+                io::Error::new(io::ErrorKind::WouldBlock, error)
+            } else {
+                error
+            }
+        })?;
         Ok(MigrationAuthoringLock {
             _file: file,
             directory: self,
@@ -339,6 +351,28 @@ mod tests {
         let mut bytes = Vec::new();
         std::io::Read::read_to_end(&mut published, &mut bytes).expect("published bytes read");
         assert_eq!(bytes, b"authority");
+    }
+
+    #[test]
+    fn contended_authoring_lock_surfaces_would_block_on_every_platform() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let directory =
+            MigrationDirectory::open_ambient(temporary.path()).expect("directory capability opens");
+        let held = directory
+            .try_acquire_authoring_lock()
+            .expect("first publisher acquires the authoring lock");
+        // Windows reports the held lock as ERROR_LOCK_VIOLATION rather than
+        // an errno the standard library maps to WouldBlock; the acquisition
+        // seam must normalize both platforms to one contention kind.
+        let contended = match directory.try_acquire_authoring_lock() {
+            Ok(_) => panic!("second publisher must observe contention"),
+            Err(error) => error,
+        };
+        assert_eq!(contended.kind(), io::ErrorKind::WouldBlock);
+        drop(held);
+        directory
+            .try_acquire_authoring_lock()
+            .expect("released lock reacquires");
     }
 
     #[test]
