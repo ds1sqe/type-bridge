@@ -114,8 +114,14 @@ impl ExtensionRegistryService for RejectExtensions {
     }
 }
 
+// An absolute path requires a drive prefix on Windows.
+#[cfg(windows)]
+const VIRTUAL_ROOT: &str = "C:/virtual/project";
+#[cfg(not(windows))]
+const VIRTUAL_ROOT: &str = "/virtual/project";
+
 fn root() -> WorkspaceRoot {
-    WorkspaceRoot::new("/virtual/project").unwrap()
+    WorkspaceRoot::new(VIRTUAL_ROOT).unwrap()
 }
 
 fn base_builder() -> TypeBridgeConfigBuilder {
@@ -177,17 +183,14 @@ fn typed_builder_retains_exact_policy_and_uses_injected_services() {
     assert_eq!(source.calls.get(), 1);
     assert_eq!(secrets.calls.get(), 1);
     assert_eq!(extensions.calls.get(), 1);
-    assert_eq!(
-        config.workspace_root().as_path(),
-        Path::new("/virtual/project")
-    );
+    assert_eq!(config.workspace_root().as_path(), Path::new(VIRTUAL_ROOT));
     assert_eq!(
         config.schema_set_absolute_path(),
-        PathBuf::from("/virtual/project/schema/schema.yaml")
+        Path::new(VIRTUAL_ROOT).join("schema/schema.yaml")
     );
     assert_eq!(
         config.migration_v2_absolute_path(),
-        PathBuf::from("/virtual/project/migrations/v2")
+        Path::new(VIRTUAL_ROOT).join("migrations/v2")
     );
     assert_eq!(config.app_label().as_str(), "example");
     assert_eq!(config.managed_scope().id().as_str(), "example-schema");
@@ -217,7 +220,7 @@ fn workspace_root_is_explicit_and_matches_injected_canonical_spelling() {
         WorkspaceConfigErrorCode::WorkspaceRootNotAbsolute
     );
     assert_eq!(
-        WorkspaceRoot::new("/virtual/../project")
+        WorkspaceRoot::new(format!("{VIRTUAL_ROOT}/../other"))
             .unwrap_err()
             .code(),
         WorkspaceConfigErrorCode::WorkspaceRootNotCanonical

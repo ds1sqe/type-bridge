@@ -75,8 +75,14 @@ impl ExtensionRegistryService for AcceptExtensions {
     }
 }
 
+// An absolute path requires a drive prefix on Windows.
+#[cfg(windows)]
+const VIRTUAL_ROOT: &str = "C:/virtual/project";
+#[cfg(not(windows))]
+const VIRTUAL_ROOT: &str = "/virtual/project";
+
 fn root() -> WorkspaceRoot {
-    WorkspaceRoot::new("/virtual/project").unwrap()
+    WorkspaceRoot::new(VIRTUAL_ROOT).unwrap()
 }
 
 fn origin() -> ConfigOrigin {
@@ -159,7 +165,7 @@ fn located_spec_retains_exact_source_comments_spans_and_origin() {
     );
     assert_eq!(
         located.origin().manifest_absolute_path(),
-        PathBuf::from("/virtual/project/config/typebridge.yaml")
+        Path::new(VIRTUAL_ROOT).join("config/typebridge.yaml")
     );
     assert_eq!(
         located.origin().diagnostic_name(),
