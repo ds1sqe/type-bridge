@@ -22,6 +22,11 @@ impl TempDirectory {
             std::process::id()
         ));
         fs::create_dir_all(&path).expect("create temporary schema directory");
+        // Discovery reports canonical roots; the ambient temp directory
+        // may sit behind symlinked components (macOS /var).
+        let path = path
+            .canonicalize()
+            .expect("resolve physical schema directory");
         Self(path)
     }
 
@@ -229,6 +234,24 @@ fn unicode_casefold_collisions_fail_before_platform_order_can_choose() {
     let manifest = directory.manifest();
     directory.write_source("fragments/Straße.yaml", "root: first\n");
     directory.write_source("fragments/STRASSE.yaml", "root: second\n");
+
+    // A case-folding filesystem (macOS APFS) resolves the second
+    // spelling to the first file, so the colliding pair cannot exist on
+    // disk and discovery legitimately observes a single source. The
+    // collision diagnostic is a pure name-level check exercised by the
+    // case-sensitive lanes.
+    let spellings = fs::read_dir(directory.path().join("fragments"))
+        .expect("list fragment spellings")
+        .count();
+    if spellings < 2 {
+        let folded = fs::read_to_string(directory.path().join("fragments/Straße.yaml"))
+            .expect("read folded fragment");
+        assert_eq!(
+            folded, "root: second\n",
+            "second spelling must have folded into the first"
+        );
+        return;
+    }
 
     let error = discover_schema_documents(&manifest, ["fragments/*.yaml"])
         .expect_err("case-fold collision must fail");
