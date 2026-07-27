@@ -9,14 +9,14 @@ is a separate, later step.
 
 ## Compatibility schedule
 
-The named removals in [V2 Deprecations](v2-deprecations.md) come in two
-tiers. The `v2.1.0` minor release closes the legacy window as a deliberate,
-exactly-enumerated exception to the ordinary major-version schedule: active
-TypeDB 3.8/3.10 provider support (the wheel then embeds only the band-8 and
-band-9 driver lines) and direct TOML desired-schema authoring. Every other
-named removal follows ordinary SemVer at `v3.0.0`, and every other
-deprecated surface stays fully operational
-throughout the 2.x release line
+The named removals in [V2 Deprecations](v2-deprecations.md) all land in the
+`v2.1.0` minor release as a deliberate, exactly-enumerated exception to
+ordinary major-version scheduling: active TypeDB 3.8/3.10 provider support
+(the wheel then embeds only the band-8 and band-9 driver lines), direct TOML
+desired-schema authoring, the V1 schema and model facades, and legacy
+migration authoring. There is no `v3.0.0` removal plan. Every deprecated
+surface stays fully operational throughout 2.0.x — and every surface without
+a removal schedule throughout the whole 2.x line —
 unless an individual migration scope explicitly completes the irreversible V2
 adoption described below. Adoption closes only that scope's legacy writer
 lane; it is not a package-wide early removal. The inventory is exact: a

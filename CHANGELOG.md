@@ -47,10 +47,10 @@ All notable changes to TypeBridge will be documented in this file.
   `--throw-deprecation` suppresses this compatibility notice. Exceptions
   raised later by application-owned Node `warning` listeners retain ordinary
   Node process semantics.
-  The removal schedule has two tiers, documented exactly in
+  The removal schedule names a single release, documented exactly in
   [V2 Deprecations](docs/guide/v2-deprecations.md#scheduled-for-removal-in-210).
-  The 2.1.0 minor release closes the legacy window as a deliberate,
-  exactly-enumerated exception to the ordinary major-version schedule:
+  Every scheduled removal lands in the 2.1.0 minor release as a deliberate,
+  exactly-enumerated exception to ordinary major-version scheduling:
   active TypeDB 3.8/3.10 provider and driver support ends (the wheel then
   embeds only the band-8 and band-9 driver lines), and direct `schema.toml`
   desired-schema authoring, `generate_models(..., format="toml")`, and
@@ -59,8 +59,8 @@ All notable changes to TypeBridge will be documented in this file.
   retaining a 2.1.0-scheduled surface pin `type-bridge>=2,<2.1`.
   V1 query facades have no removal schedule, and archival migration readers,
   checksum verification, ledger import, snapshots, converters, and the
-  legacy-frontier bridge remain retained. The exact ordinary-SemVer 3.0.0
-  removal inventory is:
+  legacy-frontier bridge remain retained. The 2.1.0 removal inventory
+  further includes:
 
   - `type_bridge_core.TypeSchema`,
     `type_bridge_core_lib::schema::TypeSchema`,
@@ -81,10 +81,10 @@ All notable changes to TypeBridge will be documented in this file.
   are each deprecated without a removal schedule. Read-only TOML conversion,
   legacy migration readers, original checksums, applied-ledger import,
   snapshots, historical server metadata, and the legacy-frontier bridge are
-  explicitly retained. Apart from the named 2.1.0 legacy-window removals
-  (3.8/3.10 bands and TOML authoring) there is no other 2.x removal or
-  calendar cutoff; deployments retaining a
-  3.0.0-scheduled surface can pin `type-bridge>=2,<3`.
+  explicitly retained. Apart from the named 2.1.0 removals there is no
+  other removal or calendar cutoff — there is no 3.0.0 removal plan;
+  deployments retaining any scheduled surface can pin
+  `type-bridge>=2,<2.1`.
 - **Rust V2 publication boundary** - the nine V2 semantic, migration,
   projection, workspace, and CLI crates are first-party `2.0.0-rc.0`
   workspace packages with `publish = false`; they are not crates.io release

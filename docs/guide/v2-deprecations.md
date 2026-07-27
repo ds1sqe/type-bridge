@@ -5,19 +5,21 @@ with Rust as the only semantic engine on every V2 path; each deprecated V1
 facade keeps its released behavior and public contract until it is removed.
 Its implementation may delegate to a parity-proven Rust V2 bridge, as the V1
 `MatchRequest` path does, without scheduling the facade for removal. Every V1
-surface stays fully operational throughout every 2.x release unless an
-individual migration scope explicitly completes the irreversible V2 adoption
+surface stays fully operational throughout 2.0.x — and every surface without
+a removal schedule throughout the whole 2.x line — unless an individual
+migration scope explicitly completes the irreversible V2 adoption
 cutover. That cutover closes only the adopted scope's legacy writer lane and
 is not a package-wide removal. This page is the exact removal contract: a
 surface absent from the "Scheduled for removal" list is not scheduled for
 removal, and nothing is removed under a catch-all.
 
-The removal schedule has two tiers. The 2.1.0 minor release closes the
-legacy window as a deliberate, exactly-enumerated exception to the ordinary
-major-version schedule: active TypeDB 3.8/3.10 provider support (the wheel
-then embeds only the band-8 and band-9 driver lines) and direct TOML
-desired-schema authoring. Every other named removal follows the ordinary
-3.0.0 schedule.
+The removal schedule names a single release. Every scheduled removal lands
+in the 2.1.0 minor release as a deliberate, exactly-enumerated exception to
+ordinary major-version scheduling: active TypeDB 3.8/3.10 provider support
+(the wheel then embeds only the band-8 and band-9 driver lines), direct TOML
+desired-schema authoring, the V1 schema and model facades, and legacy
+migration authoring. There is no 3.0.0 removal plan; a surface not scheduled
+for 2.1.0 is not scheduled at all.
 
 ## Scheduled for removal in 2.1.0
 
@@ -106,8 +108,6 @@ returned and cannot contain it. The ordinary Python ignore filter and Node
 support may pin
 `type-bridge>=2,<2.1`.
 
-## Scheduled for removal in 3.0.0
-
 ### V1 schema and model facades
 
 - `type_bridge_core.TypeSchema` and
@@ -125,6 +125,7 @@ This list deliberately does **not** schedule `TypeDBType`, `Entity`,
 CRUD managers/queries/hooks/exceptions, generated model projections, or the
 V2 `RoleRef`. Removing any of those would require a later inventory that names
 the fully qualified public symbols and gives them a new notice period.
+Deployments that retain these facades past 2.0.x pin `type-bridge>=2,<2.1`.
 
 ### Legacy migration authoring
 
@@ -135,7 +136,7 @@ the fully qualified public symbols and gives them a new notice period.
 Legacy migration **reading** is not removed: readers, original checksum
 verification, applied-ledger import, snapshots, historical
 TypeDB-version metadata, and the legacy-frontier bridge all remain.
-Before 3.0, an unadopted scope may keep using the released writer. Completing
+Before 2.1.0, an unadopted scope may keep using the released writer. Completing
 `migration adopt` is a deliberate, per-scope, irreversible opt-in that writes
 the ledger cutover marker and closes that scope's writer lane immediately;
 quiescence and revocation of the old writer credential are required during the
@@ -168,7 +169,7 @@ excluded through credential revocation during adoption.
   query facades.
 
 These facades are deprecated in intent but are **not** scheduled for
-removal in `3.0.0`. No V1 query surface is removed before a complete
+removal. No V1 query surface is removed before a complete
 V2 replacement exists for its full released algebra with a proven
 result-, order-, and diagnostic-parity corpus, announced in a later
 deprecation revision with its own notice period. The production Rust
@@ -213,6 +214,6 @@ These surfaces are not deprecated and carry no removal schedule:
 
 Archive-only compatibility does not authorize new legacy authoring and does
 not restore a second semantic engine. No archival reader is scheduled for
-removal in `3.0.0`; any future removal requires a separately versioned,
+removal; any future removal requires a separately versioned,
 fully enumerated contract and its own notice period, in addition to positive
 bridge-adoption evidence.
