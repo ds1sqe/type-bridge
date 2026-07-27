@@ -2962,7 +2962,11 @@ database = "db"
     #[test]
     fn non_regular_absolute_declared_schema_is_rejected() {
         let dir = tempfile::tempdir().unwrap();
-        let error = capture_absolute_declared_schema_file(dir.path())
+        // The capture walks parent components without following symlinks;
+        // the ambient temp directory may sit behind symlinked components
+        // (macOS /var), so hand it an already-physical path.
+        let root = dir.path().canonicalize().unwrap();
+        let error = capture_absolute_declared_schema_file(&root)
             .expect_err("a directory must not resolve as a declared schema");
         assert!(error.to_string().contains("regular file"), "{error}");
     }
