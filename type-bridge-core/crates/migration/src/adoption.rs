@@ -132,6 +132,7 @@ impl LegacyMetadataRevision {
         }
         #[cfg(windows)]
         {
+            use cap_fs_ext::MetadataExt as _;
             use cap_std::fs::MetadataExt as _;
             let volume_serial_number = metadata.volume_serial_number().ok_or_else(|| {
                 loader_error("legacy authority metadata has no stable Windows volume identity")
