@@ -373,9 +373,11 @@ pub const TYPEDB_LEGACY_SERVER_DEPRECATION_CODE: &str = "TYPE_BRIDGE_TYPEDB_LEGA
 
 /// TypeBridge release that removes active TypeDB 3.8/3.10 server support.
 ///
-/// The removal follows ordinary major-version SemVer. Every TypeBridge 2.x
-/// release continues to support these server lines.
-pub const TYPEDB_LEGACY_SERVER_REMOVAL_RELEASE: &str = "3.0.0";
+/// The legacy window closes in the 2.1.0 minor release: it is a scheduled,
+/// deliberate exception to the ordinary major-version removal schedule, and
+/// from 2.1.0 the wheel embeds only the band-8 and band-9 driver lines.
+/// Every TypeBridge 2.0.x release continues to support these server lines.
+pub const TYPEDB_LEGACY_SERVER_REMOVAL_RELEASE: &str = "2.1.0";
 
 /// Support status for one exact, known TypeDB server version.
 ///
@@ -388,8 +390,8 @@ pub enum ServerSupportStatus {
     /// The server is in the active window and has no scheduled compatibility
     /// removal.
     Supported,
-    /// The server remains fully supported throughout TypeBridge 2.x but its
-    /// active provider support is scheduled for removal in TypeBridge 3.0.0.
+    /// The server remains fully supported throughout TypeBridge 2.0.x but its
+    /// active provider support is scheduled for removal in TypeBridge 2.1.0.
     Deprecated,
     /// The server is outside the active window or has no mapped accepted
     /// protocol path.
@@ -449,8 +451,8 @@ pub fn known_server_deprecation_notice(server: &Version) -> Option<String> {
         "TypeDB {server} is on the 3.8/3.10 line, which is deprecated in \
          type-bridge 2.0. Support for this server line will be removed in \
          type-bridge {TYPEDB_LEGACY_SERVER_REMOVAL_RELEASE}. Connections keep \
-         working throughout 2.x. Upgrade the server to TypeDB 3.11 or 3.12, \
-         or pin type-bridge>=2,<3."
+         working throughout 2.0.x. Upgrade the server to TypeDB 3.11 or 3.12, \
+         or pin type-bridge>=2,<2.1."
     ))
 }
 
@@ -465,8 +467,8 @@ pub fn unknown_legacy_fallback_deprecation_notice() -> String {
         "This connection uses the legacy TypeDB 3.8/3.10-compatible fallback \
          path, which is deprecated in type-bridge 2.0. Support for this path \
          will be removed in type-bridge {TYPEDB_LEGACY_SERVER_REMOVAL_RELEASE}. \
-         Connections keep working throughout 2.x. Upgrade the server to TypeDB \
-         3.11 or 3.12, or pin type-bridge>=2,<3. Configure an exact server \
+         Connections keep working throughout 2.0.x. Upgrade the server to TypeDB \
+         3.11 or 3.12, or pin type-bridge>=2,<2.1. Configure an exact server \
          version for strict validation."
     )
 }
@@ -2021,20 +2023,20 @@ mod tests {
     }
 
     #[test]
-    fn deprecated_status_owns_the_stable_code_and_v3_removal_release() {
+    fn deprecated_status_owns_the_stable_code_and_legacy_window_removal_release() {
         assert_eq!(
             ServerSupportStatus::Deprecated.deprecation_code(),
             Some("TYPE_BRIDGE_TYPEDB_LEGACY_SERVER")
         );
         assert_eq!(
             ServerSupportStatus::Deprecated.removal_release(),
-            Some("3.0.0")
+            Some("2.1.0")
         );
         assert_eq!(
             TYPEDB_LEGACY_SERVER_DEPRECATION_CODE,
             "TYPE_BRIDGE_TYPEDB_LEGACY_SERVER"
         );
-        assert_eq!(TYPEDB_LEGACY_SERVER_REMOVAL_RELEASE, "3.0.0");
+        assert_eq!(TYPEDB_LEGACY_SERVER_REMOVAL_RELEASE, "2.1.0");
 
         for status in [
             ServerSupportStatus::Supported,
@@ -2053,12 +2055,12 @@ mod tests {
             notice,
             "TypeDB 3.10.4 is on the 3.8/3.10 line, which is deprecated in \
              type-bridge 2.0. Support for this server line will be removed in \
-             type-bridge 3.0.0. Connections keep working throughout 2.x. \
+             type-bridge 2.1.0. Connections keep working throughout 2.0.x. \
              Upgrade the server to TypeDB 3.11 or 3.12, or pin \
-             type-bridge>=2,<3."
+             type-bridge>=2,<2.1."
         );
 
-        for forbidden in ["band 7", "band 8", "band 9", "2.1.0", ">=2.0,<2.1"] {
+        for forbidden in ["band 7", "band 8", "band 9", "3.0.0", ">=2,<3"] {
             assert!(!notice.contains(forbidden), "{forbidden}: {notice}");
         }
     }
@@ -2083,13 +2085,13 @@ mod tests {
             notice,
             "This connection uses the legacy TypeDB 3.8/3.10-compatible \
              fallback path, which is deprecated in type-bridge 2.0. Support \
-             for this path will be removed in type-bridge 3.0.0. Connections \
-             keep working throughout 2.x. Upgrade the server to TypeDB 3.11 \
-             or 3.12, or pin type-bridge>=2,<3. Configure an exact server \
+             for this path will be removed in type-bridge 2.1.0. Connections \
+             keep working throughout 2.0.x. Upgrade the server to TypeDB 3.11 \
+             or 3.12, or pin type-bridge>=2,<2.1. Configure an exact server \
              version for strict validation."
         );
 
-        for forbidden in ["band 7", "band 8", "band 9", "2.1.0", ">=2.0,<2.1"] {
+        for forbidden in ["band 7", "band 8", "band 9", "3.0.0", ">=2,<3"] {
             assert!(!notice.contains(forbidden), "{forbidden}: {notice}");
         }
     }

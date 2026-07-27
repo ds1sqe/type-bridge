@@ -12,11 +12,25 @@ is not a package-wide removal. This page is the exact removal contract: a
 surface absent from the "Scheduled for removal" list is not scheduled for
 removal, and nothing is removed under a catch-all.
 
-Every named removal follows the ordinary-SemVer 3.0.0 schedule with one
-deliberate exception: direct TOML desired-schema authoring is
-removed earlier, in the 2.1.0 minor release, as documented below.
+The removal schedule has two tiers. The 2.1.0 minor release closes the
+legacy window as a deliberate, exactly-enumerated exception to the ordinary
+major-version schedule: active TypeDB 3.8/3.10 provider support (the wheel
+then embeds only the band-8 and band-9 driver lines) and direct TOML
+desired-schema authoring. Every other named removal follows the ordinary
+3.0.0 schedule.
 
 ## Scheduled for removal in 2.1.0
+
+### Provider and driver bands
+
+- TypeDB 3.8 and TypeDB 3.10 provider/driver bands. TypeDB 3.11 support and
+  its band-8 compatibility package remain; TypeDB 3.12.1 is the conformance
+  baseline and the official upstream band-9 driver remains.
+
+Starting with 2.1.0 the wheel embeds only the band-8 and band-9 driver
+lines, so active 3.8/3.10 support ends in that minor release. Deployments
+that must retain those server lines pin `type-bridge>=2,<2.1` or upgrade the
+server to TypeDB 3.11 or 3.12 before moving past 2.0.x.
 
 ### TOML schema authoring
 
@@ -24,9 +38,8 @@ removed earlier, in the 2.1.0 minor release, as documented below.
 - `generate_models(..., format="toml")`.
 - Python `.toml` generator auto-routing.
 
-This is the single exception to the ordinary-SemVer 3.0.0 removal schedule:
-TOML desired-schema authoring is scheduled for removal in the
-2.1.0 minor release. Deployments that still author TOML must either translate
+TOML desired-schema authoring is scheduled for removal in the 2.1.0 minor
+release. Deployments that still author TOML must either translate
 to split YAML before upgrading past 2.0.x or pin `type-bridge>=2,<2.1`.
 
 Both deprecated authoring routes — `format="toml"` and `.toml`
@@ -40,14 +53,6 @@ Read-only TOML conversion is **not** removed: the public
 permanent so existing schemas can always be rendered for migration, and
 calling `toml_to_typeql` directly emits no deprecation warning. No
 automated TOML-to-YAML converter ships in 2.0.0.
-
-## Scheduled for removal in 3.0.0
-
-### Provider and driver bands
-
-- TypeDB 3.8 and TypeDB 3.10 provider/driver bands. TypeDB 3.11 support and
-  its band-8 compatibility package remain; TypeDB 3.12.1 is the conformance
-  baseline and the official upstream band-9 driver remains.
 
 Under the default warning policy, every successful 3.8/3.10 connection emits
 exactly one compatibility notice and then continues normally. Strict warning
@@ -99,7 +104,9 @@ application-owned, as it does for every Node warning; `connect()` has already
 returned and cannot contain it. The ordinary Python ignore filter and Node
 `--no-deprecation` remain supported. Applications that must retain 3.8/3.10
 support may pin
-`type-bridge>=2,<3`; the server-band schedule has no earlier 2.x cutoff.
+`type-bridge>=2,<2.1`.
+
+## Scheduled for removal in 3.0.0
 
 ### V1 schema and model facades
 
@@ -202,7 +209,7 @@ These surfaces are not deprecated and carry no removal schedule:
 | Fused `Role[T]` | Split YAML + generated `relates()`/`plays()` | `type-bridge schema generate` projections |
 | Python/Rust/Node V1 queries | Low-level V2 plans (`type_bridge.query_v2`, `@type-bridge/node/query-v2`) or model-oriented direct/remote typed sessions | Manual per-query rewrite (no automated converter yet; unrelated V1 queries stay operational) |
 | Legacy `NNNN_*.py` migrations | Generated migration manifests | `migration adopt` (legacy-frontier bridge + ledger import) |
-| TypeDB 3.8/3.10 bands | TypeDB 3.11 or 3.12 | Band upgrade before 3.0.0 |
+| TypeDB 3.8/3.10 bands | TypeDB 3.11 or 3.12 | Band upgrade before 2.1.0 |
 
 Archive-only compatibility does not authorize new legacy authoring and does
 not restore a second semantic engine. No archival reader is scheduled for

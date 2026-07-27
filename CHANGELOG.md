@@ -39,30 +39,29 @@ All notable changes to TypeBridge will be documented in this file.
   notice is limited to an actually negotiated band-7 fallback and does not
   claim an exact server version; missing HTTP identity on band 8 or 9 does not
   warn. TypeDB 3.11 and 3.12 connections do not emit it. Active 3.8/3.10
-  support remains operational throughout every 2.x release. Warning lookup or
+  support remains operational throughout every 2.0.x release and is removed
+  in the 2.1.0 minor. Warning lookup or
   delivery cannot turn a successful connection into a failure: Python
   warning-to-error promotion and synchronously throwing replacements of
   Node's `process.emitWarning` are contained, while Node
   `--throw-deprecation` suppresses this compatibility notice. Exceptions
   raised later by application-owned Node `warning` listeners retain ordinary
   Node process semantics.
-  Active support is scheduled for removal in 3.0.0 under ordinary SemVer;
-  applications that must retain those server lines may pin
-  `type-bridge>=2,<3`. The exact 3.0 inventory is
-  documented in
-  [V2 Deprecations](docs/guide/v2-deprecations.md#scheduled-for-removal-in-300);
+  The removal schedule has two tiers, documented exactly in
+  [V2 Deprecations](docs/guide/v2-deprecations.md#scheduled-for-removal-in-210).
+  The 2.1.0 minor release closes the legacy window as a deliberate,
+  exactly-enumerated exception to the ordinary major-version schedule:
+  active TypeDB 3.8/3.10 provider and driver support ends (the wheel then
+  embeds only the band-8 and band-9 driver lines), and direct `schema.toml`
+  desired-schema authoring, `generate_models(..., format="toml")`, and
+  Python `.toml` generator auto-routing are removed; both TOML authoring
+  routes emit a filterable Python `DeprecationWarning`. Deployments
+  retaining a 2.1.0-scheduled surface pin `type-bridge>=2,<2.1`.
   V1 query facades have no removal schedule, and archival migration readers,
   checksum verification, ledger import, snapshots, converters, and the
-  legacy-frontier bridge remain retained. One deliberate exception leaves
-  the ordinary-SemVer schedule: direct `schema.toml` desired-schema
-  authoring, `generate_models(..., format="toml")`, and Python `.toml`
-  generator auto-routing are scheduled for removal in the 2.1.0 minor
-  release; both authoring routes emit a filterable Python
-  `DeprecationWarning`, and deployments still authoring TOML can pin
-  `type-bridge>=2,<2.1`. The exact ordinary-SemVer 3.0.0
+  legacy-frontier bridge remain retained. The exact ordinary-SemVer 3.0.0
   removal inventory is:
 
-  - TypeDB 3.8/3.10 active provider and driver support;
   - `type_bridge_core.TypeSchema`,
     `type_bridge_core_lib::schema::TypeSchema`,
     `type_bridge.SchemaInfo`, `type_bridge.migration.SchemaInfo`,
@@ -82,8 +81,9 @@ All notable changes to TypeBridge will be documented in this file.
   are each deprecated without a removal schedule. Read-only TOML conversion,
   legacy migration readers, original checksums, applied-ledger import,
   snapshots, historical server metadata, and the legacy-frontier bridge are
-  explicitly retained. Apart from the named 2.1.0 TOML-authoring removal
-  there is no other 2.x removal or calendar cutoff; deployments retaining a
+  explicitly retained. Apart from the named 2.1.0 legacy-window removals
+  (3.8/3.10 bands and TOML authoring) there is no other 2.x removal or
+  calendar cutoff; deployments retaining a
   3.0.0-scheduled surface can pin `type-bridge>=2,<3`.
 - **Rust V2 publication boundary** - the nine V2 semantic, migration,
   projection, workspace, and CLI crates are first-party `2.0.0-rc.0`

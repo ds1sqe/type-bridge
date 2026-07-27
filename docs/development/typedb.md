@@ -15,11 +15,12 @@ This guide covers TypeDB-specific concepts, driver API, TypeQL syntax, and integ
 
 ### Support window
 
-The current 1.x release line and every TypeBridge 2.x release support TypeDB
-servers in the **3.8.x through 3.12.x** range. TypeBridge 2.x is the final major
-line to support TypeDB 3.8.x and 3.10.x; those server lines are deprecated in
+The current 1.x release line and every TypeBridge 2.0.x release support TypeDB
+servers in the **3.8.x through 3.12.x** range. TypeBridge 2.0.x is the final
+release line to support TypeDB 3.8.x and 3.10.x; those server lines are
+deprecated in
 `v2.0.0` to provide downstream users a migration window. Starting with
-TypeBridge `v3.0.0`, the supported server window is **TypeDB 3.11.x through
+TypeBridge `v2.1.0`, the supported server window is **TypeDB 3.11.x through
 3.12.x**. The
 complete V2 schema/query feature set and its conformance fixtures target
 **TypeDB 3.12.1** exactly, matching the exact release-artifact lane. Verified
@@ -47,7 +48,7 @@ are declared once in `crates/core`'s version module and consumed by every tier.
 
 ### Multi-band runtime
 
-Throughout TypeBridge 2.x, the wheel embeds three TypeDB Rust driver lines:
+Throughout TypeBridge 2.0.x, the wheel embeds three TypeDB Rust driver lines:
 band 7 (an unofficial namespaced packaging of upstream 3.8.1), band 8 (an
 unofficial namespaced packaging of upstream 3.11.5), and band 9 (the official
 upstream 3.12.1 package, currently the newest non-yanked stable 3.12.x Rust
@@ -65,7 +66,9 @@ graph already started even if a newer upstream patch is subsequently released.
 A confirmed 3.12 server upgrades to band 9 so `given` rows are available; band 8
 remains its safe discovery/fallback path. A single TypeBridge release therefore
 serves the full supported window without user-side driver selection.
-Starting with `v3.0.0`, the wheel embeds only bands 8 and 9.
+Starting with `v2.1.0`, the wheel embeds only bands 8 and 9: the band-7 line
+and active TypeDB 3.8/3.10 support leave in that minor release, the scheduled
+legacy-window exception to the ordinary major-version removal schedule.
 
 TypeBridge explicitly closes a binding-owned embedded-driver connection before
 releasing it. Automatic teardown is lease-aware: an open transaction may still
@@ -90,9 +93,9 @@ criteria pass.
 
 ### Release support matrix
 
-Compatibility is release-specific: every 2.x release retains the current
-server window, and `v3.0.0` removes the deprecated band-7 runtime under an
-ordinary major-version boundary.
+Compatibility is release-specific: every 2.0.x release retains the current
+server window, and `v2.1.0` removes the deprecated band-7 runtime as the
+scheduled legacy-window exception to the ordinary major-version boundary.
 
 | Dimension | Supported range | Notes |
 |-----------|-----------------|-------|
@@ -216,12 +219,12 @@ validates the supplied semantic version against the same support window, derives
 protocol band from the validated version, and then opens the matching embedded Rust
 driver.
 
-For `v2.x`, use an exact TypeDB version such as `3.8.3`, `3.10.4`, or
+For `v2.0.x`, use an exact TypeDB version such as `3.8.3`, `3.10.4`, or
 `3.11.5`, or `3.12.1`; do not substitute a raw protocol band. Band 7 includes
 unsupported TypeDB `3.7.x` as well as supported `3.8.x` and `3.10.x`. When
 HTTP is unavailable, automatic band-7 fallback can identify the protocol band
 but not the exact semantic version; use `server_version` when that exact
-validation is required. Starting with `v3.0.0`, pin only TypeDB 3.11.x or
+validation is required. Starting with `v2.1.0`, pin only TypeDB 3.11.x or
 3.12.x. Invalid or unsupported pinned versions still fail with `VersionError`.
 
 **Node binding**

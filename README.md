@@ -417,10 +417,11 @@ band 8 remains available for discovery/fallback. No extra install is needed for
 3.8.x/3.10.x/3.12.x deployments.
 
 TypeDB 3.8 and 3.10 connections remain fully operational throughout
-TypeBridge 2.x but emit one filterable compatibility notice per successful
+TypeBridge 2.0.x but emit one filterable compatibility notice per successful
 connection; active support for those server lines is scheduled for removal in
-TypeBridge 3.0.0. Deployments that must retain them may pin
-`type-bridge>=2,<3`. TypeDB 3.11 and 3.12 do not emit that notice. See the
+TypeBridge 2.1.0, when the wheel embeds only the band-8 and band-9 driver
+lines. Deployments that must retain them may pin
+`type-bridge>=2,<2.1`. TypeDB 3.11 and 3.12 do not emit that notice. See the
 exact [V2 deprecation inventory](docs/guide/v2-deprecations.md), including
 warning filtering and the surfaces that are explicitly retained.
 

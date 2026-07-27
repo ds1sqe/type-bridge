@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 
 class TypeDBServerDeprecationWarning(FutureWarning):
-    """A connected TypeDB server line is scheduled for removal in 3.0."""
+    """A connected TypeDB server line is scheduled for removal in 2.1.0."""
 
     code = _TYPEDB_LEGACY_SERVER_DEPRECATION_CODE
 

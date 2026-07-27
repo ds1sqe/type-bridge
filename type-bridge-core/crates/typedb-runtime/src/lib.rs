@@ -3937,7 +3937,10 @@ mod tests {
                 1,
                 "{output}"
             );
-            assert!(output.contains("3.0.0"), "{output}");
+            assert!(
+                output.contains(core_version::TYPEDB_LEGACY_SERVER_REMOVAL_RELEASE),
+                "{output}"
+            );
             assert!(!output.contains("driver band"), "{output}");
         }
     }
