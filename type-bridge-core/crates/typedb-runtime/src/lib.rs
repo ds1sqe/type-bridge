@@ -4948,6 +4948,9 @@ mod tests {
             std::process::id()
         ));
         std::fs::create_dir(&directory).unwrap();
+        // load() requires an already-physical path; the ambient temp
+        // directory may sit behind symlinked components (macOS /var).
+        let directory = directory.canonicalize().unwrap();
         let configured = directory.join("root.pem");
         let moved = directory.join("loaded-root.pem");
         let original = include_bytes!("../tests/fixtures/root-ca.pem");
@@ -4995,9 +4998,13 @@ mod tests {
             "type-bridge-runtime-root-parent-swap-{}-{sequence}",
             std::process::id()
         ));
+        std::fs::create_dir(&root).unwrap();
+        // load() requires an already-physical path; the ambient temp
+        // directory may sit behind symlinked components (macOS /var).
+        let root = root.canonicalize().unwrap();
         let configured_parent = root.join("configured-parent");
         let moved_parent = root.join("loaded-parent");
-        std::fs::create_dir_all(&configured_parent).unwrap();
+        std::fs::create_dir(&configured_parent).unwrap();
         let configured = configured_parent.join("root.pem");
         let original = include_bytes!("../tests/fixtures/root-ca.pem");
         std::fs::write(&configured, original).unwrap();
@@ -5044,6 +5051,9 @@ mod tests {
             std::process::id()
         ));
         std::fs::create_dir(&directory).unwrap();
+        // load() requires an already-physical path; the ambient temp
+        // directory may sit behind symlinked components (macOS /var).
+        let directory = directory.canonicalize().unwrap();
         let configured = directory.join("root.pem");
         let original = include_bytes!("../tests/fixtures/root-ca.pem");
         std::fs::write(&configured, original).unwrap();

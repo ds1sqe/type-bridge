@@ -2665,8 +2665,12 @@ tls-root-ca = "root.pem"
     #[tokio::test]
     async fn inbound_identity_load_rechecks_the_open_handle_byte_limit() {
         let dir = tempfile::tempdir().unwrap();
-        let cert = dir.path().join("server.pem");
-        let key = dir.path().join("server.key");
+        // load() walks parent components without following symlinks; the
+        // ambient temp directory may sit behind symlinked components
+        // (macOS /var), which would fail before the byte-limit check.
+        let root = dir.path().canonicalize().unwrap();
+        let cert = root.join("server.pem");
+        let key = root.join("server.key");
         let file = std::fs::File::create(&cert).unwrap();
         file.set_len(MAX_TLS_MATERIAL_BYTES + 1).unwrap();
         std::fs::write(&key, "not a key").unwrap();
@@ -2811,13 +2815,17 @@ database = "db"
         use std::time::Duration;
 
         let dir = tempfile::tempdir().unwrap();
-        let fifo = dir.path().join("server.pem");
+        // load() walks parent components without following symlinks; the
+        // ambient temp directory may sit behind symlinked components
+        // (macOS /var), which would fail before the regular-file check.
+        let root = dir.path().canonicalize().unwrap();
+        let fifo = root.join("server.pem");
         let status = std::process::Command::new("mkfifo")
             .arg(&fifo)
             .status()
             .expect("POSIX mkfifo is available");
         assert!(status.success(), "mkfifo failed: {status}");
-        let key = dir.path().join("server.key");
+        let key = root.join("server.key");
         std::fs::write(&key, "not reached").unwrap();
         let tls = InboundTlsSection::from_paths(fifo, key);
         let (sender, receiver) = mpsc::sync_channel(1);
