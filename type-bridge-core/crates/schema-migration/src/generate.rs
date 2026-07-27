@@ -271,7 +271,7 @@ pub fn try_acquire_migration_authoring_lock(
         if error.kind() == std::io::ErrorKind::WouldBlock {
             write_conflict()
         } else {
-            write_failed()
+            write_failed(&error)
         }
     })
 }
@@ -293,7 +293,7 @@ pub fn write_generated_migration_under_lock(
     let preview_name = generated.preview_file_name();
     if directory
         .entry_exists(manifest_name.as_ref())
-        .map_err(|_| write_failed())?
+        .map_err(|error| write_failed(&error))?
     {
         return Err(write_conflict());
     }
@@ -302,11 +302,11 @@ pub fn write_generated_migration_under_lock(
     // publication and can be recovered safely.
     if directory
         .entry_exists(preview_name.as_ref())
-        .map_err(|_| write_failed())?
+        .map_err(|error| write_failed(&error))?
     {
         directory
             .remove_file(preview_name.as_ref())
-            .map_err(|_| write_failed())?;
+            .map_err(|error| write_failed(&error))?;
     }
     let manifest_temp = write_unique_temporary(
         directory,
@@ -347,9 +347,9 @@ pub fn write_generated_migration_under_lock(
                 }
             }
         }
-        Err(_) => {
+        Err(error) => {
             cleanup(false);
-            return Err(write_failed());
+            return Err(write_failed(&error));
         }
     };
     if let Err(error) = publish_no_replace(directory, &manifest_temp, &manifest_name) {
@@ -357,7 +357,7 @@ pub fn write_generated_migration_under_lock(
         return Err(if error.kind() == std::io::ErrorKind::AlreadyExists {
             write_conflict()
         } else {
-            write_failed()
+            write_failed(&error)
         });
     }
     if let Err(error) = sync_authoring_directory(directory) {
@@ -403,21 +403,19 @@ fn write_unique_temporary(
         );
         match directory.create_new(name.as_ref()) {
             Ok(mut file) => {
-                if file
-                    .write_all(bytes)
-                    .and_then(|()| file.sync_all())
-                    .is_err()
-                {
+                if let Err(error) = file.write_all(bytes).and_then(|()| file.sync_all()) {
                     let _ = directory.remove_file(name.as_ref());
-                    return Err(write_failed());
+                    return Err(write_failed(&error));
                 }
                 return Ok(name);
             }
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(_) => return Err(write_failed()),
+            Err(error) => return Err(write_failed(&error)),
         }
     }
-    Err(write_failed())
+    Err(write_failed(&std::io::Error::other(
+        "temporary name allocation exhausted",
+    )))
 }
 
 /// Publish a completed temporary under its final name without replacing.
@@ -434,7 +432,7 @@ fn publish_no_replace(
 }
 
 fn sync_authoring_directory(directory: &MigrationDirectory) -> Result<(), Diagnostic> {
-    directory.sync_all().map_err(|_| write_failed())
+    directory.sync_all().map_err(|error| write_failed(&error))
 }
 
 fn write_conflict() -> Diagnostic {
@@ -445,11 +443,14 @@ fn write_conflict() -> Diagnostic {
     )
 }
 
-fn write_failed() -> Diagnostic {
+/// The integrity diagnostic names the underlying I/O failure so a
+/// production operator can distinguish permissions, exhaustion, and
+/// platform quirks without tracing the filesystem calls.
+fn write_failed(error: &std::io::Error) -> Diagnostic {
     failure(
         DiagnosticCategory::Integrity,
         "migration_generation_write_failed",
-        "generated migration file could not be created",
+        format!("generated migration file could not be created: {error}"),
     )
 }
 
@@ -541,7 +542,11 @@ fn author_steps(
     Ok(steps)
 }
 
-fn failure(category: DiagnosticCategory, code: &'static str, message: &'static str) -> Diagnostic {
+fn failure(
+    category: DiagnosticCategory,
+    code: &'static str,
+    message: impl Into<String>,
+) -> Diagnostic {
     Diagnostic::new(
         category,
         DiagnosticCode::new(code).expect("static generation diagnostic code is canonical"),
