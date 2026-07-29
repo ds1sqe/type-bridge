@@ -32,6 +32,11 @@ A modern, Pythonic ORM for [TypeDB](https://github.com/typedb/typedb) with an At
 - **V2 Query Facades**: Complete Rust-owned low-level plan authoring plus
   synchronous direct and one-exchange asynchronous remote model queries in
   Python and Node
+- **Public Rust Client**: Owner-branded generated models, CRUD, immutable
+  queries, reusable transactions, and local/remote materialization on Rust
+  1.88+
+- **Hardened Server Image**: Multi-platform, non-root, signed TypeBridge
+  server OCI artifact with V1 compatibility and configuration-gated V2
 - **Multi-player Roles**: A single role can accept multiple entity types via `Role.multi(...)`
 - **Transaction Context**: Share transactions across multiple operations with `TransactionContext`
 - **Django-style Lookups**: Filter with `__contains`, `__gt`, `__in`, `__isnull` and more
@@ -42,6 +47,11 @@ See [Immutable Typed Queries](docs/guide/typed-queries.md) for the distinct
 `type_bridge.typed` / `@type-bridge/node/typed` model facade, the complete
 `type_bridge.query_v2` / `@type-bridge/node/query-v2` authoring facade, and the
 caller-owned remote transport contract.
+
+See the [Rust Client](docs/guide/rust.md) for the exact source/Git dependency
+and generated application workflow, and the
+[Server Container](docs/guide/server-container.md) for immutable digest,
+runtime-hardening, and supply-chain verification guidance.
 
 ## Installation
 

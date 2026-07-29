@@ -27,7 +27,7 @@ fn projected(
 }
 
 #[test]
-fn emits_exact_deterministic_dependency_free_crate() {
+fn emits_exact_deterministic_single_dependency_crate() {
     let emitter = RustEmitter::new();
     let resources = emitter.code_resources().unwrap();
     let projection = projected(include_str!("acceptance/schema.yaml"), &resources);
@@ -56,21 +56,67 @@ fn emits_exact_deterministic_dependency_free_crate() {
     );
     let declarations =
         String::from_utf8(first.get("src/declaration.rs").unwrap().to_vec()).unwrap();
+    for import in [
+        "HydratedRow",
+        "HydrationCapability",
+        "ValidationError",
+        "MaterializeModel",
+    ] {
+        assert!(declarations.contains(import));
+    }
+    assert!(declarations.contains("fn __tb_dispatch_subtype"));
+    assert!(!declarations.contains("fn dispatch_subtype"));
+    let person_start = declarations
+        .find("impl SubtypeRootModel for Person")
+        .unwrap();
+    let person_end = person_start + declarations[person_start..].find(" } }\n").unwrap() + 4;
+    let person_impl = &declarations[person_start..person_end];
+    let identity = person_impl
+        .find("__tb_row.type_id_json() == Person::TYPE_ID_JSON")
+        .unwrap();
+    let materialize = person_impl.find("Person::materialize").unwrap();
+    assert!(identity < materialize);
+    assert!(
+        person_impl.contains("ValidationError::new(\"type_id\", \"wrong_concrete_model_type\")")
+    );
+    let membership_start = declarations
+        .find("impl SubtypeRootModel for Membership")
+        .unwrap();
+    let membership_end =
+        membership_start + declarations[membership_start..].find(" } }\n").unwrap() + 4;
+    let membership_impl = &declarations[membership_start..membership_end];
+    assert!(membership_impl.contains("Membership::TYPE_ID_JSON => Membership::materialize(__tb_row, __tb_cap).map(MembershipFamily::Membership)"));
+    assert!(membership_impl.contains("Employment::TYPE_ID_JSON => Employment::materialize(__tb_row, __tb_cap).map(MembershipFamily::Employment)"));
+    assert!(
+        membership_impl
+            .contains("_ => Err(ValidationError::new(\"type_id\", \"wrong_concrete_model_type\"))")
+    );
     assert!(
         declarations.find("impl Model for Membership").unwrap()
             < declarations.find("impl Model for Employment").unwrap()
     );
     assert!(declarations.contains("RoleUpcast<EmploymentEmployeePlayer, MembershipMemberPlayer>"));
+    assert!(declarations.contains(
+        "impl RoleTokenCompatible<Employment, EmploymentEmployeePlayer> for Employment {}"
+    ));
+    assert!(!declarations.contains(
+        "impl RoleTokenCompatible<Membership, MembershipMemberPlayer> for Employment {}"
+    ));
     let create = String::from_utf8(first.get("src/create.rs").unwrap().to_vec()).unwrap();
     assert!(create.contains("pub struct ContainerCreate"));
     assert!(create.contains("pub fn try_new"));
+    let read = String::from_utf8(first.get("src/read.rs").unwrap().to_vec()).unwrap();
+    assert!(read.contains("impl QueryValued for Identifier { type Domain = String; }"));
     let tokens = String::from_utf8(first.get("src/tokens.rs").unwrap().to_vec()).unwrap();
     assert!(tokens.contains("pub struct ContainerType"));
     assert!(tokens.contains("pub enum ContainerItemPlayer"));
+    assert!(tokens.contains("impl RolePlayer<Person> for EmploymentEmployeePlayer {}"));
     assert!(tokens.contains("pub const plays_event_container_item"));
     let manifest = String::from_utf8(first.get("Cargo.toml").unwrap().to_vec()).unwrap();
-    assert!(!manifest.contains("dependencies"));
+    assert!(manifest.contains("[dependencies]"));
+    assert!(manifest.contains("type-bridge ="));
     assert!(manifest.contains("doctest = false"));
+    assert!(manifest.contains("rust-version = \"1.88\""));
 }
 
 #[test]
@@ -130,4 +176,17 @@ fn rejects_schema_name_colliding_with_runtime_export() {
     let error = emitter.emit(&projection).unwrap_err();
     assert!(error.to_string().contains("rust_emitter_name_collision"));
     assert!(error.to_string().contains("Cardinality"));
+}
+
+#[test]
+fn rejects_schema_name_colliding_with_injected_schema_export() {
+    let emitter = RustEmitter::new();
+    let resources = emitter.code_resources().unwrap();
+    let projection = projected(
+        "format: typebridge.schema/v2\nentities:\n  app_schema: {}\n",
+        &resources,
+    );
+    let error = emitter.emit(&projection).unwrap_err();
+    assert!(error.to_string().contains("rust_emitter_name_collision"));
+    assert!(error.to_string().contains("AppSchema"));
 }

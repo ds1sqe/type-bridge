@@ -504,6 +504,18 @@ pub trait TransactionOps: Send {
     /// Execute a TypeQL query string.
     fn query(&mut self, typeql: &str) -> BoxFuture<'_, Result<QueryResult, OrmError>>;
 
+    /// Execute using canonical provider temporal encoding while preserving answer kind.
+    ///
+    /// This hidden compatibility hook delegates to legacy [`Self::query`] by
+    /// default; the real provider overrides it with the ExactV2 path.
+    #[doc(hidden)]
+    fn query_canonical<'a>(
+        &'a mut self,
+        typeql: &str,
+    ) -> BoxFuture<'a, Result<QueryResult, OrmError>> {
+        self.query(typeql)
+    }
+
     /// Execute a TypeQL query with `given`-stage input rows.
     ///
     /// Rows travel through the driver API, not the query string. Defaults to

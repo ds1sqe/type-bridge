@@ -56,7 +56,14 @@ type QueryV2Comparator =
   | "greater"
   | "greater_or_equal";
 type QueryV2OrderDirection = "ascending" | "descending";
-type QueryV2Reducer = "count" | "max" | "mean" | "min" | "sum";
+type QueryV2Reducer =
+  | "count"
+  | "max"
+  | "mean"
+  | "median"
+  | "min"
+  | "std"
+  | "sum";
 type QueryV2InputReducer = Exclude<QueryV2Reducer, "count">;
 type QueryV2Scalar = string | bigint | number | boolean;
 type QueryV2InvocationRows = readonly (readonly (QueryV2Scalar | null)[])[];

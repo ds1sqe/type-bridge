@@ -981,6 +981,7 @@ impl ProjectedAnnotation {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct FieldTokenProjection {
     id: OwnsFactId,
+    declaring_id: OwnsFactId,
     target_name: TargetIdentifier,
     multiplicity: ProjectedMultiplicity,
     key: bool,
@@ -993,15 +994,35 @@ impl FieldTokenProjection {
     /// Construct a projected owned-attribute token.
     pub fn new(
         id: OwnsFactId,
+        declaring_id: OwnsFactId,
         target_name: TargetIdentifier,
         multiplicity: ProjectedMultiplicity,
         key: bool,
         unique: bool,
         annotations: BTreeMap<AnnotationFactId, ProjectedAnnotation>,
     ) -> Result<Self, Diagnostic> {
+        if id.attribute() != declaring_id.attribute() {
+            return Err(invalid_projection(
+                "invalid_projection_reference",
+                "effective owns fact attribute does not match declaring owns fact attribute",
+            ));
+        }
+        if annotations.iter().any(|(key, value)| {
+            key != value.id()
+                || !matches!(
+                    value.id().subject(),
+                    AnnotationSubjectId::Owns(subject) if subject == &id
+                )
+        }) {
+            return Err(invalid_projection(
+                "invalid_projected_owns_annotation",
+                "owns annotations require matching exact effective owns subjects",
+            ));
+        }
         ensure_collection_limit(annotations.len(), "too_many_projected_annotations")?;
         Ok(Self {
             id,
+            declaring_id,
             target_name,
             multiplicity,
             key,
@@ -1013,6 +1034,11 @@ impl FieldTokenProjection {
     #[must_use]
     pub const fn id(&self) -> &OwnsFactId {
         &self.id
+    }
+    /// Return the declaring ownership identity.
+    #[must_use]
+    pub const fn declaring_id(&self) -> &OwnsFactId {
+        &self.declaring_id
     }
     /// Return the emitted member name.
     #[must_use]
@@ -1656,6 +1682,8 @@ impl CompleteReadProjection {
 pub enum ReferenceConstructionPolicy {
     /// Only an engine IID may construct a reference in the initial runtime contract.
     IidOnly,
+    /// Reference construction admits typed key fallback.
+    KeyFallback,
 }
 
 /// The nonrecursive identity/reference read facet.
@@ -1673,10 +1701,22 @@ impl ReferenceReadProjection {
         key_fields: Vec<OwnsFactId>,
     ) -> Result<Self, Diagnostic> {
         ensure_collection_limit(key_fields.len(), "too_many_projected_reference_keys")?;
+        let mut unique = BTreeSet::new();
+        if key_fields.iter().any(|id| !unique.insert(id)) {
+            return Err(invalid_projection(
+                "duplicate_projected_reference_key",
+                "reference key identities must be unique",
+            ));
+        }
+        let construction_policy = if key_fields.is_empty() {
+            ReferenceConstructionPolicy::IidOnly
+        } else {
+            ReferenceConstructionPolicy::KeyFallback
+        };
         Ok(Self {
             target_name,
             key_fields,
-            construction_policy: ReferenceConstructionPolicy::IidOnly,
+            construction_policy,
         })
     }
     /// Return the generated reference type name, if supported.
@@ -1776,6 +1816,45 @@ impl ModelProjection {
         reference_read: ReferenceReadProjection,
         query_tokens: QueryTokenProjection,
     ) -> Result<Self, Diagnostic> {
+        let exact_required_scalar = |multiplicity: ProjectedMultiplicity| {
+            multiplicity.required()
+                && multiplicity.container() == ProjectedContainer::Scalar
+                && multiplicity.cardinality().min() == 1
+                && multiplicity.cardinality().max() == Some(1)
+        };
+        let reference_keys_valid = reference_read.key_fields().iter().all(|key| {
+            let Some(token) = query_tokens.fields().get(key) else {
+                return false;
+            };
+            if !token.is_key() || !exact_required_scalar(token.multiplicity()) {
+                return false;
+            }
+            let mut complete = complete_read
+                .fields()
+                .iter()
+                .filter(|field| field.token() == key);
+            let Some(field) = complete.next() else {
+                return false;
+            };
+            if complete.next().is_some() || !exact_required_scalar(field.multiplicity()) {
+                return false;
+            }
+            matches!(
+                field.value(),
+                ProjectedTypeRef::Model(value)
+                    if value.form() == ProjectedModelForm::Complete
+                        && value.id().kind() == TypeKind::Attribute
+                        && value.id().label() == key.attribute().label()
+            )
+        });
+        if (!reference_read.key_fields().is_empty() && reference_read.target_name().is_none())
+            || !reference_keys_valid
+        {
+            return Err(invalid_projection(
+                "invalid_projected_reference_key",
+                "reference keys require exact required-scalar complete/query key facets",
+            ));
+        }
         if query_tokens.type_id() != &id
             || match (declaration.parent(), declaration.direct_sub()) {
                 (None, None) => false,
@@ -2356,6 +2435,31 @@ impl RuntimeProjection {
             return Err(invalid_projection(
                 "invalid_projection_reference",
                 "projection references a model that is not present",
+            ));
+        }
+        let declaring_owners_valid = models.values().all(|model| {
+            model.query_tokens().fields().values().all(|token| {
+                let declaring_owner = token.declaring_id().owner();
+                let mut curr = Some(model.id());
+                let mut found = false;
+                let mut visited = BTreeSet::new();
+                while let Some(curr_id) = curr {
+                    if !visited.insert(curr_id) {
+                        return false;
+                    }
+                    if curr_id == declaring_owner {
+                        found = true;
+                        break;
+                    }
+                    curr = models.get(curr_id).and_then(|m| m.declaration().parent());
+                }
+                found
+            })
+        });
+        if !declaring_owners_valid {
+            return Err(invalid_projection(
+                "invalid_projection_reference",
+                "field token declaring owner is not the effective owner or a valid ancestor",
             ));
         }
         let model_use_is_valid = |value: &ProjectedModelUse| {

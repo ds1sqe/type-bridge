@@ -1,3 +1,6 @@
+from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
+
 from generated_v2 import (
     Container,
     Employment,
@@ -8,7 +11,31 @@ from generated_v2 import (
     Person,
     PersonRef,
     RoleToken,
+    Score,
+    ValBool,
+    ValConstrained,
+    ValDate,
+    ValDatetime,
+    ValDatetimeTz,
+    ValDecimal,
+    ValDouble,
+    ValDuration,
 )
+
+
+def person(identifier: Identifier) -> Person:
+    return Person(
+        identifier=identifier,
+        score=Score(3),
+        val_bool=ValBool(True),
+        val_constrained=ValConstrained(20),
+        val_date=ValDate(date(2026, 7, 29)),
+        val_datetime=ValDatetime(datetime(2026, 7, 29)),
+        val_datetime_tz=ValDatetimeTz(datetime(2026, 7, 29, tzinfo=UTC)),
+        val_decimal=ValDecimal(Decimal("3.5")),
+        val_double=ValDouble(3.5),
+        val_duration=ValDuration(timedelta(seconds=3)),
+    )
 
 
 def accepts_employment_role(role: RoleToken[Employment, Person]) -> None:
@@ -23,14 +50,14 @@ Employment(
     )
 )
 Employment(
-    employee=Person(identifier=Identifier("person-1")),
-    member=Person(identifier=Identifier("person-2")),  # E: specialized_keyword:reportCallIssue
+    employee=person(Identifier("person-1")),
+    member=person(Identifier("person-2")),  # E: specialized_keyword:reportCallIssue
 )
 accepts_employment_role(Membership.member)  # E: wrong_owner:reportArgumentType
 Container(item=EventRef("event-iid"))  # E: scalar_for_sequence:reportArgumentType
 Employment(
     employee=[  # E: sequence_for_scalar:reportArgumentType
-        Person(identifier=Identifier("person-1"))
+        person(Identifier("person-1"))
     ]
 )
-Person(identifier=7)  # E: wrong_scalar:reportArgumentType
+person(7)  # E: wrong_scalar:reportArgumentType

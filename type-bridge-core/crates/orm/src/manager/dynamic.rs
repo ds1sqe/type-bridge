@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use crate::descriptor::{EntityDescriptor, RelationDescriptor};
 use crate::dynamic::{
-    DynamicAggregate, DynamicAttributeMap, DynamicEntityRow, DynamicExpr, DynamicRelationRow,
-    DynamicRolePlayerInput, DynamicSort,
+    DynamicAggregate, DynamicAttributeMap, DynamicEntityIdentity, DynamicEntityRow, DynamicExpr,
+    DynamicRelationIdentity, DynamicRelationRow, DynamicRolePlayerInput, DynamicSort,
 };
 use crate::error::{OrmError, Result};
 use crate::filter::Filter;
@@ -13,7 +13,10 @@ use crate::session::backend::{GivenRowsSpec, GivenValue, QueryResult, TxType};
 use crate::session::{Database, TransactionContext};
 use crate::value::AttributeValue;
 
-use super::hydration::{extract_count, hydrate_dynamic_entity, hydrate_dynamic_relation};
+use super::hydration::{
+    coalesce_dynamic_relation_by_iid, coalesce_dynamic_relations, extract_count,
+    hydrate_dynamic_entity, hydrate_dynamic_entity_identity, hydrate_dynamic_relation_identity,
+};
 use super::query_builder;
 
 /// CRUD manager for an entity described at runtime.
@@ -35,6 +38,27 @@ impl<'db> DynamicEntityManager<'db> {
     pub fn with_transaction(tx: TransactionContext, descriptor: Arc<EntityDescriptor>) -> Self {
         Self {
             target: DynamicExecutionTarget::Transaction(tx),
+            descriptor,
+        }
+    }
+
+    /// Create a manager whose provider answers use canonical contract encoding.
+    #[doc(hidden)]
+    pub fn new_canonical(db: &'db Database, descriptor: Arc<EntityDescriptor>) -> Self {
+        Self {
+            target: DynamicExecutionTarget::CanonicalDatabase(db),
+            descriptor,
+        }
+    }
+
+    /// Bind a manager to an existing transaction using canonical answers.
+    #[doc(hidden)]
+    pub fn with_canonical_transaction(
+        tx: TransactionContext,
+        descriptor: Arc<EntityDescriptor>,
+    ) -> Self {
+        Self {
+            target: DynamicExecutionTarget::CanonicalTransaction(tx),
             descriptor,
         }
     }
@@ -74,11 +98,152 @@ impl<'db> DynamicEntityManager<'db> {
         self.write_many(items, DynamicWriteOperation::Put).await
     }
 
+    /// Insert or update one exact-type entity without reusing a subtype.
+    pub async fn put_exact(&self, attributes: &DynamicAttributeMap) -> Result<String> {
+        match &self.target {
+            DynamicExecutionTarget::Database(db) => {
+                let tx = db.transaction_context(TxType::Write).await?;
+                let manager = DynamicEntityManager::with_transaction(
+                    tx.clone(),
+                    Arc::clone(&self.descriptor),
+                );
+                let iid = match manager.put_exact_in_transaction(attributes).await {
+                    Ok(iid) => iid,
+                    Err(error) => {
+                        let _ = tx.rollback().await;
+                        return Err(error);
+                    }
+                };
+                tx.commit().await?;
+                Ok(iid)
+            }
+            DynamicExecutionTarget::Transaction(tx) => {
+                ensure_transaction_can_execute(tx.tx_type(), TxType::Write)?;
+                self.put_exact_in_transaction(attributes).await
+            }
+            DynamicExecutionTarget::CanonicalDatabase(db) => {
+                let tx = db.transaction_context(TxType::Write).await?;
+                let manager = DynamicEntityManager::with_canonical_transaction(
+                    tx.clone(),
+                    Arc::clone(&self.descriptor),
+                );
+                let iid = match manager.put_exact_in_transaction(attributes).await {
+                    Ok(iid) => iid,
+                    Err(error) => {
+                        let _ = tx.rollback().await;
+                        return Err(error);
+                    }
+                };
+                tx.commit().await?;
+                Ok(iid)
+            }
+            DynamicExecutionTarget::CanonicalTransaction(tx) => {
+                ensure_transaction_can_execute(tx.tx_type(), TxType::Write)?;
+                self.put_exact_in_transaction(attributes).await
+            }
+        }
+    }
+
+    /// Insert or update exact-type entities in input order within one transaction.
+    pub async fn put_many_exact(&self, items: &[DynamicAttributeMap]) -> Result<Vec<String>> {
+        if items.is_empty() {
+            return Ok(vec![]);
+        }
+
+        match &self.target {
+            DynamicExecutionTarget::Database(db) => {
+                let tx = db.transaction_context(TxType::Write).await?;
+                let manager = DynamicEntityManager::with_transaction(
+                    tx.clone(),
+                    Arc::clone(&self.descriptor),
+                );
+                let mut iids = Vec::with_capacity(items.len());
+                for item in items {
+                    match manager.put_exact_in_transaction(item).await {
+                        Ok(iid) => iids.push(iid),
+                        Err(error) => {
+                            let _ = tx.rollback().await;
+                            return Err(error);
+                        }
+                    }
+                }
+                tx.commit().await?;
+                Ok(iids)
+            }
+            DynamicExecutionTarget::Transaction(tx) => {
+                ensure_transaction_can_execute(tx.tx_type(), TxType::Write)?;
+                let mut iids = Vec::with_capacity(items.len());
+                for item in items {
+                    iids.push(self.put_exact_in_transaction(item).await?);
+                }
+                Ok(iids)
+            }
+            DynamicExecutionTarget::CanonicalDatabase(db) => {
+                let tx = db.transaction_context(TxType::Write).await?;
+                let manager = DynamicEntityManager::with_canonical_transaction(
+                    tx.clone(),
+                    Arc::clone(&self.descriptor),
+                );
+                let mut iids = Vec::with_capacity(items.len());
+                for item in items {
+                    match manager.put_exact_in_transaction(item).await {
+                        Ok(iid) => iids.push(iid),
+                        Err(error) => {
+                            let _ = tx.rollback().await;
+                            return Err(error);
+                        }
+                    }
+                }
+                tx.commit().await?;
+                Ok(iids)
+            }
+            DynamicExecutionTarget::CanonicalTransaction(tx) => {
+                ensure_transaction_can_execute(tx.tx_type(), TxType::Write)?;
+                let mut iids = Vec::with_capacity(items.len());
+                for item in items {
+                    iids.push(self.put_exact_in_transaction(item).await?);
+                }
+                Ok(iids)
+            }
+        }
+    }
+
     /// Update one dynamic entity's non-key attributes.
     pub async fn update(&self, iid: Option<&str>, attributes: &DynamicAttributeMap) -> Result<()> {
         let typeql =
             query_builder::build_dynamic_entity_update(&self.descriptor, iid, attributes, "$e")?;
         tracing::debug!(typeql = %typeql, entity_type = %self.descriptor.type_name, "DYNAMIC UPDATE");
+        self.target.execute(&typeql, TxType::Write).await?;
+        Ok(())
+    }
+
+    /// Completely replace non-key ownership on one exact-type entity identified by a mandatory
+    /// canonical IID; omitted optional and multivalue values are removed.
+    pub async fn update_exact(&self, iid: &str, attributes: &DynamicAttributeMap) -> Result<()> {
+        crate::dynamic::validate_exact_iid(&self.descriptor.type_name, iid)?;
+        for (name, _) in attributes {
+            if self.descriptor.attribute(name).is_none() {
+                return Err(OrmError::QueryExecution(format!(
+                    "Dynamic exact update for {} references unknown attribute {name}",
+                    self.descriptor.type_name
+                )));
+            }
+        }
+        if self
+            .descriptor
+            .owned_attributes
+            .iter()
+            .all(|attribute| attribute.is_key())
+        {
+            return Ok(());
+        }
+        let typeql = query_builder::build_dynamic_entity_update_exact(
+            &self.descriptor,
+            iid,
+            attributes,
+            "$e",
+        )?;
+        tracing::debug!(typeql = %typeql, entity_type = %self.descriptor.type_name, "DYNAMIC EXACT UPDATE");
         self.target.execute(&typeql, TxType::Write).await?;
         Ok(())
     }
@@ -192,9 +357,55 @@ impl<'db> DynamicEntityManager<'db> {
         self.get_exact(&[]).await
     }
 
+    /// Discover subtype-inclusive entity identities without fetching attributes.
+    pub async fn discover_all(&self) -> Result<Vec<DynamicEntityIdentity>> {
+        let typeql =
+            query_builder::build_dynamic_entity_identity_discovery(&self.descriptor, None, "$e")?;
+        tracing::debug!(typeql = %typeql, entity_type = %self.descriptor.type_name, "DYNAMIC ENTITY IDENTITY DISCOVERY");
+        let result = self.target.execute(&typeql, TxType::Read).await?;
+        self.hydrate_identity_documents(result)
+    }
+
+    /// Discover one subtype-inclusive entity identity by canonical IID.
+    pub async fn discover_by_iid(&self, iid: &str) -> Result<Option<DynamicEntityIdentity>> {
+        let typeql = query_builder::build_dynamic_entity_identity_discovery(
+            &self.descriptor,
+            Some(iid),
+            "$e",
+        )?;
+        tracing::debug!(typeql = %typeql, entity_type = %self.descriptor.type_name, "DYNAMIC ENTITY IDENTITY DISCOVERY BY IID");
+        let result = self.target.execute(&typeql, TxType::Read).await?;
+        let mut identities = self.hydrate_identity_documents(result)?;
+        match identities.len() {
+            0 => Ok(None),
+            1 => {
+                let identity = identities.pop().unwrap();
+                if identity.iid != iid {
+                    return Err(OrmError::Hydration {
+                        type_name: self.descriptor.type_name.clone(),
+                        message: "Entity identity discovery returned the wrong IID".into(),
+                    });
+                }
+                Ok(Some(identity))
+            }
+            n => Err(OrmError::Hydration {
+                type_name: self.descriptor.type_name.clone(),
+                message: format!("Expected 0 or 1 identity for IID lookup, got {n}"),
+            }),
+        }
+    }
+
     /// Count entities for this descriptor.
     pub async fn count(&self) -> Result<u64> {
         self.count_with_filters(&[]).await
+    }
+
+    /// Count only entities whose concrete type exactly matches this descriptor.
+    pub async fn count_exact(&self) -> Result<u64> {
+        let typeql = query_builder::build_dynamic_entity_count_exact(&self.descriptor, "$e")?;
+        tracing::debug!(typeql = %typeql, entity_type = %self.descriptor.type_name, "DYNAMIC EXACT COUNT");
+        let result = self.target.execute(&typeql, TxType::Read).await?;
+        extract_count(&result)
     }
 
     /// Count entities matching equality filters.
@@ -295,6 +506,35 @@ impl<'db> DynamicEntityManager<'db> {
         Ok(())
     }
 
+    /// Delete an exact-type entity by mandatory canonical IID.
+    pub async fn delete_by_iid_exact(&self, iid: &str) -> Result<()> {
+        let typeql =
+            query_builder::build_dynamic_entity_delete_by_iid_exact(&self.descriptor, iid, "$e")?;
+        tracing::debug!(typeql = %typeql, entity_type = %self.descriptor.type_name, "DYNAMIC EXACT DELETE");
+        self.target.execute(&typeql, TxType::Write).await?;
+        Ok(())
+    }
+
+    async fn put_exact_in_transaction(&self, attributes: &DynamicAttributeMap) -> Result<String> {
+        let Some(typeql) = query_builder::build_dynamic_entity_exact_key_lookup(
+            &self.descriptor,
+            attributes,
+            "$e",
+        )?
+        else {
+            return self.insert(attributes).await;
+        };
+        tracing::debug!(typeql = %typeql, entity_type = %self.descriptor.type_name, "DYNAMIC EXACT KEY LOOKUP");
+        let result = self.target.execute(&typeql, TxType::Read).await?;
+        match extract_exact_key_lookup_iid(&self.descriptor.type_name, result)? {
+            Some(iid) => {
+                self.update_exact(&iid, attributes).await?;
+                Ok(iid)
+            }
+            None => self.insert(attributes).await,
+        }
+    }
+
     async fn write_many(
         &self,
         items: &[DynamicAttributeMap],
@@ -351,6 +591,33 @@ impl<'db> DynamicEntityManager<'db> {
                 }
                 Ok(iids)
             }
+            DynamicExecutionTarget::CanonicalDatabase(db) => {
+                let tx = db.transaction_context(TxType::Write).await?;
+                let manager = DynamicEntityManager::with_canonical_transaction(
+                    tx.clone(),
+                    Arc::clone(&self.descriptor),
+                );
+                let mut iids = Vec::with_capacity(items.len());
+                for item in items {
+                    match manager.write_one(item, operation).await {
+                        Ok(iid) => iids.push(iid),
+                        Err(error) => {
+                            let _ = tx.rollback().await;
+                            return Err(error);
+                        }
+                    }
+                }
+                tx.commit().await?;
+                Ok(iids)
+            }
+            DynamicExecutionTarget::CanonicalTransaction(tx) => {
+                ensure_transaction_can_execute(tx.tx_type(), TxType::Write)?;
+                let mut iids = Vec::with_capacity(items.len());
+                for item in items {
+                    iids.push(self.write_one(item, operation).await?);
+                }
+                Ok(iids)
+            }
         }
     }
 
@@ -378,6 +645,26 @@ impl<'db> DynamicEntityManager<'db> {
             }),
         }
     }
+
+    fn hydrate_identity_documents(
+        &self,
+        result: QueryResult,
+    ) -> Result<Vec<DynamicEntityIdentity>> {
+        match result {
+            QueryResult::Documents(docs) => docs
+                .iter()
+                .map(|doc| hydrate_dynamic_entity_identity(&self.descriptor.type_name, doc))
+                .collect(),
+            QueryResult::Ok => Err(OrmError::Hydration {
+                type_name: self.descriptor.type_name.clone(),
+                message: "Expected Documents from identity discovery, got Ok".into(),
+            }),
+            QueryResult::Rows(_) => Err(OrmError::Hydration {
+                type_name: self.descriptor.type_name.clone(),
+                message: "Expected Documents from identity discovery, got Rows".into(),
+            }),
+        }
+    }
 }
 
 /// CRUD manager for a relation described at runtime.
@@ -399,6 +686,27 @@ impl<'db> DynamicRelationManager<'db> {
     pub fn with_transaction(tx: TransactionContext, descriptor: Arc<RelationDescriptor>) -> Self {
         Self {
             target: DynamicExecutionTarget::Transaction(tx),
+            descriptor,
+        }
+    }
+
+    /// Create a relation manager using canonical provider answers.
+    #[doc(hidden)]
+    pub fn new_canonical(db: &'db Database, descriptor: Arc<RelationDescriptor>) -> Self {
+        Self {
+            target: DynamicExecutionTarget::CanonicalDatabase(db),
+            descriptor,
+        }
+    }
+
+    /// Bind a relation manager to canonical answers in an existing transaction.
+    #[doc(hidden)]
+    pub fn with_canonical_transaction(
+        tx: TransactionContext,
+        descriptor: Arc<RelationDescriptor>,
+    ) -> Self {
+        Self {
+            target: DynamicExecutionTarget::CanonicalTransaction(tx),
             descriptor,
         }
     }
@@ -474,6 +782,324 @@ impl<'db> DynamicRelationManager<'db> {
         )?;
         tracing::debug!(typeql = %typeql, relation_type = %self.descriptor.type_name, "DYNAMIC RELATION UPDATE");
         self.target.execute(&typeql, TxType::Write).await?;
+        Ok(())
+    }
+
+    /// Replace the exact relation's owned state while preserving its IID.
+    /// The final complete player set must be nonempty because TypeDB removes
+    /// roleless relations at commit.
+    pub async fn update_exact(
+        &self,
+        iid: &str,
+        attributes: &DynamicAttributeMap,
+        role_players: &[DynamicRolePlayerInput],
+    ) -> Result<()> {
+        validate_relation_exact_update_input(&self.descriptor, iid, attributes, role_players)?;
+        match &self.target {
+            DynamicExecutionTarget::Database(db) => {
+                let tx = db.transaction_context(TxType::Write).await?;
+                let manager = DynamicRelationManager::with_transaction(
+                    tx.clone(),
+                    Arc::clone(&self.descriptor),
+                );
+                match manager
+                    .update_exact_in_transaction(iid, attributes, role_players)
+                    .await
+                {
+                    Ok(()) => {
+                        tx.commit().await?;
+                        Ok(())
+                    }
+                    Err(error) => {
+                        let _ = tx.rollback().await;
+                        Err(error)
+                    }
+                }
+            }
+            DynamicExecutionTarget::CanonicalDatabase(db) => {
+                let tx = db.transaction_context(TxType::Write).await?;
+                let manager = DynamicRelationManager::with_canonical_transaction(
+                    tx.clone(),
+                    Arc::clone(&self.descriptor),
+                );
+                match manager
+                    .update_exact_in_transaction(iid, attributes, role_players)
+                    .await
+                {
+                    Ok(()) => {
+                        tx.commit().await?;
+                        Ok(())
+                    }
+                    Err(error) => {
+                        let _ = tx.rollback().await;
+                        Err(error)
+                    }
+                }
+            }
+            DynamicExecutionTarget::Transaction(tx)
+            | DynamicExecutionTarget::CanonicalTransaction(tx) => {
+                ensure_transaction_can_execute(tx.tx_type(), TxType::Write)?;
+                self.update_exact_in_transaction(iid, attributes, role_players)
+                    .await
+            }
+        }
+    }
+
+    /// Put one exact concrete relation.
+    ///
+    /// Declared keys identify at most one relation. A hit preserves its IID
+    /// and keys while replacing non-key and player state; a miss inserts it.
+    /// The canonical relation IID is returned.
+    pub async fn put_exact(
+        &self,
+        attributes: &DynamicAttributeMap,
+        role_players: &[DynamicRolePlayerInput],
+    ) -> Result<String> {
+        validate_relation_exact_put_input(&self.descriptor, attributes, role_players)?;
+        match &self.target {
+            DynamicExecutionTarget::Database(db) => {
+                let tx = db.transaction_context(TxType::Write).await?;
+                let manager = Self::with_transaction(tx.clone(), Arc::clone(&self.descriptor));
+                match manager
+                    .put_exact_in_transaction(attributes, role_players)
+                    .await
+                {
+                    Ok(iid) => {
+                        tx.commit().await?;
+                        Ok(iid)
+                    }
+                    Err(e) => {
+                        let _ = tx.rollback().await;
+                        Err(e)
+                    }
+                }
+            }
+            DynamicExecutionTarget::CanonicalDatabase(db) => {
+                let tx = db.transaction_context(TxType::Write).await?;
+                let manager =
+                    Self::with_canonical_transaction(tx.clone(), Arc::clone(&self.descriptor));
+                match manager
+                    .put_exact_in_transaction(attributes, role_players)
+                    .await
+                {
+                    Ok(iid) => {
+                        tx.commit().await?;
+                        Ok(iid)
+                    }
+                    Err(e) => {
+                        let _ = tx.rollback().await;
+                        Err(e)
+                    }
+                }
+            }
+            DynamicExecutionTarget::Transaction(tx) => {
+                ensure_transaction_can_execute(tx.tx_type(), TxType::Write)?;
+                self.put_exact_in_transaction(attributes, role_players)
+                    .await
+            }
+            DynamicExecutionTarget::CanonicalTransaction(tx) => {
+                ensure_transaction_can_execute(tx.tx_type(), TxType::Write)?;
+                self.put_exact_in_transaction(attributes, role_players)
+                    .await
+            }
+        }
+    }
+
+    /// Put complete exact concrete relations in input order, atomically within
+    /// one owned or reused write transaction, returning canonical IIDs in order.
+    pub async fn put_many_exact(
+        &self,
+        items: &[(DynamicAttributeMap, Vec<DynamicRolePlayerInput>)],
+    ) -> Result<Vec<String>> {
+        for (attributes, role_players) in items {
+            validate_relation_exact_put_input(&self.descriptor, attributes, role_players)?;
+        }
+        if items.is_empty() {
+            return Ok(Vec::new());
+        }
+        match &self.target {
+            DynamicExecutionTarget::Database(db) => {
+                let tx = db.transaction_context(TxType::Write).await?;
+                let manager = Self::with_transaction(tx.clone(), Arc::clone(&self.descriptor));
+                match manager.put_many_exact_in_transaction(items).await {
+                    Ok(iids) => {
+                        tx.commit().await?;
+                        Ok(iids)
+                    }
+                    Err(error) => {
+                        let _ = tx.rollback().await;
+                        Err(error)
+                    }
+                }
+            }
+            DynamicExecutionTarget::CanonicalDatabase(db) => {
+                let tx = db.transaction_context(TxType::Write).await?;
+                let manager =
+                    Self::with_canonical_transaction(tx.clone(), Arc::clone(&self.descriptor));
+                match manager.put_many_exact_in_transaction(items).await {
+                    Ok(iids) => {
+                        tx.commit().await?;
+                        Ok(iids)
+                    }
+                    Err(error) => {
+                        let _ = tx.rollback().await;
+                        Err(error)
+                    }
+                }
+            }
+            DynamicExecutionTarget::Transaction(tx)
+            | DynamicExecutionTarget::CanonicalTransaction(tx) => {
+                ensure_transaction_can_execute(tx.tx_type(), TxType::Write)?;
+                self.put_many_exact_in_transaction(items).await
+            }
+        }
+    }
+
+    async fn put_many_exact_in_transaction(
+        &self,
+        items: &[(DynamicAttributeMap, Vec<DynamicRolePlayerInput>)],
+    ) -> Result<Vec<String>> {
+        let mut result = Vec::with_capacity(items.len());
+        for (attributes, role_players) in items {
+            result.push(
+                self.put_exact_in_transaction(attributes, role_players)
+                    .await?,
+            );
+        }
+        Ok(result)
+    }
+
+    async fn put_exact_in_transaction(
+        &self,
+        attributes: &DynamicAttributeMap,
+        role_players: &[DynamicRolePlayerInput],
+    ) -> Result<String> {
+        if let Some(q) = query_builder::build_dynamic_relation_exact_key_lookup(
+            &self.descriptor,
+            attributes,
+            "$r",
+        )? && let Some(iid) = extract_exact_key_lookup_iid(
+            &self.descriptor.type_name,
+            self.target.execute(&q, TxType::Write).await?,
+        )? {
+            self.update_exact_in_transaction(&iid, attributes, role_players)
+                .await?;
+            return Ok(iid);
+        }
+        let resolved = self.resolve_exact_role_players(role_players).await?;
+        let q = query_builder::build_dynamic_relation_insert_resolved_with_iid(
+            &self.descriptor,
+            attributes,
+            &resolved,
+            "$r",
+        )?;
+        let answer = self.target.execute(&q, TxType::Write).await?;
+        extract_insert_iid(&self.descriptor.type_name, answer)
+    }
+
+    async fn resolve_exact_role_players(
+        &self,
+        role_players: &[DynamicRolePlayerInput],
+    ) -> Result<Vec<(String, String, String)>> {
+        let mut resolved = Vec::with_capacity(role_players.len());
+        for player in role_players {
+            let q = query_builder::build_dynamic_relation_player_lookup(
+                &player.player_type_name,
+                player.iid.as_deref(),
+                player.key.as_ref().map(|(n, v)| (n.as_str(), v)),
+                "$p",
+            )?;
+            let answer = self.target.execute(&q, TxType::Write).await?;
+            let rows = match answer {
+                QueryResult::Documents(d) => d,
+                QueryResult::Ok => {
+                    return Err(OrmError::Hydration {
+                        type_name: self.descriptor.type_name.clone(),
+                        message: "Player resolution returned Ok; expected exactly one document"
+                            .into(),
+                    });
+                }
+                QueryResult::Rows(_) => {
+                    return Err(OrmError::Hydration {
+                        type_name: self.descriptor.type_name.clone(),
+                        message: "Player resolution returned Rows; expected exactly one document"
+                            .into(),
+                    });
+                }
+            };
+            if rows.len() != 1 {
+                return Err(OrmError::Hydration {
+                    type_name: self.descriptor.type_name.clone(),
+                    message: format!(
+                        "Player resolution returned {}; expected exactly one document",
+                        rows.len()
+                    ),
+                });
+            }
+            let identity =
+                super::hydration::extract_scalar_identity(&self.descriptor.type_name, &rows[0])?;
+            if let Some(requested) = &player.iid
+                && &identity != requested
+            {
+                return Err(OrmError::Hydration {
+                    type_name: self.descriptor.type_name.clone(),
+                    message: "Player resolution returned the wrong IID".into(),
+                });
+            }
+            resolved.push((
+                player.player_type_name.clone(),
+                identity,
+                player.role_name.clone(),
+            ));
+        }
+        let mut seen = std::collections::HashSet::new();
+        for (_, iid, role) in &resolved {
+            if !seen.insert((role.clone(), iid.clone())) {
+                return Err(OrmError::Hydration {
+                    type_name: self.descriptor.type_name.clone(),
+                    message: format!(
+                        "Player resolution converged on duplicate IID {iid} for role {role}"
+                    ),
+                });
+            }
+        }
+        Ok(resolved)
+    }
+
+    async fn update_exact_in_transaction(
+        &self,
+        iid: &str,
+        attributes: &DynamicAttributeMap,
+        role_players: &[DynamicRolePlayerInput],
+    ) -> Result<()> {
+        let resolved = self.resolve_exact_role_players(role_players).await?;
+        if !self.descriptor.owned_attributes.iter().all(|a| a.is_key()) {
+            let q = query_builder::build_dynamic_relation_update_exact(
+                &self.descriptor,
+                iid,
+                attributes,
+                "$r",
+            )?;
+            self.target.execute(&q, TxType::Write).await?;
+        }
+        for role in &self.descriptor.roles {
+            let q = query_builder::build_dynamic_relation_clear_role(
+                &self.descriptor,
+                iid,
+                &role.role_name,
+                "$r",
+            )?;
+            self.target.execute(&q, TxType::Write).await?;
+        }
+        if !resolved.is_empty() {
+            let q = query_builder::build_dynamic_relation_attach(
+                &self.descriptor,
+                iid,
+                &resolved,
+                "$r",
+            )?;
+            self.target.execute(&q, TxType::Write).await?;
+        }
         Ok(())
     }
 
@@ -555,15 +1181,10 @@ impl<'db> DynamicRelationManager<'db> {
         tracing::debug!(typeql = %typeql, relation_type = %self.descriptor.type_name, "DYNAMIC RELATION FETCH BY IID");
         let result = self.target.execute(&typeql, TxType::Read).await?;
         match result {
-            QueryResult::Documents(docs) => docs
-                .iter()
-                .map(|doc| hydrate_dynamic_relation(&self.descriptor, doc))
-                .collect(),
-            QueryResult::Ok => Ok(vec![]),
-            QueryResult::Rows(_) => Err(OrmError::Hydration {
-                type_name: self.descriptor.type_name.clone(),
-                message: "Expected Documents from fetch query, got Rows".into(),
-            }),
+            QueryResult::Documents(docs) => {
+                coalesce_dynamic_relation_by_iid(&self.descriptor, &docs, iid)
+            }
+            other => self.hydrate_documents(other),
         }
     }
 
@@ -574,15 +1195,10 @@ impl<'db> DynamicRelationManager<'db> {
         tracing::debug!(typeql = %typeql, relation_type = %self.descriptor.type_name, "DYNAMIC RELATION EXACT FETCH BY IID");
         let result = self.target.execute(&typeql, TxType::Read).await?;
         match result {
-            QueryResult::Documents(docs) => docs
-                .iter()
-                .map(|doc| hydrate_dynamic_relation(&self.descriptor, doc))
-                .collect(),
-            QueryResult::Ok => Ok(vec![]),
-            QueryResult::Rows(_) => Err(OrmError::Hydration {
-                type_name: self.descriptor.type_name.clone(),
-                message: "Expected Documents from exact fetch query, got Rows".into(),
-            }),
+            QueryResult::Documents(docs) => {
+                coalesce_dynamic_relation_by_iid(&self.descriptor, &docs, iid)
+            }
+            other => self.hydrate_documents(other),
         }
     }
 
@@ -594,6 +1210,82 @@ impl<'db> DynamicRelationManager<'db> {
     /// Fetch all exact-type relations for this descriptor.
     pub async fn all_exact(&self) -> Result<Vec<DynamicRelationRow>> {
         self.get_exact(&[]).await
+    }
+
+    /// Discover concrete relation identities in database result order.
+    pub async fn discover_all(&self) -> Result<Vec<DynamicRelationIdentity>> {
+        let q =
+            query_builder::build_dynamic_relation_identity_discovery(&self.descriptor, None, "$r")?;
+        match self.target.execute(&q, TxType::Read).await? {
+            QueryResult::Documents(docs) => docs
+                .iter()
+                .map(|doc| hydrate_dynamic_relation_identity(&self.descriptor.type_name, doc))
+                .collect(),
+            QueryResult::Ok => Err(OrmError::Hydration {
+                type_name: self.descriptor.type_name.clone(),
+                message: "Expected Documents from relation identity discovery, got Ok".into(),
+            }),
+            QueryResult::Rows(_) => Err(OrmError::Hydration {
+                type_name: self.descriptor.type_name.clone(),
+                message: "Expected Documents from relation identity discovery, got Rows".into(),
+            }),
+        }
+    }
+
+    /// Discover at most one concrete relation identity by canonical IID.
+    pub async fn discover_by_iid(&self, iid: &str) -> Result<Option<DynamicRelationIdentity>> {
+        crate::dynamic::validate_relation_iid(&self.descriptor.type_name, iid)?;
+        let q = query_builder::build_dynamic_relation_identity_discovery(
+            &self.descriptor,
+            Some(iid),
+            "$r",
+        )?;
+        let rows = match self.target.execute(&q, TxType::Read).await? {
+            QueryResult::Documents(docs) => docs
+                .iter()
+                .map(|doc| hydrate_dynamic_relation_identity(&self.descriptor.type_name, doc))
+                .collect::<Result<Vec<_>>>()?,
+            QueryResult::Ok => {
+                return Err(OrmError::Hydration {
+                    type_name: self.descriptor.type_name.clone(),
+                    message: "Expected Documents from relation identity discovery, got Ok".into(),
+                });
+            }
+            QueryResult::Rows(_) => {
+                return Err(OrmError::Hydration {
+                    type_name: self.descriptor.type_name.clone(),
+                    message: "Expected Documents from relation identity discovery, got Rows".into(),
+                });
+            }
+        };
+        match rows.as_slice() {
+            [] => Ok(None),
+            [row] if row.iid == iid => Ok(Some(row.clone())),
+            [_row] => Err(OrmError::Hydration {
+                type_name: self.descriptor.type_name.clone(),
+                message: "Relation identity discovery returned the wrong IID".into(),
+            }),
+            _ => Err(OrmError::Hydration {
+                type_name: self.descriptor.type_name.clone(),
+                message: format!(
+                    "Expected 0 or 1 relation identity for IID lookup, got {}",
+                    rows.len()
+                ),
+            }),
+        }
+    }
+
+    /// Count only exact instances of this concrete relation type.
+    pub async fn count_exact(&self) -> Result<u64> {
+        let q = query_builder::build_dynamic_relation_count_exact(&self.descriptor, "$r")?;
+        extract_count(&self.target.execute(&q, TxType::Read).await?)
+    }
+
+    /// Delete one exact concrete relation instance by canonical IID.
+    pub async fn delete_by_iid_exact(&self, iid: &str) -> Result<()> {
+        let q =
+            query_builder::build_dynamic_relation_delete_by_iid_exact(&self.descriptor, iid, "$r")?;
+        self.target.execute(&q, TxType::Write).await.map(|_| ())
     }
 
     /// Count relations for this descriptor.
@@ -736,6 +1428,33 @@ impl<'db> DynamicRelationManager<'db> {
                 }
                 Ok(iids)
             }
+            DynamicExecutionTarget::CanonicalDatabase(db) => {
+                let tx = db.transaction_context(TxType::Write).await?;
+                let manager = DynamicRelationManager::with_canonical_transaction(
+                    tx.clone(),
+                    Arc::clone(&self.descriptor),
+                );
+                let mut iids = Vec::with_capacity(items.len());
+                for (attributes, role_players) in items {
+                    match manager.write_one(attributes, role_players, operation).await {
+                        Ok(iid) => iids.push(iid),
+                        Err(error) => {
+                            let _ = tx.rollback().await;
+                            return Err(error);
+                        }
+                    }
+                }
+                tx.commit().await?;
+                Ok(iids)
+            }
+            DynamicExecutionTarget::CanonicalTransaction(tx) => {
+                ensure_transaction_can_execute(tx.tx_type(), TxType::Write)?;
+                let mut iids = Vec::with_capacity(items.len());
+                for (attributes, role_players) in items {
+                    iids.push(self.write_one(attributes, role_players, operation).await?);
+                }
+                Ok(iids)
+            }
         }
     }
 
@@ -753,10 +1472,7 @@ impl<'db> DynamicRelationManager<'db> {
 
     fn hydrate_documents(&self, result: QueryResult) -> Result<Vec<DynamicRelationRow>> {
         match result {
-            QueryResult::Documents(docs) => docs
-                .iter()
-                .map(|doc| hydrate_dynamic_relation(&self.descriptor, doc))
-                .collect(),
+            QueryResult::Documents(docs) => coalesce_dynamic_relations(&self.descriptor, &docs),
             QueryResult::Ok => Ok(vec![]),
             QueryResult::Rows(_) => Err(OrmError::Hydration {
                 type_name: self.descriptor.type_name.clone(),
@@ -764,6 +1480,235 @@ impl<'db> DynamicRelationManager<'db> {
             }),
         }
     }
+}
+
+#[derive(Clone, Copy)]
+enum ExactWritePolicy {
+    Update,
+    Put,
+}
+
+fn validate_relation_exact_write_input(
+    descriptor: &RelationDescriptor,
+    iid: Option<&str>,
+    attributes: &DynamicAttributeMap,
+    players: &[DynamicRolePlayerInput],
+    policy: ExactWritePolicy,
+) -> Result<()> {
+    if matches!(policy, ExactWritePolicy::Update) {
+        crate::dynamic::validate_relation_iid(&descriptor.type_name, iid.unwrap_or_default())?;
+    }
+    validate_relation_exact_update_input_inner(descriptor, attributes, players, policy)
+}
+
+fn validate_relation_exact_update_input(
+    descriptor: &RelationDescriptor,
+    iid: &str,
+    attributes: &DynamicAttributeMap,
+    players: &[DynamicRolePlayerInput],
+) -> Result<()> {
+    validate_relation_exact_write_input(
+        descriptor,
+        Some(iid),
+        attributes,
+        players,
+        ExactWritePolicy::Update,
+    )
+}
+
+fn validate_relation_exact_put_input(
+    descriptor: &RelationDescriptor,
+    attributes: &DynamicAttributeMap,
+    players: &[DynamicRolePlayerInput],
+) -> Result<()> {
+    validate_relation_exact_write_input(
+        descriptor,
+        None,
+        attributes,
+        players,
+        ExactWritePolicy::Put,
+    )
+}
+
+fn validate_relation_exact_update_input_inner(
+    descriptor: &RelationDescriptor,
+    attributes: &DynamicAttributeMap,
+    players: &[DynamicRolePlayerInput],
+    policy: ExactWritePolicy,
+) -> Result<()> {
+    if !type_bridge_core_lib::compiler::is_valid_typeql_label(&descriptor.type_name) {
+        return Err(OrmError::QueryExecution(format!(
+            "{}: unsafe relation type label",
+            descriptor.type_name
+        )));
+    }
+    let mut resolved_attributes = Vec::with_capacity(attributes.len());
+    for (name, value) in attributes {
+        let matches: Vec<_> = descriptor
+            .owned_attributes
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| a.field_name == *name || a.attr_name == *name)
+            .collect();
+        if matches.is_empty() {
+            return Err(OrmError::QueryExecution(format!(
+                "{}: unknown relation attribute {name}",
+                descriptor.type_name
+            )));
+        }
+        if matches.len() != 1 {
+            return Err(OrmError::QueryExecution(format!(
+                "{}: ambiguous relation attribute {name}",
+                descriptor.type_name
+            )));
+        }
+        resolved_attributes.push((matches[0].0, value));
+    }
+    for (attr_index, attr) in descriptor.owned_attributes.iter().enumerate() {
+        if !type_bridge_core_lib::compiler::is_valid_typeql_label(&attr.attr_name)
+            || attr.attr_name.trim().is_empty()
+        {
+            return Err(OrmError::QueryExecution(format!(
+                "{}: unsafe relation attribute label {}",
+                descriptor.type_name, attr.attr_name
+            )));
+        }
+        let supplied = resolved_attributes
+            .iter()
+            .filter(|(candidate, _)| *candidate == attr_index)
+            .count();
+        let (min, max) = attr
+            .cardinality()
+            .unwrap_or((if attr.is_optional { 0 } else { 1 }, Some(1)));
+        if (matches!(policy, ExactWritePolicy::Put) || !attr.is_key()) && supplied < min as usize {
+            return Err(OrmError::QueryExecution(format!(
+                "{}: relation attribute {} violates minimum cardinality",
+                descriptor.type_name, attr.attr_name
+            )));
+        }
+        if max.is_some_and(|m| supplied > m as usize) {
+            return Err(OrmError::QueryExecution(format!(
+                "{}: relation attribute {} violates maximum cardinality",
+                descriptor.type_name, attr.attr_name
+            )));
+        }
+        for (_, value) in resolved_attributes
+            .iter()
+            .filter(|(candidate, _)| *candidate == attr_index)
+        {
+            if value.value_type_name() != attr.value_type.as_str() {
+                return Err(OrmError::QueryExecution(format!(
+                    "{}: relation attribute {} has wrong value type",
+                    descriptor.type_name, attr.attr_name
+                )));
+            }
+        }
+    }
+    let mut seen = std::collections::HashSet::new();
+    for role in &descriptor.roles {
+        if !type_bridge_core_lib::compiler::is_valid_typeql_label(&role.role_name)
+            || role.role_name.trim().is_empty()
+        {
+            return Err(OrmError::QueryExecution(format!(
+                "{}: unsafe relation role label {}",
+                descriptor.type_name, role.role_name
+            )));
+        }
+        let count = players
+            .iter()
+            .filter(|p| p.role_name == role.role_name)
+            .count();
+        let (min, max) = role.cardinality.unwrap_or((0, None));
+        if count < min as usize || max.is_some_and(|m| count > m as usize) {
+            return Err(OrmError::QueryExecution(format!(
+                "{}: relation role {} violates cardinality",
+                descriptor.type_name, role.role_name
+            )));
+        }
+        if role.ordered && count > 1 {
+            return Err(OrmError::QueryExecution(format!(
+                "{}: ordered relation role {} cannot contain multiple players",
+                descriptor.type_name, role.role_name
+            )));
+        }
+    }
+    for player in players {
+        if descriptor
+            .roles
+            .iter()
+            .all(|r| r.role_name != player.role_name)
+        {
+            return Err(OrmError::QueryExecution(format!(
+                "{}: unknown relation role {}",
+                descriptor.type_name, player.role_name
+            )));
+        }
+        if !type_bridge_core_lib::compiler::is_valid_typeql_label(&player.player_type_name) {
+            return Err(OrmError::QueryExecution(format!(
+                "{}: unsafe player type label {}",
+                descriptor.type_name, player.player_type_name
+            )));
+        }
+        if let Some((key, _)) = &player.key
+            && (key.trim().is_empty()
+                || !type_bridge_core_lib::compiler::is_valid_typeql_label(key))
+        {
+            return Err(OrmError::QueryExecution(format!(
+                "{}: unsafe player key label {}",
+                descriptor.type_name, key
+            )));
+        }
+        if player.iid.is_some() == player.key.is_some() {
+            return Err(OrmError::QueryExecution(format!(
+                "{}: player identity must be exactly IID xor key",
+                descriptor.type_name
+            )));
+        }
+        if let Some(iid) = &player.iid {
+            if !type_bridge_contract::id::is_canonical_thing_iid(iid) {
+                return Err(OrmError::QueryExecution(format!(
+                    "{}: player IID must be canonical",
+                    descriptor.type_name
+                )));
+            }
+            if !seen.insert((
+                player.role_name.clone(),
+                format!("iid:{}:{iid}", player.player_type_name),
+            )) {
+                return Err(OrmError::QueryExecution(format!(
+                    "{}: duplicate relation player input",
+                    descriptor.type_name
+                )));
+            }
+        }
+        if let Some((key, value)) = &player.key {
+            if crate::dynamic::is_blank_key_value(value) {
+                return Err(OrmError::QueryExecution(format!(
+                    "{}: player key value must be nonblank",
+                    descriptor.type_name
+                )));
+            }
+            let marker = format!("key:{}:{key}:{value:?}", player.player_type_name);
+            if !seen.insert((player.role_name.clone(), marker)) {
+                return Err(OrmError::QueryExecution(format!(
+                    "{}: duplicate relation player input",
+                    descriptor.type_name
+                )));
+            }
+        }
+    }
+    if players.is_empty() {
+        return Err(OrmError::QueryExecution(format!(
+            "{}: exact relation {} requires at least one role player",
+            descriptor.type_name,
+            if matches!(policy, ExactWritePolicy::Put) {
+                "put"
+            } else {
+                "update"
+            }
+        )));
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy)]
@@ -775,6 +1720,8 @@ enum DynamicWriteOperation {
 enum DynamicExecutionTarget<'db> {
     Database(&'db Database),
     Transaction(TransactionContext),
+    CanonicalDatabase(&'db Database),
+    CanonicalTransaction(TransactionContext),
 }
 
 impl DynamicExecutionTarget<'_> {
@@ -784,6 +1731,11 @@ impl DynamicExecutionTarget<'_> {
             Self::Transaction(tx) => {
                 ensure_transaction_can_execute(tx.tx_type(), required_tx_type)?;
                 tx.query(typeql).await
+            }
+            Self::CanonicalDatabase(db) => db.execute_canonical(typeql, required_tx_type).await,
+            Self::CanonicalTransaction(tx) => {
+                ensure_transaction_can_execute(tx.tx_type(), required_tx_type)?;
+                tx.query_canonical(typeql).await
             }
         }
     }
@@ -977,18 +1929,32 @@ fn extract_insert_iids(
 fn extract_insert_iid(type_name: &str, result: QueryResult) -> Result<String> {
     match result {
         QueryResult::Documents(docs) => {
-            let doc = docs.first().ok_or_else(|| OrmError::Hydration {
-                type_name: type_name.to_string(),
-                message: "Insert returned no documents".into(),
-            })?;
+            let doc = (docs.len() == 1)
+                .then(|| &docs[0])
+                .ok_or_else(|| OrmError::Hydration {
+                    type_name: type_name.to_string(),
+                    message: format!(
+                        "Insert returned {} documents; expected exactly one",
+                        docs.len()
+                    ),
+                })?;
             let obj = doc.as_object().ok_or_else(|| OrmError::Hydration {
                 type_name: type_name.to_string(),
                 message: "Expected JSON object from insert+fetch".into(),
             })?;
-            super::hydration::extract_scalar_string(obj, "iid").ok_or_else(|| OrmError::Hydration {
-                type_name: type_name.to_string(),
-                message: "No IID in insert response".into(),
-            })
+            let iid = super::hydration::extract_scalar_string(obj, "iid").ok_or_else(|| {
+                OrmError::Hydration {
+                    type_name: type_name.to_string(),
+                    message: "No IID in insert response".into(),
+                }
+            })?;
+            if !type_bridge_contract::id::is_canonical_thing_iid(&iid) {
+                return Err(OrmError::Hydration {
+                    type_name: type_name.to_string(),
+                    message: "Insert returned noncanonical IID".into(),
+                });
+            }
+            Ok(iid)
         }
         QueryResult::Ok => Err(OrmError::Hydration {
             type_name: type_name.to_string(),
@@ -998,6 +1964,40 @@ fn extract_insert_iid(type_name: &str, result: QueryResult) -> Result<String> {
             type_name: type_name.to_string(),
             message: "Expected Documents from insert+fetch, got Rows".into(),
         }),
+    }
+}
+
+fn extract_exact_key_lookup_iid(type_name: &str, result: QueryResult) -> Result<Option<String>> {
+    let hydration_error = |message: String| OrmError::Hydration {
+        type_name: type_name.to_string(),
+        message,
+    };
+    match result {
+        QueryResult::Documents(docs) => match docs.len() {
+            0 => Ok(None),
+            1 => {
+                let obj = docs[0].as_object().ok_or_else(|| {
+                    hydration_error("Expected JSON object from exact key lookup".into())
+                })?;
+                let iid = super::hydration::extract_scalar_string(obj, "iid")
+                    .ok_or_else(|| hydration_error("Exact key lookup omitted its IID".into()))?;
+                if !type_bridge_contract::id::is_canonical_thing_iid(&iid) {
+                    return Err(hydration_error(
+                        "Exact key lookup returned a noncanonical IID".into(),
+                    ));
+                }
+                Ok(Some(iid))
+            }
+            n => Err(hydration_error(format!(
+                "Expected at most one exact key identity, got {n}"
+            ))),
+        },
+        QueryResult::Ok => Err(hydration_error(
+            "Expected Documents from exact key lookup, got Ok".into(),
+        )),
+        QueryResult::Rows(_) => Err(hydration_error(
+            "Expected Documents from exact key lookup, got Rows".into(),
+        )),
     }
 }
 

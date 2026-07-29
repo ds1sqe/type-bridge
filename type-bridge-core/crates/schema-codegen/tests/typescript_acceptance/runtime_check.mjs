@@ -14,6 +14,14 @@ import {
   RUNTIME_PROJECTION_JSON,
   SEMANTIC_SCHEMA_FINGERPRINT_JSON,
   Score,
+  ValBool,
+  ValConstrained,
+  ValDate,
+  ValDatetime,
+  ValDatetimeTz,
+  ValDecimal,
+  ValDouble,
+  ValDuration,
 } from "./generated_v2/dist/index.js";
 
 const identifier = Identifier.create("person-1");
@@ -22,8 +30,20 @@ assert.equal(identifier.iid, null);
 const score = Score.create(3n);
 assert.equal(score.value, 3n);
 assert.equal(score.iid, null);
-const person = Person.create({
+const personValues = {
   identifier,
+  score,
+  valBool: ValBool.create(true),
+  valConstrained: ValConstrained.create(20n),
+  valDate: ValDate.create(new Date("2026-07-29T00:00:00Z")),
+  valDatetime: ValDatetime.create(new Date("2026-07-29T12:34:56Z")),
+  valDatetimeTz: ValDatetimeTz.create(new Date("2026-07-29T12:34:56Z")),
+  valDecimal: ValDecimal.create("3.5"),
+  valDouble: ValDouble.create(3.5),
+  valDuration: ValDuration.create("PT3S"),
+};
+const person = Person.create({
+  ...personValues,
   aliases: [Aliases.create("first"), Aliases.create("second")],
 });
 assert.equal(person.__typebridgeForm, "complete");
@@ -53,7 +73,11 @@ const hydratedIdentifier = Identifier[hydrateComplete]("identifier-iid", "provid
 assert.equal(hydratedIdentifier.iid, "identifier-iid");
 assert.equal(hydratedIdentifier.value, "provider-value");
 assert(Object.isFrozen(hydratedIdentifier));
-const hydratedPerson = Person[hydrateComplete]("person-iid", { identifier });
+const hydratedPerson = Person[hydrateComplete]("person-iid", {
+  ...personValues,
+  aliases: [],
+  nickname: null,
+});
 assert.equal(hydratedPerson.iid, "person-iid");
 assert.equal(hydratedPerson.nickname, null);
 assert.deepEqual(hydratedPerson.aliases, []);
@@ -79,7 +103,7 @@ const stats = PlayerStats({ wins: 3n });
 assert.equal(stats.nickname, null);
 assert(Object.isFrozen(stats));
 
-assert.equal(PLAYING_FACTS.length, 5);
+assert.equal(PLAYING_FACTS.length, 8);
 assert(PLAYING_FACTS.every((fact) => fact.kind === "plays"));
 const personId = '{"kind":"entity","label":"person"}';
 const robotId = '{"kind":"entity","label":"robot"}';

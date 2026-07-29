@@ -77,6 +77,18 @@ jobs:
         working-directory: type-bridge-core
         run: cargo test -p type-bridge-schema-codegen --test rust_acceptance
 
+      - name: Install generated Rust MSRV
+        if: runner.os == 'Linux'
+        run: rustup toolchain install 1.88.0 --profile minimal
+
+      - name: Check generated Rust projection on MSRV 1.88
+        if: runner.os == 'Linux'
+        working-directory: type-bridge-core
+        run: >-
+          cargo +1.88.0 test --locked
+          -p type-bridge-schema-codegen --test rust_acceptance
+          generated_rust_crate_compiles_rejects_invalid_types_and_runs -- --exact
+
       - name: cargo clippy
         working-directory: type-bridge-core
         run: cargo clippy --all-targets -- -D warnings
@@ -919,6 +931,20 @@ jobs:
           cargo test --locked --manifest-path type-bridge-core/Cargo.toml
           -p type-bridge-typedb-runtime --test tls_live
           -- --nocapture --test-threads=1
+
+      - name: Run generated Rust application over TLS
+        env:
+          SSL_CERT_FILE: ${{ github.workspace }}/tests/fixtures/tls/root-ca.pem
+          TYPE_BRIDGE_RUST_PROJECTION_TLS: "1"
+          TYPE_BRIDGE_RUST_PROJECTION_INTG_DATABASE: type_bridge_rust_projection_tls
+          ACCEPTANCE_TARGET_DIR: ${{ github.workspace }}/type-bridge-core/target/tmp_projection_live_target
+        run: |
+          export TYPEDB_ADDRESS="$TYPEDB_TLS_ADDRESS"
+          export TYPEDB_HTTP_PORT="$TYPEDB_TLS_HTTP_PORT"
+          cargo test --locked --manifest-path type-bridge-core/Cargo.toml \
+            -p type-bridge-schema-codegen --test rust_projection_live \
+            generated_rust_projection_round_trips_exact_live_models \
+            -- --ignored --exact --nocapture
 
       - name: Show TLS stack logs on failure
         if: failure()

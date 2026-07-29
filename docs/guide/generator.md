@@ -18,6 +18,8 @@ schema.tql  →  generator  →  attributes.py
                           →  entities.py
                           →  relations.py
                           →  __init__.py
+                          →  generated TypeScript crate/package
+                          →  generated Rust schema crate
 ```
 
 ## Quick Start
@@ -88,7 +90,7 @@ removes TypeBridge's own ledger types from that live view with the public
 `MIGRATION_STATE_SCHEMA` contract. Embedding schema exporters should use the
 same helper, or `is_migration_state_type` for individual objects, rather than
 copying the reserved labels. See
-[`examples/advanced/toml_migration`](../../examples/advanced/toml_migration/)
+[`examples/advanced/toml_migration`](https://github.com/ds1sqe/type-bridge/tree/master/examples/advanced/toml_migration)
 for a two-step `schema.toml` example, and see [Migrations](migrations.md) for
 the full migration workflow, snapshot rationale, data migrations, rollback, and
 migration-state backends.

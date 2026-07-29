@@ -397,7 +397,7 @@ entities:
 }
 
 #[test]
-fn rust_projection_rejects_generated_runtime_member_names() {
+fn rust_projection_retains_member_names_for_namespace_aware_emitter_validation() {
     let documents = SchemaDocumentSet::parse([(
         DocumentId::new("schema.yaml").unwrap(),
         r#"format: typebridge.schema/v2
@@ -415,17 +415,25 @@ entities:
         &SemanticProfileId::new("typedb-3.12.1/v1").unwrap(),
     )
     .unwrap();
-    let error = project(
+    let projection = project(
         &resolved,
         BindingTarget::Rust,
         &ProjectionConfig::rust(),
         &[ProjectionHandler::rust_v1()],
         &[],
     )
-    .unwrap_err();
+    .unwrap();
+    let account = TypeId::new(TypeKind::Entity, "account").unwrap();
     assert_eq!(
-        error.iter().next().unwrap().diagnostic().code().as_str(),
-        "reserved_rust_projection_identifier"
+        projection.models()[&account]
+            .query_tokens()
+            .fields()
+            .values()
+            .next()
+            .unwrap()
+            .target_name()
+            .as_str(),
+        "try_new"
     );
 }
 

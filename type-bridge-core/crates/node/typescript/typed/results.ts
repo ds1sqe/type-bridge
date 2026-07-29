@@ -331,6 +331,132 @@ export function materializeValidatedExists(
   return value;
 }
 
+/** @internal Exact scalar proof expected for one typed reduction term. */
+export interface ReductionOutputSpec {
+  readonly kind: "count" | "long" | "double";
+  readonly optional: boolean;
+}
+
+/**
+ * @internal Decode one validated typed-reduction proof.
+ *
+ * Ungrouped results are returned as one frozen reducer tuple. Grouped results
+ * are frozen rows of `[group, reducerTuple]`, in the canonical order proven by
+ * Rust. Every scalar and group graph is preflighted before any user model
+ * constructor runs.
+ */
+export function materializeValidatedReduction(
+  query: NativeQueryHandle,
+  result: NativeResultHandle,
+  specs: readonly ReductionOutputSpec[],
+  models: ReadonlyMap<string, QueryModelClass>,
+  grouped: boolean,
+): readonly unknown[] {
+  const rowCount = requireCount(
+    nativeCall(() => result.reductionRowCount(query)),
+    "invalid_result_reduction_row_count",
+    "validated reduction exposed an invalid row count",
+  );
+  if (!grouped && rowCount !== 1) {
+    throw resultDecode(
+      "result_reduction_row_count_mismatch",
+      "ungrouped reduction must expose exactly one validated row",
+    );
+  }
+
+  const rows: (readonly unknown[])[] = [];
+  for (let rowIndex = 0; rowIndex < rowCount; rowIndex += 1) {
+    const valueCount = requireCount(
+      nativeCall(() => result.reductionValueCount(query, rowIndex)),
+      "invalid_result_reduction_value_count",
+      "validated reduction exposed an invalid value count",
+    );
+    if (valueCount !== specs.length) {
+      throw resultDecode(
+        "result_reduction_value_count_mismatch",
+        "validated reduction row does not match its exact reducer tuple",
+      );
+    }
+    rows.push(Object.freeze(
+      specs.map((spec, valueIndex) =>
+        preflightReducedValue(query, result, rowIndex, valueIndex, spec),
+      ),
+    ));
+  }
+
+  if (!grouped) {
+    return rows[0]!;
+  }
+
+  const groups: ThingPlan[] = [];
+  for (let rowIndex = 0; rowIndex < rowCount; rowIndex += 1) {
+    const group = nativeCall(() => result.reductionGroup(query, rowIndex));
+    groups.push(preflightThing(group, models, "selected"));
+  }
+  return Object.freeze(
+    groups.map((group, rowIndex) =>
+      Object.freeze([materializeThingPlan(group), rows[rowIndex]!] as const),
+    ),
+  );
+}
+
+function preflightReducedValue(
+  query: NativeQueryHandle,
+  result: NativeResultHandle,
+  rowIndex: number,
+  valueIndex: number,
+  spec: ReductionOutputSpec,
+): bigint | number | null {
+  const kind = nativeCall(() =>
+    result.reductionValueKind(query, rowIndex, valueIndex),
+  );
+  if (kind !== spec.kind) {
+    throw resultDecode(
+      "result_reduction_value_kind_mismatch",
+      "validated reduction value differs from its requested output domain",
+    );
+  }
+  let value: bigint | number | null;
+  if (kind === "count") {
+    value = requireU64BigInt(
+      nativeCall(() =>
+        result.reductionCountValue(query, rowIndex, valueIndex),
+      ),
+      "invalid_result_reduction_count",
+      "validated reduction count is outside the lossless u64 domain",
+    );
+  } else if (kind === "long") {
+    const raw = nativeCall(() =>
+      result.reductionLongValue(query, rowIndex, valueIndex),
+    );
+    value = raw === null
+      ? null
+      : requireI64BigInt(
+          raw,
+          "invalid_result_reduction_long",
+          "validated integer reduction is outside the lossless i64 domain",
+        );
+  } else {
+    const raw = nativeCall(() =>
+      result.reductionDoubleValue(query, rowIndex, valueIndex),
+    );
+    if (raw !== null && (typeof raw !== "number" || !Number.isFinite(raw))) {
+      throw resultDecode(
+        "invalid_result_reduction_double",
+        "validated double reduction is not finite",
+      );
+    }
+    value = raw;
+  }
+  if (value === null && !spec.optional) {
+    throw resultDecode(
+      "result_reduction_total_absent",
+      "validated total reducer unexpectedly reported an absent value",
+    );
+  }
+  return value;
+}
+
 function preflightOutputShape(
   query: NativeQueryHandle,
   result: NativeResultHandle,
@@ -881,6 +1007,17 @@ function isRelationDescriptor(
 
 function requireCount(value: unknown, code: string, message: string): number {
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+    throw resultDecode(code, message);
+  }
+  return value;
+}
+
+function requireI64BigInt(value: unknown, code: string, message: string): bigint {
+  if (
+    typeof value !== "bigint" ||
+    value < -9_223_372_036_854_775_808n ||
+    value > 9_223_372_036_854_775_807n
+  ) {
     throw resultDecode(code, message);
   }
   return value;

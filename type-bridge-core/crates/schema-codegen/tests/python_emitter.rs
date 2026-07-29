@@ -146,6 +146,7 @@ fn compound_projection(resources: &[CodeResourceDigest]) -> RuntimeProjection {
                 owns_identifier.clone(),
                 FieldTokenProjection::new(
                     owns_identifier.clone(),
+                    owns_identifier.clone(),
                     TargetIdentifier::python("identifier").unwrap(),
                     one,
                     true,

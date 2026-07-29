@@ -12,9 +12,10 @@ use std::sync::Arc;
 use type_bridge_orm::{
     BindingHandle, ComparisonOp, FieldHandle, HydratedAttribute, HydratedRole, HydratedRolePlayer,
     HydratedThing, MatchError, MatchErrorCategory, MatchRequest, MatchResult, MissingOrder,
-    OrderHandle, PredicateHandle, QueryHandle, RoleHandle, RowCardinality, SelectionHandle,
-    SessionHandle, ShapeHandle, SlotValue, SortDirection, ThingKind, UnvalidatedMatchRequest,
-    ValidatedMatchRequest, ValidatedMatchResult, Window, validate_public_order_term_count,
+    OrderHandle, PredicateHandle, QueryHandle, ReducedValue, Reduction, ReductionRow, RoleHandle,
+    RowCardinality, SelectionHandle, SessionHandle, ShapeHandle, SlotValue, SortDirection,
+    ThingKind, UnvalidatedMatchRequest, ValidatedMatchRequest, ValidatedMatchResult, Window,
+    validate_public_order_term_count,
 };
 
 use crate::{NodeDescriptorRegistry, NodeRustDatabase, NodeRustTransactionContext};
@@ -113,6 +114,51 @@ pub(crate) fn parse_cardinality(value: &str) -> Result<RowCardinality> {
             "cardinality must be 'exactly_one' or 'bounded_many', got '{value}'"
         ))),
     }
+}
+
+fn parse_reduction(value: &str) -> Result<Reduction> {
+    match value {
+        "count" => Ok(Reduction::Count),
+        "sum" => Ok(Reduction::Sum),
+        "min" => Ok(Reduction::Min),
+        "max" => Ok(Reduction::Max),
+        "mean" => Ok(Reduction::Mean),
+        "median" => Ok(Reduction::Median),
+        "std" => Ok(Reduction::Std),
+        _ => Err(invalid_arg(format!(
+            "reducer must be a canonical reducer name, got '{value}'"
+        ))),
+    }
+}
+
+fn reduce_terms(
+    reducers: &[String],
+    inputs: &[Option<Reference<NodeMatchFieldHandle>>],
+) -> Result<Vec<(Reduction, Option<FieldHandle>)>> {
+    if reducers.len() != inputs.len() {
+        return Err(invalid_arg(
+            "reducer names and reducer inputs must have equal length",
+        ));
+    }
+    reducers
+        .iter()
+        .zip(inputs)
+        .map(|(reducer, input)| {
+            Ok((
+                parse_reduction(reducer)?,
+                input.as_ref().map(|field| field.inner.clone()),
+            ))
+        })
+        .collect()
+}
+
+fn borrow_reduce_terms(
+    terms: &[(Reduction, Option<FieldHandle>)],
+) -> Vec<(Reduction, Option<&FieldHandle>)> {
+    terms
+        .iter()
+        .map(|(reduction, input)| (*reduction, input.as_ref()))
+        .collect()
 }
 
 pub(crate) fn bigint_u64(value: &BigInt, name: &str) -> Result<u64> {
@@ -897,6 +943,79 @@ impl NodeMatchQueryHandle {
                 .map_err(crate::napi_orm_error)?,
         )
     }
+
+    #[napi(js_name = "reduceByDiagnostic")]
+    pub fn reduce_by_diagnostic(
+        &self,
+        root: &NodeMatchBindingHandle,
+        group: Option<&NodeMatchBindingHandle>,
+        reducers: Vec<String>,
+        inputs: Vec<Option<Reference<NodeMatchFieldHandle>>>,
+    ) -> Result<String> {
+        let terms = reduce_terms(&reducers, &inputs)?;
+        let terms = borrow_reduce_terms(&terms);
+        diagnostic(
+            self.inner
+                .reduce_by(&root.inner, group.map(|group| &group.inner), &terms)
+                .map_err(crate::napi_orm_error)?,
+        )
+    }
+
+    #[napi(js_name = "executeReduceByOwned")]
+    pub fn execute_reduce_by_owned(
+        &self,
+        database: &NodeRustDatabase,
+        root: &NodeMatchBindingHandle,
+        group: Option<&NodeMatchBindingHandle>,
+        reducers: Vec<String>,
+        inputs: Vec<Option<Reference<NodeMatchFieldHandle>>>,
+    ) -> Result<NodeValidatedMatchResultHandle> {
+        let terms = reduce_terms(&reducers, &inputs)?;
+        let terms = borrow_reduce_terms(&terms);
+        let validated = self
+            .inner
+            .validate_reduce_by(&root.inner, group.map(|group| &group.inner), &terms)
+            .map_err(crate::napi_orm_error)?;
+        let registry = self.inner.registry_arc();
+        let (database, runtime) = database.handles();
+        let inner = runtime
+            .block_on(database.execute_match(&registry, &validated))
+            .map_err(crate::napi_orm_error)?;
+        Ok(NodeValidatedMatchResultHandle {
+            inner,
+            request: validated,
+            output: Arc::clone(&self.output),
+            lineage: Arc::clone(&self.lineage),
+        })
+    }
+
+    #[napi(js_name = "executeReduceByBorrowed")]
+    pub fn execute_reduce_by_borrowed(
+        &self,
+        transaction: &NodeRustTransactionContext,
+        root: &NodeMatchBindingHandle,
+        group: Option<&NodeMatchBindingHandle>,
+        reducers: Vec<String>,
+        inputs: Vec<Option<Reference<NodeMatchFieldHandle>>>,
+    ) -> Result<NodeValidatedMatchResultHandle> {
+        let terms = reduce_terms(&reducers, &inputs)?;
+        let terms = borrow_reduce_terms(&terms);
+        let validated = self
+            .inner
+            .validate_reduce_by(&root.inner, group.map(|group| &group.inner), &terms)
+            .map_err(crate::napi_orm_error)?;
+        let registry = self.inner.registry_arc();
+        let (transaction, runtime) = transaction.handles();
+        let inner = runtime
+            .block_on(transaction.execute_match(&registry, &validated))
+            .map_err(crate::napi_orm_error)?;
+        Ok(NodeValidatedMatchResultHandle {
+            inner,
+            request: validated,
+            output: Arc::clone(&self.output),
+            lineage: Arc::clone(&self.lineage),
+        })
+    }
 }
 
 /// Opaque proof that Rust validated one FetchRows provider result.
@@ -1040,6 +1159,48 @@ impl NodeValidatedMatchResultHandle {
                 "row index is outside the validated result",
             )
         })
+    }
+
+    fn reduction<'a>(&'a self, query: &NodeMatchQueryHandle) -> Result<&'a [ReductionRow]> {
+        match self.result(query)? {
+            MatchResult::Reduction { rows, .. } => Ok(rows),
+            _ => Err(result_decode_error(
+                "result_operation_mismatch",
+                "validated result is not a ReduceBy result",
+            )),
+        }
+    }
+
+    fn reduction_row<'a>(
+        &'a self,
+        query: &NodeMatchQueryHandle,
+        row_index: u32,
+    ) -> Result<&'a ReductionRow> {
+        self.reduction(query)?
+            .get(row_index as usize)
+            .ok_or_else(|| {
+                result_decode_error(
+                    "result_reduction_row_out_of_bounds",
+                    "row index is outside the validated reduction result",
+                )
+            })
+    }
+
+    fn reduced_value<'a>(
+        &'a self,
+        query: &NodeMatchQueryHandle,
+        row_index: u32,
+        value_index: u32,
+    ) -> Result<&'a ReducedValue> {
+        self.reduction_row(query, row_index)?
+            .values()
+            .get(value_index as usize)
+            .ok_or_else(|| {
+                result_decode_error(
+                    "result_reduction_value_out_of_bounds",
+                    "value index is outside the validated reduction row",
+                )
+            })
     }
 }
 
@@ -1259,6 +1420,112 @@ impl NodeValidatedMatchResultHandle {
                 "validated result is not an ExistsBy result",
             )),
         }
+    }
+
+    #[napi(js_name = "reductionRowCount")]
+    pub fn reduction_row_count(&self, query: &NodeMatchQueryHandle) -> Result<u32> {
+        u32::try_from(self.reduction(query)?.len()).map_err(|_| {
+            result_decode_error(
+                "result_reduction_row_count_overflow",
+                "validated reduction row count cannot be represented by the Node binding",
+            )
+        })
+    }
+
+    #[napi(js_name = "reductionValueCount")]
+    pub fn reduction_value_count(
+        &self,
+        query: &NodeMatchQueryHandle,
+        row_index: u32,
+    ) -> Result<u32> {
+        u32::try_from(self.reduction_row(query, row_index)?.values().len()).map_err(|_| {
+            result_decode_error(
+                "result_reduction_value_count_overflow",
+                "validated reduction value count cannot be represented by the Node binding",
+            )
+        })
+    }
+
+    #[napi(js_name = "reductionValueKind")]
+    pub fn reduction_value_kind(
+        &self,
+        query: &NodeMatchQueryHandle,
+        row_index: u32,
+        value_index: u32,
+    ) -> Result<String> {
+        Ok(match self.reduced_value(query, row_index, value_index)? {
+            ReducedValue::Count(_) => "count".to_owned(),
+            ReducedValue::Long(_) => "long".to_owned(),
+            ReducedValue::Double(_) => "double".to_owned(),
+        })
+    }
+
+    #[napi(js_name = "reductionCountValue")]
+    pub fn reduction_count_value(
+        &self,
+        query: &NodeMatchQueryHandle,
+        row_index: u32,
+        value_index: u32,
+    ) -> Result<BigInt> {
+        match self.reduced_value(query, row_index, value_index)? {
+            ReducedValue::Count(value) => Ok(u64_bigint(*value)),
+            _ => Err(result_decode_error(
+                "result_reduction_value_kind_mismatch",
+                "validated reduction value is not a count",
+            )),
+        }
+    }
+
+    #[napi(js_name = "reductionLongValue")]
+    pub fn reduction_long_value(
+        &self,
+        query: &NodeMatchQueryHandle,
+        row_index: u32,
+        value_index: u32,
+    ) -> Result<Option<BigInt>> {
+        match self.reduced_value(query, row_index, value_index)? {
+            ReducedValue::Long(value) => Ok(value.map(BigInt::from)),
+            _ => Err(result_decode_error(
+                "result_reduction_value_kind_mismatch",
+                "validated reduction value is not an integer-domain result",
+            )),
+        }
+    }
+
+    #[napi(js_name = "reductionDoubleValue")]
+    pub fn reduction_double_value(
+        &self,
+        query: &NodeMatchQueryHandle,
+        row_index: u32,
+        value_index: u32,
+    ) -> Result<Option<f64>> {
+        match self.reduced_value(query, row_index, value_index)? {
+            ReducedValue::Double(value) => Ok(*value),
+            _ => Err(result_decode_error(
+                "result_reduction_value_kind_mismatch",
+                "validated reduction value is not a double-domain result",
+            )),
+        }
+    }
+
+    #[napi(js_name = "reductionGroup")]
+    pub fn reduction_group(
+        &self,
+        query: &NodeMatchQueryHandle,
+        row_index: u32,
+    ) -> Result<NodeValidatedThingHandle> {
+        let group = self
+            .reduction_row(query, row_index)?
+            .group()
+            .ok_or_else(|| {
+                result_decode_error(
+                    "result_reduction_ungrouped",
+                    "ungrouped reduction row carries no group evidence",
+                )
+            })?;
+        Ok(NodeValidatedThingHandle {
+            inner: NodeValidatedThing::Selected(group.clone()),
+        })
     }
 }
 
@@ -1662,6 +1929,18 @@ mod tests {
         );
         assert!(parse_comparison("=").is_err());
         assert!(parse_direction("desc").is_err());
+        for (name, expected) in [
+            ("count", Reduction::Count),
+            ("sum", Reduction::Sum),
+            ("min", Reduction::Min),
+            ("max", Reduction::Max),
+            ("mean", Reduction::Mean),
+            ("median", Reduction::Median),
+            ("std", Reduction::Std),
+        ] {
+            assert_eq!(parse_reduction(name).unwrap(), expected);
+        }
+        assert!(parse_reduction("variance").is_err());
     }
 
     #[test]
@@ -1877,5 +2156,186 @@ mod tests {
         let payload: Value = serde_json::from_str(&error.reason).unwrap();
         assert_eq!(payload["category"], "result_decode");
         assert_eq!(payload["code"], "request_token_mismatch");
+    }
+
+    fn reduction_registry() -> NodeDescriptorRegistry {
+        let registry = NodeDescriptorRegistry::new();
+        registry
+            .register_entity_json(
+                r#"{
+                    "type_name":"person",
+                    "is_abstract":false,
+                    "parent_type":null,
+                    "owned_attributes":[
+                        {
+                            "field_name":"name",
+                            "attr_name":"person-name",
+                            "value_type":"string",
+                            "annotations":["Key"],
+                            "is_optional":false,
+                            "is_ordered":false
+                        },
+                        {
+                            "field_name":"age",
+                            "attr_name":"person-age",
+                            "value_type":"long",
+                            "annotations":[{"Card":[0,1]}],
+                            "is_optional":true,
+                            "is_ordered":false
+                        }
+                    ]
+                }"#
+                .into(),
+            )
+            .unwrap();
+        registry
+            .register_entity_json(
+                r#"{
+                    "type_name":"team",
+                    "is_abstract":false,
+                    "parent_type":null,
+                    "owned_attributes":[{
+                        "field_name":"name",
+                        "attr_name":"team-name",
+                        "value_type":"string",
+                        "annotations":["Key"],
+                        "is_optional":false,
+                        "is_ordered":false
+                    }]
+                }"#
+                .into(),
+            )
+            .unwrap();
+        registry
+    }
+
+    #[test]
+    fn reduction_accessors_expose_typed_domains_behind_exact_invocation_proofs() {
+        let registry = reduction_registry();
+        let session = NodeMatchSessionHandle::new(&registry);
+        let person = session.exact("person".into()).unwrap();
+        let shape = NodeMatchShapeHandle {
+            inner: session.inner.positional([person.inner.one()]).unwrap(),
+            output: Arc::new(NodeOutputShape::Positional {
+                slots: vec![NodeOutputSlotKind::One],
+            }),
+        };
+        let query = session.query(&shape).unwrap();
+        let age = person.inner.field("age").unwrap();
+        let validated = query
+            .inner
+            .validate_reduce_by(
+                &person.inner,
+                None,
+                &[
+                    (Reduction::Count, None),
+                    (Reduction::Sum, Some(&age)),
+                    (Reduction::Mean, Some(&age)),
+                ],
+            )
+            .unwrap();
+        let mut executor = type_bridge_orm::RecordingMatchExecutor::new(query.inner.registry_arc());
+        executor.push(type_bridge_orm::RecordingMatchResponse::Reduction(vec![
+            ReducedValue::Count(2),
+            ReducedValue::Long(Some(70)),
+            ReducedValue::Double(Some(35.0)),
+        ]));
+        let inner = executor.execute(&validated).unwrap();
+        let result = NodeValidatedMatchResultHandle {
+            inner,
+            request: validated,
+            output: Arc::clone(&query.output),
+            lineage: Arc::clone(&query.lineage),
+        };
+
+        assert_eq!(result.reduction_row_count(&query).unwrap(), 1);
+        assert_eq!(result.reduction_value_count(&query, 0).unwrap(), 3);
+        assert_eq!(result.reduction_value_kind(&query, 0, 0).unwrap(), "count");
+        assert_eq!(result.reduction_value_kind(&query, 0, 1).unwrap(), "long");
+        assert_eq!(result.reduction_value_kind(&query, 0, 2).unwrap(), "double");
+        assert_eq!(
+            bigint_u64(
+                &result.reduction_count_value(&query, 0, 0).unwrap(),
+                "count"
+            )
+            .unwrap(),
+            2
+        );
+        assert_eq!(
+            bigint_u64(
+                &result.reduction_long_value(&query, 0, 1).unwrap().unwrap(),
+                "sum",
+            )
+            .unwrap(),
+            70
+        );
+        assert_eq!(
+            result.reduction_double_value(&query, 0, 2).unwrap(),
+            Some(35.0)
+        );
+
+        let error = result.reduction_count_value(&query, 0, 1).unwrap_err();
+        let payload: Value = serde_json::from_str(&error.reason).unwrap();
+        assert_eq!(payload["code"], "result_reduction_value_kind_mismatch");
+
+        let error = result.reduction_group(&query, 0).err().unwrap();
+        let payload: Value = serde_json::from_str(&error.reason).unwrap();
+        assert_eq!(payload["code"], "result_reduction_ungrouped");
+
+        let error = result.reduction_value_kind(&query, 0, 3).unwrap_err();
+        let payload: Value = serde_json::from_str(&error.reason).unwrap();
+        assert_eq!(payload["code"], "result_reduction_value_out_of_bounds");
+
+        let error = result.count_value(&query).unwrap_err();
+        let payload: Value = serde_json::from_str(&error.reason).unwrap();
+        assert_eq!(payload["code"], "result_operation_mismatch");
+
+        let foreign = session.query(&shape).unwrap();
+        let error = result.reduction_row_count(&foreign).unwrap_err();
+        let payload: Value = serde_json::from_str(&error.reason).unwrap();
+        assert_eq!(payload["code"], "result_query_mismatch");
+    }
+
+    #[test]
+    fn empty_grouped_reductions_expose_zero_rows_and_bounded_row_access() {
+        let registry = reduction_registry();
+        let session = NodeMatchSessionHandle::new(&registry);
+        let person = session.exact("person".into()).unwrap();
+        let team = session.exact("team".into()).unwrap();
+        let shape = NodeMatchShapeHandle {
+            inner: session.inner.positional([person.inner.one()]).unwrap(),
+            output: Arc::new(NodeOutputShape::Positional {
+                slots: vec![NodeOutputSlotKind::One],
+            }),
+        };
+        let query = session
+            .query(&shape)
+            .unwrap()
+            .add_hidden(&team)
+            .unwrap()
+            .allow_cross_join(&person, &team)
+            .unwrap();
+        let validated = query
+            .inner
+            .validate_reduce_by(
+                &person.inner,
+                Some(&team.inner),
+                &[(Reduction::Count, None)],
+            )
+            .unwrap();
+        let mut executor = type_bridge_orm::RecordingMatchExecutor::new(query.inner.registry_arc());
+        executor.push(type_bridge_orm::RecordingMatchResponse::EmptyGroupedReduction);
+        let inner = executor.execute(&validated).unwrap();
+        let result = NodeValidatedMatchResultHandle {
+            inner,
+            request: validated,
+            output: Arc::clone(&query.output),
+            lineage: Arc::clone(&query.lineage),
+        };
+
+        assert_eq!(result.reduction_row_count(&query).unwrap(), 0);
+        let error = result.reduction_value_count(&query, 0).unwrap_err();
+        let payload: Value = serde_json::from_str(&error.reason).unwrap();
+        assert_eq!(payload["code"], "result_reduction_row_out_of_bounds");
     }
 }

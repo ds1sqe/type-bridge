@@ -220,7 +220,7 @@ impl Database {
         .await
     }
 
-    /// Connect to a TypeDB server with explicit [`ConnectOptions`].
+    /// Connect to a TypeDB server with explicit [`crate::ConnectOptions`].
     #[cfg(feature = "typedb")]
     pub async fn connect_with_options(
         address: &str,
@@ -544,6 +544,39 @@ impl Database {
             tx.commit().await?;
         }
         Ok(result)
+    }
+
+    pub(crate) async fn execute_canonical(
+        &self,
+        typeql: &str,
+        tx_type: TxType,
+    ) -> Result<QueryResult> {
+        let mut tx = self
+            .backend
+            .open_transaction(&self.database_name, tx_type)
+            .await?;
+        let result = tx.query_canonical(typeql).await;
+        match result {
+            Ok(value) => {
+                if matches!(tx_type, TxType::Write | TxType::Schema)
+                    && let Err(error) = tx.commit().await
+                {
+                    let _ = tx.close().await;
+                    return Err(error);
+                }
+                tx.close().await?;
+                Ok(value)
+            }
+            Err(primary) => {
+                if matches!(tx_type, TxType::Write | TxType::Schema) {
+                    let _ = tx.rollback().await;
+                    let _ = tx.close().await;
+                } else {
+                    let _ = tx.close().await;
+                }
+                Err(primary)
+            }
+        }
     }
 
     /// Execute a `given`-stage TypeQL query over input rows, auto-managing

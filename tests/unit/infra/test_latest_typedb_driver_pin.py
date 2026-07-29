@@ -756,6 +756,6 @@ def test_release_workflow_binds_the_driver_cutoff_without_cargo_publication() ->
     assert "cargo publish" not in workflow
     assert (
         "needs: [validate-release-identity, accept-python-artifacts, "
-        "accept-node-package, accept-live-artifact-parity]"
+        "accept-node-package, accept-live-artifact-parity, accept-server-oci]"
     ) in workflow[preflight:]
-    assert "needs: channel-preflight" in workflow[first_publish:]
+    assert "needs: [channel-preflight, publish-server-oci]" in workflow[first_publish:]

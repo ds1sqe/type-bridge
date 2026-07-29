@@ -52,6 +52,16 @@ impl TransactionContext {
         tx.query(typeql).await
     }
 
+    /// Execute a canonical provider-answer query for binding-neutral CRUD.
+    #[doc(hidden)]
+    pub(crate) async fn query_canonical(&self, typeql: &str) -> Result<QueryResult> {
+        let mut guard = self.inner.lock().await;
+        let tx = guard
+            .as_mut()
+            .ok_or_else(|| OrmError::Transaction("Transaction already consumed".into()))?;
+        tx.query_canonical(typeql).await
+    }
+
     /// Export the schema under this transaction's provider-side schema fence,
     /// when supported by the backend.
     pub(crate) async fn schema_snapshot(&self) -> Result<Option<String>> {

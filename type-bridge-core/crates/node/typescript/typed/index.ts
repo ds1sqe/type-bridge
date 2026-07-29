@@ -11,7 +11,12 @@ export {
 } from "./remote-query.js";
 export type { Page } from "./page.js";
 export {
+  aggregate,
+  GroupedQuery,
   Query,
+  type Aggregate,
+  type AggregateOutputs,
+  type AggregateTerms,
   type NamedQueryRow,
   type PageOptions,
   type QueryConnection,

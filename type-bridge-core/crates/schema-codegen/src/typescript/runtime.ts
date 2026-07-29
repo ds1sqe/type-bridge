@@ -172,8 +172,8 @@ type ScalarValueType =
   | "double"
   | "boolean"
   | "date"
-  | "date_time"
-  | "date_time_tz"
+  | "datetime"
+  | "datetime_tz"
   | "decimal"
   | "duration";
 
@@ -291,8 +291,8 @@ function validateScalar(name: string, value: unknown, valueType: ScalarValueType
       case "boolean":
         return typeof value === "boolean";
       case "date":
-      case "date_time":
-      case "date_time_tz":
+      case "datetime":
+      case "datetime_tz":
         return value instanceof Date && Number.isFinite(value.getTime());
     }
   })();
@@ -591,9 +591,9 @@ function scalarToWire(valueType: ScalarValueType, value: unknown): ScalarWire {
       }
       return { valueType, value: iso.slice(0, 10) };
     }
-    case "date_time":
+    case "datetime":
       return { valueType, value: canonicalDateTime((value as Date).toISOString(), false) };
-    case "date_time_tz":
+    case "datetime_tz":
       return { valueType, value: canonicalDateTime((value as Date).toISOString(), true) };
     default:
       return { valueType, value: value as string | number | boolean };
@@ -686,10 +686,10 @@ function scalarFromWire(wire: ScalarWire): unknown {
     case "date":
       if (typeof wire.value !== "string") throw new TypeError("date wire requires a string");
       return new Date(`${wire.value}T00:00:00.000Z`);
-    case "date_time":
+    case "datetime":
       if (typeof wire.value !== "string") throw new TypeError("datetime wire requires a string");
       return new Date(`${wire.value}Z`);
-    case "date_time_tz":
+    case "datetime_tz":
       if (typeof wire.value !== "string") throw new TypeError("datetime-tz wire requires a string");
       return new Date(wire.value);
     default:
@@ -699,7 +699,7 @@ function scalarFromWire(wire: ScalarWire): unknown {
 
 function isScalarValueType(value: unknown): value is ScalarValueType {
   return typeof value === "string" && [
-    "string", "long", "double", "boolean", "date", "date_time", "date_time_tz", "decimal", "duration",
+    "string", "long", "double", "boolean", "date", "datetime", "datetime_tz", "decimal", "duration",
   ].includes(value);
 }
 

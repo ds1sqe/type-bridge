@@ -7,6 +7,8 @@ import json
 import subprocess
 import sys
 from collections.abc import Iterator
+from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 from types import ModuleType
 
@@ -95,6 +97,15 @@ def test_generated_projection_round_trips_live_models(
         identifier=generated.Identifier("person-1"),
         nickname=generated.Nickname("alice"),
         aliases=[generated.Aliases("alpha"), generated.Aliases("beta")],
+        score=generated.Score(3),
+        val_bool=generated.ValBool(True),
+        val_constrained=generated.ValConstrained(20),
+        val_date=generated.ValDate(date(2026, 7, 29)),
+        val_datetime=generated.ValDatetime(datetime(2026, 7, 29)),
+        val_datetime_tz=generated.ValDatetimeTz(datetime(2026, 7, 29, tzinfo=UTC)),
+        val_decimal=generated.ValDecimal(Decimal("3.5")),
+        val_double=generated.ValDouble(3.5),
+        val_duration=generated.ValDuration(timedelta(seconds=3)),
     )
     assert person_manager.insert(person) is person
     assert person.iid

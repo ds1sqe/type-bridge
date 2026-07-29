@@ -1,6 +1,7 @@
 import type { RustDatabase } from "@type-bridge/node";
 
 import {
+  aggregate,
   type Page,
   type Query,
   QuerySession,
@@ -89,6 +90,31 @@ const seventeenSelections = [
 session.query(...seventeenSelections);
 
 const single = session.query(p01);
+// @ts-expect-error canonical typed reductions admit only long/double fields
+single.aggregate(p01, [aggregate.sum(p01.field(personRefs.fields.name))]);
+
+const seventeenReducers = [
+  aggregate.count(),
+  aggregate.count(),
+  aggregate.count(),
+  aggregate.count(),
+  aggregate.count(),
+  aggregate.count(),
+  aggregate.count(),
+  aggregate.count(),
+  aggregate.count(),
+  aggregate.count(),
+  aggregate.count(),
+  aggregate.count(),
+  aggregate.count(),
+  aggregate.count(),
+  aggregate.count(),
+  aggregate.count(),
+  aggregate.count(),
+] as const;
+// @ts-expect-error canonical typed reductions reject a seventeenth term
+single.aggregate(p01, seventeenReducers);
+
 // @ts-expect-error a one-slot query page contains ContractPerson, not a tuple row
 const wrongPage: Page<readonly [ContractPerson]> = single.pageBy(p01, { limit: 10 });
 void wrongPage;

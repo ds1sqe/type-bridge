@@ -267,7 +267,9 @@ assert.deepStrictEqual(descriptor.owned_attributes[0].annotations, ["Key"], "Key
 
 const { execSync } = require("node:child_process");
 const packed = JSON.parse(execSync("npm pack --dry-run --json", { encoding: "utf8" }));
-const packedFiles = packed[0].files.map((f) => f.path);
+const packInfo = Array.isArray(packed) ? packed[0] : Object.values(packed)[0];
+assert.ok(packInfo && Array.isArray(packInfo.files), "npm pack must return a file manifest");
+const packedFiles = packInfo.files.map((f) => f.path);
 assert.ok(packedFiles.includes("dist/index.js"), "tarball must include dist/index.js");
 assert.ok(packedFiles.includes("dist/native.js"), "tarball must include dist/native.js (the loader)");
 assert.ok(

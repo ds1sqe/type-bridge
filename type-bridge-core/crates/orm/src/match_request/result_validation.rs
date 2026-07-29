@@ -14,6 +14,9 @@ use type_bridge_contract::query_plan::{CompatibilityValueV2, ReleasedValueKindV2
 use type_bridge_contract::query_remote_v2::{
     HydrationGraphV2, HydrationNodeKindV2, HydrationReferenceV2, HydrationSlotV2, RemoteOutcomeV2,
 };
+use type_bridge_contract::temporal::{
+    CanonicalDate, CanonicalDateTime, CanonicalDateTimeTz, CanonicalDuration,
+};
 use type_bridge_contract::value::CanonicalValue;
 use type_bridge_core_lib::decimal::parse_decimal;
 use unicase::UniCase;
@@ -28,12 +31,12 @@ use super::ids::{BindingId, BoundFieldId, DescriptorId, FieldId, RoleEdgeId, Rol
 use super::limits::MAX_SEMANTIC_ID_BYTES;
 use super::model::{
     ComparisonOp, FetchShape, FetchSlot, MatchBinding, MatchExpr, MatchMode, MatchOperation,
-    MatchOrder, MissingOrder, RowCardinality, SortDirection, ThingKind, Window,
+    MatchOrder, MissingOrder, Reduction, RowCardinality, SortDirection, ThingKind, Window,
 };
 use super::result::{
     ConceptId, HydratedAttribute, HydratedRole, HydratedRolePlayer, HydratedThing, MatchResult,
-    MatchRow, ProviderResultEvidence, ProviderResultPayload, ProviderSolutionEvidence, SlotValue,
-    ValidatedMatchResult,
+    MatchRow, ProviderResultEvidence, ProviderResultPayload, ProviderSolutionEvidence,
+    ReducedValue, SlotValue, ValidatedMatchResult,
 };
 use super::validation::{StableOrderSpec, ValidatedMatchRequest};
 
@@ -260,6 +263,79 @@ pub(crate) fn validate_provider_result_with_limits(
         ) => {
             require_root(*root, actual_root, "exists_root_mismatch")?;
             MatchResult::Exists { root: *root, value }
+        }
+        (
+            MatchOperation::ReduceBy {
+                root,
+                group,
+                reducers,
+            },
+            ProviderResultPayload::Reduction {
+                root: actual_root,
+                group: actual_group,
+                rows,
+            },
+        ) => {
+            require_root(*root, actual_root, "reduction_root_mismatch")?;
+            if *group != actual_group {
+                return Err(result_error(
+                    "reduction_group_mismatch",
+                    "provider reduction echoed the wrong group binding",
+                ));
+            }
+            match group {
+                None => {
+                    if rows.len() != 1 || rows[0].group().is_some() {
+                        return Err(result_error(
+                            "reduction_ungrouped_shape",
+                            "ungrouped reductions require exactly one keyless row",
+                        ));
+                    }
+                }
+                Some(_) => {
+                    for row in &rows {
+                        if row.group().is_none() {
+                            return Err(result_error(
+                                "reduction_group_key_missing",
+                                "grouped reduction rows require group evidence",
+                            ));
+                        }
+                    }
+                }
+            }
+            for row in &rows {
+                if row.values().len() != reducers.len() {
+                    return Err(result_error(
+                        "reduction_arity_mismatch",
+                        "reduction rows must carry one value per requested reducer",
+                    ));
+                }
+                for (value, term) in row.values().iter().zip(reducers) {
+                    let variant_valid = matches!(
+                        (term.reduction, value),
+                        (Reduction::Count, ReducedValue::Count(_))
+                            | (
+                                Reduction::Sum | Reduction::Min | Reduction::Max,
+                                ReducedValue::Long(_) | ReducedValue::Double(_),
+                            )
+                            | (
+                                Reduction::Mean | Reduction::Median | Reduction::Std,
+                                ReducedValue::Double(_),
+                            )
+                    );
+                    if !variant_valid {
+                        return Err(result_error(
+                            "reduction_value_domain",
+                            "reduction value variant does not fit its reducer",
+                        ));
+                    }
+                }
+            }
+            MatchResult::Reduction {
+                root: *root,
+                group: *group,
+                rows,
+            }
         }
         _ => {
             return Err(result_error(
@@ -625,8 +701,8 @@ fn released_attributes(
 }
 
 fn released_attribute_value(value: &CompatibilityValueV2) -> Result<AttributeValue, MatchError> {
-    if let Some(value) = value.canonical_value() {
-        return Ok(match value {
+    let value = if let Some(value) = value.canonical_value() {
+        match value {
             CanonicalValue::String(value) => AttributeValue::String(value.as_str().to_owned()),
             CanonicalValue::Long(value) => AttributeValue::Long(*value),
             CanonicalValue::Double(value) => AttributeValue::Double(value.get()),
@@ -636,25 +712,102 @@ fn released_attribute_value(value: &CompatibilityValueV2) -> Result<AttributeVal
             CanonicalValue::DateTimeTz(value) => AttributeValue::DateTimeTZ(value.to_string()),
             CanonicalValue::Decimal(value) => AttributeValue::Decimal(value.to_string()),
             CanonicalValue::Duration(value) => AttributeValue::Duration(value.to_string()),
-        });
-    }
-    let text = value.released_text().ok_or_else(|| {
+        }
+    } else {
+        let text = value.released_text().ok_or_else(|| {
+            result_error(
+                "hydrated_attribute_value_type",
+                "hydrated compatibility value has no released representation",
+            )
+        })?;
+        match value.released_kind() {
+            Some(ReleasedValueKindV2::String) => AttributeValue::String(text),
+            Some(ReleasedValueKindV2::DateTime) => AttributeValue::DateTime(text),
+            Some(ReleasedValueKindV2::DateTimeTz) => AttributeValue::DateTimeTZ(text),
+            Some(ReleasedValueKindV2::Duration) => AttributeValue::Duration(text),
+            Some(ReleasedValueKindV2::Decimal) => AttributeValue::Decimal(text),
+            None => {
+                return Err(result_error(
+                    "hydrated_attribute_value_type",
+                    "hydrated compatibility value has no scalar domain",
+                ));
+            }
+        }
+    };
+    canonicalize_provider_attribute_value(value)
+}
+
+pub(crate) fn canonicalize_provider_attribute_value(
+    value: AttributeValue,
+) -> Result<AttributeValue, MatchError> {
+    let malformed = || {
         result_error(
             "hydrated_attribute_value_type",
-            "hydrated compatibility value has no released representation",
+            "hydrated attribute value is outside its canonical scalar domain",
         )
-    })?;
-    match value.released_kind() {
-        Some(ReleasedValueKindV2::String) => Ok(AttributeValue::String(text)),
-        Some(ReleasedValueKindV2::DateTime) => Ok(AttributeValue::DateTime(text)),
-        Some(ReleasedValueKindV2::DateTimeTz) => Ok(AttributeValue::DateTimeTZ(text)),
-        Some(ReleasedValueKindV2::Duration) => Ok(AttributeValue::Duration(text)),
-        Some(ReleasedValueKindV2::Decimal) => Ok(AttributeValue::Decimal(text)),
-        None => Err(result_error(
-            "hydrated_attribute_value_type",
-            "hydrated compatibility value has no scalar domain",
-        )),
+    };
+    match value {
+        AttributeValue::Date(value) => value
+            .parse::<CanonicalDate>()
+            .map(|value| AttributeValue::Date(value.to_string()))
+            .map_err(|_| malformed()),
+        AttributeValue::DateTime(value) => normalize_provider_fraction(value)
+            .parse::<CanonicalDateTime>()
+            .map(|value| AttributeValue::DateTime(value.to_string()))
+            .map_err(|_| malformed()),
+        AttributeValue::DateTimeTZ(value) => normalize_provider_datetime_tz(value)
+            .parse::<CanonicalDateTimeTz>()
+            .map(|value| AttributeValue::DateTimeTZ(value.to_string()))
+            .map_err(|_| malformed()),
+        AttributeValue::Decimal(value) => parse_decimal(&value)
+            .map(|value| AttributeValue::Decimal(value.canonical_string()))
+            .ok_or_else(malformed),
+        AttributeValue::Duration(value) => {
+            let value = normalize_provider_fraction(value);
+            match value.parse::<CanonicalDuration>() {
+                Ok(value) => Ok(AttributeValue::Duration(value.to_string())),
+                Err(_) => CompatibilityValueV2::released_duration(value.clone())
+                    .map(|_| AttributeValue::Duration(value))
+                    .map_err(|_| malformed()),
+            }
+        }
+        value => Ok(value),
     }
+}
+
+fn normalize_provider_datetime_tz(value: String) -> String {
+    let mut normalized = normalize_provider_fraction(value);
+    for zero_offset in ["+00:00:00", "-00:00:00", "+00:00", "-00:00"] {
+        if normalized.ends_with(zero_offset) {
+            normalized.truncate(normalized.len() - zero_offset.len());
+            normalized.push('Z');
+            break;
+        }
+    }
+    normalized
+}
+
+fn normalize_provider_fraction(value: String) -> String {
+    let Some(dot) = value.find('.') else {
+        return value;
+    };
+    let fraction_end = value[dot + 1..]
+        .find(|character: char| !character.is_ascii_digit())
+        .map_or(value.len(), |offset| dot + 1 + offset);
+    let trimmed_end = value[dot + 1..fraction_end].trim_end_matches('0').len() + dot + 1;
+    if trimmed_end == fraction_end {
+        return value;
+    }
+    let mut normalized = String::with_capacity(value.len());
+    normalized.push_str(
+        &value[..if trimmed_end == dot + 1 {
+            dot
+        } else {
+            trimmed_end
+        }],
+    );
+    normalized.push_str(&value[fraction_end..]);
+    normalized
 }
 
 const fn released_kind(kind: HydrationNodeKindV2) -> ThingKind {

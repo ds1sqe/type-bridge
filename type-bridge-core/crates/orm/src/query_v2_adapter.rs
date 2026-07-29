@@ -139,6 +139,9 @@ pub(crate) enum MatchRequestAdaptation {
     Adapted(AdaptedMatchRequest),
     /// Preserve released behavior through the already-validated direct V1 path.
     LegacyRequired(V1ResourceEnvelopeReason),
+    /// The V2 vocabulary has no spelling for this operation; the direct
+    /// typed lane is its only execution program.
+    NativeOnly,
 }
 
 /// The V2 program one V1 request adapts to.
@@ -196,6 +199,9 @@ pub(crate) fn adapt_match_request(
                 "V1 bindings must be dense zero-based ordinals",
             ));
         }
+    }
+    if matches!(request.operation, MatchOperation::ReduceBy { .. }) {
+        return Ok(MatchRequestAdaptation::NativeOnly);
     }
     if request
         .plan
@@ -317,7 +323,8 @@ const fn assert_released_capability_mapped(capability: Capability) {
         | Capability::Collect
         | Capability::CollectDistinct
         | Capability::StableCollectionOrder
-        | Capability::BoundedReachability => {}
+        | Capability::BoundedReachability
+        | Capability::TypedReduction => {}
     }
 }
 
@@ -619,6 +626,16 @@ fn adapt_operation(
                 ModelQueryV2::DistinctCount { hydration, root },
                 vec![root],
             )
+        }
+        MatchOperation::ReduceBy { .. } => {
+            return Err(type_bridge_contract::diagnostic::Diagnostic::new(
+                type_bridge_contract::diagnostic::DiagnosticCategory::UnsupportedCapability,
+                type_bridge_contract::diagnostic::DiagnosticCode::new(
+                    "typed_reduction_unsupported",
+                )
+                .expect("static diagnostic code is valid"),
+                "the V2 compatibility lane does not carry typed reductions",
+            ));
         }
         MatchOperation::ExistsBy { root } => {
             let root = BindingId::new(root.get())?;

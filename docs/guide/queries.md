@@ -981,7 +981,7 @@ Requirements and fallbacks:
 - Bulk ORM operations (`insert_many()` on entities) use this mechanism
   automatically when that capability is available and fall back to per-row
   queries elsewhere; see
-  [CRUD Operations](crud.md#given-stage-fast-path-typedb-312).
+  [CRUD Operations](crud.md#given-stage-fast-path-typedb-312-negotiated-band-9).
 
 ## See Also
 

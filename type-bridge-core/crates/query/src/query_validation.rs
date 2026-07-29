@@ -487,7 +487,7 @@ pub fn validate_query_plan(
                                 ));
                             }
                         },
-                        Reducer::Mean => match input_scalar {
+                        Reducer::Mean | Reducer::Median | Reducer::Std => match input_scalar {
                             Some(ValueTypeTag::Long | ValueTypeTag::Double) => ValueTypeTag::Double,
                             _ => {
                                 return Err(plan_failure(

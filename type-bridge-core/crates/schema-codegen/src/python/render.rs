@@ -452,7 +452,12 @@ fn render_descriptors(
     model: &ModelProjection,
 ) -> Result<(), Diagnostic> {
     let owner = model.target_name().as_str();
-    for (id, token) in model.query_tokens().fields() {
+    for (id, token) in model
+        .query_tokens()
+        .fields()
+        .iter()
+        .filter(|(id, _)| model.declaration().direct_fields().contains(id))
+    {
         let read = model
             .complete_read()
             .fields()
@@ -484,7 +489,12 @@ fn render_descriptors(
             token.target_name().as_str()
         );
     }
-    for (id, token) in model.query_tokens().roles() {
+    for (id, token) in model
+        .query_tokens()
+        .roles()
+        .iter()
+        .filter(|(id, _)| model.declaration().direct_roles().contains_key(id))
+    {
         let read = model
             .complete_read()
             .roles()

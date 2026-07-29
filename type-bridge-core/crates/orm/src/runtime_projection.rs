@@ -14,6 +14,7 @@ use crate::descriptor::{
 use crate::dynamic::DynamicAttributeMap;
 use crate::entity::Annotation;
 use crate::error::{OrmError, Result};
+use crate::registry::DescriptorRegistry;
 use crate::value::AttributeValue;
 
 /// One package-scoped trusted projection and its provider-facing descriptors.
@@ -40,6 +41,33 @@ impl InstalledRuntimeProjection {
             projection: Arc::new(projection),
             descriptors,
         })
+    }
+
+    /// Decode a verified Rust runtime projection from JSON bytes and derive provider descriptors.
+    pub fn from_verified_rust_json(
+        runtime_json: &[u8],
+        semantic_json: &[u8],
+        projection_json: &[u8],
+    ) -> Result<Self> {
+        let runtime = type_bridge_contract::projection_wire::decode_runtime_projection_verified(
+            runtime_json,
+            semantic_json,
+            projection_json,
+        )
+        .map_err(|err| OrmError::DescriptorValidation {
+            type_name: "<runtime_projection>".to_owned(),
+            message: err.to_string(),
+        })?;
+        if runtime.target() != type_bridge_contract::projection::BindingTarget::Rust {
+            return Err(OrmError::DescriptorValidation {
+                type_name: "<runtime_projection>".to_owned(),
+                message: format!(
+                    "target mismatch: expected Rust binding target, found {:?}",
+                    runtime.target()
+                ),
+            });
+        }
+        Self::try_new(runtime)
     }
 
     /// Return the trusted source projection.
@@ -72,6 +100,28 @@ impl InstalledRuntimeProjection {
             TypeDescriptor::Relation(value) => Ok(value),
             TypeDescriptor::Entity(_) => Err(kind_conflict(id, "relation")),
         }
+    }
+
+    /// Build the exact match registry for this installed generated
+    /// projection.
+    ///
+    /// The registry carries its trusted projection provenance into prepared
+    /// execution snapshots so generated-client requests use the direct typed
+    /// executor instead of reconstructing schema authority from lossy dynamic
+    /// descriptors.
+    pub fn match_registry(&self) -> Result<DescriptorRegistry> {
+        let registry = DescriptorRegistry::for_installed_projection();
+        for descriptor in self.descriptors.values().cloned() {
+            match descriptor {
+                TypeDescriptor::Entity(entity) => {
+                    registry.register_entity(entity)?;
+                }
+                TypeDescriptor::Relation(relation) => {
+                    registry.register_relation(relation)?;
+                }
+            }
+        }
+        Ok(registry)
     }
 
     /// Decode one fetched role player's raw provider attribute arrays against

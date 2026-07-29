@@ -194,7 +194,9 @@ define_closed_builder_vocabulary!(
         Reducer::Count => "count",
         Reducer::Max => "max",
         Reducer::Mean => "mean",
+        Reducer::Median => "median",
         Reducer::Min => "min",
+        Reducer::Std => "std",
         Reducer::Sum => "sum",
     }
 );
@@ -3370,7 +3372,13 @@ mod completeness_guard {
         }
         fn reducer(value: Reducer) {
             match value {
-                Reducer::Count | Reducer::Max | Reducer::Mean | Reducer::Min | Reducer::Sum => {}
+                Reducer::Count
+                | Reducer::Max
+                | Reducer::Mean
+                | Reducer::Median
+                | Reducer::Min
+                | Reducer::Std
+                | Reducer::Sum => {}
             }
         }
         fn direction(value: OrderDirection) {

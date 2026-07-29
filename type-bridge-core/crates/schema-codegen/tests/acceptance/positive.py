@@ -1,4 +1,6 @@
 from collections.abc import Iterator
+from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
 from typing import assert_type
 
 from generated_v2 import (
@@ -17,6 +19,15 @@ from generated_v2 import (
     PlayerStats,
     Robot,
     RoleToken,
+    Score,
+    ValBool,
+    ValConstrained,
+    ValDate,
+    ValDatetime,
+    ValDatetimeTz,
+    ValDecimal,
+    ValDouble,
+    ValDuration,
     find_events,
 )
 
@@ -32,6 +43,15 @@ person = Person(
     identifier=Identifier("person-1"),
     nickname=Nickname("alice"),
     aliases=[Aliases("a"), Aliases("b")],
+    score=Score(3),
+    val_bool=ValBool(True),
+    val_constrained=ValConstrained(20),
+    val_date=ValDate(date(2026, 7, 29)),
+    val_datetime=ValDatetime(datetime(2026, 7, 29)),
+    val_datetime_tz=ValDatetimeTz(datetime(2026, 7, 29, tzinfo=UTC)),
+    val_decimal=ValDecimal(Decimal("3.5")),
+    val_double=ValDouble(3.5),
+    val_duration=ValDuration(timedelta(seconds=3)),
 )
 assert_type(person.identifier, Identifier)
 assert_type(person.nickname, Nickname | None)

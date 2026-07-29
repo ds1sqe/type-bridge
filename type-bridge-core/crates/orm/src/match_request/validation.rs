@@ -483,6 +483,53 @@ fn validate_operation_structure(request: &MatchRequest) -> Result<(), MatchError
             require_binding(request, *root)?;
             (None, None, None)
         }
+        MatchOperation::ReduceBy {
+            root,
+            group,
+            reducers,
+        } => {
+            require_binding(request, *root)?;
+            if let Some(group) = group {
+                require_binding(request, *group)?;
+                if group == root {
+                    return Err(invalid(
+                        "reduce_group_is_root",
+                        "the reduction group binding must differ from the reduced root",
+                    )
+                    .at(MatchErrorPathSegment::Operation));
+                }
+            }
+            if reducers.is_empty() {
+                return Err(invalid(
+                    "empty_reducers",
+                    "typed reductions require at least one reducer term",
+                )
+                .at(MatchErrorPathSegment::Operation));
+            }
+            if reducers.len() > MAX_SELECTED_SLOTS {
+                return Err(invalid(
+                    "reducer_cap_exceeded",
+                    "typed reductions exceed the canonical sixteen-slot ceiling",
+                )
+                .at(MatchErrorPathSegment::Operation)
+                .with_detail("actual", usize_detail(reducers.len()))
+                .with_detail("maximum", usize_detail(MAX_SELECTED_SLOTS)));
+            }
+            for term in reducers {
+                match (&term.input, term.reduction.requires_input()) {
+                    (Some(field), _) => validate_bound_field_id(field)?,
+                    (None, true) => {
+                        return Err(invalid(
+                            "reduce_input_required",
+                            "this reducer requires a bound scalar field input",
+                        )
+                        .at(MatchErrorPathSegment::Operation));
+                    }
+                    (None, false) => {}
+                }
+            }
+            (None, None, None)
+        }
     };
 
     if let Some(window) = window {
@@ -1047,6 +1094,33 @@ fn validate_operation(
             ))
         }
         MatchOperation::CountBy { .. } | MatchOperation::ExistsBy { .. } => {
+            Ok((StableOrderSpec::default(), BTreeMap::new()))
+        }
+        MatchOperation::ReduceBy { reducers, .. } => {
+            for term in reducers {
+                let Some(field) = &term.input else { continue };
+                let attribute = resolve_bound_field(registry, field, bindings)?;
+                if attribute.is_ordered
+                    || attribute
+                        .cardinality()
+                        .is_some_and(|(_, max)| max != Some(1))
+                {
+                    return Err(invalid(
+                        "non_scalar_reduce_field",
+                        "reducer inputs must be scalar descriptor ownerships",
+                    )
+                    .at(MatchErrorPathSegment::Field(field.field.clone())));
+                }
+                if term.reduction.requires_input()
+                    && !matches!(attribute.value_type.as_str(), "long" | "integer" | "double")
+                {
+                    return Err(invalid(
+                        "reduce_input_domain",
+                        "this reducer requires a uniform numeric scalar input",
+                    )
+                    .at(MatchErrorPathSegment::Field(field.field.clone())));
+                }
+            }
             Ok((StableOrderSpec::default(), BTreeMap::new()))
         }
     }

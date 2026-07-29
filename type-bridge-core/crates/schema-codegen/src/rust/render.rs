@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 use type_bridge_contract::codec::to_canonical_json;
@@ -35,6 +35,8 @@ const FIXED_PUBLIC_NAMES: &[&str] = &[
     "structs",
     "functions",
     "schema",
+    "sealed",
+    "ValidationPath",
     "ValidationError",
     "Cardinality",
     "Required",
@@ -50,10 +52,14 @@ const FIXED_PUBLIC_NAMES: &[&str] = &[
     "Duration",
     "Model",
     "CompleteModel",
+    "SubtypeRootModel",
     "ReferenceModel",
     "StructValue",
     "NominalUpcast",
     "RoleUpcast",
+    "RoleTokenCompatible",
+    "RolePlayer",
+    "QueryValued",
     "TypeToken",
     "FieldToken",
     "RoleToken",
@@ -65,29 +71,74 @@ const FIXED_PUBLIC_NAMES: &[&str] = &[
     "SEMANTIC_SCHEMA_FINGERPRINT_JSON",
     "PROJECTION_FINGERPRINT_JSON",
     "RUNTIME_PROJECTION_JSON",
+    "DECLARED_SCHEMA_JSON",
     "MODEL_SHELLS",
     "MODEL_LINK_COMPONENTS",
     "STRUCT_ORDER",
     "FUNCTION_ORDER",
     "PlayingFact",
     "PLAYING_FACTS",
+    "ThingKind",
+    "ThingModel",
+    "EntityModel",
+    "RelationModel",
+    "AbstractModel",
+    "TextValued",
+    "OrderedValued",
+    "NumericValued",
+    "ModelFamily",
+    "EncodedScalar",
+    "EncodedReference",
+    "EncodedCreate",
+    "HydratedRow",
+    "HydratedPlayer",
+    "HydrationCapability",
+    "ConstraintDescriptor",
+    "IntoEncodedScalar",
+    "IntoEncodedCreate",
+    "IntoEncodedReference",
+    "MaterializeModel",
+    "validate_canonical_string",
+    "prefix_validation_path",
+    "materialize_model_for_test",
+    "Schema",
+    "SchemaPackage",
+    "Unbound",
+    "AppSchema",
+    "SchemaMarker",
+    "SCHEMA",
     "String",
+    "str",
+    "bool",
+    "i64",
+    "f64",
+    "u64",
+    "usize",
+    "Option",
+    "Result",
+    "Vec",
+    "Some",
+    "None",
+    "Ok",
+    "Err",
+    "Into",
+    "ToOwned",
+    "core",
+    "std",
+    "type_bridge",
 ];
 
-const FIXED_MEMBER_NAMES: &[&str] = &[
-    "from_parts",
-    "try_new",
-    "new",
-    "value",
-    "iid",
-    "TOKEN",
-    "TYPE_ID_JSON",
+const FIXED_GENERATED_HELPERS: &[&str] = &[
+    "__tb_from_parts",
+    "__tb_from_player",
+    "__tb_dispatch_subtype",
 ];
 
 pub(super) fn render(
     projection: &RuntimeProjection,
     cargo_toml: &[u8],
     runtime: &[u8],
+    declared_schema: Option<&[u8]>,
 ) -> Result<GeneratedPackage, Diagnostic> {
     validate_projection(projection)?;
     GeneratedPackage::try_new([
@@ -124,7 +175,7 @@ pub(super) fn render(
         ),
         (
             "src/schema.rs".to_owned(),
-            render_schema(projection)?.into_bytes(),
+            render_schema(projection, declared_schema)?.into_bytes(),
         ),
     ])
 }
@@ -142,27 +193,143 @@ fn render_lib() -> String {
 
 fn render_declaration(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
     let mut output = String::from(header());
-    output.push_str("use crate::read::*;\nuse crate::reference::*;\nuse crate::runtime::{self, CompleteModel, Model, NominalUpcast, ReferenceModel, RoleUpcast};\nuse crate::tokens::*;\n\n");
+    output.push_str("use crate::read::*;\nuse crate::reference::*;\nuse crate::runtime::{self, AbstractModel, CompleteModel, EntityModel, HydratedRow, HydrationCapability, MaterializeModel, Model, ModelFamily, NominalUpcast, ReferenceModel, RelationModel, RoleTokenCompatible, RoleUpcast, SubtypeRootModel, ThingModel, ValidationError};\nuse crate::schema::AppSchema;\nuse crate::tokens::*;\n\n");
     output.push_str("#[derive(Clone, Copy, Debug, Eq, PartialEq)]\npub struct ModelDeclaration {\n  pub type_id_json: &'static str,\n  pub target_name: &'static str,\n  pub parent_type_id_json: Option<&'static str>,\n  pub is_abstract: bool,\n  pub is_constructible: bool,\n  pub metadata_json: &'static str,\n}\n\n");
 
     for id in projection.emission().model_shells() {
         let projected_model = model(projection, id)?;
         let name = projected_model.target_name().as_str();
         let id_json = rust_literal(&canonical_text!(id));
+        let create = projected_model
+            .create()
+            .target_name()
+            .map(|name| name.as_str().to_owned())
+            .unwrap_or_else(|| "()".to_owned());
         let _ = writeln!(output, "impl runtime::sealed::Sealed for {name} {{}}");
         let _ = writeln!(
             output,
-            "impl Model for {name} {{ const TYPE_ID_JSON: &'static str = {id_json}; }}"
+            "impl Model for {name} {{ type Schema = AppSchema; const TYPE_ID_JSON: &'static str = {id_json}; }}"
         );
-        let _ = writeln!(output, "impl CompleteModel for {name} {{}}");
+        match id.kind() {
+            TypeKind::Entity => {
+                let _ = writeln!(
+                    output,
+                    "impl ThingModel for {name} {{ fn thing_kind() -> runtime::ThingKind {{ runtime::ThingKind::Entity }} }}"
+                );
+                let _ = writeln!(output, "impl EntityModel for {name} {{}}");
+                if projected_model.declaration().is_abstract() {
+                    let _ = writeln!(output, "impl AbstractModel for {name} {{}}");
+                } else {
+                    let _ = writeln!(
+                        output,
+                        "impl CompleteModel for {name} {{ type Create = crate::create::{create}; fn iid(&self) -> &str {{ self.iid() }} }}"
+                    );
+                }
+            }
+            TypeKind::Relation => {
+                let _ = writeln!(
+                    output,
+                    "impl ThingModel for {name} {{ fn thing_kind() -> runtime::ThingKind {{ runtime::ThingKind::Relation }} }}"
+                );
+                let _ = writeln!(output, "impl RelationModel for {name} {{}}");
+                if projected_model.declaration().is_abstract() {
+                    let _ = writeln!(output, "impl AbstractModel for {name} {{}}");
+                } else {
+                    let _ = writeln!(
+                        output,
+                        "impl CompleteModel for {name} {{ type Create = crate::create::{create}; fn iid(&self) -> &str {{ self.iid() }} }}"
+                    );
+                }
+            }
+            TypeKind::Attribute | TypeKind::Struct => {
+                // Attribute wrappers implement Model, not ThingModel / EntityModel / RelationModel
+            }
+        }
         if let Some(reference) = projected_model.reference_read().target_name() {
             let reference = reference.as_str();
             let _ = writeln!(output, "impl runtime::sealed::Sealed for {reference} {{}}");
             let _ = writeln!(
                 output,
-                "impl Model for {reference} {{ const TYPE_ID_JSON: &'static str = {id_json}; }}"
+                "impl Model for {reference} {{ type Schema = AppSchema; const TYPE_ID_JSON: &'static str = {id_json}; }}"
             );
-            let _ = writeln!(output, "impl ReferenceModel for {reference} {{}}");
+            let kind = match id.kind() {
+                TypeKind::Entity => "runtime::ThingKind::Entity",
+                TypeKind::Relation => "runtime::ThingKind::Relation",
+                _ => return Err(facet_error("reference model has non-thing type kind")),
+            };
+            let _ = writeln!(
+                output,
+                "impl ThingModel for {reference} {{ fn thing_kind() -> runtime::ThingKind {{ {kind} }} }}"
+            );
+            let _ = writeln!(
+                output,
+                "impl ReferenceModel for {reference} {{ fn iid(&self) -> Option<&str> {{ self.iid() }} }}"
+            );
+        }
+
+        let descendants = concrete_descendants(projection, id)?;
+        if descendants.len() >= 2
+            || (projected_model.declaration().is_abstract() && !descendants.is_empty())
+        {
+            let family_name = format!("{name}Family");
+            let _ = writeln!(
+                output,
+                "impl runtime::sealed::Sealed for {family_name} {{}}"
+            );
+            let _ = writeln!(
+                output,
+                "impl Model for {family_name} {{ type Schema = AppSchema; const TYPE_ID_JSON: &'static str = {id_json}; }}"
+            );
+            let _ = writeln!(
+                output,
+                "impl ModelFamily for {family_name} {{ type Root = {name}; type Schema = AppSchema; fn iid(&self) -> &str {{ self.iid() }} }}"
+            );
+        }
+
+        if id.kind() == TypeKind::Entity || id.kind() == TypeKind::Relation {
+            let concrete = !projected_model.declaration().is_abstract();
+            let family = descendants.len() >= 2
+                || (projected_model.declaration().is_abstract() && !descendants.is_empty());
+            let result = if family {
+                format!("{name}Family")
+            } else if concrete {
+                name.to_owned()
+            } else {
+                "runtime::Never".to_owned()
+            };
+            let _ = writeln!(
+                output,
+                "impl SubtypeRootModel for {name} {{ type Subtypes = {result}; fn __tb_dispatch_subtype(__tb_row: &HydratedRow, __tb_cap: &HydrationCapability) -> Result<Self::Subtypes, ValidationError> {{"
+            );
+            if family {
+                output.push_str("match __tb_row.type_id_json() {\n");
+                for descendant in &descendants {
+                    let dn = descendant.target_name().as_str();
+                    let _ = writeln!(
+                        output,
+                        "{dn}::TYPE_ID_JSON => {dn}::materialize(__tb_row, __tb_cap).map({name}Family::{dn}),"
+                    );
+                }
+                output.push_str("_ => Err(ValidationError::new(\"type_id\", \"wrong_concrete_model_type\")),\n}");
+            } else if concrete {
+                output.push_str(&format!("if __tb_row.type_id_json() == {name}::TYPE_ID_JSON {{ {name}::materialize(__tb_row, __tb_cap) }} else {{ Err(ValidationError::new(\"type_id\", \"wrong_concrete_model_type\")) }}"));
+            } else {
+                output.push_str(
+                    "Err(ValidationError::new(\"type_id\", \"wrong_concrete_model_type\"))",
+                );
+            }
+            output.push_str(" } }\n");
+        }
+
+        // The reflexive impl anchors compile-time member admission: a token
+        // declared by the model itself is always admitted on its own binding.
+        let _ = writeln!(output, "impl NominalUpcast<{name}> for {name} {{}}");
+        if let Some(reference) = projected_model.reference_read().target_name() {
+            let _ = writeln!(
+                output,
+                "impl NominalUpcast<{reference}> for {reference} {{}}",
+                reference = reference.as_str()
+            );
         }
         for ancestor in projected_model.complete_read().nominal_upcasts() {
             let ancestor_model = model(projection, ancestor)?;
@@ -202,6 +369,13 @@ fn render_declaration(projection: &RuntimeProjection) -> Result<String, Diagnost
                 );
             }
         }
+        for token in projected_model.query_tokens().roles().values() {
+            let (token_owner, token_union) = role_owner_and_union(projection, token.role())?;
+            let _ = writeln!(
+                output,
+                "impl RoleTokenCompatible<{token_owner}, {token_union}> for {name} {{}}"
+            );
+        }
         output.push('\n');
     }
 
@@ -231,7 +405,7 @@ fn render_create(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
     output.push_str("use crate::read::*;\nuse crate::reference::*;\nuse crate::runtime::*;\nuse crate::structs::*;\n\n");
     for id in projection.emission().model_shells() {
         let model = model(projection, id)?;
-        if !model.create().enabled() {
+        if !model.create().enabled() || model.declaration().is_abstract() {
             continue;
         }
         let name = model
@@ -239,29 +413,388 @@ fn render_create(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
             .target_name()
             .ok_or_else(|| facet_error("enabled Rust create facet has no target name"))?
             .as_str();
-        let members = create_members(projection, model)?;
-        render_record(&mut output, name, &members, "try_new", true);
+        let (members, extra_unions) = create_members(projection, model)?;
+        for union_code in extra_unions {
+            output.push_str(&union_code);
+        }
+        let _ = writeln!(output, "impl sealed::Sealed for {name} {{}}");
+        let validation_checks = render_create_validation_checks(model)?;
+        render_record(
+            &mut output,
+            name,
+            &members,
+            "try_new",
+            true,
+            &validation_checks,
+        );
+        let read_name = model.target_name().as_str();
+
+        let mut enc_fields_code = String::new();
+        let mut enc_roles_code = String::new();
+        for member in &members {
+            let mname = &member.name;
+            let token_str = member.token.as_deref().unwrap_or(mname);
+            if member.is_role {
+                match (member.container, member.required) {
+                    (ProjectedContainer::Scalar, true) => {
+                        let _ = writeln!(
+                            enc_roles_code,
+                            "    __tb_roles.push(({token_str:?}, vec![self.{mname}.value().clone().into_encoded_reference()?]));"
+                        );
+                    }
+                    (ProjectedContainer::Scalar, false) => {
+                        let _ = writeln!(
+                            enc_roles_code,
+                            "    if let Some(__tb_reference) = self.{mname}.as_ref() {{ __tb_roles.push(({token_str:?}, vec![__tb_reference.value().clone().into_encoded_reference()?])); }} else {{ __tb_roles.push(({token_str:?}, vec![])); }}"
+                        );
+                    }
+                    (ProjectedContainer::Sequence, _) => {
+                        let _ = writeln!(
+                            enc_roles_code,
+                            "    let mut __tb_references = Vec::new(); for __tb_reference in self.{mname}.as_slice() {{ __tb_references.push(__tb_reference.clone().into_encoded_reference()?); }} __tb_roles.push(({token_str:?}, __tb_references));"
+                        );
+                    }
+                }
+            } else {
+                match (member.container, member.required) {
+                    (ProjectedContainer::Scalar, true) => {
+                        let _ = writeln!(
+                            enc_fields_code,
+                            "    __tb_fields.push(({token_str:?}, vec![self.{mname}.value().into_encoded_scalar()]));"
+                        );
+                    }
+                    (ProjectedContainer::Scalar, false) => {
+                        let _ = writeln!(
+                            enc_fields_code,
+                            "    if let Some(__tb_value) = self.{mname}.as_ref() {{ __tb_fields.push(({token_str:?}, vec![__tb_value.value().into_encoded_scalar()])); }} else {{ __tb_fields.push(({token_str:?}, vec![])); }}"
+                        );
+                    }
+                    (ProjectedContainer::Sequence, _) => {
+                        let _ = writeln!(
+                            enc_fields_code,
+                            "    let mut __tb_scalars = Vec::new(); for __tb_value in self.{mname}.as_slice() {{ __tb_scalars.push(__tb_value.value().into_encoded_scalar()); }} __tb_fields.push(({token_str:?}, __tb_scalars));"
+                        );
+                    }
+                }
+            }
+        }
+
+        let _ = writeln!(
+            output,
+            "impl IntoEncodedCreate for {name} {{\n  fn into_encoded_create(self) -> Result<EncodedCreate, ValidationError> {{\n    let mut __tb_fields = Vec::new();\n{enc_fields_code}    let mut __tb_roles = Vec::new();\n{enc_roles_code}    Ok(EncodedCreate::new({read_name}::TYPE_ID_JSON, __tb_fields, __tb_roles))\n  }}\n}}\n"
+        );
     }
     Ok(output)
 }
 
+fn decode_field_expr(
+    projection: &RuntimeProjection,
+    val_type: &str,
+    scalar_expr: &str,
+    path_expr: &str,
+) -> Result<String, Diagnostic> {
+    match val_type {
+        "String" => Ok(format!(
+            "{scalar_expr}.as_string().ok_or_else(|| ValidationError::new({path_expr}.path(), \"wrong_scalar_domain\"))?.to_owned()"
+        )),
+        "i64" => Ok(format!(
+            "{scalar_expr}.as_long().ok_or_else(|| ValidationError::new({path_expr}.path(), \"wrong_scalar_domain\"))?"
+        )),
+        "CanonicalDouble" => Ok(format!(
+            "{scalar_expr}.as_double().ok_or_else(|| ValidationError::new({path_expr}.path(), \"wrong_scalar_domain\"))?"
+        )),
+        "bool" => Ok(format!(
+            "{scalar_expr}.as_boolean().ok_or_else(|| ValidationError::new({path_expr}.path(), \"wrong_scalar_domain\"))?"
+        )),
+        "Decimal" => Ok(format!(
+            "{scalar_expr}.as_decimal().ok_or_else(|| ValidationError::new({path_expr}.path(), \"wrong_scalar_domain\"))?.clone()"
+        )),
+        "Date" => Ok(format!(
+            "{scalar_expr}.as_date().ok_or_else(|| ValidationError::new({path_expr}.path(), \"wrong_scalar_domain\"))?.clone()"
+        )),
+        "DateTime" => Ok(format!(
+            "{scalar_expr}.as_datetime().ok_or_else(|| ValidationError::new({path_expr}.path(), \"wrong_scalar_domain\"))?.clone()"
+        )),
+        "DateTimeTz" => Ok(format!(
+            "{scalar_expr}.as_datetime_tz().ok_or_else(|| ValidationError::new({path_expr}.path(), \"wrong_scalar_domain\"))?.clone()"
+        )),
+        "Duration" => Ok(format!(
+            "{scalar_expr}.as_duration().ok_or_else(|| ValidationError::new({path_expr}.path(), \"wrong_scalar_domain\"))?.clone()"
+        )),
+        _ => {
+            for id in projection.emission().model_shells() {
+                let m = model(projection, id)?;
+                if m.target_name().as_str() == val_type
+                    && let Some(vt) = m.declaration().value_type()
+                {
+                    let inner = match vt {
+                        ValueTypeTag::String => format!(
+                            "{scalar_expr}.as_string().ok_or_else(|| ValidationError::new({path_expr}.path(), \"wrong_scalar_domain\"))?.to_owned()"
+                        ),
+                        ValueTypeTag::Long => format!(
+                            "{scalar_expr}.as_long().ok_or_else(|| ValidationError::new({path_expr}.path(), \"wrong_scalar_domain\"))?"
+                        ),
+                        ValueTypeTag::Double => format!(
+                            "{scalar_expr}.as_double().ok_or_else(|| ValidationError::new({path_expr}.path(), \"wrong_scalar_domain\"))?"
+                        ),
+                        ValueTypeTag::Boolean => format!(
+                            "{scalar_expr}.as_boolean().ok_or_else(|| ValidationError::new({path_expr}.path(), \"wrong_scalar_domain\"))?"
+                        ),
+                        ValueTypeTag::Decimal => format!(
+                            "{scalar_expr}.as_decimal().ok_or_else(|| ValidationError::new({path_expr}.path(), \"wrong_scalar_domain\"))?.clone()"
+                        ),
+                        ValueTypeTag::Date => format!(
+                            "{scalar_expr}.as_date().ok_or_else(|| ValidationError::new({path_expr}.path(), \"wrong_scalar_domain\"))?.clone()"
+                        ),
+                        ValueTypeTag::DateTime => format!(
+                            "{scalar_expr}.as_datetime().ok_or_else(|| ValidationError::new({path_expr}.path(), \"wrong_scalar_domain\"))?.clone()"
+                        ),
+                        ValueTypeTag::DateTimeTz => format!(
+                            "{scalar_expr}.as_datetime_tz().ok_or_else(|| ValidationError::new({path_expr}.path(), \"wrong_scalar_domain\"))?.clone()"
+                        ),
+                        ValueTypeTag::Duration => format!(
+                            "{scalar_expr}.as_duration().ok_or_else(|| ValidationError::new({path_expr}.path(), \"wrong_scalar_domain\"))?.clone()"
+                        ),
+                    };
+                    return Ok(format!(
+                        "{val_type}::try_new({inner}).map_err(|__tb_error| prefix_validation_path(__tb_error, &{path_expr}))?"
+                    ));
+                }
+            }
+            Ok(format!(
+                "{val_type}::try_new({scalar_expr}.as_string().ok_or_else(|| ValidationError::new({path_expr}.path(), \"wrong_scalar_domain\"))?.to_owned()).map_err(|__tb_error| prefix_validation_path(__tb_error, &{path_expr}))?"
+            ))
+        }
+    }
+}
+
 fn render_read(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
     let mut output = String::from(header());
-    output.push_str("use crate::reference::*;\nuse crate::runtime::*;\nuse crate::structs::*;\n\n");
+    output.push_str("use crate::reference::*;\nuse crate::runtime::*;\nuse crate::structs::*;\nuse crate::tokens::*;\n\n");
     for id in projection.emission().model_shells() {
         let model = model(projection, id)?;
-        let members = read_members(projection, model)?;
+        if model.declaration().is_abstract() {
+            let name = model.target_name().as_str();
+            if let Some(documentation) = model_documentation(model) {
+                render_rustdoc(&mut output, &documentation);
+            }
+            let _ = writeln!(
+                output,
+                "#[derive(Clone, Debug, PartialEq)]\npub struct {name} {{\n  _private: core::marker::PhantomData<()>\n}}\n"
+            );
+            continue;
+        }
+
+        let name = model.target_name().as_str();
         if let Some(documentation) = model_documentation(model) {
             render_rustdoc(&mut output, &documentation);
         }
-        render_record(
-            &mut output,
-            model.target_name().as_str(),
-            &members,
-            "from_parts",
-            true,
-        );
+
+        if id.kind() == TypeKind::Attribute {
+            let value_type = model
+                .declaration()
+                .value_type()
+                .ok_or_else(|| facet_error("attribute has no value type"))?;
+            let scalar_t = scalar_type(value_type);
+            let canonical_check = if value_type == ValueTypeTag::String {
+                "    validate_canonical_string(&value, &ValidationPath::root().join(\"value\"))?;\n"
+            } else {
+                ""
+            };
+            let checks = render_annotation_checks(
+                "value",
+                "&ValidationPath::root().join(\"value\")",
+                model.declaration().value_annotations(),
+            );
+            let _ = writeln!(
+                output,
+                "#[derive(Clone, Debug, PartialEq)]\npub struct {name} {{\n  value: {scalar_t},\n}}\n\nimpl {name} {{\n  pub fn new(value: impl Into<{scalar_t}>) -> Result<Self, ValidationError> {{\n    let value = value.into();\n{canonical_check}{checks}    Ok(Self {{ value }})\n  }}\n\n  pub fn try_new(value: impl Into<{scalar_t}>) -> Result<Self, ValidationError> {{\n    Self::new(value)\n  }}\n\n  #[must_use]\n  pub fn value(&self) -> &{scalar_t} {{\n    &self.value\n  }}\n}}\n\nimpl IntoEncodedScalar for {name} {{\n  fn into_encoded_scalar(&self) -> EncodedScalar {{\n    self.value.clone().into_encoded_scalar()\n  }}\n}}\n"
+            );
+            let domain_marker = match value_type {
+                ValueTypeTag::String => Some("TextValued"),
+                ValueTypeTag::Long
+                | ValueTypeTag::Double
+                | ValueTypeTag::Decimal
+                | ValueTypeTag::Date
+                | ValueTypeTag::DateTime
+                | ValueTypeTag::DateTimeTz
+                | ValueTypeTag::Duration => Some("OrderedValued"),
+                ValueTypeTag::Boolean => None,
+            };
+            if let Some(marker) = domain_marker {
+                let _ = writeln!(output, "impl {marker} for {name} {{}}\n");
+            }
+            let numeric_reduced = match value_type {
+                ValueTypeTag::Long => Some("i64"),
+                ValueTypeTag::Double => Some("f64"),
+                _ => None,
+            };
+            if let Some(reduced) = numeric_reduced {
+                let _ = writeln!(
+                    output,
+                    "impl NumericValued for {name} {{ type Reduced = {reduced}; }}\n"
+                );
+            }
+            let _ = writeln!(
+                output,
+                "impl QueryValued for {name} {{ type Domain = {scalar_t}; }}\n"
+            );
+        } else {
+            let members = read_members(projection, model)?;
+            let _ = writeln!(
+                output,
+                "#[derive(Clone, Debug, PartialEq)]\npub struct {name} {{"
+            );
+            for member in &members {
+                let _ = writeln!(output, "  {}: {},", member.name, member.stored_type());
+            }
+            output.push_str("}\n\nimpl ");
+            output.push_str(name);
+            output.push_str(" {\n");
+            for member in &members {
+                render_getter(&mut output, member);
+            }
+            output.push_str("}\n\n");
+
+            let mut exp_fields = Vec::new();
+            let mut exp_roles = Vec::new();
+            for member in &members {
+                if member.name == "iid" {
+                    continue;
+                }
+                let token_str = member.token.as_deref().unwrap_or(&member.name);
+                if member.is_role {
+                    exp_roles.push(format!("{token_str:?}"));
+                } else {
+                    exp_fields.push(format!("{token_str:?}"));
+                }
+            }
+            let exp_fields_str = exp_fields.join(", ");
+            let exp_roles_str = exp_roles.join(", ");
+
+            let _ = writeln!(
+                output,
+                "impl MaterializeModel for {name} {{\n  fn materialize(__tb_row: &HydratedRow, __tb_cap: &HydrationCapability) -> Result<Self, ValidationError> {{\n    let __tb_path = ValidationPath::root();\n    __tb_row.validate_shape(Self::TYPE_ID_JSON, &[{exp_fields_str}], &[{exp_roles_str}], &__tb_path)?;\n    let __tb_iid = __tb_row.iid().to_owned();\n    if __tb_iid.trim().is_empty() {{\n      return Err(ValidationError::new(__tb_path.path(), \"empty_iid\"));\n    }}"
+            );
+            for member in &members {
+                if member.name == "iid" {
+                    continue;
+                }
+                let mname = &member.name;
+                let token_str = member.token.as_deref().unwrap_or(mname);
+                let is_role = member.is_role;
+                if is_role {
+                    let player_type = member.value.replace('<', "::<");
+                    let player_type = &player_type;
+                    match (member.container, member.required) {
+                        (ProjectedContainer::Scalar, true) => {
+                            let _ = writeln!(
+                                output,
+                                "    let {mname} = {{\n      let __tb_raw = __tb_row.roles().iter().find(|(__tb_token, _)| __tb_token.as_str() == {token_str:?}).map(|(_, __tb_values)| __tb_values.as_slice()).unwrap_or(&[]);\n      if __tb_raw.is_empty() {{ return Err(ValidationError::new(__tb_path.join({mname:?}).path(), \"missing_required_role\")); }}\n      if __tb_raw.len() > 1 {{ return Err(ValidationError::new(__tb_path.join({mname:?}).path(), \"duplicate_role_evidence\")); }}\n      {player_type}::__tb_from_player(&__tb_raw[0], &__tb_path.join({mname:?}))?\n    }};"
+                            );
+                        }
+                        (ProjectedContainer::Scalar, false) => {
+                            let _ = writeln!(
+                                output,
+                                "    let {mname} = {{\n      let __tb_raw = __tb_row.roles().iter().find(|(__tb_token, _)| __tb_token.as_str() == {token_str:?}).map(|(_, __tb_values)| __tb_values.as_slice()).unwrap_or(&[]);\n      if __tb_raw.len() > 1 {{ return Err(ValidationError::new(__tb_path.join({mname:?}).path(), \"duplicate_role_evidence\")); }}\n      if let Some(__tb_player) = __tb_raw.first() {{ Some({player_type}::__tb_from_player(__tb_player, &__tb_path.join({mname:?}))?) }} else {{ None }}\n    }};"
+                            );
+                        }
+                        (ProjectedContainer::Sequence, _) => {
+                            let _ = writeln!(
+                                output,
+                                "    let {mname} = {{\n      let __tb_raw = __tb_row.roles().iter().find(|(__tb_token, _)| __tb_token.as_str() == {token_str:?}).map(|(_, __tb_values)| __tb_values.as_slice()).unwrap_or(&[]);\n      let mut __tb_values = Vec::new();\n      for (__tb_index, __tb_player) in __tb_raw.iter().enumerate() {{\n        __tb_values.push({player_type}::__tb_from_player(__tb_player, &__tb_path.join({mname:?}).join_index(__tb_index))?);\n      }}\n      __tb_values\n    }};"
+                            );
+                        }
+                    }
+                } else {
+                    let owns_anns = (|| -> Result<_, Diagnostic> {
+                        for t in model.query_tokens().fields().values() {
+                            if canonical_text!(t.declaring_id()) == token_str {
+                                return Ok(Some(t.annotations()));
+                            }
+                        }
+                        Ok(None)
+                    })()?;
+                    let ann_checks = if let Some(anns) = owns_anns {
+                        render_annotation_checks("__tb_scalar", "&__tb_member_path", anns)
+                    } else {
+                        String::new()
+                    };
+                    let decode_expr = decode_field_expr(
+                        projection,
+                        &member.value,
+                        "__tb_scalar",
+                        "__tb_member_path",
+                    )?;
+
+                    match (member.container, member.required) {
+                        (ProjectedContainer::Scalar, true) => {
+                            let _ = writeln!(
+                                output,
+                                "    let {mname} = {{\n      let __tb_raw = __tb_row.fields().iter().find(|(__tb_token, _)| __tb_token.as_str() == {token_str:?}).map(|(_, __tb_values)| __tb_values.as_slice()).unwrap_or(&[]);\n      if __tb_raw.is_empty() {{ return Err(ValidationError::new(__tb_path.join({mname:?}).path(), \"missing_required_field\")); }}\n      if __tb_raw.len() > 1 {{ return Err(ValidationError::new(__tb_path.join({mname:?}).path(), \"duplicate_scalar_evidence\")); }}\n      let __tb_member_path = __tb_path.join({mname:?});\n      let __tb_scalar = &__tb_raw[0];\n{ann_checks}      {decode_expr}\n    }};"
+                            );
+                        }
+                        (ProjectedContainer::Scalar, false) => {
+                            let _ = writeln!(
+                                output,
+                                "    let {mname} = {{\n      let __tb_raw = __tb_row.fields().iter().find(|(__tb_token, _)| __tb_token.as_str() == {token_str:?}).map(|(_, __tb_values)| __tb_values.as_slice()).unwrap_or(&[]);\n      if __tb_raw.len() > 1 {{ return Err(ValidationError::new(__tb_path.join({mname:?}).path(), \"duplicate_scalar_evidence\")); }}\n      if let Some(__tb_scalar) = __tb_raw.first() {{\n        let __tb_member_path = __tb_path.join({mname:?});\n{ann_checks}        Some({decode_expr})\n      }} else {{ None }}\n    }};"
+                            );
+                        }
+                        (ProjectedContainer::Sequence, _) => {
+                            let _ = writeln!(
+                                output,
+                                "    let {mname} = {{\n      let __tb_raw = __tb_row.fields().iter().find(|(__tb_token, _)| __tb_token.as_str() == {token_str:?}).map(|(_, __tb_values)| __tb_values.as_slice()).unwrap_or(&[]);\n      let mut __tb_values = Vec::new();\n      for (__tb_index, __tb_scalar) in __tb_raw.iter().enumerate() {{\n        let __tb_member_path = __tb_path.join({mname:?}).join_index(__tb_index);\n{ann_checks}        __tb_values.push({decode_expr});\n      }}\n      __tb_values\n    }};"
+                            );
+                        }
+                    }
+                }
+            }
+            output.push_str("    Ok(Self {\n      iid: __tb_iid,\n");
+            for member in &members {
+                if member.name == "iid" {
+                    continue;
+                }
+                let mname = &member.name;
+                match (member.container, member.required) {
+                    (ProjectedContainer::Scalar, true) => {
+                        let _ = writeln!(output, "      {mname}: Required::new({mname}),");
+                    }
+                    (ProjectedContainer::Scalar, false) => {
+                        let _ = writeln!(output, "      {mname}: Optional::new({mname}),");
+                    }
+                    (ProjectedContainer::Sequence, _) => {
+                        let min = member.min;
+                        let max_str = option_u64(member.max);
+                        let _ = writeln!(
+                            output,
+                            "      {mname}: Sequence::try_new({mname}, Cardinality::new({min}, {max_str}), &__tb_path.join({mname:?}))?,"
+                        );
+                    }
+                }
+            }
+            output.push_str("    })\n  }\n}\n\n");
+
+            if let Some(reference_name) = model.reference_read().target_name() {
+                let ref_name = reference_name.as_str();
+                let mut ref_args = vec!["Some(self.iid().to_owned())".to_owned()];
+                for key in model.reference_read().key_fields() {
+                    let token = model
+                        .query_tokens()
+                        .fields()
+                        .get(key)
+                        .ok_or_else(|| facet_error("reference key has no query token"))?;
+                    let getter = token.target_name().as_str();
+                    ref_args.push(format!("Some(self.{getter}.value().clone())"));
+                }
+                let ref_args_str = ref_args.join(", ");
+                let _ = writeln!(
+                    output,
+                    "impl {name} {{\n  #[must_use]\n  pub fn reference(&self) -> {ref_name} {{\n    {ref_name}::__tb_from_parts({ref_args_str})\n  }}\n}}\n"
+                );
+            }
+        }
     }
+    output.push_str(&render_families(projection)?);
     Ok(output)
 }
 
@@ -274,6 +807,7 @@ fn render_reference(projection: &RuntimeProjection) -> Result<String, Diagnostic
             continue;
         };
         let name = reference_name.as_str();
+        let read_name = model.target_name().as_str();
         let mut members = Vec::new();
         for key in model.reference_read().key_fields() {
             let read = model
@@ -291,43 +825,393 @@ fn render_reference(projection: &RuntimeProjection) -> Result<String, Diagnostic
                 token.target_name().as_str(),
                 projected_type(projection, read.value())?,
                 read.multiplicity(),
+                Some(canonical_text!(token.declaring_id())),
+                false,
             ));
         }
         if let Some(documentation) = model_documentation(model) {
             render_rustdoc(&mut output, &documentation);
         }
+        let policy = model.reference_read().construction_policy();
+
         let _ = writeln!(
             output,
-            "#[derive(Clone, Debug, PartialEq)]\npub struct {name} {{\n  iid: String,"
+            "#[derive(Clone, Debug, PartialEq)]\npub struct {name} {{\n  iid: Option<String>,"
         );
         for member in &members {
-            let _ = writeln!(output, "  {}: {},", member.name, member.stored_type());
+            let _ = writeln!(output, "  {}: Option<{}>,", member.name, member.value);
         }
-        output.push_str("}\n\n");
-        let _ = write!(
+        output.push_str("}\n\nimpl ");
+        output.push_str(name);
+        output.push_str(" {\n  pub(crate) fn __tb_from_parts(iid: Option<String>, ");
+        for member in &members {
+            let _ = write!(output, "{}: Option<{}>, ", member.name, member.value);
+        }
+        output.push_str(") -> Self {\n    Self { iid, ");
+        for member in &members {
+            let _ = write!(output, "{}, ", member.name);
+        }
+        output.push_str("}\n  }\n\n");
+
+        output.push_str("  pub fn from_iid(iid: impl Into<String>) -> Result<Self, ValidationError> {\n    let iid = iid.into();\n    if iid.trim().is_empty() { return Err(ValidationError::new(\"iid\", \"empty_iid\")); }\n    Ok(Self { iid: Some(iid),\n");
+        for member in &members {
+            let _ = writeln!(output, "      {}: None,", member.name);
+        }
+        output.push_str("    })\n  }\n\n");
+
+        if policy == type_bridge_contract::projection::ReferenceConstructionPolicy::KeyFallback
+            && !members.is_empty()
+        {
+            if members.len() == 1 {
+                let member = &members[0];
+                let mname = &member.name;
+                let mtype = &member.value;
+                let _ = writeln!(
+                    output,
+                    "  pub fn from_key({mname}: {mtype}) -> Result<Self, ValidationError> {{\n    Ok(Self {{ iid: None, {mname}: Some({mname}) }})\n  }}\n"
+                );
+            } else {
+                for member in &members {
+                    let mname = &member.name;
+                    let mtype = &member.value;
+                    let fn_name = format!("from_{mname}");
+                    let _ = write!(
+                        output,
+                        "  pub fn {fn_name}({mname}: {mtype}) -> Result<Self, ValidationError> {{\n    Ok(Self {{ iid: None,\n"
+                    );
+                    for other in &members {
+                        if other.name == member.name {
+                            let _ = writeln!(output, "      {mname}: Some({mname}),");
+                        } else {
+                            let _ = writeln!(output, "      {}: None,", other.name);
+                        }
+                    }
+                    output.push_str("    })\n  }\n\n");
+                }
+            }
+        }
+
+        let _ = writeln!(
             output,
-            "impl {name} {{\n  pub fn try_new(iid: impl Into<String>"
+            "  pub fn iid(&self) -> Option<&str> {{\n    self.iid.as_deref()\n  }}"
         );
         for member in &members {
-            let _ = write!(output, ", {}: {}", member.name, member.parameter_type());
+            let mname = &member.name;
+            let mtype = &member.value;
+            let _ = writeln!(
+                output,
+                "  pub fn {mname}(&self) -> Option<&{mtype}> {{\n    self.{mname}.as_ref()\n  }}"
+            );
         }
-        output.push_str(") -> Result<Self, ValidationError> {\n    let iid = iid.into();\n    if iid.is_empty() { return Err(ValidationError::new(\"iid\", \"empty_iid\")); }\n    Ok(Self { iid,\n");
+
+        let _ = writeln!(
+            output,
+            "  pub(crate) fn __tb_from_player(__tb_player: &HydratedPlayer, __tb_path: &ValidationPath) -> Result<Self, ValidationError> {{\n    if __tb_player.type_id_json() != {read_name}::TYPE_ID_JSON {{\n      return Err(ValidationError::new(__tb_path.path(), \"wrong_concrete_model_type\"));\n    }}\n    let __tb_iid = match __tb_player.iid() {{\n      Some(__tb_value) if __tb_value.trim().is_empty() => return Err(ValidationError::new(__tb_path.join(\"iid\").path(), \"empty_iid\")),\n      Some(__tb_value) => Some(__tb_value.to_owned()),\n      None => None,\n    }};\n    let mut __tb_seen_keys = std::collections::BTreeSet::new();\n    for (__tb_index, (__tb_token, _)) in __tb_player.keys().iter().enumerate() {{\n      let __tb_key_path = match __tb_token.as_str() {{"
+        );
         for member in &members {
-            let _ = writeln!(output, "      {}: {},", member.name, member.initializer());
+            let mname = &member.name;
+            let token_str = member.token.as_deref().unwrap_or(mname);
+            let _ = writeln!(
+                output,
+                "        {token_str:?} => __tb_path.join({mname:?}),"
+            );
         }
-        output
-            .push_str("    })\n  }\n\n  #[must_use]\n  pub fn iid(&self) -> &str { &self.iid }\n");
+        output.push_str(
+            "        _ => __tb_path.join(\"keys\").join_index(__tb_index),\n      };\n      if !__tb_seen_keys.insert(__tb_token.as_str()) {\n        return Err(ValidationError::new(__tb_key_path.path(), \"duplicate_reference_key\"));\n      }\n      match __tb_token.as_str() {\n",
+        );
         for member in &members {
-            render_getter(&mut output, member);
+            let token_str = member.token.as_deref().unwrap_or(&member.name);
+            let _ = writeln!(output, "        {token_str:?} => {{}},");
+        }
+        output.push_str(
+            "        _ => return Err(ValidationError::new(__tb_key_path.path(), \"unexpected_reference_key\")),\n      }\n    }\n    if __tb_iid.is_none() && __tb_player.keys().is_empty() {\n      return Err(ValidationError::new(__tb_path.path(), \"missing_reference_identity\"));\n    }\n    if __tb_iid.is_none() && __tb_player.keys().len() > 1 {\n      return Err(ValidationError::new(__tb_path.path(), \"multiple_reference_keys_without_iid\"));\n    }\n",
+        );
+        for member in &members {
+            let mname = &member.name;
+            let mtype = &member.value;
+            let token_str = member.token.as_deref().unwrap_or(mname);
+            let decode_expr =
+                decode_field_expr(projection, mtype, "__tb_scalar", "__tb_member_path")?;
+            let _ = writeln!(
+                output,
+                "    let {mname} = if let Some((_, __tb_scalar)) = __tb_player.keys().iter().find(|(__tb_key, _)| __tb_key.as_str() == {token_str:?}) {{\n      let __tb_member_path = __tb_path.join({mname:?});\n      Some({decode_expr})\n    }} else {{ None }};"
+            );
+        }
+        output.push_str("    Ok(Self { iid: __tb_iid, ");
+        for member in &members {
+            let _ = write!(output, "{}, ", member.name);
+        }
+        output.push_str("})\n  }\n}\n\n");
+
+        let mut enc_keys_code = String::new();
+        for member in &members {
+            let mname = &member.name;
+            let token_str = member.token.as_deref().unwrap_or(mname);
+            let _ = writeln!(
+                enc_keys_code,
+                "    if let Some(__tb_attribute) = &self.{mname} {{ __tb_keys.push(({token_str:?}, __tb_attribute.value().into_encoded_scalar())); }}"
+            );
+        }
+
+        let _ = writeln!(
+            output,
+            "impl IntoEncodedReference for {name} {{\n  fn into_encoded_reference(self) -> Result<EncodedReference, ValidationError> {{\n    let mut __tb_keys = Vec::new();\n{enc_keys_code}    EncodedReference::try_new({read_name}::TYPE_ID_JSON, self.iid, __tb_keys, &ValidationPath::root())\n  }}\n}}\n"
+        );
+    }
+    Ok(output)
+}
+
+fn is_descendant_or_self(
+    projection: &RuntimeProjection,
+    candidate_id: &TypeId,
+    ancestor_id: &TypeId,
+) -> Result<bool, Diagnostic> {
+    if candidate_id == ancestor_id {
+        return Ok(true);
+    }
+    let candidate = model(projection, candidate_id)?;
+    let mut current = candidate.declaration().parent();
+    while let Some(parent_id) = current {
+        if *parent_id == *ancestor_id {
+            return Ok(true);
+        }
+        let parent_model = model(projection, parent_id)?;
+        current = parent_model.declaration().parent();
+    }
+    Ok(false)
+}
+
+fn concrete_descendants<'a>(
+    projection: &'a RuntimeProjection,
+    root_id: &TypeId,
+) -> Result<Vec<&'a ModelProjection>, Diagnostic> {
+    let mut descendants = Vec::new();
+    for id in projection.emission().model_shells() {
+        let candidate = model(projection, id)?;
+        if !candidate.declaration().is_abstract() && is_descendant_or_self(projection, id, root_id)?
+        {
+            descendants.push(candidate);
+        }
+    }
+    Ok(descendants)
+}
+
+fn to_snake_case(name: &str) -> String {
+    let mut snake = String::new();
+    for (i, ch) in name.chars().enumerate() {
+        if ch.is_uppercase() {
+            if i > 0 {
+                snake.push('_');
+            }
+            snake.extend(ch.to_lowercase());
+        } else {
+            snake.push(ch);
+        }
+    }
+    snake
+}
+
+fn to_pascal_case(name: &str) -> String {
+    let mut pascal = String::new();
+    let mut capitalize_next = true;
+    for ch in name.chars() {
+        if ch == '_' || ch == '-' {
+            capitalize_next = true;
+        } else if capitalize_next {
+            pascal.extend(ch.to_uppercase());
+            capitalize_next = false;
+        } else {
+            pascal.push(ch);
+        }
+    }
+    pascal
+}
+
+fn common_family_members(
+    projection: &RuntimeProjection,
+    descendants: &[&ModelProjection],
+) -> Result<Vec<Member>, Diagnostic> {
+    if descendants.is_empty() {
+        return Ok(Vec::new());
+    }
+    let families = descendants
+        .iter()
+        .map(|descendant| {
+            read_members(projection, descendant)?
+                .into_iter()
+                .filter(|member| member.name != "iid")
+                .map(|member| {
+                    let fact = family_member_fact(descendant, &member)?;
+                    Ok((member, fact))
+                })
+                .collect::<Result<Vec<_>, Diagnostic>>()
+        })
+        .collect::<Result<Vec<_>, Diagnostic>>()?;
+    Ok(exact_common_family_members(&families))
+}
+
+fn exact_common_family_members(families: &[Vec<(Member, FamilyMemberFact)>]) -> Vec<Member> {
+    let Some(first_members) = families.first() else {
+        return Vec::new();
+    };
+    let mut common = Vec::new();
+    for (member, fact) in first_members {
+        let matches_all = families[1..].iter().all(|other_members| {
+            other_members.iter().any(|(candidate, candidate_fact)| {
+                candidate.name == member.name
+                    && candidate_fact == fact
+                    && candidate.getter_type() == member.getter_type()
+            })
+        });
+        if matches_all {
+            common.push(member.clone());
+        }
+    }
+    common
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum FamilyMemberToken {
+    Field(OwnsFactId),
+    Role(RoleId),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum FamilyMemberShape {
+    Field(ProjectedTypeRef),
+    Role(BTreeSet<ProjectedModelUse>),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct FamilyMemberFact {
+    token: FamilyMemberToken,
+    multiplicity: ProjectedMultiplicity,
+    shape: FamilyMemberShape,
+}
+
+fn family_member_fact(
+    model: &ModelProjection,
+    member: &Member,
+) -> Result<FamilyMemberFact, Diagnostic> {
+    if member.is_role {
+        let token = model
+            .query_tokens()
+            .roles()
+            .values()
+            .find(|token| token.target_name().as_str() == member.name)
+            .ok_or_else(|| facet_error("family role member has no query token"))?;
+        let role = model
+            .complete_read()
+            .roles()
+            .get(token.role())
+            .ok_or_else(|| facet_error("family role member has no complete-read facet"))?;
+        return Ok(FamilyMemberFact {
+            token: FamilyMemberToken::Role(token.role().clone()),
+            multiplicity: role.multiplicity(),
+            shape: FamilyMemberShape::Role(role.players().clone()),
+        });
+    }
+
+    let token = model
+        .query_tokens()
+        .fields()
+        .values()
+        .find(|token| token.target_name().as_str() == member.name)
+        .ok_or_else(|| facet_error("family field member has no query token"))?;
+    let field = model
+        .complete_read()
+        .fields()
+        .iter()
+        .find(|field| field.token() == token.id())
+        .ok_or_else(|| facet_error("family field member has no complete-read facet"))?;
+    Ok(FamilyMemberFact {
+        token: FamilyMemberToken::Field(token.declaring_id().clone()),
+        multiplicity: field.multiplicity(),
+        shape: FamilyMemberShape::Field(field.value().clone()),
+    })
+}
+
+fn render_families(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
+    let mut output = String::new();
+    for id in projection.emission().model_shells() {
+        let root_model = model(projection, id)?;
+        let descendants = concrete_descendants(projection, id)?;
+        if descendants.len() < 2 && !root_model.declaration().is_abstract() {
+            continue;
+        }
+        if descendants.is_empty() {
+            continue;
+        }
+        let family_name = format!("{}Family", root_model.target_name().as_str());
+        let _ = writeln!(
+            output,
+            "#[derive(Clone, Debug, PartialEq)]\npub enum {family_name} {{"
+        );
+        for descendant in &descendants {
+            let variant_name = descendant.target_name().as_str();
+            let _ = writeln!(output, "  {variant_name}({variant_name}),");
         }
         output.push_str("}\n\n");
+
+        let _ = writeln!(
+            output,
+            "impl {family_name} {{\n  #[must_use]\n  pub fn iid(&self) -> &str {{\n    match self {{"
+        );
+        for descendant in &descendants {
+            let variant_name = descendant.target_name().as_str();
+            let _ = writeln!(
+                output,
+                "      Self::{variant_name}(__tb_inner) => __tb_inner.iid(),"
+            );
+        }
+        output.push_str("    }\n  }\n");
+        for member in common_family_members(projection, &descendants)? {
+            let fn_name = &member.name;
+            let ret_type = member.getter_type();
+            let _ = writeln!(
+                output,
+                "\n  #[must_use]\n  pub fn {fn_name}(&self) -> {ret_type} {{\n    match self {{"
+            );
+            for descendant in &descendants {
+                let variant_name = descendant.target_name().as_str();
+                let _ = writeln!(
+                    output,
+                    "      Self::{variant_name}(__tb_inner) => __tb_inner.{fn_name}(),"
+                );
+            }
+            output.push_str("    }\n  }\n");
+        }
+
+        for descendant in &descendants {
+            let variant_name = descendant.target_name().as_str();
+            let fn_name = format!("as_{}", to_snake_case(variant_name));
+            let _ = writeln!(
+                output,
+                "\n  #[must_use]\n  pub fn {fn_name}(&self) -> Option<&{variant_name}> {{\n    if let Self::{variant_name}(__tb_inner) = self {{ Some(__tb_inner) }} else {{ None }}\n  }}"
+            );
+        }
+
+        output.push_str("}\n\n");
+
+        let _ = writeln!(
+            output,
+            "impl MaterializeModel for {family_name} {{\n  fn materialize(__tb_row: &HydratedRow, __tb_cap: &HydrationCapability) -> Result<Self, ValidationError> {{\n    match __tb_row.type_id_json() {{"
+        );
+        for descendant in &descendants {
+            let variant_name = descendant.target_name().as_str();
+            let _ = writeln!(
+                output,
+                "      {variant_name}::TYPE_ID_JSON => {variant_name}::materialize(__tb_row, __tb_cap).map(Self::{variant_name}),"
+            );
+        }
+        output.push_str("      _ => Err(ValidationError::new(\"type_id\", \"unknown_concrete_type\")),\n    }\n  }\n}\n\n");
     }
     Ok(output)
 }
 
 fn render_tokens(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
     let mut output = String::from(header());
-    output.push_str("use crate::read::*;\nuse crate::runtime::*;\n\n");
+    output.push_str("use crate::read::*;\nuse crate::reference::*;\nuse crate::runtime::*;\n\n");
 
     for id in projection.emission().model_shells() {
         let projected_model = model(projection, id)?;
@@ -341,10 +1225,41 @@ fn render_tokens(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
                 "#[derive(Clone, Debug, PartialEq)]\npub enum {union} {{"
             );
             for player in token.accepted_players() {
-                let player_name = model(projection, player)?.target_name().as_str();
-                let _ = writeln!(output, "  {player_name}({player_name}),");
+                let player_m = model(projection, player)?;
+                let player_name = player_m.target_name().as_str();
+                let ref_name = player_m
+                    .reference_read()
+                    .target_name()
+                    .map(|n| n.as_str().to_owned());
+                let target_ref_or_model = ref_name.unwrap_or_else(|| player_name.to_owned());
+                let _ = writeln!(output, "  {player_name}({target_ref_or_model}),");
             }
-            output.push_str("}\n\n");
+            let _ = writeln!(
+                output,
+                "}}\n\nimpl {union} {{\n  pub(crate) fn __tb_from_player(__tb_player: &HydratedPlayer, __tb_path: &ValidationPath) -> Result<Self, ValidationError> {{\n    match __tb_player.type_id_json() {{"
+            );
+            for player in token.accepted_players() {
+                let player_m = model(projection, player)?;
+                let player_name = player_m.target_name().as_str();
+                let ref_name = player_m
+                    .reference_read()
+                    .target_name()
+                    .map(|n| n.as_str().to_owned());
+                let target_ref_or_model = ref_name.unwrap_or_else(|| player_name.to_owned());
+                let _ = writeln!(
+                    output,
+                    "      {player_name}::TYPE_ID_JSON => Ok(Self::{player_name}({target_ref_or_model}::__tb_from_player(__tb_player, __tb_path)?)),"
+                );
+            }
+            let _ = writeln!(
+                output,
+                "      _ => Err(ValidationError::new(__tb_path.path(), \"wrong_concrete_model_type\")),\n    }}\n  }}\n}}\n\n"
+            );
+            for player in token.accepted_players() {
+                let player_name = model(projection, player)?.target_name().as_str();
+                let _ = writeln!(output, "impl RolePlayer<{player_name}> for {union} {{}}");
+            }
+            output.push('\n');
         }
     }
 
@@ -375,22 +1290,19 @@ fn render_tokens(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
                 output,
                 "  pub const {}: FieldToken<{owner}, {value}> = FieldToken::new({}, {});",
                 token.target_name().as_str(),
-                rust_literal(&canonical_text!(token.id())),
+                rust_literal(&canonical_text!(token.declaring_id())),
                 rust_literal(&canonical_text!(token)),
             );
         }
         for token in model.query_tokens().roles().values() {
-            let union = token
-                .player_union_target_name()
-                .ok_or_else(|| facet_error("role union is absent"))?;
+            let (token_owner, token_union) = role_owner_and_union(projection, token.role())?;
             if let Some(documentation) = documentation_annotation(token.annotations()) {
                 render_indented_rustdoc(&mut output, "  ", documentation);
             }
             let _ = writeln!(
                 output,
-                "  pub const {}: RoleToken<{owner}, {}> = RoleToken::new({}, {});",
+                "  pub const {}: RoleToken<{token_owner}, {token_union}> = RoleToken::new({}, {});",
                 token.target_name().as_str(),
-                union.as_str(),
                 rust_literal(&canonical_text!(token.role())),
                 rust_literal(&canonical_text!(token)),
             );
@@ -422,7 +1334,7 @@ fn render_tokens(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
 
 fn render_structs(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
     let mut output = String::from(header());
-    output.push_str("use crate::runtime::{self, StructValue};\n\n");
+    output.push_str("use crate::runtime::{self, StructValue};\nuse crate::schema::AppSchema;\n\n");
     for id in projection.emission().structs() {
         let structure = projection
             .structs()
@@ -484,7 +1396,7 @@ fn render_structs(projection: &RuntimeProjection) -> Result<String, Diagnostic> 
         }
         let _ = writeln!(
             output,
-            "}}\n\nimpl runtime::sealed::Sealed for {name} {{}}\nimpl StructValue for {name} {{ const STRUCT_ID_JSON: &'static str = {}; }}\n",
+            "}}\n\nimpl runtime::sealed::Sealed for {name} {{}}\nimpl StructValue for {name} {{ type Schema = AppSchema; const STRUCT_ID_JSON: &'static str = {}; }}\n",
             rust_literal(&canonical_text!(id))
         );
     }
@@ -493,7 +1405,7 @@ fn render_structs(projection: &RuntimeProjection) -> Result<String, Diagnostic> 
 
 fn render_functions(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
     let mut output = String::from(header());
-    output.push_str("use crate::read::*;\nuse crate::reference::*;\nuse crate::runtime::*;\nuse crate::structs::*;\n\n");
+    output.push_str("use crate::read::*;\nuse crate::reference::*;\nuse crate::runtime::*;\nuse crate::schema::AppSchema;\nuse crate::structs::*;\n\n");
     for id in projection.emission().functions() {
         let function = projection
             .functions()
@@ -512,7 +1424,7 @@ fn render_functions(projection: &RuntimeProjection) -> Result<String, Diagnostic
         }
         let _ = writeln!(
             output,
-            "#[allow(non_upper_case_globals)]\npub const {}: FunctionToken<{arguments}, {returns}> = FunctionToken::new({}, {});\n",
+            "#[allow(non_upper_case_globals)]\npub const {}: FunctionToken<AppSchema, {arguments}, {returns}> = FunctionToken::new({}, {});\n",
             function.target_name().as_str(),
             rust_literal(function.id().label().as_str()),
             rust_literal(&canonical_text!(function)),
@@ -521,10 +1433,13 @@ fn render_functions(projection: &RuntimeProjection) -> Result<String, Diagnostic
     Ok(output)
 }
 
-fn render_schema(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
+fn render_schema(
+    projection: &RuntimeProjection,
+    declared_schema: Option<&[u8]>,
+) -> Result<String, Diagnostic> {
     let mut output = String::from(header());
     output.push_str(
-        "use crate::runtime::Cardinality;\n\npub const SEMANTIC_SCHEMA_FINGERPRINT_JSON: &str = ",
+        "use crate::runtime::Cardinality;\n\n#[derive(Clone, Copy, Debug, Eq, PartialEq)]\npub struct AppSchema;\n\nimpl type_bridge::schema::sealed::Sealed for AppSchema {}\nimpl type_bridge::schema::Schema for AppSchema {}\n\npub type SchemaMarker = AppSchema;\n\npub const SEMANTIC_SCHEMA_FINGERPRINT_JSON: &str = ",
     );
     output.push_str(&rust_literal(&canonical_text!(
         projection.semantic_fingerprint()
@@ -535,7 +1450,19 @@ fn render_schema(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
     )));
     output.push_str(";\npub const RUNTIME_PROJECTION_JSON: &str = ");
     output.push_str(&rust_literal(&canonical_text!(projection)));
-    output.push_str(";\n\n");
+    if let Some(declared_schema) = declared_schema {
+        let declared_schema = std::str::from_utf8(declared_schema).map_err(|_| {
+            invalid(
+                "rust_emitter_non_utf8_declared_schema",
+                "canonical declared schema must be UTF-8",
+            )
+        })?;
+        output.push_str(";\npub const DECLARED_SCHEMA_JSON: &str = ");
+        output.push_str(&rust_literal(declared_schema));
+        output.push_str(";\n\npub const SCHEMA: type_bridge::schema::SchemaPackage<AppSchema> = type_bridge::schema::SchemaPackage::new_with_declared(\n  SEMANTIC_SCHEMA_FINGERPRINT_JSON,\n  PROJECTION_FINGERPRINT_JSON,\n  RUNTIME_PROJECTION_JSON,\n  DECLARED_SCHEMA_JSON,\n);\n\n");
+    } else {
+        output.push_str(";\n\npub const SCHEMA: type_bridge::schema::SchemaPackage<AppSchema> = type_bridge::schema::SchemaPackage::new(\n  SEMANTIC_SCHEMA_FINGERPRINT_JSON,\n  PROJECTION_FINGERPRINT_JSON,\n  RUNTIME_PROJECTION_JSON,\n);\n\n");
+    }
 
     output.push_str("pub const MODEL_SHELLS: &[&str] = &[\n");
     for id in projection.emission().model_shells() {
@@ -590,10 +1517,18 @@ struct Member {
     container: ProjectedContainer,
     min: u64,
     max: Option<u64>,
+    token: Option<String>,
+    is_role: bool,
 }
 
 impl Member {
-    fn from_multiplicity(name: &str, value: String, multiplicity: ProjectedMultiplicity) -> Self {
+    fn from_multiplicity(
+        name: &str,
+        value: String,
+        multiplicity: ProjectedMultiplicity,
+        token: Option<String>,
+        is_role: bool,
+    ) -> Self {
         let cardinality = multiplicity.cardinality();
         Self {
             name: name.to_owned(),
@@ -602,6 +1537,8 @@ impl Member {
             container: multiplicity.container(),
             min: cardinality.min(),
             max: cardinality.max(),
+            token,
+            is_role,
         }
     }
 
@@ -613,10 +1550,15 @@ impl Member {
             container: ProjectedContainer::Scalar,
             min: 1,
             max: Some(1),
+            token: None,
+            is_role: false,
         }
     }
 
     fn stored_type(&self) -> String {
+        if self.name == "iid" {
+            return "String".to_owned();
+        }
         match (self.container, self.required) {
             (ProjectedContainer::Scalar, true) => format!("Required<{}>", self.value),
             (ProjectedContainer::Scalar, false) => format!("Optional<{}>", self.value),
@@ -625,6 +1567,9 @@ impl Member {
     }
 
     fn parameter_type(&self) -> String {
+        if self.name == "iid" {
+            return "String".to_owned();
+        }
         match (self.container, self.required) {
             (ProjectedContainer::Scalar, true) => self.value.clone(),
             (ProjectedContainer::Scalar, false) => format!("Option<{}>", self.value),
@@ -633,20 +1578,26 @@ impl Member {
     }
 
     fn initializer(&self) -> String {
+        if self.name == "iid" {
+            return "iid".to_owned();
+        }
         match (self.container, self.required) {
             (ProjectedContainer::Scalar, true) => format!("Required::new({})", self.name),
             (ProjectedContainer::Scalar, false) => format!("Optional::new({})", self.name),
             (ProjectedContainer::Sequence, _) => format!(
-                "Sequence::try_new({}, Cardinality::new({}, {}), {})?",
+                "Sequence::try_new({}, Cardinality::new({}, {}), &ValidationPath::root().join({:?}))?",
                 self.name,
                 self.min,
                 option_u64(self.max),
-                rust_literal(&self.name),
+                self.token.as_deref().unwrap_or(&self.name),
             ),
         }
     }
 
     fn getter_type(&self) -> String {
+        if self.name == "iid" {
+            return "&str".to_owned();
+        }
         match (self.container, self.required) {
             (ProjectedContainer::Scalar, true) => format!("&{}", self.value),
             (ProjectedContainer::Scalar, false) => format!("Option<&{}>", self.value),
@@ -655,6 +1606,9 @@ impl Member {
     }
 
     fn getter_body(&self) -> String {
+        if self.name == "iid" {
+            return "&self.iid".to_owned();
+        }
         match (self.container, self.required) {
             (ProjectedContainer::Scalar, true) => format!("self.{}.get()", self.name),
             (ProjectedContainer::Scalar, false) => format!("self.{}.as_ref()", self.name),
@@ -669,6 +1623,7 @@ fn render_record(
     members: &[Member],
     constructor: &str,
     fallible: bool,
+    validation_checks: &str,
 ) {
     let _ = writeln!(
         output,
@@ -678,7 +1633,12 @@ fn render_record(
         let _ = writeln!(output, "  {}: {},", member.name, member.stored_type());
     }
     output.push_str("}\n\n");
-    let _ = write!(output, "impl {name} {{\n  pub fn {constructor}(");
+    let primary_fn = if constructor == "try_new" {
+        "new"
+    } else {
+        constructor
+    };
+    let _ = write!(output, "impl {name} {{\n  pub fn {primary_fn}(");
     for (index, member) in members.iter().enumerate() {
         if index > 0 {
             output.push_str(", ");
@@ -686,7 +1646,12 @@ fn render_record(
         let _ = write!(output, "{}: {}", member.name, member.parameter_type());
     }
     if fallible {
-        output.push_str(") -> Result<Self, ValidationError> {\n    Ok(Self {\n");
+        output.push_str(") -> Result<Self, ValidationError> {\n");
+        if members.iter().any(|m| m.name == "iid") {
+            output.push_str("    if iid.trim().is_empty() { return Err(ValidationError::new(\"iid\", \"empty_iid\")); }\n");
+        }
+        output.push_str(validation_checks);
+        output.push_str("    Ok(Self {\n");
     } else {
         output.push_str(") -> Self {\n    Self {\n");
     }
@@ -698,10 +1663,81 @@ fn render_record(
     } else {
         output.push_str("    }\n  }\n");
     }
+    if constructor == "try_new" {
+        let _ = write!(output, "  pub fn try_new(");
+        for (index, member) in members.iter().enumerate() {
+            if index > 0 {
+                output.push_str(", ");
+            }
+            let _ = write!(output, "{}: {}", member.name, member.parameter_type());
+        }
+        output.push_str(") -> Result<Self, ValidationError> {\n    Self::new(");
+        for (index, member) in members.iter().enumerate() {
+            if index > 0 {
+                output.push_str(", ");
+            }
+            output.push_str(&member.name);
+        }
+        output.push_str(")\n  }\n");
+    }
     for member in members {
         render_getter(output, member);
     }
     output.push_str("}\n\n");
+}
+
+fn render_create_validation_checks(model: &ModelProjection) -> Result<String, Diagnostic> {
+    let mut output = String::new();
+    for field in model.create().fields() {
+        let token = model
+            .query_tokens()
+            .fields()
+            .get(field.token())
+            .ok_or_else(|| facet_error("create field has no query token"))?;
+        if token.annotations().is_empty() {
+            continue;
+        }
+        let name = token.target_name().as_str();
+        match (
+            field.multiplicity().container(),
+            field.multiplicity().required(),
+        ) {
+            (ProjectedContainer::Scalar, true) => {
+                let checks = render_annotation_checks(
+                    "__tb_member.value()",
+                    "&__tb_path",
+                    token.annotations(),
+                );
+                let _ = writeln!(
+                    output,
+                    "    {{\n      let __tb_member = &{name};\n      let __tb_path = ValidationPath::root().join({name:?});\n{checks}    }}"
+                );
+            }
+            (ProjectedContainer::Scalar, false) => {
+                let checks = render_annotation_checks(
+                    "__tb_member.value()",
+                    "&__tb_path",
+                    token.annotations(),
+                );
+                let _ = writeln!(
+                    output,
+                    "    if let Some(__tb_member) = {name}.as_ref() {{\n      let __tb_path = ValidationPath::root().join({name:?});\n{checks}    }}"
+                );
+            }
+            (ProjectedContainer::Sequence, _) => {
+                let checks = render_annotation_checks(
+                    "__tb_member.value()",
+                    "&__tb_path",
+                    token.annotations(),
+                );
+                let _ = writeln!(
+                    output,
+                    "    for (__tb_index, __tb_member) in {name}.iter().enumerate() {{\n      let __tb_path = ValidationPath::root().join({name:?}).join_index(__tb_index);\n{checks}    }}"
+                );
+            }
+        }
+    }
+    Ok(output)
 }
 
 fn render_getter(output: &mut String, member: &Member) {
@@ -717,8 +1753,10 @@ fn render_getter(output: &mut String, member: &Member) {
 fn create_members(
     projection: &RuntimeProjection,
     model: &ModelProjection,
-) -> Result<Vec<Member>, Diagnostic> {
+) -> Result<(Vec<Member>, Vec<String>), Diagnostic> {
     let mut members = Vec::new();
+    let mut extra_unions = Vec::new();
+    let model_name = model.target_name().as_str();
     if let Some(value_type) = model.declaration().value_type() {
         members.push(Member::required_scalar(
             "value",
@@ -735,6 +1773,8 @@ fn create_members(
             token.target_name().as_str(),
             projected_type(projection, field.value())?,
             field.multiplicity(),
+            Some(canonical_text!(token.declaring_id())),
+            false,
         ));
     }
     for (role_id, role) in model.create().roles() {
@@ -743,13 +1783,148 @@ fn create_members(
             .roles()
             .get(role_id)
             .ok_or_else(|| facet_error("create role has no query token"))?;
+        let role_name = token.target_name().as_str();
+        let (ptype, union_code) =
+            create_role_player_union(projection, model_name, role_name, role.players())?;
+        if let Some(code) = union_code {
+            extra_unions.push(code);
+        }
         members.push(Member::from_multiplicity(
-            token.target_name().as_str(),
-            model_use_union(projection, role.players())?,
+            role_name,
+            ptype,
             role.multiplicity(),
+            Some(canonical_text!(role_id)),
+            true,
         ));
     }
-    Ok(members)
+    Ok((members, extra_unions))
+}
+
+fn create_role_player_union<'a>(
+    projection: &RuntimeProjection,
+    model_name: &str,
+    role_name: &str,
+    players: impl IntoIterator<Item = &'a ProjectedModelUse>,
+) -> Result<(String, Option<String>), Diagnostic> {
+    let mut ref_types: Vec<(String, String)> = Vec::new();
+    for player in players {
+        let player_model = model(projection, player.id())?;
+        if let Some(ref_name) = player_model.reference_read().target_name() {
+            let variant = player_model.target_name().as_str().to_owned();
+            let ref_t = ref_name.as_str().to_owned();
+            if !ref_types.iter().any(|(v, _)| v == &variant) {
+                ref_types.push((variant, ref_t));
+            }
+        }
+    }
+    if ref_types.is_empty() {
+        return Ok(("Never".to_owned(), None));
+    }
+    if ref_types.len() == 1 {
+        return Ok((ref_types.remove(0).1, None));
+    }
+    let pascal_role = to_pascal_case(role_name);
+    let union_name = format!("{model_name}{pascal_role}Ref");
+    let mut code = format!("#[derive(Clone, Debug, PartialEq)]\npub enum {union_name} {{\n");
+    for (variant, ref_t) in &ref_types {
+        let _ = writeln!(code, "  {variant}({ref_t}),");
+    }
+    code.push_str("}\n\nimpl sealed::Sealed for ");
+    code.push_str(&union_name);
+    code.push_str(" {}\n\nimpl IntoEncodedReference for ");
+    code.push_str(&union_name);
+    code.push_str(" {\n  fn into_encoded_reference(self) -> Result<EncodedReference, ValidationError> {\n    match self {\n");
+    for (variant, _) in &ref_types {
+        let _ = writeln!(
+            code,
+            "      Self::{variant}(__tb_inner) => __tb_inner.into_encoded_reference(),"
+        );
+    }
+    code.push_str("    }\n  }\n}\n\n");
+    Ok((union_name, Some(code)))
+}
+fn scalar_literal_expr(
+    val: &type_bridge_contract::value::CanonicalValue,
+    path_expr: &str,
+) -> String {
+    match val {
+        type_bridge_contract::value::CanonicalValue::String(s) => {
+            format!("EncodedScalar::String({:?}.to_owned())", s.as_str())
+        }
+        type_bridge_contract::value::CanonicalValue::Long(n) => format!("EncodedScalar::Long({n})"),
+        type_bridge_contract::value::CanonicalValue::Double(d) => format!(
+            "EncodedScalar::Double(CanonicalDouble::try_from_bits({}u64).map_err(|__tb_error| prefix_validation_path(__tb_error, {path_expr}))?)",
+            d.get().to_bits(),
+        ),
+        type_bridge_contract::value::CanonicalValue::Boolean(b) => {
+            format!("EncodedScalar::Boolean({b})")
+        }
+        type_bridge_contract::value::CanonicalValue::Decimal(dec) => format!(
+            "EncodedScalar::Decimal(Decimal::try_new({:?}).map_err(|__tb_error| prefix_validation_path(__tb_error, {path_expr}))?)",
+            dec.as_str(),
+        ),
+        type_bridge_contract::value::CanonicalValue::Date(d) => format!(
+            "EncodedScalar::Date(Date::try_new({:?}).map_err(|__tb_error| prefix_validation_path(__tb_error, {path_expr}))?)",
+            d.to_string(),
+        ),
+        type_bridge_contract::value::CanonicalValue::DateTime(dt) => format!(
+            "EncodedScalar::DateTime(DateTime::try_new({:?}).map_err(|__tb_error| prefix_validation_path(__tb_error, {path_expr}))?)",
+            dt.to_string(),
+        ),
+        type_bridge_contract::value::CanonicalValue::DateTimeTz(dt) => format!(
+            "EncodedScalar::DateTimeTz(DateTimeTz::try_new({:?}).map_err(|__tb_error| prefix_validation_path(__tb_error, {path_expr}))?)",
+            dt.to_string(),
+        ),
+        type_bridge_contract::value::CanonicalValue::Duration(dur) => format!(
+            "EncodedScalar::Duration(Duration::try_new({:?}).map_err(|__tb_error| prefix_validation_path(__tb_error, {path_expr}))?)",
+            dur.to_string(),
+        ),
+    }
+}
+
+fn render_annotation_checks(
+    value_expr: &str,
+    path_expr: &str,
+    annotations: &BTreeMap<
+        type_bridge_contract::schema::AnnotationFactId,
+        type_bridge_contract::projection::ProjectedAnnotation,
+    >,
+) -> String {
+    if annotations.is_empty() {
+        return String::new();
+    }
+    let mut min_code = "None".to_string();
+    let mut max_code = "None".to_string();
+    let mut regex_code = "None".to_string();
+    let mut values_code = "None".to_string();
+
+    for ann in annotations.values() {
+        match ann.value() {
+            type_bridge_contract::schema::SchemaAnnotationValue::Range(range) => {
+                if let Some(lower) = range.lower() {
+                    min_code = format!("Some({})", scalar_literal_expr(lower, path_expr));
+                }
+                if let Some(upper) = range.upper() {
+                    max_code = format!("Some({})", scalar_literal_expr(upper, path_expr));
+                }
+            }
+            type_bridge_contract::schema::SchemaAnnotationValue::Values(values) => {
+                let items: Vec<String> = values
+                    .iter()
+                    .map(|value| scalar_literal_expr(value, path_expr))
+                    .collect();
+                values_code = format!("Some(vec![{}])", items.join(", "));
+            }
+            type_bridge_contract::schema::SchemaAnnotationValue::Regex(regex) => {
+                regex_code = format!("Some({:?})", regex.as_str());
+            }
+            _ => {}
+        }
+    }
+
+    format!(
+        "    let __tb_constraint = ConstraintDescriptor::new({min_code}, {max_code}, {regex_code}, {values_code});\n    __tb_constraint.validate(&{value_expr}.into_encoded_scalar(), {path_expr})?;\n"
+    )
 }
 
 fn read_members(
@@ -757,6 +1932,9 @@ fn read_members(
     model: &ModelProjection,
 ) -> Result<Vec<Member>, Diagnostic> {
     let mut members = Vec::new();
+    if matches!(model.id().kind(), TypeKind::Entity | TypeKind::Relation) {
+        members.push(Member::required_scalar("iid", "String".to_owned()));
+    }
     if let Some(value_type) = model.declaration().value_type() {
         members.push(Member::required_scalar(
             "value",
@@ -773,6 +1951,8 @@ fn read_members(
             token.target_name().as_str(),
             projected_type(projection, field.value())?,
             field.multiplicity(),
+            Some(canonical_text!(token.declaring_id())),
+            false,
         ));
     }
     for (role_id, role) in model.complete_read().roles() {
@@ -781,10 +1961,17 @@ fn read_members(
             .roles()
             .get(role_id)
             .ok_or_else(|| facet_error("read role has no query token"))?;
+        let role_type = if let Some(union_name) = token.player_union_target_name() {
+            union_name.as_str().to_owned()
+        } else {
+            model_use_union(projection, role.players())?
+        };
         members.push(Member::from_multiplicity(
             token.target_name().as_str(),
-            model_use_union(projection, role.players())?,
+            role_type,
             role.multiplicity(),
+            Some(canonical_text!(role_id)),
+            true,
         ));
     }
     Ok(members)
@@ -1002,68 +2189,364 @@ fn facet_error(message: &'static str) -> Diagnostic {
     invalid("rust_emitter_facet_mismatch", message)
 }
 
-fn validate_projection(projection: &RuntimeProjection) -> Result<(), Diagnostic> {
-    let mut public = BTreeMap::<String, String>::new();
-    for name in FIXED_PUBLIC_NAMES {
-        public.insert((*name).to_owned(), "generated Rust runtime".to_owned());
+fn reserve_rust_name(
+    reservations: &mut BTreeMap<(String, String), String>,
+    namespace: &str,
+    name: &str,
+    identity: String,
+) -> Result<(), Diagnostic> {
+    if name.starts_with("__tb_") {
+        return Err(invalid(
+            "rust_emitter_name_collision",
+            format!(
+                "Rust name `{name}` in namespace `{namespace}` collides between `generated implementation binding prefix __tb_` and `{identity}`"
+            ),
+        ));
     }
-    let mut insert = |name: &str, identity: String| -> Result<(), Diagnostic> {
-        if let Some(previous) = public.insert(name.to_owned(), identity.clone()) {
-            return Err(invalid(
-                "rust_emitter_name_collision",
-                format!("Rust public name `{name}` collides between `{previous}` and `{identity}`"),
-            ));
-        }
-        Ok(())
-    };
+    let key = (namespace.to_owned(), name.to_owned());
+    if let Some(previous) = reservations.insert(key, identity.clone()) {
+        return Err(invalid(
+            "rust_emitter_name_collision",
+            format!(
+                "Rust name `{name}` in namespace `{namespace}` collides between `{previous}` and `{identity}`"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_projection(projection: &RuntimeProjection) -> Result<(), Diagnostic> {
+    if let Some(name) = FIXED_GENERATED_HELPERS
+        .iter()
+        .find(|name| !name.starts_with("__tb_"))
+    {
+        return Err(invalid(
+            "rust_emitter_internal_helper_inventory",
+            format!("generated helper `{name}` is not __tb_-owned"),
+        ));
+    }
+    let mut reservations = BTreeMap::<(String, String), String>::new();
+    for name in FIXED_PUBLIC_NAMES {
+        reserve_rust_name(
+            &mut reservations,
+            "root",
+            name,
+            format!("generated Rust runtime export `{name}`"),
+        )?;
+    }
 
     for id in projection.emission().model_shells() {
         let model = model(projection, id)?;
-        insert(
+        let model_name = model.target_name().as_str();
+        reserve_rust_name(
+            &mut reservations,
+            "root",
             model.target_name().as_str(),
             format!("complete model {id:?}"),
         )?;
         if let Some(name) = model.create().target_name() {
-            insert(name.as_str(), format!("create model {id:?}"))?;
+            reserve_rust_name(
+                &mut reservations,
+                "root",
+                name.as_str(),
+                format!("create model {id:?}"),
+            )?;
         }
         if let Some(name) = model.reference_read().target_name() {
-            insert(name.as_str(), format!("reference model {id:?}"))?;
+            reserve_rust_name(
+                &mut reservations,
+                "root",
+                name.as_str(),
+                format!("reference model {id:?}"),
+            )?;
+        }
+        let descendants = concrete_descendants(projection, id)?;
+        if descendants.len() >= 2 || (model.declaration().is_abstract() && !descendants.is_empty())
+        {
+            let family_name = format!("{}Family", model.target_name().as_str());
+            reserve_rust_name(
+                &mut reservations,
+                "root",
+                &family_name,
+                format!("model family {id:?}"),
+            )?;
+            reserve_rust_name(
+                &mut reservations,
+                &family_name,
+                "iid",
+                format!("family IID getter for {id:?}"),
+            )?;
+            reserve_rust_name(
+                &mut reservations,
+                &family_name,
+                "materialize",
+                format!("family materializer for {id:?}"),
+            )?;
+            for member in common_family_members(projection, &descendants)? {
+                reserve_rust_name(
+                    &mut reservations,
+                    &family_name,
+                    &member.name,
+                    format!("common family member `{}` for {id:?}", member.name),
+                )?;
+            }
+            for descendant in &descendants {
+                let variant = descendant.target_name().as_str();
+                reserve_rust_name(
+                    &mut reservations,
+                    &family_name,
+                    variant,
+                    format!("family variant {:?}", descendant.id()),
+                )?;
+                let downcast = format!("as_{}", to_snake_case(variant));
+                reserve_rust_name(
+                    &mut reservations,
+                    &family_name,
+                    &downcast,
+                    format!("family downcast to {:?}", descendant.id()),
+                )?;
+            }
         }
         let query = model
             .query_tokens()
             .target_name()
             .ok_or_else(|| facet_error("query-token name is absent"))?;
-        insert(query.as_str(), format!("query token {id:?}"))?;
+        reserve_rust_name(
+            &mut reservations,
+            "root",
+            query.as_str(),
+            format!("query token {id:?}"),
+        )?;
+        reserve_rust_name(
+            &mut reservations,
+            query.as_str(),
+            "TOKEN",
+            format!("type token for {id:?}"),
+        )?;
         for token in model.query_tokens().roles().values() {
             let union = token
                 .player_union_target_name()
                 .ok_or_else(|| facet_error("player-union name is absent"))?;
-            insert(
+            reserve_rust_name(
+                &mut reservations,
+                "root",
                 union.as_str(),
                 format!("role player union {:?}", token.role()),
             )?;
+            for player in token.accepted_players() {
+                let player_model = projection
+                    .models()
+                    .get(player)
+                    .ok_or_else(|| facet_error("role player model is absent"))?;
+                reserve_rust_name(
+                    &mut reservations,
+                    union.as_str(),
+                    player_model.target_name().as_str(),
+                    format!("role player variant {player:?}"),
+                )?;
+            }
         }
-        for name in model
-            .query_tokens()
-            .fields()
-            .values()
-            .map(|token| token.target_name())
-            .chain(
-                model
+        for token in model.query_tokens().fields().values() {
+            reserve_rust_name(
+                &mut reservations,
+                query.as_str(),
+                token.target_name().as_str(),
+                format!("query member for {id:?}:{}", token.target_name().as_str()),
+            )?;
+        }
+        for token in model.query_tokens().roles().values() {
+            reserve_rust_name(
+                &mut reservations,
+                query.as_str(),
+                token.target_name().as_str(),
+                format!("query member for {id:?}:{}", token.target_name().as_str()),
+            )?;
+        }
+
+        if model.declaration().value_type().is_some() {
+            for (name, identity) in [
+                ("new", "attribute constructor"),
+                ("try_new", "attribute constructor alias"),
+                ("value", "attribute value getter"),
+                ("into_encoded_scalar", "attribute scalar codec"),
+            ] {
+                reserve_rust_name(
+                    &mut reservations,
+                    model_name,
+                    name,
+                    format!("{identity} for {id:?}"),
+                )?;
+            }
+        } else if !model.declaration().is_abstract() {
+            for (name, identity) in [
+                ("iid", "complete IID getter"),
+                ("materialize", "complete materializer"),
+            ] {
+                reserve_rust_name(
+                    &mut reservations,
+                    model_name,
+                    name,
+                    format!("{identity} for {id:?}"),
+                )?;
+            }
+            if model.reference_read().target_name().is_some() {
+                reserve_rust_name(
+                    &mut reservations,
+                    model_name,
+                    "reference",
+                    format!("complete reference getter for {id:?}"),
+                )?;
+            }
+            for field in model.complete_read().fields() {
+                let token = model
+                    .query_tokens()
+                    .fields()
+                    .get(field.token())
+                    .ok_or_else(|| facet_error("complete field has no query token"))?;
+                reserve_rust_name(
+                    &mut reservations,
+                    model_name,
+                    token.target_name().as_str(),
+                    format!("complete field {:?} for {id:?}", field.token()),
+                )?;
+            }
+            for role in model.complete_read().roles().values() {
+                let token = model
                     .query_tokens()
                     .roles()
-                    .values()
-                    .map(|token| token.target_name()),
-            )
-        {
-            if FIXED_MEMBER_NAMES.contains(&name.as_str()) {
-                return Err(invalid(
-                    "rust_emitter_name_collision",
-                    format!(
-                        "Rust model member `{}` collides with generated runtime state",
-                        name.as_str()
-                    ),
-                ));
+                    .get(role.role())
+                    .ok_or_else(|| facet_error("complete role has no query token"))?;
+                reserve_rust_name(
+                    &mut reservations,
+                    model_name,
+                    token.target_name().as_str(),
+                    format!("complete role {:?} for {id:?}", role.role()),
+                )?;
+            }
+        }
+
+        if let Some(create_name) = model.create().target_name() {
+            for (name, identity) in [
+                ("new", "create constructor"),
+                ("try_new", "create constructor alias"),
+                ("into_encoded_create", "create codec"),
+            ] {
+                reserve_rust_name(
+                    &mut reservations,
+                    create_name.as_str(),
+                    name,
+                    format!("{identity} for {id:?}"),
+                )?;
+            }
+            let (members, _) = create_members(projection, model)?;
+            for member in members {
+                reserve_rust_name(
+                    &mut reservations,
+                    create_name.as_str(),
+                    &member.name,
+                    format!("create member `{}` for {id:?}", member.name),
+                )?;
+            }
+            for (role_id, role) in model.create().roles() {
+                let token = model
+                    .query_tokens()
+                    .roles()
+                    .get(role_id)
+                    .ok_or_else(|| facet_error("create role has no query token"))?;
+                let mut variants = Vec::new();
+                for player in role.players() {
+                    let player_model = projection
+                        .models()
+                        .get(player.id())
+                        .ok_or_else(|| facet_error("create player model is absent"))?;
+                    if player_model.reference_read().target_name().is_some()
+                        && !variants
+                            .iter()
+                            .any(|name: &String| name == player_model.target_name().as_str())
+                    {
+                        variants.push(player_model.target_name().as_str().to_owned());
+                    }
+                }
+                if variants.len() > 1 {
+                    let union_name = format!(
+                        "{}{}Ref",
+                        model_name,
+                        to_pascal_case(token.target_name().as_str())
+                    );
+                    reserve_rust_name(
+                        &mut reservations,
+                        "root",
+                        &union_name,
+                        format!("create reference union {id:?}:{role_id:?}"),
+                    )?;
+                    reserve_rust_name(
+                        &mut reservations,
+                        &union_name,
+                        "into_encoded_reference",
+                        format!("create reference union codec {id:?}:{role_id:?}"),
+                    )?;
+                    for variant in variants {
+                        reserve_rust_name(
+                            &mut reservations,
+                            &union_name,
+                            &variant,
+                            format!("create reference union variant `{variant}` for {role_id:?}"),
+                        )?;
+                    }
+                }
+            }
+        }
+
+        if let Some(reference_name) = model.reference_read().target_name() {
+            let namespace = reference_name.as_str();
+            for (name, identity) in [
+                ("from_iid", "IID constructor"),
+                ("iid", "IID getter"),
+                ("into_encoded_reference", "reference codec"),
+            ] {
+                reserve_rust_name(
+                    &mut reservations,
+                    namespace,
+                    name,
+                    format!("{identity} for {id:?}"),
+                )?;
+            }
+            let keys = model.reference_read().key_fields();
+            for key in keys {
+                let token = model
+                    .query_tokens()
+                    .fields()
+                    .get(key)
+                    .ok_or_else(|| facet_error("reference key has no query token"))?;
+                reserve_rust_name(
+                    &mut reservations,
+                    namespace,
+                    token.target_name().as_str(),
+                    format!("reference key getter {key:?}"),
+                )?;
+            }
+            if keys.len() == 1 {
+                reserve_rust_name(
+                    &mut reservations,
+                    namespace,
+                    "from_key",
+                    format!("single-key constructor for {:?}", keys[0]),
+                )?;
+            } else {
+                for key in keys {
+                    let token = model
+                        .query_tokens()
+                        .fields()
+                        .get(key)
+                        .ok_or_else(|| facet_error("reference key has no query token"))?;
+                    let constructor = format!("from_{}", token.target_name().as_str());
+                    reserve_rust_name(
+                        &mut reservations,
+                        namespace,
+                        &constructor,
+                        format!("key-specific constructor for {key:?}"),
+                    )?;
+                }
             }
         }
     }
@@ -1072,16 +2555,25 @@ fn validate_projection(projection: &RuntimeProjection) -> Result<(), Diagnostic>
             .structs()
             .get(id)
             .ok_or_else(|| facet_error("struct is absent"))?;
-        insert(structure.target_name().as_str(), format!("struct {id:?}"))?;
-        if structure
-            .fields()
-            .iter()
-            .any(|field| FIXED_MEMBER_NAMES.contains(&field.target_name().as_str()))
-        {
-            return Err(invalid(
-                "rust_emitter_name_collision",
-                "Rust struct field collides with generated runtime state",
-            ));
+        reserve_rust_name(
+            &mut reservations,
+            "root",
+            structure.target_name().as_str(),
+            format!("struct {id:?}"),
+        )?;
+        reserve_rust_name(
+            &mut reservations,
+            structure.target_name().as_str(),
+            "try_new",
+            format!("struct constructor for {id:?}"),
+        )?;
+        for field in structure.fields() {
+            reserve_rust_name(
+                &mut reservations,
+                structure.target_name().as_str(),
+                field.target_name().as_str(),
+                format!("struct field {:?}:{}", id, field.name()),
+            )?;
         }
     }
     for id in projection.emission().functions() {
@@ -1089,13 +2581,173 @@ fn validate_projection(projection: &RuntimeProjection) -> Result<(), Diagnostic>
             .functions()
             .get(id)
             .ok_or_else(|| facet_error("function is absent"))?;
-        insert(function.target_name().as_str(), format!("function {id:?}"))?;
+        reserve_rust_name(
+            &mut reservations,
+            "root",
+            function.target_name().as_str(),
+            format!("function {id:?}"),
+        )?;
     }
     for playing in projection.playing_facts().values() {
         let name = playing
             .target_name()
             .ok_or_else(|| facet_error("playing name is absent"))?;
-        insert(name.as_str(), format!("playing fact {:?}", playing.id()))?;
+        reserve_rust_name(
+            &mut reservations,
+            "root",
+            name.as_str(),
+            format!("playing fact {:?}", playing.id()),
+        )?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use type_bridge_contract::id::AttributeId;
+    use type_bridge_contract::value::Cardinality;
+
+    #[test]
+    fn rust_acceptance_review_06b_family_fact_distinguishes_projected_form() {
+        let owner = TypeId::new(TypeKind::Entity, "owner").unwrap();
+        let attribute = AttributeId::new("identifier").unwrap();
+        let token = OwnsFactId::new(owner, attribute).unwrap();
+        let attribute_model = TypeId::new(TypeKind::Attribute, "identifier").unwrap();
+        let multiplicity =
+            ProjectedMultiplicity::from_cardinality(Cardinality::new(1, Some(1)).unwrap());
+        let complete = FamilyMemberFact {
+            token: FamilyMemberToken::Field(token.clone()),
+            multiplicity,
+            shape: FamilyMemberShape::Field(ProjectedTypeRef::Model(ProjectedModelUse::new(
+                attribute_model.clone(),
+                ProjectedModelForm::Complete,
+            ))),
+        };
+        let reference = FamilyMemberFact {
+            token: FamilyMemberToken::Field(token),
+            multiplicity,
+            shape: FamilyMemberShape::Field(ProjectedTypeRef::Model(ProjectedModelUse::new(
+                attribute_model,
+                ProjectedModelForm::Reference,
+            ))),
+        };
+        assert_ne!(complete, reference);
+        let member = Member::from_multiplicity(
+            "projected_value",
+            "Identifier".to_owned(),
+            multiplicity,
+            Some("declaring-token".to_owned()),
+            false,
+        );
+        let common = exact_common_family_members(&[
+            vec![(member.clone(), complete)],
+            vec![(member, reference)],
+        ]);
+        assert!(
+            common.is_empty(),
+            "a Complete-versus-Reference projected shape mismatch emitted a family getter"
+        );
+        println!(
+            "FRESH 06B: projected Complete/Reference mismatch => projected_value getter absent"
+        );
+    }
+
+    #[test]
+    fn rust_acceptance_review_06b_fixed_names_cover_codegen_spi_and_prelude() {
+        let mut exports = BTreeSet::new();
+        for source_line in include_str!("../../../rust/src/__codegen.rs").lines() {
+            if source_line != source_line.trim_start() {
+                continue;
+            }
+            let line = source_line.trim();
+            if let Some(names) = line
+                .strip_prefix("pub use ")
+                .and_then(|line| line.split_once('{').map(|(_, rest)| rest))
+                .and_then(|rest| rest.split_once('}').map(|(names, _)| names))
+            {
+                exports.extend(names.split(',').map(|name| name.trim().to_owned()));
+                continue;
+            }
+            for prefix in ["pub struct ", "pub enum ", "pub trait ", "pub fn "] {
+                if let Some(rest) = line.strip_prefix(prefix) {
+                    let name = rest
+                        .split(|character: char| {
+                            character == '<'
+                                || character == '('
+                                || character.is_whitespace()
+                                || character == ':'
+                        })
+                        .next()
+                        .unwrap();
+                    exports.insert(name.to_owned());
+                }
+            }
+            if let Some(rest) = line.strip_prefix("canonical_scalar!(") {
+                let name = rest.split(',').next().unwrap().trim();
+                if name != "$name" {
+                    exports.insert(name.to_owned());
+                }
+            }
+        }
+        let fixed = FIXED_PUBLIC_NAMES.iter().copied().collect::<BTreeSet<_>>();
+        let missing = exports
+            .iter()
+            .filter(|name| !fixed.contains(name.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
+        assert!(
+            missing.is_empty(),
+            "public __codegen exports missing fixed root reservations: {missing:?}"
+        );
+        for name in [
+            "Option",
+            "Result",
+            "Vec",
+            "Some",
+            "None",
+            "Ok",
+            "Err",
+            "Into",
+            "ToOwned",
+            "String",
+            "str",
+            "bool",
+            "i64",
+            "f64",
+            "u64",
+            "usize",
+            "core",
+            "std",
+            "type_bridge",
+        ] {
+            assert!(fixed.contains(name), "missing emitted Rust name `{name}`");
+        }
+        println!(
+            "FRESH 06B: fixed root inventory covers {} SPI exports and 20 emitted prelude/path names",
+            exports.len()
+        );
+    }
+    #[test]
+    fn fixed_private_helper_inventory_matches_emitted_helpers() {
+        let prefix = ["fn ", "__tb_"].concat();
+        let emitted = include_str!("render.rs")
+            .lines()
+            .filter_map(|line| {
+                let start = line.find(&prefix)?;
+                let tail = &line[start + prefix.len()..];
+                let name: String = tail
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                    .collect();
+                Some(format!("__tb_{name}"))
+            })
+            .collect::<BTreeSet<_>>();
+        let inventory = FIXED_GENERATED_HELPERS
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(emitted, inventory);
+        assert!(inventory.iter().all(|name| name.starts_with("__tb_")));
+    }
 }

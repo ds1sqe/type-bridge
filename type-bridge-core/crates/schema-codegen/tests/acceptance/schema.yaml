@@ -4,13 +4,53 @@ attributes:
   nickname: { value: string }
   aliases: { value: string }
   score: { value: integer }
+  val_double: { value: double }
+  val_decimal: { value: decimal }
+  val_bool: { value: boolean }
+  val_date: { value: date }
+  val_datetime: { value: datetime }
+  val_datetime_tz: { value: datetime-tz }
+  val_duration: { value: duration }
+  val_constrained: { value: integer }
+  party_name: { value: string }
+  rank: { value: integer }
+  manager_note: { value: string }
+  contractor_code: { value: string }
 entities:
+  party:
+    abstract: true
+    owns:
+      identifier: { key: true }
+      party_name: { card: 1 }
   person:
     owns:
       identifier: { key: true }
       nickname: { card: { min: 0, max: 1 } }
       aliases: { unique: true, card: { min: 0, max: 3 } }
-  robot: {}
+      score: { card: 1 }
+      val_double: { card: 1 }
+      val_decimal: { card: 1 }
+      val_bool: { card: 1 }
+      val_date: { card: 1 }
+      val_datetime: { card: 1 }
+      val_datetime_tz: { card: 1 }
+      val_duration: { card: 1 }
+      val_constrained: { card: 1, range: { min: 20, max: 80 } }
+  employee:
+    sub: party
+    owns:
+      rank: { card: 1 }
+  manager:
+    sub: employee
+    owns:
+      manager_note: { card: 1 }
+  contractor:
+    sub: party
+    owns:
+      contractor_code: { card: 1 }
+  robot:
+    owns:
+      val_constrained: { card: 1, range: { min: 0, max: 50 } }
 relations:
   membership:
     relates:
@@ -25,6 +65,14 @@ relations:
   event:
     relates:
       subject: { card: 1 }
+  network-link:
+    owns:
+      identifier: { key: true }
+      nickname: { card: { min: 0, max: 1 } }
+    relates:
+      origin: { card: 1 }
+      destination: { card: 1 }
+      participant: { card: { min: 0, max: 3 } }
 plays:
   person:
     membership:
@@ -33,6 +81,10 @@ plays:
       employee: { card: { min: 0, max: 1 }, doc: employment player }
     event:
       subject: { card: { min: 0, max: 1 }, doc: event subject player }
+    network-link:
+      origin: { card: { min: 0, max: 3 }, doc: directed link origin }
+      destination: { card: { min: 0, max: 3 }, doc: directed link destination }
+      participant: { card: { min: 0, max: 3 }, doc: repeated link participant }
   event:
     container:
       item: { card: { min: 0, max: 3 }, doc: cyclic relation player }
@@ -42,8 +94,8 @@ plays:
 structs:
   player-stats:
     fields:
-      - { name: wins, type: integer }
       - { name: nickname, type: string, optional: true }
+      - { name: wins, type: integer }
 functions:
   find-events:
     parameters:

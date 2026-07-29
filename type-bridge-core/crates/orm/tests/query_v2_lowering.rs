@@ -778,15 +778,24 @@ fn reduce_stages_lower_to_deterministic_grouped_reducers() {
 
     let person = type_id(TypeKind::Entity, "person");
     let name = AttributeId::new("name").expect("attribute");
+    let age = AttributeId::new("age").expect("attribute");
     let facts = vec![
         SchemaFact::Type(TypeFact::new(person.clone()).expect("type fact")),
         SchemaFact::Type(TypeFact::new(type_id(TypeKind::Attribute, "name")).expect("type fact")),
+        SchemaFact::Type(TypeFact::new(type_id(TypeKind::Attribute, "age")).expect("type fact")),
         SchemaFact::Value(ValueFact::new(
             ValueFactId::new(name.clone()),
             ValueTypeTag::String,
         )),
+        SchemaFact::Value(ValueFact::new(
+            ValueFactId::new(age.clone()),
+            ValueTypeTag::Long,
+        )),
         SchemaFact::Owns(OwnsFact::new(
-            OwnsFactId::new(person, name).expect("owns id"),
+            OwnsFactId::new(person.clone(), name).expect("owns id"),
+        )),
+        SchemaFact::Owns(OwnsFact::new(
+            OwnsFactId::new(person, age).expect("owns id"),
         )),
     ];
     let sourced = facts.into_iter().enumerate().map(|(index, fact)| {
@@ -873,6 +882,58 @@ fn reduce_stages_lower_to_deterministic_grouped_reducers() {
          sort $name_count desc;\n",
     );
 
+    // Median and standard deviation lower to their TypeQL reduce keywords.
+    let stats = QueryPlan::new(
+        vec![
+            binding(0, "person"),
+            binding(1, "age"),
+            binding(2, "age_median"),
+            binding(3, "age_std"),
+        ],
+        Vec::new(),
+        vec![
+            ReadStage::Match {
+                patterns: vec![
+                    QueryPattern::Isa {
+                        binding: binding_id(0),
+                        include_subtypes: true,
+                        type_id: type_id(TypeKind::Entity, "person"),
+                    },
+                    QueryPattern::Has {
+                        attribute: binding_id(1),
+                        attribute_id: AttributeId::new("age").expect("attribute"),
+                        owner: binding_id(0),
+                    },
+                ],
+            },
+            ReadStage::Reduce {
+                assignments: vec![
+                    ReduceAssignment::new(binding_id(2), Reducer::Median, Some(binding_id(1))),
+                    ReduceAssignment::new(binding_id(3), Reducer::Std, Some(binding_id(1))),
+                ],
+                groups: vec![binding_id(0)],
+            },
+        ],
+        QueryOutput::Rows {
+            columns: vec![binding_id(0), binding_id(2), binding_id(3)],
+        },
+        managed.managed_semantic_schema().clone(),
+    )
+    .expect("median/std plan");
+    let validated = validate_query_plan(&stats, &validation_context, StructuralLimits::CANONICAL)
+        .expect("validated median/std query");
+    let invocation =
+        QueryInvocation::new(&stats, QueryOperation::Rows, Vec::new()).expect("invocation");
+    let lowered = lower_validated_query(&validated, &invocation).expect("lowered median/std");
+    assert_eq!(
+        lowered.typeql(),
+        "match\n\
+         $person isa person;\n\
+         $person has age $age;\n\
+         $age isa! age;\n\
+         reduce $age_median = median($age), $age_std = std($age) groupby $person;\n",
+    );
+
     // A global bare count reduces the whole stream to one row.
     let global = QueryPlan::new(
         vec![binding(0, "person"), binding(1, "total")],
@@ -913,15 +974,24 @@ fn reduce_stages_lower_to_deterministic_grouped_reducers() {
 fn try_blocks_lower_to_indented_optional_bodies() {
     let person = type_id(TypeKind::Entity, "person");
     let name = AttributeId::new("name").expect("attribute");
+    let age = AttributeId::new("age").expect("attribute");
     let facts = vec![
         SchemaFact::Type(TypeFact::new(person.clone()).expect("type fact")),
         SchemaFact::Type(TypeFact::new(type_id(TypeKind::Attribute, "name")).expect("type fact")),
+        SchemaFact::Type(TypeFact::new(type_id(TypeKind::Attribute, "age")).expect("type fact")),
         SchemaFact::Value(ValueFact::new(
             ValueFactId::new(name.clone()),
             ValueTypeTag::String,
         )),
+        SchemaFact::Value(ValueFact::new(
+            ValueFactId::new(age.clone()),
+            ValueTypeTag::Long,
+        )),
         SchemaFact::Owns(OwnsFact::new(
-            OwnsFactId::new(person, name).expect("owns id"),
+            OwnsFactId::new(person.clone(), name).expect("owns id"),
+        )),
+        SchemaFact::Owns(OwnsFact::new(
+            OwnsFactId::new(person, age).expect("owns id"),
         )),
     ];
     let sourced = facts.into_iter().enumerate().map(|(index, fact)| {
@@ -1008,15 +1078,24 @@ fn document_outputs_lower_to_deterministic_fetch_blocks() {
 
     let person = type_id(TypeKind::Entity, "person");
     let name = AttributeId::new("name").expect("attribute");
+    let age = AttributeId::new("age").expect("attribute");
     let facts = vec![
         SchemaFact::Type(TypeFact::new(person.clone()).expect("type fact")),
         SchemaFact::Type(TypeFact::new(type_id(TypeKind::Attribute, "name")).expect("type fact")),
+        SchemaFact::Type(TypeFact::new(type_id(TypeKind::Attribute, "age")).expect("type fact")),
         SchemaFact::Value(ValueFact::new(
             ValueFactId::new(name.clone()),
             ValueTypeTag::String,
         )),
+        SchemaFact::Value(ValueFact::new(
+            ValueFactId::new(age.clone()),
+            ValueTypeTag::Long,
+        )),
         SchemaFact::Owns(OwnsFact::new(
-            OwnsFactId::new(person, name).expect("owns id"),
+            OwnsFactId::new(person.clone(), name).expect("owns id"),
+        )),
+        SchemaFact::Owns(OwnsFact::new(
+            OwnsFactId::new(person, age).expect("owns id"),
         )),
     ];
     let sourced = facts.into_iter().enumerate().map(|(index, fact)| {
@@ -1111,15 +1190,24 @@ fn local_functions_lower_to_with_fun_preambles() {
 
     let person = type_id(TypeKind::Entity, "person");
     let name = AttributeId::new("name").expect("attribute");
+    let age = AttributeId::new("age").expect("attribute");
     let facts = vec![
         SchemaFact::Type(TypeFact::new(person.clone()).expect("type fact")),
         SchemaFact::Type(TypeFact::new(type_id(TypeKind::Attribute, "name")).expect("type fact")),
+        SchemaFact::Type(TypeFact::new(type_id(TypeKind::Attribute, "age")).expect("type fact")),
         SchemaFact::Value(ValueFact::new(
             ValueFactId::new(name.clone()),
             ValueTypeTag::String,
         )),
+        SchemaFact::Value(ValueFact::new(
+            ValueFactId::new(age.clone()),
+            ValueTypeTag::Long,
+        )),
         SchemaFact::Owns(OwnsFact::new(
-            OwnsFactId::new(person, name).expect("owns id"),
+            OwnsFactId::new(person.clone(), name).expect("owns id"),
+        )),
+        SchemaFact::Owns(OwnsFact::new(
+            OwnsFactId::new(person, age).expect("owns id"),
         )),
     ];
     let sourced = facts.into_iter().enumerate().map(|(index, fact)| {
@@ -1323,15 +1411,24 @@ fn bounded_reachability_lowers_to_unrolled_disjunctions() {
 fn hidden_negation_witnesses_lower_with_an_exact_root_select() {
     let person = type_id(TypeKind::Entity, "person");
     let name = AttributeId::new("name").expect("attribute");
+    let age = AttributeId::new("age").expect("attribute");
     let facts = vec![
         SchemaFact::Type(TypeFact::new(person.clone()).expect("type fact")),
         SchemaFact::Type(TypeFact::new(type_id(TypeKind::Attribute, "name")).expect("type fact")),
+        SchemaFact::Type(TypeFact::new(type_id(TypeKind::Attribute, "age")).expect("type fact")),
         SchemaFact::Value(ValueFact::new(
             ValueFactId::new(name.clone()),
             ValueTypeTag::String,
         )),
+        SchemaFact::Value(ValueFact::new(
+            ValueFactId::new(age.clone()),
+            ValueTypeTag::Long,
+        )),
         SchemaFact::Owns(OwnsFact::new(
-            OwnsFactId::new(person, name).expect("owns id"),
+            OwnsFactId::new(person.clone(), name).expect("owns id"),
+        )),
+        SchemaFact::Owns(OwnsFact::new(
+            OwnsFactId::new(person, age).expect("owns id"),
         )),
     ];
     let sourced = facts.into_iter().enumerate().map(|(index, fact)| {

@@ -120,9 +120,11 @@ CANDIDATE_RELEASE_VERSION = "2.0.0-rc.0"
 CANDIDATE_PYTHON_VERSION = "2.0.0rc0"
 ARTIFACT_CONTRACT_CARGO_INCLUSIVE = "cargo-inclusive"
 ARTIFACT_CONTRACT_PYTHON_NPM_ONLY = "python-npm-only"
+ARTIFACT_CONTRACT_SOURCE_GIT_SERVER_OCI = "source-git-server-oci"
 ARTIFACT_CONTRACTS = (
     ARTIFACT_CONTRACT_CARGO_INCLUSIVE,
     ARTIFACT_CONTRACT_PYTHON_NPM_ONLY,
+    ARTIFACT_CONTRACT_SOURCE_GIT_SERVER_OCI,
 )
 RELEASE_CHANNEL_CANDIDATE = "candidate"
 RELEASE_CHANNEL_STABLE = "stable"
@@ -1707,6 +1709,33 @@ def validate_python_npm_only_workflow(workflow: Path) -> None:
         )
 
 
+def validate_source_git_server_oci_workflow(workflow: Path) -> None:
+    """Require the final source/Git Rust SDK plus server-OCI artifact graph."""
+    validate_python_npm_only_workflow(workflow)
+    source = workflow.read_text(encoding="utf-8")
+    required_markers = {
+        "build-server-oci": "server OCI build job",
+        "accept-server-oci": "exact server OCI acceptance job",
+        "publish-server-oci": "stable-only server OCI publication job",
+        "ghcr.io/ds1sqe/type-bridge-server": "public server image identity",
+        "type=oci,dest=": "immutable OCI-layout output",
+        "skopeo copy --preserve-digests": "accepted-byte registry import",
+        "TYPE_BRIDGE_SERVER_IMAGE": "exact-image V1/V2 runtime acceptance",
+        "linux/amd64": "amd64 platform",
+        "linux/arm64": "arm64 platform",
+        "cosign sign --yes": "keyless image signature",
+        "actions/attest-build-provenance": "registry provenance attestation",
+        "actions/attest-sbom": "registry SBOM attestation",
+    }
+    missing = [
+        description for marker, description in required_markers.items() if marker not in source
+    ]
+    if missing:
+        raise ValidationError(
+            f"Source/Git plus server-OCI workflow is incomplete: {sorted(missing)!r}"
+        )
+
+
 def validate_manifest_version(path: Path, version: str, *, label: str) -> None:
     """Require one PEP 621 project version to match the release."""
     project = read_toml(path.resolve(), label=label).get("project")
@@ -2441,8 +2470,10 @@ def validate_release_identity(
                 "Expected-new crates.io key-preflight sequence is incomplete or reordered: "
                 f"actual={candidate_preflights!r}, expected={EXPECTED_NEW_CRATES!r}"
             )
-    else:
+    elif artifact_contract == ARTIFACT_CONTRACT_PYTHON_NPM_ONLY:
         validate_python_npm_only_workflow(release_workflow.resolve())
+    else:
+        validate_source_git_server_oci_workflow(release_workflow.resolve())
     for name in PUBLISHED_CRATES:
         package = by_name.get(name)
         if package is None or not package.publishable:
@@ -2495,7 +2526,7 @@ def validate_release_identity(
     blocker_edges = [
         (entry["package"], entry["unpublished_dependency"]) for entry in publication_blockers
     ]
-    if artifact_contract == ARTIFACT_CONTRACT_PYTHON_NPM_ONLY:
+    if artifact_contract != ARTIFACT_CONTRACT_CARGO_INCLUSIVE:
         actual_blocker_edges = frozenset(blocker_edges)
         missing_blocker_edges = sorted(KNOWN_PUBLICATION_BLOCKER_EDGES - actual_blocker_edges)
         unexpected_blocker_edges = sorted(actual_blocker_edges - KNOWN_PUBLICATION_BLOCKER_EDGES)
@@ -2514,6 +2545,18 @@ def validate_release_identity(
     crates_io_mutation = artifact_contract == ARTIFACT_CONTRACT_CARGO_INCLUSIVE
     report = {
         "artifact_contract": artifact_contract,
+        "public_artifact_set": (
+            [
+                "python-root",
+                "python-native",
+                "npm-package",
+                "npm-native-packages",
+                "rust-type-bridge-source-git-exact-revision",
+                "ghcr.io/ds1sqe/type-bridge-server",
+            ]
+            if artifact_contract == ARTIFACT_CONTRACT_SOURCE_GIT_SERVER_OCI
+            else ["python-root", "python-native", "npm-package", "npm-native-packages"]
+        ),
         "cargo_licenses": cargo_licenses,
         "cargo_manifest_publishable_crates": list(PUBLISHED_CRATES),
         "cargo_packages": {package.name: package.version for package in packages},

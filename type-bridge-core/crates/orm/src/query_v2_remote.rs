@@ -140,7 +140,7 @@ const REMOTE_REQUEST_FORMAT_V2_FIELD: &[u8] =
 ///
 /// Canonical request objects sort `advertisement`, `expires_at_unix_ms`, and
 /// `format` before the potentially multi-megabyte plan. Classification reads
-/// at most [`REMOTE_REQUEST_FORMAT_PREFIX_BYTES`] and performs no allocation,
+/// at most a fixed 256-byte prefix and performs no allocation,
 /// so an attacker cannot make Tokio workers parse the full body merely to
 /// select a decoder. Only the exact canonical V2 prefix selects V2; unknown,
 /// reordered, or malformed format prefixes retain the historical V1 path.

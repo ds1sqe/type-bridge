@@ -445,7 +445,9 @@ enum ReducerWire {
     Count,
     Max,
     Mean,
+    Median,
     Min,
+    Std,
     Sum,
 }
 
@@ -455,7 +457,9 @@ impl ReducerWire {
             Self::Count => Reducer::Count,
             Self::Max => Reducer::Max,
             Self::Mean => Reducer::Mean,
+            Self::Median => Reducer::Median,
             Self::Min => Reducer::Min,
+            Self::Std => Reducer::Std,
             Self::Sum => Reducer::Sum,
         }
     }

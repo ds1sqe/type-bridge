@@ -2483,13 +2483,13 @@ impl RuntimeTransaction {
         limits: RuntimeAnswerLimits,
         consumer: &'a mut (dyn FnMut(RuntimeAnswerItem) -> Result<RuntimeAnswerControl> + Send),
     ) -> BoxFuture<'a, Result<RuntimeAnswerStats>> {
-        self.query_bounded_with_temporal_encoding(
+        self.query_bounded_with_scalar_encoding(
             typeql,
             QueryV2RuntimeAnswerLimits {
                 answer: limits,
                 max_collection_members: u64::MAX,
             },
-            TemporalJsonEncoding::DriverDisplay,
+            ScalarJsonEncoding::DriverDisplay,
             consumer,
         )
     }
@@ -2501,19 +2501,35 @@ impl RuntimeTransaction {
         limits: QueryV2RuntimeAnswerLimits,
         consumer: &'a mut (dyn FnMut(RuntimeAnswerItem) -> Result<RuntimeAnswerControl> + Send),
     ) -> BoxFuture<'a, Result<RuntimeAnswerStats>> {
-        self.query_bounded_with_temporal_encoding(
+        self.query_bounded_with_scalar_encoding(
             typeql,
             limits,
-            TemporalJsonEncoding::ExactV2,
+            ScalarJsonEncoding::CanonicalV2,
             consumer,
         )
     }
 
-    fn query_bounded_with_temporal_encoding<'a>(
+    /// Execute V2 with canonical scalar spelling and retain the answer kind.
+    #[doc(hidden)]
+    pub async fn query_v2_materialized(
+        &mut self,
+        typeql: &str,
+        limits: QueryV2RuntimeAnswerLimits,
+    ) -> Result<QueryResult> {
+        let mut items = Vec::new();
+        let mut consumer = |item: RuntimeAnswerItem| {
+            items.push(item);
+            Ok(RuntimeAnswerControl::Continue)
+        };
+        let stats = self.query_v2_bounded(typeql, limits, &mut consumer).await?;
+        Ok(materialize_runtime_answer(stats, items))
+    }
+
+    fn query_bounded_with_scalar_encoding<'a>(
         &'a mut self,
         typeql: &'a str,
         limits: QueryV2RuntimeAnswerLimits,
-        temporal_encoding: TemporalJsonEncoding,
+        scalar_encoding: ScalarJsonEncoding,
         consumer: &'a mut (dyn FnMut(RuntimeAnswerItem) -> Result<RuntimeAnswerControl> + Send),
     ) -> BoxFuture<'a, Result<RuntimeAnswerStats>> {
         let QueryV2RuntimeAnswerLimits {
@@ -2564,9 +2580,7 @@ impl RuntimeTransaction {
                                         .row
                                         .get(index)
                                         .and_then(|concept| concept.as_ref())
-                                        .map(|concept| {
-                                            concept_to_json_b7(concept, temporal_encoding)
-                                        })
+                                        .map(|concept| concept_to_json_b7(concept, scalar_encoding))
                                         .transpose()?
                                         .unwrap_or(serde_json::Value::Null);
                                     object.insert(column.clone(), value);
@@ -2602,7 +2616,7 @@ impl RuntimeTransaction {
                                     &document,
                                     &mut collection_members,
                                     max_collection_members,
-                                    temporal_encoding,
+                                    scalar_encoding,
                                 )?;
                                 if runtime_accept(
                                     &limits,
@@ -2657,9 +2671,7 @@ impl RuntimeTransaction {
                                         .row
                                         .get(index)
                                         .and_then(|concept| concept.as_ref())
-                                        .map(|concept| {
-                                            concept_to_json_b8(concept, temporal_encoding)
-                                        })
+                                        .map(|concept| concept_to_json_b8(concept, scalar_encoding))
                                         .transpose()?
                                         .unwrap_or(serde_json::Value::Null);
                                     object.insert(column.clone(), value);
@@ -2695,7 +2707,7 @@ impl RuntimeTransaction {
                                     &document,
                                     &mut collection_members,
                                     max_collection_members,
-                                    temporal_encoding,
+                                    scalar_encoding,
                                 )?;
                                 if runtime_accept(
                                     &limits,
@@ -2734,7 +2746,7 @@ impl RuntimeTransaction {
                         answer,
                         &limits,
                         max_collection_members,
-                        temporal_encoding,
+                        scalar_encoding,
                         consumer,
                     )
                     .await
@@ -2783,14 +2795,14 @@ impl RuntimeTransaction {
         limits: RuntimeAnswerLimits,
         consumer: &'a mut (dyn FnMut(RuntimeAnswerItem) -> Result<RuntimeAnswerControl> + Send),
     ) -> BoxFuture<'a, Result<RuntimeAnswerStats>> {
-        self.query_with_rows_bounded_with_temporal_encoding(
+        self.query_with_rows_bounded_with_scalar_encoding(
             typeql,
             rows,
             QueryV2RuntimeAnswerLimits {
                 answer: limits,
                 max_collection_members: u64::MAX,
             },
-            TemporalJsonEncoding::DriverDisplay,
+            ScalarJsonEncoding::DriverDisplay,
             consumer,
         )
     }
@@ -2803,21 +2815,21 @@ impl RuntimeTransaction {
         limits: QueryV2RuntimeAnswerLimits,
         consumer: &'a mut (dyn FnMut(RuntimeAnswerItem) -> Result<RuntimeAnswerControl> + Send),
     ) -> BoxFuture<'a, Result<RuntimeAnswerStats>> {
-        self.query_with_rows_bounded_with_temporal_encoding(
+        self.query_with_rows_bounded_with_scalar_encoding(
             typeql,
             rows,
             limits,
-            TemporalJsonEncoding::ExactV2,
+            ScalarJsonEncoding::CanonicalV2,
             consumer,
         )
     }
 
-    fn query_with_rows_bounded_with_temporal_encoding<'a>(
+    fn query_with_rows_bounded_with_scalar_encoding<'a>(
         &'a mut self,
         typeql: &'a str,
         rows: GivenRowsSpec,
         limits: QueryV2RuntimeAnswerLimits,
-        temporal_encoding: TemporalJsonEncoding,
+        scalar_encoding: ScalarJsonEncoding,
         consumer: &'a mut (dyn FnMut(RuntimeAnswerItem) -> Result<RuntimeAnswerControl> + Send),
     ) -> BoxFuture<'a, Result<RuntimeAnswerStats>> {
         let QueryV2RuntimeAnswerLimits {
@@ -2830,7 +2842,7 @@ impl RuntimeTransaction {
             &tql,
             &rows,
             max_collection_members,
-            temporal_encoding,
+            scalar_encoding,
             &consumer,
         );
         Box::pin(async move {
@@ -2873,7 +2885,7 @@ impl RuntimeTransaction {
                         answer,
                         &limits,
                         max_collection_members,
-                        temporal_encoding,
+                        scalar_encoding,
                         consumer,
                     )
                     .await
@@ -3093,9 +3105,17 @@ fn runtime_document_member_error(message: &'static str) -> RuntimeError {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum TemporalJsonEncoding {
+enum ScalarJsonEncoding {
     DriverDisplay,
-    ExactV2,
+    CanonicalV2,
+}
+
+fn canonical_decimal_text(display: String) -> Result<String> {
+    type_bridge_core_lib::decimal::parse_decimal(&display)
+        .map(|decimal| decimal.canonical_string())
+        .ok_or_else(|| {
+            RuntimeError::QueryExecution("provider returned an unparseable decimal".to_owned())
+        })
 }
 
 fn checked_datetime_tz_local<Tz>(
@@ -3209,7 +3229,7 @@ macro_rules! define_driver_json_conversion {
             document: &$driver::answer::ConceptDocument,
             collection_members: &mut u64,
             max_collection_members: u64,
-            temporal_encoding: TemporalJsonEncoding,
+            scalar_encoding: ScalarJsonEncoding,
         ) -> Result<serde_json::Value> {
             document
                 .root
@@ -3219,7 +3239,7 @@ macro_rules! define_driver_json_conversion {
                         node,
                         collection_members,
                         max_collection_members,
-                        temporal_encoding,
+                        scalar_encoding,
                     )
                 })
                 .transpose()
@@ -3231,7 +3251,7 @@ macro_rules! define_driver_json_conversion {
             node: &$driver::answer::concept_document::Node,
             collection_members: &mut u64,
             max_collection_members: u64,
-            temporal_encoding: TemporalJsonEncoding,
+            scalar_encoding: ScalarJsonEncoding,
         ) -> Result<serde_json::Value> {
             use $driver::answer::concept_document::Node;
 
@@ -3243,7 +3263,7 @@ macro_rules! define_driver_json_conversion {
                             node,
                             collection_members,
                             max_collection_members,
-                            temporal_encoding,
+                            scalar_encoding,
                         )
                         .map(|value| (name.clone(), value))
                     })
@@ -3270,13 +3290,13 @@ macro_rules! define_driver_json_conversion {
                                 node,
                                 collection_members,
                                 max_collection_members,
-                                temporal_encoding,
+                                scalar_encoding,
                             )
                         })
                         .collect::<Result<Vec<_>>>()
                         .map(serde_json::Value::Array)
                 }
-                Node::Leaf(Some(leaf)) => $leaf_fn(leaf, temporal_encoding),
+                Node::Leaf(Some(leaf)) => $leaf_fn(leaf, scalar_encoding),
                 Node::Leaf(None) => Ok(serde_json::Value::Null),
             }
         }
@@ -3284,7 +3304,7 @@ macro_rules! define_driver_json_conversion {
         #[cfg(feature = $feature)]
         fn $leaf_fn(
             leaf: &$driver::answer::concept_document::Leaf,
-            temporal_encoding: TemporalJsonEncoding,
+            scalar_encoding: ScalarJsonEncoding,
         ) -> Result<serde_json::Value> {
             use $driver::answer::concept_document::Leaf;
             use $driver::concept::Concept;
@@ -3314,7 +3334,7 @@ macro_rules! define_driver_json_conversion {
                                 "document value concept did not carry a value".to_owned(),
                             )
                         })?;
-                        $value_fn(value, temporal_encoding)
+                        $value_fn(value, scalar_encoding)
                     }
                     Concept::Entity(_) | Concept::Relation(_) => Err(RuntimeError::QueryExecution(
                         "document response carried an unsupported thing instance".to_owned(),
@@ -3330,7 +3350,7 @@ macro_rules! define_driver_json_conversion {
         #[cfg(feature = $feature)]
         fn $value_fn(
             value: &$driver::concept::Value,
-            temporal_encoding: TemporalJsonEncoding,
+            scalar_encoding: ScalarJsonEncoding,
         ) -> Result<serde_json::Value> {
             use $driver::concept::Value;
 
@@ -3339,18 +3359,27 @@ macro_rules! define_driver_json_conversion {
                 Value::Integer(value) => serde_json::Value::from(*value),
                 Value::Double(value) => serde_json::Value::from(*value),
                 Value::String(value) => serde_json::Value::String(value.clone()),
-                Value::Decimal(_) | Value::Date(_) => serde_json::Value::String(value.to_string()),
+                Value::Decimal(decimal) => {
+                    let rendered = match scalar_encoding {
+                        ScalarJsonEncoding::DriverDisplay => decimal.to_string(),
+                        ScalarJsonEncoding::CanonicalV2 => {
+                            canonical_decimal_text(decimal.to_string())?
+                        }
+                    };
+                    serde_json::Value::String(rendered)
+                }
+                Value::Date(_) => serde_json::Value::String(value.to_string()),
                 Value::Datetime(datetime) => {
-                    let rendered = match temporal_encoding {
-                        TemporalJsonEncoding::DriverDisplay => value.to_string(),
-                        TemporalJsonEncoding::ExactV2 => exact_naive_datetime(datetime),
+                    let rendered = match scalar_encoding {
+                        ScalarJsonEncoding::DriverDisplay => value.to_string(),
+                        ScalarJsonEncoding::CanonicalV2 => exact_naive_datetime(datetime),
                     };
                     serde_json::Value::String(rendered)
                 }
                 Value::Duration(duration) => {
-                    let rendered = match temporal_encoding {
-                        TemporalJsonEncoding::DriverDisplay => value.to_string(),
-                        TemporalJsonEncoding::ExactV2 => {
+                    let rendered = match scalar_encoding {
+                        ScalarJsonEncoding::DriverDisplay => value.to_string(),
+                        ScalarJsonEncoding::CanonicalV2 => {
                             exact_duration(duration.months, duration.days, duration.nanos)
                         }
                     };
@@ -3358,9 +3387,9 @@ macro_rules! define_driver_json_conversion {
                 }
                 Value::DatetimeTZ(datetime_tz) => {
                     let (local, offset_seconds) = checked_datetime_tz_local(datetime_tz)?;
-                    let rendered = match temporal_encoding {
-                        TemporalJsonEncoding::DriverDisplay => value.to_string(),
-                        TemporalJsonEncoding::ExactV2 => {
+                    let rendered = match scalar_encoding {
+                        ScalarJsonEncoding::DriverDisplay => value.to_string(),
+                        ScalarJsonEncoding::CanonicalV2 => {
                             let mut rendered = exact_naive_datetime(&local);
                             append_exact_offset(&mut rendered, i64::from(offset_seconds));
                             if let $driver::concept::value::TimeZone::IANA(timezone) =
@@ -3384,7 +3413,7 @@ macro_rules! define_driver_json_conversion {
                                 field.clone(),
                                 value
                                     .as_ref()
-                                    .map(|value| $value_fn(value, temporal_encoding))
+                                    .map(|value| $value_fn(value, scalar_encoding))
                                     .transpose()?
                                     .unwrap_or(serde_json::Value::Null),
                             ))
@@ -3432,7 +3461,7 @@ define_driver_json_conversion!(
 #[cfg(feature = "band7")]
 fn concept_to_json_b7(
     concept: &type_bridge_typedb_driver_b7::concept::Concept,
-    temporal_encoding: TemporalJsonEncoding,
+    scalar_encoding: ScalarJsonEncoding,
 ) -> Result<serde_json::Value> {
     let mut obj = serde_json::Map::new();
     obj.insert(
@@ -3447,7 +3476,7 @@ fn concept_to_json_b7(
         obj.insert("iid".into(), serde_json::Value::String(iid.to_string()));
     }
     if let Some(value) = concept.try_get_value() {
-        obj.insert("value".into(), value_to_json_b7(value, temporal_encoding)?);
+        obj.insert("value".into(), value_to_json_b7(value, scalar_encoding)?);
     }
     if let Some(vt) = concept.try_get_value_type() {
         obj.insert(
@@ -3464,7 +3493,7 @@ fn concept_to_json_b7(
 #[cfg(feature = "band8")]
 fn concept_to_json_b8(
     concept: &type_bridge_typedb_driver_b8::concept::Concept,
-    temporal_encoding: TemporalJsonEncoding,
+    scalar_encoding: ScalarJsonEncoding,
 ) -> Result<serde_json::Value> {
     let mut obj = serde_json::Map::new();
     obj.insert(
@@ -3479,7 +3508,7 @@ fn concept_to_json_b8(
         obj.insert("iid".into(), serde_json::Value::String(iid.to_string()));
     }
     if let Some(value) = concept.try_get_value() {
-        obj.insert("value".into(), value_to_json_b8(value, temporal_encoding)?);
+        obj.insert("value".into(), value_to_json_b8(value, scalar_encoding)?);
     }
     if let Some(vt) = concept.try_get_value_type() {
         obj.insert(
@@ -3710,7 +3739,7 @@ async fn consume_answer_b9(
     answer: B9QueryAnswer,
     limits: &RuntimeAnswerLimits,
     max_collection_members: u64,
-    temporal_encoding: TemporalJsonEncoding,
+    scalar_encoding: ScalarJsonEncoding,
     consumer: &mut (dyn FnMut(RuntimeAnswerItem) -> Result<RuntimeAnswerControl> + Send),
 ) -> Result<RuntimeAnswerStats> {
     match answer {
@@ -3726,7 +3755,7 @@ async fn consume_answer_b9(
                                 .row
                                 .get(i)
                                 .and_then(|c| c.as_ref())
-                                .map(|concept| concept_to_json_b9(concept, temporal_encoding))
+                                .map(|concept| concept_to_json_b9(concept, scalar_encoding))
                                 .transpose()?
                                 .unwrap_or(serde_json::Value::Null);
                             obj.insert(col.clone(), value);
@@ -3746,7 +3775,7 @@ async fn consume_answer_b9(
                         &document,
                         &mut collection_members,
                         max_collection_members,
-                        temporal_encoding,
+                        scalar_encoding,
                     )
                     .map(RuntimeAnswerItem::Document);
                     futures::future::ready(result)
@@ -3762,7 +3791,7 @@ async fn consume_answer_b9(
 #[cfg(feature = "band9")]
 fn concept_to_json_b9(
     concept: &typedb_driver::concept::Concept,
-    temporal_encoding: TemporalJsonEncoding,
+    scalar_encoding: ScalarJsonEncoding,
 ) -> Result<serde_json::Value> {
     let mut obj = serde_json::Map::new();
     obj.insert(
@@ -3777,7 +3806,7 @@ fn concept_to_json_b9(
         obj.insert("iid".into(), serde_json::Value::String(iid.to_string()));
     }
     if let Some(value) = concept.try_get_value() {
-        obj.insert("value".into(), value_to_json_b9(value, temporal_encoding)?);
+        obj.insert("value".into(), value_to_json_b9(value, scalar_encoding)?);
     }
     if let Some(vt) = concept.try_get_value_type() {
         obj.insert(
@@ -4109,8 +4138,8 @@ mod tests {
         ));
     }
 
-    macro_rules! document_scalar_regression {
-        ($feature:literal, $name:ident, $driver:ident, $node_fn:ident, $decimal:expr) => {
+    macro_rules! row_and_document_scalar_regression {
+        ($feature:literal, $name:ident, $driver:ident, $concept_fn:ident, $node_fn:ident, $decimal:expr) => {
             #[cfg(feature = $feature)]
             #[test]
             fn $name() {
@@ -4127,7 +4156,7 @@ mod tests {
                         &integer,
                         &mut collection_members,
                         u64::MAX,
-                        TemporalJsonEncoding::ExactV2,
+                        ScalarJsonEncoding::CanonicalV2,
                     )
                     .unwrap(),
                     serde_json::Value::from(LARGE_INTEGER),
@@ -4135,42 +4164,85 @@ mod tests {
                 );
 
                 let decimal = $decimal;
-                let expected = decimal.to_string();
+                let scalar_text = |value: serde_json::Value| {
+                    value
+                        .get("value")
+                        .and_then(serde_json::Value::as_str)
+                        .or_else(|| value.as_str())
+                        .map(str::to_owned)
+                        .expect("decimal conversion must expose scalar text")
+                };
+                let legacy_expected = decimal.to_string();
+                let expected = "1234.56";
                 let decimal =
                     Node::Leaf(Some(Leaf::Concept(Concept::Value(Value::Decimal(decimal)))));
+                let row_decimal = Concept::Value(Value::Decimal($decimal));
                 assert_eq!(
-                    $node_fn(
-                        &decimal,
-                        &mut collection_members,
-                        u64::MAX,
-                        TemporalJsonEncoding::ExactV2,
-                    )
-                    .unwrap(),
-                    serde_json::Value::String(expected),
-                    "concept-document decimals must remain lossless strings"
+                    scalar_text(
+                        $node_fn(
+                            &decimal,
+                            &mut collection_members,
+                            u64::MAX,
+                            ScalarJsonEncoding::CanonicalV2,
+                        )
+                        .unwrap()
+                    ),
+                    expected,
+                    "concept-document decimals must use canonical strings"
+                );
+                assert_eq!(
+                    scalar_text(
+                        $concept_fn(&row_decimal, ScalarJsonEncoding::CanonicalV2).unwrap()
+                    ),
+                    expected
+                );
+                assert_eq!(
+                    scalar_text(
+                        $concept_fn(&row_decimal, ScalarJsonEncoding::DriverDisplay).unwrap()
+                    ),
+                    legacy_expected.clone()
+                );
+                let legacy_decimal = Node::Leaf(Some(Leaf::Concept(Concept::Value(
+                    Value::Decimal($decimal),
+                ))));
+                assert_eq!(
+                    scalar_text(
+                        $node_fn(
+                            &legacy_decimal,
+                            &mut collection_members,
+                            u64::MAX,
+                            ScalarJsonEncoding::DriverDisplay,
+                        )
+                        .unwrap()
+                    ),
+                    legacy_expected,
+                    "legacy document decimals must retain driver spelling"
                 );
             }
         };
     }
 
-    document_scalar_regression!(
+    row_and_document_scalar_regression!(
         "band7",
-        band7_document_scalars_are_lossless,
+        band7_rows_and_documents_preserve_lossless_scalars,
         driver_b7,
+        concept_to_json_b7,
         document_node_to_json_b7,
         driver_b7::concept::value::Decimal::new(1234, 5_600_000_000_000_000_000)
     );
-    document_scalar_regression!(
+    row_and_document_scalar_regression!(
         "band8",
-        band8_document_scalars_are_lossless,
+        band8_rows_and_documents_preserve_lossless_scalars,
         driver_b8,
+        concept_to_json_b8,
         document_node_to_json_b8,
         driver_b8::concept::value::Decimal::new(1234, 5_600_000_000_000_000_000)
     );
-    document_scalar_regression!(
+    row_and_document_scalar_regression!(
         "band9",
-        band9_document_scalars_are_lossless,
+        band9_rows_and_documents_preserve_lossless_scalars,
         driver_b9,
+        concept_to_json_b9,
         document_node_to_json_b9,
         driver_b9::concept::value::Decimal::from_parts(1234, 5_600_000_000_000_000_000)
     );
@@ -4197,7 +4269,7 @@ mod tests {
                 assert_eq!(
                     $concept_fn(
                         &Concept::Value(named.clone()),
-                        TemporalJsonEncoding::ExactV2,
+                        ScalarJsonEncoding::CanonicalV2,
                     )
                     .expect("row concept")["value"],
                     serde_json::json!("2024-10-27T01:30:00+01:00[Europe/London]"),
@@ -4206,14 +4278,14 @@ mod tests {
                 assert_eq!(
                     $leaf_fn(
                         &Leaf::Concept(Concept::Value(named.clone())),
-                        TemporalJsonEncoding::ExactV2,
+                        ScalarJsonEncoding::CanonicalV2,
                     )
                     .expect("document leaf"),
                     serde_json::json!("2024-10-27T01:30:00+01:00[Europe/London]"),
                     "document evidence uses the same exact datetime-tz bridge",
                 );
                 assert_eq!(
-                    $concept_fn(&Concept::Value(named), TemporalJsonEncoding::DriverDisplay,)
+                    $concept_fn(&Concept::Value(named), ScalarJsonEncoding::DriverDisplay,)
                         .expect("row concept")["value"],
                     serde_json::json!("2024-10-27T01:30:00.000000000 Europe/London"),
                     "released conversion retains the upstream driver display",
@@ -4229,7 +4301,7 @@ mod tests {
                 assert_eq!(
                     $concept_fn(
                         &Concept::Value(fixed.clone()),
-                        TemporalJsonEncoding::ExactV2,
+                        ScalarJsonEncoding::CanonicalV2,
                     )
                     .expect("row concept")["value"],
                     serde_json::json!("1900-01-01T12:00:00+00:19:32"),
@@ -4238,7 +4310,7 @@ mod tests {
                 assert_eq!(
                     $leaf_fn(
                         &Leaf::Concept(Concept::Value(fixed)),
-                        TemporalJsonEncoding::ExactV2,
+                        ScalarJsonEncoding::CanonicalV2,
                     )
                     .expect("document leaf"),
                     serde_json::json!("1900-01-01T12:00:00+00:19:32"),
@@ -4302,8 +4374,8 @@ mod tests {
                     let timezone = TimeZone::Fixed(offset);
                     let value = Value::DatetimeTZ(timezone.from_utc_datetime(&utc));
                     for encoding in [
-                        TemporalJsonEncoding::ExactV2,
-                        TemporalJsonEncoding::DriverDisplay,
+                        ScalarJsonEncoding::CanonicalV2,
+                        ScalarJsonEncoding::DriverDisplay,
                     ] {
                         let row_error =
                             $concept_fn(&Concept::Value(value.clone()), encoding).expect_err(
@@ -4334,8 +4406,8 @@ mod tests {
                     let timezone = TimeZone::Fixed(offset);
                     let value = Value::DatetimeTZ(timezone.from_utc_datetime(&utc));
                     for encoding in [
-                        TemporalJsonEncoding::ExactV2,
-                        TemporalJsonEncoding::DriverDisplay,
+                        ScalarJsonEncoding::CanonicalV2,
+                        ScalarJsonEncoding::DriverDisplay,
                     ] {
                         let row = $concept_fn(&Concept::Value(value.clone()), encoding)
                             .expect("an inward offset must remain representable");
@@ -4397,7 +4469,7 @@ mod tests {
                     assert_eq!(
                         $concept_fn(
                             &Concept::Value(value.clone()),
-                            TemporalJsonEncoding::ExactV2,
+                            ScalarJsonEncoding::CanonicalV2,
                         )
                         .expect("row concept")["value"],
                         serde_json::Value::String(expected.to_owned()),
@@ -4406,7 +4478,7 @@ mod tests {
                     assert_eq!(
                         $leaf_fn(
                             &Leaf::Concept(Concept::Value(value)),
-                            TemporalJsonEncoding::ExactV2,
+                            ScalarJsonEncoding::CanonicalV2,
                         )
                         .expect("document leaf"),
                         serde_json::Value::String(expected.to_owned()),
@@ -4416,7 +4488,7 @@ mod tests {
 
                 let year = Value::Duration(Duration::new(12, 0, 0));
                 assert_eq!(
-                    $concept_fn(&Concept::Value(year), TemporalJsonEncoding::DriverDisplay,)
+                    $concept_fn(&Concept::Value(year), ScalarJsonEncoding::DriverDisplay,)
                         .expect("row concept")["value"],
                     serde_json::json!("P1Y"),
                     "released conversion retains the upstream duration display",
@@ -4430,7 +4502,7 @@ mod tests {
                 assert_eq!(
                     $concept_fn(
                         &Concept::Value(datetime.clone()),
-                        TemporalJsonEncoding::ExactV2,
+                        ScalarJsonEncoding::CanonicalV2,
                     )
                     .expect("row concept")["value"],
                     serde_json::json!("2024-01-02T03:04:05.5"),
@@ -4439,18 +4511,15 @@ mod tests {
                 assert_eq!(
                     $leaf_fn(
                         &Leaf::Concept(Concept::Value(datetime.clone())),
-                        TemporalJsonEncoding::ExactV2,
+                        ScalarJsonEncoding::CanonicalV2,
                     )
                     .expect("document leaf"),
                     serde_json::json!("2024-01-02T03:04:05.5"),
                     "document evidence uses the same exact datetime bridge",
                 );
                 assert_eq!(
-                    $concept_fn(
-                        &Concept::Value(datetime),
-                        TemporalJsonEncoding::DriverDisplay,
-                    )
-                    .expect("row concept")["value"],
+                    $concept_fn(&Concept::Value(datetime), ScalarJsonEncoding::DriverDisplay,)
+                        .expect("row concept")["value"],
                     serde_json::json!("2024-01-02T03:04:05.500000000"),
                     "released conversion retains the upstream datetime display",
                 );
@@ -4487,7 +4556,7 @@ mod tests {
         let document = Node::List(vec![Node::Leaf(Some(Leaf::Empty)), Node::Leaf(None)]);
         let mut members = 0;
         let error =
-            document_node_to_json_b9(&document, &mut members, 1, TemporalJsonEncoding::ExactV2)
+            document_node_to_json_b9(&document, &mut members, 1, ScalarJsonEncoding::CanonicalV2)
                 .expect_err("the list exceeds its conversion budget");
         assert!(matches!(
             error,
@@ -4514,7 +4583,7 @@ mod tests {
             &document,
             &mut members,
             u64::MAX,
-            TemporalJsonEncoding::ExactV2,
+            ScalarJsonEncoding::CanonicalV2,
         )
         .expect_err("thing instances are not valid fetch-document leaves");
         assert!(matches!(
@@ -5780,5 +5849,47 @@ mod tests {
             "pinned band-9 driver version {PINNED_DRIVER_VERSION_B9} left protocol band 9; \
              review the gate expectations before accepting the bump"
         );
+    }
+
+    #[test]
+    fn materialize_runtime_answer_preserves_empty_kinds() {
+        let stats = |kind| RuntimeAnswerStats {
+            kind,
+            processed_items: 0,
+            response_bytes: 0,
+            stopped_early: false,
+        };
+        assert!(matches!(
+            super::materialize_runtime_answer(stats(RuntimeAnswerKind::Ok), Vec::new()),
+            QueryResult::Ok
+        ));
+        assert!(matches!(
+            super::materialize_runtime_answer(stats(RuntimeAnswerKind::Rows), Vec::new()),
+            QueryResult::Rows(values) if values.is_empty()
+        ));
+        assert!(matches!(
+            super::materialize_runtime_answer(stats(RuntimeAnswerKind::Documents), Vec::new()),
+            QueryResult::Documents(values) if values.is_empty()
+        ));
+    }
+
+    #[test]
+    fn canonical_decimal_text_normalizes_provider_display() {
+        assert_eq!(
+            super::canonical_decimal_text("001234.5600dec".into()).unwrap(),
+            "1234.56"
+        );
+        assert_eq!(
+            super::canonical_decimal_text("-0.000dec".into()).unwrap(),
+            "0"
+        );
+        assert_eq!(
+            super::canonical_decimal_text("-9223372036854775808dec".into()).unwrap(),
+            "-9223372036854775808"
+        );
+        assert!(matches!(
+            super::canonical_decimal_text("not-a-decimal".into()),
+            Err(RuntimeError::QueryExecution(message)) if message == "provider returned an unparseable decimal"
+        ));
     }
 }

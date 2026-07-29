@@ -397,6 +397,9 @@ fn adapt(
         MatchRequestAdaptation::LegacyRequired(reason) => panic!(
             "small adapter fixture unexpectedly requires the V1 resource fallback: {reason:?}"
         ),
+        MatchRequestAdaptation::NativeOnly => {
+            panic!("small adapter fixture unexpectedly declared a native-only operation")
+        }
     }
 }
 

@@ -1,9 +1,11 @@
 import { Entity, Relation, attr, field, role } from "@type-bridge/node";
 
 export class ContractName extends attr.String("contract-name") {}
+export class ContractAge extends attr.Integer("contract-age") {}
 
 export class ContractPerson extends Entity("contract-person", {
   name: field(ContractName),
+  age: field(ContractAge),
 }) {}
 
 export class ContractCompany extends Entity("contract-company", {

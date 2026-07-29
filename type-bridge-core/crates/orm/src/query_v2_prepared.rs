@@ -152,6 +152,16 @@ impl QueryAuthority {
         )
     }
 
+    /// Test whether this authority resolves to one exact semantic schema
+    /// fingerprint.
+    #[doc(hidden)]
+    pub fn matches_semantic_fingerprint(
+        &self,
+        fingerprint: &type_bridge_contract::schema_fingerprint::SemanticSchemaFingerprint,
+    ) -> bool {
+        self.resolved.semantic_fingerprint() == fingerprint
+    }
+
     fn from_declared_bytes_with_policy(
         bytes: &[u8],
         scope: &str,

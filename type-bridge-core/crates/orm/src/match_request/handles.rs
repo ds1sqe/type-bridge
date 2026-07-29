@@ -23,8 +23,8 @@ use super::ids::{
 use super::limits::{MAX_PREDICATE_DEPTH, MAX_PREDICATE_NODES, MAX_SELECTED_SLOTS};
 use super::model::{
     BindingPair, ComparisonOp, FetchShape, FetchSlot, MatchBinding, MatchExpr, MatchMode,
-    MatchOperation, MatchOrder, MatchPlan, MatchRequest, MissingOrder, NamedFetchSlot,
-    RowCardinality, SortDirection, ThingKind, Window,
+    MatchOperation, MatchOrder, MatchPlan, MatchRequest, MissingOrder, NamedFetchSlot, ReduceTerm,
+    Reduction, RowCardinality, SortDirection, ThingKind, Window,
 };
 use super::validation::{ValidatedMatchRequest, validate_match_request};
 
@@ -1185,6 +1185,66 @@ impl QueryHandle {
             lowered.plan,
             MatchOperation::ExistsBy { root },
         ))
+    }
+
+    /// Lower this lineage to an unvalidated typed reduction request.
+    pub fn reduce_by(
+        &self,
+        root: &BindingHandle,
+        group: Option<&BindingHandle>,
+        terms: &[(Reduction, Option<&FieldHandle>)],
+    ) -> Result<MatchRequest> {
+        let lowered = self.lower()?;
+        let root_id = self.require_attached(root, &lowered.binding_ids)?;
+        let group_id = group
+            .map(|group| self.require_attached(group, &lowered.binding_ids))
+            .transpose()?;
+        let mut reducers = Vec::with_capacity(terms.len());
+        for (reduction, input) in terms {
+            let input = input
+                .map(|field| {
+                    self.require_session(field.session_id())?;
+                    let binding = lowered
+                        .binding_ids
+                        .get(&field.binding_token())
+                        .copied()
+                        .ok_or_else(|| {
+                            handle_error(
+                                "unattached_binding",
+                                "reducer input binding is not attached to this query",
+                            )
+                        })?;
+                    Ok::<_, OrmError>(BoundFieldId {
+                        binding,
+                        field: field.field_id().clone(),
+                    })
+                })
+                .transpose()?;
+            reducers.push(ReduceTerm {
+                reduction: *reduction,
+                input,
+            });
+        }
+        Ok(MatchRequest::v1(
+            lowered.plan,
+            MatchOperation::ReduceBy {
+                root: root_id,
+                group: group_id,
+                reducers,
+            },
+        ))
+    }
+
+    /// Canonically validate one typed reduction terminal.
+    #[doc(hidden)]
+    pub fn validate_reduce_by(
+        &self,
+        root: &BindingHandle,
+        group: Option<&BindingHandle>,
+        terms: &[(Reduction, Option<&FieldHandle>)],
+    ) -> Result<ValidatedMatchRequest> {
+        let request = self.reduce_by(root, group, terms)?;
+        Ok(validate_match_request(&self.0.session.registry, request)?)
     }
 
     fn with_state(

@@ -1730,3 +1730,24 @@ fn aggregate_local_and_root_pattern_ceiling_is_atomic() {
         .finalize_rows(vec![root])
         .expect("exact aggregate ceiling remains valid");
 }
+
+#[test]
+fn reducer_spellings_cover_the_complete_canonical_vocabulary() {
+    use type_bridge_contract::query_plan::Reducer;
+    use type_bridge_orm::query_v2_builder::query_builder_reducer;
+    for (spelling, expected) in [
+        ("count", Reducer::Count),
+        ("max", Reducer::Max),
+        ("mean", Reducer::Mean),
+        ("median", Reducer::Median),
+        ("min", Reducer::Min),
+        ("std", Reducer::Std),
+        ("sum", Reducer::Sum),
+    ] {
+        assert_eq!(
+            query_builder_reducer(spelling).expect("canonical reducer spelling"),
+            expected,
+        );
+    }
+    assert!(query_builder_reducer("variance").is_err());
+}

@@ -85,11 +85,29 @@ All notable changes to TypeBridge will be documented in this file.
   other removal or calendar cutoff — there is no 3.0.0 removal plan;
   deployments retaining any scheduled surface can pin
   `type-bridge>=2,<2.1`.
-- **Rust V2 publication boundary** - the nine V2 semantic, migration,
-  projection, workspace, and CLI crates are first-party `2.0.0-rc.0`
+- **Public generated Rust application client** - `type-bridge` and generated
+  schema crates now expose owner-branded entity/relation CRUD, exact and
+  subtype reads, complete replacement, reusable write/read transactions,
+  typed expressions and reductions, selected/collected pages, bounded
+  reachability, and identical local/one-exchange remote materialization. The
+  generated crate has only one direct TypeBridge dependency and the complete
+  consumer contract is accepted on Rust 1.88.
+- **Rust V2 source/Git distribution boundary** - the internal V2 semantic,
+  migration, projection, workspace, and CLI crates remain first-party
   workspace packages with `publish = false`; they are not crates.io release
-  identities. The 2.0 release contract is Python/npm-only: the release gate
-  blocks Cargo publication and leaves the crates.io graph untouched.
+  identities. The public `type-bridge` package still depends on that
+  unpublished graph, so 2.0 distributes it from the exact release Git
+  revision instead of publishing a broken crates.io package. The release gate
+  blocks Cargo mutation and names the exact source/Git SDK in the closed
+  artifact set.
+- **Hardened server OCI distribution** -
+  `ghcr.io/ds1sqe/type-bridge-server:2.0.0` is built once for `linux/amd64`
+  and `linux/arm64` from digest-pinned bases with the locked V2-capable server.
+  Exact layouts run as UID/GID 10001 with a read-only root, no capabilities,
+  and no-new-privileges; acceptance covers V1 compatibility, authenticated V2,
+  and the external generated Rust application. Stable publication imports the
+  accepted manifests without rebuilding, verifies all aliases and digests,
+  and attaches keyless signatures, SPDX SBOMs, provenance, and scan evidence.
 - **Direct Python driver 3.12.1** - CPython 3.14 dependency markers, native
   artifact probes, and live compatibility cells now use the current 3.12.1
   Python driver patch; CPython 3.12–3.13 retains the released multi-line

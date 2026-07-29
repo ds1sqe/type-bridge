@@ -136,6 +136,11 @@ pub mod integration_test_support {
                 "query_v2_adapter_test_resource_envelope",
                 "the live V2 parity fixture cannot fit the canonical V2 artifact envelope",
             )),
+            MatchRequestAdaptation::NativeOnly => Err(failure(
+                type_bridge_contract::diagnostic::DiagnosticCategory::UnsupportedCapability,
+                "query_v2_adapter_test_native_only",
+                "the live V2 parity fixture has no V2 spelling for this operation",
+            )),
         }
     }
 }
@@ -147,8 +152,9 @@ pub use descriptor::{
     TypeDescriptorRef,
 };
 pub use dynamic::{
-    DynamicAggregate, DynamicAttributeMap, DynamicComparisonOp, DynamicEntityRow, DynamicExpr,
-    DynamicRelationRow, DynamicRolePlayer, DynamicRolePlayerInput, DynamicSort,
+    DynamicAggregate, DynamicAttributeMap, DynamicComparisonOp, DynamicEntityIdentity,
+    DynamicEntityRow, DynamicExpr, DynamicRelationIdentity, DynamicRelationRow, DynamicRolePlayer,
+    DynamicRolePlayerInput, DynamicSort,
 };
 pub use entity::{Annotation, OwnedAttributeInfo, TypeBridgeEntity};
 pub use error::{ClassifiedCommitError, CommitFailureCertainty, OrmError, Result};

@@ -853,6 +853,20 @@ export function nativeBindingHandle<Model extends object>(
   return boundVariableState(variable).handle;
 }
 
+/** @internal Extract the native field retained by one owner-aware bound field. */
+export function nativeBoundFieldHandle<Attr extends AttributeClass>(
+  field: BoundField<Attr>,
+): NativeFieldHandle {
+  return boundFieldState(field).handle;
+}
+
+/** @internal Inspect the canonical value category retained by a bound field. */
+export function boundFieldValueCategory<Attr extends AttributeClass>(
+  field: BoundField<Attr>,
+): AttributeValueCategory<Attr> {
+  return boundFieldState(field).attrType.valueType as AttributeValueCategory<Attr>;
+}
+
 /** @internal Inspect one owner-aware role reference during predicate construction. */
 export function queryRoleReference(
   reference: object,
