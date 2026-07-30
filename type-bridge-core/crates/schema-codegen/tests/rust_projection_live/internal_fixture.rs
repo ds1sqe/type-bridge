@@ -143,6 +143,22 @@ async fn main() {
     db.execute_raw(PROVIDER_SCHEMA, TxType::Schema)
         .await
         .expect("shared TypeDB 3.12.1 provider schema defines");
+    let exported_schema = db
+        .schema_text()
+        .await
+        .expect("TypeDB 3.12.1 provider schema exports");
+    for annotation in [
+        r#"@doc("cyclic relation player")"#,
+        r#"@doc("membership player")"#,
+        r#"@doc("employment player")"#,
+        r#"@doc("robot membership player")"#,
+    ] {
+        assert!(
+            exported_schema.contains(annotation),
+            "exported TypeDB 3.12.1 schema omitted {annotation}:\n{exported_schema}"
+        );
+    }
+    println!("TypeDB 3.12 annotation export: passed");
 
     let person_manager = DynamicEntityManager::new(
         &db,

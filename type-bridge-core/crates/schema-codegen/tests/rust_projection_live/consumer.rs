@@ -12,11 +12,10 @@ use type_bridge_generated_schema::{
     ContractorCode, ContractorCreate, Date, DateTime, DateTimeTz, Decimal, Duration, Employee,
     EmployeeCreate, EmployeeFamily, Employment, EmploymentCreate, EmploymentType, Event,
     EventCreate, EventType, Identifier, Manager, ManagerCreate, ManagerNote, Membership,
-    MembershipFamily, MembershipType, NetworkLink, NetworkLinkCreate,
-    NetworkLinkDestinationPlayer, NetworkLinkOriginPlayer, NetworkLinkType, Nickname, Party,
-    PartyFamily, PartyName, Person, PersonCreate, PersonRef, PersonType, Rank, SCHEMA, Score, ValBool,
-    ValConstrained, ValDate, ValDatetime, ValDatetimeTz, ValDecimal, ValDouble, ValDuration,
-    plays_event_container_item,
+    MembershipFamily, MembershipType, NetworkLink, NetworkLinkCreate, NetworkLinkDestinationPlayer,
+    NetworkLinkOriginPlayer, NetworkLinkType, Nickname, Party, PartyFamily, PartyName, Person,
+    PersonCreate, PersonRef, PersonType, Rank, SCHEMA, Score, ValBool, ValConstrained, ValDate,
+    ValDatetime, ValDatetimeTz, ValDecimal, ValDouble, ValDuration, plays_event_container_item,
 };
 
 #[derive(type_bridge::SelectedRow)]
@@ -118,9 +117,16 @@ fn connection_options() -> ConnectionOptions {
     }
 }
 
-#[tokio::main]
-async fn main() {
-    // 1. Verify schema package marker and generated tokens
+async fn database() -> Database<AppSchema> {
+    Database::connect(connection_options())
+        .await
+        .expect("live projection database connects")
+        .with_schema(SCHEMA)
+        .expect("schema binding handshake succeeds")
+}
+
+#[tokio::test]
+async fn generated_schema_handshake_and_tokens() {
     assert_eq!(
         PersonType::identifier.owns_id_json(),
         r#"{"attribute":"identifier","owner":{"kind":"entity","label":"person"}}"#
@@ -146,23 +152,20 @@ async fn main() {
         r#"{"player":{"kind":"relation","label":"event"},"role":{"declaring_relation":"container","label":"item"}}"#
     );
 
-    // 2. Connect to Database using public client builder and perform verified type-branded schema handshake
-    let options = connection_options();
-    let db: Database<AppSchema> = Database::connect(options)
-        .await
-        .expect("live projection database connects")
-        .with_schema(SCHEMA)
-        .expect("schema binding handshake succeeds");
-
+    let db = database().await;
     assert!(db.is_schema_bound());
+    println!("public generated schema handshake and tokens: passed");
+}
 
+#[tokio::test]
+async fn generated_entity_crud_batches_and_scalar_domains() {
+    let db = database().await;
     let person_baseline = db
         .entities::<Person>()
         .count()
         .await
         .expect("person baseline count");
 
-    // 3. Verify generated struct/create model construction
     let score = Score::new(42i64).expect("score is valid");
     let v_double = ValDouble::new(CanonicalDouble::try_new(3.14).expect("double is valid"))
         .expect("val_double is valid");
@@ -506,7 +509,12 @@ async fn main() {
             .expect("person cleanup count"),
         person_baseline
     );
+    println!("public generated entity CRUD, batches, and scalar domains: passed");
+}
 
+#[tokio::test]
+async fn generated_inheritance_exact_and_subtype_reads() {
+    let db = database().await;
     let employee_baseline = db
         .entities::<Employee>()
         .count()
@@ -864,7 +872,8 @@ async fn main() {
         let party_name = party_binding.field(type_bridge_generated_schema::PartyType::party_name);
         let employee_name =
             employee_binding.field(type_bridge_generated_schema::PartyType::party_name);
-        let employee_rank = employee_binding.field(type_bridge_generated_schema::EmployeeType::rank);
+        let employee_rank =
+            employee_binding.field(type_bridge_generated_schema::EmployeeType::rank);
 
         let manager_name = PartyName::new("manager").expect("manager query wrapper");
         let manager_predicate = party_name.eq(manager_name.clone())
@@ -898,11 +907,7 @@ async fn main() {
             .expect("party first row");
         assert_eq!(first.party_name().value(), "contractor");
         let page = party_query
-            .rows(
-                RowsOptions::new(1)
-                    .offset(1)
-                    .order_by(party_name.asc()),
-            )
+            .rows(RowsOptions::new(1).offset(1).order_by(party_name.asc()))
             .await
             .expect("party ordered page");
         assert_eq!(page.len(), 1);
@@ -979,8 +984,16 @@ async fn main() {
         party_baseline
     );
     println!("F2B-03 public generated entity lifecycle: passed");
+}
 
-    // F2C-03: generated relation lifecycle against the live provider.
+#[tokio::test]
+async fn generated_relation_query_and_remote_lifecycle() {
+    let db = database().await;
+    let person_baseline = db
+        .entities::<Person>()
+        .count()
+        .await
+        .expect("relation person baseline count");
     let employment_baseline = db
         .relations::<Employment>()
         .count()
@@ -1198,8 +1211,7 @@ async fn main() {
             .where_(
                 reachable
                     & source_identifier.eq(Identifier::new("p-200").expect("source key"))
-                    & target_identifier
-                        .starts_with(Text::new("p-2").expect("target prefix")),
+                    & target_identifier.starts_with(Text::new("p-2").expect("target prefix")),
             )
             .expect("F5 reachability filters")
             .rows(RowsOptions::new(10).order_by(target_identifier.asc()))
@@ -1301,10 +1313,9 @@ async fn main() {
         employment_baseline + 1
     );
 
-    let key_reference = PersonRef::from_key(
-        Identifier::new("p-201".to_owned()).expect("key reference identifier"),
-    )
-    .expect("typed key reference");
+    let key_reference =
+        PersonRef::from_key(Identifier::new("p-201".to_owned()).expect("key reference identifier"))
+            .expect("typed key reference");
     let employment_batch = db
         .relations::<Employment>()
         .insert_many(vec![
@@ -1358,21 +1369,17 @@ async fn main() {
     {
         let mut session = db.query().expect("query session");
         let person_binding = session.exact::<Person>().expect("person binding");
-        let employment_binding = session
-            .exact::<Employment>()
-            .expect("employment binding");
+        let employment_binding = session.exact::<Employment>().expect("employment binding");
         let identifier = person_binding.field(PersonType::identifier);
         let score = person_binding.field(PersonType::score);
         let employee_role = employment_binding.role(EmploymentType::employee);
 
-        let worker_predicate = identifier
-            .starts_with(Text::new("p-2").expect("worker prefix"))
+        let worker_predicate = identifier.starts_with(Text::new("p-2").expect("worker prefix"))
             & identifier.contains(Text::new("p-20").expect("worker substring"))
             & identifier.regex(Regex::new("^p-20[0-2]$").expect("worker regex"))
             & score.ge(70_i64)
             & score.lt(71_i64)
-            & !(identifier.eq(Identifier::new("p-999").expect("absent worker"))
-                | score.lt(70_i64));
+            & !(identifier.eq(Identifier::new("p-999").expect("absent worker")) | score.lt(70_i64));
         let worker_query = session
             .query(person_binding)
             .expect("worker query")
@@ -1382,11 +1389,7 @@ async fn main() {
         assert!(worker_query.exists().await.expect("worker exists"));
 
         let workers = worker_query
-            .rows(
-                RowsOptions::new(2)
-                    .offset(1)
-                    .order_by(identifier.asc()),
-            )
+            .rows(RowsOptions::new(2).offset(1).order_by(identifier.asc()))
             .await
             .expect("worker ordered page");
         assert_eq!(
@@ -1435,7 +1438,18 @@ async fn main() {
             ))
             .await
             .expect("worker aggregate");
-        assert_eq!(stats, (3, 210, Some(70), Some(70), Some(70.0), Some(70.0), Some(0.0)));
+        assert_eq!(
+            stats,
+            (
+                3,
+                210,
+                Some(70),
+                Some(70),
+                Some(70.0),
+                Some(70.0),
+                Some(0.0)
+            )
+        );
 
         let grouped = session
             .query(employment_binding)
@@ -1476,8 +1490,7 @@ async fn main() {
             .distinct()
             .order_by(member_identifier.asc())
             .expect("F4 local collection order");
-        let graph =
-            PersonGraph::select(person_binding, members).expect("F4 local selected graph");
+        let graph = PersonGraph::select(person_binding, members).expect("F4 local selected graph");
         let query = session
             .query(graph)
             .expect("F4 local graph query")
@@ -1501,12 +1514,7 @@ async fn main() {
         let observed = page
             .items()
             .iter()
-            .map(|row| {
-                (
-                    row.person.identifier().value().clone(),
-                    row.members.len(),
-                )
-            })
+            .map(|row| (row.person.identifier().value().clone(), row.members.len()))
             .collect::<Vec<_>>();
         assert_eq!(
             observed,
@@ -1523,9 +1531,7 @@ async fn main() {
         let query = session
             .query(person_binding)
             .expect("F4 read query")
-            .where_(
-                identifier.starts_with(Text::new("p-2").expect("F4 read worker prefix")),
-            )
+            .where_(identifier.starts_with(Text::new("p-2").expect("F4 read worker prefix")))
             .expect("F4 read predicate");
         assert_eq!(query.count().await.expect("F4 first read count"), 4);
         assert!(query.exists().await.expect("F4 read exists"));
@@ -1536,22 +1542,18 @@ async fn main() {
     }
 
     let remote_url = env::var("TYPE_BRIDGE_REMOTE_URL").expect("F4 remote server URL");
-    let remote: RemoteDatabase<AppSchema> =
-        RemoteDatabase::connect(RemoteConnectionOptions::new(
-            "rust-projection-live",
-            "typedb-3.12.1/v1",
-            RemoteQueryLimits::new(100, 8 << 20, 1000, 1000, 1000, 1000)
-                .deadline_ms(30_000),
-            HttpTransport::new(remote_url),
-        ))
-        .await
-        .expect("F4 remote database connects")
-        .with_schema(SCHEMA)
-        .expect("F4 remote schema authority binds");
+    let remote: RemoteDatabase<AppSchema> = RemoteDatabase::connect(RemoteConnectionOptions::new(
+        "rust-projection-live",
+        "typedb-3.12.1/v1",
+        RemoteQueryLimits::new(100, 8 << 20, 1000, 1000, 1000, 1000).deadline_ms(30_000),
+        HttpTransport::new(remote_url),
+    ))
+    .await
+    .expect("F4 remote database connects")
+    .with_schema(SCHEMA)
+    .expect("F4 remote schema authority binds");
     let mut session = remote.query().expect("F4 remote query session");
-    let person_binding = session
-        .exact::<Person>()
-        .expect("F4 remote person binding");
+    let person_binding = session.exact::<Person>().expect("F4 remote person binding");
     let member_binding = session.exact::<Person>().expect("F4 remote member binding");
     let identifier = person_binding.field(PersonType::identifier);
     let member_identifier = member_binding.field(PersonType::identifier);
@@ -1594,12 +1596,7 @@ async fn main() {
     let observed_page = remote_page
         .items()
         .iter()
-        .map(|row| {
-            (
-                row.person.identifier().value().clone(),
-                row.members.len(),
-            )
-        })
+        .map(|row| (row.person.identifier().value().clone(), row.members.len()))
         .collect::<Vec<_>>();
     assert_eq!(remote_page.total(), Some(4));
     assert_eq!(observed_page, expected_page);
@@ -1652,9 +1649,7 @@ async fn main() {
     let event_iid = event.iid().to_owned();
     let container = db
         .relations::<Container>()
-        .insert(
-            ContainerCreate::new(vec![event.reference()]).expect("container create"),
-        )
+        .insert(ContainerCreate::new(vec![event.reference()]).expect("container create"))
         .await
         .expect("container insert with a relation player");
     let container_iid = container.iid().to_owned();
@@ -1734,8 +1729,11 @@ async fn main() {
         person_baseline
     );
     println!("F2C-03 public generated relation lifecycle: passed");
+}
 
-    // F2D: client-owned write transaction lifecycle.
+#[tokio::test]
+async fn generated_write_transaction_commit_rollback_and_drop() {
+    let db = database().await;
     let transaction_person_baseline = db
         .entities::<Person>()
         .count()

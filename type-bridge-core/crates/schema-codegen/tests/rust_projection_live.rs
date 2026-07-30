@@ -17,6 +17,13 @@ const SCHEMA: &str = include_str!("acceptance/schema.yaml");
 const PROVIDER_SCHEMA: &str = include_str!("acceptance/provider-3.12.1.tql");
 const INTERNAL_FIXTURE: &str = include_str!("rust_projection_live/internal_fixture.rs");
 const CONSUMER: &str = include_str!("rust_projection_live/consumer.rs");
+const CONSUMER_TESTS: [&str; 5] = [
+    "generated_schema_handshake_and_tokens",
+    "generated_entity_crud_batches_and_scalar_domains",
+    "generated_inheritance_exact_and_subtype_reads",
+    "generated_relation_query_and_remote_lifecycle",
+    "generated_write_transaction_commit_rollback_and_drop",
+];
 
 struct Stage(PathBuf);
 
@@ -132,6 +139,21 @@ fn manifest_path(path: &Path) -> String {
 }
 
 #[test]
+fn external_consumer_remains_a_focused_public_api_suite() {
+    assert!(!CONSUMER.contains("#[tokio::main]"));
+    assert_eq!(
+        CONSUMER.matches("#[tokio::test]").count(),
+        CONSUMER_TESTS.len()
+    );
+    for test in CONSUMER_TESTS {
+        assert!(
+            CONSUMER.contains(&format!("async fn {test}()")),
+            "external consumer test is missing: {test}"
+        );
+    }
+}
+
+#[test]
 #[ignore = "requires isolated TypeDB 3.12.1"]
 fn generated_rust_projection_round_trips_exact_live_models() {
     let documents = SchemaDocumentSet::parse([(
@@ -179,7 +201,7 @@ fn generated_rust_projection_round_trips_exact_live_models() {
     let cargo = env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let consumer = stage.path().join("consumer");
     fs::create_dir_all(consumer.join("src")).expect("consumer staging directory is created");
-    fs::write(consumer.join("src/main.rs"), CONSUMER).expect("consumer source is staged");
+    fs::write(consumer.join("src/lib.rs"), CONSUMER).expect("consumer source is staged");
     let preflight_manifest = format!(
         "[package]\nname=\"type-bridge-rust-projection-live-consumer\"\nversion=\"0.0.0\"\nedition=\"2024\"\npublish=false\n[dependencies]\ntype-bridge-generated-schema={{path=\"{}\"}}\ntype-bridge={{path=\"{}\"}}\ntokio={{version=\"1\",features=[\"macros\",\"rt-multi-thread\"]}}\nreqwest={{version=\"0.12\",default-features=false,features=[\"rustls-tls\"]}}\n[patch.crates-io]\ntype-bridge={{path=\"{}\"}}\n[workspace]\n",
         manifest_path(&generated),
@@ -228,7 +250,7 @@ fn generated_rust_projection_round_trips_exact_live_models() {
     );
     assert!(!consumer_manifest_text.contains("test-harness"));
     let consumer_source =
-        fs::read_to_string(consumer.join("src/main.rs")).expect("consumer source is readable");
+        fs::read_to_string(consumer.join("src/lib.rs")).expect("consumer source is readable");
     for forbidden in [
         "Dynamic",
         "AttributeValue",
@@ -266,7 +288,7 @@ fn generated_rust_projection_round_trips_exact_live_models() {
         );
     }
     let consumer_check = Command::new(&cargo)
-        .args(["check", "--offline", "--manifest-path"])
+        .args(["check", "--tests", "--offline", "--manifest-path"])
         .arg(&consumer_manifest_path)
         .env("CARGO_TARGET_DIR", &target_dir)
         .output()
@@ -328,6 +350,10 @@ type-bridge = {{ path = "{}" }}
     assert!(
         String::from_utf8_lossy(&fixture_output.stdout)
             .contains("F2B-03 internal dynamic regression: passed")
+    );
+    assert!(
+        String::from_utf8_lossy(&fixture_output.stdout)
+            .contains("TypeDB 3.12 annotation export: passed")
     );
     println!("F2B-03 internal dynamic regression: passed");
 
@@ -471,10 +497,11 @@ type-bridge = {{ path = "{}" }}
     server.wait_until_ready(server_port);
 
     let consumer_output = Command::new(&cargo)
-        .arg("run")
+        .arg("test")
         .arg("--quiet")
         .arg("--manifest-path")
         .arg(&consumer_manifest_path)
+        .args(["--", "--test-threads=1", "--nocapture"])
         .env("CARGO_TARGET_DIR", &target_dir)
         .env(
             "TYPE_BRIDGE_REMOTE_URL",
@@ -490,6 +517,12 @@ type-bridge = {{ path = "{}" }}
         String::from_utf8_lossy(&consumer_output.stderr),
     );
     let consumer_stdout = String::from_utf8_lossy(&consumer_output.stdout);
+    assert!(consumer_stdout.contains("test result: ok. 5 passed; 0 failed"));
+    assert!(consumer_stdout.contains("public generated schema handshake and tokens: passed"));
+    assert!(
+        consumer_stdout
+            .contains("public generated entity CRUD, batches, and scalar domains: passed")
+    );
     assert!(consumer_stdout.contains("F2B-03 public generated entity lifecycle: passed"));
     assert!(consumer_stdout.contains("F2C-03 public generated relation lifecycle: passed"));
     assert!(consumer_stdout.contains("F2D public write transaction lifecycle: passed"));

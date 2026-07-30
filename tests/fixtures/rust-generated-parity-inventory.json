@@ -34,7 +34,7 @@
       "rust": [
         {
           "path": "type-bridge-core/crates/schema-codegen/tests/rust_projection_live/consumer.rs",
-          "anchors": [".insert_many(vec![", ".put_many(vec![", "F2B-03 public generated entity lifecycle: passed"]
+          "anchors": ["generated_entity_crud_batches_and_scalar_domains", ".insert_many(vec![", ".put_many(vec![", "public generated entity CRUD, batches, and scalar domains: passed"]
         }
       ],
       "release_exclusion": null
@@ -58,7 +58,7 @@
       "rust": [
         {
           "path": "type-bridge-core/crates/schema-codegen/tests/rust_projection_live/consumer.rs",
-          "anchors": ["employee subtype count", "party subtype count", "F2B-03 public generated entity lifecycle: passed"]
+          "anchors": ["generated_inheritance_exact_and_subtype_reads", "employee subtype count", "party subtype count", "F2B-03 public generated entity lifecycle: passed"]
         }
       ],
       "release_exclusion": null
@@ -90,7 +90,7 @@
       "rust": [
         {
           "path": "type-bridge-core/crates/schema-codegen/tests/rust_projection_live/consumer.rs",
-          "anchors": ["ValBool::new", "ValDatetimeTz::new", "ValDecimal::new", "ValDuration::new", "optional absence read"]
+          "anchors": ["generated_entity_crud_batches_and_scalar_domains", "ValBool::new", "ValDatetimeTz::new", "ValDecimal::new", "ValDuration::new", "optional absence read"]
         }
       ],
       "release_exclusion": null
@@ -118,7 +118,7 @@
       "rust": [
         {
           "path": "type-bridge-core/crates/schema-codegen/tests/rust_projection_live/consumer.rs",
-          "anchors": ["keyed network put hit", "keyed network put miss", "network update replaces attributes and roles", "container insert with a relation player", "F5 public relation parity and bounded reachability: passed"]
+          "anchors": ["generated_relation_query_and_remote_lifecycle", "keyed network put hit", "keyed network put miss", "network update replaces attributes and roles", "container insert with a relation player", "F5 public relation parity and bounded reachability: passed"]
         }
       ],
       "release_exclusion": null
@@ -146,7 +146,7 @@
       "rust": [
         {
           "path": "type-bridge-core/crates/schema-codegen/tests/rust_projection_live/consumer.rs",
-          "anchors": ["F3-06A", ".first(party_name.asc())", "party query exists", "F3 public generated query lifecycle: passed"]
+          "anchors": ["generated_relation_query_and_remote_lifecycle", "F3-06A", ".first(party_name.asc())", "party query exists", "F3 public generated query lifecycle: passed"]
         }
       ],
       "release_exclusion": null
@@ -170,7 +170,7 @@
       "rust": [
         {
           "path": "type-bridge-core/crates/schema-codegen/tests/rust_projection_live/consumer.rs",
-          "anchors": ["aggregate::count()", "score.mean()", "role-grouped"]
+          "anchors": ["generated_relation_query_and_remote_lifecycle", "aggregate::count()", "score.mean()", "role-grouped"]
         }
       ],
       "release_exclusion": null
@@ -194,7 +194,7 @@
       "rust": [
         {
           "path": "type-bridge-core/crates/schema-codegen/tests/rust_projection_live/consumer.rs",
-          "anchors": ["PersonGraph::select", "F4 local collected page", "F4 public selected/read/remote lifecycle: passed"]
+          "anchors": ["generated_relation_query_and_remote_lifecycle", "PersonGraph::select", "F4 local collected page", "F4 public selected/read/remote lifecycle: passed"]
         }
       ],
       "release_exclusion": null
@@ -222,7 +222,7 @@
         },
         {
           "path": "type-bridge-core/crates/schema-codegen/tests/rust_projection_live/consumer.rs",
-          "anchors": ["F5 bounded reachability predicate", "F5 cycle exclusion count", "F5 cycle inclusion exists", "vec![\"p-201\", \"p-202\", \"p-203\"]"]
+          "anchors": ["generated_relation_query_and_remote_lifecycle", "F5 bounded reachability predicate", "F5 cycle exclusion count", "F5 cycle inclusion exists", "vec![\"p-201\", \"p-202\", \"p-203\"]"]
         }
       ],
       "release_exclusion": null
@@ -250,7 +250,7 @@
       "rust": [
         {
           "path": "type-bridge-core/crates/schema-codegen/tests/rust_projection_live/consumer.rs",
-          "anchors": ["F2D public write transaction lifecycle: passed", "F4 second read count", "F4 read transaction closes"]
+          "anchors": ["generated_write_transaction_commit_rollback_and_drop", "F2D public write transaction lifecycle: passed", "F4 second read count", "F4 read transaction closes"]
         }
       ],
       "release_exclusion": null
@@ -274,7 +274,7 @@
       "rust": [
         {
           "path": "type-bridge-core/crates/schema-codegen/tests/rust_projection_live/consumer.rs",
-          "anchors": ["RemoteDatabase<AppSchema>", "F4 remote distinct root count", "assert_eq!(observed_page, expected_page)"]
+          "anchors": ["generated_relation_query_and_remote_lifecycle", "RemoteDatabase<AppSchema>", "F4 remote distinct root count", "assert_eq!(observed_page, expected_page)"]
         }
       ],
       "release_exclusion": null
@@ -326,7 +326,7 @@
         },
         {
           "path": "type-bridge-core/crates/schema-codegen/tests/rust_projection_live.rs",
-          "anchors": ["type-bridge-generated-schema={{path=", "dependency-isolated client consumer starts"]
+          "anchors": ["external_consumer_remains_a_focused_public_api_suite", "type-bridge-generated-schema={{path=", "dependency-isolated client consumer starts"]
         }
       ],
       "release_exclusion": null
