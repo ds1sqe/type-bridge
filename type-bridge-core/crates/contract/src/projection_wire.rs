@@ -461,6 +461,7 @@ impl MultiplicityWire {
 #[serde(deny_unknown_fields)]
 struct FieldTokenWire {
     id: OwnsFactIdWire,
+    declaring_id: OwnsFactIdWire,
     target_name: String,
     multiplicity: MultiplicityWire,
     key: bool,
@@ -470,8 +471,11 @@ struct FieldTokenWire {
 
 impl FieldTokenWire {
     fn rebuild(self, target: BindingTarget) -> Result<FieldTokenProjection, Diagnostic> {
+        let id = self.id.rebuild()?;
+        let declaring_id = self.declaring_id.rebuild()?;
         FieldTokenProjection::new(
-            self.id.rebuild()?,
+            id,
+            declaring_id,
             target_name(target, self.target_name)?,
             self.multiplicity.rebuild()?,
             self.key,
@@ -784,6 +788,7 @@ impl CompleteReadWire {
 #[serde(rename_all = "snake_case")]
 enum ReferenceConstructionPolicyWire {
     IidOnly,
+    KeyFallback,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -806,10 +811,16 @@ impl ReferenceReadWire {
             .map(OwnsFactIdWire::rebuild)
             .collect::<Result<_, _>>()?;
         let projection = ReferenceReadProjection::new(target_name, key_fields)?;
-        if projection.construction_policy() != ReferenceConstructionPolicy::IidOnly {
+        let expected_policy = match self.construction_policy {
+            ReferenceConstructionPolicyWire::IidOnly => ReferenceConstructionPolicy::IidOnly,
+            ReferenceConstructionPolicyWire::KeyFallback => {
+                ReferenceConstructionPolicy::KeyFallback
+            }
+        };
+        if projection.construction_policy() != expected_policy {
             return Err(invalid(
                 "invalid_reference_construction_policy",
-                "reference construction policy is unsupported",
+                "reference construction policy wire mismatch",
             ));
         }
         Ok(projection)

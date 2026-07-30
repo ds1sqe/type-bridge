@@ -4,6 +4,7 @@ use type_bridge_contract::diagnostic::Diagnostic;
 use type_bridge_contract::projection::{
     BindingTarget, CodeResourceDigest, ProjectionConfig, ProjectionHandler, RuntimeProjection,
 };
+use type_bridge_contract::schema::{DeclaredSchema, encode_declared_schema};
 
 use crate::{GeneratedPackage, invalid};
 
@@ -13,7 +14,7 @@ const RUNTIME_SOURCE: &[u8] = include_bytes!("runtime.rs");
 const CARGO_TOML_ID: &str = "typebridge.generator.rust.cargo-toml";
 const RUNTIME_SOURCE_ID: &str = "typebridge.generator.rust.runtime-source";
 
-/// Version-one dependency-free Rust crate emitter.
+/// Split-YAML Rust client schema crate emitter.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RustEmitter;
 
@@ -54,6 +55,29 @@ impl RustEmitter {
                 "projection target, config, handler, or resource evidence does not match this emitter",
             ));
         }
-        render::render(projection, CARGO_TOML, RUNTIME_SOURCE)
+        render::render(projection, CARGO_TOML, RUNTIME_SOURCE, None)
+    }
+
+    /// Emit a Rust package carrying the canonical declared schema required by
+    /// the authenticated remote model-query authority.
+    pub fn emit_with_declared_schema(
+        &self,
+        projection: &RuntimeProjection,
+        declared: &DeclaredSchema,
+    ) -> Result<GeneratedPackage, Diagnostic> {
+        let handlers = self.generator_handlers();
+        let resources = self.code_resources()?;
+        if projection.target() != BindingTarget::Rust
+            || projection.config() != &ProjectionConfig::rust()
+            || projection.generator_handlers() != handlers
+            || projection.code_resources() != resources
+        {
+            return Err(invalid(
+                "rust_emitter_evidence_mismatch",
+                "projection target, config, handler, or resource evidence does not match this emitter",
+            ));
+        }
+        let declared = encode_declared_schema(declared)?;
+        render::render(projection, CARGO_TOML, RUNTIME_SOURCE, Some(&declared))
     }
 }

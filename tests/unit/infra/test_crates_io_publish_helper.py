@@ -494,7 +494,7 @@ def test_cutoff_state_is_closed_to_the_first_graph_crate(tmp_path: Path) -> None
 def test_python_npm_release_workflow_does_not_invoke_the_cargo_helper() -> None:
     workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
 
-    assert "--artifact-contract python-npm-only" in workflow
+    assert "--artifact-contract source-git-server-oci" in workflow
     assert PUBLISH_HELPER.name not in workflow
     assert "--cutoff-state" not in workflow
     assert "cargo publish" not in workflow

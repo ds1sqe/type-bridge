@@ -45,15 +45,34 @@ impl DescriptorFingerprintRoot {
 /// The registry is intentionally standalone: it has no database, transaction,
 /// manager, Python, or TypeScript dependency. Bindings normalize their metadata
 /// into descriptors before registration.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum MatchExecutionAuthority {
+    #[default]
+    ReleasedAdapter,
+    InstalledProjectionNative,
+}
+
 #[derive(Debug, Default)]
 pub struct DescriptorRegistry {
     descriptors: RwLock<HashMap<String, TypeDescriptorRef>>,
+    match_execution_authority: MatchExecutionAuthority,
 }
 
 impl DescriptorRegistry {
     /// Create an empty registry.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub(crate) fn for_installed_projection() -> Self {
+        Self {
+            descriptors: RwLock::new(HashMap::new()),
+            match_execution_authority: MatchExecutionAuthority::InstalledProjectionNative,
+        }
+    }
+
+    pub(crate) fn uses_installed_projection_native_execution(&self) -> bool {
+        self.match_execution_authority == MatchExecutionAuthority::InstalledProjectionNative
     }
 
     /// Register an entity descriptor.
@@ -181,7 +200,10 @@ impl DescriptorRegistry {
     #[doc(hidden)]
     pub fn owned_registry_snapshot(&self) -> Result<Self> {
         let descriptors = self.owned_snapshot()?;
-        let snapshot = Self::new();
+        let snapshot = match self.match_execution_authority {
+            MatchExecutionAuthority::ReleasedAdapter => Self::new(),
+            MatchExecutionAuthority::InstalledProjectionNative => Self::for_installed_projection(),
+        };
         for descriptor in descriptors.into_values() {
             match descriptor {
                 TypeDescriptor::Entity(entity) => {
@@ -786,5 +808,20 @@ fn lock_error<T>(_: std::sync::PoisonError<T>) -> OrmError {
     OrmError::DescriptorValidation {
         type_name: "<registry>".into(),
         message: "descriptor registry lock is poisoned".into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn installed_projection_execution_authority_survives_owned_snapshot() {
+        let registry = DescriptorRegistry::for_installed_projection();
+        let snapshot = registry.owned_registry_snapshot().unwrap();
+
+        assert!(registry.uses_installed_projection_native_execution());
+        assert!(snapshot.uses_installed_projection_native_execution());
+        assert!(!DescriptorRegistry::new().uses_installed_projection_native_execution());
     }
 }

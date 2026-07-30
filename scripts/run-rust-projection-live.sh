@@ -61,6 +61,7 @@ fi
 TYPEDB_ADDRESS="127.0.0.1:$typedb_port" \
 TYPEDB_HTTP_PORT="$typedb_http_port" \
 TYPE_BRIDGE_RUST_PROJECTION_INTG_DATABASE="type_bridge_rust_projection_live_${$}" \
+ACCEPTANCE_TARGET_DIR="$ROOT_DIR/type-bridge-core/target/tmp_projection_live_target" \
 cargo test --manifest-path "$ROOT_DIR/type-bridge-core/Cargo.toml" \
     -p type-bridge-schema-codegen --test rust_projection_live \
     -- --ignored --nocapture

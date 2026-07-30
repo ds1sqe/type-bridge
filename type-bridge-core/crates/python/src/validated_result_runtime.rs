@@ -11,8 +11,8 @@ use pyo3::prelude::*;
 use pythonize::pythonize;
 use type_bridge_orm::{
     AttributeValue, DescriptorId, DescriptorRegistry, FetchShape, HydratedAttribute, HydratedRole,
-    HydratedRolePlayer, HydratedThing, MatchOperation, MatchResult, MatchRow, SlotValue, ThingKind,
-    ValidatedMatchRequest, ValidatedMatchResult, Window,
+    HydratedRolePlayer, HydratedThing, MatchOperation, MatchResult, MatchRow, ReducedValue,
+    ReductionRow, SlotValue, ThingKind, ValidatedMatchRequest, ValidatedMatchResult, Window,
 };
 
 use crate::match_runtime::py_match_error;
@@ -101,6 +101,35 @@ impl ValidatedResultProof {
         }
     }
 
+    fn reduction(&self) -> PyResult<&[ReductionRow]> {
+        match (&self.request.request().operation, self.result()?) {
+            (
+                MatchOperation::ReduceBy {
+                    root: expected_root,
+                    group: expected_group,
+                    ..
+                },
+                MatchResult::Reduction { root, group, rows },
+            ) if root == expected_root && group == expected_group => Ok(rows),
+            _ => Err(access_error(
+                "validated reduction handle contains a non-reduction or foreign result",
+            )),
+        }
+    }
+
+    fn reduction_row(&self, index: usize) -> PyResult<&ReductionRow> {
+        self.reduction()?
+            .get(index)
+            .ok_or_else(|| index_error("reduction row", index))
+    }
+
+    fn reduced_value(&self, row: usize, value: usize) -> PyResult<&ReducedValue> {
+        self.reduction_row(row)?
+            .values()
+            .get(value)
+            .ok_or_else(|| index_error("reduction value", value))
+    }
+
     fn shape(&self) -> PyResult<&FetchShape> {
         match &self.request.request().operation {
             MatchOperation::FetchRows { output, .. } | MatchOperation::PageBy { output, .. } => {
@@ -172,12 +201,22 @@ impl ValidatedResultProof {
     }
 
     fn thing(&self, path: ThingPath) -> PyResult<&HydratedThing> {
-        match self.slot(path.slot)? {
-            SlotValue::One(thing) if path.thing == 0 => Ok(thing),
-            SlotValue::One(_) => Err(index_error("singular slot thing", path.thing)),
-            SlotValue::Many(things) => things
-                .get(path.thing)
-                .ok_or_else(|| index_error("collection thing", path.thing)),
+        match path.source {
+            ThingSource::Slot(slot) => match self.slot(slot)? {
+                SlotValue::One(thing) if path.thing == 0 => Ok(thing),
+                SlotValue::One(_) => Err(index_error("singular slot thing", path.thing)),
+                SlotValue::Many(things) => things
+                    .get(path.thing)
+                    .ok_or_else(|| index_error("collection thing", path.thing)),
+            },
+            ThingSource::ReductionGroup { row } => {
+                if path.thing != 0 {
+                    return Err(index_error("reduction group thing", path.thing));
+                }
+                self.reduction_row(row)?.group().ok_or_else(|| {
+                    access_error("ungrouped reduction row carries no group evidence")
+                })
+            }
         }
     }
 
@@ -219,8 +258,14 @@ struct SlotPath {
 }
 
 #[derive(Clone, Copy)]
+enum ThingSource {
+    Slot(SlotPath),
+    ReductionGroup { row: usize },
+}
+
+#[derive(Clone, Copy)]
 struct ThingPath {
-    slot: SlotPath,
+    source: ThingSource,
     thing: usize,
 }
 
@@ -317,6 +362,44 @@ impl PyValidatedMatchResultHandle {
     fn exists_value(&self) -> PyResult<bool> {
         self.proof.exists()
     }
+
+    fn reduction_row_count(&self) -> PyResult<usize> {
+        Ok(self.proof.reduction()?.len())
+    }
+
+    fn reduction_value_count(&self, row: usize) -> PyResult<usize> {
+        Ok(self.proof.reduction_row(row)?.values().len())
+    }
+
+    fn reduction_value_kind(&self, row: usize, index: usize) -> PyResult<&'static str> {
+        Ok(match self.proof.reduced_value(row, index)? {
+            ReducedValue::Count(_) => "count",
+            ReducedValue::Long(_) => "long",
+            ReducedValue::Double(_) => "double",
+        })
+    }
+
+    fn reduction_value(&self, py: Python<'_>, row: usize, index: usize) -> PyResult<PyObject> {
+        let value = match self.proof.reduced_value(row, index)? {
+            ReducedValue::Count(value) => pythonize(py, value),
+            ReducedValue::Long(value) => pythonize(py, value),
+            ReducedValue::Double(value) => pythonize(py, value),
+        }
+        .map_err(|error| PyRuntimeError::new_err(error.to_string()))?;
+        Ok(value.unbind())
+    }
+
+    fn reduction_group(&self, row: usize) -> PyResult<PyValidatedMatchThingHandle> {
+        let path = ThingPath {
+            source: ThingSource::ReductionGroup { row },
+            thing: 0,
+        };
+        self.proof.thing(path)?;
+        Ok(PyValidatedMatchThingHandle {
+            proof: Arc::clone(&self.proof),
+            path,
+        })
+    }
 }
 
 #[pyclass(name = "ValidatedMatchRowHandle", frozen)]
@@ -372,7 +455,7 @@ impl PyValidatedMatchSlotHandle {
 
     fn thing(&self, index: usize) -> PyResult<PyValidatedMatchThingHandle> {
         let path = ThingPath {
-            slot: self.path,
+            source: ThingSource::Slot(self.path),
             thing: index,
         };
         self.proof.thing(path)?;
@@ -620,7 +703,7 @@ mod tests {
     };
     use type_bridge_orm::{
         Annotation, Database, DescriptorRegistry, EntityDescriptor, OrmError,
-        OwnedAttributeDescriptor, RowCardinality, SessionHandle, ValueType, Window,
+        OwnedAttributeDescriptor, Reduction, RowCardinality, SessionHandle, ValueType, Window,
     };
 
     use super::*;
@@ -813,6 +896,61 @@ mod tests {
         registry
     }
 
+    fn reduction_registry() -> Arc<DescriptorRegistry> {
+        let registry = Arc::new(DescriptorRegistry::new());
+        registry
+            .register_entity(EntityDescriptor {
+                type_name: "person".into(),
+                is_abstract: false,
+                parent_type: None,
+                owned_attributes: vec![
+                    OwnedAttributeDescriptor {
+                        field_name: "name".into(),
+                        attr_name: "person-name".into(),
+                        value_type: ValueType::String,
+                        annotations: vec![Annotation::Key],
+                        is_optional: false,
+                        is_ordered: false,
+                        doc: None,
+                        meta: Default::default(),
+                    },
+                    OwnedAttributeDescriptor {
+                        field_name: "age".into(),
+                        attr_name: "person-age".into(),
+                        value_type: ValueType::Long,
+                        annotations: vec![Annotation::Card(0, Some(1))],
+                        is_optional: true,
+                        is_ordered: false,
+                        doc: None,
+                        meta: Default::default(),
+                    },
+                ],
+                doc: None,
+                meta: Default::default(),
+            })
+            .unwrap();
+        registry
+            .register_entity(EntityDescriptor {
+                type_name: "team".into(),
+                is_abstract: false,
+                parent_type: None,
+                owned_attributes: vec![OwnedAttributeDescriptor {
+                    field_name: "name".into(),
+                    attr_name: "team-name".into(),
+                    value_type: ValueType::String,
+                    annotations: vec![Annotation::Key],
+                    is_optional: false,
+                    is_ordered: false,
+                    doc: None,
+                    meta: Default::default(),
+                }],
+                doc: None,
+                meta: Default::default(),
+            })
+            .unwrap();
+        registry
+    }
+
     fn executed_handle() -> PyValidatedMatchResultHandle {
         let registry = registry();
         let session = SessionHandle::new(Arc::clone(&registry));
@@ -881,12 +1019,222 @@ mod tests {
         registry: Arc<DescriptorRegistry>,
         validated: ValidatedMatchRequest,
     ) -> PyValidatedMatchResultHandle {
-        let database = Database::with_backend(Box::new(AccessorBackend), "test");
+        execute_handle_with(Box::new(AccessorBackend), registry, validated)
+    }
+
+    fn execute_handle_with(
+        backend: Box<dyn DriverBackend>,
+        registry: Arc<DescriptorRegistry>,
+        validated: ValidatedMatchRequest,
+    ) -> PyValidatedMatchResultHandle {
+        let database = Database::with_backend(backend, "test");
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let result = runtime
             .block_on(database.execute_match(&registry, &validated))
             .unwrap();
         PyValidatedMatchResultHandle::new(validated, result, registry)
+    }
+
+    struct ReductionBackend {
+        roots: Vec<serde_json::Value>,
+        rematch: Vec<serde_json::Value>,
+    }
+
+    impl DriverBackend for ReductionBackend {
+        fn match_capabilities(&self) -> type_bridge_orm::CapabilitySet {
+            type_bridge_orm::CapabilitySet::all()
+        }
+
+        fn open_transaction(
+            &self,
+            _database: &str,
+            _tx_type: TxType,
+        ) -> BoxFuture<'_, Result<Box<dyn TransactionOps>, OrmError>> {
+            let roots = self.roots.clone();
+            let rematch = self.rematch.clone();
+            Box::pin(async move {
+                Ok(Box::new(ReductionTransaction { roots, rematch }) as Box<dyn TransactionOps>)
+            })
+        }
+
+        fn is_open(&self) -> bool {
+            true
+        }
+    }
+
+    struct ReductionTransaction {
+        roots: Vec<serde_json::Value>,
+        rematch: Vec<serde_json::Value>,
+    }
+
+    impl TransactionOps for ReductionTransaction {
+        fn query(&mut self, _typeql: &str) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
+            Box::pin(async { panic!("reduction accessor test used a legacy string query") })
+        }
+
+        fn query_typed_bounded<'a>(
+            &'a mut self,
+            _query: &'a TypedFetchRows,
+            _limits: BoundedAnswerLimits,
+            _consumer: &'a mut dyn AnswerConsumer,
+        ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
+            Box::pin(async { panic!("reduction accessor test used the selected-row lane") })
+        }
+
+        fn query_tuple_typed_bounded<'a>(
+            &'a mut self,
+            _query: &'a TypedFetchRows,
+            _limits: BoundedAnswerLimits,
+            _consumer: &'a mut dyn AnswerConsumer,
+        ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
+            Box::pin(async { panic!("reduction accessor test used the tuple lane") })
+        }
+
+        fn hydrate_typed_bounded<'a>(
+            &'a mut self,
+            _query: &'a TypedHydrateThings,
+            _limits: BoundedAnswerLimits,
+            _consumer: &'a mut dyn AnswerConsumer,
+        ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
+            Box::pin(async { panic!("reduction accessor test used the hydration lane") })
+        }
+
+        fn query_root_typed_bounded<'a>(
+            &'a mut self,
+            _query: &'a TypedRootScan,
+            limits: BoundedAnswerLimits,
+            consumer: &'a mut dyn AnswerConsumer,
+        ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
+            let items = self.roots.iter().cloned().map(AnswerItem::Row).collect();
+            Box::pin(async move { feed(items, limits, consumer) })
+        }
+
+        fn rematch_page_typed_bounded<'a>(
+            &'a mut self,
+            _query: &'a TypedPageRematch,
+            limits: BoundedAnswerLimits,
+            consumer: &'a mut dyn AnswerConsumer,
+        ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
+            let items = self
+                .rematch
+                .iter()
+                .cloned()
+                .map(AnswerItem::Document)
+                .collect();
+            Box::pin(async move { feed(items, limits, consumer) })
+        }
+
+        fn commit(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn rollback(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn close(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    fn root_row(concept_id: &str) -> serde_json::Value {
+        serde_json::json!({
+            "bindings": [{"binding": 0, "concept_id": concept_id}],
+            "satisfied_role_edges": [],
+        })
+    }
+
+    fn person_binding(concept_id: &str, name: &str, age: i64) -> serde_json::Value {
+        serde_json::json!({
+            "binding": 0,
+            "concept_id": concept_id,
+            "concrete_type": "person",
+            "kind": "entity",
+            "attributes": [
+                {"field": "name", "value_type": "string", "values": [name]},
+                {"field": "age", "value_type": "long", "values": [age]},
+            ],
+            "roles": [],
+        })
+    }
+
+    fn team_binding(concept_id: &str, name: &str) -> serde_json::Value {
+        serde_json::json!({
+            "binding": 1,
+            "concept_id": concept_id,
+            "concrete_type": "team",
+            "kind": "entity",
+            "attributes": [
+                {"field": "name", "value_type": "string", "values": [name]},
+            ],
+            "roles": [],
+        })
+    }
+
+    fn executed_reduction_handle() -> PyValidatedMatchResultHandle {
+        let registry = reduction_registry();
+        let session = SessionHandle::new(Arc::clone(&registry));
+        let person = session.exact("person").unwrap();
+        let age = person.field("age").unwrap();
+        let shape = session.positional([person.one()]).unwrap();
+        let query = session.query(shape).unwrap();
+        let validated = query
+            .validate_reduce_by(
+                &person,
+                None,
+                &[
+                    (Reduction::Count, None),
+                    (Reduction::Sum, Some(&age)),
+                    (Reduction::Mean, Some(&age)),
+                ],
+            )
+            .unwrap();
+        let backend = ReductionBackend {
+            roots: vec![root_row("0x01"), root_row("0x02")],
+            rematch: vec![
+                serde_json::json!({
+                    "bindings": [person_binding("0x01", "Alice", 30)],
+                    "satisfied_role_edges": [],
+                }),
+                serde_json::json!({
+                    "bindings": [person_binding("0x02", "Bob", 40)],
+                    "satisfied_role_edges": [],
+                }),
+            ],
+        };
+        execute_handle_with(Box::new(backend), registry, validated)
+    }
+
+    fn executed_grouped_reduction_handle() -> PyValidatedMatchResultHandle {
+        let registry = reduction_registry();
+        let session = SessionHandle::new(Arc::clone(&registry));
+        let person = session.exact("person").unwrap();
+        let team = session.exact("team").unwrap();
+        let shape = session.positional([person.one()]).unwrap();
+        let query = session
+            .query(shape)
+            .unwrap()
+            .add_hidden(team.clone())
+            .unwrap()
+            .allow_cross_join(&person, &team)
+            .unwrap();
+        let validated = query
+            .validate_reduce_by(&person, Some(&team), &[(Reduction::Count, None)])
+            .unwrap();
+        let backend = ReductionBackend {
+            roots: vec![root_row("0x01"), root_row("0x02")],
+            rematch: vec![
+                serde_json::json!({
+                    "bindings": [person_binding("0x01", "Alice", 30), team_binding("0x1a", "Alpha")],
+                    "satisfied_role_edges": [],
+                }),
+                serde_json::json!({
+                    "bindings": [person_binding("0x02", "Bob", 40), team_binding("0x1a", "Alpha")],
+                    "satisfied_role_edges": [],
+                }),
+            ],
+        };
+        execute_handle_with(Box::new(backend), registry, validated)
     }
 
     #[test]
@@ -972,5 +1320,80 @@ mod tests {
         assert!(exists.exists_value().unwrap());
         assert!(exists.count_value().is_err());
         assert!(exists.row_count().is_err());
+    }
+
+    #[test]
+    fn ungrouped_reduction_accessors_expose_typed_values() {
+        let handle = executed_reduction_handle();
+        assert_eq!(handle.reduction_row_count().unwrap(), 1);
+        assert_eq!(handle.reduction_value_count(0).unwrap(), 3);
+        assert_eq!(handle.reduction_value_kind(0, 0).unwrap(), "count");
+        assert_eq!(handle.reduction_value_kind(0, 1).unwrap(), "long");
+        assert_eq!(handle.reduction_value_kind(0, 2).unwrap(), "double");
+
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            assert_eq!(
+                handle
+                    .reduction_value(py, 0, 0)
+                    .unwrap()
+                    .extract::<u64>(py)
+                    .unwrap(),
+                2
+            );
+            assert_eq!(
+                handle
+                    .reduction_value(py, 0, 1)
+                    .unwrap()
+                    .extract::<i64>(py)
+                    .unwrap(),
+                70
+            );
+            assert_eq!(
+                handle
+                    .reduction_value(py, 0, 2)
+                    .unwrap()
+                    .extract::<f64>(py)
+                    .unwrap(),
+                35.0
+            );
+        });
+
+        assert!(handle.reduction_group(0).is_err());
+        assert!(handle.reduction_value_kind(0, 3).is_err());
+        assert!(handle.count_value().is_err());
+        assert!(handle.row_count().is_err());
+
+        let count = executed_count_handle();
+        assert!(count.reduction_row_count().is_err());
+    }
+
+    #[test]
+    fn grouped_reduction_exposes_validated_group_evidence() {
+        let handle = executed_grouped_reduction_handle();
+        assert_eq!(handle.reduction_row_count().unwrap(), 1);
+        assert_eq!(handle.reduction_value_count(0).unwrap(), 1);
+        assert_eq!(handle.reduction_value_kind(0, 0).unwrap(), "count");
+
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            assert_eq!(
+                handle
+                    .reduction_value(py, 0, 0)
+                    .unwrap()
+                    .extract::<u64>(py)
+                    .unwrap(),
+                2
+            );
+        });
+
+        let group = handle.reduction_group(0).unwrap();
+        assert_eq!(group.iid().unwrap(), "0x1a");
+        assert_eq!(group.declared_type_name().unwrap(), "team");
+        assert_eq!(group.concrete_type_name().unwrap(), "team");
+        assert_eq!(group.kind().unwrap(), "entity");
+        assert_eq!(group.attribute_count().unwrap(), 1);
+        assert_eq!(group.attribute(0).unwrap().field_name().unwrap(), "name");
+        assert!(handle.reduction_group(1).is_err());
     }
 }

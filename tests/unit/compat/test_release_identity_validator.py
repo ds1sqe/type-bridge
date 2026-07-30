@@ -181,6 +181,22 @@ def test_repository_python_npm_candidate_identity_is_complete() -> None:
         "type-bridge-typedb-driver-b9",
         "type-bridge-typedb-protocol-b9",
     ]
+
+
+def test_repository_final_closed_artifact_set_includes_source_git_and_server_oci() -> None:
+    report = validate(artifact_contract=validator.ARTIFACT_CONTRACT_SOURCE_GIT_SERVER_OCI)
+
+    assert report["status"] == "ok"
+    assert report["crates_io_mutation"] is False
+    assert report["cargo_publication_plan"] == []
+    assert report["public_artifact_set"] == [
+        "python-root",
+        "python-native",
+        "npm-package",
+        "npm-native-packages",
+        "rust-type-bridge-source-git-exact-revision",
+        "ghcr.io/ds1sqe/type-bridge-server",
+    ]
     assert report["legacy_vendor_identities"] == [
         "|".join(
             (
@@ -217,6 +233,7 @@ def test_repository_python_npm_candidate_identity_is_complete() -> None:
     assert "type-bridge-typedb-driver-b8" not in validator.EXPECTED_NEW_CRATES
     assert not set(validator.PREEXISTING_CRATES) & set(validator.EXPECTED_NEW_CRATES)
     assert report["unpublished_crates"] == [
+        "type-bridge",
         "type-bridge-cli",
         "type-bridge-contract",
         "type-bridge-core",
@@ -249,6 +266,7 @@ def test_repository_python_npm_candidate_identity_is_complete() -> None:
         for package, version in cargo_packages.items()
     )
     assert set(cargo_packages) == {
+        "type-bridge",
         "type-bridge-cli",
         "type-bridge-contract",
         "type-bridge-core",

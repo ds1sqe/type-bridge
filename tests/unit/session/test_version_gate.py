@@ -1082,6 +1082,20 @@ class TestSchemaAnnotationGate:
             manager.sync_schema()
         db.transaction.assert_not_called()
 
+    def test_execute_query_gates_schema_annotations_before_transaction(self, monkeypatch):
+        stub = MagicMock()
+        stub.check_schema_annotation_support.side_effect = type_bridge_core.VersionError(
+            "schema annotations (@doc/@meta) require TypeDB 3.12 or newer"
+        )
+        db = self._database_with_rust_stub(monkeypatch, stub)
+        query = 'define\nentity gate-person @doc("Gated.");'
+
+        with pytest.raises(type_bridge_core.VersionError, match="3.12 or newer"):
+            db.execute_query(query, "schema")
+
+        stub.check_schema_annotation_support.assert_called_once_with(query)
+        stub.transaction.assert_not_called()
+
 
 class TestGivenStageSurface:
     """The given-stage parameterized-query surface (TypeDB 3.12+).

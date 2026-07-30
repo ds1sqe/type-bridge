@@ -9,6 +9,7 @@ mod attribute;
 mod entity;
 mod include_schema;
 mod relation;
+mod selected_row;
 
 /// Derive `TypeBridgeAttribute` for a newtype struct.
 ///
@@ -100,6 +101,15 @@ pub fn derive_entity(input: TokenStream) -> TokenStream {
 #[proc_macro_derive(TypeBridgeRelation, attributes(relation, role, field))]
 pub fn derive_relation(input: TokenStream) -> TokenStream {
     relation::derive(input.into())
+        .unwrap_or_else(|e| e.to_compile_error())
+        .into()
+}
+
+/// Derive a declaration-ordered named selection constructor for the public
+/// generated Rust query facade.
+#[proc_macro_derive(SelectedRow)]
+pub fn derive_selected_row(input: TokenStream) -> TokenStream {
+    selected_row::derive(input.into())
         .unwrap_or_else(|e| e.to_compile_error())
         .into()
 }

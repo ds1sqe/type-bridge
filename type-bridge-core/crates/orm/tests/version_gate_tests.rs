@@ -280,6 +280,8 @@ fn connect_options_default_equals_ssot() {
 
 mod common;
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use type_bridge_core_lib::version::Version;
 use type_bridge_orm::Database;
 use type_bridge_orm::session::backend::{BoxFuture, DriverBackend, TransactionOps};
@@ -289,6 +291,7 @@ struct VersionedBackend {
     inner: common::MockBackend,
     server_version: Option<Version>,
     supports_given_rows: bool,
+    open_count: Arc<AtomicUsize>,
 }
 
 impl VersionedBackend {
@@ -297,6 +300,7 @@ impl VersionedBackend {
             inner: common::MockBackend::new(vec![]),
             server_version,
             supports_given_rows: false,
+            open_count: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -313,6 +317,7 @@ impl DriverBackend for VersionedBackend {
         tx_type: type_bridge_orm::TxType,
     ) -> BoxFuture<'_, std::result::Result<Box<dyn TransactionOps>, type_bridge_orm::OrmError>>
     {
+        self.open_count.fetch_add(1, Ordering::SeqCst);
         self.inner.open_transaction(database, tx_type)
     }
 
@@ -395,6 +400,78 @@ fn annotation_gate_defers_to_server_when_version_unknown() {
     // Band-7 gRPC fallback: version undetectable; the DDL is sent as-is.
     let db = Database::with_backend(Box::new(VersionedBackend::new(None)), "gate-test");
     assert!(db.check_schema_annotation_support(ANNOTATED_DDL).is_ok());
+}
+
+#[tokio::test]
+async fn execute_raw_rejects_annotations_before_opening_schema_transaction() {
+    let backend = VersionedBackend::new(Some(Version::new(3, 11, 5)));
+    let open_count = Arc::clone(&backend.open_count);
+    let db = Database::with_backend(Box::new(backend), "gate-test");
+
+    let error = db
+        .execute_raw(ANNOTATED_DDL, TxType::Schema)
+        .await
+        .expect_err("pre-3.12 raw schema execution must reject annotations");
+
+    assert!(
+        matches!(error, OrmError::UnsupportedVersion(_)),
+        "expected UnsupportedVersion, got {error:?}"
+    );
+    assert_eq!(
+        open_count.load(Ordering::SeqCst),
+        0,
+        "the version gate must run before opening the schema transaction"
+    );
+}
+
+#[tokio::test]
+async fn owned_schema_transaction_rejects_annotations_before_provider_query() {
+    let backend = VersionedBackend::new(Some(Version::new(3, 11, 5)));
+    let queries = Arc::clone(&backend.inner.queries);
+    let db = Database::with_backend(Box::new(backend), "gate-test");
+    let mut transaction = db
+        .schema_transaction()
+        .await
+        .expect("opening an empty schema transaction remains supported");
+
+    let error = transaction
+        .query(ANNOTATED_DDL)
+        .await
+        .expect_err("pre-3.12 owned schema transaction must reject annotations");
+
+    assert!(
+        matches!(error, OrmError::UnsupportedVersion(_)),
+        "expected UnsupportedVersion, got {error:?}"
+    );
+    assert!(
+        queries.lock().unwrap().is_empty(),
+        "the rejected DDL must not reach the provider transaction"
+    );
+}
+
+#[tokio::test]
+async fn shared_schema_transaction_rejects_annotations_before_provider_query() {
+    let backend = VersionedBackend::new(Some(Version::new(3, 11, 5)));
+    let queries = Arc::clone(&backend.inner.queries);
+    let db = Database::with_backend(Box::new(backend), "gate-test");
+    let transaction = db
+        .transaction_context(TxType::Schema)
+        .await
+        .expect("opening an empty schema transaction remains supported");
+
+    let error = transaction
+        .query(ANNOTATED_DDL)
+        .await
+        .expect_err("pre-3.12 shared schema transaction must reject annotations");
+
+    assert!(
+        matches!(error, OrmError::UnsupportedVersion(_)),
+        "expected UnsupportedVersion, got {error:?}"
+    );
+    assert!(
+        queries.lock().unwrap().is_empty(),
+        "the rejected DDL must not reach the provider transaction"
+    );
 }
 
 #[test]

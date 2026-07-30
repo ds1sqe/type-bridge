@@ -167,7 +167,8 @@ try {
     );
     let packInfo;
     try {
-      packInfo = JSON.parse(packed.stdout)[0];
+      const report = JSON.parse(packed.stdout);
+      packInfo = Array.isArray(report) ? report[0] : Object.values(report)[0];
     } catch (error) {
       fail(`could not parse npm pack JSON: ${error.message}\n${packed.stdout}`);
     }

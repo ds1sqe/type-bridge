@@ -2,6 +2,7 @@
 name = "type-bridge-orm"
 version = "2.0.0-rc.0"
 edition = "2024"
+rust-version = "1.88"
 description = "Async ORM for TypeDB built on type-bridge-core-lib"
 license.workspace = true
 license-file.workspace = true

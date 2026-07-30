@@ -300,6 +300,49 @@ impl FetchShape {
     }
 }
 
+/// The closed typed-reduction vocabulary of the match algebra.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Reduction {
+    /// Count matched rows; total on an empty stream.
+    Count,
+    /// The total of input values.
+    Sum,
+    /// The smallest input value.
+    Min,
+    /// The largest input value.
+    Max,
+    /// The arithmetic mean of input values.
+    Mean,
+    /// The statistical median of input values.
+    Median,
+    /// The sample standard deviation of input values.
+    Std,
+}
+
+impl Reduction {
+    /// Whether this reducer consumes a bound scalar field input.
+    #[must_use]
+    pub const fn requires_input(self) -> bool {
+        !matches!(self, Self::Count)
+    }
+
+    /// Whether this reducer always widens its result domain to double.
+    #[must_use]
+    pub const fn widens_to_double(self) -> bool {
+        matches!(self, Self::Mean | Self::Median | Self::Std)
+    }
+}
+
+/// One typed reducer term over an optional bound scalar field.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReduceTerm {
+    /// The reducer applied to the matched stream.
+    pub reduction: Reduction,
+    /// The bound scalar field consumed by input-requiring reducers.
+    pub input: Option<BoundFieldId>,
+}
+
 /// One stable public ordering term.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MatchOrder {
@@ -385,6 +428,16 @@ pub enum MatchOperation {
         /// Root binding whose identities are counted.
         root: BindingId,
     },
+    /// Reduce matched evidence to typed scalar values, optionally grouped
+    /// by a second attached binding's distinct identities.
+    ReduceBy {
+        /// Root binding whose matched stream feeds the reducers.
+        root: BindingId,
+        /// Optional attached binding whose distinct identities group rows.
+        group: Option<BindingId>,
+        /// Ordered typed reducer terms, bounded by the selection ceiling.
+        reducers: Vec<ReduceTerm>,
+    },
     /// Test whether any distinct matching root identity exists.
     ExistsBy {
         /// Root binding whose existence is tested.
@@ -397,7 +450,7 @@ impl MatchOperation {
     pub const fn output(&self) -> Option<&FetchShape> {
         match self {
             Self::FetchRows { output, .. } | Self::PageBy { output, .. } => Some(output),
-            Self::CountBy { .. } | Self::ExistsBy { .. } => None,
+            Self::CountBy { .. } | Self::ExistsBy { .. } | Self::ReduceBy { .. } => None,
         }
     }
 }

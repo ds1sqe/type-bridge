@@ -10,9 +10,9 @@ use pyo3::types::{PyAny, PyInt};
 use pythonize::pythonize;
 use type_bridge_orm::{
     BindingHandle, ComparisonOp, FieldHandle, MatchError, MissingOrder, OrderHandle, OrmError,
-    PredicateHandle, QueryHandle, RoleHandle, RowCardinality, SelectionHandle, SessionHandle,
-    ShapeHandle, SortDirection, UnvalidatedMatchRequest, ValidatedMatchRequest, Window,
-    validate_public_order_term_count,
+    PredicateHandle, QueryHandle, Reduction, RoleHandle, RowCardinality, SelectionHandle,
+    SessionHandle, ShapeHandle, SortDirection, UnvalidatedMatchRequest, ValidatedMatchRequest,
+    Window, validate_public_order_term_count,
 };
 
 use crate::orm_runtime::{
@@ -581,6 +581,105 @@ impl PyMatchQueryHandle {
             .map_err(py_match_orm_error)?;
         execute_validated_borrowed(py, transaction, validated, self.inner.registry_arc())
     }
+
+    #[pyo3(signature = (root, group, reducers, inputs))]
+    fn reduce_by_diagnostic(
+        &self,
+        py: Python<'_>,
+        root: PyRef<'_, PyMatchBindingHandle>,
+        group: Option<PyRef<'_, PyMatchBindingHandle>>,
+        reducers: Vec<String>,
+        inputs: Vec<Option<Py<PyMatchFieldHandle>>>,
+    ) -> PyResult<String> {
+        let terms = reduce_terms(py, &reducers, &inputs)?;
+        let terms = borrow_reduce_terms(&terms);
+        diagnostic_from_request(self.inner.reduce_by(
+            &root.inner,
+            group.as_ref().map(|group| &group.inner),
+            &terms,
+        ))
+    }
+
+    // PyO3 exposes these operation-local arguments as the stable Python terminal contract.
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (database, root, group, reducers, inputs))]
+    fn execute_reduce_by_owned(
+        &self,
+        py: Python<'_>,
+        database: &PyRustDatabase,
+        root: PyRef<'_, PyMatchBindingHandle>,
+        group: Option<PyRef<'_, PyMatchBindingHandle>>,
+        reducers: Vec<String>,
+        inputs: Vec<Option<Py<PyMatchFieldHandle>>>,
+    ) -> PyResult<PyValidatedMatchResultHandle> {
+        let terms = reduce_terms(py, &reducers, &inputs)?;
+        let terms = borrow_reduce_terms(&terms);
+        let validated = self
+            .inner
+            .validate_reduce_by(
+                &root.inner,
+                group.as_ref().map(|group| &group.inner),
+                &terms,
+            )
+            .map_err(py_match_orm_error)?;
+        execute_validated_owned(py, database, validated, self.inner.registry_arc())
+    }
+
+    // PyO3 exposes these operation-local arguments as the stable Python terminal contract.
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (transaction, root, group, reducers, inputs))]
+    fn execute_reduce_by_borrowed(
+        &self,
+        py: Python<'_>,
+        transaction: &PyRustTransactionContext,
+        root: PyRef<'_, PyMatchBindingHandle>,
+        group: Option<PyRef<'_, PyMatchBindingHandle>>,
+        reducers: Vec<String>,
+        inputs: Vec<Option<Py<PyMatchFieldHandle>>>,
+    ) -> PyResult<PyValidatedMatchResultHandle> {
+        let terms = reduce_terms(py, &reducers, &inputs)?;
+        let terms = borrow_reduce_terms(&terms);
+        let validated = self
+            .inner
+            .validate_reduce_by(
+                &root.inner,
+                group.as_ref().map(|group| &group.inner),
+                &terms,
+            )
+            .map_err(py_match_orm_error)?;
+        execute_validated_borrowed(py, transaction, validated, self.inner.registry_arc())
+    }
+}
+
+fn reduce_terms(
+    py: Python<'_>,
+    reducers: &[String],
+    inputs: &[Option<Py<PyMatchFieldHandle>>],
+) -> PyResult<Vec<(Reduction, Option<FieldHandle>)>> {
+    if reducers.len() != inputs.len() {
+        return Err(PyValueError::new_err(
+            "reducer names and reducer inputs must have equal length",
+        ));
+    }
+    reducers
+        .iter()
+        .zip(inputs)
+        .map(|(reducer, input)| {
+            Ok((
+                parse_reduction(reducer)?,
+                input.as_ref().map(|field| field.borrow(py).inner.clone()),
+            ))
+        })
+        .collect()
+}
+
+fn borrow_reduce_terms(
+    terms: &[(Reduction, Option<FieldHandle>)],
+) -> Vec<(Reduction, Option<&FieldHandle>)> {
+    terms
+        .iter()
+        .map(|(reduction, input)| (*reduction, input.as_ref()))
+        .collect()
 }
 
 fn execute_validated_owned(
@@ -701,6 +800,19 @@ pub(crate) fn parse_cardinality(value: &str) -> PyResult<RowCardinality> {
         _ => Err(PyValueError::new_err(format!(
             "unknown row cardinality {value:?}"
         ))),
+    }
+}
+
+fn parse_reduction(value: &str) -> PyResult<Reduction> {
+    match value {
+        "count" => Ok(Reduction::Count),
+        "sum" => Ok(Reduction::Sum),
+        "min" => Ok(Reduction::Min),
+        "max" => Ok(Reduction::Max),
+        "mean" => Ok(Reduction::Mean),
+        "median" => Ok(Reduction::Median),
+        "std" => Ok(Reduction::Std),
+        _ => Err(PyValueError::new_err(format!("unknown reducer {value:?}"))),
     }
 }
 
@@ -891,6 +1003,7 @@ mod tests {
             ),
             query.count_by(&person),
             query.exists_by(&person),
+            query.reduce_by(&person, None, &[(Reduction::Count, None)]),
         ];
 
         for request in requests {
@@ -928,6 +1041,22 @@ mod tests {
             diagnostic_from_request(base.count_by(&person)).unwrap(),
             base_diagnostic
         );
+    }
+
+    #[test]
+    fn reducer_names_parse_to_the_canonical_closed_vocabulary() {
+        for (name, expected) in [
+            ("count", Reduction::Count),
+            ("sum", Reduction::Sum),
+            ("min", Reduction::Min),
+            ("max", Reduction::Max),
+            ("mean", Reduction::Mean),
+            ("median", Reduction::Median),
+            ("std", Reduction::Std),
+        ] {
+            assert_eq!(parse_reduction(name).unwrap(), expected);
+        }
+        assert!(parse_reduction("variance").is_err());
     }
 
     #[test]

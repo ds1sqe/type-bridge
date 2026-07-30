@@ -3109,6 +3109,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
+name = "type-bridge"
+version = "2.0.0-rc.0"
+dependencies = [
+ "regex",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "type-bridge-contract",
+ "type-bridge-orm",
+ "type-bridge-orm-derive",
+ "type-bridge-schema",
+ "type-bridge-schema-codegen",
+]
+
+[[package]]
 name = "type-bridge-cli"
 version = "2.0.0-rc.0"
 dependencies = [

@@ -125,7 +125,7 @@ Current feature gates:
 
 | Feature | Minimum server | Gated surfaces |
 |---------|----------------|----------------|
-| `@doc`/`@meta` schema annotations | 3.12.0 | `SchemaManager.sync_schema`, migration executor steps |
+| `@doc`/`@meta` schema annotations | 3.12.0 | Every ORM schema-query boundary, including `execute_raw`, owned/shared transactions, `SchemaManager.sync_schema`, and migration executor steps |
 | `given`-stage parameterized queries | 3.12.0 | `Database.execute_with_rows`, `TransactionContext.execute_with_rows`; `insert_many` and typed-query predicate transport use it opportunistically |
 
 When the server version is unknown (band-7 gRPC fallback without a

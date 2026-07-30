@@ -2,6 +2,19 @@ define
 attribute identifier, value string;
 attribute nickname, value string;
 attribute aliases, value string;
+attribute score, value integer;
+attribute val_double, value double;
+attribute val_decimal, value decimal;
+attribute val_bool, value boolean;
+attribute val_date, value date;
+attribute val_datetime, value datetime;
+attribute val_datetime_tz, value datetime-tz;
+attribute val_duration, value duration;
+attribute val_constrained, value integer;
+attribute party_name, value string;
+attribute rank, value integer;
+attribute manager_note, value string;
+attribute contractor_code, value string;
 
 relation membership,
     relates member @card(1..1);
@@ -12,13 +25,50 @@ relation container,
 relation event,
     relates subject @card(1..1),
     plays container:item @card(0..3) @doc("cyclic relation player");
+relation network-link,
+    owns identifier @key,
+    owns nickname @card(0..1),
+    relates origin @card(1..1),
+    relates destination @card(1..1),
+    relates participant @card(0..3);
 
 entity person,
     owns identifier @key,
     owns nickname @card(0..1),
     owns aliases @unique @card(0..3),
+    owns score @card(1..1),
+    owns val_double @card(1..1),
+    owns val_decimal @card(1..1),
+    owns val_bool @card(1..1),
+    owns val_date @card(1..1),
+    owns val_datetime @card(1..1),
+    owns val_datetime_tz @card(1..1),
+    owns val_duration @card(1..1),
+    owns val_constrained @card(1..1) @range(20..80),
     plays membership:member @card(0..2) @doc("membership player"),
     plays employment:employee @card(0..1) @doc("employment player"),
-    plays event:subject;
+    plays event:subject @card(0..1) @doc("event subject player"),
+    plays network-link:origin @card(0..3) @doc("directed link origin"),
+    plays network-link:destination @card(0..3) @doc("directed link destination"),
+    plays network-link:participant @card(0..3) @doc("repeated link participant");
+entity party @abstract,
+    owns identifier @key,
+    owns party_name @card(1..1);
+entity employee sub party,
+    owns rank @card(1..1);
+entity manager sub employee,
+    owns manager_note @card(1..1);
+entity contractor sub party,
+    owns contractor_code @card(1..1);
 entity robot,
+    owns val_constrained @card(1..1) @range(0..50),
     plays membership:member @card(1..1) @doc("robot membership player");
+
+struct player-stats:
+    nickname value string?,
+    wins value integer;
+
+fun find-events($event: event) -> { event }:
+match
+  $event isa event;
+return { $event };

@@ -12,10 +12,11 @@ use type_bridge_core_lib::ast::{
 use type_bridge_core_lib::compiler::QueryCompiler;
 
 use crate::entity::TypeBridgeEntity;
-use crate::error::Result;
+use crate::error::{OrmError, Result};
 use crate::expr::{Agg, Expr, SortDir};
 use crate::filter::Filter;
 use crate::relation::TypeBridgeRelation;
+use crate::value::AttributeValue;
 use crate::{
     descriptor::{EntityDescriptor, RelationDescriptor},
     dynamic::{
@@ -139,6 +140,17 @@ pub fn build_dynamic_entity_update(
     let clauses = crate::dynamic::entity_update_clauses(descriptor, iid, attributes, var)?;
     let compiler = QueryCompiler::new();
     Ok(compiler.compile(&clauses))
+}
+
+/// Build a strict match + update query for one exact entity IID.
+pub fn build_dynamic_entity_update_exact(
+    descriptor: &EntityDescriptor,
+    iid: &str,
+    attributes: &DynamicAttributeMap,
+    var: &str,
+) -> Result<String> {
+    let clauses = crate::dynamic::entity_update_exact_clauses(descriptor, iid, attributes, var)?;
+    Ok(QueryCompiler::new().compile(&clauses))
 }
 
 /// Build a polymorphic fetch query for a runtime entity descriptor.
@@ -292,6 +304,72 @@ pub fn build_dynamic_entity_count(
     Ok(compiler.compile(&clauses))
 }
 
+/// Build a strict exact-type count query for a runtime entity descriptor.
+pub fn build_dynamic_entity_count_exact(
+    descriptor: &EntityDescriptor,
+    var: &str,
+) -> Result<String> {
+    let clauses = crate::dynamic::entity_count_exact_clauses(descriptor, var);
+    Ok(QueryCompiler::new().compile(&clauses))
+}
+
+/// Build an identity-only subtype discovery query.
+pub fn build_dynamic_entity_identity_discovery(
+    descriptor: &EntityDescriptor,
+    iid: Option<&str>,
+    var: &str,
+) -> Result<String> {
+    let clauses = crate::dynamic::entity_identity_discovery_clauses(descriptor, iid, var)?;
+    Ok(QueryCompiler::new().compile(&clauses))
+}
+
+pub fn build_dynamic_relation_identity_discovery(
+    descriptor: &RelationDescriptor,
+    iid: Option<&str>,
+    var: &str,
+) -> Result<String> {
+    Ok(
+        QueryCompiler::new().compile(&crate::dynamic::relation_identity_discovery_clauses(
+            descriptor, iid, var,
+        )?),
+    )
+}
+
+pub fn build_dynamic_relation_count_exact(
+    descriptor: &RelationDescriptor,
+    var: &str,
+) -> Result<String> {
+    Ok(
+        QueryCompiler::new().compile(&crate::dynamic::relation_count_exact_clauses(
+            descriptor, var,
+        )),
+    )
+}
+
+pub fn build_dynamic_relation_delete_by_iid_exact(
+    descriptor: &RelationDescriptor,
+    iid: &str,
+    var: &str,
+) -> Result<String> {
+    Ok(
+        QueryCompiler::new().compile(&crate::dynamic::relation_delete_by_iid_exact_clauses(
+            descriptor, iid, var,
+        )?),
+    )
+}
+
+/// Build a strict exact-type lookup from every usable projected key value.
+///
+/// Returns `None` when the input carries no projected key value.
+pub fn build_dynamic_entity_exact_key_lookup(
+    descriptor: &EntityDescriptor,
+    attributes: &DynamicAttributeMap,
+    var: &str,
+) -> Result<Option<String>> {
+    crate::dynamic::entity_exact_key_lookup_clauses(descriptor, attributes, var)
+        .map(|clauses| clauses.map(|clauses| QueryCompiler::new().compile(&clauses)))
+}
+
 /// Build an expression-aware count query for a runtime entity descriptor.
 pub fn build_dynamic_entity_expr_count(
     descriptor: &EntityDescriptor,
@@ -375,6 +453,16 @@ pub fn build_dynamic_entity_delete_by_iid(
     let clauses = crate::dynamic::entity_delete_by_iid_clauses(descriptor, iid, var);
     let compiler = QueryCompiler::new();
     Ok(compiler.compile(&clauses))
+}
+
+/// Build a strict IID-based delete query for a runtime entity descriptor.
+pub fn build_dynamic_entity_delete_by_iid_exact(
+    descriptor: &EntityDescriptor,
+    iid: &str,
+    var: &str,
+) -> Result<String> {
+    let clauses = crate::dynamic::entity_delete_by_iid_exact_clauses(descriptor, iid, var)?;
+    Ok(QueryCompiler::new().compile(&clauses))
 }
 
 // ------------------------------------------------------------------
@@ -566,6 +654,30 @@ pub fn build_dynamic_relation_insert_with_iid(
     Ok(compiler.compile(&clauses))
 }
 
+/// Build strict identity-only lookup using supplied relation key ownership.
+pub fn build_dynamic_relation_exact_key_lookup(
+    descriptor: &RelationDescriptor,
+    attributes: &DynamicAttributeMap,
+    var: &str,
+) -> Result<Option<String>> {
+    crate::dynamic::relation_exact_key_lookup_clauses(descriptor, attributes, var)
+        .map(|c| c.map(|clauses| QueryCompiler::new().compile(&clauses)))
+}
+
+/// Build a strict resolved-player relation insert with IID fetch.
+pub fn build_dynamic_relation_insert_resolved_with_iid(
+    descriptor: &RelationDescriptor,
+    attributes: &DynamicAttributeMap,
+    resolved: &[(String, String, String)],
+    var: &str,
+) -> Result<String> {
+    Ok(
+        QueryCompiler::new().compile(&crate::dynamic::relation_insert_resolved_clauses(
+            descriptor, attributes, resolved, var,
+        )?),
+    )
+}
+
 /// Build a put + fetch-IID query for a runtime relation descriptor.
 pub fn build_dynamic_relation_put(
     descriptor: &RelationDescriptor,
@@ -590,6 +702,135 @@ pub fn build_dynamic_relation_update(
         crate::dynamic::relation_update_clauses(descriptor, iid, attributes, role_players, var)?;
     let compiler = QueryCompiler::new();
     Ok(compiler.compile(&clauses))
+}
+
+/// Build strict exact relation attribute replacement without role mutation.
+pub fn build_dynamic_relation_update_exact(
+    descriptor: &RelationDescriptor,
+    iid: &str,
+    attributes: &DynamicAttributeMap,
+    var: &str,
+) -> Result<String> {
+    Ok(
+        QueryCompiler::new().compile(&crate::dynamic::relation_update_exact_clauses(
+            descriptor, iid, attributes, var,
+        )?),
+    )
+}
+
+/// Build strict identity-only resolution for one selected relation player.
+pub fn build_dynamic_relation_player_lookup(
+    player_type: &str,
+    iid: Option<&str>,
+    key: Option<(&str, &AttributeValue)>,
+    var: &str,
+) -> Result<String> {
+    if !type_bridge_core_lib::compiler::is_valid_typeql_label(player_type)
+        || player_type.trim().is_empty()
+    {
+        return Err(OrmError::QueryExecution("unsafe player type label".into()));
+    }
+    if iid.is_some() == key.is_some() {
+        return Err(OrmError::QueryExecution(
+            "player identity must be exactly IID xor key".into(),
+        ));
+    }
+    if let Some(iid) = iid
+        && !type_bridge_contract::id::is_canonical_thing_iid(iid)
+    {
+        return Err(OrmError::QueryExecution(
+            "player IID must be canonical".into(),
+        ));
+    }
+    if let Some((name, value)) = key {
+        if name.trim().is_empty() || !type_bridge_core_lib::compiler::is_valid_typeql_label(name) {
+            return Err(OrmError::QueryExecution("unsafe player key label".into()));
+        }
+        if crate::dynamic::is_blank_key_value(value) {
+            return Err(OrmError::QueryExecution(
+                "player key value must be nonblank".into(),
+            ));
+        }
+    }
+    let constraint = if let Some(iid) = iid {
+        Constraint::Iid(iid.to_string())
+    } else if let Some((name, value)) = key {
+        Constraint::Has {
+            attr_name: name.to_string(),
+            value: value.to_ast_value(),
+        }
+    } else {
+        return Err(OrmError::QueryExecution(
+            "player identity must be exactly IID xor key".into(),
+        ));
+    };
+    let clauses = vec![
+        Clause::Match(vec![Pattern::Entity {
+            variable: var.into(),
+            type_name: player_type.into(),
+            constraints: vec![constraint],
+            is_strict: true,
+        }]),
+        Clause::Fetch(vec![FetchItem::Function {
+            key: "iid".into(),
+            func_name: "iid".into(),
+            var: var.into(),
+        }]),
+    ];
+    Ok(QueryCompiler::new().compile(&clauses))
+}
+
+/// Build one strict exact relation role-clear query.
+pub fn build_dynamic_relation_clear_role(
+    descriptor: &RelationDescriptor,
+    iid: &str,
+    role: &str,
+    var: &str,
+) -> Result<String> {
+    if !type_bridge_core_lib::compiler::is_valid_typeql_label(&descriptor.type_name)
+        || descriptor.roles.iter().all(|r| r.role_name != role)
+        || !type_bridge_core_lib::compiler::is_valid_typeql_label(role)
+    {
+        return Err(OrmError::QueryExecution(
+            "unsafe or inactive relation role".into(),
+        ));
+    }
+    Ok(
+        QueryCompiler::new().compile(&crate::dynamic::relation_clear_role_clauses(
+            descriptor, iid, role, var,
+        )?),
+    )
+}
+/// Build one strict exact relation attachment query from resolved players.
+pub fn build_dynamic_relation_attach(
+    descriptor: &RelationDescriptor,
+    iid: &str,
+    resolved: &[(String, String, String)],
+    var: &str,
+) -> Result<String> {
+    if resolved.is_empty()
+        || !type_bridge_core_lib::compiler::is_valid_typeql_label(&descriptor.type_name)
+    {
+        return Err(OrmError::QueryExecution(
+            "empty or unsafe relation attachment".into(),
+        ));
+    }
+    for (ty, iid, role) in resolved {
+        if !type_bridge_core_lib::compiler::is_valid_typeql_label(ty)
+            || !type_bridge_contract::id::is_canonical_thing_iid(iid)
+            || descriptor.roles.iter().all(|r| r.role_name != *role)
+            || !type_bridge_core_lib::compiler::is_valid_typeql_label(role)
+        {
+            return Err(OrmError::QueryExecution(
+                "unsafe relation attachment".into(),
+            ));
+        }
+    }
+    Ok(
+        QueryCompiler::new().compile(&crate::dynamic::relation_attach_clauses(
+            descriptor, iid, resolved, var,
+        )?),
+    )
 }
 
 /// Build a polymorphic fetch query for a runtime relation descriptor.

@@ -383,6 +383,21 @@ impl ProviderResultEvidence {
         }
     }
 
+    /// Construct typed reduction evidence.
+    pub(crate) fn reduction(
+        request_token: RequestToken,
+        shape_id: ResultShapeId,
+        root: BindingId,
+        group: Option<BindingId>,
+        rows: Vec<ReductionRow>,
+    ) -> Self {
+        Self {
+            request_token,
+            shape_id,
+            payload: ProviderResultPayload::Reduction { root, group, rows },
+        }
+    }
+
     pub(super) const fn request_token(&self) -> RequestToken {
         self.request_token
     }
@@ -426,6 +441,15 @@ pub(super) enum ProviderResultPayload {
         root: BindingId,
         /// Distinct-root count.
         value: u64,
+    },
+    /// Claimed typed reduction rows.
+    Reduction {
+        /// Claimed reduced root.
+        root: BindingId,
+        /// Claimed group binding echo.
+        group: Option<BindingId>,
+        /// Claimed reduction rows.
+        rows: Vec<ReductionRow>,
     },
     /// Claimed distinct-root existence result.
     Exists {
@@ -488,6 +512,43 @@ impl MatchRow {
     }
 }
 
+/// One typed reduced scalar produced by a reduce operation.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+pub enum ReducedValue {
+    /// A lossless count; zero on an empty ungrouped stream.
+    Count(u64),
+    /// An integer-domain result; absent only on an empty ungrouped stream.
+    Long(Option<i64>),
+    /// A double-domain result; absent only on an empty ungrouped stream.
+    Double(Option<f64>),
+}
+
+/// One reduction result row: optional group evidence plus reducer outputs
+/// in exact requested reducer order.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReductionRow {
+    group: Option<HydratedThing>,
+    values: Vec<ReducedValue>,
+}
+
+impl ReductionRow {
+    /// Construct one reduction row inside the provider boundary.
+    pub(crate) fn new(group: Option<HydratedThing>, values: Vec<ReducedValue>) -> Self {
+        Self { group, values }
+    }
+
+    /// Return the witnessed group evidence for grouped reductions.
+    pub fn group(&self) -> Option<&HydratedThing> {
+        self.group.as_ref()
+    }
+
+    /// Return reducer outputs in exact requested reducer order.
+    pub fn values(&self) -> &[ReducedValue] {
+        &self.values
+    }
+}
+
 /// Canonical result variants for all match operations.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -514,6 +575,16 @@ pub enum MatchResult {
         root: BindingId,
         /// Distinct-root count.
         value: u64,
+    },
+    /// Typed reduction rows from `ReduceBy`.
+    Reduction {
+        /// Root binding whose matched stream was reduced.
+        root: BindingId,
+        /// Group binding when the reduction was grouped.
+        group: Option<BindingId>,
+        /// Validated reduction rows; exactly one ungrouped row, or one row
+        /// per witnessed distinct group identity.
+        rows: Vec<ReductionRow>,
     },
     /// Whether any distinct matching root exists.
     Exists {

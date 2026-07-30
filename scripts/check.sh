@@ -58,6 +58,12 @@ run_rust() {
         cargo test --manifest-path type-bridge-core/Cargo.toml \
         -p type-bridge-schema-codegen --test rust_acceptance
 
+    run_step "generated Rust projection acceptance on MSRV 1.88" \
+        cargo +1.88.0 test --locked \
+        --manifest-path type-bridge-core/Cargo.toml \
+        -p type-bridge-schema-codegen --test rust_acceptance \
+        generated_rust_crate_compiles_rejects_invalid_types_and_runs -- --exact
+
     run_step "cargo clippy --all-targets -- -D warnings" \
         cargo clippy --manifest-path type-bridge-core/Cargo.toml --all-targets -- -D warnings
 }

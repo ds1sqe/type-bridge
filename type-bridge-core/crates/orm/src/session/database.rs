@@ -220,7 +220,7 @@ impl Database {
         .await
     }
 
-    /// Connect to a TypeDB server with explicit [`ConnectOptions`].
+    /// Connect to a TypeDB server with explicit [`crate::ConnectOptions`].
     #[cfg(feature = "typedb")]
     pub async fn connect_with_options(
         address: &str,
@@ -288,7 +288,7 @@ impl Database {
             .backend
             .open_transaction(&self.database_name, TxType::Read)
             .await?;
-        Ok(Transaction::new(tx, TxType::Read))
+        Ok(Transaction::new(tx, TxType::Read, self.server_version()))
     }
 
     /// Open a write transaction.
@@ -297,7 +297,7 @@ impl Database {
             .backend
             .open_transaction(&self.database_name, TxType::Write)
             .await?;
-        Ok(Transaction::new(tx, TxType::Write))
+        Ok(Transaction::new(tx, TxType::Write, self.server_version()))
     }
 
     /// Open a bounded read-capable transaction whose schema cannot change
@@ -316,7 +316,10 @@ impl Database {
             .open_schema_fenced_read_transaction(&self.database_name, timeout)
             .await?;
         let (transaction, schema_text) = fenced.into_parts();
-        Ok((Transaction::new(transaction, TxType::Write), schema_text))
+        Ok((
+            Transaction::new(transaction, TxType::Write, self.server_version()),
+            schema_text,
+        ))
     }
 
     /// Open an owned schema transaction.
@@ -328,7 +331,7 @@ impl Database {
             .backend
             .open_transaction(&self.database_name, TxType::Schema)
             .await?;
-        Ok(Transaction::new(tx, TxType::Schema))
+        Ok(Transaction::new(tx, TxType::Schema, self.server_version()))
     }
 
     /// Create a shared [`TransactionContext`] for grouping operations.
@@ -338,7 +341,12 @@ impl Database {
             .backend
             .open_transaction(&self.database_name, tx_type)
             .await?;
-        Ok(TransactionContext::new(tx, tx_type, capabilities))
+        Ok(TransactionContext::new(
+            tx,
+            tx_type,
+            capabilities,
+            self.server_version(),
+        ))
     }
 
     /// Execute one validated selected-row request in an owned read transaction.
@@ -445,15 +453,7 @@ impl Database {
     /// version is unknown (band-7 gRPC fallback without `server_version=`),
     /// the DDL is sent as-is and the server decides.
     pub fn check_schema_annotation_support(&self, typeql: &str) -> Result<()> {
-        use type_bridge_core_lib::version::{Feature, check_feature_supported};
-
-        if let Some(server) = self.server_version()
-            && crate::schema::annotations::typeql_uses_schema_annotations(typeql)
-        {
-            check_feature_supported(Feature::SchemaAnnotations, &server)
-                .map_err(crate::error::OrmError::UnsupportedVersion)?;
-        }
-        Ok(())
+        crate::schema::annotations::check_schema_annotation_support(typeql, self.server_version())
     }
 
     /// Whether both the connected server and the active negotiated provider
@@ -535,6 +535,9 @@ impl Database {
     /// transaction type is `Write` or `Schema`.
     #[tracing::instrument(skip(self, typeql), fields(db = %self.database_name))]
     pub async fn execute_raw(&self, typeql: &str, tx_type: TxType) -> Result<QueryResult> {
+        if tx_type == TxType::Schema {
+            self.check_schema_annotation_support(typeql)?;
+        }
         let mut tx = self
             .backend
             .open_transaction(&self.database_name, tx_type)
@@ -544,6 +547,42 @@ impl Database {
             tx.commit().await?;
         }
         Ok(result)
+    }
+
+    pub(crate) async fn execute_canonical(
+        &self,
+        typeql: &str,
+        tx_type: TxType,
+    ) -> Result<QueryResult> {
+        if tx_type == TxType::Schema {
+            self.check_schema_annotation_support(typeql)?;
+        }
+        let mut tx = self
+            .backend
+            .open_transaction(&self.database_name, tx_type)
+            .await?;
+        let result = tx.query_canonical(typeql).await;
+        match result {
+            Ok(value) => {
+                if matches!(tx_type, TxType::Write | TxType::Schema)
+                    && let Err(error) = tx.commit().await
+                {
+                    let _ = tx.close().await;
+                    return Err(error);
+                }
+                tx.close().await?;
+                Ok(value)
+            }
+            Err(primary) => {
+                if matches!(tx_type, TxType::Write | TxType::Schema) {
+                    let _ = tx.rollback().await;
+                    let _ = tx.close().await;
+                } else {
+                    let _ = tx.close().await;
+                }
+                Err(primary)
+            }
+        }
     }
 
     /// Execute a `given`-stage TypeQL query over input rows, auto-managing
@@ -559,6 +598,9 @@ impl Database {
         tx_type: TxType,
         rows: GivenRowsSpec,
     ) -> Result<QueryResult> {
+        if tx_type == TxType::Schema {
+            self.check_schema_annotation_support(typeql)?;
+        }
         self.check_given_stage_support()?;
         let mut tx = self
             .backend

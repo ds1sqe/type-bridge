@@ -780,6 +780,8 @@ class Database:
         """
         logger.debug(f"Executing query (type={transaction_type}, {len(query)} chars)")
         logger.debug(f"Query: {query}")
+        if transaction_type in ("schema", TransactionType.SCHEMA):
+            self.check_schema_annotation_support(query)
         with self.transaction(transaction_type) as tx:
             results = tx.execute(query)
             if isinstance(transaction_type, str):

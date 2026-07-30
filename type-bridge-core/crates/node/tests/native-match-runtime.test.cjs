@@ -226,6 +226,9 @@ test("validated result handles are nonconstructible and expose no semantic DTO",
   assert.ok(queryMethods.includes("executeCountByBorrowed"));
   assert.ok(queryMethods.includes("executeExistsByOwned"));
   assert.ok(queryMethods.includes("executeExistsByBorrowed"));
+  assert.ok(queryMethods.includes("reduceByDiagnostic"));
+  assert.ok(queryMethods.includes("executeReduceByOwned"));
+  assert.ok(queryMethods.includes("executeReduceByBorrowed"));
   assert.equal(queryMethods.includes("executeFetchRowsOwnedJson"), false);
   assert.equal(queryMethods.includes("executeFetchRowsBorrowedJson"), false);
 
@@ -254,6 +257,13 @@ test("validated result handles are nonconstructible and expose no semantic DTO",
       "pageSlotThing",
       "pageSlotValueCount",
       "pageTotal",
+      "reductionCountValue",
+      "reductionDoubleValue",
+      "reductionGroup",
+      "reductionLongValue",
+      "reductionRowCount",
+      "reductionValueCount",
+      "reductionValueKind",
       "rowCount",
       "slotCount",
       "slotThing",

@@ -17,6 +17,7 @@ use crate::registry::DescriptorRegistry;
 use type_bridge_core_lib::ast::{
     TypedFetchRows, TypedHydrateThings, TypedPageRematch, TypedRootScan,
 };
+use type_bridge_core_lib::version::Version;
 
 /// Shared transaction context for grouping multiple operations into
 /// a single database transaction.
@@ -28,6 +29,7 @@ pub struct TransactionContext {
     inner: Arc<Mutex<Option<Box<dyn TransactionOps>>>>,
     tx_type: TxType,
     match_capabilities: CapabilitySet,
+    server_version: Option<Version>,
 }
 
 impl TransactionContext {
@@ -35,21 +37,35 @@ impl TransactionContext {
         inner: Box<dyn TransactionOps>,
         tx_type: TxType,
         match_capabilities: CapabilitySet,
+        server_version: Option<Version>,
     ) -> Self {
         Self {
             inner: Arc::new(Mutex::new(Some(inner))),
             tx_type,
             match_capabilities,
+            server_version,
         }
     }
 
     /// Execute a query on the shared transaction.
     pub async fn query(&self, typeql: &str) -> Result<QueryResult> {
+        self.check_schema_annotation_support(typeql)?;
         let mut guard = self.inner.lock().await;
         let tx = guard
             .as_mut()
             .ok_or_else(|| OrmError::Transaction("Transaction already consumed".into()))?;
         tx.query(typeql).await
+    }
+
+    /// Execute a canonical provider-answer query for binding-neutral CRUD.
+    #[doc(hidden)]
+    pub(crate) async fn query_canonical(&self, typeql: &str) -> Result<QueryResult> {
+        self.check_schema_annotation_support(typeql)?;
+        let mut guard = self.inner.lock().await;
+        let tx = guard
+            .as_mut()
+            .ok_or_else(|| OrmError::Transaction("Transaction already consumed".into()))?;
+        tx.query_canonical(typeql).await
     }
 
     /// Export the schema under this transaction's provider-side schema fence,
@@ -67,6 +83,7 @@ impl TransactionContext {
     /// Requires a band-9 (TypeDB 3.12+) connection; see
     /// [`Database::check_given_stage_support`](super::database::Database::check_given_stage_support).
     pub async fn query_with_rows(&self, typeql: &str, rows: GivenRowsSpec) -> Result<QueryResult> {
+        self.check_schema_annotation_support(typeql)?;
         let mut guard = self.inner.lock().await;
         let tx = guard
             .as_mut()
@@ -185,6 +202,16 @@ impl TransactionContext {
         self.tx_type
     }
 
+    fn check_schema_annotation_support(&self, typeql: &str) -> Result<()> {
+        if self.tx_type == TxType::Schema {
+            crate::schema::annotations::check_schema_annotation_support(
+                typeql,
+                self.server_version,
+            )?;
+        }
+        Ok(())
+    }
+
     /// Execute one validated selected-row request without consuming this read context.
     pub async fn execute_match(
         &self,
@@ -214,6 +241,7 @@ impl Clone for TransactionContext {
             inner: Arc::clone(&self.inner),
             tx_type: self.tx_type,
             match_capabilities: self.match_capabilities.clone(),
+            server_version: self.server_version,
         }
     }
 }

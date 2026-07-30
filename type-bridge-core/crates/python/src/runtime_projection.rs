@@ -996,15 +996,120 @@ fn attribute_value_to_py(py: Python<'_>, value: &AttributeValue) -> PyResult<PyO
             .getattr("datetime")?
             .call_method1("fromisoformat", (value,))
             .map(Bound::unbind),
-        AttributeValue::Decimal(value) => py
-            .import("decimal")?
-            .getattr("Decimal")?
-            .call1((value,))
-            .map(Bound::unbind),
-        AttributeValue::Duration(_) => Err(py_value_error(
-            "duration hydration requires a lossless day-time parser",
-        )),
+        AttributeValue::Decimal(value) => {
+            let value = value.strip_suffix("dec").unwrap_or(value);
+            py.import("decimal")?
+                .getattr("Decimal")?
+                .call1((value,))
+                .map(Bound::unbind)
+        }
+        AttributeValue::Duration(value) => duration_to_py(py, value),
     }
+}
+
+fn duration_to_py(py: Python<'_>, value: &str) -> PyResult<PyObject> {
+    let (days, seconds, micros) = parse_python_day_time_duration(value).ok_or_else(|| {
+        py_value_error(
+            "duration hydration requires a nonnegative day-time value at microsecond precision",
+        )
+    })?;
+    py.import("datetime")?
+        .getattr("timedelta")?
+        .call1((days, seconds, micros))
+        .map(Bound::unbind)
+}
+
+fn parse_python_day_time_duration(value: &str) -> Option<(i64, i64, i64)> {
+    let body = value.strip_prefix('P')?;
+    if body.is_empty() || body.contains(['Y', 'W']) {
+        return None;
+    }
+    let mut parts = body.split('T');
+    let date = parts.next()?;
+    let time = parts.next();
+    if parts.next().is_some() {
+        return None;
+    }
+
+    let days = if date.is_empty() {
+        0_u64
+    } else {
+        date.strip_suffix('D')?.parse::<u64>().ok()?
+    };
+    let mut hours = 0_u64;
+    let mut minutes = 0_u64;
+    let mut seconds = 0_u64;
+    let mut micros = 0_u64;
+    let mut saw_component = !date.is_empty();
+    if let Some(time) = time {
+        if time.is_empty() {
+            return None;
+        }
+        let mut number = String::new();
+        let mut last_order = 0_u8;
+        for character in time.chars() {
+            if character.is_ascii_digit() || character == '.' {
+                number.push(character);
+                continue;
+            }
+            if number.is_empty() {
+                return None;
+            }
+            let order = match character {
+                'H' => 1,
+                'M' => 2,
+                'S' => 3,
+                _ => return None,
+            };
+            if order <= last_order {
+                return None;
+            }
+            last_order = order;
+            saw_component = true;
+            match character {
+                'H' => hours = number.parse().ok()?,
+                'M' => minutes = number.parse().ok()?,
+                'S' => {
+                    let (whole, fraction) = number
+                        .split_once('.')
+                        .map_or((number.as_str(), ""), |parts| parts);
+                    if whole.is_empty()
+                        || fraction.len() > 9
+                        || !fraction.bytes().all(|byte| byte.is_ascii_digit())
+                    {
+                        return None;
+                    }
+                    seconds = whole.parse().ok()?;
+                    let mut nanos = fraction.parse::<u64>().unwrap_or(0);
+                    for _ in fraction.len()..9 {
+                        nanos *= 10;
+                    }
+                    if nanos % 1_000 != 0 {
+                        return None;
+                    }
+                    micros = nanos / 1_000;
+                }
+                _ => unreachable!(),
+            }
+            number.clear();
+        }
+        if !number.is_empty() {
+            return None;
+        }
+    }
+    if !saw_component {
+        return None;
+    }
+
+    let seconds = hours
+        .checked_mul(3_600)?
+        .checked_add(minutes.checked_mul(60)?)?
+        .checked_add(seconds)?;
+    Some((
+        i64::try_from(days).ok()?,
+        i64::try_from(seconds).ok()?,
+        i64::try_from(micros).ok()?,
+    ))
 }
 
 fn py_diagnostic(error: type_bridge_contract::diagnostic::Diagnostic) -> PyErr {
@@ -1083,6 +1188,35 @@ plays:
             &[],
         )
         .unwrap()
+    }
+
+    #[test]
+    fn provider_decimal_and_day_time_duration_values_convert_losslessly() {
+        assert_eq!(
+            parse_python_day_time_duration("P1DT2H3M4.000005S"),
+            Some((1, 7_384, 5))
+        );
+        assert_eq!(parse_python_day_time_duration("PT1H"), Some((0, 3_600, 0)));
+        assert!(parse_python_day_time_duration("P1M").is_none());
+        assert!(parse_python_day_time_duration("PT0.000000001S").is_none());
+
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            let decimal =
+                attribute_value_to_py(py, &AttributeValue::Decimal("3.50dec".into())).unwrap();
+            assert_eq!(decimal.bind(py).str().unwrap().to_str().unwrap(), "3.50");
+            let duration =
+                attribute_value_to_py(py, &AttributeValue::Duration("PT3S".into())).unwrap();
+            assert_eq!(
+                duration
+                    .bind(py)
+                    .call_method0("total_seconds")
+                    .unwrap()
+                    .extract::<f64>()
+                    .unwrap(),
+                3.0
+            );
+        });
     }
 
     fn classes(

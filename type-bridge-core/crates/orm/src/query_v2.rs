@@ -150,7 +150,9 @@ fn lower_validated_query_with_execution_limits(
             type_bridge_contract::query_plan::Reducer::Sum => "sum",
             type_bridge_contract::query_plan::Reducer::Max => "max",
             type_bridge_contract::query_plan::Reducer::Mean => "mean",
+            type_bridge_contract::query_plan::Reducer::Median => "median",
             type_bridge_contract::query_plan::Reducer::Min => "min",
+            type_bridge_contract::query_plan::Reducer::Std => "std",
         };
         writeln!(
             typeql,
@@ -261,7 +263,9 @@ fn lower_validated_query_with_execution_limits(
                         type_bridge_contract::query_plan::Reducer::Count => "count",
                         type_bridge_contract::query_plan::Reducer::Max => "max",
                         type_bridge_contract::query_plan::Reducer::Mean => "mean",
+                        type_bridge_contract::query_plan::Reducer::Median => "median",
                         type_bridge_contract::query_plan::Reducer::Min => "min",
+                        type_bridge_contract::query_plan::Reducer::Std => "std",
                         type_bridge_contract::query_plan::Reducer::Sum => "sum",
                     };
                     write!(

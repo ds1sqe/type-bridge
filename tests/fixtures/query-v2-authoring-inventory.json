@@ -2218,7 +2218,7 @@
         "assigned": "result",
         "input": null,
         "op": "reduce_assignment",
-        "reducer": "median"
+        "reducer": "variance"
       },
       "id": "reducer_unknown",
       "kind": "builder",
@@ -7320,14 +7320,14 @@
         "local_return:sum:double"
       ],
       "expected": {
-        "canonical_b64": "eyJiaW5kaW5ncyI6W3siaWQiOjAsInZhcmlhYmxlIjoicGVyc29uIn0seyJpZCI6MSwidmFyaWFibGUiOiJtZXRyaWNfbG9uZyJ9LHsiaWQiOjIsInZhcmlhYmxlIjoibWV0cmljX2RvdWJsZSJ9LHsiaWQiOjMsInZhcmlhYmxlIjoibWF4aW11bSJ9LHsiaWQiOjQsInZhcmlhYmxlIjoibWVhbmVkIn0seyJpZCI6NSwidmFyaWFibGUiOiJtaW5pbXVtIn1dLCJjb21wYXRpYmlsaXR5Ijp7ImFsbG93ZWRfY3Jvc3Nfam9pbnMiOltdLCJtb2RlbF9xdWVyeSI6bnVsbCwicHJlZGljYXRlIjpudWxsfSwiZm9ybWF0IjoidHlwZWJyaWRnZS5xdWVyeS1wbGFuL3YyIiwiZnVuY3Rpb25zIjpbeyJiaW5kaW5ncyI6W3siaWQiOjAsInZhcmlhYmxlIjoibG9jYWxfYWdlX3BlcnNvbiJ9LHsiaWQiOjEsInZhcmlhYmxlIjoibG9jYWxfYWdlIn1dLCJib2R5IjpbeyJiaW5kaW5nIjowLCJpbmNsdWRlX3N1YnR5cGVzIjpmYWxzZSwia2luZCI6ImlzYSIsInR5cGVfaWQiOnsia2luZCI6ImVudGl0eSIsImxhYmVsIjoiaW52ZW50b3J5LXBlcnNvbiJ9fSx7ImF0dHJpYnV0ZSI6MSwiYXR0cmlidXRlX2lkIjoiaW52ZW50b3J5LWFnZSIsImtpbmQiOiJoYXMiLCJvd25lciI6MH1dLCJuYW1lIjoibG9jYWxfYWdlX3N1bSIsInBhcmFtZXRlcnMiOlsiaW52ZW50b3J5LXBlcnNvbiJdLCJyZXR1cm5zIjp7ImlucHV0IjoxLCJyZWR1Y2VyIjoic3VtIiwidmFsdWVfdHlwZSI6ImxvbmcifX0seyJiaW5kaW5ncyI6W3siaWQiOjAsInZhcmlhYmxlIjoibG9jYWxfcmF0aW9fcGVyc29uIn0seyJpZCI6MSwidmFyaWFibGUiOiJsb2NhbF9yYXRpbyJ9XSwiYm9keSI6W3siYmluZGluZyI6MCwiaW5jbHVkZV9zdWJ0eXBlcyI6ZmFsc2UsImtpbmQiOiJpc2EiLCJ0eXBlX2lkIjp7ImtpbmQiOiJlbnRpdHkiLCJsYWJlbCI6ImludmVudG9yeS1wZXJzb24ifX0seyJhdHRyaWJ1dGUiOjEsImF0dHJpYnV0ZV9pZCI6ImludmVudG9yeS1yYXRpbyIsImtpbmQiOiJoYXMiLCJvd25lciI6MH1dLCJuYW1lIjoibG9jYWxfcmF0aW9fc3VtIiwicGFyYW1ldGVycyI6WyJpbnZlbnRvcnktcGVyc29uIl0sInJldHVybnMiOnsiaW5wdXQiOjEsInJlZHVjZXIiOiJzdW0iLCJ2YWx1ZV90eXBlIjoiZG91YmxlIn19XSwiaW5wdXRzIjpbXSwibWFuYWdlZF9zZW1hbnRpY3MiOnsiYWxnb3JpdGhtIjoic2hhMjU2IiwiY2Fub25pY2FsaXphdGlvbiI6InR5cGVicmlkZ2UubWFuYWdlZC1zZW1hbnRpYy92MSIsImRpZ2VzdCI6IjE5MTg0MDFmN2M2ZDFjYjA2ZmNmODBiNTNlNWM4YjgzNTAwOTdjYjM1OTMyZWI2ZWZmYWUyNjM5ZWYzODU1ZjkiLCJkb21haW4iOiJ0eXBlYnJpZGdlLnNjaGVtYS5tYW5hZ2VkLXNlbWFudGljIiwic2VtYW50aWNfcHJvZmlsZSI6InR5cGVkYi0zLjEyLjEvdjEifSwib3V0cHV0Ijp7ImNvbHVtbnMiOlswLDMsNCw1XSwia2luZCI6InJvd3MifSwicGlwZWxpbmUiOlt7ImtpbmQiOiJtYXRjaCIsInBhdHRlcm5zIjpbeyJiaW5kaW5nIjowLCJpbmNsdWRlX3N1YnR5cGVzIjpmYWxzZSwia2luZCI6ImlzYSIsInR5cGVfaWQiOnsia2luZCI6ImVudGl0eSIsImxhYmVsIjoiaW52ZW50b3J5LXBlcnNvbiJ9fSx7ImFyZ3VtZW50cyI6W3siYmluZGluZyI6MCwia2luZCI6ImJpbmRpbmcifV0sImFzc2lnbmVkIjoxLCJmdW5jdGlvbiI6ImxvY2FsX2FnZV9zdW0iLCJraW5kIjoiZnVuY3Rpb25fY2FsbCJ9LHsiYXJndW1lbnRzIjpbeyJiaW5kaW5nIjowLCJraW5kIjoiYmluZGluZyJ9XSwiYXNzaWduZWQiOjIsImZ1bmN0aW9uIjoibG9jYWxfcmF0aW9fc3VtIiwia2luZCI6ImZ1bmN0aW9uX2NhbGwifV19LHsiYXNzaWdubWVudHMiOlt7ImFzc2lnbmVkIjozLCJpbnB1dCI6MSwicmVkdWNlciI6Im1heCJ9LHsiYXNzaWduZWQiOjQsImlucHV0IjoyLCJyZWR1Y2VyIjoibWVhbiJ9LHsiYXNzaWduZWQiOjUsImlucHV0IjoxLCJyZWR1Y2VyIjoibWluIn1dLCJncm91cHMiOlswXSwia2luZCI6InJlZHVjZSJ9XSwicmVxdWlyZWRfY2FwYWJpbGl0aWVzIjpbInF1ZXJ5LmZ1bmN0aW9uLmxvY2FsIiwicXVlcnkub3V0cHV0LnJvd3MiLCJxdWVyeS5wYXR0ZXJuLmZ1bmN0aW9uLWNhbGwiLCJxdWVyeS5wYXR0ZXJuLmhhcyIsInF1ZXJ5LnBhdHRlcm4uaXNhIiwicXVlcnkucGxhbiIsInF1ZXJ5LnBsYW4udjIiLCJxdWVyeS5zdGFnZS5yZWR1Y2UiXX0=",
-        "fingerprint": "567ffc0dcfca756160dc36df1b7b34369a814a0a5626ab5d7cbd2787e8e3487e"
+        "canonical_b64": "eyJiaW5kaW5ncyI6W3siaWQiOjAsInZhcmlhYmxlIjoicGVyc29uIn0seyJpZCI6MSwidmFyaWFibGUiOiJtZXRyaWNfbG9uZyJ9LHsiaWQiOjIsInZhcmlhYmxlIjoibWV0cmljX2RvdWJsZSJ9LHsiaWQiOjMsInZhcmlhYmxlIjoibWF4aW11bSJ9LHsiaWQiOjQsInZhcmlhYmxlIjoibWVhbmVkIn0seyJpZCI6NSwidmFyaWFibGUiOiJtZWRpYW5lZCJ9LHsiaWQiOjYsInZhcmlhYmxlIjoibWluaW11bSJ9LHsiaWQiOjcsInZhcmlhYmxlIjoiZGV2aWF0ZWQifV0sImNvbXBhdGliaWxpdHkiOnsiYWxsb3dlZF9jcm9zc19qb2lucyI6W10sIm1vZGVsX3F1ZXJ5IjpudWxsLCJwcmVkaWNhdGUiOm51bGx9LCJmb3JtYXQiOiJ0eXBlYnJpZGdlLnF1ZXJ5LXBsYW4vdjIiLCJmdW5jdGlvbnMiOlt7ImJpbmRpbmdzIjpbeyJpZCI6MCwidmFyaWFibGUiOiJsb2NhbF9hZ2VfcGVyc29uIn0seyJpZCI6MSwidmFyaWFibGUiOiJsb2NhbF9hZ2UifV0sImJvZHkiOlt7ImJpbmRpbmciOjAsImluY2x1ZGVfc3VidHlwZXMiOmZhbHNlLCJraW5kIjoiaXNhIiwidHlwZV9pZCI6eyJraW5kIjoiZW50aXR5IiwibGFiZWwiOiJpbnZlbnRvcnktcGVyc29uIn19LHsiYXR0cmlidXRlIjoxLCJhdHRyaWJ1dGVfaWQiOiJpbnZlbnRvcnktYWdlIiwia2luZCI6ImhhcyIsIm93bmVyIjowfV0sIm5hbWUiOiJsb2NhbF9hZ2Vfc3VtIiwicGFyYW1ldGVycyI6WyJpbnZlbnRvcnktcGVyc29uIl0sInJldHVybnMiOnsiaW5wdXQiOjEsInJlZHVjZXIiOiJzdW0iLCJ2YWx1ZV90eXBlIjoibG9uZyJ9fSx7ImJpbmRpbmdzIjpbeyJpZCI6MCwidmFyaWFibGUiOiJsb2NhbF9yYXRpb19wZXJzb24ifSx7ImlkIjoxLCJ2YXJpYWJsZSI6ImxvY2FsX3JhdGlvIn1dLCJib2R5IjpbeyJiaW5kaW5nIjowLCJpbmNsdWRlX3N1YnR5cGVzIjpmYWxzZSwia2luZCI6ImlzYSIsInR5cGVfaWQiOnsia2luZCI6ImVudGl0eSIsImxhYmVsIjoiaW52ZW50b3J5LXBlcnNvbiJ9fSx7ImF0dHJpYnV0ZSI6MSwiYXR0cmlidXRlX2lkIjoiaW52ZW50b3J5LXJhdGlvIiwia2luZCI6ImhhcyIsIm93bmVyIjowfV0sIm5hbWUiOiJsb2NhbF9yYXRpb19zdW0iLCJwYXJhbWV0ZXJzIjpbImludmVudG9yeS1wZXJzb24iXSwicmV0dXJucyI6eyJpbnB1dCI6MSwicmVkdWNlciI6InN1bSIsInZhbHVlX3R5cGUiOiJkb3VibGUifX1dLCJpbnB1dHMiOltdLCJtYW5hZ2VkX3NlbWFudGljcyI6eyJhbGdvcml0aG0iOiJzaGEyNTYiLCJjYW5vbmljYWxpemF0aW9uIjoidHlwZWJyaWRnZS5tYW5hZ2VkLXNlbWFudGljL3YxIiwiZGlnZXN0IjoiMTkxODQwMWY3YzZkMWNiMDZmY2Y4MGI1M2U1YzhiODM1MDA5N2NiMzU5MzJlYjZlZmZhZTI2MzllZjM4NTVmOSIsImRvbWFpbiI6InR5cGVicmlkZ2Uuc2NoZW1hLm1hbmFnZWQtc2VtYW50aWMiLCJzZW1hbnRpY19wcm9maWxlIjoidHlwZWRiLTMuMTIuMS92MSJ9LCJvdXRwdXQiOnsiY29sdW1ucyI6WzAsMyw0LDUsNiw3XSwia2luZCI6InJvd3MifSwicGlwZWxpbmUiOlt7ImtpbmQiOiJtYXRjaCIsInBhdHRlcm5zIjpbeyJiaW5kaW5nIjowLCJpbmNsdWRlX3N1YnR5cGVzIjpmYWxzZSwia2luZCI6ImlzYSIsInR5cGVfaWQiOnsia2luZCI6ImVudGl0eSIsImxhYmVsIjoiaW52ZW50b3J5LXBlcnNvbiJ9fSx7ImFyZ3VtZW50cyI6W3siYmluZGluZyI6MCwia2luZCI6ImJpbmRpbmcifV0sImFzc2lnbmVkIjoxLCJmdW5jdGlvbiI6ImxvY2FsX2FnZV9zdW0iLCJraW5kIjoiZnVuY3Rpb25fY2FsbCJ9LHsiYXJndW1lbnRzIjpbeyJiaW5kaW5nIjowLCJraW5kIjoiYmluZGluZyJ9XSwiYXNzaWduZWQiOjIsImZ1bmN0aW9uIjoibG9jYWxfcmF0aW9fc3VtIiwia2luZCI6ImZ1bmN0aW9uX2NhbGwifV19LHsiYXNzaWdubWVudHMiOlt7ImFzc2lnbmVkIjozLCJpbnB1dCI6MSwicmVkdWNlciI6Im1heCJ9LHsiYXNzaWduZWQiOjQsImlucHV0IjoyLCJyZWR1Y2VyIjoibWVhbiJ9LHsiYXNzaWduZWQiOjUsImlucHV0IjoyLCJyZWR1Y2VyIjoibWVkaWFuIn0seyJhc3NpZ25lZCI6NiwiaW5wdXQiOjEsInJlZHVjZXIiOiJtaW4ifSx7ImFzc2lnbmVkIjo3LCJpbnB1dCI6MiwicmVkdWNlciI6InN0ZCJ9XSwiZ3JvdXBzIjpbMF0sImtpbmQiOiJyZWR1Y2UifV0sInJlcXVpcmVkX2NhcGFiaWxpdGllcyI6WyJxdWVyeS5mdW5jdGlvbi5sb2NhbCIsInF1ZXJ5Lm91dHB1dC5yb3dzIiwicXVlcnkucGF0dGVybi5mdW5jdGlvbi1jYWxsIiwicXVlcnkucGF0dGVybi5oYXMiLCJxdWVyeS5wYXR0ZXJuLmlzYSIsInF1ZXJ5LnBsYW4iLCJxdWVyeS5wbGFuLnYyIiwicXVlcnkuc3RhZ2UucmVkdWNlIl19",
+        "fingerprint": "f49b970bcf5c3d13af3a9d9646efd0f6c590a97e628ec86a3cc4b9d16a8a038d"
       },
       "id": "grouped_reducers",
       "invocations": [
         {
           "expected": {
-            "canonical_b64": "eyJpbnB1dHMiOltdLCJvcGVyYXRpb24iOiJyb3dzIiwicGxhbl9maW5nZXJwcmludCI6eyJhbGdvcml0aG0iOiJzaGEyNTYiLCJjYW5vbmljYWxpemF0aW9uIjoidHlwZWJyaWRnZS5xdWVyeS1wbGFuLWMxNG4vdjIiLCJkaWdlc3QiOiI1NjdmZmMwZGNmY2E3NTYxNjBkYzM2ZGYxYjdiMzQzNjlhODE0YTBhNTYyNmFiNWQ3Y2JkMjc4N2U4ZTM0ODdlIiwiZG9tYWluIjoidHlwZWJyaWRnZS5xdWVyeS5wbGFuIn19",
+            "canonical_b64": "eyJpbnB1dHMiOltdLCJvcGVyYXRpb24iOiJyb3dzIiwicGxhbl9maW5nZXJwcmludCI6eyJhbGdvcml0aG0iOiJzaGEyNTYiLCJjYW5vbmljYWxpemF0aW9uIjoidHlwZWJyaWRnZS5xdWVyeS1wbGFuLWMxNG4vdjIiLCJkaWdlc3QiOiJmNDliOTcwYmNmNWMzZDEzYWYzYTlkOTY0NmVmZDBmNmM1OTBhOTdlNjI4ZWM4NmEzY2M0YjlkMTZhOGEwMzhkIiwiZG9tYWluIjoidHlwZWJyaWRnZS5xdWVyeS5wbGFuIn19",
             "required_transport_capabilities": []
           },
           "id": "rows",
@@ -7466,8 +7466,18 @@
           "op": "binding"
         },
         {
+          "id": "medianed",
+          "name": "medianed",
+          "op": "binding"
+        },
+        {
           "id": "minimum",
           "name": "minimum",
+          "op": "binding"
+        },
+        {
+          "id": "deviated",
+          "name": "deviated",
           "op": "binding"
         },
         {
@@ -7526,6 +7536,13 @@
           "reducer": "mean"
         },
         {
+          "assigned": "medianed",
+          "id": "median_assignment",
+          "input": "metric_double",
+          "op": "reduce_assignment",
+          "reducer": "median"
+        },
+        {
           "assigned": "minimum",
           "id": "min_assignment",
           "input": "metric_long",
@@ -7533,10 +7550,19 @@
           "reducer": "min"
         },
         {
+          "assigned": "deviated",
+          "id": "std_assignment",
+          "input": "metric_double",
+          "op": "reduce_assignment",
+          "reducer": "std"
+        },
+        {
           "assignments": [
             "max_assignment",
             "mean_assignment",
-            "min_assignment"
+            "median_assignment",
+            "min_assignment",
+            "std_assignment"
           ],
           "groups": [
             "person"
@@ -7548,7 +7574,9 @@
             "person",
             "maximum",
             "meaned",
-            "minimum"
+            "medianed",
+            "minimum",
+            "deviated"
           ],
           "id": "plan",
           "op": "finalize_rows"

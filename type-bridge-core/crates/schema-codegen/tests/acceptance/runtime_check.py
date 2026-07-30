@@ -1,4 +1,6 @@
 import json
+from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
 
 from generated_v2 import (
     PLAYING_FACTS,
@@ -16,7 +18,33 @@ from generated_v2 import (
     Person,
     PersonRef,
     RoleToken,
+    Score,
+    ValBool,
+    ValConstrained,
+    ValDate,
+    ValDatetime,
+    ValDatetimeTz,
+    ValDecimal,
+    ValDouble,
+    ValDuration,
 )
+
+
+def make_person(identifier: str, **values: object) -> Person:
+    return Person(
+        identifier=Identifier(identifier),
+        score=Score(3),
+        val_bool=ValBool(True),
+        val_constrained=ValConstrained(20),
+        val_date=ValDate(date(2026, 7, 29)),
+        val_datetime=ValDatetime(datetime(2026, 7, 29)),
+        val_datetime_tz=ValDatetimeTz(datetime(2026, 7, 29, tzinfo=UTC)),
+        val_decimal=ValDecimal(Decimal("3.5")),
+        val_double=ValDouble(3.5),
+        val_duration=ValDuration(timedelta(seconds=3)),
+        **values,
+    )
+
 
 descriptor = Employment.__dict__["employee"]
 assert descriptor.name == "employee"
@@ -25,8 +53,8 @@ assert isinstance(Person.identifier, FieldToken)
 assert Person.identifier.fact["key"] is True
 assert Person.aliases.fact["unique"] is True
 
-person = Person(
-    identifier=Identifier("person-1"),
+person = make_person(
+    "person-1",
     nickname=Nickname("alice"),
     aliases=[Aliases("a"), Aliases("b")],
 )
@@ -64,8 +92,8 @@ else:
 
 try:
     Employment(
-        employee=Person(identifier=Identifier("person-1")),
-        member=Person(identifier=Identifier("person-2")),
+        employee=make_person("person-1"),
+        member=make_person("person-2"),
     )
 except TypeError:
     pass
@@ -79,13 +107,13 @@ assert person.iid is None
 assert person.identifier.value == "person-1"
 
 try:
-    Person(identifier=Identifier("person-1"), aliases="not-a-sequence-value")
+    make_person("person-1", aliases="not-a-sequence-value")
 except TypeError:
     pass
 else:
     raise AssertionError("string was accepted as a multi-cardinality owns value")
 
-assert len(PLAYING_FACTS) == 5
+assert len(PLAYING_FACTS) == 8
 membership_facts = [
     fact
     for fact in PLAYING_FACTS.values()

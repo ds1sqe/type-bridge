@@ -431,7 +431,7 @@ fn run_schema_generate(workspace: &TypeBridgeWorkspace) -> Result<(), String> {
                     &emitter.code_resources().map_err(display)?,
                 )
                 .map_err(display)?;
-                emitter.emit(&projection)
+                emitter.emit_with_declared_schema(&projection, workspace.declared_schema())
             }
         }
         .map_err(display)?;

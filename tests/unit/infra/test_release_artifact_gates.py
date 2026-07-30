@@ -25,6 +25,7 @@ RUST_RELEASE_ARTIFACT_VALIDATOR = REPO_ROOT / "scripts/ci/validate_rust_release_
 NPM_ACCESS_VALIDATOR = REPO_ROOT / "scripts/ci/validate_npm_package_access.py"
 STABLE_PUBLICATION_GUARD = "if: github.event_name == 'push' && github.ref == 'refs/tags/v2.0.0'"
 MUTATING_RELEASE_JOBS = (
+    "publish-server-oci",
     "publish-node-npm",
     "publish-core-pypi",
     "publish-python-pypi",
@@ -485,7 +486,7 @@ def test_release_identity_gate_receives_all_lockstep_authorities() -> None:
     workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
     identity = job_block(workflow, "validate-release-identity")
 
-    assert "--artifact-contract python-npm-only" in identity
+    assert "--artifact-contract source-git-server-oci" in identity
     assert '--release-channel "$RELEASE_CHANNEL"' in identity
     assert '--tag "$RELEASE_TAG"' in identity
     assert "--root-python pyproject.toml" in identity
@@ -587,6 +588,10 @@ def test_release_channels_have_fixed_non_attacker_controlled_identities() -> Non
         "inputs.release_channel == 'candidate' && 'v2.0.0-rc.0' || 'v2.0.0' }}"
     ) in preamble
     assert (
+        "RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && "
+        "inputs.release_channel == 'candidate' && '2.0.0-rc.0' || '2.0.0' }}"
+    ) in preamble
+    assert (
         "PYTHON_RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && "
         "inputs.release_channel == 'candidate' && '2.0.0rc0' || '2.0.0' }}"
     ) in preamble
@@ -595,9 +600,10 @@ def test_release_channels_have_fixed_non_attacker_controlled_identities() -> Non
         "&& inputs.release_channel || 'stable' }}"
     ) in preamble
     assert workflow.count("RELEASE_TAG:") == 1
+    assert workflow.count("\n  RELEASE_VERSION:") == 1
     assert workflow.count("PYTHON_RELEASE_VERSION:") == 1
     assert workflow.count("RELEASE_CHANNEL:") == 1
-    assert workflow.count("inputs.release_channel") == 3
+    assert workflow.count("inputs.release_channel") == 4
     assert "GITHUB_REF_NAME" not in workflow
     assert "github.ref_name" not in workflow
     assert "RELEASE_TAG#v" not in workflow
@@ -656,15 +662,15 @@ def test_python_npm_publication_is_serial_after_global_candidate_gates() -> None
 
     assert needs_line(preflight) == (
         "    needs: [validate-release-identity, accept-python-artifacts, "
-        "accept-node-package, accept-live-artifact-parity]"
+        "accept-node-package, accept-live-artifact-parity, accept-server-oci]"
     )
-    assert needs_line(node_publish) == "    needs: channel-preflight"
+    assert needs_line(node_publish) == ("    needs: [channel-preflight, publish-server-oci]")
     assert needs_line(core_publish) == (
         "    needs: [build-core-wheels, build-core-sdist, publish-node-npm]"
     )
     assert needs_line(root_publish) == ("    needs: [build-python, publish-core-pypi]")
     assert needs_line(github_release) == (
-        "    needs: [publish-node-npm, publish-core-pypi, publish-python-pypi]"
+        "    needs: [publish-server-oci, publish-node-npm, publish-core-pypi, publish-python-pypi]"
     )
     assert "NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}" in preflight
     assert "NPM_TOKEN is required for an atomic cross-registry release." in preflight
@@ -1082,7 +1088,9 @@ def test_live_release_parity_consumes_exact_artifacts_before_every_publish() -> 
 
     preflight = job_block(workflow, "channel-preflight")
     assert "accept-live-artifact-parity" in needs_line(preflight)
-    assert needs_line(job_block(workflow, "publish-node-npm")) == ("    needs: channel-preflight")
+    assert needs_line(job_block(workflow, "publish-node-npm")) == (
+        "    needs: [channel-preflight, publish-server-oci]"
+    )
 
 
 def test_live_node_reader_consumes_supplied_tarball_without_npm_pack(
@@ -1462,7 +1470,7 @@ def test_npm_publication_uses_the_accepted_tarball() -> None:
     assert "npm pack" not in acceptance
     assert "actions/upload-artifact" not in acceptance
 
-    assert needs_line(publish) == "    needs: channel-preflight"
+    assert needs_line(publish) == "    needs: [channel-preflight, publish-server-oci]"
     assert "name: node-package" in publish
     assert publish.count("scripts/ci/validate_node_release_package.py") == 2
     assert "--repository-package type-bridge-core/crates/node/package.json" in publish

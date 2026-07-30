@@ -125,10 +125,11 @@ schema_manager.sync_schema()  # ✅ Success if compatible
 
 ### Schema Annotations and Server Versions
 
-`@doc`/`@meta` schema annotations require a TypeDB **3.12+** server. Before
-sending schema DDL, `sync_schema()` (and the migration executor) check the
-server version detected at connect time and raise a versioned error when
-annotated DDL targets an older server:
+`@doc`/`@meta` schema annotations require a TypeDB **3.12+** server. Every ORM
+schema-query boundary checks the server version detected at connect time and
+raises a versioned error when annotated DDL targets an older server. This
+includes `execute_query(..., "schema")`, Rust `execute_raw`, caller-owned
+schema transactions, `sync_schema()`, and migration execution:
 
 ```text
 VersionError: schema annotations (@doc/@meta) require TypeDB 3.12 or newer;
@@ -136,8 +137,10 @@ detected server 3.11.5 — upgrade the server to the 3.12 line or remove the
 annotations from the schema
 ```
 
-The check fires client-side, so no partial DDL reaches the server. Two
-`Database` helpers expose the gate directly:
+The check fires client-side before the provider query, so no partial DDL
+reaches the server. One-shot helpers reject before opening their schema
+transaction; a caller-owned transaction rejects before dispatching the
+annotated query. Two `Database` helpers expose the gate directly:
 
 ```python
 db.detected_server_version()             # e.g. "3.12.0"; None when unknown

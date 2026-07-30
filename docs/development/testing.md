@@ -296,6 +296,19 @@ uv run pytest tests/integration/crud/relations/test_abstract_roles.py -v
 uv run pytest tests/integration/crud/relations/test_multi_role.py -v
 ```
 
+**Run the generated Rust consumer E2E suite:**
+
+```bash
+./scripts/run-rust-projection-live.sh
+```
+
+This isolated TypeDB 3.12.1 lane generates the application-owned schema crate
+and tests it as an external consumer of the public `type-bridge` crate. Its
+focused tests cover schema binding and generated tokens, entity CRUD and scalar
+domains, inheritance, relation/query/remote behavior, and transaction
+commit/rollback/drop. The provider setup also verifies that representative
+`@doc` annotations survive a define-and-export round trip.
+
 ### Integration Test Coverage
 
 **Schema operations:**

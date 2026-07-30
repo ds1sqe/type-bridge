@@ -157,6 +157,14 @@ pub fn prepare_remote_model_query_v2(
         MatchRequestAdaptation::LegacyRequired(reason) => {
             return Err(resource_envelope_failure(reason).into());
         }
+        MatchRequestAdaptation::NativeOnly => {
+            return Err(failure(
+                DiagnosticCategory::UnsupportedCapability,
+                "query_remote_v2_native_only_operation",
+                "typed reductions execute only through the direct provider lane",
+            )
+            .into());
+        }
     };
     let invocation =
         QueryInvocation::new(adapted.validated().plan(), adapted.operation(), Vec::new())?;
@@ -204,7 +212,8 @@ mod tests {
     use crate::match_request::{
         BindingId, BoundFieldId, FetchShape, FetchSlot, FieldId, MatchBinding, MatchErrorCategory,
         MatchErrorPathSegment, MatchMode, MatchOperation, MatchOrder, MatchPlan, MatchRequest,
-        MissingOrder, RowCardinality, SortDirection, ThingKind, Window, validate_match_request,
+        MissingOrder, ReduceTerm, Reduction, RowCardinality, SortDirection, ThingKind, Window,
+        validate_match_request,
     };
     use crate::query_v2_prepared::QueryAuthority;
     use crate::schema::{SchemaInfo, generator::generate_define_block};
@@ -328,5 +337,58 @@ mod tests {
             &[MatchErrorPathSegment::Field(nullable_field)]
         );
         assert!(error.details().is_empty());
+    }
+
+    #[test]
+    fn remote_model_preparation_fails_closed_on_native_only_typed_reductions() {
+        let registry = nullable_order_registry();
+        let descriptor = registry.descriptor_id("person").expect("person descriptor");
+        let request = MatchRequest::v1(
+            MatchPlan {
+                bindings: vec![MatchBinding {
+                    id: BindingId::new(0),
+                    descriptor,
+                    thing_kind: ThingKind::Entity,
+                    match_mode: MatchMode::Exact,
+                }],
+                predicate: None,
+                allowed_cross_joins: BTreeSet::new(),
+            },
+            MatchOperation::ReduceBy {
+                root: BindingId::new(0),
+                group: None,
+                reducers: vec![ReduceTerm {
+                    reduction: Reduction::Count,
+                    input: None,
+                }],
+            },
+        );
+        let validated = validate_match_request(&registry, request).expect("valid reduce request");
+        let authority = matching_authority(&registry);
+        let result = prepare_remote_model_query_v2(
+            &authority,
+            &registry,
+            validated,
+            b"advertisement decoding must not run",
+            RemoteLimitsV2 {
+                deadline_ms: Some(1_000),
+                max_bytes: 4_096,
+                max_items: 10,
+                max_collection_members: 10,
+                max_graph_nodes: 10,
+                max_attribute_values: 10,
+                max_role_players: 10,
+            },
+        );
+        let error = match result {
+            Err(RemoteModelQueryV2Error::Diagnostic(error)) => error,
+            Err(error) => panic!("expected native-only diagnostic, got {error:?}"),
+            Ok(_) => panic!("typed reductions must not reach remote preparation"),
+        };
+        assert_eq!(error.category(), DiagnosticCategory::UnsupportedCapability);
+        assert_eq!(
+            error.code().as_str(),
+            "query_remote_v2_native_only_operation"
+        );
     }
 }

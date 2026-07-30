@@ -152,7 +152,7 @@ pub(crate) fn analyze_local_function(
             Some(tag @ (ValueTypeTag::Long | ValueTypeTag::Double)) => tag,
             _ => return Err(fail(codes.local_return_domain)),
         },
-        Reducer::Max | Reducer::Min | Reducer::Mean => {
+        Reducer::Max | Reducer::Min | Reducer::Mean | Reducer::Median | Reducer::Std => {
             return Err(fail(codes.local_return_domain));
         }
     };

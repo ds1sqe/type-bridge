@@ -85,6 +85,22 @@ fn installed_projection_derives_exact_provider_descriptors_without_registry_stat
 }
 
 #[test]
+fn installed_projection_builds_its_exact_match_registry() {
+    let registry = installed().match_registry().unwrap();
+
+    assert_eq!(registry.snapshot().len(), 3);
+    assert_eq!(registry.entity("person").unwrap().type_name, "person");
+    assert_eq!(
+        registry
+            .relation("employment")
+            .unwrap()
+            .parent_type
+            .as_deref(),
+        Some("membership")
+    );
+}
+
+#[test]
 fn exact_fetch_builders_add_isa_bang_without_changing_inclusive_builders() {
     let installed = installed();
     let person = TypeId::new(TypeKind::Entity, "person").unwrap();

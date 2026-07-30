@@ -323,6 +323,7 @@ fn real_match_capabilities() -> CapabilitySet {
         Capability::CollectDistinct,
         Capability::StableCollectionOrder,
         Capability::BoundedReachability,
+        Capability::TypedReduction,
     ])
 }
 
@@ -583,6 +584,29 @@ impl TransactionOps for RealTransaction {
                 response_bytes: stats.response_bytes,
                 stopped_early: stats.stopped_early,
             })
+        })
+    }
+
+    fn query_canonical<'a>(
+        &'a mut self,
+        typeql: &str,
+    ) -> BoxFuture<'a, Result<QueryResult, OrmError>> {
+        let typeql = typeql.to_owned();
+        Box::pin(async move {
+            let limits = runtime::QueryV2RuntimeAnswerLimits {
+                answer: runtime::RuntimeAnswerLimits {
+                    max_items: u64::MAX,
+                    max_bytes: u64::MAX,
+                    deadline: None,
+                    cancellation: runtime::RuntimeAnswerCancellation::default(),
+                },
+                max_collection_members: u64::MAX,
+            };
+            self.inner
+                .query_v2_materialized(&typeql, limits)
+                .await
+                .map(query_result)
+                .map_err(OrmError::from)
         })
     }
 

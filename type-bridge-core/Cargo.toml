@@ -18,6 +18,7 @@ members = [
     "crates/orm",
     "crates/orm-derive",
     "crates/node",
+    "crates/rust",
     "crates/toml-transpiler",
     "vendor/typedb-protocol-b7",
     "vendor/typedb-driver-b7",

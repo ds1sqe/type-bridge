@@ -25,6 +25,14 @@ type NativeMatchComparison =
 type NativeMatchDirection = "ascending" | "descending";
 type NativeMatchMissingOrder = "reject" | "first" | "last";
 type NativeMatchRowCardinality = "exactly_one" | "bounded_many";
+type NativeMatchReduction =
+  | "count"
+  | "sum"
+  | "min"
+  | "max"
+  | "mean"
+  | "median"
+  | "std";
 declare const nativeMatchHandleKind: unique symbol;
 
 interface NativeMatchSessionHandle {
@@ -154,6 +162,26 @@ interface NativeMatchQueryHandle {
   ): string;
   countByDiagnostic(root: NativeMatchBindingHandle): string;
   existsByDiagnostic(root: NativeMatchBindingHandle): string;
+  reduceByDiagnostic(
+    root: NativeMatchBindingHandle,
+    group: NativeMatchBindingHandle | null,
+    reducers: NativeMatchReduction[],
+    inputs: (NativeMatchFieldHandle | null)[],
+  ): string;
+  executeReduceByOwned(
+    database: NativeRustDatabase,
+    root: NativeMatchBindingHandle,
+    group: NativeMatchBindingHandle | null,
+    reducers: NativeMatchReduction[],
+    inputs: (NativeMatchFieldHandle | null)[],
+  ): NativeValidatedMatchResultHandle;
+  executeReduceByBorrowed(
+    transaction: NativeRustTransactionContext,
+    root: NativeMatchBindingHandle,
+    group: NativeMatchBindingHandle | null,
+    reducers: NativeMatchReduction[],
+    inputs: (NativeMatchFieldHandle | null)[],
+  ): NativeValidatedMatchResultHandle;
 }
 
 interface NativeValidatedMatchResultHandle {
@@ -186,6 +214,32 @@ interface NativeValidatedMatchResultHandle {
   pageTotal(query: NativeMatchQueryHandle): bigint | null;
   countValue(query: NativeMatchQueryHandle): bigint;
   existsValue(query: NativeMatchQueryHandle): boolean;
+  reductionRowCount(query: NativeMatchQueryHandle): number;
+  reductionValueCount(query: NativeMatchQueryHandle, rowIndex: number): number;
+  reductionValueKind(
+    query: NativeMatchQueryHandle,
+    rowIndex: number,
+    valueIndex: number,
+  ): "count" | "long" | "double";
+  reductionCountValue(
+    query: NativeMatchQueryHandle,
+    rowIndex: number,
+    valueIndex: number,
+  ): bigint;
+  reductionLongValue(
+    query: NativeMatchQueryHandle,
+    rowIndex: number,
+    valueIndex: number,
+  ): bigint | null;
+  reductionDoubleValue(
+    query: NativeMatchQueryHandle,
+    rowIndex: number,
+    valueIndex: number,
+  ): number | null;
+  reductionGroup(
+    query: NativeMatchQueryHandle,
+    rowIndex: number,
+  ): NativeValidatedThingHandle;
 }
 
 interface NativeValidatedThingHandle {

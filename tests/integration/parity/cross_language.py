@@ -83,6 +83,25 @@ ATTRIBUTE_CLASSES = {
     "kind": ParityKind,
 }
 
+
+def parse_npm_pack_manifest(stdout: str) -> dict[str, Any]:
+    """Accept the one-artifact JSON shapes emitted across supported npm lines."""
+    payload = json.loads(stdout)
+    if isinstance(payload, list):
+        if len(payload) != 1:
+            raise ValueError("npm pack did not return exactly one artifact")
+        manifest = payload[0]
+    elif isinstance(payload, dict):
+        if len(payload) != 1:
+            raise ValueError("npm pack did not return exactly one artifact")
+        manifest = next(iter(payload.values()))
+    else:
+        raise TypeError("npm pack returned neither an array nor an object")
+    if not isinstance(manifest, dict):
+        raise TypeError("npm pack artifact manifest is not an object")
+    return manifest
+
+
 NODE_VALUE_TYPES = {
     "String": "string",
     "Long": "long",
@@ -409,10 +428,10 @@ def _read_with_packed_node(
                     f"npm pack failed\nstdout:\n{packed.stdout}\nstderr:\n{packed.stderr}"
                 )
             try:
-                pack_info = json.loads(packed.stdout)[0]
+                pack_info = parse_npm_pack_manifest(packed.stdout)
                 packed_paths = {entry["path"] for entry in pack_info["files"]}
                 tarball = pack_root / pack_info["filename"]
-            except (IndexError, KeyError, TypeError, json.JSONDecodeError) as error:
+            except (IndexError, KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
                 raise AssertionError(f"could not parse npm pack output: {packed.stdout}") from error
         else:
             tarball = supplied_package

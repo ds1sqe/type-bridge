@@ -14,7 +14,7 @@ use super::capability::CapabilitySet;
 use super::error::{MatchError, MatchErrorCategory, MatchErrorPathSegment};
 use super::ids::BindingId;
 use super::model::{MatchOperation, Window};
-use super::result::{ProviderResultEvidence, ValidatedMatchResult};
+use super::result::{ProviderResultEvidence, ReducedValue, ReductionRow, ValidatedMatchResult};
 use super::result_validation::validate_provider_result;
 use super::validation::ValidatedMatchRequest;
 
@@ -22,8 +22,9 @@ use super::validation::ValidatedMatchRequest;
 ///
 /// Row and page responses are deliberately empty: non-empty provider evidence
 /// remains an internal Rust executor concern and cannot be forged through this
-/// public recording seam.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// public recording seam. Scalar reduction values are forgeable by design so
+/// canonical reduction result validation stays provable offline.
+#[derive(Debug, Clone, PartialEq)]
 pub enum RecordingMatchResponse {
     /// Return no selected-row solutions.
     EmptyRows,
@@ -36,6 +37,10 @@ pub enum RecordingMatchResponse {
     Count(u64),
     /// Return one distinct-root existence value.
     Exists(bool),
+    /// Return one ungrouped typed reduction row of scalar values.
+    Reduction(Vec<ReducedValue>),
+    /// Return a grouped typed reduction with zero witnessed groups.
+    EmptyGroupedReduction,
     /// Fail at the provider callback boundary.
     ProviderFailure {
         /// Stable recording-provider error code.
@@ -136,6 +141,20 @@ impl RecordingMatchExecutor {
                 operation_root(validated),
                 value,
             ),
+            RecordingMatchResponse::Reduction(values) => ProviderResultEvidence::reduction(
+                request_token,
+                shape_id,
+                operation_root(validated),
+                operation_group(validated),
+                vec![ReductionRow::new(None, values)],
+            ),
+            RecordingMatchResponse::EmptyGroupedReduction => ProviderResultEvidence::reduction(
+                request_token,
+                shape_id,
+                operation_root(validated),
+                operation_group(validated),
+                Vec::new(),
+            ),
             RecordingMatchResponse::ProviderFailure { code, message } => {
                 return Err(MatchError::new(MatchErrorCategory::Provider, code, message)
                     .at(MatchErrorPathSegment::ProviderEvidence));
@@ -150,8 +169,16 @@ fn operation_root(validated: &ValidatedMatchRequest) -> BindingId {
     match &validated.request().operation {
         MatchOperation::PageBy { root, .. }
         | MatchOperation::CountBy { root }
-        | MatchOperation::ExistsBy { root } => *root,
+        | MatchOperation::ExistsBy { root }
+        | MatchOperation::ReduceBy { root, .. } => *root,
         MatchOperation::FetchRows { .. } => BindingId::new(0),
+    }
+}
+
+fn operation_group(validated: &ValidatedMatchRequest) -> Option<BindingId> {
+    match &validated.request().operation {
+        MatchOperation::ReduceBy { group, .. } => *group,
+        _ => None,
     }
 }
 
@@ -159,7 +186,9 @@ fn page_contract(validated: &ValidatedMatchRequest) -> (BindingId, Window) {
     match &validated.request().operation {
         MatchOperation::PageBy { root, window, .. } => (*root, *window),
         MatchOperation::FetchRows { window, .. } => (BindingId::new(0), *window),
-        MatchOperation::CountBy { root } | MatchOperation::ExistsBy { root } => (
+        MatchOperation::CountBy { root }
+        | MatchOperation::ExistsBy { root }
+        | MatchOperation::ReduceBy { root, .. } => (
             *root,
             Window {
                 offset: 0,

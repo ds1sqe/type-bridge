@@ -1,10 +1,12 @@
 import type { RustDatabase, RustTransactionContext } from "@type-bridge/node";
 
 import {
+  aggregate,
   type BoundVar,
   type Page,
   type Query,
   QuerySession,
+  references,
 } from "@type-bridge/node/typed";
 import {
   ContractCompany,
@@ -32,6 +34,7 @@ const personBinding: BoundVar<ContractPerson> = person;
 void personBinding;
 
 const people: Query<readonly [ContractPerson]> = databaseSession.query(person);
+const personRefs = references(ContractPerson);
 const onePerson: ContractPerson = people.one();
 const personRows: readonly ContractPerson[] = people.rows({ limit: 25 });
 const personPage: Page<ContractPerson> = people.pageBy(person, {
@@ -44,6 +47,32 @@ void onePerson;
 void personRows;
 void pagePerson;
 void pageTotal;
+
+const age = person.field(personRefs.fields.age);
+const ageSummary: readonly [
+  bigint,
+  bigint,
+  bigint | null,
+  number | null,
+  number | null,
+  number | null,
+] = people.aggregate(person, [
+  aggregate.count(),
+  aggregate.sum(age),
+  aggregate.max(age),
+  aggregate.mean(age),
+  aggregate.median(age),
+  aggregate.std(age),
+]);
+const groupedCounts: readonly (readonly [
+  ContractCompany,
+  readonly [bigint],
+])[] = people
+  .groupBy(person, company)
+  .allowCrossJoin(person, company)
+  .aggregate([aggregate.count()]);
+void ageSummary;
+void groupedCounts;
 
 const pair: Query<readonly [ContractPerson, ContractEmployment]> =
   databaseSession.query(person, employment);

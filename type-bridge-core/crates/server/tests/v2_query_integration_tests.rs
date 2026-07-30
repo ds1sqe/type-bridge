@@ -290,6 +290,7 @@ struct ProductionV2<'a> {
 
 struct ProductionServer {
     child: Option<Child>,
+    container_name: Option<String>,
     stdout_path: std::path::PathBuf,
     stderr_path: std::path::PathBuf,
 }
@@ -300,17 +301,60 @@ impl ProductionServer {
         let stderr_path = log_directory.join("type-bridge-server.stderr.log");
         let stdout = File::create(&stdout_path).expect("create production-server stdout capture");
         let stderr = File::create(&stderr_path).expect("create production-server stderr capture");
-        let child = Command::new(env!("CARGO_BIN_EXE_type-bridge-server"))
-            .arg("--config")
-            .arg(config_path)
+        let image = std::env::var("TYPE_BRIDGE_SERVER_IMAGE").ok();
+        let container_name = image.as_ref().map(|_| {
+            format!(
+                "type-bridge-server-oci-{}-{}",
+                std::process::id(),
+                DATABASE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+            )
+        });
+        let mut command = if let Some(image) = image {
+            let mount = format!(
+                "type=bind,src={},dst={},readonly",
+                log_directory.display(),
+                log_directory.display()
+            );
+            let mut command = Command::new("docker");
+            command.args([
+                "run",
+                "--rm",
+                "--name",
+                container_name
+                    .as_deref()
+                    .expect("container image always has a name"),
+                "--network",
+                "host",
+                "--read-only",
+                "--cap-drop",
+                "ALL",
+                "--security-opt",
+                "no-new-privileges:true",
+                "--user",
+                "10001:10001",
+                "--mount",
+                &mount,
+            ]);
+            if let Ok(platform) = std::env::var("TYPE_BRIDGE_SERVER_PLATFORM") {
+                command.args(["--platform", &platform]);
+            }
+            command.arg(image).arg("--config").arg(config_path);
+            command
+        } else {
+            let mut command = Command::new(env!("CARGO_BIN_EXE_type-bridge-server"));
+            command.arg("--config").arg(config_path);
+            command
+        };
+        let child = command
             .env_remove("RUST_LOG")
             .stdin(Stdio::null())
             .stdout(Stdio::from(stdout))
             .stderr(Stdio::from(stderr))
             .spawn()
-            .expect("spawn the compiled production type-bridge-server binary");
+            .expect("spawn the production type-bridge-server process");
         Self {
             child: Some(child),
+            container_name,
             stdout_path,
             stderr_path,
         }
@@ -334,6 +378,22 @@ impl ProductionServer {
         let Some(mut child) = self.child.take() else {
             return Ok(());
         };
+        if let Some(container_name) = self.container_name.take() {
+            let stopped = Command::new("docker")
+                .args(["stop", "--time", "5", &container_name])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()?;
+            if !stopped.success() {
+                let _ = Command::new("docker")
+                    .args(["rm", "--force", &container_name])
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+            }
+        }
         if child.try_wait()?.is_none() {
             child.kill()?;
         }
@@ -359,7 +419,14 @@ async fn wait_for_production_health(
     client: &reqwest::Client,
     base_url: &str,
 ) -> serde_json::Value {
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let startup_timeout = std::env::var("TYPE_BRIDGE_SERVER_STARTUP_TIMEOUT_SECONDS")
+        .ok()
+        .map(|raw| {
+            raw.parse::<u64>()
+                .expect("TYPE_BRIDGE_SERVER_STARTUP_TIMEOUT_SECONDS is a u64")
+        })
+        .unwrap_or(30);
+    let deadline = Instant::now() + Duration::from_secs(startup_timeout);
     loop {
         if let Some(status) = server.exited() {
             panic!(
@@ -375,7 +442,7 @@ async fn wait_for_production_health(
         }
         assert!(
             Instant::now() < deadline,
-            "production server health did not become ready in 30 seconds: {}",
+            "production server health did not become ready in {startup_timeout} seconds: {}",
             server.diagnostics()
         );
         tokio::time::sleep(Duration::from_millis(100)).await;

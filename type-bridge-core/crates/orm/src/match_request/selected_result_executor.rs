@@ -21,18 +21,20 @@ use super::capability::CapabilitySet;
 use super::error::{MatchError, MatchErrorCategory, MatchErrorPath, MatchErrorPathSegment};
 use super::ids::{BindingId, DescriptorId, FieldId, RoleEdgeId, RoleId};
 use super::lowering::{
-    LoweredMatchExecution, lower_match_execution, preflight_released_match_execution,
+    LoweredMatchExecution, LoweredReduceInput, LoweredReduceTerm, ReduceDomain,
+    lower_match_execution, preflight_released_match_execution,
 };
 use super::model::{
-    FetchShape, FetchSlot, MatchExpr, MatchOperation, RowCardinality, ThingKind, Window,
+    FetchShape, FetchSlot, MatchExpr, MatchOperation, Reduction, RowCardinality, ThingKind, Window,
 };
 use super::result::{
     BoundConceptEvidence, ConceptId, HydratedAttribute, HydratedRole, HydratedRolePlayer,
-    HydratedThing, ProviderResultEvidence, ProviderSolutionEvidence, ValidatedMatchResult,
+    HydratedThing, ProviderResultEvidence, ProviderSolutionEvidence, ReducedValue, ReductionRow,
+    ValidatedMatchResult,
 };
 use super::result_validation::{
-    ResultValidationLimits, exactly_one_cardinality_error, validate_provider_result_with_limits,
-    validated_match_result_from_v2,
+    ResultValidationLimits, canonicalize_provider_attribute_value, exactly_one_cardinality_error,
+    validate_provider_result_with_limits, validated_match_result_from_v2,
 };
 use super::validation::ValidatedMatchRequest;
 use crate::descriptor::{TypeDescriptor, TypeDescriptorRef};
@@ -379,8 +381,11 @@ impl<'a> SelectedResultExecutor<'a> {
     }
 
     /// Execute a released request through its production V2 compatibility
-    /// program, retaining the direct executor only for the two exact
-    /// representation-envelope dispositions returned by the adapter.
+    /// program.
+    ///
+    /// Registries derived from a verified installed runtime projection already
+    /// carry the complete generated-client authority and use the direct typed
+    /// executor. Dynamic registries continue through the compatibility adapter.
     pub(crate) async fn execute_compatible_owned(
         &self,
         database: &Database,
@@ -399,6 +404,9 @@ impl<'a> SelectedResultExecutor<'a> {
         validated: &ValidatedMatchRequest,
     ) -> Result<ValidatedMatchResult, OrmError> {
         self.preflight_compatibility(validated)?;
+        if self.registry.uses_installed_projection_native_execution() {
+            return self.execute_owned(database, validated).await;
+        }
         let authority = MatchRequestAdapterAuthority::from_registry(self.registry)
             .map_err(adapter_diagnostic)?;
         match adapt_match_request(
@@ -413,7 +421,7 @@ impl<'a> SelectedResultExecutor<'a> {
                 self.execute_adapted_owned(database, validated, &adapted)
                     .await
             }
-            MatchRequestAdaptation::LegacyRequired(_) => {
+            MatchRequestAdaptation::LegacyRequired(_) | MatchRequestAdaptation::NativeOnly => {
                 self.execute_owned(database, validated).await
             }
         }
@@ -447,6 +455,9 @@ impl<'a> SelectedResultExecutor<'a> {
             .at(MatchErrorPathSegment::Operation)
             .into());
         }
+        if self.registry.uses_installed_projection_native_execution() {
+            return self.execute_borrowed(context, validated).await;
+        }
         let authority = MatchRequestAdapterAuthority::from_registry(self.registry)
             .map_err(adapter_diagnostic)?;
         match adapt_match_request(
@@ -461,7 +472,7 @@ impl<'a> SelectedResultExecutor<'a> {
                 self.execute_adapted_borrowed(context, validated, &adapted)
                     .await
             }
-            MatchRequestAdaptation::LegacyRequired(_) => {
+            MatchRequestAdaptation::LegacyRequired(_) | MatchRequestAdaptation::NativeOnly => {
                 self.execute_borrowed(context, validated).await
             }
         }
@@ -736,6 +747,25 @@ impl<'a> SelectedResultExecutor<'a> {
                     value,
                 ))
             }
+            LoweredMatchExecution::ReduceBy {
+                root,
+                group,
+                scan,
+                rematch,
+                terms,
+            } => {
+                self.collect_reduce_transaction(
+                    transaction,
+                    validated,
+                    root,
+                    group,
+                    scan,
+                    rematch,
+                    &terms,
+                    budget,
+                )
+                .await
+            }
             LoweredMatchExecution::ExistsBy { root, scan } => {
                 let value = !self
                     .scan_roots_transaction(
@@ -801,6 +831,18 @@ impl<'a> SelectedResultExecutor<'a> {
                     root,
                     value,
                 ))
+            }
+            LoweredMatchExecution::ReduceBy {
+                root,
+                group,
+                scan,
+                rematch,
+                terms,
+            } => {
+                self.collect_reduce_context(
+                    context, validated, root, group, scan, rematch, &terms, budget,
+                )
+                .await
             }
             LoweredMatchExecution::ExistsBy { root, scan } => {
                 let value = !self
@@ -1144,6 +1186,118 @@ impl<'a> SelectedResultExecutor<'a> {
     }
 
     #[allow(clippy::too_many_arguments)]
+    async fn collect_reduce_transaction(
+        &self,
+        transaction: &mut Transaction,
+        validated: &ValidatedMatchRequest,
+        root: BindingId,
+        group: Option<BindingId>,
+        scan: TypedRootScan,
+        rematch: Option<TypedPageRematch>,
+        terms: &[LoweredReduceTerm],
+        budget: &mut ExecutionBudget,
+    ) -> Result<ProviderResultEvidence, OrmError> {
+        let roots = self
+            .scan_roots_transaction(transaction, scan, root, RootScanPurpose::Count, budget)
+            .await?;
+        let solutions = if let Some(mut rematch) = rematch
+            && !roots.is_empty()
+        {
+            rematch.root_concept_ids.clone_from(&roots);
+            let mut consumer = PageRematchConsumer::new(
+                self.registry,
+                validated,
+                root,
+                &roots,
+                self.limits.semantic_limits(),
+            )?;
+            let scan_limit = budget.remaining_items();
+            let FiniteStatementLimits {
+                provider: limits,
+                resources,
+            } = budget.begin_statement(scan_limit.max(1))?;
+            let mut draining = DrainingConsumer::new(&mut consumer, resources);
+            let stats = budget
+                .await_provider(async {
+                    transaction
+                        .rematch_page_typed_bounded(&rematch, limits, &mut draining)
+                        .await
+                        .map_err(provider_statement_error)
+                })
+                .await;
+            let stats = draining.complete(stats, budget)?;
+            require_solution_scan_proof(stats, scan_limit)?;
+            consumer.finish()?
+        } else {
+            Vec::new()
+        };
+        let rows = reduce_rows(root, group, terms, &roots, &solutions)?;
+        Ok(ProviderResultEvidence::reduction(
+            validated.request_token(),
+            validated.shape_id().clone(),
+            root,
+            group,
+            rows,
+        ))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn collect_reduce_context(
+        &self,
+        context: &TransactionContext,
+        validated: &ValidatedMatchRequest,
+        root: BindingId,
+        group: Option<BindingId>,
+        scan: TypedRootScan,
+        rematch: Option<TypedPageRematch>,
+        terms: &[LoweredReduceTerm],
+        budget: &mut ExecutionBudget,
+    ) -> Result<ProviderResultEvidence, OrmError> {
+        let roots = self
+            .scan_roots_context(context, scan, root, RootScanPurpose::Count, budget)
+            .await?;
+        let solutions = if let Some(mut rematch) = rematch
+            && !roots.is_empty()
+        {
+            rematch.root_concept_ids.clone_from(&roots);
+            let mut consumer = PageRematchConsumer::new(
+                self.registry,
+                validated,
+                root,
+                &roots,
+                self.limits.semantic_limits(),
+            )?;
+            let scan_limit = budget.remaining_items();
+            let FiniteStatementLimits {
+                provider: limits,
+                resources,
+            } = budget.begin_statement(scan_limit.max(1))?;
+            let mut draining = DrainingConsumer::new(&mut consumer, resources);
+            let stats = budget
+                .await_provider(async {
+                    context
+                        .rematch_page_typed_bounded(&rematch, limits, &mut draining)
+                        .await
+                        .map_err(provider_statement_error)
+                })
+                .await;
+            let stats = draining.complete(stats, budget)?;
+            require_solution_scan_proof(stats, scan_limit)?;
+            consumer.finish()?
+        } else {
+            Vec::new()
+        };
+        let rows = reduce_rows(root, group, terms, &roots, &solutions)?;
+        Ok(ProviderResultEvidence::reduction(
+            validated.request_token(),
+            validated.shape_id().clone(),
+            root,
+            group,
+            rows,
+        ))
+    }
+
+    #[allow(clippy::too_many_arguments)]
     async fn collect_page_transaction(
         &self,
         transaction: &mut Transaction,
@@ -1422,6 +1576,288 @@ fn require_selected_solution_scan_proof(
         }
     }
     Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum CollectedInputs {
+    Long(Vec<i64>),
+    Double(Vec<f64>),
+}
+
+impl CollectedInputs {
+    fn new(domain: ReduceDomain) -> Self {
+        match domain {
+            ReduceDomain::Long => Self::Long(Vec::new()),
+            ReduceDomain::Double => Self::Double(Vec::new()),
+        }
+    }
+
+    fn push(&mut self, value: &AttributeValue) -> Result<(), OrmError> {
+        match (self, value) {
+            (Self::Long(values), AttributeValue::Long(value)) => {
+                values.push(*value);
+                Ok(())
+            }
+            (Self::Double(values), AttributeValue::Double(value)) => {
+                if !value.is_finite() {
+                    return Err(decode_error(
+                        "reduction_input_not_finite",
+                        "provider reducer input is not a finite double",
+                    ));
+                }
+                values.push(*value);
+                Ok(())
+            }
+            _ => Err(decode_error(
+                "reduction_input_domain",
+                "provider reducer input does not match its validated domain",
+            )),
+        }
+    }
+
+    fn as_doubles(&self) -> Vec<f64> {
+        match self {
+            Self::Long(values) => values.iter().map(|value| *value as f64).collect(),
+            Self::Double(values) => values.clone(),
+        }
+    }
+}
+
+fn finite_reduction_double(value: f64) -> Result<ReducedValue, OrmError> {
+    if !value.is_finite() {
+        return Err(resource_error(
+            "reduction_overflow",
+            "reduction result left the finite double domain",
+        ));
+    }
+    Ok(ReducedValue::Double(Some(value)))
+}
+
+/// Reduce one collected input stream with canonical semantics: sums stay
+/// total (zero on empty), extrema and statistical reducers are absent on
+/// empty streams, sample standard deviation requires two values, and all
+/// double results must remain finite.
+fn reduce_collected(
+    reduction: Reduction,
+    collected: &CollectedInputs,
+) -> Result<ReducedValue, OrmError> {
+    match reduction {
+        Reduction::Count => Err(decode_error(
+            "reduction_input_domain",
+            "count consumes the distinct root stream, not a field input",
+        )),
+        Reduction::Sum => match collected {
+            CollectedInputs::Long(values) => {
+                let mut total = 0_i64;
+                for value in values {
+                    total = total.checked_add(*value).ok_or_else(|| {
+                        resource_error(
+                            "reduction_overflow",
+                            "integer sum left the canonical long domain",
+                        )
+                    })?;
+                }
+                Ok(ReducedValue::Long(Some(total)))
+            }
+            CollectedInputs::Double(values) => finite_reduction_double(values.iter().sum::<f64>()),
+        },
+        Reduction::Min | Reduction::Max => match collected {
+            CollectedInputs::Long(values) => {
+                let extreme = if reduction == Reduction::Min {
+                    values.iter().min()
+                } else {
+                    values.iter().max()
+                };
+                Ok(ReducedValue::Long(extreme.copied()))
+            }
+            CollectedInputs::Double(values) => {
+                let mut extreme: Option<f64> = None;
+                for value in values {
+                    extreme = Some(match extreme {
+                        None => *value,
+                        Some(current) if reduction == Reduction::Min => current.min(*value),
+                        Some(current) => current.max(*value),
+                    });
+                }
+                Ok(ReducedValue::Double(extreme))
+            }
+        },
+        Reduction::Mean => {
+            let values = collected.as_doubles();
+            if values.is_empty() {
+                return Ok(ReducedValue::Double(None));
+            }
+            finite_reduction_double(values.iter().sum::<f64>() / values.len() as f64)
+        }
+        Reduction::Median => {
+            let mut values = collected.as_doubles();
+            if values.is_empty() {
+                return Ok(ReducedValue::Double(None));
+            }
+            values
+                .sort_by(|left, right| left.partial_cmp(right).expect("reducer inputs are finite"));
+            let middle = values.len() / 2;
+            let median = if values.len() % 2 == 1 {
+                values[middle]
+            } else {
+                (values[middle - 1] + values[middle]) / 2.0
+            };
+            finite_reduction_double(median)
+        }
+        Reduction::Std => {
+            let values = collected.as_doubles();
+            if values.len() < 2 {
+                return Ok(ReducedValue::Double(None));
+            }
+            let mean = values.iter().sum::<f64>() / values.len() as f64;
+            let variance = values
+                .iter()
+                .map(|value| {
+                    let delta = value - mean;
+                    delta * delta
+                })
+                .sum::<f64>()
+                / (values.len() - 1) as f64;
+            finite_reduction_double(variance.sqrt())
+        }
+    }
+}
+
+fn reduction_input_value<'a>(
+    solution: &'a ProviderSolutionEvidence,
+    input: &LoweredReduceInput,
+) -> Result<Option<&'a AttributeValue>, OrmError> {
+    let thing = solution
+        .bindings()
+        .iter()
+        .find(|bound| bound.binding() == input.binding)
+        .map(BoundConceptEvidence::thing)
+        .ok_or_else(|| {
+            decode_error(
+                "reduction_binding_missing",
+                "provider solution omitted a reducer input binding",
+            )
+        })?;
+    Ok(thing
+        .attributes()
+        .iter()
+        .find(|attribute| attribute.field() == &input.field)
+        .and_then(|attribute| attribute.values().first()))
+}
+
+/// Assemble typed reduction rows over the distinct selected-identity stream.
+///
+/// The exhaustively proven root scan is authoritative for distinct root
+/// counting; solutions contribute each distinct (group, root) pair's input
+/// values exactly once, and grouped rows are deterministically ordered by
+/// group concept identity.
+fn reduce_rows(
+    root: BindingId,
+    group: Option<BindingId>,
+    terms: &[LoweredReduceTerm],
+    roots: &[String],
+    solutions: &[ProviderSolutionEvidence],
+) -> Result<Vec<ReductionRow>, OrmError> {
+    struct GroupAccumulator {
+        thing: HydratedThing,
+        roots: BTreeSet<String>,
+        inputs: Vec<Option<CollectedInputs>>,
+    }
+    let fresh_inputs = |terms: &[LoweredReduceTerm]| {
+        terms
+            .iter()
+            .map(|term| {
+                term.input
+                    .as_ref()
+                    .map(|input| CollectedInputs::new(input.domain))
+            })
+            .collect::<Vec<_>>()
+    };
+    let collect_solution = |accumulated: &mut Vec<Option<CollectedInputs>>,
+                            solution: &ProviderSolutionEvidence|
+     -> Result<(), OrmError> {
+        for (term, collected) in terms.iter().zip(accumulated.iter_mut()) {
+            let (Some(input), Some(collected)) = (&term.input, collected) else {
+                continue;
+            };
+            if let Some(value) = reduction_input_value(solution, input)? {
+                collected.push(value)?;
+            }
+        }
+        Ok(())
+    };
+    let finish = |root_count: usize,
+                  accumulated: &[Option<CollectedInputs>]|
+     -> Result<Vec<ReducedValue>, OrmError> {
+        terms
+            .iter()
+            .zip(accumulated)
+            .map(|(term, collected)| match collected {
+                None => Ok(ReducedValue::Count(root_count as u64)),
+                Some(collected) => reduce_collected(term.reduction, collected),
+            })
+            .collect()
+    };
+    let solution_root = |solution: &ProviderSolutionEvidence| -> Result<String, OrmError> {
+        solution
+            .bindings()
+            .iter()
+            .find(|bound| bound.binding() == root)
+            .map(|bound| bound.thing().concept_id().as_str().to_owned())
+            .ok_or_else(|| {
+                decode_error(
+                    "reduction_binding_missing",
+                    "provider solution omitted the reduced root binding",
+                )
+            })
+    };
+    match group {
+        None => {
+            let mut seen = BTreeSet::new();
+            let mut accumulated = fresh_inputs(terms);
+            for solution in solutions {
+                let root_id = solution_root(solution)?;
+                if seen.insert(root_id) {
+                    collect_solution(&mut accumulated, solution)?;
+                }
+            }
+            let values = finish(roots.len(), &accumulated)?;
+            Ok(vec![ReductionRow::new(None, values)])
+        }
+        Some(group) => {
+            let mut groups: BTreeMap<String, GroupAccumulator> = BTreeMap::new();
+            for solution in solutions {
+                let root_id = solution_root(solution)?;
+                let thing = solution
+                    .bindings()
+                    .iter()
+                    .find(|bound| bound.binding() == group)
+                    .map(BoundConceptEvidence::thing)
+                    .ok_or_else(|| {
+                        decode_error(
+                            "reduction_binding_missing",
+                            "provider solution omitted the group binding",
+                        )
+                    })?;
+                let key = thing.concept_id().as_str().to_owned();
+                let entry = groups.entry(key).or_insert_with(|| GroupAccumulator {
+                    thing: thing.clone(),
+                    roots: BTreeSet::new(),
+                    inputs: fresh_inputs(terms),
+                });
+                if entry.roots.insert(root_id) {
+                    collect_solution(&mut entry.inputs, solution)?;
+                }
+            }
+            groups
+                .into_values()
+                .map(|accumulator| {
+                    let values = finish(accumulator.roots.len(), &accumulator.inputs)?;
+                    Ok(ReductionRow::new(Some(accumulator.thing), values))
+                })
+                .collect()
+        }
+    }
 }
 
 fn require_solution_scan_proof(
@@ -2524,20 +2960,23 @@ impl<'a> PageRematchConsumer<'a> {
                 "root selection returned one identity more than once",
             ));
         }
-        let MatchOperation::PageBy { output, .. } = &validated.request().operation else {
-            return Err(decode_error(
-                "page_operation_mismatch",
-                "page re-match consumer requires a PageBy operation",
-            ));
+        let collections = match &validated.request().operation {
+            MatchOperation::PageBy { output, .. } => output_slots(output)
+                .filter_map(|slot| match slot {
+                    FetchSlot::One { .. } => None,
+                    FetchSlot::Collect {
+                        binding, distinct, ..
+                    } => Some((*binding, *distinct)),
+                })
+                .collect(),
+            MatchOperation::ReduceBy { .. } => Vec::new(),
+            _ => {
+                return Err(decode_error(
+                    "page_operation_mismatch",
+                    "re-match consumption requires a PageBy or ReduceBy operation",
+                ));
+            }
         };
-        let collections = output_slots(output)
-            .filter_map(|slot| match slot {
-                FetchSlot::One { .. } => None,
-                FetchSlot::Collect {
-                    binding, distinct, ..
-                } => Some((*binding, *distinct)),
-            })
-            .collect();
         Ok(Self {
             validated,
             root,
@@ -2758,12 +3197,16 @@ fn decode_wildcard_attributes(
             .into_iter()
             .filter(|value| !value.is_null())
             .map(|value| {
-                AttributeValue::from_json(value, field.value_type.as_str()).ok_or_else(|| {
-                    decode_error(
-                        "hydrated_attribute_value_type",
-                        "TypeDB wildcard attribute value has the wrong value type",
-                    )
-                })
+                AttributeValue::from_json(value, field.value_type.as_str())
+                    .ok_or_else(|| {
+                        decode_error(
+                            "hydrated_attribute_value_type",
+                            "TypeDB wildcard attribute value has the wrong value type",
+                        )
+                    })
+                    .and_then(|value| {
+                        canonicalize_provider_attribute_value(value).map_err(OrmError::Match)
+                    })
             })
             .collect::<Result<Vec<_>, _>>()?;
         attributes.push(HydratedAttribute::new(
@@ -2934,12 +3377,16 @@ fn decode_attributes(
                 .values
                 .iter()
                 .map(|value| {
-                    AttributeValue::from_json(value, &attribute.value_type).ok_or_else(|| {
-                        decode_error(
-                            "hydrated_attribute_value_type",
-                            "hydrated attribute value does not match its value type",
-                        )
-                    })
+                    AttributeValue::from_json(value, &attribute.value_type)
+                        .ok_or_else(|| {
+                            decode_error(
+                                "hydrated_attribute_value_type",
+                                "hydrated attribute value does not match its value type",
+                            )
+                        })
+                        .and_then(|value| {
+                            canonicalize_provider_attribute_value(value).map_err(OrmError::Match)
+                        })
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(HydratedAttribute::new(
@@ -3880,7 +4327,7 @@ mod tests {
     use crate::match_request::ids::BoundFieldId;
     use crate::match_request::model::{
         BindingPair, MatchBinding, MatchExpr, MatchMode, MatchOrder, MatchPlan, MatchRequest,
-        MissingOrder, SortDirection, Window,
+        MissingOrder, ReduceTerm, SortDirection, Window,
     };
     use crate::match_request::validation::validate_match_request;
     use crate::session::backend::{
@@ -3903,6 +4350,67 @@ mod tests {
             assert!(!executor.contains(forbidden));
             assert!(!lowerer.contains(forbidden));
         }
+    }
+
+    #[test]
+    fn provider_scalar_spellings_are_canonicalized_at_the_hydration_boundary() {
+        assert_eq!(
+            canonicalize_provider_attribute_value(AttributeValue::DateTime(
+                "2026-07-28T03:55:00.000000000".into(),
+            ))
+            .unwrap(),
+            AttributeValue::DateTime("2026-07-28T03:55:00".into())
+        );
+        assert_eq!(
+            canonicalize_provider_attribute_value(AttributeValue::Decimal("00123.4500dec".into(),))
+                .unwrap(),
+            AttributeValue::Decimal("123.45".into())
+        );
+        assert_eq!(
+            canonicalize_provider_attribute_value(AttributeValue::DateTimeTZ(
+                "2026-08-03T03:55:00.000000000+00:00".into(),
+            ))
+            .unwrap(),
+            AttributeValue::DateTimeTZ("2026-08-03T03:55:00Z".into())
+        );
+        for duration in ["PT1H", "P1DT30M"] {
+            assert_eq!(
+                canonicalize_provider_attribute_value(AttributeValue::Duration(duration.into()))
+                    .unwrap(),
+                AttributeValue::Duration(duration.into())
+            );
+        }
+
+        let descriptor = TypeDescriptorRef::Entity(Arc::new(EntityDescriptor {
+            type_name: "record".into(),
+            is_abstract: false,
+            parent_type: None,
+            owned_attributes: vec![OwnedAttributeDescriptor {
+                field_name: "val_datetime".into(),
+                attr_name: "val-datetime".into(),
+                value_type: ValueType::DateTime,
+                annotations: vec![Annotation::Card(1, Some(1))],
+                is_optional: false,
+                is_ordered: false,
+                doc: None,
+                meta: Default::default(),
+            }],
+            doc: None,
+            meta: Default::default(),
+        }));
+        let provider = serde_json::json!({
+            "val-datetime": "2026-07-28T03:55:00.000000000"
+        });
+        let decoded = decode_wildcard_attributes(
+            &DescriptorId::new("entity:record"),
+            &descriptor,
+            Some(&provider),
+        )
+        .unwrap();
+        assert_eq!(
+            decoded[0].values(),
+            &[AttributeValue::DateTime("2026-07-28T03:55:00".into())]
+        );
     }
 
     #[test]
@@ -5913,6 +6421,237 @@ mod tests {
         assert!(events.solution_statements.is_empty());
         assert!(events.hydration_statements.is_empty());
         assert_eq!((events.opens, events.closes), (2, 2));
+    }
+
+    fn reduction_registry() -> DescriptorRegistry {
+        let registry = DescriptorRegistry::new();
+        registry
+            .register_entity(EntityDescriptor {
+                type_name: "person".into(),
+                is_abstract: false,
+                parent_type: None,
+                owned_attributes: vec![
+                    key("name"),
+                    OwnedAttributeDescriptor {
+                        field_name: "age".into(),
+                        attr_name: "person-age".into(),
+                        value_type: ValueType::Long,
+                        annotations: vec![Annotation::Card(0, Some(1))],
+                        is_optional: true,
+                        is_ordered: false,
+                        doc: None,
+                        meta: Default::default(),
+                    },
+                ],
+                doc: None,
+                meta: Default::default(),
+            })
+            .unwrap();
+        registry
+            .register_entity(EntityDescriptor {
+                type_name: "team".into(),
+                is_abstract: false,
+                parent_type: None,
+                owned_attributes: vec![key("name")],
+                doc: None,
+                meta: Default::default(),
+            })
+            .unwrap();
+        registry
+    }
+
+    fn person_age_wire(binding: u16, concept_id: &str, name: &str, age: Option<i64>) -> Value {
+        let mut attributes = vec![serde_json::json!({
+            "field": "name",
+            "value_type": "string",
+            "values": [name],
+        })];
+        if let Some(age) = age {
+            attributes.push(serde_json::json!({
+                "field": "age",
+                "value_type": "long",
+                "values": [age],
+            }));
+        }
+        serde_json::json!({
+            "binding": binding,
+            "concept_id": concept_id,
+            "concrete_type": "person",
+            "kind": "entity",
+            "attributes": attributes,
+            "roles": [],
+        })
+    }
+
+    fn person_reduce_request(
+        registry: &DescriptorRegistry,
+        reducers: Vec<ReduceTerm>,
+    ) -> MatchRequest {
+        person_root_request(registry, |root| MatchOperation::ReduceBy {
+            root,
+            group: None,
+            reducers,
+        })
+    }
+
+    fn age_input(registry: &DescriptorRegistry) -> BoundFieldId {
+        BoundFieldId::new(
+            BindingId::new(0),
+            FieldId::new(registry.descriptor_id("person").unwrap(), "age"),
+        )
+    }
+
+    #[tokio::test]
+    async fn ungrouped_reduction_reduces_the_distinct_root_stream_through_one_rematch() {
+        let registry = reduction_registry();
+        let age = age_input(&registry);
+        let validated = validate_match_request(
+            &registry,
+            person_reduce_request(
+                &registry,
+                vec![
+                    ReduceTerm {
+                        reduction: Reduction::Count,
+                        input: None,
+                    },
+                    ReduceTerm {
+                        reduction: Reduction::Sum,
+                        input: Some(age.clone()),
+                    },
+                    ReduceTerm {
+                        reduction: Reduction::Mean,
+                        input: Some(age.clone()),
+                    },
+                    ReduceTerm {
+                        reduction: Reduction::Min,
+                        input: Some(age),
+                    },
+                ],
+            ),
+        )
+        .unwrap();
+        let (database, events) = database(
+            CapabilitySet::all(),
+            vec![Ok(vec![
+                solution(&[(0, "0x01")], &[]),
+                solution(&[(0, "0x01")], &[]),
+                solution(&[(0, "0x02")], &[]),
+                solution(&[(0, "0x03")], &[]),
+            ])],
+            vec![Ok(vec![
+                rematch_entities(vec![person_age_wire(0, "0x01", "Alice", Some(10))]),
+                rematch_entities(vec![person_age_wire(0, "0x01", "Alice", Some(10))]),
+                rematch_entities(vec![person_age_wire(0, "0x02", "Bea", Some(30))]),
+                rematch_entities(vec![person_age_wire(0, "0x03", "Cleo", None)]),
+            ])],
+        );
+
+        let result = database.execute_match(&registry, &validated).await.unwrap();
+        let super::super::result::MatchResult::Reduction { root, group, rows } = result.result()
+        else {
+            panic!("expected reduction result")
+        };
+        assert_eq!(*root, BindingId::new(0));
+        assert!(group.is_none());
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].group().is_none());
+        assert_eq!(
+            rows[0].values(),
+            &[
+                ReducedValue::Count(3),
+                ReducedValue::Long(Some(40)),
+                ReducedValue::Double(Some(20.0)),
+                ReducedValue::Long(Some(10)),
+            ]
+        );
+        let events = events.lock().unwrap();
+        assert_eq!(events.root_statements.len(), 1);
+        assert_eq!(events.rematch_statements.len(), 1);
+        assert_eq!((events.opens, events.closes), (1, 1));
+    }
+
+    #[tokio::test]
+    async fn grouped_reduction_orders_rows_by_group_identity_and_admits_absent_inputs() {
+        let registry = reduction_registry();
+        let root = BindingId::new(0);
+        let team = BindingId::new(1);
+        let request = MatchRequest::v1(
+            MatchPlan {
+                bindings: vec![
+                    MatchBinding {
+                        id: root,
+                        descriptor: registry.descriptor_id("person").unwrap(),
+                        thing_kind: ThingKind::Entity,
+                        match_mode: MatchMode::Exact,
+                    },
+                    MatchBinding {
+                        id: team,
+                        descriptor: registry.descriptor_id("team").unwrap(),
+                        thing_kind: ThingKind::Entity,
+                        match_mode: MatchMode::Exact,
+                    },
+                ],
+                predicate: None,
+                allowed_cross_joins: BTreeSet::from([BindingPair::new(root, team)]),
+            },
+            MatchOperation::ReduceBy {
+                root,
+                group: Some(team),
+                reducers: vec![
+                    ReduceTerm {
+                        reduction: Reduction::Count,
+                        input: None,
+                    },
+                    ReduceTerm {
+                        reduction: Reduction::Sum,
+                        input: Some(age_input(&registry)),
+                    },
+                ],
+            },
+        );
+        let validated = validate_match_request(&registry, request).unwrap();
+        let member = |person: Value, team_id: &str, team_name: &str| {
+            rematch_entities(vec![person, entity_wire(1, "team", team_id, team_name)])
+        };
+        let (database, _events) = database(
+            CapabilitySet::all(),
+            vec![Ok(vec![
+                solution(&[(0, "0x01")], &[]),
+                solution(&[(0, "0x02")], &[]),
+                solution(&[(0, "0x03")], &[]),
+            ])],
+            vec![Ok(vec![
+                member(
+                    person_age_wire(0, "0x01", "Alice", Some(10)),
+                    "0x22",
+                    "Beta",
+                ),
+                member(person_age_wire(0, "0x02", "Bea", Some(30)), "0x22", "Beta"),
+                member(person_age_wire(0, "0x03", "Cleo", None), "0x21", "Alpha"),
+            ])],
+        );
+
+        let result = database.execute_match(&registry, &validated).await.unwrap();
+        let super::super::result::MatchResult::Reduction { root, group, rows } = result.result()
+        else {
+            panic!("expected reduction result")
+        };
+        assert_eq!(*root, BindingId::new(0));
+        assert_eq!(*group, Some(team));
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.group().unwrap().concept_id().as_str())
+                .collect::<Vec<_>>(),
+            vec!["0x21", "0x22"]
+        );
+        assert_eq!(
+            rows[0].values(),
+            &[ReducedValue::Count(1), ReducedValue::Long(Some(0))]
+        );
+        assert_eq!(
+            rows[1].values(),
+            &[ReducedValue::Count(2), ReducedValue::Long(Some(40))]
+        );
     }
 
     #[tokio::test]

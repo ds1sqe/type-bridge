@@ -425,9 +425,10 @@ impl OrderTerm {
 
 /// The closed reducer vocabulary of the first reduce stage.
 ///
-/// Reducers that can observe an empty stream (`max`, `min`, `mean`) are
-/// admitted only under group bindings, where every group is witnessed by at
-/// least one row; `count` and `sum` stay total on empty streams.
+/// Reducers that can observe an empty stream (`max`, `min`, `mean`,
+/// `median`, `std`) are admitted only under group bindings, where every
+/// group is witnessed by at least one row; `count` and `sum` stay total on
+/// empty streams.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Reducer {
@@ -437,8 +438,12 @@ pub enum Reducer {
     Max,
     /// The arithmetic mean of input values.
     Mean,
+    /// The statistical median of input values.
+    Median,
     /// The smallest input value.
     Min,
+    /// The sample standard deviation of input values.
+    Std,
     /// The total of input values.
     Sum,
 }
@@ -1779,7 +1784,7 @@ fn validate_local_functions(
                 returns.value_type(),
                 ValueTypeTag::Long | ValueTypeTag::Double
             ),
-            Reducer::Max | Reducer::Min | Reducer::Mean => false,
+            Reducer::Max | Reducer::Min | Reducer::Mean | Reducer::Median | Reducer::Std => false,
         };
         if !declared_valid {
             return Err(failure(

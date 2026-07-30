@@ -1807,6 +1807,30 @@ fn reduce_stages_type_grouped_and_global_results() {
     assert!(columns[2].domain().type_ids().is_empty());
     assert_eq!(columns[2].domain().value_type(), Some(ValueTypeTag::Double));
 
+    // Median and standard deviation admit numeric inputs and widen to double.
+    let validated = grouped(
+        &age,
+        vec![
+            binding(0, "person"),
+            binding(1, "measure"),
+            binding(2, "first_result"),
+            binding(3, "second_result"),
+        ],
+        vec![
+            ReduceAssignment::new(binding_id(2), Reducer::Median, Some(binding_id(1))),
+            ReduceAssignment::new(binding_id(3), Reducer::Std, Some(binding_id(1))),
+        ],
+        vec![binding_id(0), binding_id(2), binding_id(3)],
+    )
+    .expect("grouped median/std reduce");
+    let columns = validated
+        .output_schema()
+        .rows()
+        .expect("row plan")
+        .columns();
+    assert_eq!(columns[1].domain().value_type(), Some(ValueTypeTag::Double));
+    assert_eq!(columns[2].domain().value_type(), Some(ValueTypeTag::Double));
+
     // Counting a thing binding needs no scalar and yields a long.
     let validated = grouped(
         &name,

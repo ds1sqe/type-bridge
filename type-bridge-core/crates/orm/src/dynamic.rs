@@ -29,6 +29,39 @@ pub struct DynamicEntityRow {
     pub attributes: DynamicAttributeMap,
 }
 
+/// Identity-only evidence for one concrete entity discovered under a root type.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DynamicEntityIdentity {
+    /// Canonical TypeDB internal identifier.
+    pub iid: String,
+    /// Concrete TypeDB entity type label.
+    pub type_name: String,
+}
+
+/// Owned identity-only evidence for a concrete relation discovered under a root relation.
+///
+/// The IID is canonical TypeDB identity text and `type_name` is the concrete
+/// relation label returned by the projection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DynamicRelationIdentity {
+    /// Canonical TypeDB internal identifier.
+    pub iid: String,
+    /// Concrete TypeDB relation type label.
+    pub type_name: String,
+}
+
+pub(crate) fn is_blank_key_value(value: &AttributeValue) -> bool {
+    match value {
+        AttributeValue::String(s)
+        | AttributeValue::Date(s)
+        | AttributeValue::DateTime(s)
+        | AttributeValue::DateTimeTZ(s)
+        | AttributeValue::Decimal(s)
+        | AttributeValue::Duration(s) => s.trim().is_empty(),
+        _ => false,
+    }
+}
+
 /// Dynamic role player hydrated from relation fetch output or provided for relation insert.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DynamicRolePlayer {
@@ -409,6 +442,7 @@ pub(crate) fn entity_put_clauses(
                 .map(|attr| (attr, attr.is_key())),
             attributes,
             var,
+            false,
         )?;
         match_patterns.extend(mutation.match_patterns);
         clauses.push(Clause::Match(match_patterns));
@@ -446,6 +480,7 @@ pub(crate) fn entity_update_clauses(
             .map(|attr| (attr, attr.is_key())),
         attributes,
         var,
+        false,
     )?;
     match_patterns.extend(mutation.match_patterns);
 
@@ -454,6 +489,41 @@ pub(crate) fn entity_update_clauses(
         clauses.push(Clause::Delete(mutation.delete_statements));
     }
     clauses.push(Clause::Insert(mutation.insert_statements));
+    Ok(clauses)
+}
+
+pub(crate) fn entity_update_exact_clauses(
+    descriptor: &EntityDescriptor,
+    iid: &str,
+    attributes: &DynamicAttributeMap,
+    var: &str,
+) -> Result<Vec<Clause>> {
+    validate_exact_iid(&descriptor.type_name, iid)?;
+    let mut match_patterns = vec![Pattern::Entity {
+        variable: var.to_string(),
+        type_name: descriptor.type_name.clone(),
+        constraints: vec![Constraint::Iid(iid.to_string())],
+        is_strict: true,
+    }];
+    let mutation = update_mutation_clauses(
+        &descriptor.type_name,
+        descriptor
+            .owned_attributes
+            .iter()
+            .map(|attr| (attr, attr.is_key())),
+        attributes,
+        var,
+        true,
+    )?;
+    match_patterns.extend(mutation.match_patterns);
+
+    let mut clauses = vec![Clause::Match(match_patterns)];
+    if !mutation.delete_statements.is_empty() {
+        clauses.push(Clause::Delete(mutation.delete_statements));
+    }
+    if !mutation.insert_statements.is_empty() {
+        clauses.push(Clause::Insert(mutation.insert_statements));
+    }
     Ok(clauses)
 }
 
@@ -613,6 +683,375 @@ pub(crate) fn entity_count_clauses(
     match_patterns.extend(extra_patterns);
 
     vec![Clause::Match(match_patterns), count_clause(var)]
+}
+
+pub(crate) fn entity_count_exact_clauses(descriptor: &EntityDescriptor, var: &str) -> Vec<Clause> {
+    vec![
+        Clause::Match(vec![Pattern::Entity {
+            variable: var.to_string(),
+            type_name: descriptor.type_name.clone(),
+            constraints: vec![],
+            is_strict: true,
+        }]),
+        count_clause(var),
+    ]
+}
+
+pub(crate) fn entity_identity_discovery_clauses(
+    descriptor: &EntityDescriptor,
+    iid: Option<&str>,
+    var: &str,
+) -> Result<Vec<Clause>> {
+    let constraints = match iid {
+        Some(iid) => {
+            validate_exact_iid(&descriptor.type_name, iid)?;
+            vec![Constraint::Iid(iid.to_string())]
+        }
+        None => vec![],
+    };
+    Ok(vec![
+        Clause::Match(vec![
+            Pattern::Entity {
+                variable: var.to_string(),
+                type_name: "$t".to_string(),
+                constraints,
+                is_strict: true,
+            },
+            Pattern::SubType {
+                variable: "$t".to_string(),
+                parent_type: descriptor.type_name.clone(),
+            },
+        ]),
+        entity_identity_fetch_items(var),
+    ])
+}
+
+pub(crate) fn entity_exact_key_lookup_clauses(
+    descriptor: &EntityDescriptor,
+    attributes: &DynamicAttributeMap,
+    var: &str,
+) -> Result<Option<Vec<Clause>>> {
+    let constraints = descriptor
+        .owned_attributes
+        .iter()
+        .filter(|attribute| attribute.is_key())
+        .filter_map(|attribute| {
+            find_attribute_value(attributes, attribute).map(|(_, value)| Constraint::Has {
+                attr_name: attribute.attr_name.clone(),
+                value: value.to_ast_value(),
+            })
+        })
+        .collect::<Vec<_>>();
+    if constraints.is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some(vec![
+        Clause::Match(vec![Pattern::Entity {
+            variable: var.to_string(),
+            type_name: descriptor.type_name.clone(),
+            constraints,
+            is_strict: true,
+        }]),
+        Clause::Fetch(vec![FetchItem::Function {
+            key: "iid".to_string(),
+            func_name: "iid".to_string(),
+            var: var.to_string(),
+        }]),
+    ]))
+}
+
+pub(crate) fn relation_exact_key_lookup_clauses(
+    descriptor: &RelationDescriptor,
+    attributes: &DynamicAttributeMap,
+    var: &str,
+) -> Result<Option<Vec<Clause>>> {
+    if !type_bridge_core_lib::compiler::is_valid_typeql_label(&descriptor.type_name) {
+        return Err(OrmError::QueryExecution(format!(
+            "{}: unsafe relation type label",
+            descriptor.type_name
+        )));
+    }
+    for attr in &descriptor.owned_attributes {
+        if !type_bridge_core_lib::compiler::is_valid_typeql_label(&attr.attr_name) {
+            return Err(OrmError::QueryExecution(format!(
+                "{}: unsafe relation attribute label {}",
+                descriptor.type_name, attr.attr_name
+            )));
+        }
+    }
+    let mut resolved = Vec::new();
+    for (name, value) in attributes {
+        let matches: Vec<_> = descriptor
+            .owned_attributes
+            .iter()
+            .filter(|a| a.field_name == *name || a.attr_name == *name)
+            .collect();
+        if matches.is_empty() {
+            return Err(OrmError::QueryExecution(format!(
+                "{}: unknown relation attribute {name}",
+                descriptor.type_name
+            )));
+        }
+        if matches.len() != 1 {
+            return Err(OrmError::QueryExecution(format!(
+                "{}: ambiguous relation attribute {name}",
+                descriptor.type_name
+            )));
+        }
+        let a = matches[0];
+        if !type_bridge_core_lib::compiler::is_valid_typeql_label(&a.attr_name) {
+            return Err(OrmError::QueryExecution(format!(
+                "{}: unsafe relation attribute label {}",
+                descriptor.type_name, a.attr_name
+            )));
+        }
+        if value.value_type_name() != a.value_type.as_str() {
+            return Err(OrmError::QueryExecution(format!(
+                "{}: relation attribute {} has wrong value type",
+                descriptor.type_name, a.attr_name
+            )));
+        }
+        let index = descriptor
+            .owned_attributes
+            .iter()
+            .position(|candidate| std::ptr::eq(candidate, a))
+            .unwrap();
+        resolved.push((index, value));
+    }
+    let mut counts = vec![0usize; descriptor.owned_attributes.len()];
+    for (index, _) in &resolved {
+        counts[*index] += 1;
+    }
+    for (index, attr) in descriptor.owned_attributes.iter().enumerate() {
+        let maximum = attr
+            .cardinality()
+            .map(|(_, maximum)| maximum)
+            .unwrap_or(Some(1));
+        if maximum.is_some_and(|maximum| counts[index] > maximum as usize) {
+            return Err(OrmError::QueryExecution(format!(
+                "{}: relation attribute {} violates maximum cardinality",
+                descriptor.type_name, attr.attr_name
+            )));
+        }
+    }
+    let constraints = descriptor
+        .owned_attributes
+        .iter()
+        .enumerate()
+        .flat_map(|(index, attr)| {
+            resolved
+                .iter()
+                .filter(move |(i, _)| *i == index && attr.is_key())
+                .map(move |(_, value)| Constraint::Has {
+                    attr_name: attr.attr_name.clone(),
+                    value: value.to_ast_value(),
+                })
+        })
+        .collect::<Vec<_>>();
+    if constraints.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(vec![
+        Clause::Match(vec![Pattern::Entity {
+            variable: var.into(),
+            type_name: descriptor.type_name.clone(),
+            constraints,
+            is_strict: true,
+        }]),
+        Clause::Fetch(vec![FetchItem::Function {
+            key: "iid".into(),
+            func_name: "iid".into(),
+            var: var.into(),
+        }]),
+    ]))
+}
+
+pub(crate) fn relation_insert_resolved_clauses(
+    descriptor: &RelationDescriptor,
+    attributes: &DynamicAttributeMap,
+    resolved: &[(String, String, String)],
+    var: &str,
+) -> Result<Vec<Clause>> {
+    if !type_bridge_core_lib::compiler::is_valid_typeql_label(&descriptor.type_name) {
+        return Err(OrmError::QueryExecution(format!(
+            "{}: unsafe relation type label",
+            descriptor.type_name
+        )));
+    }
+    if descriptor.is_abstract {
+        return Err(OrmError::QueryExecution(format!(
+            "{}: exact relation insert requires a concrete descriptor",
+            descriptor.type_name
+        )));
+    }
+    for attr in &descriptor.owned_attributes {
+        if !type_bridge_core_lib::compiler::is_valid_typeql_label(&attr.attr_name) {
+            return Err(OrmError::QueryExecution(format!(
+                "{}: unsafe relation attribute label {}",
+                descriptor.type_name, attr.attr_name
+            )));
+        }
+    }
+    for role in &descriptor.roles {
+        if !type_bridge_core_lib::compiler::is_valid_typeql_label(&role.role_name) {
+            return Err(OrmError::QueryExecution(format!(
+                "{}: unsafe relation role label {}",
+                descriptor.type_name, role.role_name
+            )));
+        }
+    }
+    let mut resolved_attributes = Vec::with_capacity(attributes.len());
+    for (name, value) in attributes {
+        let matches: Vec<_> = descriptor
+            .owned_attributes
+            .iter()
+            .enumerate()
+            .filter(|(_, attr)| attr.field_name == *name || attr.attr_name == *name)
+            .collect();
+        if matches.is_empty() {
+            return Err(OrmError::QueryExecution(format!(
+                "{}: unknown relation attribute {name}",
+                descriptor.type_name
+            )));
+        }
+        if matches.len() > 1 {
+            return Err(OrmError::QueryExecution(format!(
+                "{}: ambiguous relation attribute {name}",
+                descriptor.type_name
+            )));
+        }
+        let (index, attr) = matches[0];
+        if value.value_type_name() != attr.value_type.as_str() {
+            return Err(OrmError::QueryExecution(format!(
+                "{}: relation attribute {} has wrong value type",
+                descriptor.type_name, attr.attr_name
+            )));
+        }
+        resolved_attributes.push((index, value));
+    }
+    for (index, attr) in descriptor.owned_attributes.iter().enumerate() {
+        let count = resolved_attributes
+            .iter()
+            .filter(|(i, _)| *i == index)
+            .count();
+        let (minimum, maximum) = attr
+            .cardinality()
+            .unwrap_or((u32::from(!attr.is_optional), Some(1)));
+        if count < minimum as usize {
+            return Err(OrmError::QueryExecution(format!(
+                "{}: relation attribute {} violates minimum cardinality",
+                descriptor.type_name, attr.attr_name
+            )));
+        }
+        if maximum.is_some_and(|m| count > m as usize) {
+            return Err(OrmError::QueryExecution(format!(
+                "{}: relation attribute {} violates maximum cardinality",
+                descriptor.type_name, attr.attr_name
+            )));
+        }
+    }
+    if resolved.is_empty() {
+        return Err(OrmError::QueryExecution(format!(
+            "{}: exact relation insert requires at least one role player",
+            descriptor.type_name
+        )));
+    }
+    for (ty, iid, role) in resolved {
+        if !type_bridge_core_lib::compiler::is_valid_typeql_label(ty) {
+            return Err(OrmError::QueryExecution(format!(
+                "{}: unsafe resolved player type label {}",
+                descriptor.type_name, ty
+            )));
+        }
+        if !type_bridge_contract::id::is_canonical_thing_iid(iid) {
+            return Err(OrmError::QueryExecution(format!(
+                "{}: resolved player IID must be canonical",
+                descriptor.type_name
+            )));
+        }
+        if !descriptor.roles.iter().any(|r| r.role_name == *role) {
+            return Err(OrmError::QueryExecution(format!(
+                "{}: unknown relation role {}",
+                descriptor.type_name, role
+            )));
+        }
+    }
+    for role in &descriptor.roles {
+        let count = resolved
+            .iter()
+            .filter(|(_, _, r)| r == &role.role_name)
+            .count();
+        let (min, max) = role.cardinality.unwrap_or((0, None));
+        if count < min as usize || max.is_some_and(|m| count > m as usize) {
+            return Err(OrmError::QueryExecution(format!(
+                "{}: relation role {} violates cardinality",
+                descriptor.type_name, role.role_name
+            )));
+        }
+        if role.ordered && count > 1 {
+            return Err(OrmError::QueryExecution(format!(
+                "{}: ordered relation role {} cannot contain multiple players",
+                descriptor.type_name, role.role_name
+            )));
+        }
+    }
+    let mut seen = std::collections::HashSet::new();
+    for (_, iid, role) in resolved {
+        if !seen.insert((role.clone(), iid.clone())) {
+            return Err(OrmError::QueryExecution(format!(
+                "{}: duplicate resolved relation player",
+                descriptor.type_name
+            )));
+        }
+    }
+    let patterns = resolved
+        .iter()
+        .enumerate()
+        .map(|(index, (ty, iid, _role))| Pattern::Entity {
+            variable: format!("$p{index}"),
+            type_name: ty.clone(),
+            constraints: vec![Constraint::Iid(iid.clone())],
+            is_strict: true,
+        })
+        .collect::<Vec<_>>();
+    let role_players = resolved
+        .iter()
+        .enumerate()
+        .map(|(index, (_, _, role))| RolePlayer {
+            role: role.clone(),
+            player_var: format!("$p{index}"),
+        })
+        .collect();
+    Ok(vec![
+        Clause::Match(patterns),
+        Clause::Insert(vec![Statement::Relation {
+            variable: var.to_string(),
+            type_name: descriptor.type_name.clone(),
+            role_players,
+            include_variable: true,
+            attributes: descriptor
+                .owned_attributes
+                .iter()
+                .enumerate()
+                .flat_map(|(index, attr)| {
+                    resolved_attributes
+                        .iter()
+                        .filter(move |(i, _)| *i == index)
+                        .map(move |(_, value)| Statement::Has {
+                            subject_var: var.to_string(),
+                            attr_name: attr.attr_name.clone(),
+                            value: value.to_ast_value(),
+                        })
+                })
+                .collect(),
+        }]),
+        Clause::Fetch(vec![FetchItem::Function {
+            key: "iid".to_string(),
+            func_name: "iid".to_string(),
+            var: var.to_string(),
+        }]),
+    ])
 }
 
 pub(crate) fn entity_expr_count_clauses(
@@ -793,6 +1232,23 @@ pub(crate) fn entity_delete_by_iid_clauses(
     ]
 }
 
+pub(crate) fn entity_delete_by_iid_exact_clauses(
+    descriptor: &EntityDescriptor,
+    iid: &str,
+    var: &str,
+) -> Result<Vec<Clause>> {
+    validate_exact_iid(&descriptor.type_name, iid)?;
+    Ok(vec![
+        Clause::Match(vec![Pattern::Entity {
+            variable: var.to_string(),
+            type_name: descriptor.type_name.clone(),
+            constraints: vec![Constraint::Iid(iid.to_string())],
+            is_strict: true,
+        }]),
+        Clause::Delete(vec![Statement::DeleteThing(var.to_string())]),
+    ])
+}
+
 pub(crate) fn relation_insert_clauses(
     descriptor: &RelationDescriptor,
     attributes: &DynamicAttributeMap,
@@ -833,6 +1289,7 @@ pub(crate) fn relation_update_clauses(
             .map(|attr| (attr, attr.is_key())),
         attributes,
         var,
+        false,
     )?;
     match_patterns.extend(mutation.match_patterns);
 
@@ -842,6 +1299,94 @@ pub(crate) fn relation_update_clauses(
     }
     clauses.push(Clause::Insert(mutation.insert_statements));
     Ok(clauses)
+}
+
+pub(crate) fn relation_update_exact_clauses(
+    descriptor: &RelationDescriptor,
+    iid: &str,
+    attributes: &DynamicAttributeMap,
+    var: &str,
+) -> Result<Vec<Clause>> {
+    validate_relation_iid(&descriptor.type_name, iid)?;
+    let mutation = update_mutation_clauses(
+        &descriptor.type_name,
+        descriptor.owned_attributes.iter().map(|a| (a, a.is_key())),
+        attributes,
+        var,
+        true,
+    )?;
+    let mut clauses = vec![Clause::Match(vec![Pattern::Entity {
+        variable: var.to_string(),
+        type_name: descriptor.type_name.clone(),
+        constraints: vec![Constraint::Iid(iid.to_string())],
+        is_strict: true,
+    }])];
+    if let Clause::Match(patterns) = &mut clauses[0] {
+        patterns.extend(mutation.match_patterns);
+    }
+    if !mutation.delete_statements.is_empty() {
+        clauses.push(Clause::Delete(mutation.delete_statements));
+    }
+    if !mutation.insert_statements.is_empty() {
+        clauses.push(Clause::Insert(mutation.insert_statements));
+    }
+    Ok(clauses)
+}
+
+pub(crate) fn relation_clear_role_clauses(
+    descriptor: &RelationDescriptor,
+    iid: &str,
+    role: &str,
+    var: &str,
+) -> Result<Vec<Clause>> {
+    validate_relation_iid(&descriptor.type_name, iid)?;
+    Ok(vec![
+        Clause::Match(vec![
+            Pattern::Entity {
+                variable: var.into(),
+                type_name: descriptor.type_name.clone(),
+                constraints: vec![Constraint::Iid(iid.into())],
+                is_strict: true,
+            },
+            Pattern::Raw(format!("{var} links ({role}: $old)")),
+        ]),
+        Clause::Delete(vec![Statement::Raw(format!(
+            "links ({role}: $old) of {var}"
+        ))]),
+    ])
+}
+
+pub(crate) fn relation_attach_clauses(
+    descriptor: &RelationDescriptor,
+    iid: &str,
+    resolved: &[(String, String, String)],
+    var: &str,
+) -> Result<Vec<Clause>> {
+    validate_relation_iid(&descriptor.type_name, iid)?;
+    let mut patterns = vec![Pattern::Entity {
+        variable: var.into(),
+        type_name: descriptor.type_name.clone(),
+        constraints: vec![Constraint::Iid(iid.into())],
+        is_strict: true,
+    }];
+    for (idx, (ty, player_iid, _)) in resolved.iter().enumerate() {
+        patterns.push(Pattern::Entity {
+            variable: format!("$p{idx}"),
+            type_name: ty.clone(),
+            constraints: vec![Constraint::Iid(player_iid.clone())],
+            is_strict: true,
+        });
+    }
+    let links = resolved
+        .iter()
+        .enumerate()
+        .map(|(i, (_, _, role))| format!("{role}: $p{i}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Ok(vec![
+        Clause::Match(patterns),
+        Clause::Insert(vec![Statement::Raw(format!("{var} links ({links})"))]),
+    ])
 }
 
 fn relation_write_with_iid_clauses(
@@ -1427,6 +1972,88 @@ pub(crate) fn relation_delete_by_iid_clauses(
     ]
 }
 
+pub(crate) fn relation_delete_by_iid_exact_clauses(
+    descriptor: &RelationDescriptor,
+    iid: &str,
+    var: &str,
+) -> Result<Vec<Clause>> {
+    validate_relation_iid(&descriptor.type_name, iid)?;
+    Ok(vec![
+        Clause::Match(vec![Pattern::Entity {
+            variable: var.to_string(),
+            type_name: descriptor.type_name.clone(),
+            constraints: vec![Constraint::Iid(iid.to_string())],
+            is_strict: true,
+        }]),
+        Clause::Delete(vec![Statement::DeleteThing(var.to_string())]),
+    ])
+}
+
+pub(crate) fn relation_count_exact_clauses(
+    descriptor: &RelationDescriptor,
+    var: &str,
+) -> Vec<Clause> {
+    vec![
+        Clause::Match(vec![Pattern::Entity {
+            variable: var.into(),
+            type_name: descriptor.type_name.clone(),
+            constraints: vec![],
+            is_strict: true,
+        }]),
+        count_clause(var),
+    ]
+}
+
+pub(crate) fn relation_identity_discovery_clauses(
+    descriptor: &RelationDescriptor,
+    iid: Option<&str>,
+    var: &str,
+) -> Result<Vec<Clause>> {
+    let constraints = match iid {
+        Some(iid) => {
+            validate_relation_iid(&descriptor.type_name, iid)?;
+            vec![Constraint::Iid(iid.into())]
+        }
+        None => vec![],
+    };
+    Ok(vec![
+        Clause::Match(vec![
+            Pattern::Entity {
+                variable: var.into(),
+                type_name: "$t".into(),
+                constraints,
+                is_strict: true,
+            },
+            Pattern::SubType {
+                variable: "$t".into(),
+                parent_type: descriptor.type_name.clone(),
+            },
+        ]),
+        Clause::Fetch(vec![
+            FetchItem::Function {
+                key: "_iid".into(),
+                func_name: "iid".into(),
+                var: var.into(),
+            },
+            FetchItem::Function {
+                key: "_type".into(),
+                func_name: "label".into(),
+                var: "$t".into(),
+            },
+        ]),
+    ])
+}
+
+pub(crate) fn validate_relation_iid(type_name: &str, iid: &str) -> Result<()> {
+    if type_bridge_contract::id::is_canonical_thing_iid(iid) {
+        Ok(())
+    } else {
+        Err(OrmError::QueryExecution(format!(
+            "Exact relation operation for {type_name} requires a canonical TypeDB IID"
+        )))
+    }
+}
+
 fn attribute_statements(
     var: &str,
     descriptors: &[OwnedAttributeDescriptor],
@@ -1527,6 +2154,7 @@ fn update_mutation_clauses<'a>(
     descriptors: impl Iterator<Item = (&'a OwnedAttributeDescriptor, bool)>,
     attributes: &DynamicAttributeMap,
     var: &str,
+    complete_replacement: bool,
 ) -> Result<UpdateMutation> {
     let descriptors: Vec<_> = descriptors.collect();
     let mut match_patterns = Vec::new();
@@ -1534,10 +2162,30 @@ fn update_mutation_clauses<'a>(
     let mut insert_statements = Vec::new();
     let mut deletion_attrs: Vec<String> = Vec::new();
 
+    if complete_replacement {
+        for (attr, is_key) in &descriptors {
+            if *is_key {
+                continue;
+            }
+            let old_var = format!("$old_attr_{}", deletion_attrs.len());
+            deletion_attrs.push(attr.attr_name.clone());
+            match_patterns.push(Pattern::Raw(format!(
+                "try {{ {var} has {} {old_var}; }}",
+                attr.attr_name
+            )));
+            delete_statements.push(Statement::Raw(format!("try {{ {old_var} of {var}; }}")));
+        }
+    }
+
     for (name, value) in attributes {
         let Some((attr, is_key)) = descriptors.iter().find(|(attr, _)| {
             name.as_str() == attr.attr_name.as_str() || name.as_str() == attr.field_name.as_str()
         }) else {
+            if complete_replacement {
+                return Err(OrmError::QueryExecution(format!(
+                    "Dynamic exact update for {type_name} references unknown attribute {name}"
+                )));
+            }
             continue;
         };
         if *is_key {
@@ -1561,7 +2209,7 @@ fn update_mutation_clauses<'a>(
         });
     }
 
-    if insert_statements.is_empty() {
+    if insert_statements.is_empty() && !complete_replacement {
         return Err(OrmError::QueryExecution(format!(
             "Dynamic update for {type_name} has no non-key attributes"
         )));
@@ -1781,6 +2429,31 @@ fn polymorphic_fetch_items(var: &str) -> Clause {
             var: var.to_string(),
         },
     ])
+}
+
+fn entity_identity_fetch_items(var: &str) -> Clause {
+    Clause::Fetch(vec![
+        FetchItem::Function {
+            key: "_iid".to_string(),
+            func_name: "iid".to_string(),
+            var: var.to_string(),
+        },
+        FetchItem::Function {
+            key: "_type".to_string(),
+            func_name: "label".to_string(),
+            var: "$t".to_string(),
+        },
+    ])
+}
+
+pub(crate) fn validate_exact_iid(type_name: &str, iid: &str) -> Result<()> {
+    if type_bridge_contract::id::is_canonical_thing_iid(iid) {
+        Ok(())
+    } else {
+        Err(OrmError::QueryExecution(format!(
+            "Exact entity operation for {type_name} requires a canonical TypeDB IID"
+        )))
+    }
 }
 
 fn relation_fetch_items(

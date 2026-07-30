@@ -104,23 +104,6 @@ fn typescript_identifier(value: String) -> Result<TargetIdentifier, SchemaDiagno
 }
 
 fn rust_identifier(value: String) -> Result<TargetIdentifier, SchemaDiagnostics> {
-    if matches!(
-        value.as_str(),
-        "iid"
-            | "type_token"
-            | "fields"
-            | "roles"
-            | "plays"
-            | "create"
-            | "reference"
-            | "try_new"
-            | "insert"
-    ) {
-        return Err(projection_error(
-            "reserved_rust_projection_identifier",
-            "projected Rust name collides with generated runtime state",
-        ));
-    }
     TargetIdentifier::rust(value).map_err(no_source)
 }
 
@@ -500,9 +483,19 @@ pub fn project(
                 &name,
                 format!("field:{:?}", owns.id()),
             )?;
+            let declaring_id = match owns.origin().declared() {
+                type_bridge_contract::schema::SchemaFactId::Owns(fact_id) => fact_id.clone(),
+                _ => {
+                    return Err(projection_error(
+                        "invalid_projection_reference",
+                        "declared resolution origin for owns fact is not an Owns fact ID",
+                    ));
+                }
+            };
             let multiplicity = ProjectedMultiplicity::from_cardinality(owns.cardinality());
             let token = FieldTokenProjection::new(
                 owns.id().clone(),
+                declaring_id,
                 name,
                 multiplicity,
                 owns.is_key(),

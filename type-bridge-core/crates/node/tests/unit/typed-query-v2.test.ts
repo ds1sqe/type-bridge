@@ -3,6 +3,7 @@ import test = require("node:test");
 
 import { Card, Entity, Key, Relation, attr, field, role } from "../../typescript/index.js";
 import {
+  aggregate,
   QuerySession,
   TypedMatchError,
   references,
@@ -14,7 +15,9 @@ import {
   materializeValidatedExists,
   materializeValidatedOne,
   materializeValidatedPage,
+  materializeValidatedReduction,
   materializeValidatedRows,
+  type ReductionOutputSpec,
 } from "../../typescript/typed/results.js";
 import {
   diagnosticQuerySession,
@@ -97,6 +100,7 @@ const employmentRefs = references(RuntimeQueryEmployment);
 const traversalRefs = references(RuntimeQueryTraversal);
 const foreignTraversalRefs = references(RuntimeQueryForeignTraversal);
 const envelopeRefs = references(RuntimeMaterializedEnvelope);
+const materializedPersonRefs = references(RuntimeMaterializedPerson);
 
 function expectMatchError(
   operation: () => unknown,
@@ -170,6 +174,53 @@ test("query construction is immutable, opaque, and preserves distinct repeated m
     () => base.allowCrossJoin(person, company).one(),
     "invalid_plan",
     "execution_connection_required",
+  );
+});
+
+test("typed reductions preserve scalar domains and grouped query lineage", () => {
+  const session = diagnosticQuerySession();
+  const measured = session.var(RuntimeMaterializedPerson);
+  const value = measured.field(materializedPersonRefs.fields.value);
+  const terms = [
+    aggregate.count(),
+    aggregate.sum(value),
+    aggregate.min(value),
+    aggregate.mean(value),
+    aggregate.median(value),
+    aggregate.std(value),
+  ] as const;
+  const query = session.query(measured);
+
+  assert.ok(terms.every(Object.isFrozen));
+  expectMatchError(
+    () => query.aggregate(measured, terms),
+    "invalid_plan",
+    "execution_connection_required",
+  );
+
+  const person = session.var(RuntimeQueryPerson);
+  const company = session.var(RuntimeQueryCompany);
+  const employment = session.var(RuntimeQueryEmployment);
+  const grouped = session
+    .query(person)
+    .groupBy(person, company)
+    .match(employment)
+    .where(
+      employment.role(employmentRefs.roles.employee).connects(person),
+      employment.role(employmentRefs.roles.employer).connects(company),
+    );
+  assert.ok(Object.isFrozen(grouped));
+  expectMatchError(
+    () => grouped.aggregate([aggregate.count()]),
+    "invalid_plan",
+    "execution_connection_required",
+  );
+
+  assert.throws(
+    () => aggregate.sum(
+      company.field(references(RuntimeQueryCompany).fields.name) as never,
+    ),
+    /long or double field/,
   );
 });
 
@@ -1389,5 +1440,155 @@ test("validated count and exists remain lossless and operation-typed", () => {
     ),
     "result_decode",
     "invalid_result_exists",
+  );
+});
+
+test("validated reductions decode typed frozen tuples and grouped model evidence", () => {
+  const query = Object.freeze({});
+  const specs = Object.freeze([
+    Object.freeze({ kind: "count" as const, optional: false }),
+    Object.freeze({ kind: "long" as const, optional: false }),
+    Object.freeze({ kind: "long" as const, optional: true }),
+    Object.freeze({ kind: "double" as const, optional: true }),
+  ]);
+  const kinds = ["count", "long", "long", "double"] as const;
+  const result = Object.freeze({
+    reductionRowCount: () => 1,
+    reductionValueCount: () => 4,
+    reductionValueKind: (
+      _query: object,
+      _rowIndex: number,
+      valueIndex: number,
+    ) => kinds[valueIndex],
+    reductionCountValue: () => 18_446_744_073_709_551_615n,
+    reductionLongValue: (
+      _query: object,
+      _rowIndex: number,
+      valueIndex: number,
+    ) => valueIndex === 1 ? -9_223_372_036_854_775_808n : null,
+    reductionDoubleValue: () => 1.25,
+  });
+  const tuple = materializeValidatedReduction(
+    query as never,
+    result as never,
+    specs,
+    new Map(),
+    false,
+  );
+  assert.deepEqual(tuple, [
+    18_446_744_073_709_551_615n,
+    -9_223_372_036_854_775_808n,
+    null,
+    1.25,
+  ]);
+  assert.ok(Object.isFrozen(tuple));
+
+  const groupThing = Object.freeze({
+    iid: () => "0x-reduction-company",
+    concreteDescriptor: () => `entity:${RuntimeQueryCompany.typeName}`,
+    thingKind: () => "entity" as const,
+    fieldNames: () => ["name"],
+    fieldValuesJson: () => JSON.stringify([{ String: "Acme" }]),
+    roleDataComplete: () => true,
+    roleNames: () => [],
+    rolePlayerCount: () => 0,
+    rolePlayer: () => {
+      throw new Error("entity has no role players");
+    },
+  });
+  const groupedResult = Object.freeze({
+    ...result,
+    reductionGroup: () => groupThing,
+  });
+  const grouped = materializeValidatedReduction(
+    query as never,
+    groupedResult as never,
+    specs,
+    new Map([[RuntimeQueryCompany.typeName, RuntimeQueryCompany]]),
+    true,
+  ) as readonly (readonly [RuntimeQueryCompany, readonly unknown[]])[];
+  assert.equal(grouped.length, 1);
+  assert.ok(grouped[0]![0] instanceof RuntimeQueryCompany);
+  assert.equal(grouped[0]![0]._iid, "0x-reduction-company");
+  assert.deepEqual(grouped[0]![1], tuple);
+  assert.ok(Object.isFrozen(grouped));
+  assert.ok(Object.isFrozen(grouped[0]));
+  assert.ok(Object.isFrozen(grouped[0]![0]));
+  assert.ok(Object.isFrozen(grouped[0]![1]));
+});
+
+test("hostile reduction proofs fail closed on shape, domain, and totality", () => {
+  const query = Object.freeze({});
+  const countSpec = [Object.freeze({ kind: "count" as const, optional: false })];
+  const base = Object.freeze({
+    reductionRowCount: () => 1,
+    reductionValueCount: () => 1,
+    reductionValueKind: () => "count",
+    reductionCountValue: () => 1n,
+  });
+  const decode = (
+    result: object,
+    specs: readonly ReductionOutputSpec[] = countSpec,
+  ): readonly unknown[] =>
+    materializeValidatedReduction(
+      query as never,
+      result as never,
+      specs,
+      new Map(),
+      false,
+    );
+
+  expectMatchError(
+    () => decode({ ...base, reductionRowCount: () => 0 }),
+    "result_decode",
+    "result_reduction_row_count_mismatch",
+  );
+  expectMatchError(
+    () => decode({ ...base, reductionValueCount: () => 2 }),
+    "result_decode",
+    "result_reduction_value_count_mismatch",
+  );
+  expectMatchError(
+    () => decode({ ...base, reductionValueKind: () => "long" }),
+    "result_decode",
+    "result_reduction_value_kind_mismatch",
+  );
+  expectMatchError(
+    () => decode({ ...base, reductionCountValue: () => -1n }),
+    "result_decode",
+    "invalid_result_reduction_count",
+  );
+
+  const longTotal = [Object.freeze({ kind: "long" as const, optional: false })];
+  expectMatchError(
+    () => decode({
+      ...base,
+      reductionValueKind: () => "long",
+      reductionLongValue: () => null,
+    }, longTotal),
+    "result_decode",
+    "result_reduction_total_absent",
+  );
+  expectMatchError(
+    () => decode({
+      ...base,
+      reductionValueKind: () => "long",
+      reductionLongValue: () => 9_223_372_036_854_775_808n,
+    }, longTotal),
+    "result_decode",
+    "invalid_result_reduction_long",
+  );
+
+  const doubleOptional = [
+    Object.freeze({ kind: "double" as const, optional: true }),
+  ];
+  expectMatchError(
+    () => decode({
+      ...base,
+      reductionValueKind: () => "double",
+      reductionDoubleValue: () => Number.POSITIVE_INFINITY,
+    }, doubleOptional),
+    "result_decode",
+    "invalid_result_reduction_double",
   );
 });

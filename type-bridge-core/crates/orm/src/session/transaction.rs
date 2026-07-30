@@ -8,6 +8,7 @@ use crate::error::{ClassifiedCommitError, OrmError, Result};
 use type_bridge_core_lib::ast::{
     TypedFetchRows, TypedHydrateThings, TypedPageRematch, TypedRootScan,
 };
+use type_bridge_core_lib::version::Version;
 
 /// A single TypeDB transaction.
 ///
@@ -16,18 +17,25 @@ use type_bridge_core_lib::ast::{
 pub struct Transaction {
     inner: Option<Box<dyn TransactionOps>>,
     tx_type: TxType,
+    server_version: Option<Version>,
 }
 
 impl Transaction {
-    pub(crate) fn new(inner: Box<dyn TransactionOps>, tx_type: TxType) -> Self {
+    pub(crate) fn new(
+        inner: Box<dyn TransactionOps>,
+        tx_type: TxType,
+        server_version: Option<Version>,
+    ) -> Self {
         Self {
             inner: Some(inner),
             tx_type,
+            server_version,
         }
     }
 
     /// Execute a TypeQL query within this transaction.
     pub async fn query(&mut self, typeql: &str) -> Result<QueryResult> {
+        self.check_schema_annotation_support(typeql)?;
         let tx = self
             .inner
             .as_mut()
@@ -52,6 +60,7 @@ impl Transaction {
         typeql: &str,
         rows: GivenRowsSpec,
     ) -> Result<QueryResult> {
+        self.check_schema_annotation_support(typeql)?;
         let tx = self
             .inner
             .as_mut()
@@ -181,5 +190,15 @@ impl Transaction {
     /// The transaction type.
     pub fn tx_type(&self) -> TxType {
         self.tx_type
+    }
+
+    fn check_schema_annotation_support(&self, typeql: &str) -> Result<()> {
+        if self.tx_type == TxType::Schema {
+            crate::schema::annotations::check_schema_annotation_support(
+                typeql,
+                self.server_version,
+            )?;
+        }
+        Ok(())
     }
 }

@@ -81,7 +81,16 @@ test("generated package round-trips exact Phase 3 models on TypeDB 3.12.1", { ti
       Person,
       PROJECTION_FINGERPRINT_JSON,
       RUNTIME_PROJECTION_JSON,
+      Score,
       SEMANTIC_SCHEMA_FINGERPRINT_JSON,
+      ValBool,
+      ValConstrained,
+      ValDate,
+      ValDatetime,
+      ValDatetimeTz,
+      ValDecimal,
+      ValDouble,
+      ValDuration,
     } = generated;
 
     const runtimeProjection = JSON.parse(RUNTIME_PROJECTION_JSON);
@@ -97,6 +106,15 @@ test("generated package round-trips exact Phase 3 models on TypeDB 3.12.1", { ti
       identifier: Identifier.create("person-1"),
       nickname: Nickname.create("alice"),
       aliases: [Aliases.create("alpha"), Aliases.create("beta")],
+      score: Score.create(3n),
+      valBool: ValBool.create(true),
+      valConstrained: ValConstrained.create(20n),
+      valDate: ValDate.create(new Date("2026-07-29T00:00:00Z")),
+      valDatetime: ValDatetime.create(new Date("2026-07-29T12:34:56Z")),
+      valDatetimeTz: ValDatetimeTz.create(new Date("2026-07-29T12:34:56Z")),
+      valDecimal: ValDecimal.create("3.5"),
+      valDouble: ValDouble.create(3.5),
+      valDuration: ValDuration.create("PT3S"),
     });
     const insertedPerson = personManager.insert(personInput);
     assertIid(insertedPerson.iid);

@@ -55,11 +55,13 @@ pub enum Capability {
     StableCollectionOrder,
     /// Finite directed reachability lowered through exact relation roles.
     BoundedReachability,
+    /// Typed scalar reduction over the matched stream.
+    TypedReduction,
 }
 
 impl Capability {
     /// Complete provider capability vocabulary for exhaustive implementations.
-    pub const ALL: [Self; 19] = [
+    pub const ALL: [Self; 20] = [
         Self::ResourceBoundedStreaming,
         Self::ExactEntityTarget,
         Self::ExactRelationTarget,
@@ -79,6 +81,7 @@ impl Capability {
         Self::CollectDistinct,
         Self::StableCollectionOrder,
         Self::BoundedReachability,
+        Self::TypedReduction,
     ];
 }
 
@@ -242,6 +245,9 @@ fn add_operation_capabilities(operation: &MatchOperation, required: &mut Capabil
         }
         MatchOperation::ExistsBy { .. } => {
             required.insert(Capability::DistinctRootExists);
+        }
+        MatchOperation::ReduceBy { .. } => {
+            required.insert(Capability::TypedReduction);
         }
     }
 }

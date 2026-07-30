@@ -1,0 +1,416 @@
+{
+  "format": "typebridge.rust-generated-parity-inventory/v1",
+  "authority": {
+    "plan": "/home/ds1sqe/docs/plans/type-bridge/#170-rust-ssot-schema-query-v2/10-rust-codegen-orm-parity.md",
+    "rust_live_test": "type-bridge-core/crates/schema-codegen/tests/rust_projection_live.rs",
+    "rust_live_consumer": "type-bridge-core/crates/schema-codegen/tests/rust_projection_live/consumer.rs"
+  },
+  "statuses": [
+    "accepted_live",
+    "accepted_offline",
+    "open"
+  ],
+  "scenarios": [
+    {
+      "id": "entity_crud_and_batches",
+      "classification": "semantic_parity",
+      "status": "accepted_live",
+      "python": [
+        {
+          "path": "tests/integration/crud/entities/test_insert.py",
+          "anchors": ["test_insert_many", "manager.insert_many"]
+        },
+        {
+          "path": "tests/integration/crud/entities/test_bulk_operations.py",
+          "anchors": ["test_update_many", "test_delete_many_instances"]
+        }
+      ],
+      "node": [
+        {
+          "path": "type-bridge-core/crates/node/tests/integration/typed/entity-crud.test.ts",
+          "anchors": ["insert, getByIid, get, all, count, and delete"]
+        }
+      ],
+      "rust": [
+        {
+          "path": "type-bridge-core/crates/schema-codegen/tests/rust_projection_live/consumer.rs",
+          "anchors": ["generated_entity_crud_batches_and_scalar_domains", ".insert_many(vec![", ".put_many(vec![", "public generated entity CRUD, batches, and scalar domains: passed"]
+        }
+      ],
+      "release_exclusion": null
+    },
+    {
+      "id": "inheritance_exact_and_subtype_reads",
+      "classification": "semantic_parity",
+      "status": "accepted_live",
+      "python": [
+        {
+          "path": "tests/integration/crud/test_polymorphic_queries.py",
+          "anchors": ["subtype"]
+        }
+      ],
+      "node": [
+        {
+          "path": "type-bridge-core/crates/node/tests/integration/typed/inheritance.test.ts",
+          "anchors": ["inherited and child-local fields", "getByIid round-trips inherited"]
+        }
+      ],
+      "rust": [
+        {
+          "path": "type-bridge-core/crates/schema-codegen/tests/rust_projection_live/consumer.rs",
+          "anchors": ["generated_inheritance_exact_and_subtype_reads", "employee subtype count", "party subtype count", "F2B-03 public generated entity lifecycle: passed"]
+        }
+      ],
+      "release_exclusion": null
+    },
+    {
+      "id": "optional_multivalue_and_nine_domains",
+      "classification": "semantic_parity",
+      "status": "accepted_live",
+      "python": [
+        {
+          "path": "tests/integration/crud/attributes/test_multi_value.py",
+          "anchors": ["multi"]
+        },
+        {
+          "path": "tests/integration/crud/attributes/test_datetimetz.py",
+          "anchors": ["datetime"]
+        }
+      ],
+      "node": [
+        {
+          "path": "type-bridge-core/crates/node/tests/integration/crud/attributes.test.ts",
+          "anchors": ["all 9 primitives"]
+        },
+        {
+          "path": "type-bridge-core/crates/node/tests/integration/typed/multivalue.test.ts",
+          "anchors": ["insert with 3 tags"]
+        }
+      ],
+      "rust": [
+        {
+          "path": "type-bridge-core/crates/schema-codegen/tests/rust_projection_live/consumer.rs",
+          "anchors": ["generated_entity_crud_batches_and_scalar_domains", "ValBool::new", "ValDatetimeTz::new", "ValDecimal::new", "ValDuration::new", "optional absence read"]
+        }
+      ],
+      "release_exclusion": null
+    },
+    {
+      "id": "relation_crud_attributes_repeated_roles_keys_and_relation_players",
+      "classification": "semantic_parity",
+      "status": "accepted_live",
+      "python": [
+        {
+          "path": "tests/integration/crud/relations/test_multi_role.py",
+          "anchors": ["role"]
+        },
+        {
+          "path": "tests/integration/crud/test_complex_relations.py",
+          "anchors": ["relation"]
+        }
+      ],
+      "node": [
+        {
+          "path": "type-bridge-core/crates/node/tests/integration/typed/relation-crud.test.ts",
+          "anchors": ["insert by key fallback", "repeated role merge"]
+        }
+      ],
+      "rust": [
+        {
+          "path": "type-bridge-core/crates/schema-codegen/tests/rust_projection_live/consumer.rs",
+          "anchors": ["generated_relation_query_and_remote_lifecycle", "keyed network put hit", "keyed network put miss", "network update replaces attributes and roles", "container insert with a relation player", "F5 public relation parity and bounded reachability: passed"]
+        }
+      ],
+      "release_exclusion": null
+    },
+    {
+      "id": "expressions_boolean_order_window_and_terminals",
+      "classification": "semantic_parity",
+      "status": "accepted_live",
+      "python": [
+        {
+          "path": "tests/integration/queries/test_expressions.py",
+          "anchors": ["test_complex_boolean", "test_not_logic"]
+        },
+        {
+          "path": "tests/integration/queries/test_pagination.py",
+          "anchors": ["test_query_first_method", "test_query_count_method"]
+        }
+      ],
+      "node": [
+        {
+          "path": "type-bridge-core/crates/node/tests/integration/typed/query-expressions.test.ts",
+          "anchors": ["orderBy + offset + limit", "count and exists"]
+        }
+      ],
+      "rust": [
+        {
+          "path": "type-bridge-core/crates/schema-codegen/tests/rust_projection_live/consumer.rs",
+          "anchors": ["generated_relation_query_and_remote_lifecycle", "F3-06A", ".first(party_name.asc())", "party query exists", "F3 public generated query lifecycle: passed"]
+        }
+      ],
+      "release_exclusion": null
+    },
+    {
+      "id": "typed_aggregates_and_grouping",
+      "classification": "semantic_parity",
+      "status": "accepted_live",
+      "python": [
+        {
+          "path": "tests/integration/queries/test_expressions.py",
+          "anchors": ["test_single_aggregation", "test_group_by_single_field"]
+        }
+      ],
+      "node": [
+        {
+          "path": "type-bridge-core/crates/node/tests/integration/typed/query-aggregates.test.ts",
+          "anchors": ["median and std", "groupBy returns"]
+        }
+      ],
+      "rust": [
+        {
+          "path": "type-bridge-core/crates/schema-codegen/tests/rust_projection_live/consumer.rs",
+          "anchors": ["generated_relation_query_and_remote_lifecycle", "aggregate::count()", "score.mean()", "role-grouped"]
+        }
+      ],
+      "release_exclusion": null
+    },
+    {
+      "id": "selected_rows_named_and_collected_pages",
+      "classification": "semantic_parity",
+      "status": "accepted_live",
+      "python": [
+        {
+          "path": "tests/integration/queries/test_typed_query_executor.py",
+          "anchors": ["test_typed_pages_count_exists_and_named_collections"]
+        }
+      ],
+      "node": [
+        {
+          "path": "type-bridge-core/crates/node/tests/integration/typed/query-v2.test.ts",
+          "anchors": ["named collected pages deduplicate roots"]
+        }
+      ],
+      "rust": [
+        {
+          "path": "type-bridge-core/crates/schema-codegen/tests/rust_projection_live/consumer.rs",
+          "anchors": ["generated_relation_query_and_remote_lifecycle", "PersonGraph::select", "F4 local collected page", "F4 public selected/read/remote lifecycle: passed"]
+        }
+      ],
+      "release_exclusion": null
+    },
+    {
+      "id": "bounded_cycles_and_shared_subtrees",
+      "classification": "semantic_parity",
+      "status": "accepted_live",
+      "python": [
+        {
+          "path": "tests/integration/queries/test_typed_query_executor.py",
+          "anchors": ["test_typed_bounded_reachability_depths_cycles_and_shared_subtrees"]
+        }
+      ],
+      "node": [
+        {
+          "path": "type-bridge-core/crates/node/tests/integration/typed/query-v2.test.ts",
+          "anchors": ["bounded reachability preserves subtype hydration across cycles and shared subtrees"]
+        }
+      ],
+      "rust": [
+        {
+          "path": "type-bridge-core/crates/schema-codegen/tests/rust_acceptance/positive.rs",
+          "anchors": ["bounded_reachability_compiles", "NetworkLinkType::origin", "NetworkLinkType::destination"]
+        },
+        {
+          "path": "type-bridge-core/crates/schema-codegen/tests/rust_projection_live/consumer.rs",
+          "anchors": ["generated_relation_query_and_remote_lifecycle", "F5 bounded reachability predicate", "F5 cycle exclusion count", "F5 cycle inclusion exists", "vec![\"p-201\", \"p-202\", \"p-203\"]"]
+        }
+      ],
+      "release_exclusion": null
+    },
+    {
+      "id": "write_and_reusable_read_transactions",
+      "classification": "semantic_parity",
+      "status": "accepted_live",
+      "python": [
+        {
+          "path": "tests/integration/queries/test_typed_query_executor.py",
+          "anchors": ["test_typed_borrowed_read_context_survives_multiple_terminals"]
+        }
+      ],
+      "node": [
+        {
+          "path": "type-bridge-core/crates/node/tests/integration/transactions/commit_rollback.test.ts",
+          "anchors": ["rollback isolation", "commit durability"]
+        },
+        {
+          "path": "type-bridge-core/crates/node/tests/integration/typed/query-v2.test.ts",
+          "anchors": ["borrowed read contexts remain reusable"]
+        }
+      ],
+      "rust": [
+        {
+          "path": "type-bridge-core/crates/schema-codegen/tests/rust_projection_live/consumer.rs",
+          "anchors": ["generated_write_transaction_commit_rollback_and_drop", "F2D public write transaction lifecycle: passed", "F4 second read count", "F4 read transaction closes"]
+        }
+      ],
+      "release_exclusion": null
+    },
+    {
+      "id": "local_and_one_exchange_remote_parity",
+      "classification": "semantic_parity",
+      "status": "accepted_live",
+      "python": [
+        {
+          "path": "tests/integration/queries/test_remote_query_session_parity.py",
+          "anchors": ["test_public_remote_query_session_matches_direct_subtype_hydration"]
+        }
+      ],
+      "node": [
+        {
+          "path": "type-bridge-core/crates/node/tests/integration/queries/typed-remote-query-parity.test.ts",
+          "anchors": ["public remote model query matches local"]
+        }
+      ],
+      "rust": [
+        {
+          "path": "type-bridge-core/crates/schema-codegen/tests/rust_projection_live/consumer.rs",
+          "anchors": ["generated_relation_query_and_remote_lifecycle", "RemoteDatabase<AppSchema>", "F4 remote distinct root count", "assert_eq!(observed_page, expected_page)"]
+        }
+      ],
+      "release_exclusion": null
+    },
+    {
+      "id": "schema_generation_and_compile_rejection",
+      "classification": "semantic_parity",
+      "status": "accepted_offline",
+      "python": [
+        {
+          "path": "type-bridge-core/crates/schema-codegen/tests/acceptance/check.py",
+          "anchors": ["check_negative", "schema-codegen Python acceptance passed"]
+        }
+      ],
+      "node": [
+        {
+          "path": "type-bridge-core/crates/schema-codegen/tests/typescript_acceptance/check.mjs",
+          "anchors": ["@ts-expect-error", "schema-codegen TypeScript acceptance passed"]
+        }
+      ],
+      "rust": [
+        {
+          "path": "type-bridge-core/crates/schema-codegen/tests/rust_acceptance.rs",
+          "anchors": ["generated_rust_crate_compiles_rejects_invalid_types_and_runs", "negative generated consumer unexpectedly compiled"]
+        }
+      ],
+      "release_exclusion": null
+    },
+    {
+      "id": "external_consumer_dependency_isolation",
+      "classification": "semantic_parity",
+      "status": "accepted_offline",
+      "python": [
+        {
+          "path": "type-bridge-core/crates/schema-codegen/tests/acceptance/check.py",
+          "anchors": ["STAGE", "maturin"]
+        }
+      ],
+      "node": [
+        {
+          "path": "type-bridge-core/crates/node/tests/compat/legacy-package/run.cjs",
+          "anchors": ["packed consumer passed"]
+        }
+      ],
+      "rust": [
+        {
+          "path": "type-bridge-core/crates/schema-codegen/tests/rust_acceptance.rs",
+          "anchors": ["positive generated consumer failed"]
+        },
+        {
+          "path": "type-bridge-core/crates/schema-codegen/tests/rust_projection_live.rs",
+          "anchors": ["external_consumer_remains_a_focused_public_api_suite", "type-bridge-generated-schema={{path=", "dependency-isolated client consumer starts"]
+        }
+      ],
+      "release_exclusion": null
+    }
+  ],
+  "system_gates": [
+    {
+      "id": "single_isolated_python_packed_node_generated_rust_smoke",
+      "status": "accepted_live",
+      "evidence": [
+        {
+          "path": "test.sh",
+          "anchors": [
+            "generated Rust application parity",
+            "pytest -m integration",
+            "npm run test:integration"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "generated_rust_tls",
+      "status": "accepted_live",
+      "evidence": [
+        {
+          "path": "test.sh",
+          "anchors": [
+            "TLS generated Rust application parity",
+            "TLS Python and packed Node remote model parity",
+            "TLS Node remote model subtype hydration"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "generated_rust_msrv",
+      "status": "accepted_offline",
+      "evidence": [
+        {
+          "path": "test.sh",
+          "anchors": [
+            "generated Rust projection acceptance on MSRV 1.88",
+            "+1.88.0"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "exact_server_oci_acceptance",
+      "status": "open",
+      "evidence": [
+        {
+          "path": ".github/workflows/release.yml",
+          "anchors": [
+            "accept-server-oci:",
+            "linux/arm64",
+            "Run external generated Rust application through the exact image"
+          ]
+        }
+      ],
+      "open_requirements": [
+        "Run the non-mutating exact-layout acceptance workflow for both linux/amd64 and linux/arm64 on the landed candidate SHA.",
+        "On the separately authorized stable path, publish only the accepted layouts, verify the remote multi-platform digest, and attach the required SBOM, provenance, and signatures."
+      ]
+    },
+    {
+      "id": "final_rust_distribution_identity",
+      "status": "accepted_offline",
+      "evidence": [
+        {
+          "path": "scripts/ci/validate_release_identity.py",
+          "anchors": [
+            "ARTIFACT_CONTRACT_SOURCE_GIT_SERVER_OCI",
+            "Require the final source/Git Rust SDK plus server-OCI artifact graph."
+          ]
+        },
+        {
+          "path": ".github/workflows/release.yml",
+          "anchors": [
+            "--artifact-contract source-git-server-oci",
+            "publish-server-oci:"
+          ]
+        }
+      ]
+    }
+  ]
+}

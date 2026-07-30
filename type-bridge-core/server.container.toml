@@ -1,0 +1,28 @@
+# Credential-free image default. Production credentials, schemas, workspace
+# files, and TLS material are supplied through environment variables or a
+# read-only operator-mounted replacement for this file.
+[server]
+host = "0.0.0.0"
+port = 8080
+
+[typedb]
+address = "localhost:1729"
+database = "typedb"
+http_port = 8000
+
+[schema]
+source_file = ""
+
+[interceptors]
+enabled = ["audit-log"]
+
+[interceptors.audit-log]
+output = "stdout"
+file_path = ""
+
+[logging]
+level = "info"
+format = "json"
+
+[v2]
+enabled = false

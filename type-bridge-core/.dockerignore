@@ -1,4 +1,9 @@
-target/
-.pytest_cache/
-dist/
-*.egg-info/
+*
+!Cargo.toml
+!Cargo.lock
+!LICENSE
+!server.container.toml
+!crates/
+!crates/**
+!vendor/
+!vendor/**

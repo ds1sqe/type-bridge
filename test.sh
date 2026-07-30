@@ -293,6 +293,12 @@ run_step "released validation-rule wire without feature unification" \
     cargo test --locked \
     --manifest-path type-bridge-core/crates/core/tests/fixtures/rule-wire-standalone/Cargo.toml
 
+run_step "generated Rust projection acceptance on MSRV 1.88" \
+    cargo +1.88.0 test --locked \
+    --manifest-path type-bridge-core/Cargo.toml \
+    -p type-bridge-schema-codegen --test rust_acceptance \
+    generated_rust_crate_compiles_rejects_invalid_types_and_runs -- --exact
+
 printf "${BOLD}━━━ Python (unit) ━━━${RESET}\n\n"
 run_step "pytest tests/unit/" \
     uv run pytest tests/unit/ --tb=short -q
@@ -330,6 +336,17 @@ if [[ "$integration" == 1 ]]; then
             -p type-bridge-server --features v2-query \
             --test v2_query_integration_tests \
             production_binary_serves_v1_health_and_v2_query \
+            -- --ignored --exact --nocapture
+
+    printf "${BOLD}━━━ Generated Rust projection (integration) ━━━${RESET}\n\n"
+    run_step "generated Rust application parity" \
+        timeout --foreground 10m \
+        env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
+            TYPE_BRIDGE_RUST_PROJECTION_INTG_DATABASE="type_bridge_rust_projection_live_${$}" \
+            ACCEPTANCE_TARGET_DIR="$ROOT/type-bridge-core/target/tmp_projection_live_target" \
+        cargo test --manifest-path type-bridge-core/Cargo.toml \
+            -p type-bridge-schema-codegen --test rust_projection_live \
+            generated_rust_projection_round_trips_exact_live_models \
             -- --ignored --exact --nocapture
 
     printf "${BOLD}━━━ CLI workspace lifecycle (integration) ━━━${RESET}\n\n"
@@ -407,6 +424,20 @@ run_tls_transport_steps() {
             cargo test --manifest-path type-bridge-core/Cargo.toml \
                 -p type-bridge-typedb-runtime --test tls_live \
                 -- --nocapture --test-threads=1
+
+        run_step "TLS generated Rust application parity" \
+            timeout --foreground 10m \
+            env TYPEDB_ADDRESS="$tls_address" \
+                TYPEDB_HTTP_PORT="$tls_http_port" \
+                TYPEDB_TLS_ROOT_CA="$tls_root_ca" \
+                SSL_CERT_FILE="$fixture_root_ca" \
+                TYPE_BRIDGE_RUST_PROJECTION_TLS=1 \
+                TYPE_BRIDGE_RUST_PROJECTION_INTG_DATABASE="type_bridge_rust_projection_tls_${$}" \
+                ACCEPTANCE_TARGET_DIR="$ROOT/type-bridge-core/target/tmp_projection_live_target" \
+            cargo test --manifest-path type-bridge-core/Cargo.toml \
+                -p type-bridge-schema-codegen --test rust_projection_live \
+                generated_rust_projection_round_trips_exact_live_models \
+                -- --ignored --exact --nocapture
     else
         printf "${CYAN}External TLS runtime proof is custom-root only; native-root and exact-topology assertions require the isolated 3.12.1 lane.${RESET}\n\n"
         run_step "TLS runtime HTTP + gRPC lifecycle (external custom-root)" \

@@ -1032,6 +1032,32 @@ fn local_functions_declare_total_reducers_and_reject_unsound_shapes() {
         "query_plan_local_function_return_partial",
     );
 
+    // Median and standard deviation are partial and reserved from local returns.
+    assert!(!Reducer::Median.total_without_groups());
+    assert!(!Reducer::Std.total_without_groups());
+    assert!(Reducer::Median.requires_input());
+    assert!(Reducer::Std.requires_input());
+    let error = build(vec![local(LocalReturn::new(
+        Reducer::Median,
+        binding_id(1),
+        ValueTypeTag::Double,
+    ))])
+    .expect_err("partial median local reducer");
+    assert_eq!(
+        error.code().as_str(),
+        "query_plan_local_function_return_partial",
+    );
+    let error = build(vec![local(LocalReturn::new(
+        Reducer::Std,
+        binding_id(1),
+        ValueTypeTag::Double,
+    ))])
+    .expect_err("partial std local reducer");
+    assert_eq!(
+        error.code().as_str(),
+        "query_plan_local_function_return_partial",
+    );
+
     // A count declares a long result, nothing else.
     let error = build(vec![local(LocalReturn::new(
         Reducer::Count,

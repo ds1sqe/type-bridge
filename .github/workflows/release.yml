@@ -20,6 +20,7 @@ on:
 # tag can publish.
 env:
   RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_channel == 'candidate' && 'v2.0.0-rc.0' || 'v2.0.0' }}
+  RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.release_channel == 'candidate' && '2.0.0-rc.0' || '2.0.0' }}
   PYTHON_RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.release_channel == 'candidate' && '2.0.0rc0' || '2.0.0' }}
   RELEASE_CHANNEL: ${{ github.event_name == 'workflow_dispatch' && inputs.release_channel || 'stable' }}
 
@@ -74,6 +75,16 @@ jobs:
           cargo test --locked
           --manifest-path crates/core/tests/fixtures/rule-wire-standalone/Cargo.toml
 
+      - name: Install generated Rust MSRV
+        run: rustup toolchain install 1.88.0 --profile minimal
+
+      - name: Check generated Rust projection on MSRV 1.88
+        working-directory: type-bridge-core
+        run: >-
+          cargo +1.88.0 test --locked
+          -p type-bridge-schema-codegen --test rust_acceptance
+          generated_rust_crate_compiles_rejects_invalid_types_and_runs -- --exact
+
       - name: Run unit tests
         run: uv run pytest tests/unit/ -v --tb=short
 
@@ -111,12 +122,13 @@ jobs:
       - name: Verify historical band-9 registry compatibility keys
         run: python scripts/ci/validate_historical_band9_registry.py
 
-      # The release contract publishes only Python and npm artifacts. Rust
-      # packages remain private implementation inputs to those artifacts.
+      # The closed release set includes Python, npm, the exact source/Git Rust
+      # SDK revision, and the accepted TypeBridge server OCI image. It never
+      # creates a crates.io mutation path for the blocked workspace graph.
       - name: Validate identity and legacy TypeDB package provenance
         run: |
           python scripts/ci/validate_release_identity.py \
-            --artifact-contract python-npm-only \
+            --artifact-contract source-git-server-oci \
             --release-channel "$RELEASE_CHANNEL" \
             --tag "$RELEASE_TAG" \
             --workspace type-bridge-core/Cargo.toml \
@@ -134,11 +146,11 @@ jobs:
           python scripts/ci/validate_latest_typedb_driver_pin.py \
             --committed-cutoff
 
-  # One non-mutating channel gate must pass after every Python/npm candidate
-  # has been accepted. Credential checks apply only to the stable tag path.
+  # One non-mutating channel gate must pass after every public candidate has
+  # been accepted. Credential checks apply only to the stable tag path.
   channel-preflight:
     name: Preflight selected release channel
-    needs: [validate-release-identity, accept-python-artifacts, accept-node-package, accept-live-artifact-parity]
+    needs: [validate-release-identity, accept-python-artifacts, accept-node-package, accept-live-artifact-parity, accept-server-oci]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -918,6 +930,280 @@ jobs:
           path: type-bridge-core/target/release/examples/v2_smoke_server
           if-no-files-found: error
 
+  # Build one immutable, daemon-importable OCI layout per supported platform.
+  # Candidate and stable paths share these bytes; neither job pushes a registry.
+  build-server-oci:
+    name: Build server OCI (${{ matrix.platform }})
+    needs: validate-release-identity
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: amd64
+            platform: linux/amd64
+            runner: ubuntu-latest
+          - architecture: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Checkout exact release source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up pinned Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+        with:
+          version: v0.34.1
+
+      - name: Build immutable platform OCI layout
+        env:
+          SERVER_OCI_PLATFORM: ${{ matrix.platform }}
+          SERVER_OCI_ARCH: ${{ matrix.architecture }}
+        run: |
+          set -euo pipefail
+          created="$(git show --no-patch --format=%cI "$GITHUB_SHA")"
+          release_identity="${RELEASE_TAG}@${GITHUB_SHA}"
+          output="$RUNNER_TEMP/server-oci-${SERVER_OCI_ARCH}"
+          mkdir -p "$output"
+          archive="$output/type-bridge-server-${SERVER_OCI_ARCH}.oci.tar"
+          docker buildx build \
+            --file type-bridge-core/Dockerfile.server \
+            --platform "$SERVER_OCI_PLATFORM" \
+            --provenance=false \
+            --sbom=false \
+            --tag \
+              "ghcr.io/ds1sqe/type-bridge-server:${RELEASE_VERSION}-${SERVER_OCI_ARCH}" \
+            --build-arg "SOURCE_REVISION=${GITHUB_SHA}" \
+            --build-arg "RELEASE_VERSION=${RELEASE_VERSION}" \
+            --build-arg "CREATED=${created}" \
+            --build-arg "RELEASE_IDENTITY=${release_identity}" \
+            --output \
+              "type=oci,dest=${archive},oci-mediatypes=false,rewrite-timestamp=true" \
+            type-bridge-core
+          python scripts/ci/validate_server_oci_layout.py \
+            --archive "$archive" \
+            --platform "$SERVER_OCI_PLATFORM" \
+            --version "$RELEASE_VERSION" \
+            --revision "$GITHUB_SHA" \
+            --created "$created" \
+            --release-identity "$release_identity" \
+            --report "$output/layout-report.json"
+          (
+            cd "$output"
+            sha256sum "$(basename "$archive")" > layout.sha256
+          )
+
+      - name: Upload immutable platform OCI layout
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: server-oci-layout-${{ matrix.architecture }}
+          path: ${{ runner.temp }}/server-oci-${{ matrix.architecture }}
+          if-no-files-found: error
+          retention-days: 14
+
+  # Import and execute the exact layout bytes. The arm64 leg runs under QEMU
+  # on amd64 so architecture startup is proved rather than inferred.
+  accept-server-oci:
+    name: Accept server OCI (${{ matrix.platform }})
+    needs: build-server-oci
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: amd64
+            platform: linux/amd64
+          - architecture: arm64
+            platform: linux/arm64
+    services:
+      typedb:
+        image: typedb/typedb:3.12.1
+        ports:
+          - 1729:1729
+          - 8000:8000
+    steps:
+      - name: Checkout exact release source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up QEMU for arm64 runtime proof
+        if: matrix.architecture == 'arm64'
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+        with:
+          platforms: arm64
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: 1.94.1
+
+      - name: Download immutable platform OCI layout
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: server-oci-layout-${{ matrix.architecture }}
+          path: tmp/server-oci-layout-${{ matrix.architecture }}
+
+      - name: Import exact layout into the runtime daemon
+        env:
+          SERVER_OCI_ARCH: ${{ matrix.architecture }}
+          SERVER_OCI_PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends skopeo
+          archive="$(
+            find "tmp/server-oci-layout-${SERVER_OCI_ARCH}" \
+              -maxdepth 1 -type f -name '*.oci.tar' -print
+          )"
+          test -n "$archive"
+          test "$(printf '%s\n' "$archive" | wc -l)" -eq 1
+          (
+            cd "tmp/server-oci-layout-${SERVER_OCI_ARCH}"
+            sha256sum --check layout.sha256
+          )
+          image="type-bridge-server:accepted-${GITHUB_SHA}-${SERVER_OCI_ARCH}"
+          skopeo copy --preserve-digests \
+            "oci-archive:${archive}" "docker-daemon:${image}"
+          docker inspect "$image" >/dev/null
+          printf 'TYPE_BRIDGE_SERVER_IMAGE=%s\n' "$image" >> "$GITHUB_ENV"
+          printf 'TYPE_BRIDGE_SERVER_PLATFORM=%s\n' \
+            "$SERVER_OCI_PLATFORM" >> "$GITHUB_ENV"
+          printf 'SERVER_OCI_ARCHIVE=%s\n' "$(realpath "$archive")" >> "$GITHUB_ENV"
+          printf 'SERVER_OCI_DOCKER_ARCHIVE=%s\n' \
+            "$RUNNER_TEMP/type-bridge-server-${SERVER_OCI_ARCH}.docker.tar" \
+            >> "$GITHUB_ENV"
+          printf 'SERVER_OCI_ACCEPTED_DIR=%s\n' \
+            "$RUNNER_TEMP/server-oci-accepted-${SERVER_OCI_ARCH}" \
+            >> "$GITHUB_ENV"
+
+      - name: Prove binary identity under deployment restrictions
+        run: |
+          set -euo pipefail
+          expected="type-bridge-server ${RELEASE_VERSION}"
+          actual="$(
+            docker run --rm \
+              --platform "$TYPE_BRIDGE_SERVER_PLATFORM" \
+              --read-only \
+              --cap-drop ALL \
+              --security-opt no-new-privileges:true \
+              --user 10001:10001 \
+              "$TYPE_BRIDGE_SERVER_IMAGE" --version
+          )"
+          test "$actual" = "$expected"
+          test "$(
+            docker inspect --format '{{.Config.User}}' \
+              "$TYPE_BRIDGE_SERVER_IMAGE"
+          )" = "10001:10001"
+
+      - name: Wait for pinned TypeDB
+        run: |
+          for attempt in {1..90}; do
+            if curl --fail --silent \
+              http://localhost:8000/v1/version >/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs ${{ job.services.typedb.id }} >&2 || true
+          exit 1
+
+      - name: Run exact-image V1 compatibility and authenticated V2 query
+        env:
+          TYPEDB_ADDRESS: localhost:1729
+          TYPEDB_HTTP_PORT: "8000"
+          TYPE_BRIDGE_SERVER_STARTUP_TIMEOUT_SECONDS: "180"
+        run: >-
+          timeout --foreground 15m
+          cargo test --manifest-path type-bridge-core/Cargo.toml --locked
+          -p type-bridge-server --features v2-query
+          --test v2_query_integration_tests
+          production_binary_serves_v1_health_and_v2_query
+          -- --ignored --exact --nocapture
+
+      - name: Run external generated Rust application through the exact image
+        if: matrix.architecture == 'amd64'
+        env:
+          TYPEDB_ADDRESS: localhost:1729
+          TYPEDB_HTTP_PORT: "8000"
+          TYPE_BRIDGE_RUST_PROJECTION_INTG_DATABASE: release_rust_projection_live
+          ACCEPTANCE_TARGET_DIR: ${{ runner.temp }}/release-rust-projection-target
+        run: >-
+          timeout --foreground 15m
+          cargo test --manifest-path type-bridge-core/Cargo.toml --locked
+          -p type-bridge-schema-codegen --test rust_projection_live
+          generated_rust_projection_round_trips_exact_live_models
+          -- --ignored --exact --nocapture
+
+      - name: Report runtime packages and image size
+        run: |
+          set -euo pipefail
+          mkdir -p "$SERVER_OCI_ACCEPTED_DIR"
+          docker image inspect "$TYPE_BRIDGE_SERVER_IMAGE" \
+            --format \
+              '{"image_bytes":{{.Size}},"runtime_user":{{json .Config.User}}}' \
+            > "$SERVER_OCI_ACCEPTED_DIR/runtime-report.json"
+          docker run --rm \
+            --platform "$TYPE_BRIDGE_SERVER_PLATFORM" \
+            --read-only \
+            --cap-drop ALL \
+            --security-opt no-new-privileges:true \
+            --entrypoint /usr/bin/dpkg-query \
+            "$TYPE_BRIDGE_SERVER_IMAGE" \
+            -W '-f=${Package} ${Version}\n' \
+            | LC_ALL=C sort \
+            > "$SERVER_OCI_ACCEPTED_DIR/installed-packages.txt"
+          docker save --output "$SERVER_OCI_DOCKER_ARCHIVE" \
+            "$TYPE_BRIDGE_SERVER_IMAGE"
+
+      - name: Generate SPDX JSON SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: ${{ env.TYPE_BRIDGE_SERVER_IMAGE }}
+          format: spdx-json
+          output-file: ${{ env.SERVER_OCI_ACCEPTED_DIR }}/server.spdx.json
+          artifact-name: server-oci-sbom-${{ matrix.architecture }}.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+          syft-version: v1.44.0
+
+      - name: Scan exact runtime for vulnerabilities and secrets
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          input: ${{ env.SERVER_OCI_DOCKER_ARCHIVE }}
+          scanners: vuln,secret
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          format: json
+          output: ${{ env.SERVER_OCI_ACCEPTED_DIR }}/trivy.json
+          exit-code: 0
+
+      - name: Assemble accepted OCI evidence
+        env:
+          SERVER_OCI_ARCH: ${{ matrix.architecture }}
+        run: |
+          set -euo pipefail
+          cp "$SERVER_OCI_ARCHIVE" "$SERVER_OCI_ACCEPTED_DIR/"
+          cp "tmp/server-oci-layout-${SERVER_OCI_ARCH}/layout-report.json" \
+            "$SERVER_OCI_ACCEPTED_DIR/"
+          cp "tmp/server-oci-layout-${SERVER_OCI_ARCH}/layout.sha256" \
+            "$SERVER_OCI_ACCEPTED_DIR/"
+
+      - name: Upload exact accepted OCI bytes and evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: server-oci-accepted-${{ matrix.architecture }}
+          path: ${{ env.SERVER_OCI_ACCEPTED_DIR }}
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Enforce the accepted-image vulnerability and secret gate
+        run: >-
+          python scripts/ci/validate_trivy_report.py
+          "$SERVER_OCI_ACCEPTED_DIR/trivy.json"
+
   # Exercise the exact Linux wheel pair and the one final multi-native npm
   # tarball against live TypeDB before any registry mutation. This job consumes
   # only uploaded release candidates: it performs no source build or repack.
@@ -1240,12 +1526,227 @@ jobs:
               raise SystemExit(f"Unexpected V2 artifact parity test cases: {names}")
           PY
 
+  # Import the two already-accepted platform manifests without rebuilding,
+  # assemble their stable multi-platform index, and attach registry evidence.
+  publish-server-oci:
+    name: Publish accepted TypeBridge server OCI
+    if: github.event_name == 'push' && github.ref == 'refs/tags/v2.0.0'
+    needs: [channel-preflight, accept-server-oci]
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+      packages: write
+      attestations: write
+    steps:
+      - name: Checkout exact release source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Download accepted amd64 OCI
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: server-oci-accepted-amd64
+          path: tmp/server-oci/amd64
+
+      - name: Download accepted arm64 OCI
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: server-oci-accepted-arm64
+          path: tmp/server-oci/arm64
+
+      - name: Set up pinned Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+        with:
+          version: v0.34.1
+
+      - name: Install pinned Cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.0.6
+
+      - name: Authenticate GHCR
+        uses: docker/login-action@e92390c5fb421da1463c202d546fed0ec5c39f20 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish exact accepted platform manifests
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends skopeo
+          image="ghcr.io/ds1sqe/type-bridge-server"
+          version="$RELEASE_VERSION"
+          for architecture in amd64 arm64; do
+            directory="tmp/server-oci/${architecture}"
+            (
+              cd "$directory"
+              sha256sum --check layout.sha256
+            )
+            archive="$(
+              find "$directory" -maxdepth 1 -type f \
+                -name '*.oci.tar' -print
+            )"
+            test -n "$archive"
+            test "$(printf '%s\n' "$archive" | wc -l)" -eq 1
+            expected="$(
+              python -c \
+                'import json,sys; print(json.load(open(sys.argv[1]))["manifest_digest"])' \
+                "$directory/layout-report.json"
+            )"
+            skopeo copy --preserve-digests \
+              "oci-archive:${archive}" \
+              "docker://${image}:${version}-${architecture}"
+            raw="$RUNNER_TEMP/${architecture}-remote-manifest.json"
+            skopeo inspect --raw \
+              "docker://${image}:${version}-${architecture}" > "$raw"
+            actual="sha256:$(sha256sum "$raw" | cut -d' ' -f1)"
+            test "$actual" = "$expected"
+            printf 'SERVER_OCI_%s_DIGEST=%s\n' \
+              "${architecture^^}" "$actual" >> "$GITHUB_ENV"
+          done
+
+      - name: Create exact stable manifest and aliases
+        run: |
+          set -euo pipefail
+          image="ghcr.io/ds1sqe/type-bridge-server"
+          version="$RELEASE_VERSION"
+          docker buildx imagetools create \
+            --tag "${image}:${version}" \
+            "${image}@${SERVER_OCI_AMD64_DIGEST}" \
+            "${image}@${SERVER_OCI_ARM64_DIGEST}"
+          stable_raw="$RUNNER_TEMP/stable-manifest.json"
+          skopeo inspect --raw "docker://${image}:${version}" > "$stable_raw"
+          digest="sha256:$(sha256sum "$stable_raw" | cut -d' ' -f1)"
+          for alias in 2.0 2 latest; do
+            docker buildx imagetools create \
+              --tag "${image}:${alias}" "${image}@${digest}"
+            alias_raw="$RUNNER_TEMP/alias-${alias}.json"
+            skopeo inspect --raw "docker://${image}:${alias}" > "$alias_raw"
+            test "sha256:$(sha256sum "$alias_raw" | cut -d' ' -f1)" = "$digest"
+          done
+          printf 'SERVER_OCI_DIGEST=%s\n' "$digest" >> "$GITHUB_ENV"
+          printf 'SERVER_OCI_IMAGE=%s\n' "$image" >> "$GITHUB_ENV"
+
+      - name: Sign exact platform and multi-platform digests
+        run: |
+          cosign sign --yes \
+            "${SERVER_OCI_IMAGE}@${SERVER_OCI_AMD64_DIGEST}" \
+            "${SERVER_OCI_IMAGE}@${SERVER_OCI_ARM64_DIGEST}" \
+            "${SERVER_OCI_IMAGE}@${SERVER_OCI_DIGEST}"
+          for digest in \
+            "$SERVER_OCI_AMD64_DIGEST" \
+            "$SERVER_OCI_ARM64_DIGEST" \
+            "$SERVER_OCI_DIGEST"; do
+            cosign verify \
+              --certificate-identity-regexp \
+                '^https://github.com/ds1sqe/type-bridge/.github/workflows/release.yml@refs/tags/v2[.]0[.]0$' \
+              --certificate-oidc-issuer \
+                https://token.actions.githubusercontent.com \
+              "${SERVER_OCI_IMAGE}@${digest}" >/dev/null
+          done
+
+      - name: Attest amd64 build provenance
+        id: attest-provenance-amd64
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-name: ${{ env.SERVER_OCI_IMAGE }}
+          subject-digest: ${{ env.SERVER_OCI_AMD64_DIGEST }}
+          push-to-registry: true
+
+      - name: Attest arm64 build provenance
+        id: attest-provenance-arm64
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-name: ${{ env.SERVER_OCI_IMAGE }}
+          subject-digest: ${{ env.SERVER_OCI_ARM64_DIGEST }}
+          push-to-registry: true
+
+      - name: Attest multi-platform provenance
+        id: attest-provenance-index
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-name: ${{ env.SERVER_OCI_IMAGE }}
+          subject-digest: ${{ env.SERVER_OCI_DIGEST }}
+          push-to-registry: true
+
+      - name: Attest amd64 SPDX SBOM
+        id: attest-sbom-amd64
+        uses: actions/attest-sbom@4651f806c01d8637787e274ac3bdf724ef169f34 # v3
+        with:
+          subject-name: ${{ env.SERVER_OCI_IMAGE }}
+          subject-digest: ${{ env.SERVER_OCI_AMD64_DIGEST }}
+          sbom-path: tmp/server-oci/amd64/server.spdx.json
+          push-to-registry: true
+
+      - name: Attest arm64 SPDX SBOM
+        id: attest-sbom-arm64
+        uses: actions/attest-sbom@4651f806c01d8637787e274ac3bdf724ef169f34 # v3
+        with:
+          subject-name: ${{ env.SERVER_OCI_IMAGE }}
+          subject-digest: ${{ env.SERVER_OCI_ARM64_DIGEST }}
+          sbom-path: tmp/server-oci/arm64/server.spdx.json
+          push-to-registry: true
+
+      - name: Record immutable OCI release identity
+        env:
+          PROVENANCE_AMD64_URL: ${{ steps.attest-provenance-amd64.outputs.attestation-url }}
+          PROVENANCE_ARM64_URL: ${{ steps.attest-provenance-arm64.outputs.attestation-url }}
+          PROVENANCE_INDEX_URL: ${{ steps.attest-provenance-index.outputs.attestation-url }}
+          SBOM_AMD64_URL: ${{ steps.attest-sbom-amd64.outputs.attestation-url }}
+          SBOM_ARM64_URL: ${{ steps.attest-sbom-arm64.outputs.attestation-url }}
+        run: |
+          mkdir -p tmp/server-oci-release
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          payload = {
+              "image": os.environ["SERVER_OCI_IMAGE"],
+              "digest": os.environ["SERVER_OCI_DIGEST"],
+              "platform_digests": {
+                  "linux/amd64": os.environ["SERVER_OCI_AMD64_DIGEST"],
+                  "linux/arm64": os.environ["SERVER_OCI_ARM64_DIGEST"],
+              },
+              "revision": os.environ["GITHUB_SHA"],
+              "tag": os.environ["RELEASE_TAG"],
+              "aliases": ["2.0", "2", "latest"],
+              "attestations": {
+                  "provenance_amd64": os.environ["PROVENANCE_AMD64_URL"],
+                  "provenance_arm64": os.environ["PROVENANCE_ARM64_URL"],
+                  "provenance_index": os.environ["PROVENANCE_INDEX_URL"],
+                  "sbom_amd64": os.environ["SBOM_AMD64_URL"],
+                  "sbom_arm64": os.environ["SBOM_ARM64_URL"],
+              },
+          }
+          output = Path("tmp/server-oci-release/server-oci-release.json")
+          output.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+          markdown = Path("tmp/server-oci-release/server-oci-release.md")
+          markdown.write_text(
+              "## TypeBridge server OCI\n\n"
+              f"`{payload['image']}@{payload['digest']}`\n\n"
+              f"- linux/amd64: `{payload['platform_digests']['linux/amd64']}`\n"
+              f"- linux/arm64: `{payload['platform_digests']['linux/arm64']}`\n"
+              "- aliases: `2.0`, `2`, `latest`\n"
+          )
+          PY
+
+      - name: Upload immutable OCI release metadata
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: server-oci-release-metadata
+          path: tmp/server-oci-release
+          if-no-files-found: error
+
   # Publish only the accepted tarball. The stable-only channel preflight has
   # already proved that the mandatory npm credential is present.
   publish-node-npm:
     name: Publish Node package to npm
     if: github.event_name == 'push' && github.ref == 'refs/tags/v2.0.0'
-    needs: channel-preflight
+    needs: [channel-preflight, publish-server-oci]
     runs-on: ubuntu-latest
     environment: release
     steps:
@@ -1435,7 +1936,7 @@ jobs:
   github-release:
     name: Create GitHub Release
     if: github.event_name == 'push' && github.ref == 'refs/tags/v2.0.0'
-    needs: [publish-node-npm, publish-core-pypi, publish-python-pypi]
+    needs: [publish-server-oci, publish-node-npm, publish-core-pypi, publish-python-pypi]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -1468,9 +1969,16 @@ jobs:
           name: node-package
           path: dist/
 
+      - name: Download immutable server OCI metadata
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: server-oci-release-metadata
+          path: dist/
+
       - name: Create draft release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           draft: true
           generate_release_notes: true
+          body_path: dist/server-oci-release.md
           files: dist/*

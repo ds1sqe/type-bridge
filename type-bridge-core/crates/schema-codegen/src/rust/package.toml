@@ -2,11 +2,18 @@
 name = "type-bridge-generated-schema"
 version = "0.0.0"
 edition = "2024"
+rust-version = "1.88"
 publish = false
 
 [lib]
 path = "src/lib.rs"
 doctest = false
+
+[dependencies]
+type-bridge = { version = "2.0.0-rc.0", default-features = false }
+
+[features]
+test-harness = ["type-bridge/test-harness"]
 
 [workspace]
 
