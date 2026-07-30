@@ -1,213 +1,59 @@
-# TypeBridge API Reference
+# Guides
 
-Complete API reference for TypeBridge - a Python ORM for TypeDB with an Attribute-based API.
+TypeBridge combines language SDKs with schema, query, migration, generation,
+and server workflows. These guides are grouped by the task you are performing,
+while detailed reference pages keep their stable URLs.
 
-## Overview
+<div class="grid cards" markdown>
 
-TypeBridge provides a Pythonic interface to TypeDB that aligns with TypeDB's type system, where **attributes are base types** that **entities and relations own**.
+-   **Choose an SDK**
 
-## API Documentation
+    Python, TypeScript/Node, generated Rust, or remote server execution.
 
-### Core Concepts
+    [:octicons-arrow-right-24: Compare surfaces](sdks.md)
 
-- **[Attributes](attributes.md)** - All 9 attribute types and value types
-- **[Entities](entities.md)** - Entity definition, ownership, and inheritance
-- **[Relations](relations.md)** - Relations, roles, and role players
-- **[Cardinality](cardinality.md)** - Card API and Flag system for constraints
+-   **Model TypeDB data**
 
-### Data Operations
+    Attributes, entities, relations, roles, inheritance, cardinality, and
+    validation.
 
-- **[CRUD Operations](crud.md)** - Create, read, update, delete with type-safe managers
-- **[Queries](queries.md)** - Query expressions, filtering, aggregations, and pagination
-- **[Immutable Typed Queries](typed-queries.md)** - Multi-model typed matches, pages, counts, and transaction ownership
-- **[Functions](functions.md)** - TypeDB schema-defined functions and FunctionQuery
-- **[Schema Management](schema.md)** - Schema operations and conflict detection
-- **[Migrations](migrations.md)** - Schema history, snapshots, data migrations, and rollback
+    [:octicons-arrow-right-24: Model guide](models.md)
 
-### Code Generation
+-   **Read and write data**
 
-- **[Generator](generator.md)** - Generate Python models from TypeDB schema files
-- **[API DTOs](dto.md)** - Pydantic Data Transfer Objects for REST APIs
+    CRUD managers, transactions, expressions, functions, and immutable typed
+    queries.
 
-### Validation and Type Safety
+    [:octicons-arrow-right-24: Data guide](data.md)
 
-- **[Validation](validation.md)** - Pydantic integration, type safety, and literal types
+-   **Own the schema lifecycle**
 
-## Quick Reference
+    Canonical Split-YAML, TypeQL compatibility, migration, generation, and
+    API projections.
 
-### Basic Usage Pattern
+    [:octicons-arrow-right-24: Schema workflows](schema-workflows.md)
 
-```python
-from type_bridge import Entity, TypeFlags, String, Integer, Flag, Key
+-   **Operate and upgrade**
 
-# 1. Define attribute types
-class Name(String):
-    pass
+    Server deployment, logging, compatibility, deprecations, and 2.0 upgrade
+    sequencing.
 
-class Age(Integer):
-    pass
+    [:octicons-arrow-right-24: Operations](operations.md)
 
-# 2. Define entity with ownership
-class Person(Entity):
-    flags = TypeFlags(name="person")
-    name: Name = Flag(Key)
-    age: Age | None = None  # Optional field
+</div>
 
-# 3. Create instances (keyword arguments required)
-alice = Person(name=Name("Alice"), age=Age(30))
+## How the guides relate
 
-# 4. CRUD operations
-person_manager = Person.manager(db)
-person_manager.insert(alice)
-persons = person_manager.all()
+Application models and canonical schemas describe the same TypeDB concepts.
+Choose one authoring authority for a scope:
 
-# 5. Add lifecycle hooks (optional)
-person_manager.add_hook(my_audit_hook)  # chainable
-```
+- model-first Python applications can register classes and use
+  `SchemaManager` during the 2.0 compatibility window;
+- schema-first applications author Split-YAML, plan migrations, and generate
+  Python, TypeScript, or Rust projections;
+- existing TypeQL applications can generate models through the retained
+  compatibility path.
 
-## Key Principles
-
-### 1. Attributes Are Independent Types
-
-Define attributes once, reuse across entities/relations:
-
-```python
-class Name(String):
-    pass
-
-class Person(Entity):
-    name: Name  # Person owns 'name'
-
-class Company(Entity):
-    name: Name  # Company also owns 'name'
-```
-
-### 2. Use TypeFlags for Configuration
-
-Clean API with `TypeFlags`:
-
-```python
-class Person(Entity):
-    flags = TypeFlags(name="person")  # Clean API
-```
-
-### 3. Use Flag System for Annotations
-
-```python
-from type_bridge import Flag, Key, Unique, Card
-
-name: Name = Flag(Key)                    # @key (implies @card(1..1))
-email: Email = Flag(Unique)               # @unique @card(1..1); type is required
-age: Age | None = None                    # @card(0..1) - PEP 604 syntax
-tags: list[Tag] = Flag(Card(min=2))       # @card(2..) - multi-value
-```
-
-### 4. Python Inheritance Maps to TypeDB Supertypes
-
-```python
-class Animal(Entity):
-    flags = TypeFlags(abstract=True)
-
-class Dog(Animal):  # Generates: entity dog, sub animal
-    pass
-```
-
-### 5. Keyword-Only Arguments
-
-All Entity/Relation constructors require keyword arguments:
-
-```python
-# ✅ CORRECT
-person = Person(name=Name("Alice"), age=Age(30))
-
-# ❌ WRONG
-person = Person(Name("Alice"), Age(30))
-```
-
-### 6. TransactionContext for Shared Operations
-
-Share transactions across multiple operations:
-
-```python
-with db.transaction(TransactionType.WRITE) as tx:
-    Person.manager(tx).insert(alice)
-    Company.manager(tx).insert(techcorp)
-    # Both commit together
-```
-
-### 7. Django-style Lookup Filters
-
-Filter with expressive suffix operators:
-
-```python
-person_manager.filter(name__startswith="Al", age__gt=30).execute()
-person_manager.filter(status__in=["active", "pending"]).execute()
-```
-
-### 8. Sorting Results
-
-Sort query results with `order_by()`:
-
-```python
-# Ascending (default)
-person_manager.filter().order_by('age').execute()
-
-# Descending (prefix with '-')
-person_manager.filter().order_by('-age').execute()
-
-# Multiple fields
-person_manager.filter().order_by('city', '-age').execute()
-
-# Role-player attributes (relations only)
-employment_manager.filter().order_by('employee__age').execute()
-```
-
-### 9. Dict Helpers for Serialization
-
-Easy conversion to/from dictionaries:
-
-```python
-data = person.to_dict()  # {'name': 'Alice', 'age': 30}
-person = Person.from_dict(data)
-```
-
-## Generated Schema Example
-
-The Python code above generates this TypeQL schema:
-
-```typeql
-define
-
-# Attributes (defined once, can be owned by multiple types)
-attribute name, value string;
-attribute age, value integer;
-
-# Entities declare ownership with cardinality annotations
-entity person,
-    owns name @key,
-    owns age @card(0..1);
-```
-
-## Navigation
-
-- [Attributes Documentation](attributes.md)
-- [Entities Documentation](entities.md)
-- [Relations Documentation](relations.md)
-- [Cardinality Documentation](cardinality.md)
-- [CRUD Operations Documentation](crud.md)
-- [Queries Documentation](queries.md)
-- [Immutable Typed Queries](typed-queries.md)
-- [Functions Documentation](functions.md)
-- [Schema Management Documentation](schema.md)
-- [Migration Documentation](migrations.md)
-- [Generator Documentation](generator.md)
-- [API DTOs Documentation](dto.md)
-- [Validation Documentation](validation.md)
-
----
-
-For TypeDB integration details, see [docs/development/typedb.md](../development/typedb.md).
-
-For development guidelines, see [docs/development/setup.md](../development/setup.md).
-
-For abstract types implementation, see [abstract-types.md](abstract-types.md). For TypeDB abstract types concepts, see [docs/development/abstract-types.md](../development/abstract-types.md).
+All runtime surfaces delegate semantic work to the shared Rust engine. The
+[Python API reference](../reference/index.md) is generated from source
+docstrings; the pages in this section explain workflows and contracts.

@@ -1,708 +1,335 @@
 ---
 name: type-bridge
-description: Use the type-bridge Python ORM for TypeDB. Covers defining entities, relations, attributes, CRUD operations, queries, expressions, and schema management. Use when working with TypeDB in Python projects.
+description: Build, migrate, query, or operate TypeDB applications with TypeBridge across Python, TypeScript/Node, generated Rust, Split-YAML schema workspaces, immutable typed queries, and the TypeBridge server. Use when defining TypeDB models, implementing CRUD or queries, generating SDKs, managing schema migrations, selecting a TypeBridge language surface, or troubleshooting TypeBridge compatibility and runtime behavior.
 ---
 
-# type-bridge Python ORM for TypeDB
+# Use TypeBridge
 
-type-bridge is a Pythonic ORM for TypeDB that provides type-safe abstractions over TypeQL.
+Treat TypeBridge as a multi-language TypeDB application toolkit. One Rust
+semantic engine owns schema, query, migration, validation, code generation,
+ORM, and provider behavior. Python and Node expose language-native facades;
+generated Rust applications and the query server consume the same contracts.
 
-## Quick Start
+## Choose the surface
+
+| Task | Surface | Read first |
+| --- | --- | --- |
+| Build a Python application | `type-bridge` | `getting-started/quickstart.md`, `guide/models.md`, `guide/data.md` |
+| Build a Node application | `@type-bridge/node` | `guide/typescript.md` |
+| Build a Rust application | generated schema crate + `type-bridge` | `guide/rust.md` |
+| Own a canonical schema | Split-YAML workspace and CLI | `guide/schema-workflows.md`, `guide/split-yaml-v1.md` |
+| Run remote queries | TypeBridge server | `guide/server-container.md`, `guide/typed-queries.md` |
+| Upgrade an existing app | compatibility guides | `guide/upgrade-v2.md`, `guide/v2-deprecations.md` |
+
+Resolve these paths relative to this file when the repository documentation is
+available. Otherwise use <https://ds1sqe.github.io/type-bridge/>.
+
+## Start every task
+
+1. Determine whether the target is this repository or an application consuming
+   TypeBridge.
+2. Inspect the target's `pyproject.toml`, `package.json`, `Cargo.toml`,
+   `typebridge.yaml`, and schema files as applicable. Do not assume the
+   documentation branch matches the installed version.
+3. Identify the language surface, TypeBridge version, TypeDB server version,
+   and whether execution is direct or remote.
+4. Identify the desired-schema authority: Python models, existing TypeQL, or a
+   V2 Split-YAML workspace. Do not introduce a second writer for the same
+   scope.
+5. Read only the relevant guide pages from the routing table before changing
+   an API boundary.
+6. Implement through the language facade and let the Rust engine own semantic
+   validation.
+7. Verify the focused behavior, then run the surface-level check.
+
+When working in this repository, read `../DEVELOPMENT.md` first. Locate public
+behavior in these ownership areas:
+
+| Boundary | Source |
+| --- | --- |
+| Python facade | `../type_bridge/` |
+| Shared engines and contracts | `../type-bridge-core/crates/` |
+| TypeScript/Node facade | `../type-bridge-core/crates/node/` |
+| Public Rust client | `../type-bridge-core/crates/rust/` |
+| Schema generation | `../type-bridge-core/crates/schema-codegen/` |
+| Tests and parity contracts | `../tests/` |
+
+## Preserve the contracts
+
+- Keep Rust as the only V2 semantic engine. Do not implement schema, query,
+  migration, validation, or ORM rules independently in Python or TypeScript.
+- Choose one desired-schema authority per scope. Prefer Split-YAML for new V2
+  systems; Python model-driven schema management is a compatibility path.
+- Treat generated Python, TypeScript, and Rust files as projections. Regenerate
+  them after schema changes; do not edit them by hand.
+- Sync or migrate the schema before inserting application data.
+- Use attribute instances at typed model boundaries.
+- Use JavaScript `bigint` for TypeDB integer values.
+- Resolve the Rust 2.0 SDK from the exact release source/Git revision. Do not
+  claim crates.io distribution.
+- Preserve exact compatibility, deprecation, remote-trust, and resource-limit
+  behavior from the relevant guide.
+
+## Model TypeDB semantics directly
+
+- Define attributes as reusable independent types. Let entities and relations
+  own them.
+- Use `Flag(Key)` for stable identity and `Flag(Unique)` for non-key
+  uniqueness.
+- Treat `T | None = None` as optional single ownership.
+- Treat `list[T]` cardinality as unordered unless `Flag(Ordered)` explicitly
+  declares TypeDB 3.12 ordered ownership.
+- Use `Card(min, max)` for ownership, relates-side, and plays-side constraints;
+  verify which side a role constraint applies to.
+- Use `Role[T]` for one player type and `Role.multi(...)` for a deliberate
+  union of player types.
+- Use abstract TypeDB types for polymorphic contracts and `TypeFlags(base=True)`
+  only for Python-only inheritance.
+- Keep TypeDB labels explicit with `AttributeFlags` or `TypeFlags` when stable
+  schema names must not follow Python class names.
+
+Define relation roles and owned attributes separately:
 
 ```python
-from type_bridge import (
-    Entity, Relation, Role, String, Integer, Double, Boolean,
-    Flag, Key, Unique, Card, TypeFlags, Database, SchemaManager
-)
+from type_bridge import Entity, Flag, Key, Relation, Role, String, TypeFlags
 
-# 1. Define attribute types (reusable across entities)
 class Name(String):
     pass
 
-class Email(String):
+class Position(String):
+    pass
+
+class Person(Entity):
+    flags = TypeFlags(name="person")
+    name: Name = Flag(Key)
+
+class Company(Entity):
+    flags = TypeFlags(name="company")
+    name: Name = Flag(Key)
+
+class Employment(Relation):
+    flags = TypeFlags(name="employment")
+    employee: Role[Person] = Role("employee", Person)
+    employer: Role[Company] = Role("employer", Company)
+    position: Position
+```
+
+Read `guide/attributes.md`, `guide/entities.md`, `guide/relations.md`, and
+`guide/cardinality.md` before implementing inheritance, overridden roles,
+ordered values, schema metadata, or unusual cardinality.
+
+## Python workflow
+
+Install Python 3.12–3.14 support:
+
+```bash
+pip install type-bridge
+```
+
+Define attributes and models, create the database, synchronize the schema, then
+write data:
+
+```python
+from type_bridge import Database, Entity, Flag, Integer, Key, SchemaManager, String
+
+class PersonId(String):
     pass
 
 class Age(Integer):
     pass
 
-# 2. Define entity with ownership
 class Person(Entity):
-    flags = TypeFlags(name="person")
-    name: Name = Flag(Key)           # Primary key
-    email: Email = Flag(Unique)      # Unique constraint
-    age: Age | None = None           # Optional field
-
-# 3. Connect and sync schema
-db = Database(address="localhost:1729", database="mydb")
-with db:
-    db.create_database()
-    schema = SchemaManager(db)
-    schema.register(Person)
-    schema.sync_schema()
-
-    # 4. CRUD operations
-    manager = Person.manager(db)
-    alice = Person(name=Name("Alice"), email=Email("alice@example.com"), age=Age(30))
-    manager.insert(alice)
-```
-
----
-
-## Defining Models
-
-### Attribute Types
-
-Attributes are independent types that can be owned by entities and relations.
-
-```python
-from type_bridge import String, Integer, Double, Boolean, DateTime, Date, Duration, Decimal
-
-# Simple attributes (inherit from value types)
-class Name(String):
-    pass
-
-class Score(Double):
-    pass
-
-class IsActive(Boolean):
-    pass
-
-class CreatedAt(DateTime):
-    pass
-
-# Attribute with custom TypeDB name
-from type_bridge import AttributeFlags
-
-class PersonEmail(String):
-    flags = AttributeFlags(name="email")  # TypeDB name: "email", not "person_email"
-```
-
-### Entities
-
-```python
-from type_bridge import Entity, Flag, Key, Unique, Card, TypeFlags
-
-class Person(Entity):
-    flags = TypeFlags(name="person")
-
-    # Key attribute (required, unique identifier)
     person_id: PersonId = Flag(Key)
-
-    # Unique attribute (unique but not primary key)
-    email: Email = Flag(Unique)
-
-    # Required attribute (no default)
-    name: Name
-
-    # Optional attribute
     age: Age | None = None
 
-    # Multi-valued attribute (list)
-    tags: list[Tag] = Flag(Card(min=0))
-
-# Abstract entity (cannot be instantiated, only inherited)
-class Artifact(Entity):
-    flags = TypeFlags(name="artifact", abstract=True)
-    name: Name
-
-# Inherited entity
-class Document(Artifact):
-    flags = TypeFlags(name="document")
-    content: Content
-```
-
-### Relations
-
-```python
-from type_bridge import Relation, Role, TypeFlags
-
-class Employment(Relation):
-    flags = TypeFlags(name="employment")
-
-    # Define roles with their player types
-    employee: Role[Person] = Role("employee", Person)
-    employer: Role[Company] = Role("employer", Company)
-
-    # Relations can own attributes too
-    start_date: StartDate
-    end_date: EndDate | None = None
-
-# Entities must declare they play roles
-class Person(Entity):
-    flags = TypeFlags(name="person")
-    name: Name = Flag(Key)
-    # ... plays employment:employee (implicit from Role definition)
-
-class Company(Entity):
-    flags = TypeFlags(name="company")
-    name: Name = Flag(Key)
-```
-
-### Relates-side Role Cardinality
-
-For relations where the same role has multiple players of the same type:
-
-```python
-from type_bridge import Relation, Role, Card, TypeFlags
-
-# Exactly 2 Memory entities playing the same role
-class IsSimilarTo(Relation):
-    flags = TypeFlags(name="is_similar_to")
-    similar_memory: Role[Memory] = Role(
-        "similar_memory",
-        Memory,
-        cardinality=Card(2, 2),
-    )
-
-# Generates: relation is_similar_to, relates similar_memory @card(2..2);
-```
-
-**Card variations for roles:**
-
-| Python       | TypeQL        | Meaning                             |
-| ------------ | ------------- | ----------------------------------- |
-| `Card(2, 2)` | `@card(2..2)` | Exactly 2 players                   |
-| `Card(1, 3)` | `@card(1..3)` | Between 1 and 3 players             |
-| `Card(2)`    | `@card(2..)`  | At least 2 players (no upper bound) |
-
-**Creating instances with multiple role players:**
-
-```python
-memory1 = Memory(content=Content("First memory"))
-memory2 = Memory(content=Content("Second memory"))
-
-# Pass a list for roles with multiple players
-similarity = IsSimilarTo(similar_memory=[memory1, memory2])
-manager.insert(similarity)
-```
-
----
-
-## CRUD Operations
-
-### Entity Manager
-
-```python
-# Get manager for an entity type
-manager = Person.manager(db)
-
-# Insert
-alice = Person(name=Name("Alice"), email=Email("alice@example.com"))
-manager.insert(alice)
-
-# Get all
-all_persons = manager.all()
-
-# Filter with dict
-adults = manager.filter(age=Age(18)).all()
-
-# Filter with expressions
-seniors = manager.filter(Person.age.gte(Age(65))).all()
-
-# Get first match
-first = manager.filter(name=Name("Alice")).first()
-
-# Count
-total = manager.filter().count()
-
-# Update (updates in-place)
-alice.age = Age(31)
-manager.update(alice)
-
-# Delete
-manager.delete(alice)
-
-# Put (upsert - insert or update by key)
-manager.put(Person(name=Name("Bob"), email=Email("bob@example.com")))
-```
-
-### Relation Manager
-
-```python
-# Get manager for relation type
-emp_manager = Employment.manager(db)
-
-# Insert relation (entities must exist)
-alice = Person(name=Name("Alice"))
-acme = Company(name=Name("Acme"))
-employment = Employment(
-    employee=alice,
-    employer=acme,
-    start_date=StartDate(date(2024, 1, 15))
-)
-emp_manager.insert(employment)
-
-# Query relations
-acme_employees = emp_manager.filter(employer=acme).all()
-```
-
-### Transactions
-
-```python
-# Explicit transaction for multiple operations
-with db.transaction("write") as tx:
-    person_mgr = Person.manager(tx)
-    company_mgr = Company.manager(tx)
-
-    alice = Person(name=Name("Alice"))
-    acme = Company(name=Name("Acme"))
-
-    person_mgr.insert(alice)
-    company_mgr.insert(acme)
-    # Auto-commits on exit, rolls back on exception
-```
-
----
-
-## Query Expressions
-
-### Comparison Expressions
-
-```python
-# Available on all attribute field references
-Person.age.eq(Age(30))      # ==
-Person.age.neq(Age(30))     # !=
-Person.age.gt(Age(18))      # >
-Person.age.gte(Age(18))     # >=
-Person.age.lt(Age(65))      # <
-Person.age.lte(Age(65))     # <=
-
-# String-specific
-Person.name.contains("Ali")
-Person.name.like("^A.*")    # Regex match
-
-# Chaining filters (AND)
-manager.filter(Person.age.gte(Age(18))).filter(Person.age.lt(Age(65))).all()
-```
-
-### Boolean Expressions
-
-```python
-from type_bridge.expressions import BooleanExpr
-
-# OR
-manager.filter(
-    BooleanExpr.or_(
-        Person.name.eq(Name("Alice")),
-        Person.name.eq(Name("Bob"))
-    )
-).all()
-
-# NOT
-manager.filter(
-    BooleanExpr.not_(Person.status.eq(Status("inactive")))
-).all()
-```
-
-### Aggregations
-
-```python
-# Single aggregation
-result = manager.filter().aggregate(Person.age.avg())
-avg_age = result["avg_age"]
-
-# Multiple aggregations
-result = manager.filter().aggregate(
-    Person.age.avg(),
-    Person.salary.sum(),
-    Person.score.max()
-)
-
-# Available: .avg(), .sum(), .min(), .max(), .count(), .std(), .median()
-```
-
-### Group By
-
-```python
-# Group by single field
-result = manager.group_by(Person.department).aggregate(
-    Person.salary.avg(),
-    Person.age.avg()
-)
-# Returns: {"Engineering": {"avg_salary": 95000, "avg_age": 32}, ...}
-
-# Group by multiple fields
-result = manager.group_by(Person.department, Person.level).aggregate(
-    Person.salary.avg()
-)
-```
-
-### Pagination
-
-```python
-# Limit and offset
-page = manager.filter().limit(10).offset(20).all()
-
-# First N results
-top_5 = manager.filter(Person.score.gte(Score(90))).limit(5).all()
-```
-
----
-
-## Schema Management
-
-```python
-from type_bridge import SchemaManager
+db = Database(address="localhost:1729", database="example")
+db.connect()
+db.create_database()
 
 schema = SchemaManager(db)
-
-# Register models
-schema.register(Person, Company, Employment)
-
-# Sync schema (creates types in TypeDB)
+schema.register(Person)
 schema.sync_schema()
 
-# Force sync (recreates even if exists)
-schema.sync_schema(force=True)
-
-# Get current schema
-current = schema.get_schema()
-
-# Compare schemas
-from type_bridge import SchemaDiff
-diff = SchemaDiff.compare(old_schema, new_schema)
+ada = Person(person_id=PersonId("ada"), age=Age(36))
+Person.manager(db).put(ada)
+adults = Person.manager(db).filter(age__gte=18).all()
 ```
 
----
+Use keyword arguments for entity and relation constructors. Add explicit
+`TypeFlags` only when changing defaults such as the TypeDB name, abstractness,
+or Python-only base behavior.
 
-## Built-in Functions (TypeDB 3.8+)
+Use model managers for ordinary CRUD, filtering, ordering, grouping, and
+transactions. Use `type_bridge.typed` for connected multi-model selection,
+owner-aware fields and roles, named pages, counts, existence checks, bounded
+reachability, or one-exchange remote execution.
+
+## Choose the data operation
+
+| Intent | Operation |
+| --- | --- |
+| Create and reject duplicates | `insert()` / `insert_many()` |
+| Idempotently create by key | `put()` / `put_many()` |
+| Persist a known keyed model | `update()` / `update_many()` |
+| Read one model type | manager `get`, `filter`, `all`, `first`, `count` |
+| Match connected model types | immutable `QuerySession` |
+| Author binding-neutral V2 plans | `type_bridge.query_v2` or Node `query-v2` |
+| Execute handcrafted TypeQL | raw query API, only when typed surfaces do not fit |
+
+Require a key for `put()` and `update()`. For relation writes, prefer hydrated
+role players carrying IIDs; otherwise provide key-complete stubs. Reject role
+players that have neither identity form.
+
+Reuse a caller-owned transaction for atomic multi-model work:
 
 ```python
-from type_bridge.expressions import iid, label
+from type_bridge import TransactionType
 
-# These are used internally by type-bridge for IID and type fetching
-# The library handles this automatically in manager operations
-
-# Direct usage in custom queries:
-expr = iid("$e")       # Generates: iid($e)
-expr = label("$t")     # Generates: label($t)
-
-# IMPORTANT: label() only works on TYPE variables, not instance variables
-# Pattern: $e isa! $t; $t sub person; ... label($t)
+with db.transaction(TransactionType.WRITE) as tx:
+    Person.manager(tx).put(person)
+    Company.manager(tx).put(company)
+    Employment.manager(tx).put(employment)
 ```
 
----
+Do not use `sync_schema(force=True)` as conflict recovery without explicit
+authorization for database recreation and data loss.
 
-## Common Patterns
+## Choose the query surface
 
-### Get by IID
+- Use manager filters for a single root model, Django-style lookups,
+  aggregation, ordering, pagination, and ordinary CRUD.
+- Use `type_bridge.typed` or `@type-bridge/node/typed` for owner-aware,
+  connected, multi-model matches. Create variables from one `QuerySession`;
+  do not mix handles between sessions.
+- Use `type_bridge.query_v2` or `@type-bridge/node/query-v2` for complete
+  binding-neutral plan authoring. Let Rust create canonical bytes and
+  fingerprints; never assemble mutable plan JSON in a facade.
+- Use raw TypeQL only when the higher-level surfaces cannot express the
+  operation, and retain parameterization and version gates.
 
-```python
-# Fetch entity by internal ID (fast direct lookup)
-person = manager.get_by_iid("0x1e00000000000000000123")
-```
+Treat query construction as local and synchronous. Direct terminals perform
+provider work. A remote terminal performs exactly one caller-owned exchange;
+the client owns transport, authentication, retry policy, and capability trust.
 
-### Polymorphic Queries
-
-```python
-# Query abstract type to get all subtypes
-class Animal(Entity):
-    flags = TypeFlags(name="animal", abstract=True)
-
-class Dog(Animal):
-    flags = TypeFlags(name="dog")
-
-class Cat(Animal):
-    flags = TypeFlags(name="cat")
-
-# Gets both Dogs and Cats
-animal_manager = Animal.manager(db)
-all_animals = animal_manager.all()
-```
-
-### Polymorphic Role Players
-
-When a relation role uses an abstract type, queried role players are resolved to their concrete types:
-
-```python
-# Abstract base
-class Profile(Entity):
-    flags = TypeFlags(name="profile", abstract=True)
-    profile_id: ProfileId = Flag(Key)
-
-# Concrete subtypes
-class Person(Profile):
-    flags = TypeFlags(name="person")
-    email: Email | None = None
-
-class Organization(Profile):
-    flags = TypeFlags(name="org")
-    website: Website | None = None
-
-# Relation with abstract role type
-class Authorship(Relation):
-    flags = TypeFlags(name="authorship")
-    author: Role[Profile] = Role("author", Profile)  # Abstract!
-    post: Role[Post] = Role("post", Post)
-
-# Query - role players resolved to concrete types
-authorships = Authorship.manager(db).all()
-for auth in authorships:
-    # author is Person or Organization, NOT abstract Profile
-    if isinstance(auth.author, Person):
-        print(f"Person: {auth.author.email}")
-    elif isinstance(auth.author, Organization):
-        print(f"Org: {auth.author.website}")
-```
-
-### Serialization
-
-```python
-# Convert to dict
-person_dict = person.to_dict()
-
-# Create from dict
-person = Person.from_dict(person_dict)
-```
-
-### Raw Queries
-
-```python
-# Execute raw TypeQL
-results = db.execute_query("""
-    match $p isa person, has name $n;
-    fetch { "name": $n };
-""", "read")
-```
-
----
-
-## Cardinality Flags
-
-```python
-from type_bridge import Flag, Key, Unique, Card
-
-class Person(Entity):
-    # Key: exactly one, unique identifier
-    id: PersonId = Flag(Key)
-
-    # Required and unique but not key (the non-optional type makes it required)
-    email: Email = Flag(Unique)
-
-    # Card(0..1): optional (0 or 1)
-    nickname: Nickname | None = Flag(Card(max=1))
-
-    # Card(1..): at least one required
-    phone: Phone = Flag(Card(min=1))
-
-    # Card(0..): zero or more (default for lists)
-    tags: list[Tag] = Flag(Card(min=0))
-
-    # Card(2..5): between 2 and 5
-    references: list[Reference] = Flag(Card(min=2, max=5))
-```
-
----
-
-## Important Notes
-
-1. **Keyword-only arguments**: All Entity/Relation constructors require keyword arguments
-
-   ```python
-   # Correct
-   Person(name=Name("Alice"), age=Age(30))
-
-   # Wrong - will fail
-   Person(Name("Alice"), Age(30))
-   ```
-
-2. **Attribute instances**: Always wrap values in attribute types
-
-   ```python
-   # Correct
-   person.age = Age(31)
-
-   # Wrong
-   person.age = 31
-   ```
-
-3. **TypeFlags required**: Entities and Relations need `flags = TypeFlags(name="...")`
-
-4. **Connection management**: Use context managers or explicit connect/close
-
-   ```python
-   with Database(...) as db:
-       # operations
-   # Auto-closed
-   ```
-
-5. **Schema sync before data**: Always sync schema before inserting data
-
-6. **Role player matching**: Relation CRUD operations identify role players using:
-   - **IID (preferred)**: If the entity has `_iid` set (from being fetched from DB), uses fast IID matching
-   - **Key attributes (fallback)**: If no IID, uses `Flag(Key)` attributes to identify the entity
-   - **Error**: If neither is available, raises `ValueError` with clear guidance
-
-   ```python
-   # Pattern 1: Fetch entities first (uses IID matching - faster)
-   alice = person_manager.filter(name=Name("Alice")).first()  # alice._iid is set
-   emp = Employment(employee=alice, employer=company)
-   emp_manager.insert(emp)  # Uses alice._iid for matching
-
-   # Pattern 2: Create stub entities (uses key attribute matching)
-   alice = Person(name=Name("Alice"))  # No _iid
-   emp = Employment(employee=alice, employer=company)
-   emp_manager.insert(emp)  # Uses name (key attr) for matching
-   ```
-
-7. **Transaction types**:
-   - `"read"`: For queries (no commit needed)
-   - `"write"`: For insert/update/delete (auto-commits)
-   - `"schema"`: For schema changes (auto-commits)
-
----
-
-## Code Generator
-
-Generate Python models from TypeDB schema files instead of writing them manually.
-
-### CLI Usage
+## TypeScript and Node workflow
 
 ```bash
-# Generate models from schema
-python -m type_bridge.generator schema.tql -o ./myapp/models/
-
-# With Pydantic API DTOs
-python -m type_bridge.generator schema.tql -o ./myapp/models/ --dto
-
-# With custom DTO configuration
-python -m type_bridge.generator schema.tql -o ./myapp/models/ --dto --dto-config myapp.config:dto_config
+npm install @type-bridge/node
 ```
 
-### Programmatic Usage
+```ts
+import { Entity, Key, attr, field } from "@type-bridge/node";
 
-```python
-from type_bridge.generator import generate_models
+class PersonId extends attr.String("person-id") {}
+class Person extends Entity("person", {
+  personId: field(PersonId, Key),
+}) {}
 
-# Basic generation
-generate_models("schema.tql", "./myapp/models/")
-
-# With API DTOs
-generate_models("schema.tql", "./myapp/models/", generate_dto=True)
-
-# With custom DTO config
-from type_bridge.generator import DTOConfig, BaseClassConfig
-
-config = DTOConfig(
-    exclude_entities=["internal_counter"],
-    entity_union_name="GraphNode",
-)
-generate_models("schema.tql", "./myapp/models/", generate_dto=True, dto_config=config)
+const ada = new Person({ personId: new PersonId("ada") });
 ```
 
-### Generated Files
+Import immutable queries from `@type-bridge/node/typed` and low-level V2 plan
+authoring from `@type-bridge/node/query-v2`. Consult `guide/typescript.md` for
+database lifecycle, integer `bigint` values, managers, and generation.
 
-```text
-myapp/models/
-├── __init__.py      # Package exports
-├── attributes.py    # Attribute classes
-├── entities.py      # Entity classes
-├── relations.py     # Relation classes
-├── registry.py      # Schema metadata
-├── api_dto.py       # Pydantic DTOs (if --dto)
-└── schema.tql       # Copy of schema
+Use scheme-free `host:port` addresses by default. Keep URI scheme and
+`tlsEnabled` consistent. Require `tlsEnabled: true` when supplying
+`tlsRootCa`. Close `RustDatabase` handles when finished, but do not treat
+synchronous `close()` as an out-of-band cancellation mechanism for a native
+call occupying the event-loop thread. Use V2 deadlines for cancellable work.
+
+## Canonical schema and generation workflow
+
+For new multi-language systems:
+
+```bash
+type-bridge --manifest typebridge.yaml schema check
+type-bridge --manifest typebridge.yaml schema generate
+type-bridge --manifest typebridge.yaml migration make --name initial
+type-bridge --manifest typebridge.yaml migration plan
+type-bridge --manifest typebridge.yaml migration apply --environment development
 ```
 
----
+Keep credentials in environment references, not committed workspace files.
+Review a migration plan before applying it. Generation is offline and does not
+change TypeDB.
 
-## API DTOs (Pydantic)
+Use this lifecycle:
 
-Generate Pydantic models for REST APIs from your TypeDB schema.
+1. Validate the schema set and workspace offline.
+2. Review resolved schema diagnostics and generated TypeQL.
+3. Create a named migration.
+4. Review the migration plan and destructive classifications.
+5. Apply only in an environment whose policy permits migration.
+6. Generate every configured language projection.
+7. Commit the schema authority, migration, and generated projections together
+   when the repository's generation policy tracks them.
 
-### Generated Structure
+Treat `schema check`, migration planning, and generation as read-only with
+respect to TypeDB. Treat migration application and Python `sync_schema()` as
+database mutations. Direct TOML desired-schema authoring is deprecated for
+removal in TypeBridge 2.1; migrate new work to Split-YAML.
 
-```python
-# Entity DTOs
-class PersonOut(BaseDTOOut): ...    # Response with 'iid' field
-class PersonCreate(BaseDTOCreate): ...  # Create payload
-class PersonPatch(BaseDTOPatch): ...    # Partial update
+For a retained single-TypeQL input, select the projection target explicitly:
 
-# Relation DTOs
-class FriendshipOut(BaseRelationOut): ...
-class FriendshipCreate(BaseRelationCreate): ...
-
-# Union types (discriminated by 'type' field)
-EntityOut = Annotated[Union[PersonOut, ...], Field(discriminator="type")]
+```bash
+python -m type_bridge.generator schema.tql --output generated/python
+python -m type_bridge.generator schema.tql --output generated/typescript --target typescript
+python -m type_bridge.generator schema.tql --output generated/rust --target rust
 ```
 
-### DTOConfig Options
+## Rust and server boundaries
 
-```python
-from type_bridge.generator import (
-    DTOConfig, BaseClassConfig, ValidatorConfig, FieldSyncConfig,
-    FieldOverride, EntityFieldOverride,
-)
+Use Rust 1.88 or newer. Bind the generated schema package to the database
+before using generated models. Follow `guide/rust.md` for the exact release
+revision, dependency patch, connection, transaction, CRUD, and remote-query
+forms.
 
-config = DTOConfig(
-    # Exclude internal entities
-    exclude_entities=["display_id_counter", "schema_status"],
+Use the server container only with the configuration, TLS, declared-schema
+authority, resource limits, and immutable digest described in
+`guide/server-container.md`. The client owns remote transport, authentication,
+retry, and capability-advertisement trust.
 
-    # Rename IID field to 'id'
-    iid_field_name="id",
+## Diagnose failures by boundary
 
-    # Custom union names
-    entity_union_name="GraphNode",
-    relation_union_name="GraphRelation",
+| Symptom | Check |
+| --- | --- |
+| Connect or protocol failure | TypeDB version, accepted driver band, address, credentials, TLS scheme/options |
+| Feature rejected before I/O | Feature gate; `@doc`, `@meta`, ordered ownership, and given rows can require TypeDB 3.12 |
+| Schema conflict | Existing types and migration history; do not jump to force recreation |
+| Missing type during CRUD | Ensure the schema was synchronized or migrated before data operations |
+| Relation player cannot be matched | Supply a hydrated IID or every key attribute |
+| Node integer rejected | Use `bigint`, not JavaScript `number` |
+| Generated model mismatch | Regenerate from the canonical schema and compare schema identity/fingerprint |
+| Typed-query owner/session error | Recreate fields, roles, and variables from the same model owner and session |
+| Remote reply rejected | Check declared schema, scope, profile, capabilities, executor epoch, signature, deadline, and size limits |
+| Closed-handle failure | Do not reuse a closed database or transaction; inspect lease ownership |
 
-    # Custom validators with regex
-    validators=[
-        ValidatorConfig(name="DisplayId", pattern=r"^[A-Z]{1,5}-\d+$"),
-    ],
+Read `development/typedb.md` before changing compatibility or provider
+behavior. Read `development/typed-query-contract.md` before changing shared
+typed-query semantics. Preserve structured diagnostics rather than replacing
+them with facade-local generic errors.
 
-    # Custom base class for entity hierarchies
-    base_classes=[
-        BaseClassConfig(
-            source_entity="artifact",
-            base_name="BaseArtifact",
-            inherited_attrs=["display_id", "name", "description"],
-            extra_fields={"version": "int | None = None"},
-            field_syncs=[FieldSyncConfig("description", "content")],
-            # Make @key field optional on Create (server auto-generates)
-            create_field_overrides={
-                "display_id": FieldOverride(required=False),
-            },
-        ),
-    ],
+## Verify changes
 
-    # Per-entity field overrides (target specific entity + field + variant)
-    entity_field_overrides=[
-        EntityFieldOverride(entity="task", field="status", variant="create",
-                            required=False, default="'proposed'"),
-    ],
+Select checks by changed surface:
 
-    # Composite entities with skip_variants and extra_fields_out
-    composite_entities=[
-        CompositeEntityConfig(
-            name="GraphNode",
-            include_entities=["task", "epic"],
-            skip_variants={"out", "create", "patch"},  # Only generate type enum
-            extra_fields_out={"id": "str"},  # Required on Out, optional elsewhere
-        ),
-    ],
+| Change | Minimum verification |
+| --- | --- |
+| Python facade or models | focused `uv run pytest …`, then `./scripts/check.sh python` |
+| Node facade or declarations | focused npm test/typecheck, then `./scripts/check.sh node` |
+| Rust engine or SDK | focused Cargo test, then `./scripts/check.sh rust` |
+| Schema generation | target acceptance test plus Python/TypeScript/Rust projection checks |
+| Documentation or skill | `uv run --extra docs mkdocs build --strict` and skill validation |
+| Cross-surface semantics | parity/contract tests plus `./test.sh` when live TypeDB behavior changes |
 
-    # Custom code injection
-    preamble="...",  # After imports
-    relation_preamble="...",  # In relation section
+Use `./test.sh` for the full isolated source-tree suite with TypeDB. Exact
+wheel, npm tarball, native-platform, container, and publication acceptance
+remains workflow-only.
 
-    # Custom relation structure
-    skip_relation_output=True,  # Skip relation Out classes
-    relation_create_base_class="BaseRelationCreate",  # Custom base
-)
-```
+Before reporting completion:
 
-### Usage in FastAPI
-
-```python
-from myapp.models.api_dto import PersonOut, PersonCreate, EntityOut
-
-@app.post("/persons", response_model=PersonOut)
-def create_person(data: PersonCreate) -> PersonOut:
-    person = Person(name=Name(data.name))
-    manager.insert(person)
-    return PersonOut(iid=person.iid, name=data.name, type="person")
-
-@app.get("/entities/{id}", response_model=EntityOut)
-def get_entity(id: str) -> EntityOut:
-    # Returns PersonOut, CompanyOut, etc. based on 'type' discriminator
-    ...
-```
+- confirm generated files and documentation match the implemented surface;
+- confirm no compatibility or deprecation promise was broadened accidentally;
+- report which source and live tiers ran;
+- distinguish local source checks from workflow-only artifact acceptance.

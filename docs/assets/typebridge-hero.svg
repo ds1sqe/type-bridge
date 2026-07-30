@@ -1,0 +1,97 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 560" role="img" aria-labelledby="title description">
+  <title id="title">TypeBridge architecture</title>
+  <desc id="description">TypeDB connects to the shared Rust engine, which branches into the query server and aligned Python, TypeScript, and Rust language SDKs.</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#090d1d"/>
+      <stop offset=".5" stop-color="#17133a"/>
+      <stop offset="1" stop-color="#071a2c"/>
+    </linearGradient>
+    <linearGradient id="engine" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#7c3aed"/>
+      <stop offset="1" stop-color="#0891b2"/>
+    </linearGradient>
+    <linearGradient id="line" gradientUnits="userSpaceOnUse" x1="170" y1="0" x2="1130" y2="0">
+      <stop offset="0" stop-color="#fb923c"/>
+      <stop offset=".45" stop-color="#67e8f9"/>
+      <stop offset="1" stop-color="#a78bfa"/>
+    </linearGradient>
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="5" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <rect width="1200" height="560" rx="28" fill="url(#background)"/>
+  <g fill="none" stroke="#91a0bf" stroke-opacity=".11">
+    <path d="M0 80H1200M0 280H1200M0 480H1200"/>
+    <path d="M128 0V560M600 0V560M1072 0V560"/>
+  </g>
+
+  <g font-family="Inter, ui-sans-serif, system-ui, sans-serif" text-anchor="middle">
+    <text x="600" y="52" fill="#f8fafc" font-size="43" font-weight="750" letter-spacing="5">TYPEBRIDGE</text>
+    <text x="600" y="77" fill="#b9c4dc" font-size="14" letter-spacing="2">ONE SEMANTIC ENGINE · THREE LANGUAGE SDKs</text>
+  </g>
+
+  <!-- TypeDB is the upper system boundary. -->
+  <rect x="480" y="100" width="240" height="58" rx="18" fill="#11182c" stroke="#fb923c" stroke-width="3" filter="url(#glow)"/>
+  <text x="600" y="136" fill="#ffffff" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="22" font-weight="720" text-anchor="middle">TypeDB 3.x</text>
+
+  <path d="M600 158V190" fill="none" stroke="#fb923c" stroke-width="4" stroke-linecap="round"/>
+
+  <!-- One shared semantic engine. -->
+  <rect x="410" y="190" width="380" height="78" rx="22" fill="url(#engine)" stroke="#a5f3fc" stroke-width="2" filter="url(#glow)"/>
+  <g font-family="Inter, ui-sans-serif, system-ui, sans-serif" text-anchor="middle">
+    <text x="600" y="223" fill="#ffffff" font-size="21" font-weight="720">SHARED RUST ENGINE</text>
+    <text x="600" y="248" fill="#dbeafe" font-size="14">schema · query · migration · ORM</text>
+  </g>
+
+  <!-- Engine branches into the server and language-SDK group. -->
+  <g fill="none" stroke="url(#line)" stroke-width="4" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M600 268V298"/>
+    <path d="M300 298H800"/>
+    <path d="M300 298V326M800 298V326"/>
+  </g>
+  <g fill="#67e8f9">
+    <circle cx="300" cy="298" r="5"/>
+    <circle cx="800" cy="298" r="5"/>
+  </g>
+
+  <g font-family="Inter, ui-sans-serif, system-ui, sans-serif" text-anchor="middle">
+    <rect x="175" y="326" width="250" height="62" rx="18" fill="#11182c" stroke="#fb923c" stroke-width="3"/>
+    <text x="300" y="364" fill="#ffffff" font-size="19" font-weight="700">Query Server</text>
+
+    <rect x="650" y="326" width="300" height="62" rx="18" fill="#11182c" stroke="#67e8f9" stroke-width="3"/>
+    <text x="800" y="364" fill="#ffffff" font-size="19" font-weight="700" letter-spacing="1">LANGUAGE SDKs</text>
+  </g>
+
+  <!-- Languages are aligned as the deepest leaves. -->
+  <g fill="none" stroke="url(#line)" stroke-width="4" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M800 388V416"/>
+    <path d="M570 416H1030"/>
+    <path d="M570 416V444M800 416V444M1030 416V444"/>
+  </g>
+  <g fill="#67e8f9">
+    <circle cx="570" cy="416" r="5"/>
+    <circle cx="800" cy="416" r="5"/>
+    <circle cx="1030" cy="416" r="5"/>
+  </g>
+
+  <g font-family="Inter, ui-sans-serif, system-ui, sans-serif" text-anchor="middle">
+    <g>
+      <rect x="470" y="444" width="200" height="72" rx="18" fill="#11182c" stroke="#a78bfa" stroke-width="3"/>
+      <text x="570" y="488" fill="#ffffff" font-size="21" font-weight="700">Python</text>
+    </g>
+    <g>
+      <rect x="700" y="444" width="200" height="72" rx="18" fill="#11182c" stroke="#60a5fa" stroke-width="3"/>
+      <text x="800" y="488" fill="#ffffff" font-size="21" font-weight="700">TypeScript</text>
+    </g>
+    <g>
+      <rect x="930" y="444" width="200" height="72" rx="18" fill="#11182c" stroke="#5eead4" stroke-width="3"/>
+      <text x="1030" y="488" fill="#ffffff" font-size="21" font-weight="700">Rust</text>
+    </g>
+  </g>
+</svg>
