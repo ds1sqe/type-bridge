@@ -1,10 +1,13 @@
 site_name: TypeBridge
 site_url: https://ds1sqe.github.io/type-bridge/
-site_description: A modern, Pythonic ORM for TypeDB with an Attribute-based API
+site_description: Typed Python, TypeScript, and Rust application tooling for TypeDB
 site_author: ds1sqe
 repo_url: https://github.com/ds1sqe/type-bridge
 repo_name: ds1sqe/type-bridge
 edit_uri: edit/master/docs/
+
+exclude_docs: |
+  SKILL.md
 
 theme:
   name: material
@@ -71,6 +74,9 @@ markdown_extensions:
   - pymdownx.highlight:
       anchor_linenums: true
   - pymdownx.inlinehilite
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
   - pymdownx.snippets
   - pymdownx.tabbed:
       alternate_style: true
@@ -84,41 +90,55 @@ nav:
   - Getting Started:
     - getting-started/index.md
     - Installation: getting-started/installation.md
-    - Quick Start: getting-started/quickstart.md
-  - User Guide:
+    - Python Quick Start: getting-started/quickstart.md
+  - Guides:
     - guide/index.md
-    - Attributes: guide/attributes.md
-    - Entities: guide/entities.md
-    - Relations: guide/relations.md
-    - Abstract Types: guide/abstract-types.md
-    - Cardinality & Flags: guide/cardinality.md
-    - CRUD Operations: guide/crud.md
-    - Queries & Expressions: guide/queries.md
-    - Immutable Typed Queries: guide/typed-queries.md
-    - Schema Management: guide/schema.md
-    - Split-YAML & Workspace V1: guide/split-yaml-v1.md
-    - Migrations: guide/migrations.md
-    - Code Generator: guide/generator.md
-    - TOML Schema DSL: guide/toml.md
-    - API DTOs: guide/dto.md
-    - TypeScript Typed Surface: guide/typescript.md
-    - Rust Client: guide/rust.md
-    - Server Container: guide/server-container.md
-    - Functions: guide/functions.md
-    - Validation: guide/validation.md
-    - Upgrading to 2.0: guide/upgrade-v2.md
-    - V2 Deprecations: guide/v2-deprecations.md
-    - Logging: guide/logging.md
-  - API Reference: reference/
+    - SDKs:
+      - Choose an SDK: guide/sdks.md
+      - TypeScript / Node: guide/typescript.md
+      - Rust: guide/rust.md
+    - Model TypeDB Data:
+      - Overview: guide/models.md
+      - Attributes: guide/attributes.md
+      - Entities: guide/entities.md
+      - Relations: guide/relations.md
+      - Abstract Types: guide/abstract-types.md
+      - Cardinality & Flags: guide/cardinality.md
+      - Validation: guide/validation.md
+      - API DTOs: guide/dto.md
+    - Read and Write Data:
+      - Overview: guide/data.md
+      - CRUD & Transactions: guide/crud.md
+      - Queries & Expressions: guide/queries.md
+      - Immutable Typed Queries: guide/typed-queries.md
+      - Functions: guide/functions.md
+    - Schema Lifecycle:
+      - Overview: guide/schema-workflows.md
+      - Split-YAML & Workspace V1: guide/split-yaml-v1.md
+      - Migrations: guide/migrations.md
+      - Code Generator: guide/generator.md
+      - Python Schema Management: guide/schema.md
+      - TOML Schema DSL: guide/toml.md
+    - Operate and Upgrade:
+      - Overview: guide/operations.md
+      - Server Container: guide/server-container.md
+      - Logging: guide/logging.md
+      - Upgrading to 2.0: guide/upgrade-v2.md
+      - V2 Deprecations: guide/v2-deprecations.md
+  - Python API: reference/
   - Development:
     - development/index.md
     - Development Setup: development/setup.md
     - Testing: development/testing.md
-    - TypeDB Concepts: development/typedb.md
-    - Abstract Types: development/abstract-types.md
-    - Internals: development/internals.md
-    - Generated Rust Parity: development/rust-generated-parity.md
-    - Unified Typed Query Contract: development/typed-query-contract.md
+    - Architecture:
+      - Internals: development/internals.md
+      - Rust Backend: development/rust-backend.md
+      - TypeDB Concepts & Compatibility: development/typedb.md
+      - Abstract Type Concepts: development/abstract-types.md
+    - Maintainer Contracts:
+      - Unified Typed Query Contract: development/typed-query-contract.md
+      - Generated Rust Parity: development/rust-generated-parity.md
+      - Integration Coverage Inventory: development/integration-coverage-inventory.md
   - Changelog: changelog.md
 
 extra:
@@ -127,3 +147,5 @@ extra:
       link: https://github.com/ds1sqe/type-bridge
     - icon: fontawesome/brands/python
       link: https://pypi.org/project/type-bridge/
+    - icon: fontawesome/brands/npm
+      link: https://www.npmjs.com/package/@type-bridge/node

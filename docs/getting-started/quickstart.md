@@ -1,6 +1,8 @@
-# Quick Start
+# Python quick start
 
-This guide walks you through defining TypeDB models and performing basic operations with TypeBridge.
+This guide walks through defining TypeDB models and performing basic operations
+with the Python SDK. For TypeScript or Rust, start with
+[Choose an SDK](../guide/sdks.md).
 
 ## 1. Define Attribute Types
 
@@ -115,8 +117,13 @@ class Dog(Animal):  # Automatically: dog sub animal in TypeDB
     breed: Breed
 ```
 
-## Next Steps
+## Next steps
 
-- [User Guide](../guide/index.md) -- Full API documentation for attributes, entities, relations, CRUD, and more
-- [Code Generator](../guide/generator.md) -- Generate Python models from TypeQL schema files
-- [API Reference](../reference/index.md) -- Auto-generated reference from source docstrings
+- [Model TypeDB data](../guide/models.md) -- Attributes, entities, relations,
+  inheritance, and cardinality
+- [Read and write data](../guide/data.md) -- Managers, transactions, functions,
+  and immutable queries
+- [Schema workflows](../guide/schema-workflows.md) -- Canonical workspaces,
+  migration, and code generation
+- [Python API reference](../reference/index.md) -- Generated from public
+  docstrings

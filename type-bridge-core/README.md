@@ -1,6 +1,9 @@
-# type-bridge-core
+# TypeBridge shared engine
 
-Rust core for the **type-bridge** TypeDB ORM — high-performance AST, schema parser, query compiler, validation engine, and value coercer.
+Rust-owned semantic engine and native product workspace for **TypeBridge**.
+It implements schema, query, migration, validation, code generation, ORM, and
+provider behavior shared by the Python, TypeScript/Node, generated Rust, CLI,
+and server surfaces.
 
 ## Workspace structure
 

@@ -4,6 +4,10 @@ A hard-typed TypeScript/Node API mirroring the Python ORM, with branded
 attributes, typed managers, expression-form queries, inheritance, multi-value
 attributes, and `toDict`/`fromDict` serialization.
 
+```bash
+npm install @type-bridge/node
+```
+
 ## Overview
 
 TypeBridge ships a Node package (`@type-bridge/node`) that is a **thin facade**

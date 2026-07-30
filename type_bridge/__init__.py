@@ -1,4 +1,4 @@
-"""TypeBridge - A Python ORM for TypeDB with Attribute-based API."""
+"""Python SDK for the TypeBridge multi-language TypeDB application toolkit."""
 
 from type_bridge.attribute import (
     Attribute,

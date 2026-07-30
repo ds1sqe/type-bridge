@@ -240,7 +240,7 @@ def main():
         print()
         print("Next steps:")
         print("  • Explore the advanced examples in examples/advanced/")
-        print("  • Read the documentation in CLAUDE.md and ATTRIBUTE_API.md")
+        print("  • Read DEVELOPMENT.md and the docs/ guide")
         print("  • Build your own TypeBridge application!")
         print()
 

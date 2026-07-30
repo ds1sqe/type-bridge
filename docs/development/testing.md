@@ -1,6 +1,8 @@
 # Testing Guide
 
-TypeBridge uses a comprehensive two-tier testing approach with **100% test pass rate (1117/1117 tests)**.
+TypeBridge uses layered offline, live TypeDB, cross-language parity, packaging,
+and release-artifact tests. Test totals change as the shared engine and SDKs
+evolve, so acceptance is defined by selected suites rather than a frozen count.
 
 ## Table of Contents
 
@@ -12,89 +14,50 @@ TypeBridge uses a comprehensive two-tier testing approach with **100% test pass 
 
 ## Testing Strategy
 
-TypeBridge employs a two-tier testing approach that balances speed, isolation, and real-world validation:
+The default Python suite stays fast and offline. The source-tree runner adds
+Rust, Python, and Node checks plus isolated live TypeDB lanes; workflow-only
+jobs verify built wheels, npm tarballs, native targets, and release artifacts.
 
-### Unit Tests (Default)
-- **Fast**: Run in ~0.3 seconds without external dependencies
+### Default Offline Selection
+
+- **Fast**: Run without external services
 - **Isolated**: Test individual components in isolation
 - **No TypeDB required**: Use mocks and in-memory validation
-- **Run by default**: `pytest` runs unit tests only
-- **768 tests total**: Organized by functionality (40 test files)
+- **Run by default**: `uv run pytest` excludes tests marked `integration`,
+  `proxy`, or `benchmark`
+- **Broader than `tests/unit/`**: Offline generator, parity, contract, and
+  compatibility tests outside the unit tree can remain in the default selection
 
-### Integration Tests
+### Live Integration Tests
+
 - **Sequential**: Use `@pytest.mark.order()` for predictable execution order
 - **Real database**: Require running TypeDB 3.x server
 - **End-to-end**: Test complete workflows from schema to queries
 - **Explicit execution**: Must use `pytest -m integration`
-- **349 tests total**: Full CRUD, schema, and query coverage (56 test files)
 
 ## Unit Tests
 
 ### Overview
 
-Unit tests are located in `tests/unit/` with organized subdirectories:
+Unit tests are located in `tests/unit/`. The live tree is the authority; its
+main areas are:
 
-```
-tests/unit/
-├── attributes/               # 10 test files - Attribute type tests
-│   ├── test_boolean.py       # Boolean attribute type
-│   ├── test_date.py          # Date attribute type
-│   ├── test_datetime_tz.py   # DateTimeTZ attribute type
-│   ├── test_decimal.py       # Decimal attribute type
-│   ├── test_double.py        # Double attribute type
-│   ├── test_duration.py      # Duration attribute type (ISO 8601)
-│   ├── test_formatting.py    # Mixed attribute formatting
-│   ├── test_integer.py       # Integer attribute type
-│   ├── test_multivalue_escaping.py # Multi-value string escaping
-│   └── test_string.py        # String attribute type
-├── core/                     # 4 test files - Core functionality tests
-│   ├── test_entity_dict.py   # Entity dict serialization
-│   ├── test_inheritance.py   # Inheritance and type hierarchies
-│   ├── test_inherited_attribute_filter.py # Inherited attribute filtering
-│   └── test_multi_role_players.py # Multi-role player tests
-├── crud/                     # 5 test files - CRUD operation unit tests
-│   ├── test_format_value.py  # Value formatting for TypeQL
-│   ├── test_lookup_parser.py # Lookup filter parsing
-│   ├── test_negative_cases.py # Negative test cases
-│   ├── test_role_lookup_parser.py # Role lookup parsing
-│   └── test_update_queries.py # Update query generation
-├── exceptions/               # 1 test file - Exception handling
-│   └── test_exceptions.py    # Exception tests
-├── expressions/              # 2 test files - Query expression API tests
-│   ├── test_field_refs.py    # Field reference creation
-│   └── test_role_player_expr.py # Role player expressions
-├── fields/                   # 1 test file - Field descriptor tests
-│   └── test_field_descriptor.py # Field descriptor functionality
-├── flags/                    # 4 test files - Flag system tests
-│   ├── test_attribute_typename_case.py # Attribute name formatting
-│   ├── test_base_flag.py     # Base flag for schema exclusion
-│   ├── test_deprecated_type_name.py # Deprecated type name handling
-│   └── test_typename_case.py # Entity/Relation type name formatting
-├── generator/                # 3 test files - Code generator tests
-│   ├── test_generator.py     # Generator functionality
-│   ├── test_naming.py        # Naming conventions
-│   └── test_parser.py        # TypeQL parser tests
-├── query/                    # 1 test file - Query builder tests
-│   └── test_query_builder.py # Query builder functionality
-├── session/                  # 1 test file - Session unit tests
-│   └── test_session_unit.py  # Session functionality
-├── type-check-except/        # 6 test files - Type checking validation
-│   ├── test_basic.py         # Basic validation errors
-│   ├── test_cardinality.py   # Cardinality validation
-│   ├── test_list_default.py  # List default validation
-│   ├── test_multi_role_players_invalid.py # Invalid multi-role players
-│   ├── test_pydantic.py      # Pydantic validation
-│   └── test_update_api.py    # Update API validation
-└── validation/               # 2 test files - Validation tests
-    ├── test_duplicate_attributes.py # Duplicate attribute detection
-    └── test_reserved_words.py # Reserved word validation
-```
+- models and attributes: `attributes/`, `models/`, `fields/`, `flags/`;
+- persistence and execution: `crud/`, `query/`, `typed_query/`, `session/`,
+  `rust_backend/`;
+- schema lifecycle: `schema/`, `migration/`, `generator/`, `typeql/`;
+- contracts and quality: `compat/`, `infra/`, `type-check-except/`,
+  `validation/`;
+- supporting behavior: `core/`, `expressions/`, `exceptions/`, `proxy/`.
 
 ### Running Unit Tests
 
 ```bash
-# Run all unit tests (default)
-uv run pytest                              # All 768 unit tests (~1s)
+# Run the unit tree
+uv run pytest tests/unit/
+
+# Run the complete default offline selection
+uv run pytest
 uv run pytest -v                           # With verbose output
 
 # Run specific test category
@@ -109,7 +72,7 @@ uv run pytest tests/unit/attributes/test_integer.py -v
 uv run pytest tests/unit/attributes/test_string.py -v
 
 # Run specific test function
-uv run pytest tests/unit/core/test_basic.py::test_entity_creation -v
+uv run pytest tests/unit/core/test_entity_dict.py::test_to_dict_unwraps_values_and_supports_aliases -v
 
 # With coverage report
 uv run pytest --cov=type_bridge --cov-report=html
@@ -153,77 +116,10 @@ uv run pytest --cov=type_bridge --cov-report=html
 
 ### Overview
 
-Integration tests are located in `tests/integration/` with organized subdirectories:
-
-```
-tests/integration/
-├── crud/                         # 35 test files total
-│   ├── attributes/               # 11 test files - Attribute type operations
-│   │   ├── test_boolean.py       # Boolean attribute CRUD
-│   │   ├── test_date.py          # Date attribute CRUD
-│   │   ├── test_datetime.py      # DateTime attribute CRUD
-│   │   ├── test_datetimetz.py    # DateTimeTZ attribute CRUD
-│   │   ├── test_decimal.py       # Decimal attribute CRUD
-│   │   ├── test_double.py        # Double attribute CRUD
-│   │   ├── test_duration.py      # Duration attribute CRUD
-│   │   ├── test_integer.py       # Integer attribute CRUD
-│   │   ├── test_multivalue_escaping.py # String escaping edge cases
-│   │   ├── test_multi_value.py   # Multi-value attributes
-│   │   └── test_string.py        # String attribute CRUD
-│   ├── entities/                 # 8 test files - Entity CRUD operations
-│   │   ├── test_bulk_operations.py # Bulk insert/update/delete
-│   │   ├── test_chainable.py     # Chainable query operations
-│   │   ├── test_delete.py        # Entity deletion
-│   │   ├── test_fetch.py         # Entity fetching
-│   │   ├── test_insert.py        # Entity insertion
-│   │   ├── test_integer_key_bug.py # Integer key bug fix
-│   │   ├── test_put.py           # Entity PUT operations
-│   │   └── test_update.py        # Entity updates
-│   ├── interop/                  # 3 test files - Cross-type operations
-│   │   ├── test_mixed_entity.py  # Mixed entity operations
-│   │   ├── test_mixed_queries.py # Complex mixed queries
-│   │   └── test_type_combinations.py # Type combination tests
-│   ├── relations/                # 9 test files - Relation CRUD operations
-│   │   ├── test_abstract_roles.py # Abstract entity types in roles
-│   │   ├── test_chainable.py     # Chainable query operations
-│   │   ├── test_delete.py        # Relation deletion
-│   │   ├── test_fetch.py         # Relation fetching
-│   │   ├── test_filter.py        # Relation filtering
-│   │   ├── test_insert.py        # Relation insertion
-│   │   ├── test_multi_role.py    # Multi-player role relations
-│   │   ├── test_put.py           # Relation PUT operations
-│   │   └── test_update.py        # Relation updates
-│   ├── test_filter_validation.py # Filter validation tests
-│   ├── test_inherited_attribute_filter.py # Inherited attribute filtering
-│   ├── test_issue_47.py          # Issue #47 regression test
-│   └── test_update_advanced.py   # Advanced update operations
-├── generator/                    # 1 test file - Code generator tests
-│   └── test_generate_and_import.py # Generate and import test
-├── queries/                      # 8 test files - Query builder tests
-│   ├── test_expressions.py       # Query expressions
-│   ├── test_filters.py           # Filter operations
-│   ├── test_lookup_filters.py    # Lookup filter tests
-│   ├── test_match.py             # Match clause tests
-│   ├── test_pagination.py        # Limit, offset, sort
-│   ├── test_role_lookup_filters.py # Role lookup filters
-│   ├── test_role_multi_lookup_filters.py # Multi-role lookup filters
-│   └── test_role_players.py      # Role player queries
-├── schema/                       # 9 test files - Schema operations
-│   ├── test_attributes.py        # Attribute schema tests
-│   ├── test_cardinality.py       # Cardinality constraints
-│   ├── test_conflict.py          # Conflict detection
-│   ├── test_creation.py          # Schema creation
-│   ├── test_diff.py              # Schema diff tests
-│   ├── test_inheritance.py       # Inheritance hierarchies
-│   ├── test_migration.py         # Schema migrations
-│   ├── test_relations.py         # Relation schema tests
-│   └── test_types.py             # Type schema tests
-├── session/                      # 2 test files - Session tests
-│   ├── test_session_lifecycle.py # Session lifecycle
-│   └── test_transaction_context.py # TransactionContext operations
-└── validation/                   # 1 test file - Validation tests
-    └── test_reserved_words_integration.py # Reserved words integration
-```
+Integration tests are located in `tests/integration/`. Consult the live tree
+for exact cases. Its top-level areas cover CRUD, expressions, generation,
+migration, cross-language parity, proxy execution, queries, schema, sessions,
+and validation.
 
 ### Running Integration Tests
 
@@ -394,8 +290,11 @@ docker compose -p tb-v1-5-0 down -v
 ### Running All Tests
 
 ```bash
-# Unit tests only (default, fast)
-uv run pytest                              # Python unit tests
+# Default offline Python selection
+uv run pytest
+
+# Unit tree only
+uv run pytest tests/unit/
 
 # Python integration only (requires TypeDB)
 USE_DOCKER=false uv run pytest -m integration   # against a running TypeDB
@@ -414,7 +313,7 @@ workflow makes those consumers prerequisites for registry publication.
 
 ```bash
 # By marker
-uv run pytest -m unit           # Only unit tests
+uv run pytest tests/unit/       # Unit tree
 uv run pytest -m integration    # Only integration tests
 
 # By keyword
@@ -426,7 +325,7 @@ uv run pytest tests/unit/                    # All unit tests
 uv run pytest tests/integration/crud/        # All CRUD integration tests
 
 # Specific test
-uv run pytest tests/unit/core/test_basic.py::test_entity_creation
+uv run pytest tests/unit/core/test_entity_dict.py::test_to_dict_unwraps_values_and_supports_aliases
 ```
 
 ### Test Output Options
@@ -639,7 +538,7 @@ Quick test commands while developing:
 
 ```bash
 # Test current file
-uv run pytest tests/unit/core/test_basic.py -v
+uv run pytest tests/unit/core/test_entity_dict.py -v
 
 # Test with auto-rerun on file changes (requires pytest-watch)
 uv run ptw tests/unit/
