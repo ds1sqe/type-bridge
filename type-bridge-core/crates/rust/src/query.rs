@@ -2044,7 +2044,7 @@ impl<'s, 'db, S: Schema, Shape: SelectedShape<S>> Query<'s, 'db, S, Shape> {
     ) -> Result<Vec<Shape::Output>> {
         let rows = match result
             .for_request(validated)
-            .map_err(|error| Error::from_orm(error.into()))?
+            .map_err(|error| Error::from_orm_hydration(error.into()))?
         {
             MatchResult::Rows { rows } => rows,
             _ => {
@@ -2067,7 +2067,7 @@ impl<'s, 'db, S: Schema, Shape: SelectedShape<S>> Query<'s, 'db, S, Shape> {
     ) -> Result<Page<Shape::Output>> {
         let (entries, window, total) = match result
             .for_request(validated)
-            .map_err(|error| Error::from_orm(error.into()))?
+            .map_err(|error| Error::from_orm_hydration(error.into()))?
         {
             MatchResult::Page {
                 entries,
@@ -2115,7 +2115,7 @@ impl<'s, 'db, S: Schema, Shape: SelectedShape<S>> Query<'s, 'db, S, Shape> {
                     .await;
             }
         };
-        Ok((validated, result.map_err(Error::from_orm)?))
+        Ok((validated, result.map_err(Error::from_orm_hydration)?))
     }
 }
 
@@ -2227,7 +2227,7 @@ impl<'s, 'db, S: Schema, Shape: SelectedShape<S>> Query<'s, 'db, S, Shape> {
         let (validated, result) = self.execute(validated).await?;
         match result
             .for_request(&validated)
-            .map_err(|error| Error::from_orm(error.into()))?
+            .map_err(|error| Error::from_orm_hydration(error.into()))?
         {
             MatchResult::Count { value, .. } => Ok(*value),
             _ => Err(Error::model_validation(
@@ -2247,7 +2247,7 @@ impl<'s, 'db, S: Schema, Shape: SelectedShape<S>> Query<'s, 'db, S, Shape> {
         let (validated, result) = self.execute(validated).await?;
         match result
             .for_request(&validated)
-            .map_err(|error| Error::from_orm(error.into()))?
+            .map_err(|error| Error::from_orm_hydration(error.into()))?
         {
             MatchResult::Exists { value, .. } => Ok(*value),
             _ => Err(Error::model_validation(
@@ -2323,7 +2323,7 @@ impl<'s, 'db, S: Schema, B: Selectable<S>> Query<'s, 'db, S, B> {
     ) -> Result<Vec<type_bridge_orm::match_request::ReductionRow>> {
         match result
             .for_request(validated)
-            .map_err(|error| Error::from_orm(error.into()))?
+            .map_err(|error| Error::from_orm_hydration(error.into()))?
         {
             MatchResult::Reduction { rows, .. } => Ok(rows.clone()),
             _ => Err(Error::model_validation(

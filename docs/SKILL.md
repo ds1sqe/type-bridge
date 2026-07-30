@@ -285,6 +285,12 @@ before using generated models. Follow `guide/rust.md` for the exact release
 revision, dependency patch, connection, transaction, CRUD, and remote-query
 forms.
 
+Classify Rust SDK failures through `Error::category()`, `code()`, `path()`,
+and `model_validation_phase()`; do not parse display messages. Preserve those
+fields across direct and remote execution. In a caller-owned
+`RemoteQueryTransport`, wrap transport failures with `Error::remote` and a
+stable lowercase snake-case code.
+
 Use the server container only with the configuration, TLS, declared-schema
 authority, resource limits, and immutable digest described in
 `guide/server-container.md`. The client owns remote transport, authentication,

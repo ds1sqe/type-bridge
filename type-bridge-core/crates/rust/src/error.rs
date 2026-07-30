@@ -1,6 +1,67 @@
 //! Error handling for the public TypeBridge client.
 
 use std::error::Error as StdError;
+use std::fmt;
+
+use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticPathSegment};
+use type_bridge_orm::match_request::{MatchError, MatchErrorCategory};
+
+/// Stable public classification for TypeBridge client failures.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum ErrorCategory {
+    /// Connection establishment or connectivity failed.
+    Connection,
+    /// Generated or installed schema authority failed verification.
+    Schema,
+    /// Generated input or provider evidence failed model validation.
+    ModelValidation,
+    /// A typed query was invalid before provider execution.
+    QueryAuthoring,
+    /// The provider failed while executing an accepted query.
+    QueryExecution,
+    /// A transaction lifecycle operation failed.
+    Transaction,
+    /// A remote envelope, reply, transport, or integrity contract failed.
+    Remote,
+    /// The selected provider or remote executor lacks a required capability.
+    Capability,
+    /// A canonical client, provider, or remote resource ceiling was exceeded.
+    ResourceLimit,
+    /// A requested entity or schema element was not found.
+    NotFound,
+    /// An underlying database operation failed outside a narrower category.
+    Database,
+    /// A client invariant failed outside the stable categories above.
+    Other,
+}
+
+impl ErrorCategory {
+    /// Return the stable language-neutral category spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Connection => "connection",
+            Self::Schema => "schema",
+            Self::ModelValidation => "model_validation",
+            Self::QueryAuthoring => "query_authoring",
+            Self::QueryExecution => "query_execution",
+            Self::Transaction => "transaction",
+            Self::Remote => "remote",
+            Self::Capability => "capability",
+            Self::ResourceLimit => "resource_limit",
+            Self::NotFound => "not_found",
+            Self::Database => "database",
+            Self::Other => "other",
+        }
+    }
+}
+
+impl fmt::Display for ErrorCategory {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
 
 /// Stage at which generated-model evidence failed validation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -13,11 +74,25 @@ pub enum ModelValidationPhase {
 
 /// Primary error type for the TypeBridge client SDK.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum Error {
     /// Generated-model evidence did not match the installed schema projection.
     #[error("Model validation failed during {phase:?}: {message}")]
     ModelValidation {
         phase: ModelValidationPhase,
+        code: String,
+        path: Vec<String>,
+        message: String,
+        #[source]
+        source: Option<Box<dyn StdError + Send + Sync + 'static>>,
+    },
+
+    /// A structured engine or remote-contract failure mapped into stable
+    /// client-owned categories, codes, and paths.
+    #[error("{category} error [{code}]: {message}")]
+    Classified {
+        category: ErrorCategory,
+        phase: Option<ModelValidationPhase>,
         code: String,
         path: Vec<String>,
         message: String,
@@ -100,37 +175,155 @@ impl Error {
         }
     }
 
+    pub(crate) fn classified(
+        category: ErrorCategory,
+        phase: Option<ModelValidationPhase>,
+        code: impl Into<String>,
+        path: Vec<String>,
+        message: impl Into<String>,
+        source: Option<Box<dyn StdError + Send + Sync + 'static>>,
+    ) -> Self {
+        Self::Classified {
+            category,
+            phase,
+            code: code.into(),
+            path,
+            message: message.into(),
+            source,
+        }
+    }
+
+    /// Construct one application-owned remote transport failure.
+    ///
+    /// Transport implementations should use a stable lowercase snake-case
+    /// code so callers can handle the failure without parsing its message.
+    #[must_use]
+    pub fn remote(
+        code: impl Into<String>,
+        message: impl Into<String>,
+        source: Option<Box<dyn StdError + Send + Sync + 'static>>,
+    ) -> Self {
+        Self::classified(
+            ErrorCategory::Remote,
+            None,
+            code,
+            Vec::new(),
+            message,
+            source,
+        )
+    }
+
+    pub(crate) fn from_match(error: MatchError, phase: ModelValidationPhase) -> Self {
+        let category = match error.category() {
+            MatchErrorCategory::InvalidPlan => ErrorCategory::QueryAuthoring,
+            MatchErrorCategory::Cardinality | MatchErrorCategory::ResultDecode => {
+                ErrorCategory::ModelValidation
+            }
+            MatchErrorCategory::UnsupportedCapability => ErrorCategory::Capability,
+            MatchErrorCategory::StaleSchema => ErrorCategory::Schema,
+            MatchErrorCategory::ResourceLimit => ErrorCategory::ResourceLimit,
+            MatchErrorCategory::Provider => ErrorCategory::QueryExecution,
+        };
+        let model_phase = (category == ErrorCategory::ModelValidation).then_some(phase);
+        let code = error.code().as_str().to_owned();
+        let path = error
+            .path()
+            .segments()
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        let message = error.message().to_owned();
+        Self::classified(
+            category,
+            model_phase,
+            code,
+            path,
+            message,
+            Some(Box::new(error)),
+        )
+    }
+
+    pub(crate) fn from_remote_diagnostic(error: Diagnostic) -> Self {
+        let category = match error.category() {
+            DiagnosticCategory::UnsupportedCapability => ErrorCategory::Capability,
+            DiagnosticCategory::ResourceLimit => ErrorCategory::ResourceLimit,
+            DiagnosticCategory::InvalidContract | DiagnosticCategory::Integrity => {
+                ErrorCategory::Remote
+            }
+        };
+        let code = error.code().as_str().to_owned();
+        let path = error
+            .path()
+            .segments()
+            .iter()
+            .map(|segment| match segment {
+                DiagnosticPathSegment::Field(value) => value.clone(),
+                DiagnosticPathSegment::Index(value) => format!("[{value}]"),
+                DiagnosticPathSegment::Identifier(value) => value.clone(),
+            })
+            .collect();
+        let message = error.message().to_owned();
+        Self::classified(category, None, code, path, message, Some(Box::new(error)))
+    }
+
     #[allow(dead_code)]
     pub(crate) fn from_orm(err: type_bridge_orm::OrmError) -> Self {
-        let message = err.to_string();
-        match &err {
-            type_bridge_orm::OrmError::Connection(_) => Self::Connection {
-                message,
-                source: Some(Box::new(err)),
+        match err {
+            type_bridge_orm::OrmError::Match(error) => {
+                Self::from_match(error, ModelValidationPhase::Input)
+            }
+            error @ type_bridge_orm::OrmError::Connection(_) => Self::Connection {
+                message: error.to_string(),
+                source: Some(Box::new(error)),
             },
-            type_bridge_orm::OrmError::QueryExecution(_) => Self::QueryExecution {
-                message,
-                source: Some(Box::new(err)),
+            error @ type_bridge_orm::OrmError::QueryExecution(_) => Self::QueryExecution {
+                message: error.to_string(),
+                source: Some(Box::new(error)),
             },
-            type_bridge_orm::OrmError::Transaction(_) => Self::Transaction {
-                message,
-                source: Some(Box::new(err)),
+            error @ type_bridge_orm::OrmError::Transaction(_) => Self::Transaction {
+                message: error.to_string(),
+                source: Some(Box::new(error)),
             },
-            type_bridge_orm::OrmError::NotFound(_) => Self::NotFound {
-                message,
-                source: Some(Box::new(err)),
+            error @ type_bridge_orm::OrmError::NotFound(_) => Self::NotFound {
+                message: error.to_string(),
+                source: Some(Box::new(error)),
             },
-            type_bridge_orm::OrmError::Hydration { .. } => Self::ModelValidation {
+            error @ type_bridge_orm::OrmError::Hydration { .. } => Self::ModelValidation {
                 phase: ModelValidationPhase::Hydration,
                 code: "invalid_provider_evidence".into(),
                 path: vec![],
-                message,
-                source: Some(Box::new(err)),
+                message: error.to_string(),
+                source: Some(Box::new(error)),
             },
-            _ => Self::Database {
-                message,
-                source: Some(Box::new(err)),
+            error => Self::Database {
+                message: error.to_string(),
+                source: Some(Box::new(error)),
             },
+        }
+    }
+
+    pub(crate) fn from_orm_hydration(err: type_bridge_orm::OrmError) -> Self {
+        match err {
+            type_bridge_orm::OrmError::Match(error) => {
+                Self::from_match(error, ModelValidationPhase::Hydration)
+            }
+            error => Self::from_orm(error),
+        }
+    }
+
+    /// Return the stable public failure category.
+    #[must_use]
+    pub const fn category(&self) -> ErrorCategory {
+        match self {
+            Self::ModelValidation { .. } => ErrorCategory::ModelValidation,
+            Self::Classified { category, .. } => *category,
+            Self::SchemaVerification { .. } => ErrorCategory::Schema,
+            Self::Connection { .. } => ErrorCategory::Connection,
+            Self::QueryExecution { .. } => ErrorCategory::QueryExecution,
+            Self::Transaction { .. } => ErrorCategory::Transaction,
+            Self::NotFound { .. } => ErrorCategory::NotFound,
+            Self::Database { .. } => ErrorCategory::Database,
+            Self::Other { .. } => ErrorCategory::Other,
         }
     }
 
@@ -139,6 +332,7 @@ impl Error {
     pub fn message(&self) -> &str {
         match self {
             Self::ModelValidation { message, .. }
+            | Self::Classified { message, .. }
             | Self::SchemaVerification { message, .. }
             | Self::Connection { message, .. }
             | Self::QueryExecution { message, .. }
@@ -149,20 +343,20 @@ impl Error {
         }
     }
 
-    /// Return the stable model-validation code, when applicable.
+    /// Return the stable machine-readable failure code, when available.
     #[must_use]
     pub fn code(&self) -> Option<&str> {
         match self {
-            Self::ModelValidation { code, .. } => Some(code),
+            Self::ModelValidation { code, .. } | Self::Classified { code, .. } => Some(code),
             _ => None,
         }
     }
 
-    /// Return the owned structured model-validation path, when applicable.
+    /// Return the owned structured diagnostic path, when available.
     #[must_use]
     pub fn path(&self) -> Option<&[String]> {
         match self {
-            Self::ModelValidation { path, .. } => Some(path),
+            Self::ModelValidation { path, .. } | Self::Classified { path, .. } => Some(path),
             _ => None,
         }
     }
@@ -172,6 +366,7 @@ impl Error {
     pub const fn model_validation_phase(&self) -> Option<ModelValidationPhase> {
         match self {
             Self::ModelValidation { phase, .. } => Some(*phase),
+            Self::Classified { phase, .. } => *phase,
             _ => None,
         }
     }
@@ -179,3 +374,36 @@ impl Error {
 
 /// Convenience Result type for the TypeBridge client.
 pub type Result<T, E = Error> = std::result::Result<T, E>;
+
+#[cfg(test)]
+mod tests {
+    use super::{Error, ErrorCategory};
+
+    #[test]
+    fn public_error_categories_and_remote_constructor_are_stable() {
+        let categories = [
+            (ErrorCategory::Connection, "connection"),
+            (ErrorCategory::Schema, "schema"),
+            (ErrorCategory::ModelValidation, "model_validation"),
+            (ErrorCategory::QueryAuthoring, "query_authoring"),
+            (ErrorCategory::QueryExecution, "query_execution"),
+            (ErrorCategory::Transaction, "transaction"),
+            (ErrorCategory::Remote, "remote"),
+            (ErrorCategory::Capability, "capability"),
+            (ErrorCategory::ResourceLimit, "resource_limit"),
+            (ErrorCategory::NotFound, "not_found"),
+            (ErrorCategory::Database, "database"),
+            (ErrorCategory::Other, "other"),
+        ];
+        for (category, spelling) in categories {
+            assert_eq!(category.as_str(), spelling);
+            assert_eq!(category.to_string(), spelling);
+        }
+
+        let error = Error::remote("remote_transport", "connection reset", None);
+        assert_eq!(error.category(), ErrorCategory::Remote);
+        assert_eq!(error.code(), Some("remote_transport"));
+        assert_eq!(error.path(), Some(&[][..]));
+        assert_eq!(error.message(), "connection reset");
+    }
+}

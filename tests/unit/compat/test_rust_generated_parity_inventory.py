@@ -3,11 +3,30 @@
 from __future__ import annotations
 
 import json
+import tomllib
 from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).parents[3]
 INVENTORY = ROOT / "tests/fixtures/rust-generated-parity-inventory.json"
+
+REQUIRED_CLIENT_ACCEPTANCE = {
+    "public_rust_client_crate",
+    "dependency_direction",
+    "generated_external_consumer",
+    "generated_model_contract",
+    "exact_and_subtype_results",
+    "inheritance_narrowing",
+    "relation_role_ownership",
+    "typed_crud_and_transactions",
+    "owner_bound_query_algebra",
+    "selected_result_shapes",
+    "compile_fail_boundaries",
+    "representative_live_parity",
+    "local_remote_values_and_classified_errors",
+    "no_internal_consumer_surfaces",
+    "distribution_identity",
+}
 
 REQUIRED_SCENARIOS = {
     "entity_crud_and_batches",
@@ -44,10 +63,57 @@ def _load() -> dict[str, Any]:
     return json.loads(INVENTORY.read_text(encoding="utf-8"))
 
 
+def test_core_crates_do_not_depend_upward_on_the_public_rust_client() -> None:
+    offenders: list[str] = []
+    for manifest in sorted((ROOT / "type-bridge-core/crates").glob("*/Cargo.toml")):
+        if manifest.parent.name == "rust":
+            continue
+        document = tomllib.loads(manifest.read_text(encoding="utf-8"))
+        dependency_tables = [
+            document.get("dependencies", {}),
+            document.get("dev-dependencies", {}),
+            document.get("build-dependencies", {}),
+        ]
+        for target in document.get("target", {}).values():
+            dependency_tables.extend(
+                [
+                    target.get("dependencies", {}),
+                    target.get("dev-dependencies", {}),
+                    target.get("build-dependencies", {}),
+                ]
+            )
+        for dependencies in dependency_tables:
+            for name, specification in dependencies.items():
+                package = specification.get("package") if isinstance(specification, dict) else None
+                if name == "type-bridge" or package == "type-bridge":
+                    offenders.append(f"{manifest.relative_to(ROOT)}:{name}")
+    assert not offenders
+
+
+def _assert_source_evidence(item: dict[str, Any]) -> None:
+    assert item["evidence"], item["id"]
+    for evidence in item["evidence"]:
+        path = ROOT / evidence["path"]
+        assert path.is_file(), path
+        source = path.read_text(encoding="utf-8")
+        assert evidence["anchors"], evidence
+        for anchor in evidence["anchors"]:
+            assert anchor in source, f"{item['id']}: {path}: {anchor}"
+
+
 def test_rust_generated_parity_inventory_is_complete_and_source_tied() -> None:
     inventory = _load()
     assert inventory["format"] == "typebridge.rust-generated-parity-inventory/v1"
     assert inventory["statuses"] == ["accepted_live", "accepted_offline", "open"]
+
+    client_acceptance = inventory["client_acceptance"]
+    assert {criterion["id"] for criterion in client_acceptance} == (REQUIRED_CLIENT_ACCEPTANCE)
+    assert all(
+        criterion["status"] in {"accepted_live", "accepted_offline"}
+        for criterion in client_acceptance
+    )
+    for criterion in client_acceptance:
+        _assert_source_evidence(criterion)
 
     scenarios = inventory["scenarios"]
     assert isinstance(scenarios, list)
@@ -77,14 +143,7 @@ def test_rust_generated_parity_inventory_is_complete_and_source_tied() -> None:
     assert {gate["id"] for gate in gates} == REQUIRED_SYSTEM_GATES
     assert {gate["id"]: gate["status"] for gate in gates} == EXPECTED_SYSTEM_GATE_STATUSES
     for gate in gates:
-        assert gate["evidence"], gate["id"]
-        for evidence in gate["evidence"]:
-            path = ROOT / evidence["path"]
-            assert path.is_file(), path
-            source = path.read_text(encoding="utf-8")
-            assert evidence["anchors"], evidence
-            for anchor in evidence["anchors"]:
-                assert anchor in source, f"{gate['id']}: {path}: {anchor}"
+        _assert_source_evidence(gate)
         if gate["status"] == "open":
             assert gate["open_requirements"], gate["id"]
 

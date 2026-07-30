@@ -10,6 +10,178 @@
     "accepted_offline",
     "open"
   ],
+  "client_acceptance": [
+    {
+      "id": "public_rust_client_crate",
+      "status": "accepted_offline",
+      "evidence": [
+        {
+          "path": "type-bridge-core/crates/rust/Cargo.toml",
+          "anchors": ["name = \"type-bridge\"", "name = \"type_bridge\"", "Public client SDK for TypeBridge"]
+        },
+        {
+          "path": "type-bridge-core/crates/rust/src/lib.rs",
+          "anchors": ["Public Rust client library for TypeBridge", "pub use entity_manager", "pub use remote"]
+        }
+      ]
+    },
+    {
+      "id": "dependency_direction",
+      "status": "accepted_offline",
+      "evidence": [
+        {
+          "path": "type-bridge-core/crates/schema-codegen/tests/rust_acceptance.rs",
+          "anchors": ["generated_external_manager_contract_compiles_exact_matrix", "\"type-bridge-orm\"", "assert_eq!(entries.len(), 2)"]
+        },
+        {
+          "path": "tests/unit/compat/test_rust_generated_parity_inventory.py",
+          "anchors": ["test_core_crates_do_not_depend_upward_on_the_public_rust_client", "package == \"type-bridge\""]
+        }
+      ]
+    },
+    {
+      "id": "generated_external_consumer",
+      "status": "accepted_live",
+      "evidence": [
+        {
+          "path": "type-bridge-core/crates/schema-codegen/tests/rust_projection_live.rs",
+          "anchors": ["generated_rust_projection_round_trips_exact_live_models", "dependency-isolated client consumer starts", "test result: ok. 5 passed; 0 failed"]
+        }
+      ]
+    },
+    {
+      "id": "generated_model_contract",
+      "status": "accepted_offline",
+      "evidence": [
+        {
+          "path": "type-bridge-core/crates/schema-codegen/tests/rust_acceptance.rs",
+          "anchors": ["generated_declaration_boundary_matrix_is_scoped", "impl CompleteModel for {name}", "pub enum {name}", "impl SubtypeRootModel for {name}"]
+        }
+      ]
+    },
+    {
+      "id": "exact_and_subtype_results",
+      "status": "accepted_live",
+      "evidence": [
+        {
+          "path": "type-bridge-core/crates/schema-codegen/tests/rust_projection_live/consumer.rs",
+          "anchors": ["generated_inheritance_exact_and_subtype_reads", "employee subtype count", "party subtype count", "F2B-03 public generated entity lifecycle: passed"]
+        }
+      ]
+    },
+    {
+      "id": "inheritance_narrowing",
+      "status": "accepted_offline",
+      "evidence": [
+        {
+          "path": "type-bridge-core/crates/schema-codegen/tests/rust_acceptance.rs",
+          "anchors": ["fn narrow(value: PartyFamily)", "child-before-narrow", "family_child_only_fields_fail_at_compile_time"]
+        }
+      ]
+    },
+    {
+      "id": "relation_role_ownership",
+      "status": "accepted_live",
+      "evidence": [
+        {
+          "path": "type-bridge-core/crates/schema-codegen/tests/rust_acceptance.rs",
+          "anchors": ["query-specialized-away-ancestor-role", "query-role-rejects-non-player"]
+        },
+        {
+          "path": "type-bridge-core/crates/schema-codegen/tests/rust_projection_live/consumer.rs",
+          "anchors": ["generated_relation_query_and_remote_lifecycle", "network update replaces attributes and roles", "F2C-03 public generated relation lifecycle: passed"]
+        }
+      ]
+    },
+    {
+      "id": "typed_crud_and_transactions",
+      "status": "accepted_live",
+      "evidence": [
+        {
+          "path": "type-bridge-core/crates/schema-codegen/tests/rust_projection_live/consumer.rs",
+          "anchors": ["generated_entity_crud_batches_and_scalar_domains", "generated_write_transaction_commit_rollback_and_drop", ".insert_many(vec![", ".put_many(vec![", "F2D public write transaction lifecycle: passed"]
+        }
+      ]
+    },
+    {
+      "id": "owner_bound_query_algebra",
+      "status": "accepted_live",
+      "evidence": [
+        {
+          "path": "type-bridge-core/crates/schema-codegen/tests/rust_projection_live/consumer.rs",
+          "anchors": ["F3-06A", ".first(party_name.asc())", "F5 bounded reachability predicate", "F3 public generated query lifecycle: passed"]
+        }
+      ]
+    },
+    {
+      "id": "selected_result_shapes",
+      "status": "accepted_live",
+      "evidence": [
+        {
+          "path": "type-bridge-core/crates/schema-codegen/tests/rust_projection_live/consumer.rs",
+          "anchors": ["PersonGraph::select", "F4 local collected page", "F4 remote distinct root count", "F4 public selected/read/remote lifecycle: passed"]
+        }
+      ]
+    },
+    {
+      "id": "compile_fail_boundaries",
+      "status": "accepted_offline",
+      "evidence": [
+        {
+          "path": "type-bridge-core/crates/schema-codegen/tests/rust_acceptance.rs",
+          "anchors": ["negative generated consumer unexpectedly compiled", "query-cross-owner-field", "query-specialized-away-ancestor-role", "query-role-rejects-non-player", "query-equality-rejects-wrong-domain"]
+        }
+      ]
+    },
+    {
+      "id": "representative_live_parity",
+      "status": "accepted_live",
+      "evidence": [
+        {
+          "path": "type-bridge-core/crates/schema-codegen/tests/rust_projection_live.rs",
+          "anchors": ["generated_rust_projection_round_trips_exact_live_models", "public generated entity CRUD, batches, and scalar domains: passed", "F5 public relation parity and bounded reachability: passed"]
+        }
+      ]
+    },
+    {
+      "id": "local_remote_values_and_classified_errors",
+      "status": "accepted_live",
+      "evidence": [
+        {
+          "path": "type-bridge-core/crates/schema-codegen/tests/rust_projection_live/consumer.rs",
+          "anchors": ["RemoteDatabase<AppSchema>", "assert_eq!(observed_page, expected_page)", "F4 public selected/read/remote lifecycle: passed"]
+        },
+        {
+          "path": "type-bridge-core/crates/rust/src/remote.rs",
+          "anchors": ["local_and_remote_failures_preserve_classification_codes_and_paths", "missing_remote_capability", "crate::ErrorCategory::Capability"]
+        }
+      ]
+    },
+    {
+      "id": "no_internal_consumer_surfaces",
+      "status": "accepted_offline",
+      "evidence": [
+        {
+          "path": "type-bridge-core/crates/schema-codegen/tests/rust_projection_live.rs",
+          "anchors": ["external_consumer_remains_a_focused_public_api_suite", "forbidden consumer surface", "\"Dynamic\"", "\"type_bridge_orm\"", "\"descriptor\""]
+        }
+      ]
+    },
+    {
+      "id": "distribution_identity",
+      "status": "accepted_offline",
+      "evidence": [
+        {
+          "path": "test.sh",
+          "anchors": ["generated Rust projection acceptance on MSRV 1.88", "+1.88.0"]
+        },
+        {
+          "path": "scripts/ci/validate_release_identity.py",
+          "anchors": ["ARTIFACT_CONTRACT_SOURCE_GIT_SERVER_OCI", "Require the final source/Git Rust SDK plus server-OCI artifact graph."]
+        }
+      ]
+    }
+  ],
   "scenarios": [
     {
       "id": "entity_crud_and_batches",
@@ -275,6 +447,10 @@
         {
           "path": "type-bridge-core/crates/schema-codegen/tests/rust_projection_live/consumer.rs",
           "anchors": ["generated_relation_query_and_remote_lifecycle", "RemoteDatabase<AppSchema>", "F4 remote distinct root count", "assert_eq!(observed_page, expected_page)"]
+        },
+        {
+          "path": "type-bridge-core/crates/rust/src/remote.rs",
+          "anchors": ["local_and_remote_failures_preserve_classification_codes_and_paths", "missing_remote_capability", "crate::ErrorCategory::Capability"]
         }
       ],
       "release_exclusion": null

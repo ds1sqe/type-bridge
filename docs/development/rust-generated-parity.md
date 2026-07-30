@@ -11,6 +11,12 @@ implemented or an owner explicitly approves a release exclusion.
 
 ## Current status
 
+The inventory also checks every acceptance criterion from
+[#198](https://github.com/ds1sqe/type-bridge/issues/198). All 15 client
+criteria have source-tied live or offline evidence, including dependency
+direction, compile-fail boundaries, public-consumer isolation, distribution
+identity, and equal local/remote values and classified failures.
+
 The isolated generated Rust application has accepted live evidence for:
 
 - entity CRUD and batches;
@@ -20,7 +26,8 @@ The isolated generated Rust application has accepted live evidence for:
 - typed aggregates and grouping;
 - selected named and collected pages;
 - write and reusable read transactions; and
-- identical local and authenticated one-exchange remote materialization.
+- identical local and authenticated one-exchange remote values and classified
+  failures.
 
 Schema generation, compile rejection, and dependency-isolated external
 consumption have accepted offline evidence.
@@ -35,7 +42,10 @@ Rust 1.88, and final source/Git distribution-identity system gates are
 accepted. Exact server OCI acceptance is the sole open system gate: the
 landed candidate SHA must pass both `linux/amd64` and `linux/arm64` workflow
 runtime proofs before the separately authorized stable publication and
-attestation path can close it.
+attestation path can close it. That system-level publication proof belongs to
+the release gate in
+[#188](https://github.com/ds1sqe/type-bridge/issues/188); it is not an
+unimplemented Rust-client criterion in #198.
 
 Run the inventory guard with:
 

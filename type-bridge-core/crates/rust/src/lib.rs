@@ -25,7 +25,7 @@ mod transaction;
 pub mod value;
 
 pub use entity_manager::{EntityManager, EntitySubtypeManager};
-pub use error::{Error, ModelValidationPhase, Result};
+pub use error::{Error, ErrorCategory, ModelValidationPhase, Result};
 pub use query::{
     Binding, BoundField, BoundRole, Collected, Exact, GroupedQuery, NamedSelection, Order,
     OrderedOperand, Page, PageOptions, Predicate, Query, QueryOperand, QuerySession, RowsOptions,
