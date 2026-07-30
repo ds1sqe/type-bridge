@@ -2,6 +2,7 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use type_bridge_contract::fingerprint::SemanticProfileId;
@@ -12,6 +13,7 @@ use type_bridge_schema_codegen::{GeneratedPackage, RustEmitter};
 
 const POSITIVE: &str = include_str!("rust_acceptance/positive.rs");
 const NEGATIVE: &str = include_str!("rust_acceptance/negative.rs");
+static STAGE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 struct Stage(PathBuf);
 
@@ -21,8 +23,13 @@ impl Stage {
             .duration_since(UNIX_EPOCH)
             .expect("system time follows the Unix epoch")
             .as_nanos();
+        Self::new_for_nonce(nonce)
+    }
+
+    fn new_for_nonce(nonce: u128) -> Self {
+        let sequence = STAGE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let path = env::temp_dir().join(format!(
-            "type-bridge-schema-codegen-rust-acceptance-{}-{nonce}",
+            "type-bridge-schema-codegen-rust-acceptance-{}-{nonce}-{sequence}",
             std::process::id()
         ));
         fs::create_dir_all(&path).expect("acceptance stage is created");
@@ -38,6 +45,14 @@ impl Drop for Stage {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
     }
+}
+
+#[test]
+fn acceptance_stages_are_unique_when_clock_nonce_repeats() {
+    let first = Stage::new_for_nonce(u128::MAX);
+    let second = Stage::new_for_nonce(u128::MAX);
+
+    assert_ne!(first.path(), second.path());
 }
 
 fn project_from_source(source: &str) -> RuntimeProjection {
