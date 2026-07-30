@@ -657,7 +657,12 @@ fn generated_external_cross_schema_and_forged_capability_boundaries() {
     fs::write(manifest_b, text).unwrap();
     fs::create_dir_all(consumer.join("src")).unwrap();
     fs::write(consumer.join("src/main.rs"), "use schema_a::AppSchema; use schema_b::{Pact, Person}; use type_bridge::Database; fn f(db_a: &Database<AppSchema>) { let _ = db_a.entities::<Person>(); } fn g(db_a: &Database<AppSchema>) { let _ = db_a.relations::<Pact>(); } fn main() {}").unwrap();
-    fs::write(consumer.join("Cargo.toml"), format!("[package]\nname=\"cross-boundary-consumer\"\nversion=\"0.0.0\"\nedition=\"2024\"\n[dependencies]\nschema_a={{package=\"type-bridge-generated-schema\",path=\"../generated-a\"}}\nschema_b={{package=\"schema-b\",path=\"../generated-b\"}}\ntype-bridge={{path=\"{}\",default-features=false}}\n[patch.crates-io]\ntype-bridge={{path=\"{}\"}}\n[workspace]\n", PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("rust").display(), PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("rust").display())).unwrap();
+    let rust_crate = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("rust");
+    let rust_path = rust_crate.to_string_lossy().replace('\\', "\\\\");
+    fs::write(consumer.join("Cargo.toml"), format!("[package]\nname=\"cross-boundary-consumer\"\nversion=\"0.0.0\"\nedition=\"2024\"\n[dependencies]\nschema_a={{package=\"type-bridge-generated-schema\",path=\"../generated-a\"}}\nschema_b={{package=\"schema-b\",path=\"../generated-b\"}}\ntype-bridge={{path=\"{rust_path}\",default-features=false}}\n[patch.crates-io]\ntype-bridge={{path=\"{rust_path}\"}}\n[workspace]\n")).unwrap();
     let output = cargo(
         &[
             "check",
@@ -669,8 +674,14 @@ fn generated_external_cross_schema_and_forged_capability_boundaries() {
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!output.status.success());
-    assert!(stderr.contains("EntityModel") && stderr.contains("AppSchema"));
-    assert!(stderr.contains("RelationModel"));
+    assert!(
+        stderr.contains("EntityModel") && stderr.contains("AppSchema"),
+        "cross-schema entity boundary did not fail on its model brand:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("RelationModel"),
+        "cross-schema relation boundary did not fail on its model brand:\n{stderr}"
+    );
     for bad in [
         "failed to get",
         "failed to load",

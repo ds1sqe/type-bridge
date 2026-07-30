@@ -24,7 +24,7 @@ relation container,
     relates item @card(0..2);
 relation event,
     relates subject @card(1..1),
-    plays container:item @card(0..3) @doc("cyclic relation player");
+    plays container:item @doc("cyclic relation player") @card(0..3);
 relation network-link,
     owns identifier @key,
     owns nickname @card(0..1),
@@ -45,12 +45,12 @@ entity person,
     owns val_datetime_tz @card(1..1),
     owns val_duration @card(1..1),
     owns val_constrained @card(1..1) @range(20..80),
-    plays membership:member @card(0..2) @doc("membership player"),
-    plays employment:employee @card(0..1) @doc("employment player"),
-    plays event:subject @card(0..1) @doc("event subject player"),
-    plays network-link:origin @card(0..3) @doc("directed link origin"),
-    plays network-link:destination @card(0..3) @doc("directed link destination"),
-    plays network-link:participant @card(0..3) @doc("repeated link participant");
+    plays membership:member @doc("membership player") @card(0..2),
+    plays employment:employee @doc("employment player") @card(0..1),
+    plays event:subject @doc("event subject player") @card(0..1),
+    plays network-link:origin @doc("directed link origin") @card(0..3),
+    plays network-link:destination @doc("directed link destination") @card(0..3),
+    plays network-link:participant @doc("repeated link participant") @card(0..3);
 entity party @abstract,
     owns identifier @key,
     owns party_name @card(1..1);
@@ -62,7 +62,7 @@ entity contractor sub party,
     owns contractor_code @card(1..1);
 entity robot,
     owns val_constrained @card(1..1) @range(0..50),
-    plays membership:member @card(1..1) @doc("robot membership player");
+    plays membership:member @doc("robot membership player") @card(1..1);
 
 struct player-stats:
     nickname value string?,
