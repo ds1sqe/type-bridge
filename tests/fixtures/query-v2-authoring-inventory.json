@@ -5837,7 +5837,9 @@
         "count",
         "max",
         "mean",
+        "median",
         "min",
+        "std",
         "sum"
       ],
       "stage": [
@@ -7315,7 +7317,9 @@
       "covers": [
         "reducer:max",
         "reducer:mean",
+        "reducer:median",
         "reducer:min",
+        "reducer:std",
         "local_return:sum:long",
         "local_return:sum:double"
       ],

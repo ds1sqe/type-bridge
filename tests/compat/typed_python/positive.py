@@ -238,7 +238,11 @@ def assert_v2_artifact_shapes(
     builder = QueryPlanBuilder(authority)
     person = builder.binding("person")
     name = builder.binding("name")
+    median = builder.binding("median")
+    deviation = builder.binding("deviation")
     wanted = builder.input("wanted_name", "string", False)
+    builder.reduce_assignment(median, "median", name)
+    builder.reduce_assignment(deviation, "std", name)
     builder.match(
         (
             builder.isa(person, "entity", "artifact-positive-person", True),

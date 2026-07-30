@@ -259,7 +259,11 @@ const authoredAuthority = new QueryV2Authority(
 const authoredBuilder = new QueryPlanBuilder(authoredAuthority);
 const authoredPerson = authoredBuilder.binding("person");
 const authoredName = authoredBuilder.binding("name");
+const authoredMedian = authoredBuilder.binding("median");
+const authoredDeviation = authoredBuilder.binding("deviation");
 const authoredWanted = authoredBuilder.input("wanted_name", "string", false);
+authoredBuilder.reduceAssignment(authoredMedian, "median", authoredName);
+authoredBuilder.reduceAssignment(authoredDeviation, "std", authoredName);
 authoredBuilder.match([
   authoredBuilder.isa(authoredPerson, "entity", "smoke-person", true),
   authoredBuilder.has(authoredPerson, authoredName, "smoke-name"),

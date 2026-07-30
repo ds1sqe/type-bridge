@@ -943,8 +943,8 @@ def test_live_cli_workspace_state_machine_is_required_locally_and_in_ci() -> Non
     assert test_script.count("timeout --foreground") >= 6
 
 
-def test_remote_model_parity_is_explicitly_required_in_the_tls_lane() -> None:
-    """Both public bindings must exercise the new remote terminal over verified TLS."""
+def test_remote_model_and_low_level_parity_are_required_in_the_tls_lane() -> None:
+    """Both bindings must exercise model and low-level artifact parity over verified TLS."""
     test_script = (REPO_ROOT / "test.sh").read_text(encoding="utf-8")
     start = test_script.index("run_tls_transport_steps() {")
     end = test_script.index('\n}\n\nif [[ "$tls" == 1 ]]', start)
@@ -973,6 +973,10 @@ def test_remote_model_parity_is_explicitly_required_in_the_tls_lane() -> None:
     assert "tlsEnabled: true" in packed_reader
     assert "NODE_EXTRA_CA_CERTS" in packed_reader
     assert "NODE_TLS_REJECT_UNAUTHORIZED" not in packed_reader
+    assert ".reachable(" in packed_reader
+    assert ".finalizeDocuments(" in packed_reader
+    assert "maxItems: 1n" in packed_reader
+    assert "error.diagnosticMessage" in packed_reader
 
 
 def test_live_release_parity_consumes_exact_artifacts_before_every_publish() -> None:

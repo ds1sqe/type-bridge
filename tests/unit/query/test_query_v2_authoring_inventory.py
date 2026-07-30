@@ -267,6 +267,14 @@ def test_inventory_names_every_public_operation_and_required_variant() -> None:
     actual_coverage = {coverage for case in corpus["plans"] for coverage in case["covers"]}
     assert actual_coverage == expected_coverage
 
+    authored_reducers = {
+        step["reducer"]
+        for case in corpus["plans"]
+        for step in case["steps"]
+        if step["op"] == "reduce_assignment"
+    }
+    assert set(inventory["coverage"]["reducer"]) == authored_reducers
+
     terminals = {
         invocation["terminal"] for case in corpus["plans"] for invocation in case["invocations"]
     }
