@@ -10,6 +10,9 @@
 
 use std::collections::BTreeMap;
 
+use crate::error::{OrmError, Result};
+use type_bridge_core_lib::version::{Feature, Version, check_feature_supported};
+
 /// One `@name` or `@name(args)` annotation split out of a flag string.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AnnotationToken {
@@ -148,24 +151,70 @@ pub fn constraint_part(flags: &str) -> String {
 }
 
 /// Whether the TypeQL text contains a `@doc(`/`@meta(` schema annotation
-/// (TypeDB 3.12+) outside of string literals.
+/// (TypeDB 3.12+) outside of string literals and line comments.
 ///
 /// Used by the version gate to refuse sending annotation-bearing schema DDL
 /// to pre-3.12 servers, which would reject it with a syntax error.
 pub fn typeql_uses_schema_annotations(typeql: &str) -> bool {
     let bytes = typeql.as_bytes();
-    let mut in_string = false;
+    let mut quote = None;
+    let mut in_line_comment = false;
+    let mut in_block_comment = false;
     let mut i = 0;
     while i < bytes.len() {
-        match bytes[i] {
-            b'\\' if in_string => {
-                // Skip the escaped byte inside a string literal.
+        if in_line_comment {
+            if matches!(bytes[i], b'\n' | b'\r') {
+                in_line_comment = false;
+            }
+            i += 1;
+            continue;
+        }
+        if in_block_comment {
+            if bytes.get(i..i + 2) == Some(b"*/") {
+                in_block_comment = false;
+                i += 2;
+            } else {
                 i += 1;
             }
-            b'"' => in_string = !in_string,
-            b'@' if !in_string => {
-                let rest = &typeql[i..];
-                if rest.starts_with("@doc(") || rest.starts_with("@meta(") {
+            continue;
+        }
+        if let Some(delimiter) = quote {
+            match bytes[i] {
+                b'\\' => i += 2,
+                byte if byte == delimiter => {
+                    quote = None;
+                    i += 1;
+                }
+                _ => i += 1,
+            }
+            continue;
+        }
+        match bytes[i] {
+            b'"' | b'\'' => quote = Some(bytes[i]),
+            b'#' => in_line_comment = true,
+            b'/' if bytes.get(i + 1) == Some(&b'/') => {
+                in_line_comment = true;
+                i += 1;
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                in_block_comment = true;
+                i += 1;
+            }
+            b'@' => {
+                let name_start = i + 1;
+                let mut name_end = name_start;
+                while name_end < bytes.len()
+                    && (bytes[name_end].is_ascii_alphanumeric() || bytes[name_end] == b'_')
+                {
+                    name_end += 1;
+                }
+                let name = &typeql[name_start..name_end];
+                if name != "doc" && name != "meta" {
+                    i = name_end;
+                    continue;
+                }
+                let arguments = skip_typeql_trivia(bytes, name_end);
+                if arguments < bytes.len() && bytes[arguments] == b'(' {
                     return true;
                 }
             }
@@ -174,6 +223,61 @@ pub fn typeql_uses_schema_annotations(typeql: &str) -> bool {
         i += 1;
     }
     false
+}
+
+fn skip_typeql_trivia(bytes: &[u8], mut i: usize) -> usize {
+    loop {
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i < bytes.len() && bytes[i] == b'#' {
+            while i < bytes.len() && !matches!(bytes[i], b'\n' | b'\r') {
+                i += 1;
+            }
+            continue;
+        }
+        if bytes.get(i..i + 2) == Some(b"//") {
+            while i < bytes.len() && !matches!(bytes[i], b'\n' | b'\r') {
+                i += 1;
+            }
+            continue;
+        }
+        if bytes.get(i..i + 2) == Some(b"/*") {
+            let mut closed = false;
+            i += 2;
+            while i < bytes.len() {
+                if bytes.get(i..i + 2) == Some(b"*/") {
+                    i += 2;
+                    closed = true;
+                    break;
+                }
+                i += 1;
+            }
+            if !closed {
+                return bytes.len();
+            }
+            continue;
+        }
+        return i;
+    }
+}
+
+/// Fail fast when known server capabilities cannot parse schema annotations.
+///
+/// An unknown server version preserves the released custom-backend behavior:
+/// the query is dispatched and the provider decides. Known TypeDB versions
+/// below 3.12 are rejected before any provider query is invoked.
+pub(crate) fn check_schema_annotation_support(
+    typeql: &str,
+    server_version: Option<Version>,
+) -> Result<()> {
+    if let Some(server) = server_version
+        && typeql_uses_schema_annotations(typeql)
+    {
+        check_feature_supported(Feature::SchemaAnnotations, &server)
+            .map_err(OrmError::UnsupportedVersion)?;
+    }
+    Ok(())
 }
 
 /// Render a TypeQL string literal, escaping backslash, quote, `\n`, `\t`,
@@ -352,8 +456,32 @@ mod tests {
         assert!(typeql_uses_schema_annotations(
             "define\nperson owns name @meta(\"k\", \"v\");"
         ));
+        assert!(typeql_uses_schema_annotations(
+            "define\nentity person @doc \n (\"docs\");"
+        ));
+        assert!(typeql_uses_schema_annotations(
+            "define\nentity person @meta // annotation arguments\n (\"k\", \"v\");"
+        ));
+        assert!(typeql_uses_schema_annotations(
+            "define\nentity person @doc /* annotation arguments */ (\"docs\");"
+        ));
         assert!(!typeql_uses_schema_annotations(
             "define\nattribute note, value string @values(\"use @doc(x) here\");"
+        ));
+        assert!(!typeql_uses_schema_annotations(
+            "define\nattribute note, value string @values('use @meta(x) here');"
+        ));
+        assert!(!typeql_uses_schema_annotations(
+            "define\n# entity ghost @doc(\"commented out\");\nentity person;"
+        ));
+        assert!(!typeql_uses_schema_annotations(
+            "define\n// entity ghost @meta(\"k\", \"v\");\nentity person;"
+        ));
+        assert!(!typeql_uses_schema_annotations(
+            "define\n/* entity ghost @doc(\"commented out\"); */\nentity person;"
+        ));
+        assert!(!typeql_uses_schema_annotations(
+            "define\nentity document, owns metadata;"
         ));
         assert!(!typeql_uses_schema_annotations(
             "define\nentity person, owns name @key;"

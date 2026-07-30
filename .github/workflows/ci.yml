@@ -933,6 +933,10 @@ jobs:
           -- --nocapture --test-threads=1
 
       - name: Run generated Rust application over TLS
+        # The acceptance schema intentionally carries TypeDB 3.12
+        # @doc annotations. Older-band lanes prove transport above; the ORM
+        # version-gate suite proves that this schema fails before dispatch.
+        if: matrix.driver-band == '9'
         env:
           SSL_CERT_FILE: ${{ github.workspace }}/tests/fixtures/tls/root-ca.pem
           TYPE_BRIDGE_RUST_PROJECTION_TLS: "1"

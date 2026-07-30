@@ -6,6 +6,14 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Changed
 
+- **Fail-fast schema-annotation compatibility** - all ORM schema-query
+  boundaries now reject `@doc`/`@meta` before provider dispatch when the known
+  TypeDB server is older than 3.12. One-shot execution rejects before opening
+  a transaction, while caller-owned schema transactions reject before their
+  provider query. The 3.12 generated-projection fixture remains annotation
+  preserving and runs only in the 3.12 TLS lane; older lanes continue to prove
+  transport compatibility.
+
 - **Complete V2 query authoring and remote model facade (#195)** - Python now
   exposes the complete low-level Rust plan builder from
   `type_bridge.query_v2`, with the equivalent Node API at
