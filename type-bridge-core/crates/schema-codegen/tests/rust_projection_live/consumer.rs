@@ -56,13 +56,14 @@ impl RemoteQueryTransport for HttpTransport {
                 .windows(b"typebridge.query-remote-capabilities/v1".len())
                 .any(|window| window == b"typebridge.query-remote-capabilities/v1")
             {
-                return Err(type_bridge::Error::Other {
-                    message: format!(
+                return Err(type_bridge::Error::remote(
+                    "remote_capability_advertisement",
+                    format!(
                         "remote capability discovery returned a non-advertisement: {}",
                         String::from_utf8_lossy(&bytes)
                     ),
-                    source: None,
-                });
+                    None,
+                ));
             }
             Ok(bytes)
         })
@@ -90,10 +91,11 @@ impl RemoteQueryTransport for HttpTransport {
 }
 
 fn transport_error(error: reqwest::Error) -> type_bridge::Error {
-    type_bridge::Error::Other {
-        message: error.to_string(),
-        source: Some(Box::new(error)),
-    }
+    type_bridge::Error::remote(
+        "remote_transport",
+        error.to_string(),
+        Some(Box::new(error)),
+    )
 }
 
 fn connection_options() -> ConnectionOptions {

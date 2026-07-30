@@ -99,7 +99,10 @@ All notable changes to TypeBridge will be documented in this file.
   typed expressions and reductions, selected/collected pages, bounded
   reachability, and identical local/one-exchange remote materialization. The
   generated crate has only one direct TypeBridge dependency and the complete
-  consumer contract is accepted on Rust 1.88.
+  consumer contract is accepted on Rust 1.88. Public `ErrorCategory`, stable
+  codes, structured paths, and validation phases now survive both direct and
+  remote adapters; caller-owned transports use `Error::remote` for classified
+  transport failures.
 - **Rust V2 source/Git distribution boundary** - the internal V2 semantic,
   migration, projection, workspace, and CLI crates remain first-party
   workspace packages with `publish = false`; they are not crates.io release

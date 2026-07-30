@@ -959,7 +959,10 @@ async fn query_facade_rejects_cross_owner_fields_and_zero_limits_before_io() {
             },
         )
         .unwrap_err();
-    assert!(error.to_string().contains("cross_owner_field"));
+    assert_eq!(error.category(), crate::ErrorCategory::QueryAuthoring);
+    assert_eq!(error.code(), Some("cross_owner_field"));
+    assert_eq!(error.path(), Some(&[][..]));
+    assert_eq!(error.model_validation_phase(), None);
 
     let mut foreign_session = db.query().unwrap();
     let foreign = foreign_session.exact::<Record>().unwrap();

@@ -208,17 +208,25 @@ impl<S: Schema> RemoteDatabase<S> {
             &runtime.advertisement,
             runtime.limits,
         )
-        .map_err(remote_model_error)?;
+        .map_err(remote_model_input_error)?;
         let request = pending.request_bytes().to_vec();
         let response = runtime.transport.exchange(&request).await?;
-        let claimed = pending.claim_reply().map_err(remote_model_error)?;
+        let claimed = pending
+            .claim_reply()
+            .map_err(remote_model_hydration_error)?;
         if response.len() > claimed.response_snapshot_limit() {
-            return Err(Error::Other {
-                message: "remote query reply exceeds the authenticated response ceiling".into(),
-                source: None,
-            });
+            return Err(Error::classified(
+                crate::ErrorCategory::ResourceLimit,
+                None,
+                "remote_response_limit",
+                Vec::new(),
+                "remote query reply exceeds the authenticated response ceiling",
+                None,
+            ));
         }
-        let (request, result, _registry) = claimed.decode(&response).map_err(remote_model_error)?;
+        let (request, result, _registry) = claimed
+            .decode(&response)
+            .map_err(remote_model_hydration_error)?;
         Ok((request, result))
     }
 }
@@ -234,16 +242,24 @@ fn remote_not_bound() -> Error {
 }
 
 fn remote_diagnostic(error: type_bridge_contract::diagnostic::Diagnostic) -> Error {
-    Error::Other {
-        message: error.to_string(),
-        source: Some(Box::new(error)),
+    Error::from_remote_diagnostic(error)
+}
+
+fn remote_model_input_error(error: RemoteModelQueryV2Error) -> Error {
+    match error {
+        RemoteModelQueryV2Error::Diagnostic(error) => Error::from_remote_diagnostic(error),
+        RemoteModelQueryV2Error::Match(error) => {
+            Error::from_match(error, crate::ModelValidationPhase::Input)
+        }
     }
 }
 
-fn remote_model_error(error: RemoteModelQueryV2Error) -> Error {
-    Error::Other {
-        message: error.to_string(),
-        source: Some(Box::new(error)),
+fn remote_model_hydration_error(error: RemoteModelQueryV2Error) -> Error {
+    match error {
+        RemoteModelQueryV2Error::Diagnostic(error) => Error::from_remote_diagnostic(error),
+        RemoteModelQueryV2Error::Match(error) => {
+            Error::from_match(error, crate::ModelValidationPhase::Hydration)
+        }
     }
 }
 
@@ -252,6 +268,9 @@ mod tests {
     use std::sync::Mutex;
 
     use type_bridge_contract::codec::to_canonical_json;
+    use type_bridge_contract::diagnostic::{
+        Diagnostic, DiagnosticCategory, DiagnosticCode, DiagnosticPathSegment,
+    };
     use type_bridge_contract::fingerprint::SemanticProfileId;
     use type_bridge_contract::migration_assertion::BindingId;
     use type_bridge_contract::projection::{BindingTarget, ProjectionConfig};
@@ -262,6 +281,8 @@ mod tests {
         RemoteResultKindV2, query_remote_v2_required_capabilities,
     };
     use type_bridge_contract::schema::{DocumentId, encode_declared_schema};
+    use type_bridge_orm::OrmError;
+    use type_bridge_orm::match_request::SessionHandle;
     use type_bridge_orm::query_v2_remote::RemoteReplySigningKey;
     use type_bridge_schema::{SchemaDocumentSet, normalize_documents, project, resolve};
     use type_bridge_schema_codegen::RustEmitter;
@@ -311,6 +332,45 @@ mod tests {
         fn into_encoded_create(self) -> std::result::Result<EncodedCreate, ValidationError> {
             Ok(EncodedCreate::new(Person::TYPE_ID_JSON, vec![], vec![]))
         }
+    }
+
+    #[test]
+    fn local_and_remote_failures_preserve_classification_codes_and_paths() {
+        let session = SessionHandle::new(Arc::new(DescriptorRegistry::new()));
+        let match_error = match session.exact("missing") {
+            Err(OrmError::Match(error)) => error,
+            Err(other) => panic!("unexpected ORM error: {other:?}"),
+            Ok(_) => panic!("missing descriptor unexpectedly resolved"),
+        };
+        let local = Error::from_orm(OrmError::Match(match_error.clone()));
+        let remote = remote_model_input_error(RemoteModelQueryV2Error::Match(match_error));
+
+        assert_eq!(local.category(), crate::ErrorCategory::QueryAuthoring);
+        assert_eq!(remote.category(), local.category());
+        assert_eq!(remote.code(), Some("unknown_descriptor"));
+        assert_eq!(remote.code(), local.code());
+        assert_eq!(remote.path(), local.path());
+        assert_eq!(
+            remote.model_validation_phase(),
+            local.model_validation_phase()
+        );
+
+        let diagnostic = Diagnostic::new(
+            DiagnosticCategory::UnsupportedCapability,
+            DiagnosticCode::new("missing_remote_capability").unwrap(),
+            "the remote executor does not advertise one required capability",
+        )
+        .at(DiagnosticPathSegment::Field("capabilities".into()))
+        .at(DiagnosticPathSegment::Index(2));
+        let classified = remote_diagnostic(diagnostic);
+
+        assert_eq!(classified.category(), crate::ErrorCategory::Capability);
+        assert_eq!(classified.code(), Some("missing_remote_capability"));
+        assert_eq!(
+            classified.path(),
+            Some(&["capabilities".to_owned(), "[2]".to_owned()][..])
+        );
+        assert_eq!(classified.model_validation_phase(), None);
     }
 
     fn package() -> SchemaPackage<TestSchema> {

@@ -237,3 +237,36 @@ The transport owns authentication and authenticated TLS. The SDK binds
 capability discovery, schema authority, nonce, request fingerprint, deadline,
 limits, and reply identity before materializing the same generated model
 types used by local execution.
+
+## Classified errors
+
+Handle failures through the stable category, code, and path accessors. Human
+messages are diagnostic text and are not a machine-readable contract:
+
+```rust
+use type_bridge::{Error, ErrorCategory, ModelValidationPhase};
+
+fn inspect(error: &Error) {
+    match error.category() {
+        ErrorCategory::QueryAuthoring => {
+            eprintln!("invalid query {} at {:?}", error.code().unwrap(), error.path());
+        }
+        ErrorCategory::ModelValidation => {
+            assert!(matches!(
+                error.model_validation_phase(),
+                Some(ModelValidationPhase::Input | ModelValidationPhase::Hydration)
+            ));
+        }
+        ErrorCategory::Capability | ErrorCategory::ResourceLimit => {
+            eprintln!("executor rejected {}: {}", error.code().unwrap(), error.message());
+        }
+        _ => eprintln!("{error}"),
+    }
+}
+```
+
+Direct and remote query paths map canonical failures to the same
+`ErrorCategory` and preserve stable codes and structured paths when supplied
+by the engine or remote diagnostic. Implementations of `RemoteQueryTransport`
+should wrap application-owned transport failures with
+`Error::remote("stable_snake_case_code", message, source)`.
