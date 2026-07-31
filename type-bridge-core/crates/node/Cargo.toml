@@ -1,8 +1,8 @@
 [package]
 name = "type-bridge-node"
-version = "2.0.0-rc.0"
+version = "2.0.0"
 edition = "2024"
-description = "NAPI bindings exposing the type-bridge Rust ORM runtime to Node.js"
+description = "TypeScript and Node SDK bindings for the TypeBridge shared Rust semantic engine"
 license.workspace = true
 license-file.workspace = true
 repository.workspace = true
@@ -18,10 +18,10 @@ default = []
 contract-test-adapter = []
 
 [dependencies]
-type-bridge-contract = { path = "../contract", version = "2.0.0-rc.0" }
-type-bridge-core-lib = { path = "../core", version = "2.0.0-rc.0" }
-type-bridge-orm = { path = "../orm", version = "2.0.0-rc.0", default-features = false, features = ["band7", "band8", "band9"] }
-type-bridge-schema-compat = { path = "../schema-compat", version = "2.0.0-rc.0" }
+type-bridge-contract = { path = "../contract", version = "2.0.0" }
+type-bridge-core-lib = { path = "../core", version = "2.0.0" }
+type-bridge-orm = { path = "../orm", version = "2.0.0", default-features = false, features = ["band7", "band8", "band9"] }
+type-bridge-schema-compat = { path = "../schema-compat", version = "2.0.0" }
 napi = { version = "2", features = ["napi6"] }
 napi-derive = "2"
 serde = { version = "1.0", features = ["derive"] }

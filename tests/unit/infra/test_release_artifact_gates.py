@@ -133,6 +133,8 @@ def test_supported_python_range_is_declared_and_exercised() -> None:
     assert core["project"]["requires-python"] == ">=3.12,<3.15"
     assert expected_versions <= set(root["project"]["classifiers"])
     assert expected_versions <= set(core["project"]["classifiers"])
+    assert "Development Status :: 5 - Production/Stable" in set(root["project"]["classifiers"])
+    assert "Development Status :: 3 - Alpha" not in set(root["project"]["classifiers"])
     assert "typing-extensions>=4.12" in root["project"]["dependencies"]
 
     ci = CI_WORKFLOW.read_text(encoding="utf-8")

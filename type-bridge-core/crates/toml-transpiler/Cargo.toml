@@ -1,6 +1,6 @@
 [package]
 name = "type-bridge-toml-transpiler"
-version = "2.0.0-rc.0"
+version = "2.0.0"
 edition = "2024"
 description = "TOML schema DSL transpiler producing TypeQL define blocks for type-bridge"
 license.workspace = true

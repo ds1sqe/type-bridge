@@ -1,6 +1,6 @@
 # @type-bridge/node
 
-Node.js NAPI facade for the shared type-bridge Rust ORM runtime.
+TypeScript and Node SDK for the TypeBridge shared Rust semantic engine.
 
 This package is a boundary layer only. Descriptor validation, query
 construction, CRUD execution, hydration, and transaction behavior live in

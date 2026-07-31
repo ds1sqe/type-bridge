@@ -1,7 +1,7 @@
 [package]
 name = "type-bridge-cli"
 description = "TypeBridge V2 workspace command-line interface"
-version = "2.0.0-rc.0"
+version = "2.0.0"
 edition = "2024"
 license.workspace = true
 license-file.workspace = true
@@ -14,15 +14,15 @@ path = "src/main.rs"
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread"] }
-type-bridge-contract = { path = "../contract", version = "2.0.0-rc.0" }
-type-bridge-orm = { path = "../orm", version = "2.0.0-rc.0" }
-type-bridge-schema = { path = "../schema", version = "2.0.0-rc.0" }
-type-bridge-migration = { path = "../migration", version = "2.0.0-rc.0" }
-type-bridge-schema-codegen = { path = "../schema-codegen", version = "2.0.0-rc.0" }
-type-bridge-schema-compat = { path = "../schema-compat", version = "2.0.0-rc.0" }
-type-bridge-schema-migration = { path = "../schema-migration", version = "2.0.0-rc.0" }
-type-bridge-schema-migration-typedb = { path = "../schema-migration-typedb", version = "2.0.0-rc.0" }
-type-bridge-workspace = { path = "../workspace", version = "2.0.0-rc.0" }
+type-bridge-contract = { path = "../contract", version = "2.0.0" }
+type-bridge-orm = { path = "../orm", version = "2.0.0" }
+type-bridge-schema = { path = "../schema", version = "2.0.0" }
+type-bridge-migration = { path = "../migration", version = "2.0.0" }
+type-bridge-schema-codegen = { path = "../schema-codegen", version = "2.0.0" }
+type-bridge-schema-compat = { path = "../schema-compat", version = "2.0.0" }
+type-bridge-schema-migration = { path = "../schema-migration", version = "2.0.0" }
+type-bridge-schema-migration-typedb = { path = "../schema-migration-typedb", version = "2.0.0" }
+type-bridge-workspace = { path = "../workspace", version = "2.0.0" }
 
 [lints]
 workspace = true
@@ -32,4 +32,4 @@ serde_json = "1.0"
 sha2 = "0.10"
 tokio = { version = "1", features = ["full"] }
 tempfile = "3"
-type-bridge-typedb-runtime = { path = "../typedb-runtime", version = "2.0.0-rc.0" }
+type-bridge-typedb-runtime = { path = "../typedb-runtime", version = "2.0.0" }

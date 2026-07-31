@@ -4,16 +4,44 @@ All notable changes to TypeBridge will be documented in this file.
 
 ## [Unreleased]
 
-### Changed
+## [2.0.0] - 2026-07-31
 
-- **Fail-fast schema-annotation compatibility** - all ORM schema-query
-  boundaries now reject `@doc`/`@meta` before provider dispatch when the known
-  TypeDB server is older than 3.12. One-shot execution rejects before opening
-  a transaction, while caller-owned schema transactions reject before their
-  provider query. The 3.12 generated-projection fixture remains annotation
-  preserving and runs only in the 3.12 TLS lane; older lanes continue to prove
-  transport compatibility.
+### New Features
 
+- **Canonical Split-YAML schema and multi-language projections (#188)** -
+  TypeBridge V2 workspaces now make versioned
+  `typebridge.schema-set/v1` manifests and `typebridge.schema/v2` fragments
+  the canonical schema authority. The strict, bounded YAML subset rejects
+  unknown or duplicate facts, unsupported future shapes, unsafe paths, and
+  nondeterministic discovery before provider I/O. Rust resolves the complete
+  document set once and projects the same declared meaning into Python,
+  TypeScript/Node, and Rust bindings. The workspace CLI validates schemas
+  offline with `schema check`, generates every configured SDK with
+  `schema generate`, and emits the deterministic authority consumed by V2
+  executors with `schema export-declared`.
+- **Offline history-based migrations and workspace CLI (#188)** - Rust now
+  authors immutable `migrations/v2` programs from the desired schema and
+  committed history, orders and verifies the chain, detects drift, and never
+  infers destructive approval. The `type-bridge migration` CLI exposes
+  `make`, `plan`, `apply`, `verify`, and `adopt` against named workspace
+  environments. Legacy adoption validates the complete dependency graph,
+  applied ledger, original checksums, portable sidecars, and snapshot
+  authority; it records a writer cutover and canonical
+  `adopted-genesis.typeql` without re-executing legacy operations such as
+  `RunPython`. Failed adoption remains retryable, while retained legacy
+  readers and historical artifacts stay available.
+- **Authenticated local/remote Query V2 and standalone executor (#188)** -
+  the same Rust-owned canonical plan, invocation, schema/profile validation,
+  capability checks, limits, and structured diagnostics now govern direct
+  execution and the standalone server's `/v2/capabilities` and `/v2/query`
+  routes. Prepared remote requests bind the executor identity, nonce,
+  fingerprint, expiry, capability set, and response budget before provider
+  transaction construction; signed successes and failures are authenticated
+  before hydration. The capability advertisement is an explicit trust input
+  that callers obtain over authenticated TLS or pin out of band. One awaited
+  remote terminal performs exactly one caller-owned exchange with no built-in
+  discovery, credential, HTTP-client, retry, traversal, or follow-up hydration
+  behavior.
 - **Complete V2 query authoring and remote model facade (#195)** - Python now
   exposes the complete low-level Rust plan builder from
   `type_bridge.query_v2`, with the equivalent Node API at
@@ -43,6 +71,34 @@ All notable changes to TypeBridge will be documented in this file.
   contract. Bounds and expansion budgets fail during construction before
   provider I/O, and Rust lowers the full range into one query without
   client-side traversal.
+- **Public generated Rust application client** - `type-bridge` and generated
+  schema crates now expose owner-branded entity/relation CRUD, exact and
+  subtype reads, complete replacement, reusable write/read transactions,
+  typed expressions and reductions, selected/collected pages, bounded
+  reachability, and identical local/one-exchange remote materialization. The
+  generated crate has only one direct TypeBridge dependency and the complete
+  consumer contract is accepted on Rust 1.88. Public `ErrorCategory`, stable
+  codes, structured paths, and validation phases now survive both direct and
+  remote adapters; caller-owned transports use `Error::remote` for classified
+  transport failures.
+- **Hardened server OCI distribution** -
+  `ghcr.io/ds1sqe/type-bridge-server:2.0.0` is built once for `linux/amd64`
+  and `linux/arm64` from digest-pinned bases with the locked V2-capable server.
+  Exact layouts run as UID/GID 10001 with a read-only root, no capabilities,
+  and no-new-privileges; acceptance covers V1 compatibility, authenticated V2,
+  and the external generated Rust application. Stable publication imports the
+  accepted manifests without rebuilding, verifies all aliases and digests,
+  and attaches keyless signatures, SPDX SBOMs, provenance, and scan evidence.
+
+### Changed
+
+- **Fail-fast schema-annotation compatibility** - all ORM schema-query
+  boundaries now reject `@doc`/`@meta` before provider dispatch when the known
+  TypeDB server is older than 3.12. One-shot execution rejects before opening
+  a transaction, while caller-owned schema transactions reject before their
+  provider query. The 3.12 generated-projection fixture remains annotation
+  preserving and runs only in the 3.12 TLS lane; older lanes continue to prove
+  transport compatibility.
 - **Legacy TypeDB server notices (#189)** - each successful TypeDB 3.8/3.10
   connection now emits one filterable compatibility notice while continuing
   normally: Python uses `TypeDBServerDeprecationWarning`, Node uses standard
@@ -97,16 +153,6 @@ All notable changes to TypeBridge will be documented in this file.
   other removal or calendar cutoff — there is no 3.0.0 removal plan;
   deployments retaining any scheduled surface can pin
   `type-bridge>=2,<2.1`.
-- **Public generated Rust application client** - `type-bridge` and generated
-  schema crates now expose owner-branded entity/relation CRUD, exact and
-  subtype reads, complete replacement, reusable write/read transactions,
-  typed expressions and reductions, selected/collected pages, bounded
-  reachability, and identical local/one-exchange remote materialization. The
-  generated crate has only one direct TypeBridge dependency and the complete
-  consumer contract is accepted on Rust 1.88. Public `ErrorCategory`, stable
-  codes, structured paths, and validation phases now survive both direct and
-  remote adapters; caller-owned transports use `Error::remote` for classified
-  transport failures.
 - **Rust V2 source/Git distribution boundary** - the internal V2 semantic,
   migration, projection, workspace, and CLI crates remain first-party
   workspace packages with `publish = false`; they are not crates.io release
@@ -115,14 +161,6 @@ All notable changes to TypeBridge will be documented in this file.
   revision instead of publishing a broken crates.io package. The release gate
   blocks Cargo mutation and names the exact source/Git SDK in the closed
   artifact set.
-- **Hardened server OCI distribution** -
-  `ghcr.io/ds1sqe/type-bridge-server:2.0.0` is built once for `linux/amd64`
-  and `linux/arm64` from digest-pinned bases with the locked V2-capable server.
-  Exact layouts run as UID/GID 10001 with a read-only root, no capabilities,
-  and no-new-privileges; acceptance covers V1 compatibility, authenticated V2,
-  and the external generated Rust application. Stable publication imports the
-  accepted manifests without rebuilding, verifies all aliases and digests,
-  and attaches keyless signatures, SPDX SBOMs, provenance, and scan evidence.
 - **Direct Python driver 3.12.1** - CPython 3.14 dependency markers, native
   artifact probes, and live compatibility cells now use the current 3.12.1
   Python driver patch; CPython 3.12–3.13 retains the released multi-line
@@ -153,6 +191,21 @@ All notable changes to TypeBridge will be documented in this file.
   Namespacing is solely a Cargo package-identity mechanism that permits all
   protocol bands in one native graph. TypeDB remains the original upstream
   owner, and its Apache-2.0/MPL-2.0 licenses are preserved.
+
+### Documentation
+
+- **Multi-surface documentation and contributor workflow (#200)** - the
+  public README and MkDocs site now present TypeBridge as one Rust semantic
+  engine exposed through Python, TypeScript/Node, generated Rust, schema and
+  migration tooling, immutable queries, and the standalone server. The
+  README is kept below 200 lines with a runnable schema-before-CRUD quick
+  start and an accessible repository-owned hero that renders on package
+  pages. Stable detailed URLs now sit behind focused SDK, modeling, data,
+  schema, operations, Python API, and maintainer routes.
+  `DEVELOPMENT.md` is the canonical contributor guide, with regular
+  cross-platform `AGENTS.md` and `CLAUDE.md` pointers; stale test totals and
+  directory snapshots are removed, and `docs/SKILL.md` now validates and
+  routes workflows across every supported product surface.
 
 ## [1.5.11] - 2026-07-19
 

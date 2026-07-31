@@ -31,7 +31,7 @@ def smoke_args(
         root_dist_dir=root_dist_dir,
         core_dist_dir=core_dist_dir,
         work_dir=tmp_path / "work",
-        expected_version="2.0.0rc0",
+        expected_version="2.0.0",
         source_root=source_root,
         declared_schema=declared_schema,
     )
@@ -39,11 +39,11 @@ def smoke_args(
 
 def test_one_wheel_requires_exactly_one_direct_regular_file(tmp_path: Path) -> None:
     wheel_dir = tmp_path / "wheels"
-    expected = touch_wheel(wheel_dir, "type_bridge-2.0.0rc0-py3-none-any.whl")
+    expected = touch_wheel(wheel_dir, "type_bridge-2.0.0-py3-none-any.whl")
 
     assert artifact_smoke.one_wheel(wheel_dir, "type_bridge-*.whl", label="root") == expected
 
-    touch_wheel(wheel_dir, "type_bridge-2.0.0rc0-py2-none-any.whl")
+    touch_wheel(wheel_dir, "type_bridge-2.0.0-py2-none-any.whl")
     with pytest.raises(
         artifact_smoke.ArtifactSmokeError,
         match="Expected exactly one root",
@@ -53,7 +53,7 @@ def test_one_wheel_requires_exactly_one_direct_regular_file(tmp_path: Path) -> N
 
 def test_one_wheel_rejects_symbolic_directory_and_candidate(tmp_path: Path) -> None:
     actual_dir = tmp_path / "actual"
-    wheel = touch_wheel(actual_dir, "type_bridge-2.0.0rc0-py3-none-any.whl")
+    wheel = touch_wheel(actual_dir, "type_bridge-2.0.0-py3-none-any.whl")
     symbolic_dir = tmp_path / "symbolic-dir"
     symbolic_dir.symlink_to(actual_dir, target_is_directory=True)
 
@@ -85,8 +85,8 @@ def test_run_rejects_symbolic_source_inputs_before_environment_creation(
 ) -> None:
     root_dist = tmp_path / "root-dist"
     core_dist = tmp_path / "core-dist"
-    touch_wheel(root_dist, "type_bridge-2.0.0rc0-py3-none-any.whl")
-    touch_wheel(core_dist, "type_bridge_core-2.0.0rc0-cp312-abi3-linux_x86_64.whl")
+    touch_wheel(root_dist, "type_bridge-2.0.0-py3-none-any.whl")
+    touch_wheel(core_dist, "type_bridge_core-2.0.0-cp312-abi3-linux_x86_64.whl")
 
     actual_source = tmp_path / "source"
     actual_source.mkdir()

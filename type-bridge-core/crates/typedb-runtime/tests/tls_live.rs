@@ -1,6 +1,7 @@
 //! Opt-in live proofs for custom-root and native-root TLS across HTTP
 //! discovery, gRPC fallback, and the selected TypeDB driver band.
 
+use std::future::Future;
 use std::io::{ErrorKind, Read, Write};
 use std::net::{Shutdown, TcpListener};
 use std::path::PathBuf;
@@ -119,6 +120,19 @@ fn unique_database(prefix: &str) -> String {
         .expect("system time follows the Unix epoch")
         .as_nanos();
     format!("{prefix}_{}_{}", std::process::id(), suffix)
+}
+
+const LIVE_TLS_STAGE_TIMEOUT: Duration = Duration::from_secs(10);
+
+async fn await_live_tls_stage<T>(stage: &'static str, future: impl Future<Output = T>) -> T {
+    tokio::time::timeout(LIVE_TLS_STAGE_TIMEOUT, future)
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "live TLS stage `{stage}` timed out after {} seconds",
+                LIVE_TLS_STAGE_TIMEOUT.as_secs()
+            )
+        })
 }
 
 fn assert_expected_topology(
@@ -317,57 +331,71 @@ async fn custom_root_raw_stop_requires_connection_close_before_delete_live() {
         return;
     };
     let database = unique_database("tb_tls_terminal_close");
-    let runtime = TypeDBRuntime::connect_secure(
-        &context.address,
-        &context.username,
-        &context.password,
-        context.custom_root_options(),
+    let runtime = await_live_tls_stage(
+        "raw-stop/connect",
+        TypeDBRuntime::connect_secure(
+            &context.address,
+            &context.username,
+            &context.password,
+            context.custom_root_options(),
+        ),
     )
     .await
     .expect("custom-root terminal-close runtime connects over TLS");
     assert_expected_topology(&runtime, &context, true);
-    runtime
-        .create_database(&database)
-        .await
-        .expect("terminal-close database is created over TLS");
+    await_live_tls_stage(
+        "raw-stop/create-database",
+        runtime.create_database(&database),
+    )
+    .await
+    .expect("terminal-close database is created over TLS");
 
-    let mut schema = runtime
-        .open_transaction(&database, TxType::Schema)
-        .await
-        .expect("terminal-close schema transaction opens over TLS");
-    schema
-        .query("define entity tls-terminal-close-person;")
-        .await
-        .expect("terminal-close schema is defined over TLS");
-    schema
-        .commit()
+    let mut schema = await_live_tls_stage(
+        "raw-stop/open-schema",
+        runtime.open_transaction(&database, TxType::Schema),
+    )
+    .await
+    .expect("terminal-close schema transaction opens over TLS");
+    await_live_tls_stage(
+        "raw-stop/define-schema",
+        schema.query("define entity tls-terminal-close-person;"),
+    )
+    .await
+    .expect("terminal-close schema is defined over TLS");
+    await_live_tls_stage("raw-stop/commit-schema", schema.commit())
         .await
         .expect("terminal-close schema commits over TLS");
 
-    let mut write = runtime
-        .open_transaction(&database, TxType::Write)
-        .await
-        .expect("terminal-close write transaction opens over TLS");
-    write
-        .query(
+    let mut write = await_live_tls_stage(
+        "raw-stop/open-write",
+        runtime.open_transaction(&database, TxType::Write),
+    )
+    .await
+    .expect("terminal-close write transaction opens over TLS");
+    await_live_tls_stage(
+        "raw-stop/insert",
+        write.query(
             "insert $first isa tls-terminal-close-person; \
              $second isa tls-terminal-close-person; \
              $third isa tls-terminal-close-person;",
-        )
-        .await
-        .expect("terminal-close rows are inserted over TLS");
-    write
-        .commit()
+        ),
+    )
+    .await
+    .expect("terminal-close rows are inserted over TLS");
+    await_live_tls_stage("raw-stop/commit-write", write.commit())
         .await
         .expect("terminal-close rows commit over TLS");
 
-    let mut read = runtime
-        .open_transaction(&database, TxType::Read)
-        .await
-        .expect("terminal-close read transaction opens over TLS");
+    let mut read = await_live_tls_stage(
+        "raw-stop/open-read",
+        runtime.open_transaction(&database, TxType::Read),
+    )
+    .await
+    .expect("terminal-close read transaction opens over TLS");
     let mut stop_after_first = |_item| Ok(RuntimeAnswerControl::Stop);
-    let stats = read
-        .query_bounded(
+    let stats = await_live_tls_stage(
+        "raw-stop/query",
+        read.query_bounded(
             "match $person isa tls-terminal-close-person; select $person;",
             RuntimeAnswerLimits {
                 max_items: 3,
@@ -376,12 +404,13 @@ async fn custom_root_raw_stop_requires_connection_close_before_delete_live() {
                 cancellation: RuntimeAnswerCancellation::default(),
             },
             &mut stop_after_first,
-        )
-        .await
-        .expect("bounded TLS query delivers its first row");
+        ),
+    )
+    .await
+    .expect("bounded TLS query delivers its first row");
     assert_eq!(stats.processed_items, 1);
     assert!(stats.stopped_early);
-    read.close()
+    await_live_tls_stage("raw-stop/close-read", read.close())
         .await
         .expect("raw-stop transaction close is dispatched over TLS");
     drop(read);
@@ -395,8 +424,8 @@ async fn custom_root_raw_stop_requires_connection_close_before_delete_live() {
         .expect("raw-stop TLS runtime connection force-closes");
     drop(runtime);
 
-    tokio::time::timeout(
-        Duration::from_secs(10),
+    await_live_tls_stage(
+        "raw-stop/delete-after-force-close",
         delete_database_secure(
             &context.address,
             &database,
@@ -406,34 +435,42 @@ async fn custom_root_raw_stop_requires_connection_close_before_delete_live() {
         ),
     )
     .await
-    .expect("force-close must not leave TLS database deletion blocked")
     .expect("a fresh TLS connection deletes the database after force-close");
     assert!(
-        !database_exists_secure(
+        !await_live_tls_stage(
+            "raw-stop/verify-deleted",
+            database_exists_secure(
+                &context.address,
+                &database,
+                &context.username,
+                &context.password,
+                context.custom_root_options(),
+            ),
+        )
+        .await
+        .expect("TLS database lookup works after raw-stop cleanup")
+    );
+    await_live_tls_stage(
+        "raw-stop/recreate",
+        ensure_database_exists_secure(
             &context.address,
             &database,
             &context.username,
             &context.password,
             context.custom_root_options(),
-        )
-        .await
-        .expect("TLS database lookup works after raw-stop cleanup")
-    );
-    ensure_database_exists_secure(
-        &context.address,
-        &database,
-        &context.username,
-        &context.password,
-        context.custom_root_options(),
+        ),
     )
     .await
     .expect("the same TLS database name is immediately reusable");
-    delete_database_secure(
-        &context.address,
-        &database,
-        &context.username,
-        &context.password,
-        context.custom_root_options(),
+    await_live_tls_stage(
+        "raw-stop/final-delete",
+        delete_database_secure(
+            &context.address,
+            &database,
+            &context.username,
+            &context.password,
+            context.custom_root_options(),
+        ),
     )
     .await
     .expect("TLS raw-stop fixture cleans up");
