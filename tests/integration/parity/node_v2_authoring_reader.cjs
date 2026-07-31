@@ -69,6 +69,7 @@ const {
   Card,
   Entity,
   Key,
+  QueryV2Error,
   Relation,
   RustDatabase,
   TypeFlags,
@@ -85,6 +86,8 @@ const SCOPE = "model-remote-parity";
 const PROFILE = "typedb-3.12.1/v1";
 const ADVANCED_PLAN_FINGERPRINT =
   "85c9504dca956286b46336510af3b24980bba1a72e79465069b7a24e7d52e26f";
+const DOCUMENT_REACHABILITY_PLAN_FINGERPRINT =
+  "b253c1d8093ff648dd9617db871097e093b1d7dfca7961db26a5a5bfd939ed08";
 
 class ParityPersonName extends attr.String("parity-person-name") {}
 class ParityProjectName extends attr.String("parity-project-name") {}
@@ -175,6 +178,52 @@ function authorAdvancedPlan(authority) {
   return { invocation: plan.rows([["Alice"]]), plan };
 }
 
+function authorDocumentReachabilityPlan(authority) {
+  const builder = new QueryPlanBuilder(authority);
+  const employee = builder.binding("employee");
+  const employeeName = builder.binding("employee_name");
+  const project = builder.binding("project");
+  const projectName = builder.binding("project_name");
+  builder.match([
+    builder.isa(employee, "entity", "parity-person", true),
+    builder.isa(project, "entity", "parity-project", false),
+    builder.has(employee, employeeName, "parity-person-name"),
+    builder.has(project, projectName, "parity-project-name"),
+    builder.reachable(
+      employee,
+      project,
+      "parity-assignment",
+      "employee",
+      "project",
+      1,
+      1,
+    ),
+  ]);
+  builder.sort([
+    builder.order(employeeName, "ascending"),
+    builder.order(projectName, "ascending"),
+  ]);
+  const plan = builder.finalizeDocuments([
+    builder.documentBinding("employee", employeeName),
+    builder.documentBinding("project", projectName),
+  ]);
+  assert.equal(plan.fingerprint, DOCUMENT_REACHABILITY_PLAN_FINGERPRINT);
+  assert.ok(plan.requiredCapabilities.includes("query.pattern.reachable"));
+  assert.ok(plan.requiredCapabilities.includes("query.output.documents"));
+  return { invocation: plan.documents([]), plan };
+}
+
+function normalizeQueryV2Error(error) {
+  assert.ok(error instanceof QueryV2Error);
+  return {
+    category: error.category,
+    code: error.code,
+    message: error.diagnosticMessage,
+    path: error.path,
+    details: error.details,
+  };
+}
+
 function requireSingular(value) {
   if (Array.isArray(value)) {
     throw new TypeError("exact-one parity role unexpectedly hydrated as a collection");
@@ -247,12 +296,31 @@ async function main() {
 
     const advancedAuthority = new QueryV2Authority(declared, SCOPE, PROFILE);
     const { invocation, plan } = authorAdvancedPlan(advancedAuthority);
+    const {
+      invocation: documentInvocation,
+      plan: documentPlan,
+    } = authorDocumentReachabilityPlan(advancedAuthority);
     const invocationJson = Buffer.from(invocation.canonicalBytes).toString("utf8");
+    const documentInvocationJson = Buffer.from(
+      documentInvocation.canonicalBytes,
+    ).toString("utf8");
+    const localAuthority = QueryV2Authority.queryOnly(
+      db,
+      declared,
+      SCOPE,
+      PROFILE,
+    );
     const local = await queryV2ExecuteLocal(
       db,
-      QueryV2Authority.queryOnly(db, declared, SCOPE, PROFILE),
+      localAuthority,
       plan.canonicalBytes,
       invocationJson,
+    );
+    const documentLocal = await queryV2ExecuteLocal(
+      db,
+      localAuthority,
+      documentPlan.canonicalBytes,
+      documentInvocationJson,
     );
     let advancedExchanges = 0;
     const pending = queryV2PrepareRemote(
@@ -276,6 +344,57 @@ async function main() {
     );
     assert.equal(advancedExchanges, 1);
     assert.equal(remote, local);
+
+    let documentExchanges = 0;
+    const documentPending = queryV2PrepareRemote(
+      advancedAuthority,
+      documentPlan.canonicalBytes,
+      documentInvocationJson,
+      advertisement,
+      {
+        maxItems: 10n,
+        maxBytes: 1n << 20n,
+        maxCollectionMembers: 30n,
+        deadlineMs: 30_000n,
+      },
+    );
+    assert.equal(documentExchanges, 0);
+    const documentRemote = await documentPending.decodeReply(
+      await (async () => {
+        documentExchanges += 1;
+        return postRemote(documentPending.requestBytes());
+      })(),
+    );
+    assert.equal(documentExchanges, 1);
+    assert.equal(documentRemote, documentLocal);
+
+    let failureExchanges = 0;
+    const failurePending = queryV2PrepareRemote(
+      advancedAuthority,
+      plan.canonicalBytes,
+      invocationJson,
+      advertisement,
+      {
+        maxItems: 1n,
+        maxBytes: 1n << 20n,
+        maxCollectionMembers: 30n,
+        deadlineMs: 30_000n,
+      },
+    );
+    assert.equal(failureExchanges, 0);
+    let structuredFailure;
+    try {
+      await failurePending.decodeReply(
+        await (async () => {
+          failureExchanges += 1;
+          return postRemote(failurePending.requestBytes());
+        })(),
+      );
+      assert.fail("the one-item ceiling must reject the two-row provider answer");
+    } catch (error) {
+      structuredFailure = normalizeQueryV2Error(error);
+    }
+    assert.equal(failureExchanges, 1);
 
     const directSession = new QuerySession(db).registerModels(
       ParityEmployee,
@@ -328,6 +447,17 @@ async function main() {
         outcome: JSON.parse(local),
       },
       artifact: "packed-v2",
+      lowLevel: {
+        documentReachability: {
+          exchanges: documentExchanges,
+          fingerprint: documentPlan.fingerprint,
+          outcome: JSON.parse(documentLocal),
+        },
+        structuredFailure: {
+          diagnostic: structuredFailure,
+          exchanges: failureExchanges,
+        },
+      },
       model: {
         direct: normalize(directRows),
         exchanges: modelExchanges,

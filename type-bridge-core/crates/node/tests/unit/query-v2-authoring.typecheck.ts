@@ -76,7 +76,9 @@ function completeVocabulary(authority: QueryV2Authority): AuthoredQueryPlan {
   const count = builder.reduceAssignment(aggregate, "count");
   builder.reduceAssignment(aggregate, "max", name);
   builder.reduceAssignment(aggregate, "mean", name);
+  builder.reduceAssignment(aggregate, "median", name);
   builder.reduceAssignment(aggregate, "min", name);
+  builder.reduceAssignment(aggregate, "std", name);
   builder.reduceAssignment(aggregate, "sum", name);
   builder.reduce([count], [person]);
   const ascending = builder.order(person, "ascending");

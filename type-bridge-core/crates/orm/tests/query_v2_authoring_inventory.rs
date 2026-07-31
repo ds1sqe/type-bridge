@@ -1489,6 +1489,8 @@ fn rust_authority_recomputes_and_decodes_every_shared_vector() {
 fn rust_authority_preserves_every_shared_diagnostic_tuple() {
     let corpus = corpus();
     let authority = inventory_authority();
+    let mut observed_diagnostic_kinds = BTreeSet::new();
+    let mut observed_nonempty_details = false;
     let plans = corpus["plans"]
         .as_array()
         .expect("inventory plans")
@@ -1506,7 +1508,9 @@ fn rust_authority_preserves_every_shared_diagnostic_tuple() {
         .expect("inventory diagnostics")
     {
         let case_id = text(case, "id");
-        let error = match text(case, "kind") {
+        let kind = text(case, "kind");
+        observed_diagnostic_kinds.insert(kind);
+        let error = match kind {
             "builder" => {
                 let mut builder = QueryPlanBuilder::new(Arc::clone(&authority));
                 let mut handles = BTreeMap::new();
@@ -1529,12 +1533,33 @@ fn rust_authority_preserves_every_shared_diagnostic_tuple() {
             .expect_err("inventory invocation diagnostic must fail"),
             unknown => panic!("unknown inventory diagnostic kind {unknown}"),
         };
+        observed_nonempty_details |= !error.details().is_empty();
+        let actual = serde_json::to_value(&error).expect("diagnostic JSON");
         assert_eq!(
-            serde_json::to_value(error).expect("diagnostic JSON"),
+            actual
+                .as_object()
+                .expect("diagnostic object")
+                .keys()
+                .map(String::as_str)
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from(["category", "code", "details", "message", "path"]),
+            "{case_id}: complete structured diagnostic shape"
+        );
+        assert_eq!(
+            actual,
             case.get("expected").expect("expected diagnostic").clone(),
             "{case_id}: complete diagnostic tuple"
         );
     }
+    assert_eq!(
+        observed_diagnostic_kinds,
+        BTreeSet::from(["builder", "invocation"]),
+        "the shared inventory must exercise both authoring failure boundaries"
+    );
+    assert!(
+        observed_nonempty_details,
+        "the shared inventory must preserve at least one typed diagnostic detail"
+    );
 }
 
 #[test]

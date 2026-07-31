@@ -11,8 +11,8 @@ use type_bridge_contract::migration_assertion::{
     AssertionBinding, BindingId, QueryVariable, ValueComparator,
 };
 use type_bridge_contract::query_plan::{
-    InputColumn, InputColumnId, OrderDirection, QueryOperand, QueryOutput, QueryPattern, QueryPlan,
-    ReadStage,
+    DocumentSource, InputColumn, InputColumnId, OrderDirection, QueryOperand, QueryOutput,
+    QueryPattern, QueryPlan, ReadStage,
 };
 use type_bridge_contract::schema::{
     AnnotationFact, AnnotationFactId, AnnotationKindId, AnnotationSubjectId, DeclaredSchema,
@@ -547,7 +547,9 @@ fn advanced_builder_covers_boolean_functions_reducers_and_every_stage() {
     let count = builder.binding("count_result").expect("count result");
     let maximum = builder.binding("max_result").expect("max result");
     let mean = builder.binding("mean_result").expect("mean result");
+    let median = builder.binding("median_result").expect("median result");
     let minimum = builder.binding("min_result").expect("min result");
+    let standard_deviation = builder.binding("std_result").expect("std result");
     let sum = builder.binding("sum_result").expect("sum result");
 
     let person_isa = builder
@@ -641,8 +643,14 @@ fn advanced_builder_covers_boolean_functions_reducers_and_every_stage() {
             .reduce_assignment(&mean, Reducer::Mean, Some(&age))
             .expect("mean"),
         builder
+            .reduce_assignment(&median, Reducer::Median, Some(&age))
+            .expect("median"),
+        builder
             .reduce_assignment(&minimum, Reducer::Min, Some(&age))
             .expect("min"),
+        builder
+            .reduce_assignment(&standard_deviation, Reducer::Std, Some(&age))
+            .expect("std"),
         builder
             .reduce_assignment(&sum, Reducer::Sum, Some(&age))
             .expect("sum"),
@@ -661,8 +669,44 @@ fn advanced_builder_covers_boolean_functions_reducers_and_every_stage() {
     builder.limit(10).expect("limit");
 
     let authored = builder
-        .finalize_rows(vec![name, count, maximum, mean, minimum, sum])
+        .finalize_rows(vec![
+            name,
+            count,
+            maximum,
+            mean,
+            median,
+            minimum,
+            standard_deviation,
+            sum,
+        ])
         .expect("advanced finalization");
+    let authored_reducers = authored
+        .contract_plan()
+        .pipeline()
+        .iter()
+        .find_map(|stage| match stage {
+            ReadStage::Reduce { assignments, .. } => Some(
+                assignments
+                    .iter()
+                    .map(|assignment| assignment.reducer())
+                    .collect::<Vec<_>>(),
+            ),
+            _ => None,
+        })
+        .expect("advanced plan reduce stage");
+    assert_eq!(
+        authored_reducers,
+        vec![
+            Reducer::Count,
+            Reducer::Max,
+            Reducer::Mean,
+            Reducer::Median,
+            Reducer::Min,
+            Reducer::Std,
+            Reducer::Sum,
+        ],
+        "the incremental builder must author every canonical reducer",
+    );
     assert_eq!(
         authored.contract_plan().functions()[0]
             .bindings()
@@ -743,6 +787,39 @@ fn links_and_reachability_author_through_the_same_builder() {
     let authored = builder
         .finalize_rows(vec![source, target, edge])
         .expect("finalize");
+    let reachable_pattern = authored
+        .contract_plan()
+        .pipeline()
+        .iter()
+        .find_map(|stage| match stage {
+            ReadStage::Match { patterns } => patterns
+                .iter()
+                .find(|pattern| matches!(pattern, QueryPattern::Reachable { .. })),
+            _ => None,
+        })
+        .expect("authored bounded-reachability pattern");
+    match reachable_pattern {
+        QueryPattern::Reachable {
+            min_depth,
+            max_depth,
+            relation,
+            role_from,
+            role_to,
+            ..
+        } => {
+            assert_eq!((*min_depth, *max_depth), (0, 3));
+            assert_eq!(relation, &type_id(TypeKind::Relation, "edge"));
+            assert_eq!(
+                role_from,
+                &RoleId::new("edge", "origin").expect("origin role")
+            );
+            assert_eq!(
+                role_to,
+                &RoleId::new("edge", "destination").expect("destination role")
+            );
+        }
+        _ => unreachable!("matched reachable pattern"),
+    }
     for capability in ["query.pattern.links", "query.pattern.reachable"] {
         assert!(
             authored
@@ -773,6 +850,22 @@ fn documents_and_all_invocation_terminals_are_plan_bound() {
     let plan = builder
         .finalize_documents(vec![scalar, list])
         .expect("documents plan");
+    match plan.contract_plan().output() {
+        QueryOutput::Documents { fields } => match fields.as_slice() {
+            [scalar, list] => {
+                assert_eq!(scalar.key().as_str(), "primary_name");
+                assert!(matches!(scalar.source(), DocumentSource::Binding { .. }));
+                assert_eq!(list.key().as_str(), "all_names");
+                assert!(matches!(
+                    list.source(),
+                    DocumentSource::AttributeList { attribute: actual, .. }
+                        if actual == &attribute("name")
+                ));
+            }
+            _ => panic!("document finalization must preserve both authored fields"),
+        },
+        QueryOutput::Rows { .. } => panic!("document finalization produced a row output"),
+    }
 
     let documents = plan.documents(Vec::new()).expect("documents invocation");
     let count = plan.count(Vec::new()).expect("count invocation");

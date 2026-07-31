@@ -52,6 +52,9 @@ DECLARED_PATH = ROOT / "tests/fixtures/query-v2-model-remote-parity-declared.jso
 SCOPE = "model-remote-parity"
 PROFILE = "typedb-3.12.1/v1"
 ADVANCED_PLAN_FINGERPRINT = "85c9504dca956286b46336510af3b24980bba1a72e79465069b7a24e7d52e26f"
+DOCUMENT_REACHABILITY_PLAN_FINGERPRINT = (
+    "b253c1d8093ff648dd9617db871097e093b1d7dfca7961db26a5a5bfd939ed08"
+)
 
 SCHEMA = """
 define
@@ -246,6 +249,95 @@ def _advanced_plan(
     return plan, plan.rows((("Alice",),))
 
 
+def _document_reachability_plan(
+    authority: QueryV2Authority,
+) -> tuple[AuthoredQueryPlan, AuthoredQueryInvocation]:
+    """Author one-hop assignment reachability with document output."""
+    builder = QueryPlanBuilder(authority)
+    employee = builder.binding("employee")
+    employee_name = builder.binding("employee_name")
+    project = builder.binding("project")
+    project_name = builder.binding("project_name")
+    builder.match(
+        (
+            builder.isa(employee, "entity", "parity-person", True),
+            builder.isa(project, "entity", "parity-project", False),
+            builder.has(employee, employee_name, "parity-person-name"),
+            builder.has(project, project_name, "parity-project-name"),
+            builder.reachable(
+                employee,
+                project,
+                "parity-assignment",
+                "employee",
+                "project",
+                1,
+                1,
+            ),
+        )
+    )
+    builder.sort(
+        (
+            builder.order(employee_name, "ascending"),
+            builder.order(project_name, "ascending"),
+        )
+    )
+    plan = builder.finalize_documents(
+        (
+            builder.document_binding("employee", employee_name),
+            builder.document_binding("project", project_name),
+        )
+    )
+    assert plan.fingerprint == DOCUMENT_REACHABILITY_PLAN_FINGERPRINT
+    assert "query.pattern.reachable" in plan.required_capabilities
+    assert "query.output.documents" in plan.required_capabilities
+    return plan, plan.documents(())
+
+
+def _normalized_query_v2_error(error: core.QueryV2Error) -> dict[str, object]:
+    return {
+        "category": error.category,
+        "code": error.code,
+        "message": error.message,
+        "path": error.path,
+        "details": dict(error.details),
+    }
+
+
+DOCUMENT_REACHABILITY_OUTCOME = {
+    "kind": "documents",
+    "documents": [
+        [
+            {
+                "kind": "scalar",
+                "value": {"kind": "string", "value": "Alice"},
+            },
+            {
+                "kind": "scalar",
+                "value": {"kind": "string", "value": "Alpha"},
+            },
+        ],
+        [
+            {
+                "kind": "scalar",
+                "value": {"kind": "string", "value": "Bob"},
+            },
+            {
+                "kind": "scalar",
+                "value": {"kind": "string", "value": "Beta"},
+            },
+        ],
+    ],
+}
+
+STRUCTURED_FAILURE_DIAGNOSTIC = {
+    "category": "resource_limit",
+    "code": "processed_item_limit",
+    "message": "provider answer exceeded the processed-item ceiling",
+    "path": [],
+    "details": {},
+}
+
+
 def _normalized(
     rows: list[tuple[ParityPerson, ParityProject, ParityAssignment]],
 ) -> list[tuple[str, str, str, str]]:
@@ -336,6 +428,7 @@ def test_public_remote_query_session_matches_direct_subtype_hydration() -> None:
 
         advanced_authority = QueryV2Authority(declared, SCOPE, PROFILE)
         advanced_plan, advanced_invocation = _advanced_plan(advanced_authority)
+        document_plan, document_invocation = _document_reachability_plan(advanced_authority)
         rust_database = core.PyRustDatabase.connect(
             address,
             database_name,
@@ -357,6 +450,12 @@ def test_public_remote_query_session_matches_direct_subtype_hydration() -> None:
                 local_authority,
                 advanced_plan.canonical_bytes,
                 advanced_invocation.canonical_bytes.decode(),
+            )
+            document_local = core.query_v2_execute_local(
+                rust_database,
+                local_authority,
+                document_plan.canonical_bytes,
+                document_invocation.canonical_bytes.decode(),
             )
         finally:
             rust_database.close()
@@ -387,6 +486,7 @@ def test_public_remote_query_session_matches_direct_subtype_hydration() -> None:
                 ],
             ],
         }
+        assert json.loads(document_local) == DOCUMENT_REACHABILITY_OUTCOME
 
         direct_query, direct_employee = _query(QuerySession(database))
         direct_rows = direct_query.rows(
@@ -476,6 +576,76 @@ def test_public_remote_query_session_matches_direct_subtype_hydration() -> None:
             assert advanced_exchanges == 1
             assert advanced_remote == advanced_local
 
+            document_exchanges = 0
+
+            def post_document(request: bytes) -> bytes:
+                nonlocal document_exchanges
+                document_exchanges += 1
+                http_request = urllib_request.Request(
+                    f"{remote_scheme}://127.0.0.1:{port}/v2/query",
+                    data=request,
+                    headers={"content-type": "application/json"},
+                    method="POST",
+                )
+                with urllib_request.urlopen(
+                    http_request,
+                    timeout=30,
+                    context=ssl_context,
+                ) as response:
+                    return response.read()
+
+            document_pending = core.query_v2_prepare_remote(
+                advanced_authority,
+                document_plan.canonical_bytes,
+                document_invocation.canonical_bytes.decode(),
+                advertisement,
+                10,
+                1 << 20,
+                30,
+                30_000,
+            )
+            assert document_exchanges == 0
+            document_remote = document_pending.decode_reply(
+                post_document(bytes(document_pending.request_bytes()))
+            )
+            assert document_exchanges == 1
+            assert document_remote == document_local
+
+            failure_exchanges = 0
+
+            def post_failure(request: bytes) -> bytes:
+                nonlocal failure_exchanges
+                failure_exchanges += 1
+                http_request = urllib_request.Request(
+                    f"{remote_scheme}://127.0.0.1:{port}/v2/query",
+                    data=request,
+                    headers={"content-type": "application/json"},
+                    method="POST",
+                )
+                with urllib_request.urlopen(
+                    http_request,
+                    timeout=30,
+                    context=ssl_context,
+                ) as response:
+                    return response.read()
+
+            failure_pending = core.query_v2_prepare_remote(
+                advanced_authority,
+                advanced_plan.canonical_bytes,
+                advanced_invocation.canonical_bytes.decode(),
+                advertisement,
+                1,
+                1 << 20,
+                30,
+                30_000,
+            )
+            assert failure_exchanges == 0
+            with pytest.raises(core.QueryV2Error) as raised:
+                failure_pending.decode_reply(post_failure(bytes(failure_pending.request_bytes())))
+            assert failure_exchanges == 1
+            structured_failure = _normalized_query_v2_error(raised.value)
+            assert structured_failure == STRUCTURED_FAILURE_DIAGNOSTIC
+
             exchanges = 0
 
             async def exchange(request: bytes) -> bytes:
@@ -561,6 +731,17 @@ def test_public_remote_query_session_matches_direct_subtype_hydration() -> None:
                         "outcome": json.loads(advanced_local),
                     },
                     "artifact": "packed-v2",
+                    "lowLevel": {
+                        "documentReachability": {
+                            "exchanges": 1,
+                            "fingerprint": document_plan.fingerprint,
+                            "outcome": DOCUMENT_REACHABILITY_OUTCOME,
+                        },
+                        "structuredFailure": {
+                            "diagnostic": STRUCTURED_FAILURE_DIAGNOSTIC,
+                            "exchanges": 1,
+                        },
+                    },
                     "model": {
                         "direct": expected_rows,
                         "exchanges": 1,

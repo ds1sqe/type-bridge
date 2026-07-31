@@ -28,9 +28,13 @@ All notable changes to TypeBridge will be documented in this file.
   or hydration query. Authenticated graph validation and caller ceilings
   precede model construction; direct and remote paths preserve result order,
   structured diagnostics, and registered concrete-subtype hydration. V1 query
-  facades remain operational with no removal schedule. The Python and Node V2
-  binding smokes now author plans at runtime; canonical, fingerprint, hostile,
-  V1 wire, MatchRequest, and released compatibility fixtures remain retained.
+  facades remain operational with no removal schedule. The Rust-owned
+  `count`/`max`/`mean`/`median`/`min`/`std`/`sum` reducer vocabulary is pinned
+  through Python and TypeScript source and packaged declarations. The Python
+  and Node V2 binding smokes now author plans at runtime, and exact-artifact
+  parity covers documents, bounded reachability, and authenticated structured
+  failures; canonical, fingerprint, hostile, V1 wire, MatchRequest, and
+  released compatibility fixtures remain retained.
 - **Bounded typed reachability (#193)** - Python and Node typed query sessions
   can now express an inclusive finite directed walk over an exact relation and
   ordered endpoint roles. Zero depth is concept identity; positive depths

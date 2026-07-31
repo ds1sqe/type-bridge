@@ -341,7 +341,7 @@ class QueryPlanBuilder:
     def reduce_assignment(
         self,
         assigned: _QueryV2BindingHandle,
-        reducer: Literal["max", "mean", "min", "sum"],
+        reducer: Literal["max", "mean", "median", "min", "std", "sum"],
         input: _QueryV2BindingHandle,
     ) -> _QueryV2ReduceAssignmentHandle: ...
     @overload

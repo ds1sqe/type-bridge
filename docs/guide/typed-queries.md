@@ -102,7 +102,8 @@ const invocation: AuthoredQueryInvocation = plan.rows([["Alice"]]);
 ```
 
 The same builder also covers boolean composition, schema and plan-local
-functions, reductions, ordered windows, documents, and bounded reachability.
+functions, the Rust-owned `count`, `max`, `mean`, `median`, `min`, `std`, and
+`sum` reducers, ordered windows, documents, and bounded reachability.
 Finalization is terminal. Every rejected mutating transition leaves the
 builder at its preceding valid state, so callers may correct that transition
 without rebuilding earlier handles.
