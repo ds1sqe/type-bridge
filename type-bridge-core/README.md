@@ -15,27 +15,27 @@ type-bridge-core/
     ├── schema-migration*/                  # offline and TypeDB migration execution
     ├── schema-compat/, schema-codegen/     # compatibility input and projections
     ├── typedb-runtime/, orm/, orm-derive/  # provider bands and ORM
-    ├── workspace/, cli/, server/           # workspace and executable products
+    ├── workspace/, cli/, server/, rust/    # workspace, server, and Rust SDK
     ├── python/, node/                      # native bindings
     └── core/, migration/, toml-transpiler/ # released engines and converters
 ```
 
 ## Crate groups
 
-The workspace has 18 first-party crates. `contract`, `schema`, `query`, and the
+The workspace has 19 first-party crates. `contract`, `schema`, `query`, and the
 schema-migration crates own the canonical V2 semantics; `schema-compat` and
 `schema-codegen` project those semantics into released and generated surfaces;
 `typedb-runtime`, `orm`, and `orm-derive` own provider execution; and
-`workspace`, `cli`, `server`, `python`, and `node` expose the product surfaces.
-The released core, migration reader, and TOML converter remain separate
-compatibility boundaries.
+`workspace`, `cli`, `server`, `rust`, `python`, and `node` expose the product
+surfaces. The released core, migration reader, and TOML converter remain
+separate compatibility boundaries.
 
 ## Rust publication boundary
 
 The nine V2 implementation crates are workspace-internal: `contract`,
 `schema`, `query`, `schema-migration`, `schema-migration-typedb`,
 `schema-codegen`, `schema-compat`, `workspace`, and `cli`. Their first-party
-versions track the repository release identity (currently `2.0.0-rc.0`), but every
+versions track the repository release identity (currently `2.0.0`), but every
 manifest remains `publish = false`. They are built into the Python and Node
 products from workspace source and are not crates.io release identities.
 

@@ -1,7 +1,7 @@
 {
   "name": "@type-bridge/node",
-  "version": "2.0.0-rc.0",
-  "description": "Node.js NAPI facade for the type-bridge Rust ORM runtime",
+  "version": "2.0.0",
+  "description": "TypeScript and Node SDK for the TypeBridge shared Rust semantic engine",
   "license": "MIT",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

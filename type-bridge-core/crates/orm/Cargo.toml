@@ -1,6 +1,6 @@
 [package]
 name = "type-bridge-orm"
-version = "2.0.0-rc.0"
+version = "2.0.0"
 edition = "2024"
 rust-version = "1.88"
 description = "Async ORM for TypeDB built on type-bridge-core-lib"
@@ -27,12 +27,12 @@ derive = ["dep:type-bridge-orm-derive"]
 integration-tests = ["derive", "band7", "band8", "band9"]
 
 [dependencies]
-type-bridge-contract = { path = "../contract", version = "2.0.0-rc.0" }
-type-bridge-query = { path = "../query", version = "2.0.0-rc.0" }
-type-bridge-schema = { path = "../schema", version = "2.0.0-rc.0" }
-type-bridge-schema-compat = { path = "../schema-compat", version = "2.0.0-rc.0" }
-type-bridge-core-lib = { path = "../core", version = "2.0.0-rc.0" }
-type-bridge-typedb-runtime = { path = "../typedb-runtime", version = "2.0.0-rc.0", default-features = false, optional = true }
+type-bridge-contract = { path = "../contract", version = "2.0.0" }
+type-bridge-query = { path = "../query", version = "2.0.0" }
+type-bridge-schema = { path = "../schema", version = "2.0.0" }
+type-bridge-schema-compat = { path = "../schema-compat", version = "2.0.0" }
+type-bridge-core-lib = { path = "../core", version = "2.0.0" }
+type-bridge-typedb-runtime = { path = "../typedb-runtime", version = "2.0.0", default-features = false, optional = true }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -44,7 +44,7 @@ rand_core = { version = "0.6", features = ["getrandom"] }
 thiserror = "2"
 tracing = "0.1"
 uuid = { version = "1", features = ["v4"] }
-type-bridge-orm-derive = { path = "../orm-derive", version = "2.0.0-rc.0", optional = true }
+type-bridge-orm-derive = { path = "../orm-derive", version = "2.0.0", optional = true }
 
 [dev-dependencies]
 base64 = "0.22"

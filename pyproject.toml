@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "type-bridge"
-version = "2.0.0rc0"
+version = "2.0.0"
 description = "Typed Python, TypeScript, and Rust application tooling for TypeDB"
 readme = "README.md"
 requires-python = ">=3.12,<3.15"
@@ -14,7 +14,7 @@ authors = [
 ]
 keywords = ["typedb", "orm", "database", "typeql", "graph-database"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
@@ -30,7 +30,7 @@ dependencies = [
     "jinja2>=3.1.0",
     "typer>=0.15.0",
     # The facade and native semantic engine are one release unit.
-    "type-bridge-core==2.0.0rc0",
+    "type-bridge-core==2.0.0",
     "typing-extensions>=4.12",
 ]
 

@@ -1,6 +1,6 @@
 [package]
 name = "type-bridge-core-lib"
-version = "2.0.0-rc.0"
+version = "2.0.0"
 edition = "2024"
 description = "TypeQL AST, schema parser, query compiler, and validation engine for type-bridge"
 license.workspace = true
@@ -13,7 +13,7 @@ default = []
 pyo3 = ["dep:pyo3", "dep:pythonize"]
 
 [dependencies]
-type-bridge-contract = { path = "../contract", version = "2.0.0-rc.0" }
+type-bridge-contract = { path = "../contract", version = "2.0.0" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"

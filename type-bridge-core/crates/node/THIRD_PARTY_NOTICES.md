@@ -784,7 +784,7 @@ and fails the byte-for-byte CI freshness check.
 - Node root: `crates/node/Cargo.toml` with default features
 - Release targets: `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `x86_64-apple-darwin`, `aarch64-apple-darwin`, `x86_64-pc-windows-msvc`, `aarch64-pc-windows-msvc`
 - Excluded from this package inventory: build-only and development-only dependencies, plus private TypeBridge-authored crates covered by the MIT section
-- Closure fingerprint: `sha256:ccba63e764e7761cfbd4c7dded6f6d7b8948e02e1026a5df08772b8da87a797e`
+- Closure fingerprint: `sha256:3e8ef4a2890cdd6dc4db25b6e8ae23a553a8b5f43f35d935b06a7ea0aa65fc77`
 
 Every evaluated package's complete cargo-about-resolved SPDX expression is retained
 below. The
@@ -1030,15 +1030,15 @@ bytes actually reproduced in this notice.
 | `tracing-log` | `0.2.0` | Python, Node | `crates.io` | `MIT` | `MIT@sha256:898b1ae9821e98daf8964c8d6c7f61641f5f5aa78ad500020771c0939ee0dea1` |
 | `tracing-subscriber` | `0.3.23` | Python, Node | `crates.io` | `MIT` | `MIT@sha256:898b1ae9821e98daf8964c8d6c7f61641f5f5aa78ad500020771c0939ee0dea1` |
 | `try-lock` | `0.2.5` | Python, Node | `crates.io` | `MIT` | `MIT@sha256:c816a0749cdc6bf062a5111c159723de51b2bfac66a1dac2655abd9e6b1583eb` |
-| `type-bridge-core-lib` | `2.0.0-rc.0` | Python, Node | `workspace:crates/core/Cargo.toml` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
-| `type-bridge-migration` | `2.0.0-rc.0` | Python | `workspace:crates/migration/Cargo.toml` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
-| `type-bridge-orm` | `2.0.0-rc.0` | Python, Node | `workspace:crates/orm/Cargo.toml` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
-| `type-bridge-toml-transpiler` | `2.0.0-rc.0` | Python, Node | `workspace:crates/toml-transpiler/Cargo.toml` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
+| `type-bridge-core-lib` | `2.0.0` | Python, Node | `workspace:crates/core/Cargo.toml` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
+| `type-bridge-migration` | `2.0.0` | Python | `workspace:crates/migration/Cargo.toml` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
+| `type-bridge-orm` | `2.0.0` | Python, Node | `workspace:crates/orm/Cargo.toml` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
+| `type-bridge-toml-transpiler` | `2.0.0` | Python, Node | `workspace:crates/toml-transpiler/Cargo.toml` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
 | `type-bridge-typedb-driver-b7` | `3.8.1` | Python, Node | `workspace:vendor/typedb-driver-b7/Cargo.toml` | `Apache-2.0` | `Apache-2.0@sha256:074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff` |
 | `type-bridge-typedb-driver-b8` | `3.11.5` | Python, Node | `workspace:vendor/typedb-driver-b8/Cargo.toml` | `Apache-2.0` | `Apache-2.0@sha256:074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff` |
 | `type-bridge-typedb-protocol-b7` | `3.7.0` | Python, Node | `workspace:vendor/typedb-protocol-b7/Cargo.toml` | `MPL-2.0` | `MPL-2.0@sha256:3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04` |
 | `type-bridge-typedb-protocol-b8` | `3.11.0` | Python, Node | `workspace:vendor/typedb-protocol-b8/Cargo.toml` | `MPL-2.0` | `MPL-2.0@sha256:3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04` |
-| `type-bridge-typedb-runtime` | `2.0.0-rc.0` | Python, Node | `workspace:crates/typedb-runtime/Cargo.toml` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
+| `type-bridge-typedb-runtime` | `2.0.0` | Python, Node | `workspace:crates/typedb-runtime/Cargo.toml` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
 | `typedb-driver` | `3.12.1` | Python, Node | `crates.io` | `Apache-2.0` | `Apache-2.0@sha256:074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff` |
 | `typedb-protocol` | `3.12.0` | Python, Node | `crates.io` | `MPL-2.0` | `MPL-2.0@sha256:3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04` |
 | `typenum` | `1.20.1` | Python, Node | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:a825bd853ab71619a4923d7b4311221427848070ff44d990da39b0b274c1683f` |
