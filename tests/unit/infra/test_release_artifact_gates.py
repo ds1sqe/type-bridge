@@ -470,6 +470,8 @@ def test_published_v1_root_is_exercised_against_candidate_core_offline() -> None
     assert "--verify-pypi-authority" in reverse
     assert "type_bridge_core-*linux*x86_64.whl" in reverse
     assert "Dependency wheelhouse unexpectedly contains type-bridge-core" in reverse
+    assert 'compat_venv="$RUNNER_TEMP/released-root-candidate-core"' in reverse
+    assert 'compat_venv="$GITHUB_WORKSPACE/' not in reverse
     assert 'uv pip install --python "$compat_venv/bin/python" \\\n            --no-index' in reverse
     pair_install = reverse[reverse.rindex("uv pip install") :]
     assert "--no-deps" in pair_install

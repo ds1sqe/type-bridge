@@ -453,7 +453,7 @@ jobs:
           set -euo pipefail
           released_root_dir="$GITHUB_WORKSPACE/tmp/released-python-root"
           dependency_wheelhouse="$GITHUB_WORKSPACE/tmp/released-root-dependencies"
-          compat_venv="$GITHUB_WORKSPACE/tmp/released-root-candidate-core"
+          compat_venv="$RUNNER_TEMP/released-root-candidate-core"
           mkdir -p "$released_root_dir" "$dependency_wheelhouse"
           python -m pip download \
             --disable-pip-version-check \
