@@ -121,7 +121,17 @@ def test_release_builds_accepts_and_publishes_only_exact_oci_bytes() -> None:
     assert "aquasecurity/trivy-action@" in workflow
     assert "cosign sign --yes" in workflow
     assert workflow.count("actions/attest-build-provenance@") == 3
+    assert workflow.count("actions/attest@e59cbc1ad1ac2d59339667419eb8cdde6eb61e3d") == 3
     assert workflow.count("actions/attest-sbom@") == 2
+    assert "Refusing to overwrite conflicting immutable OCI tag." in workflow
+    assert "Refusing to move conflicting OCI alias during recovery." in workflow
+    assert "|not found|" not in workflow
+    assert "Stable OCI index conflicts with accepted platforms" in workflow
+    assert "recovery-promotion.json" in workflow
+    assert (
+        workflow.count("https://github.com/ds1sqe/type-bridge/attestations/release-promotion/v1")
+        == 3
+    )
     assert "packages: write" in workflow
     assert workflow.count("packages: write") == 1
     assert "body_path: dist/server-oci-release.md" in workflow
