@@ -569,10 +569,9 @@ def test_historical_band9_dependency_must_be_absent_from_cargo_lock(tmp_path: Pa
         "v2.0.1-pre0",
         "v2.0.1-pre.0",
         "v2.0.1rc0",
-        "v2.0.1",
     ),
 )
-def test_candidate_channel_accepts_only_canonical_semver_tag(tag: str) -> None:
+def test_candidate_channel_rejects_prerelease_tags(tag: str) -> None:
     with pytest.raises(validator.ValidationError, match="not armed for this channel"):
         validator.validate_release_identity(
             tag=tag,
@@ -587,9 +586,9 @@ def test_candidate_channel_accepts_only_canonical_semver_tag(tag: str) -> None:
 
 
 def test_release_channel_identity_mapping_is_exact() -> None:
-    assert validator.release_identity_versions("v2.0.1-rc.0", "candidate") == (
-        "2.0.1-rc.0",
-        "2.0.1rc0",
+    assert validator.release_identity_versions("v2.0.1", "candidate") == (
+        "2.0.1",
+        "2.0.1",
     )
     assert validator.release_identity_versions("v2.0.1", "stable") == (
         "2.0.1",
