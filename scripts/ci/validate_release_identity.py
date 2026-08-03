@@ -2016,8 +2016,7 @@ def validate_legacy_notice_provenance(notice: str) -> None:
         "republications.",
         "The band-8 compatibility copies are source-unmodified and owner-authorized "
         "for TypeBridge Cargo distribution.",
-        "The TypeBridge owner authorized first publication of the band-8 packages on "
-        "2026-08-03.",
+        "The TypeBridge owner authorized first publication of the band-8 packages on 2026-08-03.",
         "These exact source-unmodified packages are the authorized "
         "compatibility artifacts, with the protocol package preceding the driver package.",
     )
