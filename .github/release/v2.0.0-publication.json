@@ -1,0 +1,101 @@
+{
+  "schema_version": 1,
+  "release": {
+    "version": "2.0.0",
+    "tag": "v2.0.0",
+    "annotated_tag_object": "a4cec6478ad4e764f039e51eabcbb68d45efd45a",
+    "source_revision": "aacf4d16486a3a3bae47c3b10c1d526c587dd7a7",
+    "published_at": "2026-08-03T00:17:54Z",
+    "url": "https://github.com/ds1sqe/type-bridge/releases/tag/v2.0.0"
+  },
+  "workflow_evidence": {
+    "stable_acceptance": {
+      "run_id": 30609754107,
+      "revision": "aacf4d16486a3a3bae47c3b10c1d526c587dd7a7",
+      "conclusion": "success",
+      "url": "https://github.com/ds1sqe/type-bridge/actions/runs/30609754107"
+    },
+    "tag_source": {
+      "run_id": 30612912483,
+      "revision": "aacf4d16486a3a3bae47c3b10c1d526c587dd7a7",
+      "conclusion": "failure-before-mutation",
+      "artifact_ledger_sha256": "f8d5b2d04ad01a45694aecdd171846443bfd511a9363ab771e5f182c6bd17d2d",
+      "url": "https://github.com/ds1sqe/type-bridge/actions/runs/30612912483"
+    },
+    "recovery_verification": {
+      "run_id": 30773190443,
+      "control_revision": "2210634bfd79b5eb668dce96db50528236125023",
+      "conclusion": "success",
+      "url": "https://github.com/ds1sqe/type-bridge/actions/runs/30773190443"
+    },
+    "recovery_publication": {
+      "run_id": 30773386567,
+      "control_revision": "2210634bfd79b5eb668dce96db50528236125023",
+      "release_source_revision": "aacf4d16486a3a3bae47c3b10c1d526c587dd7a7",
+      "conclusion": "success",
+      "url": "https://github.com/ds1sqe/type-bridge/actions/runs/30773386567"
+    }
+  },
+  "python": {
+    "root": {
+      "project_url": "https://pypi.org/project/type-bridge/2.0.0/",
+      "files": {
+        "type_bridge-2.0.0-py3-none-any.whl": "910ab0ac8e8d3268c345955b19517e4d39730cb8b07ac1dfcb9b9a8d236210f5",
+        "type_bridge-2.0.0.tar.gz": "b72f8c46d5cddfed3bc33667ab1b06d997538d0606ca8a7de0152a3814d878de"
+      }
+    },
+    "core": {
+      "project_url": "https://pypi.org/project/type-bridge-core/2.0.0/",
+      "files": {
+        "type_bridge_core-2.0.0-cp312-abi3-macosx_10_12_x86_64.whl": "088f7b7333c1eba02debde506f0b7ff0b5195e178f157febc63ee4a21a928eb0",
+        "type_bridge_core-2.0.0-cp312-abi3-macosx_11_0_arm64.whl": "f198f51e3de28f2411830df8dfd9401eac24f8fac3ab6d1518521a0927d60764",
+        "type_bridge_core-2.0.0-cp312-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl": "5a17b3f1a65af21f2f1faa3a7316d7b4c5b774f4eb6dec8c2cc3057102297de5",
+        "type_bridge_core-2.0.0-cp312-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl": "6d25a8ad9cbd0884a6214a5b0c87f167a90d485119cc957a09b5d2578fe1a683",
+        "type_bridge_core-2.0.0-cp312-abi3-win_amd64.whl": "44d09887853581309957ba409bc1883697c22c4fa14309fd05e2cd11fb24c4e1",
+        "type_bridge_core-2.0.0.tar.gz": "6cc910590bad35839c60c9add31f9f1b44c49750abb3397b8c0def83d9eaade0"
+      }
+    },
+    "registry_consumers": [
+      "3.12.13",
+      "3.13.11",
+      "3.14.6"
+    ]
+  },
+  "node": {
+    "package": "@type-bridge/node@2.0.0",
+    "registry_url": "https://www.npmjs.com/package/@type-bridge/node/v/2.0.0",
+    "tarball_sha256": "0cecca029b778e2cda53a1849693ef56a8a9277ffbb496c71a300978ae5409e2",
+    "registry_integrity": "sha512-ej7tk4mwwn3aySg+B33MBX5ffAckqQdqtBsK2I48v5NaHmde+DmJbp1Ph4Z6IIOgpoO158MYiy2m/rmILUjXXQ==",
+    "registry_consumer": "Node 26.5.0 on linux-x64-gnu"
+  },
+  "rust": {
+    "distribution": "source-git",
+    "package": "type-bridge",
+    "version": "2.0.0",
+    "revision": "aacf4d16486a3a3bae47c3b10c1d526c587dd7a7",
+    "msrv": "1.88",
+    "registry_consumer": "fresh Cargo lock and executable resolved every TypeBridge package from the exact release Git revision"
+  },
+  "server_oci": {
+    "image": "ghcr.io/ds1sqe/type-bridge-server",
+    "digest": "sha256:bd05da726bd11533a43211d9c2e28a3847e124605d609a0ef3b0addb0965b5bb",
+    "platform_digests": {
+      "linux/amd64": "sha256:8fe1873a394bb1da8c5d111194ee3eefcacf66fc57b31913c925e3e1c94464d8",
+      "linux/arm64": "sha256:e55c1611337898cdb46a4dca6900c80bf08ad56d3e4669156262286261674700"
+    },
+    "aliases": [
+      "2.0.0",
+      "2.0",
+      "2",
+      "latest"
+    ],
+    "attestations": {
+      "promotion_amd64": "https://github.com/ds1sqe/type-bridge/attestations/38473204",
+      "promotion_arm64": "https://github.com/ds1sqe/type-bridge/attestations/38473207",
+      "promotion_index": "https://github.com/ds1sqe/type-bridge/attestations/38473213",
+      "sbom_amd64": "https://github.com/ds1sqe/type-bridge/attestations/38473219",
+      "sbom_arm64": "https://github.com/ds1sqe/type-bridge/attestations/38473223"
+    },
+    "verification": "anonymous pull, exact labels, CLI execution, three Cosign signatures, three promotion attestations, and two SPDX SBOM attestations passed"
+  }
+}
