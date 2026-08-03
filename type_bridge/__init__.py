@@ -60,7 +60,7 @@ from type_bridge.session import (
 )
 from type_bridge.typedb_driver import Credentials, TransactionType, TypeDB, create_driver_options
 
-__version__ = "2.0.0"
+__version__ = "2.0.1"
 
 __all__ = [
     # Database and session

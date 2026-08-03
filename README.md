@@ -6,6 +6,7 @@
   <a href="https://github.com/ds1sqe/type-bridge/actions/workflows/ci.yml"><img src="https://github.com/ds1sqe/type-bridge/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://pypi.org/project/type-bridge/"><img src="https://img.shields.io/pypi/v/type-bridge.svg" alt="PyPI"></a>
   <a href="https://www.npmjs.com/package/@type-bridge/node"><img src="https://img.shields.io/npm/v/%40type-bridge%2Fnode.svg" alt="npm"></a>
+  <a href="https://crates.io/crates/type-bridge"><img src="https://img.shields.io/crates/v/type-bridge.svg" alt="crates.io"></a>
   <a href="https://ds1sqe.github.io/type-bridge/"><img src="https://img.shields.io/badge/docs-TypeBridge-67e8f9" alt="Documentation"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-8b5cf6.svg" alt="MIT license"></a>
 </p>
@@ -22,7 +23,7 @@ and the standalone query server.
 | --- | --- | --- |
 | Python | Declarative Pydantic models, CRUD, queries, schema management | [`type-bridge`](https://pypi.org/project/type-bridge/) |
 | TypeScript / Node | Branded models, typed managers, queries, native runtime | [`@type-bridge/node`](https://www.npmjs.com/package/@type-bridge/node) |
-| Rust | Generated schema crates, async CRUD and immutable queries | Exact release source/Git revision |
+| Rust | Generated schema crates, async CRUD and immutable queries | [`type-bridge`](https://crates.io/crates/type-bridge) |
 | CLI and generators | Split-YAML schemas, migrations, Python/Node/Rust projections | Included with the Python package |
 | Server | Remote V2 query execution over the same contracts | `ghcr.io/ds1sqe/type-bridge-server` |
 
@@ -107,9 +108,10 @@ type-bridge --manifest typebridge.yaml migration make --name initial
 type-bridge --manifest typebridge.yaml migration apply --environment development
 ```
 
-The generated Rust SDK requires Rust 1.88+ and the exact Git revision recorded
-by the matching release; it is not distributed from crates.io in 2.0. Follow
-the [Rust client guide](https://ds1sqe.github.io/type-bridge/guide/rust/) and
+The generated Rust SDK requires Rust 1.88+ and, starting with 2.0.1, resolves
+from crates.io with `type-bridge = "2"`. TypeBridge 2.0.0 remains available
+from its exact Git revision. Follow the
+[Rust client guide](https://ds1sqe.github.io/type-bridge/guide/rust/) and
 [Split-YAML reference](https://ds1sqe.github.io/type-bridge/guide/split-yaml-v1/)
 for the reproducible setup.
 

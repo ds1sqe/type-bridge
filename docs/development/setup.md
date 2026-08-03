@@ -36,7 +36,7 @@ abi3 wheels do not require the variable.
 ### Project Dependencies
 
 The project requires:
-- `type-bridge-core==2.0.0`: same-version Rust runtime for ORM connectivity and query execution;
+- `type-bridge-core==2.0.1`: same-version Rust runtime for ORM connectivity and query execution;
   the facade and native semantic engine release in exact lockstep
 - `pydantic>=2.12.4`: For validation and type coercion
 - `isodate==0.7.2`: For Duration type support (ISO 8601)

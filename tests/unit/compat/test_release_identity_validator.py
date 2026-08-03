@@ -45,8 +45,8 @@ validator.LEGACY_VENDOR_DESCRIPTIONS[SYNTHETIC_PROTOCOL_NAME] = (
 def validate(**overrides: object) -> dict[str, Any]:
     """Run the gate against repository authorities by default."""
     arguments: dict[str, object] = {
-        "tag": "v2.0.0",
-        "artifact_contract": validator.ARTIFACT_CONTRACT_PYTHON_NPM_ONLY,
+        "tag": "v2.0.1",
+        "artifact_contract": validator.ARTIFACT_CONTRACT_CARGO_INCLUSIVE,
         "release_channel": validator.RELEASE_CHANNEL_STABLE,
         "workspace_manifest": ROOT / "type-bridge-core/Cargo.toml",
         "root_python_manifest": ROOT / "pyproject.toml",
@@ -144,19 +144,19 @@ def replace_both_native_notices(workspace: Path, old: str, new: str) -> None:
         notice.write_text(source.replace(old, new, 1))
 
 
-def test_repository_python_npm_stable_identity_is_complete() -> None:
+def test_repository_cargo_inclusive_stable_identity_is_complete() -> None:
     report = validate()
 
     assert report["status"] == "ok"
-    assert report["artifact_contract"] == "python-npm-only"
-    assert report["crates_io_mutation"] is False
+    assert report["artifact_contract"] == "cargo-inclusive"
+    assert report["crates_io_mutation"] is True
     assert report["release_channel"] == "stable"
-    assert report["tag"] == "v2.0.0"
-    assert report["version"] == "2.0.0"
-    assert report["python_version"] == "2.0.0"
-    assert report["python_core_requirement"] == "type-bridge-core==2.0.0"
-    assert report["python_package_version"] == "2.0.0"
-    assert report["node_package_lock_version"] == "2.0.0"
+    assert report["tag"] == "v2.0.1"
+    assert report["version"] == "2.0.1"
+    assert report["python_version"] == "2.0.1"
+    assert report["python_core_requirement"] == "type-bridge-core==2.0.1"
+    assert report["python_package_version"] == "2.0.1"
+    assert report["node_package_lock_version"] == "2.0.1"
     assert set(report["cargo_licenses"].values()) == {
         "MIT",
         "Apache-2.0",
@@ -183,20 +183,12 @@ def test_repository_python_npm_stable_identity_is_complete() -> None:
     ]
 
 
-def test_repository_final_closed_artifact_set_includes_source_git_and_server_oci() -> None:
-    report = validate(artifact_contract=validator.ARTIFACT_CONTRACT_SOURCE_GIT_SERVER_OCI)
+def test_repository_cargo_graph_is_complete_and_ordered() -> None:
+    report = validate()
 
     assert report["status"] == "ok"
-    assert report["crates_io_mutation"] is False
-    assert report["cargo_publication_plan"] == []
-    assert report["public_artifact_set"] == [
-        "python-root",
-        "python-native",
-        "npm-package",
-        "npm-native-packages",
-        "rust-type-bridge-source-git-exact-revision",
-        "ghcr.io/ds1sqe/type-bridge-server",
-    ]
+    assert report["crates_io_mutation"] is True
+    assert report["cargo_publication_plan"] == list(validator.PUBLISHED_CRATES)
     assert report["legacy_vendor_identities"] == [
         "|".join(
             (
@@ -209,42 +201,20 @@ def test_repository_final_closed_artifact_set_includes_source_git_and_server_oci
         for component in validator.LEGACY_TYPEDB_COMPONENTS
     ]
     assert report["cargo_manifest_publishable_crates"] == list(validator.PUBLISHED_CRATES)
-    assert report["cargo_publication_plan"] == []
-    assert report["unpublished_v2_crates"] == [
-        "type-bridge-contract",
-        "type-bridge-schema",
-        "type-bridge-query",
-        "type-bridge-schema-migration",
-        "type-bridge-schema-migration-typedb",
-        "type-bridge-schema-codegen",
-        "type-bridge-schema-compat",
-        "type-bridge-workspace",
-        "type-bridge-cli",
-    ]
+    assert report["unpublished_v2_crates"] == []
     assert validator.PREEXISTING_CRATES == (
         "type-bridge-typedb-protocol-b7",
         "type-bridge-typedb-driver-b7",
-        "type-bridge-typedb-protocol-b8",
-        "type-bridge-typedb-driver-b8",
     )
     assert "type-bridge-typedb-protocol-b8" in validator.PACKAGED_RELEASE_CRATES
     assert "type-bridge-typedb-driver-b8" in validator.PACKAGED_RELEASE_CRATES
-    assert "type-bridge-typedb-protocol-b8" not in validator.EXPECTED_NEW_CRATES
-    assert "type-bridge-typedb-driver-b8" not in validator.EXPECTED_NEW_CRATES
+    assert "type-bridge-typedb-protocol-b8" in validator.EXPECTED_NEW_CRATES
+    assert "type-bridge-typedb-driver-b8" in validator.EXPECTED_NEW_CRATES
     assert not set(validator.PREEXISTING_CRATES) & set(validator.EXPECTED_NEW_CRATES)
     assert report["unpublished_crates"] == [
-        "type-bridge",
-        "type-bridge-cli",
-        "type-bridge-contract",
         "type-bridge-core",
         "type-bridge-node",
-        "type-bridge-query",
-        "type-bridge-schema",
-        "type-bridge-schema-codegen",
-        "type-bridge-schema-compat",
-        "type-bridge-schema-migration",
-        "type-bridge-schema-migration-typedb",
-        "type-bridge-workspace",
+        "type-bridge-server",
     ]
     dependency_order = report["cargo_manifest_dependency_order"]
     assert isinstance(dependency_order, dict)
@@ -306,7 +276,7 @@ def test_repository_final_closed_artifact_set_includes_source_git_and_server_oci
         ("cli", "type-bridge-cli"),
     ],
 )
-def test_v2_crate_manifest_remains_first_party_and_unpublished(
+def test_v2_crate_manifest_is_first_party_and_crates_io_publishable(
     directory: str,
     package_name: str,
 ) -> None:
@@ -315,8 +285,8 @@ def test_v2_crate_manifest_remains_first_party_and_unpublished(
     )["package"]
 
     assert manifest["name"] == package_name
-    assert manifest["version"] == "2.0.0"
-    assert manifest["publish"] is False
+    assert manifest["version"] == "2.0.1"
+    assert manifest["publish"] == ["crates-io"]
 
 
 @pytest.mark.parametrize(
@@ -335,17 +305,19 @@ def test_binding_crate_manifest_remains_first_party_and_unpublished(
     )["package"]
 
     assert manifest["name"] == package_name
-    assert manifest["version"] == "2.0.0"
+    assert manifest["version"] == "2.0.1"
     assert manifest["publish"] is False
 
 
-def test_python_npm_contract_has_no_crates_io_workflow_path() -> None:
+def test_repository_workflow_uses_the_cargo_inclusive_contract() -> None:
     workflow = ROOT / ".github/workflows/release.yml"
     source = workflow.read_text()
 
     assert "validate_historical_band9_registry.py" in source
     assert "validate_latest_typedb_driver_pin.py" in source
-    validator.validate_python_npm_only_workflow(workflow)
+    assert "--artifact-contract cargo-inclusive" in source
+    validator.workflow_preflight_sequences(workflow)
+    validator.workflow_registry_preflight_sequences(workflow)
 
 
 @pytest.mark.parametrize(
@@ -378,12 +350,14 @@ def test_release_workflow_requires_pinned_native_notice_gate(
         validator.validate_native_notice_workflow(workflow)
 
 
-def test_v2_crate_publish_setting_must_be_literal_false(tmp_path: Path) -> None:
+def test_v2_crate_cannot_be_marked_unpublished(tmp_path: Path) -> None:
     workspace = copy_workspace_manifests(tmp_path)
     manifest = workspace.parent / "crates/contract/Cargo.toml"
-    manifest.write_text(manifest.read_text().replace("publish = false", "publish = []", 1))
+    manifest.write_text(
+        manifest.read_text().replace('publish = ["crates-io"]', "publish = false", 1)
+    )
 
-    with pytest.raises(validator.ValidationError, match="publish = false exactly"):
+    with pytest.raises(validator.ValidationError, match="publishable package set"):
         validate(workspace_manifest=workspace)
 
 
@@ -403,9 +377,7 @@ def test_repository_driver_components_are_packaging_only() -> None:
         expected_suffix = (
             "; already published"
             if component.band == 7
-            else (
-                "; registry publication requires separate explicit TypeBridge owner authorization"
-            )
+            else "; owner-authorized for TypeBridge Cargo distribution"
         )
         assert component.license_status == (
             "Apache-2.0 namespaced packaging-only package; source behavior unchanged"
@@ -594,10 +566,10 @@ def test_historical_band9_dependency_must_be_absent_from_cargo_lock(tmp_path: Pa
 @pytest.mark.parametrize(
     "tag",
     (
-        "v2.0.0-pre0",
-        "v2.0.0-pre.0",
-        "v2.0.0rc0",
-        "v2.0.0",
+        "v2.0.1-pre0",
+        "v2.0.1-pre.0",
+        "v2.0.1rc0",
+        "v2.0.1",
     ),
 )
 def test_candidate_channel_accepts_only_canonical_semver_tag(tag: str) -> None:
@@ -615,13 +587,13 @@ def test_candidate_channel_accepts_only_canonical_semver_tag(tag: str) -> None:
 
 
 def test_release_channel_identity_mapping_is_exact() -> None:
-    assert validator.release_identity_versions("v2.0.0-rc.0", "candidate") == (
-        "2.0.0-rc.0",
-        "2.0.0rc0",
+    assert validator.release_identity_versions("v2.0.1-rc.0", "candidate") == (
+        "2.0.1-rc.0",
+        "2.0.1rc0",
     )
-    assert validator.release_identity_versions("v2.0.0", "stable") == (
-        "2.0.0",
-        "2.0.0",
+    assert validator.release_identity_versions("v2.0.1", "stable") == (
+        "2.0.1",
+        "2.0.1",
     )
 
 
@@ -633,11 +605,11 @@ def test_release_artifact_contract_must_be_known() -> None:
 @pytest.mark.parametrize(
     "replacement",
     (
-        "type-bridge-core>=2.0.0",
-        "type-bridge-core==2.0.0; python_version >= '3.12'",
-        "Type-Bridge-Core==2.0.0",
-        "type_bridge_core==2.0.0",
-        "type.bridge.core==2.0.0",
+        "type-bridge-core>=2.0.1",
+        "type-bridge-core==2.0.2; python_version >= '3.12'",
+        "Type-Bridge-Core==2.0.1",
+        "type_bridge_core==2.0.1",
+        "type.bridge.core==2.0.1",
     ),
 )
 def test_root_python_core_requirement_must_be_canonical_exact_and_unmarked(
@@ -646,9 +618,9 @@ def test_root_python_core_requirement_must_be_canonical_exact_and_unmarked(
 ) -> None:
     manifest, package_init = copy_root_python_authorities(tmp_path)
     source = manifest.read_text(encoding="utf-8")
-    assert "type-bridge-core==2.0.0" in source
+    assert "type-bridge-core==2.0.1" in source
     manifest.write_text(
-        source.replace("type-bridge-core==2.0.0", replacement, 1),
+        source.replace("type-bridge-core==2.0.1", replacement, 1),
         encoding="utf-8",
     )
 
@@ -663,9 +635,9 @@ def test_root_python_core_requirement_cannot_be_duplicated_under_an_alias(
     source = manifest.read_text(encoding="utf-8")
     manifest.write_text(
         source.replace(
-            '"type-bridge-core==2.0.0",',
-            '"type-bridge-core==2.0.0",\n'
-            "    \"TYPE_BRIDGE_CORE==2.0.0; python_version >= '3.12'\",",
+            '"type-bridge-core==2.0.1",',
+            '"type-bridge-core==2.0.1",\n'
+            "    \"TYPE_BRIDGE_CORE==2.0.1; python_version >= '3.12'\",",
             1,
         ),
         encoding="utf-8",
@@ -679,8 +651,8 @@ def test_import_visible_python_version_must_match_manifest_and_tag(tmp_path: Pat
     manifest, package_init = copy_root_python_authorities(tmp_path)
     package_init.write_text(
         package_init.read_text(encoding="utf-8").replace(
-            '__version__ = "2.0.0"',
             '__version__ = "2.0.1"',
+            '__version__ = "2.0.2"',
             1,
         ),
         encoding="utf-8",
@@ -702,10 +674,10 @@ def test_node_package_lock_versions_must_match_package_and_tag(
         (ROOT / "type-bridge-core/crates/node/package-lock.json").read_text(encoding="utf-8")
     )
     if location == "root":
-        payload["version"] = "2.0.0-rc.1"
+        payload["version"] = "2.0.1-rc.1"
         expected = "package-lock root identity"
     else:
-        payload["packages"][""]["version"] = "2.0.0-rc.1"
+        payload["packages"][""]["version"] = "2.0.1-rc.1"
         expected = r"package-lock packages\[''\] identity"
     package_lock.write_text(json.dumps(payload), encoding="utf-8")
 
@@ -722,9 +694,9 @@ def test_node_package_and_lock_cannot_drift_together_from_tag(tmp_path: Path) ->
     lock_payload = json.loads(
         (ROOT / "type-bridge-core/crates/node/package-lock.json").read_text(encoding="utf-8")
     )
-    package_payload["version"] = "2.0.0-rc.1"
-    lock_payload["version"] = "2.0.0-rc.1"
-    lock_payload["packages"][""]["version"] = "2.0.0-rc.1"
+    package_payload["version"] = "2.0.1-rc.1"
+    lock_payload["version"] = "2.0.1-rc.1"
+    lock_payload["packages"][""]["version"] = "2.0.1-rc.1"
     package.write_text(json.dumps(package_payload), encoding="utf-8")
     package_lock.write_text(json.dumps(lock_payload), encoding="utf-8")
 
@@ -737,8 +709,8 @@ def test_first_party_cargo_version_drift_hard_fails(tmp_path: Path) -> None:
     manifest = workspace.parent / "crates/orm/Cargo.toml"
     manifest.write_text(
         manifest.read_text().replace(
-            'version = "2.0.0"',
             'version = "2.0.1"',
+            'version = "2.0.2"',
             1,
         )
     )
@@ -752,8 +724,8 @@ def test_unpublished_binding_crate_version_drift_hard_fails(tmp_path: Path) -> N
     manifest = workspace.parent / "crates/python/Cargo.toml"
     manifest.write_text(
         manifest.read_text().replace(
-            'version = "2.0.0"',
             'version = "2.0.1"',
+            'version = "2.0.2"',
             1,
         )
     )
@@ -944,7 +916,7 @@ def test_unexpected_workspace_vendor_member_hard_fails(tmp_path: Path) -> None:
     unexpected = workspace.parent / "vendor/unexpected"
     unexpected.mkdir()
     (unexpected / "Cargo.toml").write_text(
-        '[package]\nname = "unexpected-vendor"\nversion = "2.0.0-rc.0"\nlicense = "MIT"\n'
+        '[package]\nname = "unexpected-vendor"\nversion = "2.0.1-rc.0"\nlicense = "MIT"\n'
     )
     workspace.write_text(
         workspace.read_text().replace(
@@ -1062,8 +1034,8 @@ def test_band8_vendor_identity_drift_hard_fails(tmp_path: Path) -> None:
     [
         (
             "Renamed package of upstream typedb-driver 3.11.5 "
-            "(TypeDB protocol band 8); source-unmodified compatibility package with "
-            "registry publication gated by separate explicit TypeBridge owner authorization",
+            "(TypeDB protocol band 8); source-unmodified compatibility package "
+            "authorized for TypeBridge Cargo distribution",
             "generic driver package",
         ),
         ("https://github.com/typedb/typedb-driver", "https://example.invalid/upstream"),
@@ -1316,9 +1288,9 @@ def test_band9_notice_source_must_name_exact_official_crates_io_package(
         ),
         (
             "MPL-2.0 namespaced packaging-only package; generated protocol source unchanged; "
-            "registry publication requires separate explicit TypeBridge owner authorization",
+            "owner-authorized for TypeBridge Cargo distribution",
             "MIT namespaced packaging-only package; generated protocol source unchanged; "
-            "registry publication requires separate explicit TypeBridge owner authorization",
+            "owner-authorized for TypeBridge Cargo distribution",
         ),
     ],
 )
@@ -1334,7 +1306,7 @@ def test_legacy_notice_component_rows_are_exact(
         validate(workspace_manifest=workspace)
 
 
-def test_native_notices_distinguish_published_band7_from_candidate_band8() -> None:
+def test_native_notices_distinguish_published_band7_from_authorized_band8() -> None:
     python_notice = ROOT / "type-bridge-core/python/type_bridge_core/THIRD_PARTY_NOTICES.md"
     node_notice = ROOT / "type-bridge-core/crates/node/THIRD_PARTY_NOTICES.md"
     python_body = python_notice.read_bytes()
@@ -1343,23 +1315,23 @@ def test_native_notices_distinguish_published_band7_from_candidate_band8() -> No
     compact = " ".join(python_body.decode().split())
     assert "band-7 packages are unofficial namespaced, already-published" in compact
     assert (
-        "band-8 compatibility copies are source-unmodified, and their registry publication "
-        "requires separate explicit TypeBridge owner authorization"
+        "band-8 compatibility copies are source-unmodified and owner-authorized "
+        "for TypeBridge Cargo distribution"
     ) in compact
-    assert "never implied by this source checkout or native distribution" in compact
-    assert "If distributed, these exact source-unmodified packages" in compact
+    assert "authorized first publication of the band-8 packages on 2026-08-03" in compact
+    assert "These exact source-unmodified packages" in compact
     assert "protocol package preceding the driver package" in compact
     assert "renamed crates are also distributed as immutable crates.io" not in compact
     assert "currently absent" not in compact
     assert "currently unpublished" not in compact
 
 
-def test_native_notice_cannot_make_band8_publication_implicit(tmp_path: Path) -> None:
+def test_native_notice_cannot_remove_band8_publication_authorization(tmp_path: Path) -> None:
     workspace = copy_workspace_manifests(tmp_path)
     replace_both_native_notices(
         workspace,
-        "never implied by this source checkout or native distribution",
-        "implied by this source checkout or native distribution",
+        "authorized first publication of the band-8 packages on 2026-08-03",
+        "did not authorize publication of the band-8 packages",
     )
 
     with pytest.raises(validator.ValidationError, match="band-8 registry disposition"):
@@ -1379,7 +1351,8 @@ def test_band8_artifact_text_is_time_stable() -> None:
     for path in paths:
         body = " ".join(path.read_text().split()).lower()
         assert "separate explicit typedb" not in body
-        assert "separate explicit typebridge owner authorization" in body
+        assert "authorized" in body
+        assert "cargo distribution" in body
         assert "currently absent" not in body
         assert "currently unpublished" not in body
 
@@ -1619,11 +1592,11 @@ def test_internal_crate_cannot_be_implicitly_publishable(tmp_path: Path) -> None
 
 def test_public_crate_path_dependency_requires_a_release_version(tmp_path: Path) -> None:
     workspace = copy_workspace_manifests(tmp_path)
-    manifest = workspace.parent / "crates/server/Cargo.toml"
+    manifest = workspace.parent / "crates/orm/Cargo.toml"
     manifest.write_text(
         manifest.read_text().replace(
-            'type-bridge-contract = { path = "../contract", version = "2.0.0", optional = true }',
-            'type-bridge-contract = { path = "../contract", optional = true }',
+            'type-bridge-contract = { path = "../contract", version = "2.0.1" }',
+            'type-bridge-contract = { path = "../contract" }',
             1,
         )
     )
@@ -1632,21 +1605,8 @@ def test_public_crate_path_dependency_requires_a_release_version(tmp_path: Path)
         validate(workspace_manifest=workspace)
 
 
-def test_python_npm_contract_rejects_a_missing_known_blocker_edge(
-    tmp_path: Path,
-) -> None:
-    workspace = copy_workspace_manifests(tmp_path)
-    manifest = workspace.parent / "crates/core/Cargo.toml"
-    dependency = 'type-bridge-contract = { path = "../contract", version = "2.0.0" }\n'
-    source = manifest.read_text()
-    assert dependency in source
-    manifest.write_text(source.replace(dependency, "", 1))
-
-    with pytest.raises(
-        validator.ValidationError,
-        match="publication-blocker graph drifted.*missing",
-    ):
-        validate(workspace_manifest=workspace)
+def test_repository_cargo_graph_has_no_publication_blocker() -> None:
+    assert validate()["rust_publication_blockers"] == []
 
 
 def test_public_crate_cannot_depend_on_an_unpublished_workspace_crate(
@@ -1656,8 +1616,8 @@ def test_public_crate_cannot_depend_on_an_unpublished_workspace_crate(
     manifest = workspace.parent / "crates/migration/Cargo.toml"
     manifest.write_text(
         manifest.read_text().replace(
-            'type-bridge-schema-compat = { path = "../schema-compat", version = "2.0.0" }',
-            'type-bridge-schema-compat = { package = "type-bridge-cli", path = "../cli", version = "2.0.0" }',
+            'type-bridge-schema-compat = { path = "../schema-compat", version = "2.0.1" }',
+            'type-bridge-schema-compat = { package = "type-bridge-core", path = "../python", version = "2.0.1" }',
             1,
         )
     )
@@ -1680,9 +1640,7 @@ def test_planned_public_crate_cannot_be_marked_unpublished(
     workspace = copy_workspace_manifests(tmp_path)
     manifest = workspace.parent / manifest_path
     manifest.write_text(
-        manifest.read_text().replace(
-            "authors.workspace = true\n", "authors.workspace = true\npublish = false\n", 1
-        )
+        manifest.read_text().replace('publish = ["crates-io"]', "publish = false", 1)
     )
 
     with pytest.raises(validator.ValidationError, match="publishable package set"):

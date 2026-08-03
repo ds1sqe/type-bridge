@@ -11,22 +11,20 @@ historical, `publish = false`, workspace-excluded quarantine snapshots. They
 are forbidden for consumption and are not release inputs.
 
 The legacy band-7 packages are unofficial, already-published packaging-only
-republications maintained by TypeBridge. The band-8 trees are unofficial,
-source-unmodified packaging candidates. No pre-existing namespaced registry
-key is assumed by this source checkout, and publication is never authorized
-merely by the checkout. Any first publication requires separate explicit
-TypeBridge owner authorization. If distributed under that authorization, these
-exact source-unmodified packages are the authorized compatibility artifacts,
-with protocol preceding driver. TypeBridge does not carry a terminal-close
-patch or any other behavioral driver change. The TypeBridge package names
-exist solely so Cargo can resolve all three protocol bands in one native graph.
-TypeDB remains the upstream project and original source; TypeDB is not
-responsible for the downstream package names or packaging metadata.
+republications maintained by TypeBridge. The band-8 trees are unofficial and
+source-unmodified. The TypeBridge owner authorized their first publication for
+Cargo distribution on 2026-08-03. These exact source-unmodified packages are
+the authorized compatibility artifacts, with protocol preceding driver.
+TypeBridge does not carry a terminal-close patch or any other behavioral driver
+change. The TypeBridge package names exist solely so Cargo can resolve all
+three protocol bands in one native graph. TypeDB remains the upstream project
+and original source; TypeDB is not responsible for the downstream package
+names or packaging metadata.
 
 | Band | Runtime packages | Upstream source | Registry disposition |
 | --- | --- | --- | --- |
 | 7 | `type-bridge-typedb-driver-b7` 3.8.1 and `type-bridge-typedb-protocol-b7` 3.7.0 | driver 3.8.1, protocol 3.7.0 | consume the already-published immutable packaging-only packages |
-| 8 | `type-bridge-typedb-driver-b8` 3.11.5 and `type-bridge-typedb-protocol-b8` 3.11.0 | driver 3.11.5, protocol 3.11.0 | source checkout grants no publication authority; separately authorized distribution uses the exact source-unmodified protocol-before-driver packages |
+| 8 | `type-bridge-typedb-driver-b8` 3.11.5 and `type-bridge-typedb-protocol-b8` 3.11.0 | driver 3.11.5, protocol 3.11.0 | owner-authorized Cargo distribution uses the exact source-unmodified protocol-before-driver packages |
 | 9 | official `typedb-driver` 3.12.1 and `typedb-protocol` 3.12.0 | official crates.io packages | consume upstream directly; never publish a TypeBridge fork |
 
 Cargo treats the upstream 3.11 and 3.12 protocol requirements as one

@@ -1,12 +1,13 @@
 [package]
 name = "type-bridge-migration"
-version = "2.0.0"
+version = "2.0.1"
 edition = "2024"
 description = "Migration IR and planning substrate for type-bridge"
 license.workspace = true
 license-file.workspace = true
 repository.workspace = true
 authors.workspace = true
+publish = ["crates-io"]
 # The CLI bin is declared explicitly below; src/bin/display.rs is a module of
 # that bin, not its own target. Disable bin auto-discovery so it is not built
 # as a second binary.
@@ -23,10 +24,10 @@ path = "src/bin/type_bridge_migration.rs"
 [dependencies]
 cap-fs-ext = "4.0"
 cap-std = "4.0"
-type-bridge-contract = { path = "../contract", version = "2.0.0" }
-type-bridge-core-lib = { path = "../core", version = "2.0.0" }
-type-bridge-schema-compat = { path = "../schema-compat", version = "2.0.0" }
-type-bridge-orm = { path = "../orm", version = "2.0.0", default-features = false, features = ["band7", "band8", "band9"] }
+type-bridge-contract = { path = "../contract", version = "2.0.1" }
+type-bridge-core-lib = { path = "../core", version = "2.0.1" }
+type-bridge-schema-compat = { path = "../schema-compat", version = "2.0.1" }
+type-bridge-orm = { path = "../orm", version = "2.0.1", default-features = false, features = ["band7", "band8", "band9"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 clap = { version = "4.5", features = ["derive"] }
 network-interface = "2.0.5"

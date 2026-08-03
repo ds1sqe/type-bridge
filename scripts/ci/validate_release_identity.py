@@ -60,8 +60,14 @@ SEMVER_PATTERN = re.compile(
 )
 
 PUBLISHED_CRATES = (
+    "type-bridge-contract",
     "type-bridge-core-lib",
+    "type-bridge-schema",
+    "type-bridge-query",
+    "type-bridge-schema-migration",
     "type-bridge-toml-transpiler",
+    "type-bridge-schema-compat",
+    "type-bridge-schema-codegen",
     "type-bridge-orm-derive",
     "type-bridge-typedb-protocol-b7",
     "type-bridge-typedb-driver-b7",
@@ -70,54 +76,34 @@ PUBLISHED_CRATES = (
     "type-bridge-typedb-runtime",
     "type-bridge-orm",
     "type-bridge-migration",
-    "type-bridge-server",
-)
-UNPUBLISHED_V2_CRATES = (
-    "type-bridge-contract",
-    "type-bridge-schema",
-    "type-bridge-query",
-    "type-bridge-schema-migration",
     "type-bridge-schema-migration-typedb",
-    "type-bridge-schema-codegen",
-    "type-bridge-schema-compat",
     "type-bridge-workspace",
     "type-bridge-cli",
+    "type-bridge",
 )
-KNOWN_PUBLICATION_BLOCKER_EDGES = frozenset(
-    {
-        ("type-bridge-core-lib", "type-bridge-contract"),
-        ("type-bridge-orm", "type-bridge-contract"),
-        ("type-bridge-orm", "type-bridge-query"),
-        ("type-bridge-orm", "type-bridge-schema"),
-        ("type-bridge-orm", "type-bridge-schema-compat"),
-        ("type-bridge-migration", "type-bridge-contract"),
-        ("type-bridge-migration", "type-bridge-schema-compat"),
-        ("type-bridge-server", "type-bridge-contract"),
-        ("type-bridge-server", "type-bridge-query"),
-        ("type-bridge-server", "type-bridge-schema"),
-        ("type-bridge-server", "type-bridge-schema-migration-typedb"),
-    }
-)
+UNPUBLISHED_V2_CRATES: tuple[str, ...] = ()
+KNOWN_PUBLICATION_BLOCKER_EDGES: frozenset[tuple[str, str]] = frozenset()
 IMMUTABLE_BASELINE_CRATES = (
     "type-bridge-typedb-protocol-b7",
     "type-bridge-typedb-driver-b7",
 )
-OWNER_GATED_COMPATIBILITY_CRATES = (
+NEW_COMPATIBILITY_CRATES = (
     "type-bridge-typedb-protocol-b8",
     "type-bridge-typedb-driver-b8",
 )
-PREEXISTING_CRATES = IMMUTABLE_BASELINE_CRATES + OWNER_GATED_COMPATIBILITY_CRATES
+PREEXISTING_CRATES = IMMUTABLE_BASELINE_CRATES
 PACKAGED_RELEASE_CRATES = tuple(
     crate for crate in PUBLISHED_CRATES if crate not in IMMUTABLE_BASELINE_CRATES
 )
+PACKAGING_PATCH_CRATES = PUBLISHED_CRATES
 EXPECTED_NEW_CRATES = tuple(crate for crate in PUBLISHED_CRATES if crate not in PREEXISTING_CRATES)
 TYPEDB_RUNTIME_PACKAGE = "type-bridge-typedb-runtime"
 TYPEDB_BAND7_DEPENDENCY = "type-bridge-typedb-driver-b7"
 TYPEDB_BAND8_DEPENDENCY = "type-bridge-typedb-driver-b8"
 TYPEDB_BAND9_DEPENDENCY = "typedb-driver"
-TARGET_RELEASE_VERSION = "2.0.0"
-CANDIDATE_RELEASE_VERSION = "2.0.0-rc.0"
-CANDIDATE_PYTHON_VERSION = "2.0.0rc0"
+TARGET_RELEASE_VERSION = "2.0.1"
+CANDIDATE_RELEASE_VERSION = "2.0.1-rc.0"
+CANDIDATE_PYTHON_VERSION = "2.0.1rc0"
 ARTIFACT_CONTRACT_CARGO_INCLUSIVE = "cargo-inclusive"
 ARTIFACT_CONTRACT_PYTHON_NPM_ONLY = "python-npm-only"
 ARTIFACT_CONTRACT_SOURCE_GIT_SERVER_OCI = "source-git-server-oci"
@@ -137,6 +123,7 @@ UNPUBLISHED_BINDING_CRATES = (
     "type-bridge-node",
 )
 PYTHON_NPM_UNPUBLISHED_CRATES = UNPUBLISHED_V2_CRATES + UNPUBLISHED_BINDING_CRATES
+PYTHON_NPM_UNPUBLISHED_CRATES += ("type-bridge-server",)
 TYPEDB_RUNTIME_BAND7_PIN_PATTERN = re.compile(
     r'^pub const PINNED_DRIVER_VERSION_B7: &str = "([^"]+)";$',
     re.MULTILINE,
@@ -294,7 +281,7 @@ LEGACY_TYPEDB_COMPONENTS = (
         license=APACHE_2_LICENSE,
         license_status=(
             "Apache-2.0 namespaced packaging-only package; source behavior unchanged; "
-            "registry publication requires separate explicit TypeBridge owner authorization"
+            "owner-authorized for TypeBridge Cargo distribution"
         ),
         manifest_path="vendor/typedb-driver-b8/Cargo.toml",
         upstream_commit="7e669e41d9fee22fde8d5e60be7edbf00c6ec64b",
@@ -309,7 +296,7 @@ LEGACY_TYPEDB_COMPONENTS = (
         license=MPL_2_LICENSE,
         license_status=(
             "MPL-2.0 namespaced packaging-only package; generated protocol source unchanged; "
-            "registry publication requires separate explicit TypeBridge owner authorization"
+            "owner-authorized for TypeBridge Cargo distribution"
         ),
         manifest_path="vendor/typedb-protocol-b8/Cargo.toml",
         upstream_commit="1db5bdd6579352d31343da28be41844ed07da1b5",
@@ -339,13 +326,11 @@ LEGACY_VENDOR_DESCRIPTIONS = {
     ),
     "type-bridge-typedb-driver-b8": (
         "Renamed package of upstream typedb-driver 3.11.5 (TypeDB protocol band 8); "
-        "source-unmodified compatibility package with registry publication gated by separate "
-        "explicit TypeBridge owner authorization"
+        "source-unmodified compatibility package authorized for TypeBridge Cargo distribution"
     ),
     "type-bridge-typedb-protocol-b8": (
         "Renamed vendor of upstream typedb-protocol 3.11.0 (TypeDB protocol band 8); "
-        "source-unmodified compatibility package with registry publication gated by separate "
-        "explicit TypeBridge owner authorization"
+        "source-unmodified compatibility package authorized for TypeBridge Cargo distribution"
     ),
 }
 HISTORICAL_BAND9_LICENSES = {
@@ -661,9 +646,8 @@ def legacy_vendor_readme_disclosure(component: LegacyTypeDbComponent) -> bytes:
             "**TypeDB**, from\n"
             "[`typedb/typedb-driver`](https://github.com/typedb/typedb-driver). This package\n"
             f"is based exactly on the crates.io `typedb-driver` {component.upstream_version} archive:\n\n"
-            "This source checkout does not authorize registry publication. Any first\n"
-            "publication requires separate explicit TypeBridge owner authorization. If\n"
-            "distributed, this exact source-unmodified package is the authorized\n"
+            "The TypeBridge owner authorized first publication for Cargo distribution on\n"
+            "2026-08-03. This exact source-unmodified package is the authorized\n"
             "compatibility artifact, and its paired protocol package must precede it.\n\n"
             f"- Archive: <{component.archive_url}>\n"
             f"- SHA-256: `{component.archive_checksum}`\n"
@@ -686,9 +670,8 @@ def legacy_vendor_readme_disclosure(component: LegacyTypeDbComponent) -> bytes:
             "[`typedb/typedb-protocol`](https://github.com/typedb/typedb-protocol). It is\n"
             "based exactly on the crates.io "
             f"`typedb-protocol` {component.upstream_version} archive:\n\n"
-            "This source checkout does not authorize registry publication. Any first\n"
-            "publication requires separate explicit TypeBridge owner authorization. If\n"
-            "distributed, this exact source-unmodified package is the authorized\n"
+            "The TypeBridge owner authorized first publication for Cargo distribution on\n"
+            "2026-08-03. This exact source-unmodified package is the authorized\n"
             "compatibility artifact and must precede the paired driver package.\n\n"
             f"- Archive: <{component.archive_url}>\n"
             f"- SHA-256: `{component.archive_checksum}`\n"
@@ -2031,12 +2014,11 @@ def validate_legacy_notice_provenance(notice: str) -> None:
     required_disclosures = (
         "The band-7 packages are unofficial namespaced, already-published packaging-only "
         "republications.",
-        "The band-8 compatibility copies are source-unmodified, and their registry "
-        "publication requires separate explicit TypeBridge owner authorization.",
-        "Registry publication of the band-8 packages is never implied by this source "
-        "checkout or native distribution and requires separate explicit TypeBridge "
-        "owner authorization.",
-        "If distributed, these exact source-unmodified packages are the authorized "
+        "The band-8 compatibility copies are source-unmodified and owner-authorized "
+        "for TypeBridge Cargo distribution.",
+        "The TypeBridge owner authorized first publication of the band-8 packages on "
+        "2026-08-03.",
+        "These exact source-unmodified packages are the authorized "
         "compatibility artifacts, with the protocol package preceding the driver package.",
     )
     for disclosure in required_disclosures:
@@ -2239,13 +2221,12 @@ def validate_native_band9_provenance(
         f"currently that is {driver.version}, exercised",
         "There is no active, consumed, or release-input TypeBridge band-9 fork.",
         "forbidden for consumption and are not release inputs.",
-        "No pre-existing namespaced registry key is assumed by this source checkout",
-        "publication is never authorized merely by the checkout.",
-        "Any first publication requires separate explicit TypeBridge owner authorization.",
-        "If distributed under that authorization, these exact source-unmodified packages "
+        "The TypeBridge owner authorized their first publication for Cargo distribution on "
+        "2026-08-03.",
+        "These exact source-unmodified packages "
         "are the authorized compatibility artifacts, with protocol preceding driver.",
-        "source checkout grants no publication authority; separately authorized "
-        "distribution uses the exact source-unmodified protocol-before-driver packages",
+        "owner-authorized Cargo distribution uses the exact source-unmodified "
+        "protocol-before-driver packages",
         "TypeDB remains the upstream project and original source",
         "TypeBridge-authored crates and bindings remain MIT.",
         "Files derived from the TypeDB drivers retain Apache-2.0",
@@ -2447,10 +2428,10 @@ def validate_release_identity(
         preflight_patches, preflight_packages = workflow_preflight_sequences(
             release_workflow.resolve()
         )
-        if preflight_patches != PUBLISHED_CRATES:
+        if preflight_patches != PACKAGING_PATCH_CRATES:
             raise ValidationError(
                 "Cargo preflight patch sequence is incomplete or reordered: "
-                f"actual={preflight_patches!r}, expected={PUBLISHED_CRATES!r}"
+                f"actual={preflight_patches!r}, expected={PACKAGING_PATCH_CRATES!r}"
             )
         if preflight_packages != PACKAGED_RELEASE_CRATES:
             raise ValidationError(
@@ -2620,9 +2601,7 @@ def require_unblocked_rust_publication(report: dict[str, Any]) -> None:
         edges.append(f"{package} -> {dependency}")
     raise RustPublicationBlockedError(
         "Rust crates.io publication is blocked because public crates depend on "
-        "workspace-internal V2 crates: "
-        f"{', '.join(edges)}. An owner-approved packaging decision is required; "
-        "the nine V2 crates must remain publish=false.",
+        f"unpublished workspace crates: {', '.join(edges)}.",
         report,
     )
 

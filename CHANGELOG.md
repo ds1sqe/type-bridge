@@ -2,7 +2,21 @@
 
 All notable changes to TypeBridge will be documented in this file.
 
-## [Unreleased]
+## [2.0.1] - 2026-08-03
+
+### New Features
+
+- **Cargo-distributed Rust SDK** - `type-bridge` and its complete supporting
+  Rust graph are publishable to crates.io in dependency order. Release gates
+  package and preflight every candidate without mutation, preserve the
+  checksum-pinned historical TypeDB band-7 crates, and publish the authorized
+  band-8 compatibility packages only from the accepted stable tag. Python and
+  Node native binding crates retain their separate PyPI and npm identities.
+
+### Documentation
+
+- Added a linked crates.io version badge and crates.io-first Rust installation
+  guidance while retaining the exact Git instructions for historical 2.0.0.
 
 ## [2.0.0] - 2026-07-31
 
@@ -183,11 +197,11 @@ All notable changes to TypeBridge will be documented in this file.
 - **Legacy multi-band compatibility packaging** - band 7 reuses the already
   published `type-bridge-typedb-driver-b7` 3.8.1 and protocol 3.7.0 packages;
   band 8 uses namespaced driver 3.11.5 and protocol 3.11.0 source-unmodified
-  packaging candidates. Any first publication remains separately owner-gated;
-  if distributed, these exact source-unmodified packages are the authorized
-  compatibility artifacts, with protocol preceding driver. Their Rust source
-  behavior is byte-identical to the respective upstream archives, with no
-  downstream transaction-close or other behavioral patch.
+  packaging candidates. The later Cargo-distribution authorization permits
+  first publication; these exact source-unmodified packages remain the
+  authorized compatibility artifacts, with protocol preceding driver. Their
+  Rust source behavior is byte-identical to the respective upstream archives,
+  with no downstream transaction-close or other behavioral patch.
   Namespacing is solely a Cargo package-identity mechanism that permits all
   protocol bands in one native graph. TypeDB remains the original upstream
   owner, and its Apache-2.0/MPL-2.0 licenses are preserved.

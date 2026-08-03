@@ -7,9 +7,8 @@ one Cargo graph. The upstream project, original source, and ownership remain
 [`typedb/typedb-driver`](https://github.com/typedb/typedb-driver). This package
 is based exactly on the crates.io `typedb-driver` 3.11.5 archive:
 
-This source checkout does not authorize registry publication. Any first
-publication requires separate explicit TypeBridge owner authorization. If
-distributed, this exact source-unmodified package is the authorized
+The TypeBridge owner authorized first publication for Cargo distribution on
+2026-08-03. This exact source-unmodified package is the authorized
 compatibility artifact, and its paired protocol package must precede it.
 
 - Archive: <https://static.crates.io/crates/typedb-driver/typedb-driver-3.11.5.crate>
