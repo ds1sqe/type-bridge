@@ -613,21 +613,15 @@ def test_release_channels_have_fixed_non_attacker_controlled_identities() -> Non
     assert "'v*'" not in preamble
     assert (
         "RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && "
-        "inputs.release_channel == 'recovery' && 'v2.0.0' || github.event_name == "
-        "'workflow_dispatch' && inputs.release_channel == 'candidate' && "
-        "'v2.0.1-rc.0' || 'v2.0.1' }}"
+        "inputs.release_channel == 'recovery' && 'v2.0.0' || 'v2.0.1' }}"
     ) in preamble
     assert (
         "RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && "
-        "inputs.release_channel == 'recovery' && '2.0.0' || github.event_name == "
-        "'workflow_dispatch' && inputs.release_channel == 'candidate' && "
-        "'2.0.1-rc.0' || '2.0.1' }}"
+        "inputs.release_channel == 'recovery' && '2.0.0' || '2.0.1' }}"
     ) in preamble
     assert (
         "PYTHON_RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && "
-        "inputs.release_channel == 'recovery' && '2.0.0' || github.event_name == "
-        "'workflow_dispatch' && inputs.release_channel == 'candidate' && "
-        "'2.0.1rc0' || '2.0.1' }}"
+        "inputs.release_channel == 'recovery' && '2.0.0' || '2.0.1' }}"
     ) in preamble
     assert (
         "RELEASE_CHANNEL: ${{ github.event_name == 'workflow_dispatch' "
@@ -647,7 +641,7 @@ def test_release_channels_have_fixed_non_attacker_controlled_identities() -> Non
     assert workflow.count("\n  RELEASE_VERSION:") == 1
     assert workflow.count("PYTHON_RELEASE_VERSION:") == 1
     assert workflow.count("RELEASE_CHANNEL:") == 1
-    assert preamble.count("inputs.release_channel") == 9
+    assert preamble.count("inputs.release_channel") == 6
     assert "GITHUB_REF_NAME" not in workflow
     assert "github.ref_name" not in workflow
     assert "RELEASE_TAG#v" not in workflow
