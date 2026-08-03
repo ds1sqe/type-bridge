@@ -1,6 +1,6 @@
 [package]
 name = "type-bridge"
-version = "2.0.0"
+version = "2.0.1"
 edition = "2024"
 rust-version = "1.88"
 description = "Public client SDK for TypeBridge"
@@ -8,7 +8,7 @@ license.workspace = true
 license-file.workspace = true
 repository.workspace = true
 authors.workspace = true
-publish = false
+publish = ["crates-io"]
 
 [lib]
 name = "type_bridge"
@@ -23,17 +23,17 @@ band9 = ["typedb", "type-bridge-orm/band9"]
 test-harness = []
 
 [dependencies]
-type-bridge-contract = { path = "../contract", version = "2.0.0" }
-type-bridge-orm = { path = "../orm", version = "2.0.0", default-features = false }
-type-bridge-orm-derive = { path = "../orm-derive", version = "2.0.0" }
+type-bridge-contract = { path = "../contract", version = "2.0.1" }
+type-bridge-orm = { path = "../orm", version = "2.0.1", default-features = false }
+type-bridge-orm-derive = { path = "../orm-derive", version = "2.0.1" }
 thiserror = "2"
 regex = "1"
 serde_json = "1"
 
 [dev-dependencies]
-type-bridge-contract = { path = "../contract", version = "2.0.0" }
-type-bridge-schema = { path = "../schema", version = "2.0.0" }
-type-bridge-schema-codegen = { path = "../schema-codegen", version = "2.0.0" }
+type-bridge-contract = { path = "../contract", version = "2.0.1" }
+type-bridge-schema = { path = "../schema", version = "2.0.1" }
+type-bridge-schema-codegen = { path = "../schema-codegen", version = "2.0.1" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 serde_json = "1"
 

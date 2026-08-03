@@ -1,13 +1,13 @@
 [package]
 name = "type-bridge-contract"
-version = "2.0.0"
+version = "2.0.1"
 edition = "2024"
 description = "Versioned binding-neutral contract primitives for type-bridge"
 license.workspace = true
 license-file.workspace = true
 repository.workspace = true
 authors.workspace = true
-publish = false
+publish = ["crates-io"]
 
 [lib]
 name = "type_bridge_contract"

@@ -354,8 +354,6 @@ def test_preflight_rejects_inconsistent_api_and_index_visibility(tmp_path: Path)
     [
         ("type-bridge-typedb-protocol-b7", "3.7.0", PINNED_PROTOCOL_B7_CHECKSUM),
         ("type-bridge-typedb-driver-b7", "3.8.1", PINNED_DRIVER_B7_CHECKSUM),
-        ("type-bridge-typedb-protocol-b8", "3.11.0", PINNED_PROTOCOL_B8_CHECKSUM),
-        ("type-bridge-typedb-driver-b8", "3.11.5", PINNED_DRIVER_B8_CHECKSUM),
     ],
 )
 def test_pinned_preexisting_crate_uses_committed_checksum_without_packaging(
@@ -379,20 +377,23 @@ def test_pinned_preexisting_crate_uses_committed_checksum_without_packaging(
     assert "no package or publish attempted" in result.stdout
 
 
-def test_owner_gated_band8_absence_cannot_fall_through_to_publish(tmp_path: Path) -> None:
+def test_authorized_band8_absence_uses_the_ordinary_publish_path(tmp_path: Path) -> None:
     result, commands, _ = run_helper(
         tmp_path,
-        api_sequence="missing",
-        index_sequence="missing",
+        api_sequence="missing,matching",
+        index_sequence="missing,matching",
+        publish_mode="success",
         crate="type-bridge-typedb-protocol-b8",
         version="3.11.0",
-        registry_checksum=PINNED_PROTOCOL_B8_CHECKSUM,
+        registry_checksum=CANDIDATE_CHECKSUM,
     )
 
-    assert result.returncode != 0
-    assert commands == ["pkgid -p type-bridge-typedb-protocol-b8"]
-    assert "package --locked" not in "\n".join(commands)
-    assert "publish --locked" not in "\n".join(commands)
+    assert result.returncode == 0, result.stderr
+    assert commands == [
+        "pkgid -p type-bridge-typedb-protocol-b8",
+        "package --locked -p type-bridge-typedb-protocol-b8",
+        "publish --locked --registry crates-io -p type-bridge-typedb-protocol-b8",
+    ]
 
 
 def test_verify_preexisting_rejects_unmapped_crate(tmp_path: Path) -> None:
@@ -491,10 +492,10 @@ def test_cutoff_state_is_closed_to_the_first_graph_crate(tmp_path: Path) -> None
     assert f"restricted to the {CUTOFF_WITNESS} graph witness" in result.stderr
 
 
-def test_python_npm_release_workflow_does_not_invoke_the_cargo_helper() -> None:
+def test_cargo_inclusive_release_workflow_invokes_the_cargo_helper() -> None:
     workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
 
-    assert "--artifact-contract source-git-server-oci" in workflow
-    assert PUBLISH_HELPER.name not in workflow
+    assert "--artifact-contract cargo-inclusive" in workflow
+    assert PUBLISH_HELPER.name in workflow
     assert "--cutoff-state" not in workflow
-    assert "cargo publish" not in workflow
+    assert "publish-crates:" in workflow

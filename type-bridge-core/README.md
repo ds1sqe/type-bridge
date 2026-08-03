@@ -35,15 +35,14 @@ separate compatibility boundaries.
 The nine V2 implementation crates are workspace-internal: `contract`,
 `schema`, `query`, `schema-migration`, `schema-migration-typedb`,
 `schema-codegen`, `schema-compat`, `workspace`, and `cli`. Their first-party
-versions track the repository release identity (currently `2.0.0`), but every
-manifest remains `publish = false`. They are built into the Python and Node
-products from workspace source and are not crates.io release identities.
+versions track the repository release identity (currently `2.0.1`). The
+public Rust SDK closure is published to crates.io in dependency order;
+`type-bridge-core` and `type-bridge-node` remain native binding crates for the
+Python and Node products, respectively, and are not crates.io identities.
 
-Existing public Rust crates keep their established package identities. The
-current source graph, however, makes several of them depend on the unpublished
-V2 crates, so the release-identity gate blocks Rust crates.io publication until
-an explicit owner-level packaging decision closes that graph. The gate neither
-publishes the V2 crates nor silently marks additional released crates private.
+The release-identity gate requires every public SDK dependency to be present
+on crates.io before it can publish the root crate. It leaves native binding and
+OCI server products on their own distribution surfaces.
 
 ## Building
 

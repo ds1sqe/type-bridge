@@ -582,7 +582,7 @@
         {
           "path": ".github/workflows/release.yml",
           "anchors": [
-            "--artifact-contract source-git-server-oci",
+            "--artifact-contract cargo-inclusive",
             "publish-server-oci:"
           ]
         }

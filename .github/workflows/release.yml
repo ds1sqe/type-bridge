@@ -3,11 +3,11 @@ name: Release
 on:
   push:
     tags:
-      - 'v2.0.0'
+      - 'v2.0.1'
   workflow_dispatch:
     inputs:
       release_channel:
-        description: Validate a fixed release identity or recover the accepted v2.0.0 tag run
+        description: Validate the 2.0.1 release identity or recover the accepted v2.0.0 tag run
         required: true
         type: choice
         default: candidate
@@ -30,13 +30,13 @@ on:
           - publish
 
 # The event allowlist above is the sole release-identity selector. A manual run
-# validates one of two fixed identities without mutation. The recovery channel
+# validates one fixed current identity without mutation. The recovery channel
 # is pinned below to the one accepted v2.0.0 tag run whose preflight failed
 # before any publisher executed.
 env:
-  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_channel == 'candidate' && 'v2.0.0-rc.0' || 'v2.0.0' }}
-  RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.release_channel == 'candidate' && '2.0.0-rc.0' || '2.0.0' }}
-  PYTHON_RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.release_channel == 'candidate' && '2.0.0rc0' || '2.0.0' }}
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_channel == 'recovery' && 'v2.0.0' || github.event_name == 'workflow_dispatch' && inputs.release_channel == 'candidate' && 'v2.0.1-rc.0' || 'v2.0.1' }}
+  RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.release_channel == 'recovery' && '2.0.0' || github.event_name == 'workflow_dispatch' && inputs.release_channel == 'candidate' && '2.0.1-rc.0' || '2.0.1' }}
+  PYTHON_RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.release_channel == 'recovery' && '2.0.0' || github.event_name == 'workflow_dispatch' && inputs.release_channel == 'candidate' && '2.0.1rc0' || '2.0.1' }}
   RELEASE_CHANNEL: ${{ github.event_name == 'workflow_dispatch' && inputs.release_channel || 'stable' }}
   RELEASE_REVISION: ${{ github.event_name == 'workflow_dispatch' && inputs.release_channel == 'recovery' && 'aacf4d16486a3a3bae47c3b10c1d526c587dd7a7' || github.sha }}
   RELEASE_ARTIFACT_RUN_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.release_channel == 'recovery' && inputs.recovery_run_id || github.run_id }}
@@ -136,18 +136,95 @@ jobs:
         run: python scripts/ci/generate_native_dependency_notice.py --check
 
       # These namespaced 3.12.0 keys are historical 1.5.x compatibility
-      # artifacts, never current graph inputs. Check both read-only registry
-      # views before the local V2 publication-boundary gate can stop this job.
+      # artifacts, never current graph inputs.
       - name: Verify historical band-9 registry compatibility keys
         run: python scripts/ci/validate_historical_band9_registry.py
 
-      # The closed release set includes Python, npm, the exact source/Git Rust
-      # SDK revision, and the accepted TypeBridge server OCI image. It never
-      # creates a crates.io mutation path for the blocked workspace graph.
+      - name: Package and preflight the complete crates.io graph
+        working-directory: type-bridge-core
+        env:
+          PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
+        run: |
+          set -euo pipefail
+
+          bash ../scripts/ci/publish_crate_idempotently.sh \
+            --verify-preexisting type-bridge-typedb-protocol-b7
+          bash ../scripts/ci/publish_crate_idempotently.sh \
+            --verify-preexisting type-bridge-typedb-driver-b7
+
+          patches=(
+            --config 'patch.crates-io.type-bridge-contract.path="crates/contract"'
+            --config 'patch.crates-io.type-bridge-core-lib.path="crates/core"'
+            --config 'patch.crates-io.type-bridge-schema.path="crates/schema"'
+            --config 'patch.crates-io.type-bridge-query.path="crates/query"'
+            --config 'patch.crates-io.type-bridge-schema-migration.path="crates/schema-migration"'
+            --config 'patch.crates-io.type-bridge-toml-transpiler.path="crates/toml-transpiler"'
+            --config 'patch.crates-io.type-bridge-schema-compat.path="crates/schema-compat"'
+            --config 'patch.crates-io.type-bridge-schema-codegen.path="crates/schema-codegen"'
+            --config 'patch.crates-io.type-bridge-orm-derive.path="crates/orm-derive"'
+            --config 'patch.crates-io.type-bridge-typedb-protocol-b7.path="vendor/typedb-protocol-b7"'
+            --config 'patch.crates-io.type-bridge-typedb-driver-b7.path="vendor/typedb-driver-b7"'
+            --config 'patch.crates-io.type-bridge-typedb-protocol-b8.path="vendor/typedb-protocol-b8"'
+            --config 'patch.crates-io.type-bridge-typedb-driver-b8.path="vendor/typedb-driver-b8"'
+            --config 'patch.crates-io.type-bridge-typedb-runtime.path="crates/typedb-runtime"'
+            --config 'patch.crates-io.type-bridge-orm.path="crates/orm"'
+            --config 'patch.crates-io.type-bridge-migration.path="crates/migration"'
+            --config 'patch.crates-io.type-bridge-schema-migration-typedb.path="crates/schema-migration-typedb"'
+            --config 'patch.crates-io.type-bridge-workspace.path="crates/workspace"'
+            --config 'patch.crates-io.type-bridge-cli.path="crates/cli"'
+            --config 'patch.crates-io.type-bridge.path="crates/rust"'
+          )
+          for crate in \
+            type-bridge-contract \
+            type-bridge-core-lib \
+            type-bridge-schema \
+            type-bridge-query \
+            type-bridge-schema-migration \
+            type-bridge-toml-transpiler \
+            type-bridge-schema-compat \
+            type-bridge-schema-codegen \
+            type-bridge-orm-derive \
+            type-bridge-typedb-protocol-b8 \
+            type-bridge-typedb-driver-b8 \
+            type-bridge-typedb-runtime \
+            type-bridge-orm \
+            type-bridge-migration \
+            type-bridge-schema-migration-typedb \
+            type-bridge-workspace \
+            type-bridge-cli \
+            type-bridge
+          do
+            cargo package --locked --allow-dirty --all-features -p "$crate" "${patches[@]}"
+          done
+
+          for crate in \
+            type-bridge-contract \
+            type-bridge-core-lib \
+            type-bridge-schema \
+            type-bridge-query \
+            type-bridge-schema-migration \
+            type-bridge-toml-transpiler \
+            type-bridge-schema-compat \
+            type-bridge-schema-codegen \
+            type-bridge-orm-derive \
+            type-bridge-typedb-protocol-b8 \
+            type-bridge-typedb-driver-b8 \
+            type-bridge-typedb-runtime \
+            type-bridge-orm \
+            type-bridge-migration \
+            type-bridge-schema-migration-typedb \
+            type-bridge-workspace \
+            type-bridge-cli \
+            type-bridge
+          do
+            bash ../scripts/ci/publish_crate_idempotently.sh --preflight "$crate"
+          done
+
+      # Bind Python, npm, Cargo, and OCI artifacts to one release identity.
       - name: Validate identity and legacy TypeDB package provenance
         run: |
           python scripts/ci/validate_release_identity.py \
-            --artifact-contract source-git-server-oci \
+            --artifact-contract cargo-inclusive \
             --release-channel "$RELEASE_CHANNEL" \
             --tag "$RELEASE_TAG" \
             --workspace type-bridge-core/Cargo.toml \
@@ -185,7 +262,7 @@ jobs:
       # granular token can publish. Authenticate here, then make npm's exact
       # package PUT the first registry mutation so it is authoritative.
       - name: Authenticate npm publication credential
-        if: github.event_name == 'push' && github.ref == 'refs/tags/v2.0.0'
+        if: github.event_name == 'push' && github.ref == 'refs/tags/v2.0.1'
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
@@ -200,6 +277,54 @@ jobs:
             npm whoami --registry=https://registry.npmjs.org
           )"
           test -n "$authenticated_user"
+
+  # Publish the complete Rust graph only from the accepted stable tag. The
+  # helper proves both registry authorities expose the exact local checksum
+  # before an existing immutable version can be treated as success.
+  publish-crates:
+    name: Publish Rust crates to crates.io
+    if: github.event_name == 'push' && github.ref == 'refs/tags/v2.0.1'
+    needs: channel-preflight
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: 1.94.1
+
+      - name: Publish accepted crates in dependency order
+        working-directory: type-bridge-core
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          set -euo pipefail
+          cp ../scripts/ci/publish_crate_idempotently.sh "$RUNNER_TEMP/publish-crate.sh"
+          chmod +x "$RUNNER_TEMP/publish-crate.sh"
+
+          "$RUNNER_TEMP/publish-crate.sh type-bridge-contract"
+          "$RUNNER_TEMP/publish-crate.sh type-bridge-core-lib"
+          "$RUNNER_TEMP/publish-crate.sh type-bridge-schema"
+          "$RUNNER_TEMP/publish-crate.sh type-bridge-query"
+          "$RUNNER_TEMP/publish-crate.sh type-bridge-schema-migration"
+          "$RUNNER_TEMP/publish-crate.sh type-bridge-toml-transpiler"
+          "$RUNNER_TEMP/publish-crate.sh type-bridge-schema-compat"
+          "$RUNNER_TEMP/publish-crate.sh type-bridge-schema-codegen"
+          "$RUNNER_TEMP/publish-crate.sh type-bridge-orm-derive"
+          "$RUNNER_TEMP/publish-crate.sh type-bridge-typedb-protocol-b7"
+          "$RUNNER_TEMP/publish-crate.sh type-bridge-typedb-driver-b7"
+          "$RUNNER_TEMP/publish-crate.sh type-bridge-typedb-protocol-b8"
+          "$RUNNER_TEMP/publish-crate.sh type-bridge-typedb-driver-b8"
+          "$RUNNER_TEMP/publish-crate.sh type-bridge-typedb-runtime"
+          "$RUNNER_TEMP/publish-crate.sh type-bridge-orm"
+          "$RUNNER_TEMP/publish-crate.sh type-bridge-migration"
+          "$RUNNER_TEMP/publish-crate.sh type-bridge-schema-migration-typedb"
+          "$RUNNER_TEMP/publish-crate.sh type-bridge-workspace"
+          "$RUNNER_TEMP/publish-crate.sh type-bridge-cli"
+          "$RUNNER_TEMP/publish-crate.sh type-bridge"
 
   # Build type-bridge-core wheels for all platforms
   build-core-wheels:
@@ -1665,7 +1790,7 @@ jobs:
       (
         (
           github.event_name == 'push' &&
-          github.ref == 'refs/tags/v2.0.0' &&
+          github.ref == 'refs/tags/v2.0.1' &&
           needs.channel-preflight.result == 'success' &&
           needs.accept-server-oci.result == 'success' &&
           needs.publish-node-npm.result == 'success'
@@ -1765,7 +1890,7 @@ jobs:
         run: |
           set -euo pipefail
           tag_ref_json="$(
-            gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/v2.0.0"
+            gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}"
           )"
           test "$(jq -r '.object.type' <<<"$tag_ref_json")" = tag
           tag_object="$(jq -r '.object.sha' <<<"$tag_ref_json")"
@@ -2160,7 +2285,7 @@ jobs:
       (
         (
           github.event_name == 'push' &&
-          github.ref == 'refs/tags/v2.0.0' &&
+          github.ref == 'refs/tags/v2.0.1' &&
           needs.channel-preflight.result == 'success'
         ) ||
         (
@@ -2247,12 +2372,10 @@ jobs:
         run: |
           set -euo pipefail
           tag_ref_json="$(
-            gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/v2.0.0"
+            gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}"
           )"
           test "$(jq -r '.object.type' <<<"$tag_ref_json")" = tag
           tag_object="$(jq -r '.object.sha' <<<"$tag_ref_json")"
-          test "$tag_object" = \
-            "a4cec6478ad4e764f039e51eabcbb68d45efd45a"
           tag_json="$(
             gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_object}"
           )"
@@ -2301,7 +2424,7 @@ jobs:
       (
         (
           github.event_name == 'push' &&
-          github.ref == 'refs/tags/v2.0.0' &&
+          github.ref == 'refs/tags/v2.0.1' &&
           needs.build-core-wheels.result == 'success' &&
           needs.build-core-sdist.result == 'success' &&
           needs.publish-server-oci.result == 'success'
@@ -2398,12 +2521,10 @@ jobs:
         run: |
           set -euo pipefail
           tag_ref_json="$(
-            gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/v2.0.0"
+            gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}"
           )"
           test "$(jq -r '.object.type' <<<"$tag_ref_json")" = tag
           tag_object="$(jq -r '.object.sha' <<<"$tag_ref_json")"
-          test "$tag_object" = \
-            "a4cec6478ad4e764f039e51eabcbb68d45efd45a"
           tag_json="$(
             gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_object}"
           )"
@@ -2435,7 +2556,7 @@ jobs:
       (
         (
           github.event_name == 'push' &&
-          github.ref == 'refs/tags/v2.0.0' &&
+          github.ref == 'refs/tags/v2.0.1' &&
           needs.build-python.result == 'success' &&
           needs.publish-core-pypi.result == 'success'
         ) ||
@@ -2514,12 +2635,10 @@ jobs:
         run: |
           set -euo pipefail
           tag_ref_json="$(
-            gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/v2.0.0"
+            gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}"
           )"
           test "$(jq -r '.object.type' <<<"$tag_ref_json")" = tag
           tag_object="$(jq -r '.object.sha' <<<"$tag_ref_json")"
-          test "$tag_object" = \
-            "a4cec6478ad4e764f039e51eabcbb68d45efd45a"
           tag_json="$(
             gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_object}"
           )"
@@ -2551,11 +2670,12 @@ jobs:
       (
         (
           github.event_name == 'push' &&
-          github.ref == 'refs/tags/v2.0.0' &&
+          github.ref == 'refs/tags/v2.0.1' &&
           needs.publish-server-oci.result == 'success' &&
           needs.publish-node-npm.result == 'success' &&
           needs.publish-core-pypi.result == 'success' &&
-          needs.publish-python-pypi.result == 'success'
+          needs.publish-python-pypi.result == 'success' &&
+          needs.publish-crates.result == 'success'
         ) ||
         (
           github.event_name == 'workflow_dispatch' &&
@@ -2570,7 +2690,7 @@ jobs:
           needs.publish-python-pypi.result == 'success'
         )
       )
-    needs: [recovery-preflight, publish-server-oci, publish-node-npm, publish-core-pypi, publish-python-pypi]
+    needs: [recovery-preflight, publish-server-oci, publish-node-npm, publish-core-pypi, publish-python-pypi, publish-crates]
     runs-on: ubuntu-latest
     permissions:
       actions: read
@@ -2658,12 +2778,10 @@ jobs:
         run: |
           set -euo pipefail
           tag_ref_json="$(
-            gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/v2.0.0"
+            gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}"
           )"
           test "$(jq -r '.object.type' <<<"$tag_ref_json")" = tag
           tag_object="$(jq -r '.object.sha' <<<"$tag_ref_json")"
-          test "$tag_object" = \
-            "a4cec6478ad4e764f039e51eabcbb68d45efd45a"
           tag_json="$(
             gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_object}"
           )"
@@ -2673,9 +2791,9 @@ jobs:
       - name: Create draft release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
-          tag_name: v2.0.0
+          tag_name: ${{ env.RELEASE_TAG }}
           target_commitish: ${{ env.RELEASE_REVISION }}
-          name: TypeBridge 2.0.0
+          name: TypeBridge ${{ env.RELEASE_VERSION }}
           draft: true
           generate_release_notes: true
           body_path: dist/server-oci-release.md

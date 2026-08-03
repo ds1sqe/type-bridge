@@ -65,8 +65,8 @@ behavior in these ownership areas:
 - Sync or migrate the schema before inserting application data.
 - Use attribute instances at typed model boundaries.
 - Use JavaScript `bigint` for TypeDB integer values.
-- Resolve the Rust 2.0 SDK from the exact release source/Git revision. Do not
-  claim crates.io distribution.
+- Resolve Rust releases starting with 2.0.1 from crates.io. Resolve historical
+  2.0.0 consumers from the exact release Git revision.
 - Preserve exact compatibility, deprecation, remote-trust, and resource-limit
   behavior from the relevant guide.
 

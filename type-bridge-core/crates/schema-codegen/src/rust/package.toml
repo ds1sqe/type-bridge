@@ -10,7 +10,7 @@ path = "src/lib.rs"
 doctest = false
 
 [dependencies]
-type-bridge = { version = "=2.0.0", default-features = false }
+type-bridge = { version = "=2.0.1", default-features = false }
 
 [features]
 test-harness = ["type-bridge/test-harness"]

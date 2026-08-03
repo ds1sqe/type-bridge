@@ -5,15 +5,25 @@ the same model, CRUD, immutable-query, transaction, and one-exchange remote
 contracts as the Python and TypeScript bindings. Rust 1.88 or newer is
 required.
 
-## Distribution in 2.0
+## Distribution
 
-The 2.0 Rust SDK is distributed from the exact release source/Git revision,
-not crates.io. The public `type-bridge` package still has workspace-internal
-path dependencies, so publishing only that package would create an
-unresolvable registry artifact. Generated application crates depend only on
-`type-bridge`; they do not expose the internal engine crates.
+Starting with 2.0.1, the Rust SDK is distributed from crates.io as a complete,
+version-locked package graph. Generated application crates depend only on the
+public `type-bridge` package; they do not expose the supporting engine crates.
 
-Use the 40-character commit recorded in the `v2.0.0` GitHub release:
+```toml
+[dependencies]
+models = { package = "type-bridge-generated-schema", path = "generated/rust" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+type-bridge = "2"
+```
+
+Commit `Cargo.lock` after resolving the SDK and generated schema crate.
+
+### Historical 2.0.0 source dependency
+
+TypeBridge 2.0.0 was released before the complete package graph became
+publishable. Use the 40-character commit recorded in its GitHub release:
 
 ```toml
 [dependencies]
@@ -28,7 +38,6 @@ type-bridge = { git = "https://github.com/ds1sqe/type-bridge", rev = "<40-charac
 
 The patch satisfies both the application's dependency and the generated
 crate's exact `type-bridge` requirement from one immutable source revision.
-Commit `Cargo.lock` after resolving it.
 
 ## Generate the schema crate
 

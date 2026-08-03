@@ -43,13 +43,19 @@ selecting a deployment target.
 
 ## Rust
 
-The TypeBridge 2.0 Rust SDK requires Rust 1.88+ and is distributed from the
-exact source/Git revision recorded in the matching GitHub release, not from
-crates.io. The application and its generated schema crate resolve the same
-immutable revision.
+The TypeBridge Rust SDK requires Rust 1.88+. Releases starting with 2.0.1 are
+distributed through crates.io:
 
-Follow [Rust distribution in 2.0](../guide/rust.md#distribution-in-20) for the
-exact dependency and patch declarations.
+```toml
+[dependencies]
+type-bridge = "2"
+```
+
+TypeBridge 2.0.0 predates Cargo distribution and remains available from the
+exact source/Git revision recorded in its GitHub release.
+
+Follow [Rust distribution](../guide/rust.md#distribution) for generated-crate
+setup and the historical 2.0.0 Git declaration.
 
 ## CLI and code generation
 

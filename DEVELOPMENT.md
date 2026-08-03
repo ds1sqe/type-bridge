@@ -9,7 +9,7 @@ through:
 
 - the `type-bridge` Python package;
 - the `@type-bridge/node` TypeScript/Node package;
-- the source/Git-distributed generated Rust SDK;
+- the crates.io-distributed generated Rust SDK;
 - the `type-bridge` workspace and migration CLI;
 - the `type-bridge-server` container.
 
@@ -59,8 +59,8 @@ duplicated directory snapshot here.
   edited by hand.
 - Existing V1 compatibility surfaces stay available unless the exact
   deprecation inventory schedules their removal.
-- Rust 2.0 is resolved from the exact release source/Git revision, not
-  crates.io.
+- Rust releases starting with 2.0.1 resolve a complete, version-locked crates.io
+  graph; the historical 2.0.0 SDK resolves from its exact release Git revision.
 - Release-specific compatibility, trust, resource-limit, and security
   boundaries are contracts, not illustrative prose.
 
