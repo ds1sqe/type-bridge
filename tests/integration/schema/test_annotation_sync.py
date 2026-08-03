@@ -86,9 +86,16 @@ def db():
 
     yield database
 
-    # Cleanup
-    database.delete_database()
+    # Close the test connection before opening a separate control connection.
+    # TypeDB 3.12 rejects deletion while the just-used connection is still
+    # releasing its sessions.
     database.close()
+    cleanup_database = Database(address=TEST_DB_ADDRESS, database="test_annotation_sync")
+    try:
+        if cleanup_database.database_exists():
+            cleanup_database.delete_database()
+    finally:
+        cleanup_database.close()
 
 
 @pytest.mark.integration
