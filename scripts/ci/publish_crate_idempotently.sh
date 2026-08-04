@@ -295,10 +295,25 @@ if [[ "$mode" == "verify-preexisting" ]]; then
 fi
 
 crate_file="target/package/${crate}-${version}.crate"
+
+package_candidate() {
+  # Cargo can overwrite a shorter archive without truncating a longer archive
+  # left by the patched graph preflight. Remove only this resolved package file
+  # first so stale trailing bytes cannot change the immutable checksum.
+  if [[ -e "$crate_file" || -L "$crate_file" ]]; then
+    if [[ ! -f "$crate_file" || -L "$crate_file" ]]; then
+      echo "Refusing to replace non-regular packaged crate: $crate_file" >&2
+      return 1
+    fi
+    rm -f -- "$crate_file"
+  fi
+  "$cargo_bin" package --locked -p "$crate" >/dev/null
+}
+
 if [[ "$mode" == "publish" || "$mode" == "cutoff-state" ]]; then
   # `cargo publish` packages the same clean tree. Materialize that payload first
   # so an existing immutable version can be compared before any upload attempt.
-  "$cargo_bin" package --locked -p "$crate" >/dev/null
+  package_candidate
 fi
 
 calculate_candidate_checksum() {
@@ -338,7 +353,7 @@ preflight_candidate_key() {
   # archive's generated Cargo.lock. Once a key exists, rebuild it through the
   # exact unpatched publish path before comparing immutable bytes.
   if [[ "$mode" == "preflight" && ("$api_status" -eq 0 || "$index_status" -eq 0) ]]; then
-    "$cargo_bin" package --locked -p "$crate" >/dev/null
+    package_candidate
     candidate_checksum="$(calculate_candidate_checksum)"
   fi
 
