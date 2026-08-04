@@ -20,6 +20,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 CI_WORKFLOW = REPO_ROOT / ".github/workflows/ci.yml"
 RELEASE_WORKFLOW = REPO_ROOT / ".github/workflows/release.yml"
 CRATE_PUBLISH_HELPER = REPO_ROOT / "scripts/ci/publish_crate_idempotently.sh"
+CRATE_RELEASE_GRAPH = REPO_ROOT / "scripts/ci/release_crates_graph.sh"
 FRESH_RUNTIME_PROBE = REPO_ROOT / "scripts/ci/validate_fresh_typedb_runtime_package.sh"
 RUST_RELEASE_ARTIFACT_VALIDATOR = REPO_ROOT / "scripts/ci/validate_rust_release_artifacts.py"
 RECOVERY_VALIDATOR = REPO_ROOT / "scripts/ci/validate_release_recovery.py"
@@ -37,8 +38,8 @@ MUTATING_RELEASE_JOBS = (
 CARGO_PUBLICATION_MARKERS = (
     "publish-crates:",
     "CARGO_REGISTRY_TOKEN",
-    "publish_crate_idempotently",
-    "cargo package",
+    "release_crates_graph",
+    '"${cargo_command[@]}" package',
     "patch.crates-io",
     "--verify-preexisting",
     "type-bridge-typedb-protocol-b8",
@@ -877,8 +878,9 @@ def test_candidate_guard_gate_rejects_hidden_preflight_publication() -> None:
 @pytest.mark.parametrize("marker", CARGO_PUBLICATION_MARKERS)
 def test_cargo_inclusive_release_contains_each_required_path(marker: str) -> None:
     workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+    graph = CRATE_RELEASE_GRAPH.read_text(encoding="utf-8")
 
-    assert marker in workflow
+    assert marker in workflow or marker in graph
 
 
 def test_python_npm_publication_is_serial_after_global_candidate_gates() -> None:

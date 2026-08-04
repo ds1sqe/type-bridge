@@ -11,7 +11,9 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 PUBLISH_HELPER = REPO_ROOT / "scripts/ci/publish_crate_idempotently.sh"
+RELEASE_GRAPH = REPO_ROOT / "scripts/ci/release_crates_graph.sh"
 RELEASE_WORKFLOW = REPO_ROOT / ".github/workflows/release.yml"
+RECOVERY_WORKFLOW = REPO_ROOT / ".github/workflows/recover-crates-v2.0.1.yml"
 CUTOFF_WITNESS = "type-bridge-core-lib"
 CANDIDATE_BYTES = b"candidate crate bytes\n"
 CANDIDATE_CHECKSUM = hashlib.sha256(CANDIDATE_BYTES).hexdigest()
@@ -496,6 +498,81 @@ def test_cargo_inclusive_release_workflow_invokes_the_cargo_helper() -> None:
     workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
 
     assert "--artifact-contract cargo-inclusive" in workflow
-    assert PUBLISH_HELPER.name in workflow
+    assert RELEASE_GRAPH.name in workflow
     assert "--cutoff-state" not in workflow
     assert "publish-crates:" in workflow
+
+
+def test_cargo_publish_job_passes_each_crate_as_a_separate_argument(tmp_path: Path) -> None:
+    """Execute the production graph script against a non-publishing helper double."""
+    workspace = tmp_path / "workspace"
+    core = workspace / "type-bridge-core"
+    scripts = workspace / "scripts" / "ci"
+    invocation_log = tmp_path / "invocations"
+    core.mkdir(parents=True)
+    scripts.mkdir(parents=True)
+    graph = executable(
+        scripts / RELEASE_GRAPH.name,
+        RELEASE_GRAPH.read_text(encoding="utf-8"),
+    )
+    executable(
+        scripts / PUBLISH_HELPER.name,
+        """#!/usr/bin/env bash
+set -euo pipefail
+[[ $# -eq 1 ]]
+printf '%s\\n' "$1" >> "$INVOCATION_LOG"
+""",
+    )
+
+    result = subprocess.run(
+        ["bash", str(graph), "--publish", str(core)],
+        cwd=workspace,
+        env={
+            **os.environ,
+            "INVOCATION_LOG": str(invocation_log),
+        },
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert invocation_log.read_text(encoding="utf-8").splitlines() == [
+        "type-bridge-typedb-protocol-b7",
+        "type-bridge-typedb-driver-b7",
+        "type-bridge-contract",
+        "type-bridge-core-lib",
+        "type-bridge-schema",
+        "type-bridge-query",
+        "type-bridge-schema-migration",
+        "type-bridge-toml-transpiler",
+        "type-bridge-schema-compat",
+        "type-bridge-schema-codegen",
+        "type-bridge-orm-derive",
+        "type-bridge-typedb-protocol-b8",
+        "type-bridge-typedb-driver-b8",
+        "type-bridge-typedb-runtime",
+        "type-bridge-orm",
+        "type-bridge-migration",
+        "type-bridge-schema-migration-typedb",
+        "type-bridge-workspace",
+        "type-bridge-cli",
+        "type-bridge",
+    ]
+
+
+def test_crates_recovery_is_closed_to_the_exact_failed_release() -> None:
+    workflow = RECOVERY_WORKFLOW.read_text(encoding="utf-8")
+
+    assert "push:" not in workflow
+    assert "github.ref == 'refs/heads/master'" in workflow
+    assert "refs/tags/v2.0.1" in workflow
+    assert "f0b9fd41bc0a437939bb256062fe6ad47071d632" in workflow
+    assert "42775b4c412a9278e182667d27cf96e09bfc04d7" in workflow
+    assert 'RELEASE_RUN_ID: "30860417007"' in workflow
+    assert '.path == ".github/workflows/release.yml"' in workflow
+    assert 'require_job "Publish Rust crates to crates.io" failure' in workflow
+    assert "--preflight" in workflow
+    assert "inputs.recovery_mode == 'publish'" in workflow
+    assert "needs.verify-recovery.result == 'success'" in workflow
+    assert "CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}" in workflow
+    assert "--publish" in workflow
