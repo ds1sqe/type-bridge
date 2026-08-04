@@ -114,6 +114,17 @@ def copy_workspace_manifests(tmp_path: Path) -> Path:
     return target_root / "Cargo.toml"
 
 
+def copy_release_graph_authorities(tmp_path: Path) -> tuple[Path, Path]:
+    """Copy the ordinary workflow and the Cargo graph it authorizes."""
+    workflow = tmp_path / ".github/workflows/release.yml"
+    graph = tmp_path / "scripts/ci/release_crates_graph.sh"
+    workflow.parent.mkdir(parents=True)
+    graph.parent.mkdir(parents=True)
+    shutil.copyfile(ROOT / ".github/workflows/release.yml", workflow)
+    shutil.copyfile(ROOT / "scripts/ci/release_crates_graph.sh", graph)
+    return workflow, graph
+
+
 def replace_lock_package_text(
     workspace: Path,
     package: str,
@@ -318,6 +329,48 @@ def test_repository_workflow_uses_the_cargo_inclusive_contract() -> None:
     assert "--artifact-contract cargo-inclusive" in source
     validator.workflow_preflight_sequences(workflow)
     validator.workflow_registry_preflight_sequences(workflow)
+
+
+def test_release_workflow_must_bind_the_centralized_cargo_graph(tmp_path: Path) -> None:
+    workflow, _ = copy_release_graph_authorities(tmp_path)
+    workflow.write_text(
+        workflow.read_text().replace(
+            "bash ../scripts/ci/release_crates_graph.sh --publish",
+            "echo cargo publish omitted",
+            1,
+        )
+    )
+
+    with pytest.raises(validator.ValidationError, match="exactly once with --publish"):
+        validator.workflow_publish_sequence(workflow)
+
+
+def test_centralized_cargo_publish_order_cannot_drift(tmp_path: Path) -> None:
+    workflow, graph = copy_release_graph_authorities(tmp_path)
+    source = graph.read_text()
+    first = "publish_crates=(\n  type-bridge-contract\n  type-bridge-core-lib\n"
+    assert source.count(first) == 1
+    graph.write_text(
+        source.replace(
+            first,
+            "publish_crates=(\n  type-bridge-core-lib\n  type-bridge-contract\n",
+            1,
+        )
+    )
+
+    with pytest.raises(validator.ValidationError, match="incomplete or reordered"):
+        validate(release_workflow=workflow)
+
+
+def test_centralized_cargo_preflight_loop_cannot_be_bypassed(tmp_path: Path) -> None:
+    workflow, graph = copy_release_graph_authorities(tmp_path)
+    source = graph.read_text()
+    marker = 'bash "$helper" --preflight "$crate"'
+    assert source.count(marker) == 1
+    graph.write_text(source.replace(marker, 'echo "preflight omitted for $crate"', 1))
+
+    with pytest.raises(validator.ValidationError, match="preflight loops are malformed"):
+        validator.workflow_registry_preflight_sequences(workflow)
 
 
 @pytest.mark.parametrize(

@@ -1,0 +1,176 @@
+name: Recover crates.io v2.0.1
+
+on:
+  workflow_dispatch:
+    inputs:
+      recovery_mode:
+        description: Verify first; publish only after the verification run succeeds
+        required: true
+        type: choice
+        default: verify
+        options:
+          - verify
+          - publish
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: v2.0.1
+  RELEASE_REVISION: f0b9fd41bc0a437939bb256062fe6ad47071d632
+  RELEASE_TAG_OBJECT: 42775b4c412a9278e182667d27cf96e09bfc04d7
+  RELEASE_RUN_ID: "30860417007"
+
+jobs:
+  verify-recovery:
+    name: Verify crates.io recovery
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Checkout recovery controls
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Checkout immutable release source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: refs/tags/v2.0.1
+          fetch-depth: 0
+          path: tmp/release-source
+          persist-credentials: false
+
+      - name: Bind recovery to the exact tag and failed release run
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          test "$(git -C tmp/release-source cat-file -t "refs/tags/${RELEASE_TAG}")" = tag
+          test "$(git -C tmp/release-source rev-parse "refs/tags/${RELEASE_TAG}")" = \
+            "$RELEASE_TAG_OBJECT"
+          test "$(git -C tmp/release-source rev-parse "refs/tags/${RELEASE_TAG}^{}")" = \
+            "$RELEASE_REVISION"
+
+          tag_ref_json="$(
+            gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}"
+          )"
+          test "$(jq -r '.object.type' <<<"$tag_ref_json")" = tag
+          test "$(jq -r '.object.sha' <<<"$tag_ref_json")" = "$RELEASE_TAG_OBJECT"
+          tag_json="$(
+            gh api "repos/${GITHUB_REPOSITORY}/git/tags/${RELEASE_TAG_OBJECT}"
+          )"
+          test "$(jq -r '.object.type' <<<"$tag_json")" = commit
+          test "$(jq -r '.object.sha' <<<"$tag_json")" = "$RELEASE_REVISION"
+
+          run_json="$(
+            gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RELEASE_RUN_ID}"
+          )"
+          jq -e \
+            --argjson run_id "$RELEASE_RUN_ID" \
+            --arg revision "$RELEASE_REVISION" \
+            '.id == $run_id and
+             .event == "push" and
+             .head_branch == "v2.0.1" and
+             .head_sha == $revision and
+             .path == ".github/workflows/release.yml" and
+             .run_attempt == 1 and
+             .conclusion == "failure"' \
+            <<<"$run_json" >/dev/null
+
+          jobs_json="$(
+            gh api \
+              "repos/${GITHUB_REPOSITORY}/actions/runs/${RELEASE_RUN_ID}/jobs?per_page=100"
+          )"
+          require_job() {
+            local name="$1"
+            local conclusion="$2"
+            jq -e \
+              --arg name "$name" \
+              --arg conclusion "$conclusion" \
+              '[.jobs[] | select(.name == $name and .conclusion == $conclusion)] |
+               length == 1' \
+              <<<"$jobs_json" >/dev/null
+          }
+          require_job "Test" success
+          require_job "Validate release identity" success
+          require_job "Preflight selected release channel" success
+          require_job "Publish Node package to npm" success
+          require_job "Publish Rust crates to crates.io" failure
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: 1.94.1
+
+      - name: Revalidate exact release identity
+        working-directory: tmp/release-source
+        run: |
+          python scripts/ci/validate_release_identity.py \
+            --artifact-contract cargo-inclusive \
+            --release-channel stable \
+            --tag "$RELEASE_TAG" \
+            --workspace type-bridge-core/Cargo.toml \
+            --root-python pyproject.toml \
+            --root-python-init type_bridge/__init__.py \
+            --core-python type-bridge-core/pyproject.toml \
+            --node-package type-bridge-core/crates/node/package.json \
+            --node-package-lock type-bridge-core/crates/node/package-lock.json \
+            --release-workflow .github/workflows/release.yml
+
+      - name: Package and preflight the exact crates.io graph
+        env:
+          PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
+        run: >-
+          bash scripts/ci/release_crates_graph.sh --preflight
+          tmp/release-source/type-bridge-core
+
+  publish-recovery:
+    name: Publish recovered Rust crates to crates.io
+    if: >-
+      github.ref == 'refs/heads/master' &&
+      inputs.recovery_mode == 'publish' &&
+      needs.verify-recovery.result == 'success'
+    needs: verify-recovery
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout recovery controls
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Checkout immutable release source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: refs/tags/v2.0.1
+          fetch-depth: 0
+          path: tmp/release-source
+          persist-credentials: false
+
+      - name: Revalidate immutable release tag
+        run: |
+          set -euo pipefail
+          test "$(git -C tmp/release-source cat-file -t "refs/tags/${RELEASE_TAG}")" = tag
+          test "$(git -C tmp/release-source rev-parse "refs/tags/${RELEASE_TAG}")" = \
+            "$RELEASE_TAG_OBJECT"
+          test "$(git -C tmp/release-source rev-parse "refs/tags/${RELEASE_TAG}^{}")" = \
+            "$RELEASE_REVISION"
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: 1.94.1
+
+      - name: Publish exact release graph in dependency order
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
+        run: >-
+          bash scripts/ci/release_crates_graph.sh --publish
+          tmp/release-source/type-bridge-core

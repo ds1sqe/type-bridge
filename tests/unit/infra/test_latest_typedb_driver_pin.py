@@ -751,7 +751,7 @@ def test_release_workflow_binds_the_driver_cutoff_before_cargo_publication() -> 
     assert validation < committed < preflight < cargo_publish
     assert "  preflight-publication:" not in workflow
     assert "--cutoff-state" not in workflow
-    assert "publish_crate_idempotently" in workflow
+    assert "release_crates_graph" in workflow
     assert "cargo publish" not in workflow
     assert (
         "needs: [validate-release-identity, accept-python-artifacts, "
