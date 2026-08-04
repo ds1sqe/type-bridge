@@ -97,6 +97,7 @@ PACKAGED_RELEASE_CRATES = tuple(
 )
 PACKAGING_PATCH_CRATES = PUBLISHED_CRATES
 EXPECTED_NEW_CRATES = tuple(crate for crate in PUBLISHED_CRATES if crate not in PREEXISTING_CRATES)
+RELEASE_CRATES_GRAPH = PurePosixPath("scripts/ci/release_crates_graph.sh")
 TYPEDB_RUNTIME_PACKAGE = "type-bridge-typedb-runtime"
 TYPEDB_BAND7_DEPENDENCY = "type-bridge-typedb-driver-b7"
 TYPEDB_BAND8_DEPENDENCY = "type-bridge-typedb-driver-b8"
@@ -1537,95 +1538,78 @@ def cargo_workspace_packages(workspace_manifest: Path) -> tuple[CargoPackage, ..
     return tuple(packages)
 
 
-def workflow_publish_sequence(workflow: Path) -> tuple[str, ...]:
-    """Return the literal ordered crate arguments passed to the publish helper."""
+def _workflow_release_graph_source(workflow: Path) -> str:
+    """Return the graph script bound to the ordinary release workflow."""
     if not workflow.is_file() or workflow.is_symlink():
         raise ValidationError(f"Release workflow is missing or non-regular: {workflow}")
     source = workflow.read_text(encoding="utf-8")
-    return tuple(re.findall(r'publish-crate\.sh ([A-Za-z0-9_-]+)["\']?', source))
+    for mode in ("--preflight", "--publish"):
+        command = f"bash ../{RELEASE_CRATES_GRAPH.as_posix()} {mode}"
+        if source.count(command) != 1:
+            raise ValidationError(
+                f"Release workflow must invoke the Cargo graph exactly once with {mode}"
+            )
+    graph = workflow.resolve().parents[2] / RELEASE_CRATES_GRAPH
+    if not graph.is_file() or graph.is_symlink():
+        raise ValidationError(f"Cargo release graph is missing or non-regular: {graph}")
+    return graph.read_text(encoding="utf-8")
+
+
+def _bash_crate_array(source: str, name: str) -> tuple[str, ...]:
+    """Return one strict, literal Bash array of crate names."""
+    matches = tuple(
+        re.finditer(
+            rf"(?m)^{re.escape(name)}=\(\n(?P<body>(?:  [A-Za-z0-9_-]+\n)+)\)$",
+            source,
+        )
+    )
+    if len(matches) != 1:
+        raise ValidationError(f"Cargo release graph must define exactly one {name} array")
+    return tuple(line.strip() for line in matches[0].group("body").splitlines())
+
+
+def workflow_publish_sequence(workflow: Path) -> tuple[str, ...]:
+    """Return the authoritative ordered crate publication sequence."""
+    source = _workflow_release_graph_source(workflow)
+    loop = 'for crate in "${publish_crates[@]}"; do\n    bash "$helper" "$crate"'
+    if source.count(loop) != 1:
+        raise ValidationError("Cargo release graph publish loop is malformed")
+    return _bash_crate_array(source, "publish_crates")
 
 
 def workflow_preflight_sequences(workflow: Path) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """Return the local-patch and full-package sequences from release preflight."""
-    if not workflow.is_file() or workflow.is_symlink():
-        raise ValidationError(f"Release workflow is missing or non-regular: {workflow}")
-    source = workflow.read_text(encoding="utf-8")
-    command = 'cargo package --locked --allow-dirty --all-features -p "$crate" "${patches[@]}"'
-    lines = source.splitlines()
-    command_lines = [index for index, line in enumerate(lines) if command in line]
-    if len(command_lines) != 1:
-        raise ValidationError(
-            "Release workflow must contain exactly one full cargo-package preflight loop"
-        )
-    command_line = command_lines[0]
-    try:
-        do_line = max(index for index in range(command_line) if lines[index].strip() == "do")
-        for_line = max(
-            index for index in range(do_line) if lines[index].strip() == "for crate in \\"
-        )
-    except ValueError as error:
-        raise ValidationError("Cargo-package preflight loop is malformed") from error
-
-    packages: list[str] = []
-    for line in lines[for_line + 1 : do_line]:
-        token = line.strip()
-        if token.endswith("\\"):
-            token = token[:-1].rstrip()
-        if re.fullmatch(r"[A-Za-z0-9_-]+", token) is None:
-            raise ValidationError(f"Cargo-package preflight contains an invalid crate: {token!r}")
-        packages.append(token)
+    source = _workflow_release_graph_source(workflow)
+    package_loop = (
+        'for crate in "${release_crates[@]}"; do\n'
+        '  "${cargo_command[@]}" package \\\n'
+        '    --locked --allow-dirty --all-features -p "$crate" "${patches[@]}"'
+    )
+    if source.count(package_loop) != 1:
+        raise ValidationError("Cargo release graph package-preflight loop is malformed")
     patches = tuple(re.findall(r"patch\.crates-io\.([A-Za-z0-9_-]+)\.path=", source))
-    return patches, tuple(packages)
+    return patches, _bash_crate_array(source, "release_crates")
 
 
 def workflow_registry_preflight_sequences(
     workflow: Path,
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """Return checksum-only and expected-new crates.io key preflights."""
-    if not workflow.is_file() or workflow.is_symlink():
-        raise ValidationError(f"Release workflow is missing or non-regular: {workflow}")
-    source = workflow.read_text(encoding="utf-8")
-    preexisting = tuple(re.findall(r"--verify-preexisting ([A-Za-z0-9_-]+)", source))
-    command = 'bash ../scripts/ci/publish_crate_idempotently.sh --preflight "$crate"'
-    lines = source.splitlines()
-    command_lines = [index for index, line in enumerate(lines) if command in line]
-    if len(command_lines) != 1:
-        raise ValidationError(
-            "Release workflow must contain exactly one crates.io key-preflight loop"
-        )
-    preexisting_marker = "--verify-preexisting "
-    package_marker = (
-        'cargo package --locked --allow-dirty --all-features -p "$crate" "${patches[@]}"'
+    source = _workflow_release_graph_source(workflow)
+    historical_loop = (
+        'for crate in "${historical_crates[@]}"; do\n  bash "$helper" --verify-preexisting "$crate"'
     )
-    if (
-        source.count(preexisting_marker) != len(PREEXISTING_CRATES)
-        or source.count(package_marker) != 1
-    ):
-        raise ValidationError("Release workflow crates.io preflight markers are malformed")
-    if not (
-        source.rindex(preexisting_marker) < source.index(package_marker) < source.index(command)
-    ):
-        raise ValidationError(
-            "Release workflow crates.io preflights are not ordered before publication"
-        )
-    command_line = command_lines[0]
-    try:
-        do_line = max(index for index in range(command_line) if lines[index].strip() == "do")
-        for_line = max(
-            index for index in range(do_line) if lines[index].strip() == "for crate in \\"
-        )
-    except ValueError as error:
-        raise ValidationError("Crates.io key-preflight loop is malformed") from error
-
-    candidates: list[str] = []
-    for line in lines[for_line + 1 : do_line]:
-        token = line.strip()
-        if token.endswith("\\"):
-            token = token[:-1].rstrip()
-        if re.fullmatch(r"[A-Za-z0-9_-]+", token) is None:
-            raise ValidationError(f"Crates.io key-preflight contains an invalid crate: {token!r}")
-        candidates.append(token)
-    return preexisting, tuple(candidates)
+    candidate_loop = (
+        'for crate in "${release_crates[@]}"; do\n  bash "$helper" --preflight "$crate"'
+    )
+    if source.count(historical_loop) != 1 or source.count(candidate_loop) != 1:
+        raise ValidationError("Cargo release graph crates.io preflight loops are malformed")
+    if not source.index(historical_loop) < source.index(candidate_loop):
+        raise ValidationError("Cargo release graph crates.io preflight loops are reordered")
+    return (
+        _bash_crate_array(source, "historical_crates"),
+        _bash_crate_array(source, "release_crates"),
+    )
 
 
 def validate_native_notice_workflow(workflow: Path) -> None:

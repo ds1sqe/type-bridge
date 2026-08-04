@@ -52,11 +52,33 @@ release_crates=(
   type-bridge-cli
   type-bridge
 )
+publish_crates=(
+  type-bridge-contract
+  type-bridge-core-lib
+  type-bridge-schema
+  type-bridge-query
+  type-bridge-schema-migration
+  type-bridge-toml-transpiler
+  type-bridge-schema-compat
+  type-bridge-schema-codegen
+  type-bridge-orm-derive
+  type-bridge-typedb-protocol-b7
+  type-bridge-typedb-driver-b7
+  type-bridge-typedb-protocol-b8
+  type-bridge-typedb-driver-b8
+  type-bridge-typedb-runtime
+  type-bridge-orm
+  type-bridge-migration
+  type-bridge-schema-migration-typedb
+  type-bridge-workspace
+  type-bridge-cli
+  type-bridge
+)
 
 cd -- "$core_workspace"
 
 if [[ "$mode" == "--publish" ]]; then
-  for crate in "${historical_crates[@]}" "${release_crates[@]}"; do
+  for crate in "${publish_crates[@]}"; do
     bash "$helper" "$crate"
   done
   exit 0

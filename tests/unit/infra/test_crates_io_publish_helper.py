@@ -537,8 +537,6 @@ printf '%s\\n' "$1" >> "$INVOCATION_LOG"
 
     assert result.returncode == 0, result.stderr
     assert invocation_log.read_text(encoding="utf-8").splitlines() == [
-        "type-bridge-typedb-protocol-b7",
-        "type-bridge-typedb-driver-b7",
         "type-bridge-contract",
         "type-bridge-core-lib",
         "type-bridge-schema",
@@ -548,6 +546,8 @@ printf '%s\\n' "$1" >> "$INVOCATION_LOG"
         "type-bridge-schema-compat",
         "type-bridge-schema-codegen",
         "type-bridge-orm-derive",
+        "type-bridge-typedb-protocol-b7",
+        "type-bridge-typedb-driver-b7",
         "type-bridge-typedb-protocol-b8",
         "type-bridge-typedb-driver-b8",
         "type-bridge-typedb-runtime",
