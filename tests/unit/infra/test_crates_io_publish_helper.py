@@ -40,6 +40,8 @@ def run_helper(
     crate: str = "demo-crate",
     version: str = "1.2.3",
     registry_checksum: str = CANDIDATE_CHECKSUM,
+    publish_backoff: str = "0",
+    initial_archive_bytes: bytes = CANDIDATE_BYTES,
 ) -> tuple[subprocess.CompletedProcess[str], list[str], list[str]]:
     """Run the helper against deterministic cargo and crates.io doubles."""
     workspace = tmp_path / "workspace"
@@ -48,13 +50,15 @@ def run_helper(
     tools.mkdir()
     command_log = tmp_path / "cargo-commands"
     curl_log = tmp_path / "curl-urls"
+    sleep_log = tmp_path / "sleep-delays"
     api_state = tmp_path / "api-state"
     index_state = tmp_path / "index-state"
+    publish_state = tmp_path / "publish-state"
 
     if mode == "preflight":
         archive = workspace / f"target/package/{crate}-{version}.crate"
         archive.parent.mkdir(parents=True)
-        archive.write_bytes(CANDIDATE_BYTES)
+        archive.write_bytes(initial_archive_bytes)
 
     cargo = executable(
         tools / "cargo",
@@ -80,6 +84,28 @@ case "${1:-}" in
           "$CRATE_NAME" "$CRATE_VERSION" >&2
         exit 101
         ;;
+      rate-limited-once | rate-limited-twice)
+        publish_count=0
+        if [[ -f "$PUBLISH_STATE_FILE" ]]; then
+          publish_count="$(<"$PUBLISH_STATE_FILE")"
+        fi
+        printf '%s\\n' "$((publish_count + 1))" > "$PUBLISH_STATE_FILE"
+        limit=1
+        if [[ "$CARGO_PUBLISH_MODE" == "rate-limited-twice" ]]; then
+          limit=2
+        fi
+        if (( publish_count < limit )); then
+          printf '%s\\n' \
+            'status 429 Too Many Requests: published too many new crates' >&2
+          exit 101
+        fi
+        printf 'published %s\\n' "$CRATE_NAME"
+        ;;
+      rate-limited)
+        printf '%s\\n' \
+          'status 429 Too Many Requests: published too many new crates' >&2
+        exit 101
+        ;;
       *)
         printf '%s\\n' 'unexpected cargo publish invocation' >&2
         exit 42
@@ -91,6 +117,14 @@ case "${1:-}" in
     exit 43
     ;;
 esac
+""",
+    )
+    sleep = executable(
+        tools / "sleep",
+        """#!/usr/bin/env bash
+set -euo pipefail
+[[ $# -eq 1 ]]
+printf '%s\\n' "$1" >> "$SLEEP_LOG"
 """,
     )
     curl = executable(
@@ -215,13 +249,18 @@ fi
             "COMMAND_LOG": str(command_log),
             "CRATE_NAME": crate,
             "CRATE_VERSION": version,
+            "CRATES_IO_PUBLISH_ATTEMPTS": "3",
+            "CRATES_IO_PUBLISH_INITIAL_BACKOFF_SECONDS": publish_backoff,
             "CRATES_IO_VERIFY_ATTEMPTS": "3",
             "CRATES_IO_VERIFY_DELAY_SECONDS": "0",
             "CURL_BIN": str(curl),
             "CURL_LOG": str(curl_log),
             "INDEX_SEQUENCE": index_sequence,
             "INDEX_STATE_FILE": str(index_state),
+            "PUBLISH_STATE_FILE": str(publish_state),
             "REGISTRY_CHECKSUM": registry_checksum,
+            "SLEEP_BIN": str(sleep),
+            "SLEEP_LOG": str(sleep_log),
         }
     )
     arguments = ["bash", str(PUBLISH_HELPER)]
@@ -325,6 +364,39 @@ def test_successful_publish_polls_exact_sparse_index_version(tmp_path: Path) -> 
     assert "Verified crates.io sparse-index checksum" in result.stdout
 
 
+def test_rate_limited_publish_backs_off_then_verifies_both_authorities(
+    tmp_path: Path,
+) -> None:
+    result, commands, _ = run_helper(
+        tmp_path,
+        api_sequence="missing,matching",
+        index_sequence="missing,matching",
+        publish_mode="rate-limited-twice",
+        publish_backoff="10",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert commands.count("publish --locked --registry crates-io -p demo-crate") == 3
+    assert "was rate-limited; retrying publish in 10s (attempt 2/3)" in result.stderr
+    assert "was rate-limited; retrying publish in 20s (attempt 3/3)" in result.stderr
+    assert (tmp_path / "sleep-delays").read_text().splitlines() == ["10", "20"]
+    assert "Verified crates.io API checksum" in result.stdout
+    assert "Verified crates.io sparse-index checksum" in result.stdout
+
+
+def test_rate_limited_publish_stops_after_bounded_attempts(tmp_path: Path) -> None:
+    result, commands, _ = run_helper(
+        tmp_path,
+        api_sequence="missing",
+        index_sequence="missing",
+        publish_mode="rate-limited",
+    )
+
+    assert result.returncode != 0
+    assert commands.count("publish --locked --registry crates-io -p demo-crate") == 3
+    assert "remained rate-limited after 3 publish attempts" in result.stderr
+
+
 def test_preflight_absent_key_hashes_existing_archive_without_publish(tmp_path: Path) -> None:
     result, commands, _ = run_helper(
         tmp_path,
@@ -338,6 +410,22 @@ def test_preflight_absent_key_hashes_existing_archive_without_publish(tmp_path: 
     assert "Verified crates.io key is absent" in result.stdout
 
 
+def test_preflight_repackages_existing_key_through_exact_publish_path(
+    tmp_path: Path,
+) -> None:
+    result, commands, _ = run_helper(
+        tmp_path,
+        api_sequence="matching",
+        index_sequence="matching",
+        mode="preflight",
+        initial_archive_bytes=b"patched graph archive\n",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert commands == ["pkgid -p demo-crate", "package --locked -p demo-crate"]
+    assert "already published with identical non-yanked bytes" in result.stdout
+
+
 def test_preflight_rejects_inconsistent_api_and_index_visibility(tmp_path: Path) -> None:
     result, commands, _ = run_helper(
         tmp_path,
@@ -347,7 +435,7 @@ def test_preflight_rejects_inconsistent_api_and_index_visibility(tmp_path: Path)
     )
 
     assert result.returncode != 0
-    assert commands == ["pkgid -p demo-crate"]
+    assert commands == ["pkgid -p demo-crate", "package --locked -p demo-crate"]
     assert "API did not expose verifiable" in result.stderr
 
 
