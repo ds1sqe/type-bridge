@@ -71,8 +71,13 @@ case "${1:-}" in
     ;;
   package)
     mkdir -p target/package
+    archive="target/package/${CRATE_NAME}-${CRATE_VERSION}.crate"
+    if [[ -e "$archive" || -L "$archive" ]]; then
+      printf '%s\\n' 'cargo package received a stale candidate archive' >&2
+      exit 44
+    fi
     printf '%s\\n' 'candidate crate bytes' > \
-      "target/package/${CRATE_NAME}-${CRATE_VERSION}.crate"
+      "$archive"
     ;;
   publish)
     case "$CARGO_PUBLISH_MODE" in
@@ -418,7 +423,7 @@ def test_preflight_repackages_existing_key_through_exact_publish_path(
         api_sequence="matching",
         index_sequence="matching",
         mode="preflight",
-        initial_archive_bytes=b"patched graph archive\n",
+        initial_archive_bytes=CANDIDATE_BYTES + b"stale patched archive tail\n",
     )
 
     assert result.returncode == 0, result.stderr
