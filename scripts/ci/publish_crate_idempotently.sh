@@ -29,8 +29,11 @@ cargo_bin="${CARGO_BIN:-cargo}"
 curl_bin="${CURL_BIN:-curl}"
 python_bin="${PYTHON_BIN:-python3}"
 sha256_bin="${SHA256_BIN:-sha256sum}"
+sleep_bin="${SLEEP_BIN:-sleep}"
 verify_attempts="${CRATES_IO_VERIFY_ATTEMPTS:-12}"
 verify_delay="${CRATES_IO_VERIFY_DELAY_SECONDS:-5}"
+publish_attempts="${CRATES_IO_PUBLISH_ATTEMPTS:-5}"
+publish_backoff="${CRATES_IO_PUBLISH_INITIAL_BACKOFF_SECONDS:-10}"
 
 if [[ ! "$crate" =~ ^[A-Za-z0-9_-]+$ ]]; then
   echo "Invalid crate name: $crate" >&2
@@ -46,6 +49,14 @@ if [[ ! "$verify_attempts" =~ ^[1-9][0-9]*$ ]]; then
 fi
 if [[ ! "$verify_delay" =~ ^[0-9]+$ ]]; then
   echo "CRATES_IO_VERIFY_DELAY_SECONDS must be a non-negative integer" >&2
+  exit 2
+fi
+if [[ ! "$publish_attempts" =~ ^[1-9][0-9]*$ || "$publish_attempts" -gt 10 ]]; then
+  echo "CRATES_IO_PUBLISH_ATTEMPTS must be an integer from 1 through 10" >&2
+  exit 2
+fi
+if [[ ! "$publish_backoff" =~ ^[0-9]+$ || "$publish_backoff" -gt 600 ]]; then
+  echo "CRATES_IO_PUBLISH_INITIAL_BACKOFF_SECONDS must be an integer from 0 through 600" >&2
   exit 2
 fi
 
@@ -246,7 +257,7 @@ require_matching_registry_checksum() {
       echo "crates.io API did not expose verifiable ${crate}@${version} after ${verify_attempts} attempts (last status ${fetch_status})" >&2
       return 1
     fi
-    sleep "$verify_delay"
+    "$sleep_bin" "$verify_delay"
   done
 }
 
@@ -268,7 +279,7 @@ require_matching_registry_index_checksum() {
       echo "crates.io sparse index did not expose verifiable ${crate}@${version} after ${verify_attempts} attempts (last status ${fetch_status})" >&2
       return 1
     fi
-    sleep "$verify_delay"
+    "$sleep_bin" "$verify_delay"
   done
 }
 
@@ -289,16 +300,23 @@ if [[ "$mode" == "publish" || "$mode" == "cutoff-state" ]]; then
   # so an existing immutable version can be compared before any upload attempt.
   "$cargo_bin" package --locked -p "$crate" >/dev/null
 fi
-if [[ ! -f "$crate_file" || -L "$crate_file" ]]; then
-  echo "Packaged crate is missing or non-regular: $crate_file" >&2
-  exit 1
-fi
-checksum_output="$($sha256_bin "$crate_file")"
-candidate_checksum="${checksum_output%%[[:space:]]*}"
-if [[ ! "$candidate_checksum" =~ ^[0-9a-f]{64}$ ]]; then
-  echo "Could not calculate a lowercase SHA-256 for $crate_file" >&2
-  exit 1
-fi
+
+calculate_candidate_checksum() {
+  local checksum_output candidate
+  if [[ ! -f "$crate_file" || -L "$crate_file" ]]; then
+    echo "Packaged crate is missing or non-regular: $crate_file" >&2
+    return 1
+  fi
+  checksum_output="$($sha256_bin "$crate_file")"
+  candidate="${checksum_output%%[[:space:]]*}"
+  if [[ ! "$candidate" =~ ^[0-9a-f]{64}$ ]]; then
+    echo "Could not calculate a lowercase SHA-256 for $crate_file" >&2
+    return 1
+  fi
+  printf '%s\n' "$candidate"
+}
+
+candidate_checksum="$(calculate_candidate_checksum)"
 
 # A candidate key is safe only if both crates.io authorities agree that it is
 # absent, or both expose the exact candidate checksum as a non-yanked version.
@@ -313,6 +331,15 @@ preflight_candidate_key() {
     index_status=0
   else
     index_status=$?
+  fi
+
+  # The graph preflight uses local patches so every unpublished dependent crate
+  # can be packaged before registry mutation. Those patches add metadata to the
+  # archive's generated Cargo.lock. Once a key exists, rebuild it through the
+  # exact unpatched publish path before comparing immutable bytes.
+  if [[ "$mode" == "preflight" && ("$api_status" -eq 0 || "$index_status" -eq 0) ]]; then
+    "$cargo_bin" package --locked -p "$crate" >/dev/null
+    candidate_checksum="$(calculate_candidate_checksum)"
   fi
 
   if [[ "$api_status" -eq 4 && "$index_status" -eq 4 ]]; then
@@ -359,12 +386,25 @@ if [[ "$mode" == "preflight" ]]; then
   exit 0
 fi
 
-if publish_output="$($cargo_bin publish --locked --registry crates-io -p "$crate" 2>&1)"; then
-  printf '%s\n' "$publish_output"
-  require_matching_registry_checksum "$candidate_checksum"
-  require_matching_registry_index_checksum "$candidate_checksum"
-  exit 0
-fi
+for ((publish_attempt = 1; publish_attempt <= publish_attempts; publish_attempt++)); do
+  if publish_output="$($cargo_bin publish --locked --registry crates-io -p "$crate" 2>&1)"; then
+    printf '%s\n' "$publish_output"
+    require_matching_registry_checksum "$candidate_checksum"
+    require_matching_registry_index_checksum "$candidate_checksum"
+    exit 0
+  fi
+  if ! grep -qiE "status 429|429 Too Many Requests" <<<"$publish_output"; then
+    break
+  fi
+  printf '%s\n' "$publish_output" >&2
+  if (( publish_attempt == publish_attempts )); then
+    echo "${crate}@${version} remained rate-limited after ${publish_attempts} publish attempts" >&2
+    exit 1
+  fi
+  echo "${crate}@${version} was rate-limited; retrying publish in ${publish_backoff}s (attempt $((publish_attempt + 1))/${publish_attempts})." >&2
+  "$sleep_bin" "$publish_backoff"
+  publish_backoff=$((publish_backoff * 2))
+done
 
 printf '%s\n' "$publish_output" >&2
 if ! grep -qiE \
