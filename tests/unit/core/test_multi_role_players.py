@@ -2,8 +2,9 @@
 
 import pytest
 
-from type_bridge import Entity, Flag, Key, Relation, Role, String, TypeFlags
-from type_bridge.migration.info import SchemaInfo
+from tests.utils.handwritten import Entity, Flag, Key, Relation, Role, String, TypeFlags
+from type_bridge._rust_runtime import generate_define_block
+from type_bridge.migration._lower import _schema_info_for_models
 
 
 def test_role_allows_multiple_player_types_validation():
@@ -52,12 +53,8 @@ def test_schema_emits_multiple_plays_entries():
         flags = TypeFlags(name="trace")
         origin: Role[Document | Email] = Role.multi("origin", Document, Email)
 
-    schema = SchemaInfo()
-    schema.attribute_classes = {Name}
-    schema.entities = [Document, Email]
-    schema.relations = [Trace]
-
-    typeql = schema.to_typeql()
+    pytest.importorskip("type_bridge_core")
+    typeql = generate_define_block(_schema_info_for_models([Document, Email, Trace]))
 
     assert "document plays trace:origin;" in typeql
     assert "email plays trace:origin;" in typeql

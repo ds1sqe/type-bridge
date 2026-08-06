@@ -6,7 +6,7 @@ from decimal import Decimal as DecimalType
 
 import pytest
 
-from type_bridge import (
+from tests.utils.handwritten import (
     Boolean,
     Card,
     Date,
@@ -533,7 +533,6 @@ class RustListRelation(Relation):
 
 def test_ordered_distinct_attr_descriptor_is_ordered_true() -> None:
     """Flag(Ordered, Distinct) on an attribute must yield is_ordered=True in the descriptor."""
-    from type_bridge import Distinct, Ordered  # noqa: F401 — ensure imports work
 
     descriptor = descriptor_for_model(RustListEntity)
     tag_attr = next(a for a in descriptor["owned_attributes"] if a["field_name"] == "tag")
@@ -577,7 +576,7 @@ def test_ordered_distinct_role_descriptor_flags() -> None:
 
 def test_flag_distinct_without_ordered_raises() -> None:
     """Flag(Distinct) without Ordered must raise ValueError at class definition time."""
-    from type_bridge import Distinct  # noqa: F401
+    from tests.utils.handwritten import Distinct
 
     with pytest.raises(ValueError, match="(?i)ordered"):
 

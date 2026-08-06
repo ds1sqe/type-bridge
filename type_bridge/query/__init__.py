@@ -18,7 +18,10 @@ from type_bridge.query.compiler import QueryCompiler
 from type_bridge.query.parser import parse_typeql_query as parse_typeql_query
 
 if TYPE_CHECKING:
-    from type_bridge.models import Entity, Relation
+    from type_bridge._runtime_projection import (
+        GeneratedEntityProjection,
+        GeneratedRelationProjection,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -200,36 +203,40 @@ class Query:
 
 
 class QueryBuilder:
-    """Helper class for building queries with model classes."""
+    """Helper class for building raw TypeQL from installed generated models."""
 
     @staticmethod
-    def match_entity(model_class: type[Entity], var: str = "$e", **filters: Any) -> Query:
+    def match_entity(
+        model_class: type[GeneratedEntityProjection],
+        var: str = "$e",
+        **filters: Any,
+    ) -> Query:
         """Create a match query for an entity.
 
         Args:
-            model_class: The entity model class
+            model_class: An exact class from an installed generated projection
             var: Variable name to use
             filters: Attribute filters (field_name: value)
 
         Returns:
             Query object
         """
-        from type_bridge.crud.patterns import build_entity_match_pattern
-
         logger.debug(
             f"QueryBuilder.match_entity: {model_class.__name__}, var={var}, filters={filters}"
         )
         query = Query()
-        pattern = build_entity_match_pattern(model_class, var, filters or None)
+        from type_bridge._runtime_projection import projected_query_builder_match_entity_for
+
+        pattern = projected_query_builder_match_entity_for(model_class, var, filters)
         query.match(pattern)
         return query
 
     @staticmethod
-    def insert_entity(instance: Entity, var: str = "$e") -> Query:
+    def insert_entity(instance: GeneratedEntityProjection, var: str = "$e") -> Query:
         """Create an insert query for an entity instance.
 
         Args:
-            instance: Entity instance
+            instance: An exact value from an installed generated projection
             var: Variable name to use
 
         Returns:
@@ -237,18 +244,22 @@ class QueryBuilder:
         """
         logger.debug(f"QueryBuilder.insert_entity: {instance.__class__.__name__}, var={var}")
         query = Query()
-        insert_pattern = instance.to_insert_query(var)
+        from type_bridge._runtime_projection import projected_query_builder_insert_entity_for
+
+        insert_pattern = projected_query_builder_insert_entity_for(instance, var)
         query.insert(insert_pattern)
         return query
 
     @staticmethod
     def match_relation(
-        model_class: type[Relation], var: str = "$r", role_players: dict[str, str] | None = None
+        model_class: type[GeneratedRelationProjection],
+        var: str = "$r",
+        role_players: dict[str, str] | None = None,
     ) -> Query:
         """Create a match query for a relation.
 
         Args:
-            model_class: The relation model class
+            model_class: An exact class from an installed generated projection
             var: Variable name to use
             role_players: Dict mapping role names to player variables
 
@@ -258,13 +269,13 @@ class QueryBuilder:
         Raises:
             ValueError: If a role name is not defined in the model
         """
-        from type_bridge.crud.patterns import build_relation_match_pattern
-
         logger.debug(
             f"QueryBuilder.match_relation: {model_class.__name__}, var={var}, "
             f"role_players={role_players}"
         )
         query = Query()
-        pattern = build_relation_match_pattern(model_class, var, role_players)
+        from type_bridge._runtime_projection import projected_query_builder_match_relation_for
+
+        pattern = projected_query_builder_match_relation_for(model_class, var, role_players)
         query.match(pattern)
         return query

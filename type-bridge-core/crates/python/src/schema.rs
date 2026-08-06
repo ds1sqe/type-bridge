@@ -1,16 +1,16 @@
 //! PyO3 wrappers for Rust schema diff/generation.
 //!
-//! The schema policy lives in `type_bridge_orm::schema`; this module only
+//! The schema policy lives in `type_bridge_orm::_schema`; this module only
 //! marshals serde-compatible Python dicts across the boundary.
 
 use pyo3::prelude::*;
 use pythonize::{depythonize, pythonize};
-use type_bridge_orm::schema::SchemaInfo;
-use type_bridge_orm::schema::diff::{ClassifiedChange, SchemaDiff};
-use type_bridge_orm::schema::generator;
+use type_bridge_orm::_schema::SchemaInfo;
+use type_bridge_orm::_schema::diff::{ClassifiedChange, SchemaDiff};
+use type_bridge_orm::_schema::generator;
 
 /// Generate a TypeQL `define` block from a serialized `SchemaInfo` dict.
-#[pyfunction]
+#[pyfunction(name = "_archived_generate_define_block")]
 fn generate_define_block(py_info: Bound<'_, PyAny>) -> PyResult<String> {
     let info: SchemaInfo = depythonize(&py_info)
         .map_err(|error| py_value_error(format!("Invalid SchemaInfo: {error}")))?;
@@ -20,7 +20,7 @@ fn generate_define_block(py_info: Bound<'_, PyAny>) -> PyResult<String> {
 }
 
 /// Compute a serialized `SchemaDiff` dict from two serialized `SchemaInfo` dicts.
-#[pyfunction]
+#[pyfunction(name = "_archived_compute_schema_diff")]
 fn compute_schema_diff(
     py: Python<'_>,
     current: Bound<'_, PyAny>,
@@ -37,7 +37,7 @@ fn compute_schema_diff(
 }
 
 /// Classify a serialized `SchemaDiff` dict.
-#[pyfunction]
+#[pyfunction(name = "_archived_classify_schema_diff")]
 fn classify_schema_diff(py: Python<'_>, diff: Bound<'_, PyAny>) -> PyResult<PyObject> {
     let diff: SchemaDiff = depythonize(&diff)
         .map_err(|error| py_value_error(format!("Invalid SchemaDiff: {error}")))?;
@@ -48,7 +48,7 @@ fn classify_schema_diff(py: Python<'_>, diff: Bound<'_, PyAny>) -> PyResult<PyOb
 }
 
 /// Return whether a serialized `SchemaDiff` has breaking changes.
-#[pyfunction]
+#[pyfunction(name = "_archived_schema_diff_is_breaking")]
 fn schema_diff_is_breaking(diff: Bound<'_, PyAny>) -> PyResult<bool> {
     let diff: SchemaDiff = depythonize(&diff)
         .map_err(|error| py_value_error(format!("Invalid SchemaDiff: {error}")))?;

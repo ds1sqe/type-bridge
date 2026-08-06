@@ -38,12 +38,12 @@ builds and harmless on 3.12–3.13. Published abi3 wheels do not need it.
 
 | Path | Responsibility |
 | --- | --- |
-| `type_bridge/` | Python facade, Pydantic models, compatibility APIs |
+| `type_bridge/` | Python connection/query facade and read-only archive recovery APIs |
 | `type-bridge-core/crates/` | Rust contracts, engines, ORM, bindings, CLI, and server |
 | `type-bridge-core/crates/node/` | N-API boundary and TypeScript package |
 | `type-bridge-core/crates/rust/` | Public generated-model Rust client |
 | `docs/` | MkDocs source, guides, maintainer contracts, and site assets |
-| `examples/` | Executable Python examples |
+| `examples/` | Split-YAML workspace and generated-package application examples |
 | `tests/` | Python unit, integration, compatibility, contract, and parity tests |
 | `scripts/` | Source-tree checks, generated files, and focused live runners |
 
@@ -57,8 +57,10 @@ duplicated directory snapshot here.
   facades; they do not reimplement schema, query, migration, or ORM rules.
 - Generated files are projections of canonical schema authority and must not be
   edited by hand.
-- Existing V1 compatibility surfaces stay available unless the exact
-  deprecation inventory schedules their removal.
+- Separately retained V1 query surfaces stay available unless an exact future
+  inventory schedules their removal; they are not schema authority.
+- Split-YAML is the only active schema/model authoring authority. Python,
+  TypeScript/Node, and Rust applications consume generated projections.
 - Rust releases starting with 2.0.1 resolve a complete, version-locked crates.io
   graph; the historical 2.0.0 SDK resolves from its exact release Git revision.
 - Release-specific compatibility, trust, resource-limit, and security

@@ -1,10 +1,10 @@
 """Owner-aware typed-query references backed exclusively by native handles.
 
-The package-root legacy ``Query`` remains separate and unchanged.
+The package-root V1 ``Query`` remains separate and unchanged.
 """
 
-from type_bridge.fields import FieldRef
-from type_bridge.fields.role import RoleRef
+from type_bridge.fields.base import _QueryFieldRef as FieldRef
+from type_bridge.fields.role import _QueryRoleRef as RoleRef
 from type_bridge.typed._remote_terminal import RemoteQueryExchange
 from type_bridge.typed._terminal import (
     TypedQueryCapabilityError,

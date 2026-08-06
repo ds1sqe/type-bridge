@@ -16,19 +16,30 @@ from typing import (
 
 from pydantic import BaseModel, ConfigDict, PrivateAttr, model_validator
 
-from type_bridge.attribute import AttributeFlags, TypeFlags
-from type_bridge.attribute.flags import format_type_name
+from type_bridge.attribute.flags import (
+    _QueryAttributeFlags as AttributeFlags,
+)
+from type_bridge.attribute.flags import (
+    _QueryTypeFlags as TypeFlags,
+)
+from type_bridge.attribute.flags import (
+    format_type_name,
+)
 from type_bridge.crud.utils import format_value as _format_value_impl
-from type_bridge.models.registry import ModelRegistry
+from type_bridge.models.registry import _QueryModelRegistry as ModelRegistry
 from type_bridge.models.utils import (
-    MatchClauseInfo,
-    ModelAttrInfo,
+    _QueryMatchClauseInfo as MatchClauseInfo,
+)
+from type_bridge.models.utils import (
+    _QueryModelAttrInfo as ModelAttrInfo,
+)
+from type_bridge.models.utils import (
     validate_type_name,
 )
 
 if TYPE_CHECKING:
-    from type_bridge.attribute.base import Attribute
-    from type_bridge.crud.typedb_manager import TypeDBManager
+    from type_bridge.attribute.base import _QueryAttribute as Attribute
+    from type_bridge.crud.rust_manager import _QueryRustTypeDBManager as TypeDBManager
     from type_bridge.session import Connection
 
 
@@ -118,7 +129,7 @@ class TypeDBType(BaseModel, ABC):
         connection: Connection,
         attr_class: type[Attribute],
         value: Any | None = None,
-    ) -> list[TypeDBType]:
+    ) -> list[_QueryTypeDBType]:
         """Find all instances of this class (and its subtypes) that own *attr_class*.
 
         Behaviour depends on the receiver:
@@ -151,15 +162,15 @@ class TypeDBType(BaseModel, ABC):
                 :class:`Entity` or :class:`Relation` instead).
         """
         from type_bridge.crud.has_lookup import has_lookup
-        from type_bridge.models.entity import Entity
-        from type_bridge.models.relation import Relation
+        from type_bridge.models.entity import _QueryEntity as Entity
+        from type_bridge.models.relation import _QueryRelation as Relation
 
-        if cls is TypeDBType:
+        if cls is _QueryTypeDBType:
             raise TypeError("has() must be called on Entity or Relation, not TypeDBType directly")
 
         if issubclass(cls, Entity):
             kind: Literal["entity", "relation"] = "entity"
-            base_cls: type[TypeDBType] = Entity
+            base_cls: type[_QueryTypeDBType] = Entity
         elif issubclass(cls, Relation):
             kind = "relation"
             base_cls = Relation
@@ -219,7 +230,7 @@ class TypeDBType(BaseModel, ABC):
         """
         super().__pydantic_init_subclass__(**kwargs)
 
-        from type_bridge.fields import FieldDescriptor
+        from type_bridge.fields.base import _QueryFieldDescriptor as FieldDescriptor
 
         # Inject FieldDescriptors for class-level query access
         for field_name, attr_info in cls._owned_attrs.items():
@@ -264,8 +275,8 @@ class TypeDBType(BaseModel, ABC):
         The input can be either a dict or an existing model instance
         (when revalidating). We convert to dict and wrap raw values.
         """
-        from type_bridge.fields.base import FieldRef
-        from type_bridge.fields.role import RoleRef
+        from type_bridge.fields.base import _QueryFieldRef as FieldRef
+        from type_bridge.fields.role import _QueryRoleRef as RoleRef
 
         # Convert instance to dict if needed
         if isinstance(values, cls):
@@ -399,7 +410,7 @@ class TypeDBType(BaseModel, ABC):
         return format_type_name(cls.__name__, cls._flags.case)
 
     @classmethod
-    def _get_base_type_class(cls) -> type[TypeDBType]:
+    def _get_base_type_class(cls) -> type[_QueryTypeDBType]:
         """Get the root base class for this type hierarchy.
 
         Override in subclasses to return Entity or Relation.
@@ -408,7 +419,7 @@ class TypeDBType(BaseModel, ABC):
         Returns:
             The base type class (Entity or Relation)
         """
-        return TypeDBType
+        return _QueryTypeDBType
 
     @classmethod
     def get_supertype(cls) -> str | None:
@@ -495,7 +506,7 @@ class TypeDBType(BaseModel, ABC):
         all_attrs = cls.get_all_attributes()
 
         # Recursively collect attributes from all subclasses
-        def collect_subclass_attrs(klass: type[TypeDBType]) -> None:
+        def collect_subclass_attrs(klass: type[_QueryTypeDBType]) -> None:
             for subclass in klass.__subclasses__():
                 # Skip if subclass is a base class (abstract, Python-only)
                 if hasattr(subclass, "is_base") and subclass.is_base():
@@ -587,7 +598,7 @@ class TypeDBType(BaseModel, ABC):
         Returns:
             List of HasStatement AST nodes for non-None attribute values
         """
-        from type_bridge.attribute import Attribute
+        from type_bridge.attribute.base import _QueryAttribute as Attribute
         from type_bridge.models.utils import AstValueType, get_ast_value_type
         from type_bridge.query.ast import HasStatement, LiteralValue
 
@@ -659,3 +670,7 @@ class TypeDBType(BaseModel, ABC):
 
         insert_clause = self.to_ast(var=var)
         return QueryCompiler().compile(insert_clause)
+
+
+_QueryTypeDBType = TypeDBType
+del TypeDBType

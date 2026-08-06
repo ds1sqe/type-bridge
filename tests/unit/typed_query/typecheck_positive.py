@@ -6,20 +6,22 @@ from collections.abc import Awaitable
 from dataclasses import dataclass
 from typing import NamedTuple, assert_type
 
-from type_bridge import (
+from tests.utils.handwritten import (
     Boolean,
-    Database,
     Entity,
+    FieldDescriptor,
+    FieldRef,
     Flag,
     Integer,
     Key,
+    NumericFieldRef,
     Relation,
     Role,
     String,
-    TransactionContext,
+    StringFieldRef,
     TypeFlags,
 )
-from type_bridge.fields import FieldDescriptor, FieldRef, NumericFieldRef, StringFieldRef
+from type_bridge import Database, TransactionContext
 from type_bridge.typed import (
     BoundRole,
     BoundVar,

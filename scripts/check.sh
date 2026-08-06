@@ -111,7 +111,7 @@ run_node() {
     run_step "npm ci"                npm ci
     run_step "npm run build"         npm run build
     run_step "npm run typecheck"     npm run typecheck
-    run_step "npm run typecheck:query-contract" npm run typecheck:query-contract
+    run_step "npm run typecheck:projection-integration" npm run typecheck:projection-integration
     run_step "npm run scope:probe"    npm run scope:probe
     run_step "schema-codegen TypeScript projection acceptance" \
         node ../schema-codegen/tests/typescript_acceptance/check.mjs
@@ -119,10 +119,15 @@ run_node() {
     run_step "npm run test:dts"      npm run test:dts
     run_step "npm run dts:parity"    npm run dts:parity
     run_step "npm run smoke:package" npm run smoke:package
-    run_step "npm run smoke:legacy-package" npm run smoke:legacy-package
     run_step "npm run test:contract-adapter" npm run test:contract-adapter
 
     popd >/dev/null
+}
+
+run_generated_examples() {
+    printf "${BOLD}━━━ Generated examples ━━━${RESET}\n\n"
+    run_step "generated-only example workspace" \
+        scripts/ci/validate_generated_examples.sh
 }
 
 # ── Dispatch ─────────────────────────────────────────────────────────────────
@@ -131,7 +136,7 @@ case "$target" in
     rust)   run_rust   ;;
     python) run_python ;;
     node)   run_node   ;;
-    all)    run_rust; run_python; run_node ;;
+    all)    run_rust; run_python; run_node; run_generated_examples ;;
     *)
         echo "Usage: $0 [rust|python|node|all]"
         exit 1

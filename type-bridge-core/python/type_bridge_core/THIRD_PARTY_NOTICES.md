@@ -12,9 +12,8 @@ public-local license union for both bindings and reproduces every distinct
 selected or harvested dependency license text. Private TypeBridge-authored
 crates remain covered by the canonical MIT section. TypeBridge makes no
 ownership claim over TypeDB's work,
-and distributing these components does not relicense them as MIT. The band-7
-packages are unofficial namespaced, already-published packaging-only
-republications. The band-8 compatibility copies are source-unmodified and
+and distributing these components does not relicense them as MIT. The band-8
+compatibility copies are source-unmodified and
 owner-authorized for TypeBridge Cargo distribution. TypeDB is not responsible
 for the downstream package names or packaging metadata.
 
@@ -22,8 +21,6 @@ for the downstream package names or packaging metadata.
 
 | Runtime band | Included component | Exact upstream source | License and downstream status |
 | --- | --- | --- | --- |
-| 7 | `type-bridge-typedb-driver-b7` 3.8.1 | TypeDB `typedb-driver` tag [3.8.1](https://github.com/typedb/typedb-driver/tree/8e8d4a43da32adc1c56084f4d34174bebd0ce34a) (commit `8e8d4a43da32adc1c56084f4d34174bebd0ce34a`) | Apache-2.0 namespaced packaging-only package; source behavior unchanged; already published |
-| 7 | `type-bridge-typedb-protocol-b7` 3.7.0 | TypeDB `typedb-protocol` tag [3.7.0](https://github.com/typedb/typedb-protocol/tree/3b75931f30f2b5cecf192515bb95071cd98a6e10) (commit `3b75931f30f2b5cecf192515bb95071cd98a6e10`) | MPL-2.0 namespaced packaging-only package; generated protocol source unchanged; already published |
 | 8 | `type-bridge-typedb-driver-b8` 3.11.5 | TypeDB `typedb-driver` tag [3.11.5](https://github.com/typedb/typedb-driver/tree/7e669e41d9fee22fde8d5e60be7edbf00c6ec64b) (commit `7e669e41d9fee22fde8d5e60be7edbf00c6ec64b`) | Apache-2.0 namespaced packaging-only package; source behavior unchanged; owner-authorized for TypeBridge Cargo distribution |
 | 8 | `type-bridge-typedb-protocol-b8` 3.11.0 | TypeDB `typedb-protocol` tag [3.11.0](https://github.com/typedb/typedb-protocol/tree/1db5bdd6579352d31343da28be41844ed07da1b5) (commit `1db5bdd6579352d31343da28be41844ed07da1b5`) | MPL-2.0 namespaced packaging-only package; generated protocol source unchanged; owner-authorized for TypeBridge Cargo distribution |
 | 9 (default) | official `typedb-driver` 3.12.1 | TypeDB official crates.io package [3.12.1](https://crates.io/crates/typedb-driver/3.12.1) | Apache-2.0, unmodified official package |
@@ -43,9 +40,9 @@ Band 9 consumes the exact official upstream packages listed above.
 
 ## Namespacing disclosure
 
-The band-7 and band-8 package names exist solely to prevent Cargo package
-version unification from collapsing incompatible TypeDB protocol generations
-in one native binary. The driver `src/` trees and protocol generated source
+The band-8 package names exist solely to prevent Cargo package version
+unification from collapsing incompatible TypeDB protocol generations in one
+native binary. The driver `src/` tree and protocol generated source
 are byte-identical to their respective upstream archives: TypeBridge carries
 no transaction terminal-close patch or other behavioral change. Differences
 are confined to package metadata, same-band dependency aliases, workspace
@@ -58,23 +55,17 @@ table.
 The complete corresponding source for the included namespaced compatibility
 components is available from the immutable TypeBridge v2.0.0 source tag:
 
-- <https://github.com/ds1sqe/type-bridge/tree/v2.0.0/type-bridge-core/vendor/typedb-driver-b7>
-- <https://github.com/ds1sqe/type-bridge/tree/v2.0.0/type-bridge-core/vendor/typedb-protocol-b7>
 - <https://github.com/ds1sqe/type-bridge/tree/v2.0.0/type-bridge-core/vendor/typedb-driver-b8>
 - <https://github.com/ds1sqe/type-bridge/tree/v2.0.0/type-bridge-core/vendor/typedb-protocol-b8>
 
-The band-7 renamed crates are already distributed as immutable crates.io source
-packages at the exact versions shown in the table. The TypeBridge owner
-authorized first publication of the band-8 packages on 2026-08-03. These exact
-source-unmodified packages are the authorized compatibility artifacts, with
-the protocol package preceding the driver package. The upstream
-source archives used as the packaging bases, and the official band-9 archives,
-are:
+The TypeBridge owner authorized first publication of the band-8 packages on
+2026-08-03. These exact source-unmodified packages are the authorized
+compatibility artifacts, with the protocol package preceding the driver
+package. The upstream source archives used as the packaging bases, and the
+official band-9 archives, are:
 
 | Component archive | SHA-256 |
 | --- | --- |
-| <https://static.crates.io/crates/typedb-driver/typedb-driver-3.8.1.crate> | `bf5f617f8d670dd75dc752ae6f42e2bf28ca612ab4feae353c2c89d052adfab0` |
-| <https://static.crates.io/crates/typedb-protocol/typedb-protocol-3.7.0.crate> | `0062374abd0c14afa55e5b1d8e095ac110830da29943ad43f6c6b5d5912a811f` |
 | <https://static.crates.io/crates/typedb-driver/typedb-driver-3.11.5.crate> | `71c456fc6fb8f9112236fc088569cbe47f620443629ef8c81b1d79aec7b49fc6` |
 | <https://static.crates.io/crates/typedb-protocol/typedb-protocol-3.11.0.crate> | `f051694ab18c9fb31f15e4567421b55a70e7dddbc1af60a6a1c4cf73ffe8d5e8` |
 | <https://static.crates.io/crates/typedb-driver/typedb-driver-3.12.1.crate> | `b7daa941ffe0f6e6cb17e2e831e13b338a9db23551414f877c7fb64ce05f9f46` |
@@ -782,7 +773,7 @@ and fails the byte-for-byte CI freshness check.
 - Node root: `crates/node/Cargo.toml` with default features
 - Release targets: `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `x86_64-apple-darwin`, `aarch64-apple-darwin`, `x86_64-pc-windows-msvc`, `aarch64-pc-windows-msvc`
 - Excluded from this package inventory: build-only and development-only dependencies, plus private TypeBridge-authored crates covered by the MIT section
-- Closure fingerprint: `sha256:8f35f13d86447049e2d067a691c0f7b87693f44c0ed74c63fcf764b73dee560c`
+- Closure fingerprint: `sha256:6e4e45480371af9ac8fed0c6eadf9ca6cee0f45ac17b3e277f3523f61eae8fbc`
 
 Every evaluated package's complete cargo-about-resolved SPDX expression is retained
 below. The
@@ -902,7 +893,6 @@ bytes actually reproduced in this notice.
 | `io-lifetimes` | `3.0.1` | Python, Node | `crates.io` | `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT` | `MIT@sha256:23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3` |
 | `ipnet` | `2.12.0` | Python, Node | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:47dc9ff29128ddfb4d6a0435383c9f89120bc374dbcc1dd00b933a0b28aa7865` |
 | `is_terminal_polyfill` | `1.70.2` | Python | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:6efb0476a1cc085077ed49357026d8c173bf33017278ef440f222fb9cbcb66e6` |
-| `itertools` | `0.10.5` | Python, Node | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:7576269ea71f767b99297934c0b2367532690f8c4badc695edf8e04ab6a1e545` |
 | `itertools` | `0.14.0` | Python, Node | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:7576269ea71f767b99297934c0b2367532690f8c4badc695edf8e04ab6a1e545` |
 | `itoa` | `1.0.18` | Python, Node | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3` |
 | `lazy_static` | `1.5.0` | Python, Node | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:0621878e61f0d0fda054bcbe02df75192c28bde1ecc8289cbd86aeba2dd72720` |
@@ -1028,24 +1018,22 @@ bytes actually reproduced in this notice.
 | `tracing-log` | `0.2.0` | Python, Node | `crates.io` | `MIT` | `MIT@sha256:898b1ae9821e98daf8964c8d6c7f61641f5f5aa78ad500020771c0939ee0dea1` |
 | `tracing-subscriber` | `0.3.23` | Python, Node | `crates.io` | `MIT` | `MIT@sha256:898b1ae9821e98daf8964c8d6c7f61641f5f5aa78ad500020771c0939ee0dea1` |
 | `try-lock` | `0.2.5` | Python, Node | `crates.io` | `MIT` | `MIT@sha256:c816a0749cdc6bf062a5111c159723de51b2bfac66a1dac2655abd9e6b1583eb` |
-| `type-bridge-cli` | `2.0.1` | Python | `workspace:crates/cli/Cargo.toml` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
-| `type-bridge-contract` | `2.0.1` | Python, Node | `workspace:crates/contract/Cargo.toml` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
-| `type-bridge-core-lib` | `2.0.1` | Python, Node | `workspace:crates/core/Cargo.toml` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
-| `type-bridge-migration` | `2.0.1` | Python | `workspace:crates/migration/Cargo.toml` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
-| `type-bridge-orm` | `2.0.1` | Python, Node | `workspace:crates/orm/Cargo.toml` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
-| `type-bridge-query` | `2.0.1` | Python, Node | `workspace:crates/query/Cargo.toml` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
-| `type-bridge-schema` | `2.0.1` | Python, Node | `workspace:crates/schema/Cargo.toml` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
-| `type-bridge-schema-codegen` | `2.0.1` | Python | `workspace:crates/schema-codegen/Cargo.toml` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
-| `type-bridge-schema-compat` | `2.0.1` | Python, Node | `workspace:crates/schema-compat/Cargo.toml` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
-| `type-bridge-schema-migration` | `2.0.1` | Python | `workspace:crates/schema-migration/Cargo.toml` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
-| `type-bridge-schema-migration-typedb` | `2.0.1` | Python | `workspace:crates/schema-migration-typedb/Cargo.toml` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
-| `type-bridge-toml-transpiler` | `2.0.1` | Python, Node | `workspace:crates/toml-transpiler/Cargo.toml` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
-| `type-bridge-typedb-driver-b7` | `3.8.1` | Python, Node | `workspace:vendor/typedb-driver-b7/Cargo.toml` | `Apache-2.0` | `Apache-2.0@sha256:074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff` |
+| `type-bridge-cli` | `2.1.0` | Python | `workspace:crates/cli/Cargo.toml` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
+| `type-bridge-contract` | `2.1.0` | Python, Node | `workspace:crates/contract/Cargo.toml` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
+| `type-bridge-core-lib` | `2.1.0` | Python, Node | `workspace:crates/core/Cargo.toml` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
+| `type-bridge-migration` | `2.1.0` | Python | `workspace:crates/migration/Cargo.toml` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
+| `type-bridge-orm` | `2.1.0` | Python, Node | `workspace:crates/orm/Cargo.toml` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
+| `type-bridge-query` | `2.1.0` | Python, Node | `workspace:crates/query/Cargo.toml` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
+| `type-bridge-schema` | `2.1.0` | Python, Node | `workspace:crates/schema/Cargo.toml` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
+| `type-bridge-schema-codegen` | `2.1.0` | Python | `workspace:crates/schema-codegen/Cargo.toml` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
+| `type-bridge-schema-compat` | `2.1.0` | Python, Node | `workspace:crates/schema-compat/Cargo.toml` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
+| `type-bridge-schema-migration` | `2.1.0` | Python | `workspace:crates/schema-migration/Cargo.toml` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
+| `type-bridge-schema-migration-typedb` | `2.1.0` | Python | `workspace:crates/schema-migration-typedb/Cargo.toml` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
+| `type-bridge-toml-transpiler` | `2.1.0` | Python, Node | `workspace:crates/toml-transpiler/Cargo.toml` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
 | `type-bridge-typedb-driver-b8` | `3.11.5` | Python, Node | `workspace:vendor/typedb-driver-b8/Cargo.toml` | `Apache-2.0` | `Apache-2.0@sha256:074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff` |
-| `type-bridge-typedb-protocol-b7` | `3.7.0` | Python, Node | `workspace:vendor/typedb-protocol-b7/Cargo.toml` | `MPL-2.0` | `MPL-2.0@sha256:3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04` |
 | `type-bridge-typedb-protocol-b8` | `3.11.0` | Python, Node | `workspace:vendor/typedb-protocol-b8/Cargo.toml` | `MPL-2.0` | `MPL-2.0@sha256:3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04` |
-| `type-bridge-typedb-runtime` | `2.0.1` | Python, Node | `workspace:crates/typedb-runtime/Cargo.toml` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
-| `type-bridge-workspace` | `2.0.1` | Python | `workspace:crates/workspace/Cargo.toml` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
+| `type-bridge-typedb-runtime` | `2.1.0` | Python, Node | `workspace:crates/typedb-runtime/Cargo.toml` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
+| `type-bridge-workspace` | `2.1.0` | Python | `workspace:crates/workspace/Cargo.toml` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
 | `typedb-driver` | `3.12.1` | Python, Node | `crates.io` | `Apache-2.0` | `Apache-2.0@sha256:074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff` |
 | `typedb-protocol` | `3.12.0` | Python, Node | `crates.io` | `MPL-2.0` | `MPL-2.0@sha256:3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04` |
 | `typenum` | `1.20.1` | Python, Node | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:a825bd853ab71619a4923d7b4311221427848070ff44d990da39b0b274c1683f` |

@@ -6,16 +6,16 @@ in transaction scenarios.
 
 import pytest
 
-from type_bridge import (
+from tests.utils.handwritten import (
     Database,
     Entity,
     Flag,
     Integer,
     Key,
-    SchemaManager,
     String,
     TypeFlags,
 )
+from tests.utils.typeql import define_schema
 
 
 @pytest.mark.integration
@@ -37,9 +37,14 @@ class TestTransactionRollback:
             name: TxName = Flag(Key)
             count: TxCount
 
-        schema_manager = SchemaManager(clean_db)
-        schema_manager.register(TxCounter)
-        schema_manager.sync_schema(force=True)
+        define_schema(
+            clean_db,
+            """
+            attribute TxName, value string;
+            attribute TxCount, value integer;
+            entity counter_tx_test, owns TxName @key, owns TxCount;
+            """,
+        )
 
         return clean_db, TxCounter, TxName, TxCount
 
@@ -140,9 +145,14 @@ class TestTransactionContextCleanup:
             name: RecName = Flag(Key)
             value: RecValue
 
-        schema_manager = SchemaManager(clean_db)
-        schema_manager.register(Record)
-        schema_manager.sync_schema(force=True)
+        define_schema(
+            clean_db,
+            """
+            attribute RecName, value string;
+            attribute RecValue, value integer;
+            entity record_cleanup_test, owns RecName @key, owns RecValue;
+            """,
+        )
 
         return clean_db, Record, RecName, RecValue
 
@@ -197,9 +207,14 @@ class TestSequentialTransactions:
             name: SeqName = Flag(Key)
             seq: SeqNum
 
-        schema_manager = SchemaManager(clean_db)
-        schema_manager.register(SeqItem)
-        schema_manager.sync_schema(force=True)
+        define_schema(
+            clean_db,
+            """
+            attribute SeqName, value string;
+            attribute SeqNum, value integer;
+            entity item_seq_test, owns SeqName @key, owns SeqNum;
+            """,
+        )
 
         return clean_db, SeqItem, SeqName, SeqNum
 

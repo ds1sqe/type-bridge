@@ -3,11 +3,11 @@
 use std::collections::HashMap;
 use std::marker::PhantomData;
 
-use crate::entity::TypeBridgeEntity;
+use crate::_entity::TypeBridgeEntity;
+use crate::_manager::query_builder;
+use crate::_relation::TypeBridgeRelation;
 use crate::error::{OrmError, Result};
 use crate::expr::{Agg, AggResult, GroupByResult};
-use crate::manager::query_builder;
-use crate::relation::TypeBridgeRelation;
 use crate::session::Database;
 use crate::session::backend::{QueryResult, TxType};
 

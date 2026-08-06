@@ -6,13 +6,13 @@ from typing import Any, ClassVar, Self, TypeVar
 
 from pydantic_core import core_schema
 
-from type_bridge.attribute.base import Attribute
+from type_bridge.attribute.base import _QueryAttribute
 
 # TypeVar for proper type checking
 DateValue = TypeVar("DateValue", bound=date_type)
 
 
-class Date(Attribute):
+class Date(_QueryAttribute):
     """Date attribute type that accepts date values (date only, no time).
 
     This maps to TypeDB's 'date' type, which is an ISO 8601 compliant date
@@ -65,7 +65,7 @@ class Date(Attribute):
         """Get the stored date value."""
         return self._value if self._value is not None else date_type.today()
 
-    def __add__(self, other: Any) -> "Date":
+    def __add__(self, other: Any) -> Self:
         """Add a Duration to this Date.
 
         Args:
@@ -80,21 +80,21 @@ class Date(Attribute):
             duration = Duration("P1M")
             result = d + duration  # Date(2024-02-29)
         """
-        from type_bridge.attribute.duration import Duration
+        from type_bridge.attribute.duration import _QueryDuration
 
-        if isinstance(other, Duration):
+        if isinstance(other, _QueryDuration):
             new_date = self.value + other.value
             # isodate returns datetime when adding Duration to date, extract .date()
             if isinstance(new_date, datetime_type):
                 new_date = new_date.date()
-            return Date(new_date)
+            return type(self)(new_date)
         return NotImplemented
 
-    def __radd__(self, other: Any) -> "Date":
+    def __radd__(self, other: Any) -> Self:
         """Reverse addition for Duration + Date."""
         return self.__add__(other)
 
-    def __sub__(self, other: Any) -> "Date":
+    def __sub__(self, other: Any) -> Self:
         """Subtract a Duration from this Date.
 
         Args:
@@ -109,13 +109,13 @@ class Date(Attribute):
             duration = Duration("P1M")
             result = d - duration  # Date(2024-02-29)
         """
-        from type_bridge.attribute.duration import Duration
+        from type_bridge.attribute.duration import _QueryDuration
 
-        if isinstance(other, Duration):
+        if isinstance(other, _QueryDuration):
             new_date = self.value - other.value
             if isinstance(new_date, datetime_type):
                 new_date = new_date.date()
-            return Date(new_date)
+            return type(self)(new_date)
         return NotImplemented
 
     # Pydantic integration hooks (used by base class __get_pydantic_core_schema__)
@@ -151,3 +151,7 @@ class Date(Attribute):
         if isinstance(value, datetime_type):
             return cls(value.date())
         return cls(date_type.fromisoformat(str(value)))
+
+
+_QueryDate = Date
+del Date

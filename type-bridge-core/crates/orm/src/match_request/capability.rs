@@ -193,7 +193,10 @@ fn add_plan_capabilities(plan: &MatchPlan, required: &mut CapabilitySet) {
 
 fn add_expression_capabilities(expression: &MatchExpr, required: &mut CapabilitySet) {
     match expression {
-        MatchExpr::FieldValue { .. } | MatchExpr::RoleEdge { .. } => {}
+        MatchExpr::FieldValue { .. }
+        | MatchExpr::FieldPresence { .. }
+        | MatchExpr::BindingIid { .. }
+        | MatchExpr::RoleEdge { .. } => {}
         MatchExpr::Reachable { .. } => {
             required.insert(Capability::BoundedReachability);
         }
@@ -246,7 +249,9 @@ fn add_operation_capabilities(operation: &MatchOperation, required: &mut Capabil
         MatchOperation::ExistsBy { .. } => {
             required.insert(Capability::DistinctRootExists);
         }
-        MatchOperation::ReduceBy { .. } => {
+        MatchOperation::ReduceBy { .. }
+        | MatchOperation::ReduceByField { .. }
+        | MatchOperation::ReduceByFields { .. } => {
             required.insert(Capability::TypedReduction);
         }
     }

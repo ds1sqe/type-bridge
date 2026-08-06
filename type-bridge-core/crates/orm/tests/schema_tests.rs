@@ -13,17 +13,21 @@ use type_bridge_contract::reserved::{
     MANAGED_CONTROL_ENTITY, MANAGED_CONTROL_LEASE_FENCE, MANAGED_CONTROL_LEASE_HOLDER,
     MANAGED_CONTROL_LEASE_STATE, MANAGED_CONTROL_SCOPE,
 };
-use type_bridge_orm::schema::info::*;
+use type_bridge_orm::_schema::info::*;
 use type_bridge_orm::session::backend::{BoxFuture, DriverBackend, QueryResult, TransactionOps};
 use type_bridge_orm::*;
+
+#[path = "support/internal.rs"]
+mod internal;
+use internal::*;
 use type_bridge_schema_compat::{LEGACY_LEDGER_SCHEMA_TYPEQL, MANAGED_FENCE_SCHEMA_TYPEQL};
 
 // ── Test entities ───────────────────────────────────────────────────
 
-define_attribute!(Name, "name", "string");
-define_attribute!(Age, "age", "long");
-define_attribute!(Position, "position", "string");
-define_attribute!(Email, "email", "string");
+_define_attribute!(Name, "name", "string");
+_define_attribute!(Age, "age", "long");
+_define_attribute!(Position, "position", "string");
+_define_attribute!(Email, "email", "string");
 
 #[derive(Debug)]
 struct Person {

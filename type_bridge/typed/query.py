@@ -8,12 +8,14 @@ from typing import overload
 from type_bridge_core import (
     MatchOrderHandle,
     MatchQueryHandle,
-    PyDescriptorRegistry,
     ValidatedMatchResultHandle,
     validate_match_order_term_count,
 )
+from type_bridge_core import (
+    _QueryDescriptorRegistry as PyDescriptorRegistry,
+)
 
-from type_bridge.models.base import TypeDBType
+from type_bridge.models.base import _QueryTypeDBType as TypeDBType
 from type_bridge.session import Database, TransactionContext
 from type_bridge.typed._terminal import (
     TypedQueryWindowError,

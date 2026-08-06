@@ -5,7 +5,7 @@
 //! This crate re-exports the core AST types as Python classes and provides
 //! thin wrappers around [`type_bridge_core_lib::validation::ValidationEngine`],
 //! [`type_bridge_core_lib::compiler::QueryCompiler`],
-//! [`type_bridge_core_lib::schema::TypeSchema`], and
+//! [`type_bridge_core_lib::_schema::TypeSchema`], and
 //! [`type_bridge_core_lib::value_coercion::ValueCoercer`].
 //!
 //! All complex types cross the Python ↔ Rust boundary via
@@ -14,7 +14,6 @@
 #![warn(missing_docs)]
 
 pub mod ast;
-pub mod author;
 pub mod match_runtime;
 pub mod migration_runtime;
 pub mod orm;
@@ -235,10 +234,10 @@ impl QueryCompiler {
     }
 }
 
-/// Python-facing wrapper around the Rust [`type_bridge_core_lib::schema::TypeSchema`].
-#[pyclass]
+/// Python-facing wrapper around the Rust [`type_bridge_core_lib::_schema::TypeSchema`].
+#[pyclass(name = "_ArchivedTypeSchema", module = "type_bridge_core")]
 pub struct TypeSchema {
-    inner: core::schema::TypeSchema,
+    inner: core::_schema::TypeSchema,
 }
 
 #[pymethods]
@@ -246,7 +245,7 @@ impl TypeSchema {
     /// Parse a TypeQL define-block string and resolve inheritance.
     #[staticmethod]
     fn from_typeql(input: &str) -> PyResult<Self> {
-        let schema = core::schema::TypeSchema::from_typeql(input)
+        let schema = core::_schema::TypeSchema::from_typeql(input)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
         Ok(TypeSchema { inner: schema })
     }
@@ -254,7 +253,7 @@ impl TypeSchema {
     /// Deserialize from a JSON string.
     #[staticmethod]
     fn from_json(json: &str) -> PyResult<Self> {
-        let schema = core::schema::TypeSchema::from_json(json)
+        let schema = core::_schema::TypeSchema::from_json(json)
             .map_err(pyo3::exceptions::PyValueError::new_err)?;
         Ok(TypeSchema { inner: schema })
     }
@@ -271,7 +270,7 @@ impl TypeSchema {
     fn render_models_json(&self, target: &str, options_json: Option<&str>) -> PyResult<String> {
         let target = parse_bindgen_target(target)?;
         let options = parse_bindgen_options(options_json)?;
-        core::bindgen::BindgenPlan::from_schema(&self.inner)
+        core::_bindgen::BindgenPlan::from_schema(&self.inner)
             .render(target, &options)
             .to_json()
             .map_err(pyo3::exceptions::PyValueError::new_err)
@@ -655,25 +654,25 @@ fn parse_typeql_query(py: Python<'_>, input: &str) -> PyResult<PyObject> {
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
 }
 
-fn parse_bindgen_target(target: &str) -> PyResult<core::bindgen::TargetLanguage> {
+fn parse_bindgen_target(target: &str) -> PyResult<core::_bindgen::TargetLanguage> {
     target
         .parse()
         .map_err(pyo3::exceptions::PyValueError::new_err)
 }
 
-fn parse_bindgen_options(options_json: Option<&str>) -> PyResult<core::bindgen::BindgenOptions> {
+fn parse_bindgen_options(options_json: Option<&str>) -> PyResult<core::_bindgen::BindgenOptions> {
     match options_json {
         Some(options_json) => serde_json::from_str(options_json).map_err(|e| {
             pyo3::exceptions::PyValueError::new_err(format!(
                 "Failed to deserialize bindgen options: {e}"
             ))
         }),
-        None => Ok(core::bindgen::BindgenOptions::default()),
+        None => Ok(core::_bindgen::BindgenOptions::default()),
     }
 }
 
 /// Render generated model files as a JSON package from a TypeQL schema string.
-#[pyfunction]
+#[pyfunction(name = "_render_models_json")]
 #[pyo3(signature = (input, target, options_json=None))]
 fn render_models_json(input: &str, target: &str, options_json: Option<&str>) -> PyResult<String> {
     let target = parse_bindgen_target(target)?;
@@ -684,7 +683,7 @@ fn render_models_json(input: &str, target: &str, options_json: Option<&str>) -> 
 }
 
 /// Export the canonical direct declaration snapshot without rendering models.
-#[pyfunction]
+#[pyfunction(name = "_generated_declared_descriptors_json")]
 fn generated_declared_descriptors_json(input: &str) -> PyResult<String> {
     type_bridge_schema_compat::generated_declared_descriptors_json(input)
         .map_err(pyo3::exceptions::PyValueError::new_err)
@@ -701,17 +700,6 @@ fn run_v2_cli(py: Python<'_>, arguments: Vec<String>) -> i32 {
     py.allow_threads(|| type_bridge_cli::run_cli(arguments))
 }
 
-/// Run the released V1 migration CLI in-process over process-style arguments.
-///
-/// This is the wheel-safe counterpart of the standalone
-/// `type-bridge-migration` binary. It calls the same Rust parser and command
-/// runner, releases the GIL for connected commands, and returns rather than
-/// terminating the Python host process.
-#[pyfunction]
-fn run_legacy_migration_cli(py: Python<'_>, arguments: Vec<String>) -> i32 {
-    py.allow_threads(|| type_bridge_migration::legacy_cli::run_cli(arguments))
-}
-
 #[pymodule]
 fn type_bridge_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<ValidationEngine>()?;
@@ -725,7 +713,6 @@ fn type_bridge_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(coerce_value, m)?)?;
     m.add_function(wrap_pyfunction!(transpiler::toml_to_typeql, m)?)?;
     m.add_function(wrap_pyfunction!(run_v2_cli, m)?)?;
-    m.add_function(wrap_pyfunction!(run_legacy_migration_cli, m)?)?;
 
     // Values
     m.add_class::<ast::LiteralValue>()?;
@@ -788,7 +775,6 @@ fn type_bridge_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     query_v2_runtime::register(m)?;
     query_v2_builder_runtime::register(m)?;
     query_v2_model_remote_runtime::register(m)?;
-    author::register(m)?;
     schema::register(m)?;
     version::register(m)?;
 

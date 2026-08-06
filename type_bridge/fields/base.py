@@ -1,4 +1,4 @@
-# ruff: noqa: UP046 -- the defaulted contravariant owner preserves legacy generic arity.
+# ruff: noqa: UP046 -- the defaulted contravariant owner preserves V1 generic arity.
 
 """Field reference system for type-safe query building.
 
@@ -11,13 +11,13 @@ from weakref import ReferenceType, WeakKeyDictionary, ref
 
 from typing_extensions import TypeVar
 
-from type_bridge.models.base import TypeDBType
+from type_bridge.models.base import _QueryTypeDBType as TypeDBType
 
 if TYPE_CHECKING:
-    from type_bridge.attribute.base import Attribute
-    from type_bridge.attribute.string import String
+    from type_bridge.attribute.base import _QueryAttribute as Attribute
+    from type_bridge.attribute.string import _QueryString as String
     from type_bridge.expressions import AggregateExpr, ComparisonExpr, StringExpr
-    from type_bridge.models import Entity
+    from type_bridge.models.entity import _QueryEntity as Entity
 
 # Type variables for constraints
 T_Attribute = TypeVar("T_Attribute", bound="Attribute")
@@ -254,6 +254,12 @@ class OrderedFieldRef(
     """Marker reference for non-numeric fields with a total value order."""
 
 
+_QueryFieldRef = FieldRef
+_QueryStringFieldRef = StringFieldRef
+_QueryNumericFieldRef = NumericFieldRef
+_QueryOrderedFieldRef = OrderedFieldRef
+
+
 type _FieldReferenceSnapshot = tuple[
     ReferenceType[object],
     str,
@@ -266,7 +272,7 @@ _TYPED_QUERY_FIELD_REFERENCES: WeakKeyDictionary[object, _FieldReferenceSnapshot
 )
 
 
-def _mark_typed_query_field_reference[ReferenceT: FieldRef[Any, Any]](
+def _mark_typed_query_field_reference[ReferenceT: _QueryFieldRef[Any, Any]](
     reference: ReferenceT,
 ) -> ReferenceT:
     """Record that a field reference came from a real model descriptor."""
@@ -284,7 +290,7 @@ def _typed_query_field_reference_owner(
     reference: object,
 ) -> tuple[type[TypeDBType], str] | None:
     """Return immutable owner provenance for one genuine, unchanged reference."""
-    if not isinstance(reference, FieldRef):
+    if not isinstance(reference, _QueryFieldRef):
         return None
     try:
         snapshot = _TYPED_QUERY_FIELD_REFERENCES.get(reference)
@@ -337,14 +343,16 @@ class FieldDescriptor[T_Attribute: "Attribute"]:
         self.attr_type = attr_type
 
     @overload
-    def __get__(self, instance: None, owner: type[T_Owner]) -> FieldRef[T_Attribute, T_Owner]: ...
+    def __get__(
+        self, instance: None, owner: type[T_Owner]
+    ) -> _QueryFieldRef[T_Attribute, T_Owner]: ...
 
     @overload
     def __get__(self, instance: "Entity", owner: type[T_Owner]) -> T_Attribute | None: ...
 
     def __get__(
         self, instance: "Entity | None", owner: type[T_Owner]
-    ) -> "FieldRef[T_Attribute, T_Owner] | T_Attribute | None":
+    ) -> "_QueryFieldRef[T_Attribute, T_Owner] | T_Attribute | None":
         """Get field value or field reference.
 
         Args:
@@ -375,7 +383,7 @@ class FieldDescriptor[T_Attribute: "Attribute"]:
         #    call object.__setattr__ and trigger this __set__ again (infinite recursion)
         vars(instance)[self.field_name] = value
 
-    def _make_field_ref(self, entity_type: type[T_Owner]) -> FieldRef[T_Attribute, T_Owner]:
+    def _make_field_ref(self, entity_type: type[T_Owner]) -> _QueryFieldRef[T_Attribute, T_Owner]:
         """Create appropriate FieldRef subclass based on attribute type.
 
         Args:
@@ -384,18 +392,18 @@ class FieldDescriptor[T_Attribute: "Attribute"]:
         Returns:
             FieldRef subclass instance (FieldRef, StringFieldRef, or NumericFieldRef)
         """
-        from type_bridge.attribute.date import Date
-        from type_bridge.attribute.datetime import DateTime
-        from type_bridge.attribute.datetimetz import DateTimeTZ
-        from type_bridge.attribute.decimal import Decimal
-        from type_bridge.attribute.double import Double
-        from type_bridge.attribute.integer import Integer
-        from type_bridge.attribute.string import String
+        from type_bridge.attribute.date import _QueryDate as Date
+        from type_bridge.attribute.datetime import _QueryDateTime as DateTime
+        from type_bridge.attribute.datetimetz import _QueryDateTimeTZ as DateTimeTZ
+        from type_bridge.attribute.decimal import _QueryDecimal as Decimal
+        from type_bridge.attribute.double import _QueryDouble as Double
+        from type_bridge.attribute.integer import _QueryInteger as Integer
+        from type_bridge.attribute.string import _QueryString as String
 
         # Check if this is a String subclass
         if issubclass(self.attr_type, String):
             return _mark_typed_query_field_reference(
-                StringFieldRef(
+                _QueryStringFieldRef(
                     field_name=self.field_name,
                     attr_type=self.attr_type,
                     entity_type=entity_type,
@@ -405,7 +413,7 @@ class FieldDescriptor[T_Attribute: "Attribute"]:
         # Check if this is a numeric type
         if issubclass(self.attr_type, (Integer, Double, Decimal)):
             return _mark_typed_query_field_reference(
-                NumericFieldRef(
+                _QueryNumericFieldRef(
                     field_name=self.field_name,
                     attr_type=self.attr_type,
                     entity_type=entity_type,
@@ -414,7 +422,7 @@ class FieldDescriptor[T_Attribute: "Attribute"]:
 
         if issubclass(self.attr_type, (Date, DateTime, DateTimeTZ)):
             return _mark_typed_query_field_reference(
-                OrderedFieldRef(
+                _QueryOrderedFieldRef(
                     field_name=self.field_name,
                     attr_type=self.attr_type,
                     entity_type=entity_type,
@@ -423,9 +431,18 @@ class FieldDescriptor[T_Attribute: "Attribute"]:
 
         # Default to base FieldRef
         return _mark_typed_query_field_reference(
-            FieldRef(
+            _QueryFieldRef(
                 field_name=self.field_name,
                 attr_type=self.attr_type,
                 entity_type=entity_type,
             )
         )
+
+
+_QueryFieldDescriptor = FieldDescriptor
+
+del FieldRef
+del StringFieldRef
+del NumericFieldRef
+del OrderedFieldRef
+del FieldDescriptor

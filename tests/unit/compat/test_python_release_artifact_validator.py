@@ -32,7 +32,7 @@ def load_module(name: str, path: Path) -> ModuleType:
 
 
 validator = load_module("validate_python_release_artifacts", VALIDATOR_PATH)
-VERSION = "2.0.1"
+VERSION = "2.1.0"
 SPECS = validator.load_package_specs(ROOT, VERSION)
 CORE_PLATFORMS = {
     "linux-x86_64": "manylinux_2_17_x86_64",
@@ -634,9 +634,9 @@ def test_core_wheel_rejects_elf_newer_than_manylinux_policy(tmp_path: Path) -> N
     "extra_member",
     [
         "hostile/__init__.py",
-        "type_bridge-2.0.1.data/purelib/hostile.py",
-        "type_bridge-2.0.1.data/platlib/hostile.py",
-        "type_bridge-2.0.1.data/scripts/hostile",
+        "type_bridge-2.1.0.data/purelib/hostile.py",
+        "type_bridge-2.1.0.data/platlib/hostile.py",
+        "type_bridge-2.1.0.data/scripts/hostile",
     ],
 )
 def test_root_wheel_rejects_unexpected_install_payload(
@@ -680,13 +680,17 @@ def test_core_sdist_rejects_extra_package_payload(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     "fork_name",
     [
+        "typedb-driver-b7",
+        "typedb_protocol_b7",
+        "type-bridge-typedb-driver-b7",
+        "type_bridge_typedb_protocol_b7",
         "typedb-driver-b9",
         "typedb_protocol_b9",
         "type-bridge-typedb-driver-b9",
         "type_bridge_typedb_protocol_b9",
     ],
 )
-def test_python_artifacts_reject_historical_band9_payload_names(
+def test_python_artifacts_reject_retired_provider_payload_names(
     tmp_path: Path,
     fork_name: str,
 ) -> None:
@@ -698,7 +702,7 @@ def test_python_artifacts_reject_historical_band9_payload_names(
         platform="any",
         extra_members={f"{dist_info}/{fork_name}.json": b"hostile\n"},
     )
-    with pytest.raises(validator.ValidationError, match="Historical band-9 fork payload"):
+    with pytest.raises(validator.ValidationError, match="Retired provider-band payload"):
         validator.validate_wheel(wheel, spec)
 
     sdist = write_sdist(
@@ -706,7 +710,7 @@ def test_python_artifacts_reject_historical_band9_payload_names(
         spec,
         extra_members={f"vendor/{fork_name}/Cargo.toml": b"hostile\n"},
     )
-    with pytest.raises(validator.ValidationError, match="Historical band-9 fork payload"):
+    with pytest.raises(validator.ValidationError, match="Retired provider-band payload"):
         validator.validate_sdist(sdist, spec)
 
 
@@ -774,7 +778,7 @@ def test_artifacts_reject_unrecognized_license_like_members(tmp_path: Path) -> N
 @pytest.mark.parametrize(
     "source_name",
     [
-        "vendor/typedb-driver-b7/src/lib.rs",
+        "vendor/typedb-protocol-b8/src/typedb.protocol.rs",
         "vendor/typedb-driver-b8/Cargo.toml",
     ],
 )
@@ -894,14 +898,18 @@ def test_core_sdist_rejects_optional_derive_license_projection(tmp_path: Path) -
         validator.validate_sdist(sdist, SPECS["core"])
 
 
-def test_sdist_rejects_historical_band9_symlink_target(tmp_path: Path) -> None:
+@pytest.mark.parametrize("band", ("b7", "b9"))
+def test_sdist_rejects_retired_provider_symlink_target(
+    tmp_path: Path,
+    band: str,
+) -> None:
     sdist = write_sdist(
         tmp_path,
         SPECS["root"],
-        symlink_target="typedb-driver-b9/../CLAUDE.md",
+        symlink_target=f"typedb-driver-{band}/../CLAUDE.md",
     )
 
-    with pytest.raises(validator.ValidationError, match="Historical band-9 fork payload"):
+    with pytest.raises(validator.ValidationError, match="Retired provider-band payload"):
         validator.validate_sdist(sdist, SPECS["root"])
 
 
@@ -1050,10 +1058,10 @@ def test_repository_version_must_match_release_tag() -> None:
 @pytest.mark.parametrize(
     "replacement",
     (
-        "type-bridge-core>=2.0.1",
-        "type-bridge-core==2.0.1; python_version >= '3.12'",
-        "TYPE-BRIDGE-CORE==2.0.1",
-        "type_bridge_core==2.0.1",
+        "type-bridge-core>=2.1.0",
+        "type-bridge-core==2.1.0; python_version >= '3.12'",
+        "TYPE-BRIDGE-CORE==2.1.0",
+        "type_bridge_core==2.1.0",
     ),
 )
 def test_artifact_gate_rejects_noncanonical_root_core_requirements(
@@ -1063,7 +1071,7 @@ def test_artifact_gate_rejects_noncanonical_root_core_requirements(
     manifest, _ = copy_root_python_contract(tmp_path)
     manifest.write_text(
         manifest.read_text(encoding="utf-8").replace(
-            "type-bridge-core==2.0.1",
+            "type-bridge-core==2.1.0",
             replacement,
             1,
         ),
@@ -1080,8 +1088,8 @@ def test_artifact_gate_rejects_duplicate_normalized_root_core_requirements(
     manifest, _ = copy_root_python_contract(tmp_path)
     manifest.write_text(
         manifest.read_text(encoding="utf-8").replace(
-            '"type-bridge-core==2.0.1",',
-            '"type-bridge-core==2.0.1",\n    "type.bridge.core==2.0.1",',
+            '"type-bridge-core==2.1.0",',
+            '"type-bridge-core==2.1.0",\n    "type.bridge.core==2.1.0",',
             1,
         ),
         encoding="utf-8",
@@ -1095,8 +1103,8 @@ def test_artifact_gate_binds_import_visible_python_version(tmp_path: Path) -> No
     _, package_init = copy_root_python_contract(tmp_path)
     package_init.write_text(
         package_init.read_text(encoding="utf-8").replace(
-            '__version__ = "2.0.1"',
-            '__version__ = "2.0.1rc1"',
+            '__version__ = "2.1.0"',
+            '__version__ = "2.1.0rc1"',
             1,
         ),
         encoding="utf-8",

@@ -89,7 +89,7 @@ fn source_tree_python() -> PathBuf {
     absolute
 }
 
-fn run_sidecar_converter(workspace: &Path, legacy_directory: &Path) -> std::process::Output {
+fn run_sidecar_converter(workspace: &Path, archive_directory: &Path) -> std::process::Output {
     Command::new(source_tree_python())
         .current_dir(workspace)
         .env_remove("PYTHONHOME")
@@ -99,7 +99,7 @@ fn run_sidecar_converter(workspace: &Path, legacy_directory: &Path) -> std::proc
         .env("PYTHONSAFEPATH", "1")
         .env("PYTHONWARNINGS", "error")
         .args(["-m", "type_bridge.migration.sidecar"])
-        .arg(legacy_directory)
+        .arg(archive_directory)
         .output()
         .expect("the shipped Python sidecar converter runs")
 }
@@ -865,7 +865,7 @@ async fn adopt_legacy_history_then_evolve_live() {
                 "adopt",
                 "--environment",
                 "live",
-                "--legacy-directory",
+                "--archive-directory",
                 "migrations/smoke",
             ],
         ),
@@ -873,7 +873,7 @@ async fn adopt_legacy_history_then_evolve_live() {
     );
     assert!(root.join("migrations/v2/adopted-genesis.typeql").exists());
     assert!(
-        root.join("migrations/v2/0000_legacy_frontier.tbmigration.json")
+        root.join("migrations/v2/0000_archive_frontier.tbmigration.json")
             .exists(),
     );
     assert_success(
@@ -889,7 +889,7 @@ async fn adopt_legacy_history_then_evolve_live() {
             "adopt",
             "--environment",
             "live",
-            "--legacy-directory",
+            "--archive-directory",
             "migrations/smoke",
         ],
     );
@@ -911,7 +911,7 @@ async fn adopt_legacy_history_then_evolve_live() {
                 "adopt",
                 "--environment",
                 "replay",
-                "--legacy-directory",
+                "--archive-directory",
                 "migrations/smoke",
             ],
         ),
@@ -1086,7 +1086,7 @@ async fn adopt_legacy_history_then_evolve_live() {
                 "adopt",
                 "--environment",
                 "live",
-                "--legacy-directory",
+                "--archive-directory",
                 "migrations/smoke",
             ],
         ),
@@ -1107,7 +1107,7 @@ async fn adopt_legacy_history_then_evolve_live() {
                 "adopt",
                 "--environment",
                 "replay",
-                "--legacy-directory",
+                "--archive-directory",
                 "migrations/smoke",
             ],
         ),
@@ -1203,10 +1203,10 @@ async fn shipped_python_converter_to_native_adoption_live() {
 
     let workspace = tempfile::tempdir().expect("converter workspace directory");
     let root = workspace.path();
-    let legacy_directory = root.join("migrations/smoke");
+    let archive_directory = root.join("migrations/smoke");
     fs::create_dir_all(root.join("schema/fragments")).expect("schema directory");
     fs::create_dir_all(root.join("migrations/v2")).expect("V2 migration directory");
-    fs::create_dir_all(&legacy_directory).expect("legacy migration directory");
+    fs::create_dir_all(&archive_directory).expect("legacy migration directory");
     write_manifest(
         root,
         &address,
@@ -1269,17 +1269,17 @@ class _DisabledMigration(Migration):
     dependencies: ClassVar[list[tuple[str, str]]] = []
     operations: ClassVar[list[Operation]] = []
 "#;
-    fs::write(legacy_directory.join("0000_notes.py"), notes_source)
+    fs::write(archive_directory.join("0000_notes.py"), notes_source)
         .expect("ignored notes source writes");
-    fs::write(legacy_directory.join("0001_initial.py"), initial_source)
+    fs::write(archive_directory.join("0001_initial.py"), initial_source)
         .expect("initial Python migration writes");
-    fs::write(legacy_directory.join("0002_backfill.py"), backfill_source)
+    fs::write(archive_directory.join("0002_backfill.py"), backfill_source)
         .expect("RunPython migration writes");
-    fs::write(legacy_directory.join("0003_disabled.py"), disabled_source)
+    fs::write(archive_directory.join("0003_disabled.py"), disabled_source)
         .expect("ignored disabled source writes");
 
     let schema_hash = format!("{:x}", Sha256::digest(legacy_schema.as_bytes()));
-    let snapshot = legacy_directory.join("snapshots/v0001");
+    let snapshot = archive_directory.join("snapshots/v0001");
     fs::create_dir_all(&snapshot).expect("legacy snapshot directory writes");
     fs::write(snapshot.join("schema.tql"), legacy_schema).expect("snapshot schema writes");
     fs::write(
@@ -1336,37 +1336,37 @@ class _DisabledMigration(Migration):
             "converter stdout omitted {emitted}: {conversion_stdout}",
         );
         assert!(
-            legacy_directory.join(emitted).is_file(),
+            archive_directory.join(emitted).is_file(),
             "missing {emitted}"
         );
     }
     assert!(
-        !legacy_directory.join("0002_backfill.json").exists(),
+        !archive_directory.join("0002_backfill.json").exists(),
         "RunPython must not be represented as a native executable sidecar",
     );
     for ignored_sidecar in ["0000_notes.json", "0003_disabled.json"] {
         assert!(
-            !legacy_directory.join(ignored_sidecar).exists(),
+            !archive_directory.join(ignored_sidecar).exists(),
             "V1-ignored sources must not become native graph nodes",
         );
     }
     let notes_adoption: serde_json::Value = serde_json::from_slice(
-        &fs::read(legacy_directory.join("0000_notes.adoption.json"))
+        &fs::read(archive_directory.join("0000_notes.adoption.json"))
             .expect("ignored notes metadata reads"),
     )
     .expect("ignored notes metadata parses");
     let initial_adoption: serde_json::Value = serde_json::from_slice(
-        &fs::read(legacy_directory.join("0001_initial.adoption.json"))
+        &fs::read(archive_directory.join("0001_initial.adoption.json"))
             .expect("initial adoption metadata reads"),
     )
     .expect("initial adoption metadata parses");
     let backfill_adoption: serde_json::Value = serde_json::from_slice(
-        &fs::read(legacy_directory.join("0002_backfill.adoption.json"))
+        &fs::read(archive_directory.join("0002_backfill.adoption.json"))
             .expect("backfill adoption metadata reads"),
     )
     .expect("backfill adoption metadata parses");
     let disabled_adoption: serde_json::Value = serde_json::from_slice(
-        &fs::read(legacy_directory.join("0003_disabled.adoption.json"))
+        &fs::read(archive_directory.join("0003_disabled.adoption.json"))
             .expect("ignored disabled metadata reads"),
     )
     .expect("ignored disabled metadata parses");
@@ -1415,7 +1415,7 @@ class _DisabledMigration(Migration):
                 "adopt",
                 "--environment",
                 "live",
-                "--legacy-directory",
+                "--archive-directory",
                 "migrations/smoke",
             ],
         ),
@@ -1437,7 +1437,7 @@ class _DisabledMigration(Migration):
                 "adopt",
                 "--environment",
                 "replay",
-                "--legacy-directory",
+                "--archive-directory",
                 "migrations/smoke",
             ],
         ),

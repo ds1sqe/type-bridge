@@ -35,7 +35,7 @@ while detailed reference pages keep their stable URLs.
 
 -   **Operate and upgrade**
 
-    Server deployment, logging, compatibility, deprecations, and 2.0 upgrade
+    Server deployment, logging, compatibility, deprecations, and 2.1 upgrade
     sequencing.
 
     [:octicons-arrow-right-24: Operations](operations.md)
@@ -44,15 +44,10 @@ while detailed reference pages keep their stable URLs.
 
 ## How the guides relate
 
-Application models and canonical schemas describe the same TypeDB concepts.
-Choose one authoring authority for a scope:
-
-- model-first Python applications can register classes and use
-  `SchemaManager` during the 2.0 compatibility window;
-- schema-first applications author Split-YAML, plan migrations, and generate
-  Python, TypeScript, or Rust projections;
-- existing TypeQL applications can generate models through the retained
-  compatibility path.
+Split-YAML is the authoring authority. Applications check one workspace, review
+and apply canonical migrations, then generate Python, TypeScript, or Rust
+projections. Historical inputs use the documented one-way conversion/adoption
+paths; they are not parallel active authoring systems.
 
 All runtime surfaces delegate semantic work to the shared Rust engine. The
 [Python API reference](../reference/index.md) is generated from source

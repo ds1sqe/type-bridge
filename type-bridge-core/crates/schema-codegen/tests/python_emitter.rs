@@ -430,7 +430,7 @@ fn rebuild(
 }
 
 #[test]
-fn emits_exact_deterministic_eight_file_compound_package() {
+fn emits_exact_deterministic_ten_file_compound_package() {
     let emitter = PythonEmitter::new();
     let projection = compound_projection(&emitter.code_resources().unwrap());
     let first = emitter.emit(&projection).unwrap();
@@ -443,6 +443,8 @@ fn emits_exact_deterministic_eight_file_compound_package() {
             "__init__.pyi",
             "_models.py",
             "_models.pyi",
+            "_query.py",
+            "_query.pyi",
             "_runtime.py",
             "_runtime.pyi",
             "_schema.py",
@@ -464,7 +466,9 @@ fn emits_exact_deterministic_eight_file_compound_package() {
     ));
     assert!(source.contains("_install_runtime_projection("));
     assert!(source.contains("_initialize_attribute(self, value,"));
-    assert!(stub.contains("employee: _RoleDescriptor[Employment, Person, PersonRef, Person]"));
+    assert!(stub.contains(
+        "employee: _RoleDescriptor[Employment, Person, _BoundVar[Person] | _SubtypeBoundVar[Person], PersonRef, Person]"
+    ));
     assert!(stub.contains("def __init__(self, *, employee: Person) -> None:"));
     assert!(
         stub.contains("find_employment: Final[FunctionRef[[Person], Iterator[EmploymentRef]]]")
@@ -603,13 +607,10 @@ fn rejects_public_name_collisions_and_missing_parents() {
 #[test]
 fn fixed_resources_are_distinct_and_content_addressed() {
     let resources = PythonEmitter::new().code_resources().unwrap();
-    assert_eq!(resources.len(), 3);
-    assert_ne!(
-        resources[0].content_fingerprint(),
-        resources[1].content_fingerprint()
-    );
-    assert_ne!(
-        resources[1].content_fingerprint(),
-        resources[2].content_fingerprint()
-    );
+    assert_eq!(resources.len(), 5);
+    for (index, left) in resources.iter().enumerate() {
+        for right in resources.iter().skip(index + 1) {
+            assert_ne!(left.content_fingerprint(), right.content_fingerprint());
+        }
+    }
 }

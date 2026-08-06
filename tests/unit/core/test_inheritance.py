@@ -4,8 +4,8 @@ import warnings
 
 import pytest
 
-import type_bridge as tbg
-from type_bridge import Flag, Integer, Key, Role, String, TypeFlags
+import tests.utils.handwritten as tbg
+from tests.utils.handwritten import Flag, Integer, Key, Role, String, TypeFlags
 
 
 class TestInheritanceEdgeCases:

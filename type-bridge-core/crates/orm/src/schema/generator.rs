@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
-use crate::attribute::ValueType;
+use crate::_attribute::ValueType;
 
 use super::info::{AttributeSchemaEntry, EntitySchemaEntry, RelationSchemaEntry, SchemaInfo};
 
@@ -454,10 +454,12 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::attribute::ValueType;
-    use crate::descriptor::{EntityDescriptor, RelationDescriptor, RoleDescriptor, TypeDescriptor};
-    use crate::entity::Annotation;
-    use crate::schema::info::*;
+    use crate::_attribute::ValueType;
+    use crate::_descriptor::{
+        EntityDescriptor, RelationDescriptor, RoleDescriptor, TypeDescriptor,
+    };
+    use crate::_entity::Annotation;
+    use crate::_schema::info::*;
 
     #[test]
     fn empty_schema_produces_define_only() {
@@ -1684,7 +1686,7 @@ mod tests {
     /// core parser and produces the same `overrides`/`is_abstract`/cardinality values.
     #[test]
     fn specializing_role_emit_parse_roundtrip() {
-        use crate::schema::info::SchemaInfo;
+        use crate::_schema::info::SchemaInfo;
 
         let mut info = SchemaInfo::default();
         info.relations.insert(
@@ -1884,7 +1886,7 @@ mod tests {
     /// the generated TypeQL parses back to identical IR flags.
     #[test]
     fn list_owns_emit_parse_roundtrip() {
-        use crate::schema::info::SchemaInfo;
+        use crate::_schema::info::SchemaInfo;
 
         let mut info = SchemaInfo::default();
         info.attributes.insert(
@@ -1962,7 +1964,7 @@ mod tests {
     /// the generated TypeQL parses back to identical IR flags.
     #[test]
     fn list_role_emit_parse_roundtrip() {
-        use crate::schema::info::SchemaInfo;
+        use crate::_schema::info::SchemaInfo;
 
         let mut info = SchemaInfo::default();
         info.relations.insert(
@@ -2038,7 +2040,7 @@ mod tests {
             "annotations": [],
             "is_optional": false
         }"#;
-        use crate::descriptor::OwnedAttributeDescriptor;
+        use crate::_descriptor::OwnedAttributeDescriptor;
         let attr: OwnedAttributeDescriptor =
             serde_json::from_str(json).expect("deserialize failed");
         assert!(!attr.is_ordered, "is_ordered must default to false");
@@ -2054,7 +2056,7 @@ mod tests {
     /// `is_ordered` from descriptors into IR entries.
     #[test]
     fn from_descriptors_carries_list_interface_flags() {
-        use crate::descriptor::{
+        use crate::_descriptor::{
             EntityDescriptor, OwnedAttributeDescriptor, RelationDescriptor, RoleDescriptor,
             TypeDescriptor,
         };

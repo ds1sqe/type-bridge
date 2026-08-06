@@ -16,9 +16,10 @@ use type_bridge_contract::{
     id::{TypeId, TypeKind, is_canonical_thing_iid},
     projection::{CreateRoleProjection, ModelProjection, RoleTokenProjection},
 };
+use type_bridge_orm::_descriptor::{RelationDescriptor, RoleDescriptor};
 use type_bridge_orm::{
     DynamicAttributeMap, DynamicRelationRow, DynamicRolePlayer, DynamicRolePlayerInput,
-    InstalledRuntimeProjection, RelationDescriptor, RoleDescriptor,
+    InstalledRuntimeProjection,
 };
 
 pub(crate) fn resolve_relation_authority(

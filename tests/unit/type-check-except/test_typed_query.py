@@ -5,7 +5,8 @@ from __future__ import annotations
 from collections.abc import Awaitable
 from dataclasses import dataclass
 
-from type_bridge import Database, Entity, TypeFlags
+from tests.utils.handwritten import Entity, TypeFlags
+from type_bridge import Database
 from type_bridge.query_v2 import QueryPlanBuilder, QueryV2Authority
 from type_bridge.typed import (
     Query,

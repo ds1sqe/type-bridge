@@ -21,7 +21,7 @@ use super::capability::CapabilitySet;
 use super::error::{MatchError, MatchErrorCategory, MatchErrorPath, MatchErrorPathSegment};
 use super::ids::{BindingId, DescriptorId, FieldId, RoleEdgeId, RoleId};
 use super::lowering::{
-    LoweredMatchExecution, LoweredReduceInput, LoweredReduceTerm, ReduceDomain,
+    LoweredMatchExecution, LoweredReduceGroup, LoweredReduceInput, LoweredReduceTerm, ReduceDomain,
     lower_match_execution, preflight_released_match_execution,
 };
 use super::model::{
@@ -37,7 +37,8 @@ use super::result_validation::{
     validate_provider_result_with_limits, validated_match_result_from_v2,
 };
 use super::validation::ValidatedMatchRequest;
-use crate::descriptor::{TypeDescriptor, TypeDescriptorRef};
+use crate::_descriptor::{TypeDescriptor, TypeDescriptorRef};
+use crate::_registry::DescriptorRegistry;
 use crate::error::OrmError;
 use crate::query_v2::{
     QueryV2ExecutionError, execute_validated_model_query_borrowed,
@@ -46,7 +47,6 @@ use crate::query_v2::{
 use crate::query_v2_adapter::{
     AdaptedMatchRequest, MatchRequestAdaptation, MatchRequestAdapterAuthority, adapt_match_request,
 };
-use crate::registry::DescriptorRegistry;
 use crate::session::backend::{
     AnswerCancellation, AnswerConsumer, AnswerControl, AnswerItem, BoundedAnswerLimits,
     MAX_ERROR_DRAIN_BYTES, MAX_ERROR_DRAIN_ITEMS, QueryV2AnswerLimits, TxType,
@@ -1191,7 +1191,7 @@ impl<'a> SelectedResultExecutor<'a> {
         transaction: &mut Transaction,
         validated: &ValidatedMatchRequest,
         root: BindingId,
-        group: Option<BindingId>,
+        group: Option<LoweredReduceGroup>,
         scan: TypedRootScan,
         rematch: Option<TypedPageRematch>,
         terms: &[LoweredReduceTerm],
@@ -1231,14 +1231,15 @@ impl<'a> SelectedResultExecutor<'a> {
         } else {
             Vec::new()
         };
-        let rows = reduce_rows(root, group, terms, &roots, &solutions)?;
-        Ok(ProviderResultEvidence::reduction(
-            validated.request_token(),
-            validated.shape_id().clone(),
+        let rows = reduce_rows(
             root,
-            group,
-            rows,
-        ))
+            group.as_ref(),
+            terms,
+            &roots,
+            &solutions,
+            usize::try_from(self.limits.max_items).unwrap_or(usize::MAX),
+        )?;
+        Ok(reduction_evidence(validated, root, group, rows))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1247,7 +1248,7 @@ impl<'a> SelectedResultExecutor<'a> {
         context: &TransactionContext,
         validated: &ValidatedMatchRequest,
         root: BindingId,
-        group: Option<BindingId>,
+        group: Option<LoweredReduceGroup>,
         scan: TypedRootScan,
         rematch: Option<TypedPageRematch>,
         terms: &[LoweredReduceTerm],
@@ -1287,14 +1288,15 @@ impl<'a> SelectedResultExecutor<'a> {
         } else {
             Vec::new()
         };
-        let rows = reduce_rows(root, group, terms, &roots, &solutions)?;
-        Ok(ProviderResultEvidence::reduction(
-            validated.request_token(),
-            validated.shape_id().clone(),
+        let rows = reduce_rows(
             root,
-            group,
-            rows,
-        ))
+            group.as_ref(),
+            terms,
+            &roots,
+            &solutions,
+            usize::try_from(self.limits.max_items).unwrap_or(usize::MAX),
+        )?;
+        Ok(reduction_evidence(validated, root, group, rows))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1745,6 +1747,79 @@ fn reduction_input_value<'a>(
         .and_then(|attribute| attribute.values().first()))
 }
 
+fn reduction_evidence(
+    validated: &ValidatedMatchRequest,
+    root: BindingId,
+    group: Option<LoweredReduceGroup>,
+    rows: Vec<ReductionRow>,
+) -> ProviderResultEvidence {
+    match group {
+        None => ProviderResultEvidence::reduction(
+            validated.request_token(),
+            validated.shape_id().clone(),
+            root,
+            None,
+            rows,
+        ),
+        Some(LoweredReduceGroup::Binding(group)) => ProviderResultEvidence::reduction(
+            validated.request_token(),
+            validated.shape_id().clone(),
+            root,
+            Some(group),
+            rows,
+        ),
+        Some(LoweredReduceGroup::Field(group)) => ProviderResultEvidence::field_reduction(
+            validated.request_token(),
+            validated.shape_id().clone(),
+            root,
+            group,
+            rows,
+        ),
+        Some(LoweredReduceGroup::Fields(groups)) => ProviderResultEvidence::field_tuple_reduction(
+            validated.request_token(),
+            validated.shape_id().clone(),
+            root,
+            groups,
+            rows,
+        ),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum AttributeGroupKey {
+    String(String),
+    Long(i64),
+    Double(u64),
+    Boolean(bool),
+    Date(String),
+    DateTime(String),
+    DateTimeTz(String),
+    Decimal(String),
+    Duration(String),
+}
+
+fn attribute_group_key(value: &AttributeValue) -> Result<AttributeGroupKey, OrmError> {
+    Ok(match value {
+        AttributeValue::String(value) => AttributeGroupKey::String(value.clone()),
+        AttributeValue::Long(value) => AttributeGroupKey::Long(*value),
+        AttributeValue::Double(value) if value.is_finite() => {
+            AttributeGroupKey::Double(if *value == 0.0 { 0 } else { value.to_bits() })
+        }
+        AttributeValue::Double(_) => {
+            return Err(decode_error(
+                "reduction_group_value_invalid",
+                "field-grouped reduction received a non-finite double",
+            ));
+        }
+        AttributeValue::Boolean(value) => AttributeGroupKey::Boolean(*value),
+        AttributeValue::Date(value) => AttributeGroupKey::Date(value.clone()),
+        AttributeValue::DateTime(value) => AttributeGroupKey::DateTime(value.clone()),
+        AttributeValue::DateTimeTZ(value) => AttributeGroupKey::DateTimeTz(value.clone()),
+        AttributeValue::Decimal(value) => AttributeGroupKey::Decimal(value.clone()),
+        AttributeValue::Duration(value) => AttributeGroupKey::Duration(value.clone()),
+    })
+}
+
 /// Assemble typed reduction rows over the distinct selected-identity stream.
 ///
 /// The exhaustively proven root scan is authoritative for distinct root
@@ -1753,13 +1828,24 @@ fn reduction_input_value<'a>(
 /// group concept identity.
 fn reduce_rows(
     root: BindingId,
-    group: Option<BindingId>,
+    group: Option<&LoweredReduceGroup>,
     terms: &[LoweredReduceTerm],
     roots: &[String],
     solutions: &[ProviderSolutionEvidence],
+    max_group_rows: usize,
 ) -> Result<Vec<ReductionRow>, OrmError> {
     struct GroupAccumulator {
         thing: HydratedThing,
+        roots: BTreeSet<String>,
+        inputs: Vec<Option<CollectedInputs>>,
+    }
+    struct FieldGroupAccumulator {
+        value: AttributeValue,
+        roots: BTreeSet<String>,
+        inputs: Vec<Option<CollectedInputs>>,
+    }
+    struct FieldTupleGroupAccumulator {
+        values: Vec<AttributeValue>,
         roots: BTreeSet<String>,
         inputs: Vec<Option<CollectedInputs>>,
     }
@@ -1824,14 +1910,14 @@ fn reduce_rows(
             let values = finish(roots.len(), &accumulated)?;
             Ok(vec![ReductionRow::new(None, values)])
         }
-        Some(group) => {
+        Some(LoweredReduceGroup::Binding(group)) => {
             let mut groups: BTreeMap<String, GroupAccumulator> = BTreeMap::new();
             for solution in solutions {
                 let root_id = solution_root(solution)?;
                 let thing = solution
                     .bindings()
                     .iter()
-                    .find(|bound| bound.binding() == group)
+                    .find(|bound| bound.binding() == *group)
                     .map(BoundConceptEvidence::thing)
                     .ok_or_else(|| {
                         decode_error(
@@ -1854,6 +1940,157 @@ fn reduce_rows(
                 .map(|accumulator| {
                     let values = finish(accumulator.roots.len(), &accumulator.inputs)?;
                     Ok(ReductionRow::new(Some(accumulator.thing), values))
+                })
+                .collect()
+        }
+        Some(LoweredReduceGroup::Field(group)) => {
+            let mut groups: BTreeMap<AttributeGroupKey, FieldGroupAccumulator> = BTreeMap::new();
+            for solution in solutions {
+                let root_id = solution_root(solution)?;
+                let thing = solution
+                    .bindings()
+                    .iter()
+                    .find(|bound| bound.binding() == group.binding)
+                    .map(BoundConceptEvidence::thing)
+                    .ok_or_else(|| {
+                        decode_error(
+                            "reduction_binding_missing",
+                            "provider solution omitted the field-group owner binding",
+                        )
+                    })?;
+                let Some(attribute) = thing
+                    .attributes()
+                    .iter()
+                    .find(|attribute| attribute.field() == &group.field)
+                else {
+                    continue;
+                };
+                for value in attribute.values() {
+                    let key = attribute_group_key(value)?;
+                    if !groups.contains_key(&key) && groups.len() >= max_group_rows {
+                        return Err(resource_error(
+                            "reduction_group_limit",
+                            "field-grouped reduction exceeded the result-row ceiling",
+                        ));
+                    }
+                    let entry = groups.entry(key).or_insert_with(|| FieldGroupAccumulator {
+                        value: value.clone(),
+                        roots: BTreeSet::new(),
+                        inputs: fresh_inputs(terms),
+                    });
+                    if entry.roots.insert(root_id.clone()) {
+                        collect_solution(&mut entry.inputs, solution)?;
+                    }
+                }
+            }
+            groups
+                .into_values()
+                .map(|accumulator| {
+                    let values = finish(accumulator.roots.len(), &accumulator.inputs)?;
+                    Ok(ReductionRow::new_field(accumulator.value, values))
+                })
+                .collect()
+        }
+        Some(LoweredReduceGroup::Fields(group_fields)) => {
+            let mut groups: BTreeMap<Vec<AttributeGroupKey>, FieldTupleGroupAccumulator> =
+                BTreeMap::new();
+            for solution in solutions {
+                let root_id = solution_root(solution)?;
+                let mut choices = Vec::with_capacity(group_fields.len());
+                let mut omitted = false;
+                for group in group_fields {
+                    let thing = solution
+                        .bindings()
+                        .iter()
+                        .find(|bound| bound.binding() == group.binding)
+                        .map(BoundConceptEvidence::thing)
+                        .ok_or_else(|| {
+                            decode_error(
+                                "reduction_binding_missing",
+                                "provider solution omitted a tuple-group field owner binding",
+                            )
+                        })?;
+                    let Some(attribute) = thing
+                        .attributes()
+                        .iter()
+                        .find(|attribute| attribute.field() == &group.field)
+                    else {
+                        omitted = true;
+                        break;
+                    };
+                    let mut distinct = BTreeMap::new();
+                    for value in attribute.values() {
+                        distinct
+                            .entry(attribute_group_key(value)?)
+                            .or_insert_with(|| value.clone());
+                    }
+                    if distinct.is_empty() {
+                        omitted = true;
+                        break;
+                    }
+                    choices.push(distinct.into_iter().collect::<Vec<_>>());
+                }
+                if omitted {
+                    continue;
+                }
+                let tuple_count = choices.iter().try_fold(1_usize, |count, values| {
+                    count.checked_mul(values.len()).ok_or_else(|| {
+                        resource_error(
+                            "reduction_group_limit",
+                            "tuple-field reduction group cardinality overflowed",
+                        )
+                    })
+                })?;
+                if tuple_count > max_group_rows {
+                    return Err(resource_error(
+                        "reduction_group_limit",
+                        "tuple-field reduction exceeded the result-row ceiling",
+                    ));
+                }
+                let mut tuples = vec![(Vec::new(), Vec::new())];
+                for values in choices {
+                    let capacity = tuples.len().checked_mul(values.len()).ok_or_else(|| {
+                        resource_error(
+                            "reduction_group_limit",
+                            "tuple-field reduction group cardinality overflowed",
+                        )
+                    })?;
+                    let mut expanded = Vec::with_capacity(capacity);
+                    for (keys, scalars) in &tuples {
+                        for (key, scalar) in &values {
+                            let mut next_keys = keys.clone();
+                            next_keys.push(key.clone());
+                            let mut next_scalars = scalars.clone();
+                            next_scalars.push(scalar.clone());
+                            expanded.push((next_keys, next_scalars));
+                        }
+                    }
+                    tuples = expanded;
+                }
+                for (key, values) in tuples {
+                    if !groups.contains_key(&key) && groups.len() >= max_group_rows {
+                        return Err(resource_error(
+                            "reduction_group_limit",
+                            "tuple-field reduction exceeded the result-row ceiling",
+                        ));
+                    }
+                    let entry = groups
+                        .entry(key)
+                        .or_insert_with(|| FieldTupleGroupAccumulator {
+                            values,
+                            roots: BTreeSet::new(),
+                            inputs: fresh_inputs(terms),
+                        });
+                    if entry.roots.insert(root_id.clone()) {
+                        collect_solution(&mut entry.inputs, solution)?;
+                    }
+                }
+            }
+            groups
+                .into_values()
+                .map(|accumulator| {
+                    let values = finish(accumulator.roots.len(), &accumulator.inputs)?;
+                    Ok(ReductionRow::new_fields(accumulator.values, values))
                 })
                 .collect()
         }
@@ -2969,11 +3206,13 @@ impl<'a> PageRematchConsumer<'a> {
                     } => Some((*binding, *distinct)),
                 })
                 .collect(),
-            MatchOperation::ReduceBy { .. } => Vec::new(),
+            MatchOperation::ReduceBy { .. }
+            | MatchOperation::ReduceByField { .. }
+            | MatchOperation::ReduceByFields { .. } => Vec::new(),
             _ => {
                 return Err(decode_error(
                     "page_operation_mismatch",
-                    "re-match consumption requires a PageBy or ReduceBy operation",
+                    "re-match consumption requires a PageBy or reduction operation",
                 ));
             }
         };
@@ -3221,7 +3460,7 @@ fn decode_wildcard_attributes(
 fn decode_live_roles(
     registry: &DescriptorRegistry,
     owner: &DescriptorId,
-    descriptors: &[crate::descriptor::RoleDescriptor],
+    descriptors: &[crate::_descriptor::RoleDescriptor],
     value: Option<&Value>,
 ) -> Result<Vec<HydratedRole>, OrmError> {
     let Some(value) = value else {
@@ -3603,6 +3842,8 @@ fn collect_role_edges<'a>(expression: &'a MatchExpr, edges: &mut Vec<RoleEdgeCon
         MatchExpr::Not { expression } => collect_role_edges(expression, edges),
         MatchExpr::FieldValue { .. }
         | MatchExpr::FieldComparison { .. }
+        | MatchExpr::FieldPresence { .. }
+        | MatchExpr::BindingIid { .. }
         | MatchExpr::Reachable { .. } => {}
     }
 }
@@ -4318,12 +4559,12 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::*;
-    use crate::MatchErrorPath;
-    use crate::attribute::ValueType;
-    use crate::descriptor::{
+    use crate::_attribute::ValueType;
+    use crate::_descriptor::{
         EntityDescriptor, OwnedAttributeDescriptor, RelationDescriptor, RoleDescriptor,
     };
-    use crate::entity::Annotation;
+    use crate::_entity::Annotation;
+    use crate::MatchErrorPath;
     use crate::match_request::ids::BoundFieldId;
     use crate::match_request::model::{
         BindingPair, MatchBinding, MatchExpr, MatchMode, MatchOrder, MatchPlan, MatchRequest,
@@ -6442,6 +6683,26 @@ mod tests {
                         doc: None,
                         meta: Default::default(),
                     },
+                    OwnedAttributeDescriptor {
+                        field_name: "department".into(),
+                        attr_name: "department".into(),
+                        value_type: ValueType::String,
+                        annotations: vec![Annotation::Card(0, None)],
+                        is_optional: true,
+                        is_ordered: false,
+                        doc: None,
+                        meta: Default::default(),
+                    },
+                    OwnedAttributeDescriptor {
+                        field_name: "city".into(),
+                        attr_name: "city".into(),
+                        value_type: ValueType::String,
+                        annotations: vec![Annotation::Card(0, None)],
+                        is_optional: true,
+                        is_ordered: false,
+                        doc: None,
+                        meta: Default::default(),
+                    },
                 ],
                 doc: None,
                 meta: Default::default(),
@@ -6479,6 +6740,66 @@ mod tests {
             "concrete_type": "person",
             "kind": "entity",
             "attributes": attributes,
+            "roles": [],
+        })
+    }
+
+    fn person_department_wire(
+        binding: u16,
+        concept_id: &str,
+        name: &str,
+        departments: &[&str],
+    ) -> Value {
+        serde_json::json!({
+            "binding": binding,
+            "concept_id": concept_id,
+            "concrete_type": "person",
+            "kind": "entity",
+            "attributes": [
+                {
+                    "field": "name",
+                    "value_type": "string",
+                    "values": [name],
+                },
+                {
+                    "field": "department",
+                    "value_type": "string",
+                    "values": departments,
+                },
+            ],
+            "roles": [],
+        })
+    }
+
+    fn person_city_department_wire(
+        binding: u16,
+        concept_id: &str,
+        name: &str,
+        cities: &[&str],
+        departments: &[&str],
+    ) -> Value {
+        serde_json::json!({
+            "binding": binding,
+            "concept_id": concept_id,
+            "concrete_type": "person",
+            "kind": "entity",
+            "attributes": [
+                {
+                    "field": "name",
+                    "value_type": "string",
+                    "values": [name],
+                },
+                {
+                    "field": "city",
+                    "value_type": "string",
+                    "values": cities,
+                },
+                {
+                    "field": "department",
+                    "value_type": "string",
+                    "values": departments,
+                },
+            ],
             "roles": [],
         })
     }
@@ -6652,6 +6973,190 @@ mod tests {
             rows[1].values(),
             &[ReducedValue::Count(2), ReducedValue::Long(Some(40))]
         );
+    }
+
+    #[tokio::test]
+    async fn field_grouped_reduction_groups_distinct_roots_by_each_owned_value() {
+        let registry = reduction_registry();
+        let root = BindingId::new(0);
+        let department = BoundFieldId::new(
+            root,
+            FieldId::new(registry.descriptor_id("person").unwrap(), "department"),
+        );
+        let request = person_root_request(&registry, |root| MatchOperation::ReduceByField {
+            root,
+            group: department.clone(),
+            reducers: vec![ReduceTerm {
+                reduction: Reduction::Count,
+                input: None,
+            }],
+        });
+        let validated = validate_match_request(&registry, request).unwrap();
+        let (database, events) = database(
+            CapabilitySet::all(),
+            vec![Ok(vec![
+                solution(&[(0, "0x01")], &[]),
+                solution(&[(0, "0x02")], &[]),
+                solution(&[(0, "0x03")], &[]),
+                solution(&[(0, "0x04")], &[]),
+            ])],
+            vec![Ok(vec![
+                rematch_entities(vec![person_department_wire(
+                    0,
+                    "0x01",
+                    "Alice",
+                    &["Beta", "Shared"],
+                )]),
+                rematch_entities(vec![person_department_wire(0, "0x02", "Bea", &["Beta"])]),
+                rematch_entities(vec![person_department_wire(
+                    0,
+                    "0x03",
+                    "Cleo",
+                    &["Alpha", "Shared"],
+                )]),
+                rematch_entities(vec![person_department_wire(0, "0x04", "Dana", &[])]),
+            ])],
+        );
+
+        let result = database.execute_match(&registry, &validated).await.unwrap();
+        let super::super::result::MatchResult::FieldReduction { root, group, rows } =
+            result.result()
+        else {
+            panic!("expected field-grouped reduction result")
+        };
+        assert_eq!(*root, BindingId::new(0));
+        assert_eq!(group, &department);
+        assert_eq!(
+            rows.iter()
+                .map(|row| (row.field_group().unwrap().clone(), row.values().to_vec()))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    AttributeValue::String("Alpha".into()),
+                    vec![ReducedValue::Count(1)],
+                ),
+                (
+                    AttributeValue::String("Beta".into()),
+                    vec![ReducedValue::Count(2)],
+                ),
+                (
+                    AttributeValue::String("Shared".into()),
+                    vec![ReducedValue::Count(2)],
+                ),
+            ]
+        );
+        let events = events.lock().unwrap();
+        assert_eq!(events.root_statements.len(), 1);
+        assert_eq!(events.rematch_statements.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn tuple_field_grouped_reduction_uses_cartesian_values_and_distinct_roots() {
+        let registry = reduction_registry();
+        let root = BindingId::new(0);
+        let city = BoundFieldId::new(
+            root,
+            FieldId::new(registry.descriptor_id("person").unwrap(), "city"),
+        );
+        let department = BoundFieldId::new(
+            root,
+            FieldId::new(registry.descriptor_id("person").unwrap(), "department"),
+        );
+        let request = person_root_request(&registry, |root| MatchOperation::ReduceByFields {
+            root,
+            groups: vec![city.clone(), department.clone()],
+            reducers: vec![ReduceTerm {
+                reduction: Reduction::Count,
+                input: None,
+            }],
+        });
+        let validated = validate_match_request(&registry, request).unwrap();
+        let (database, events) = database(
+            CapabilitySet::all(),
+            vec![Ok(vec![
+                solution(&[(0, "0x01")], &[]),
+                solution(&[(0, "0x01")], &[]),
+                solution(&[(0, "0x02")], &[]),
+                solution(&[(0, "0x03")], &[]),
+            ])],
+            vec![Ok(vec![
+                rematch_entities(vec![person_city_department_wire(
+                    0,
+                    "0x01",
+                    "Alice",
+                    &["New York", "Paris"],
+                    &["Engineering", "Shared"],
+                )]),
+                rematch_entities(vec![person_city_department_wire(
+                    0,
+                    "0x01",
+                    "Alice",
+                    &["New York", "Paris"],
+                    &["Engineering", "Shared"],
+                )]),
+                rematch_entities(vec![person_city_department_wire(
+                    0,
+                    "0x02",
+                    "Bea",
+                    &["New York"],
+                    &["Engineering"],
+                )]),
+                rematch_entities(vec![person_city_department_wire(
+                    0,
+                    "0x03",
+                    "Cleo",
+                    &[],
+                    &["Sales"],
+                )]),
+            ])],
+        );
+
+        let result = database.execute_match(&registry, &validated).await.unwrap();
+        let super::super::result::MatchResult::FieldTupleReduction { root, groups, rows } =
+            result.result()
+        else {
+            panic!("expected tuple-field-grouped reduction result")
+        };
+        assert_eq!(*root, BindingId::new(0));
+        assert_eq!(groups, &[city, department]);
+        assert_eq!(
+            rows.iter()
+                .map(|row| (row.field_groups().unwrap().to_vec(), row.values().to_vec()))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    vec![
+                        AttributeValue::String("New York".into()),
+                        AttributeValue::String("Engineering".into()),
+                    ],
+                    vec![ReducedValue::Count(2)],
+                ),
+                (
+                    vec![
+                        AttributeValue::String("New York".into()),
+                        AttributeValue::String("Shared".into()),
+                    ],
+                    vec![ReducedValue::Count(1)],
+                ),
+                (
+                    vec![
+                        AttributeValue::String("Paris".into()),
+                        AttributeValue::String("Engineering".into()),
+                    ],
+                    vec![ReducedValue::Count(1)],
+                ),
+                (
+                    vec![
+                        AttributeValue::String("Paris".into()),
+                        AttributeValue::String("Shared".into()),
+                    ],
+                    vec![ReducedValue::Count(1)],
+                ),
+            ]
+        );
+        let events = events.lock().unwrap();
+        assert_eq!(events.root_statements.len(), 1);
+        assert_eq!(events.rematch_statements.len(), 1);
     }
 
     #[tokio::test]

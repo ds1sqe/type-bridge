@@ -4,15 +4,19 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use type_bridge_contract::id::is_canonical_thing_iid;
-use type_bridge_orm::manager::DynamicEntityManager;
+use type_bridge_orm::_manager::DynamicEntityManager;
 use type_bridge_orm::session::backend::TxType;
 
-use crate::__codegen::{CompleteModel, EntityModel, HydrationCapability, SubtypeRootModel};
+use crate::__codegen::{
+    CompleteModel, EncodedCreate, EntityModel, HydrationCapability, IntoEncodedCreate,
+    SubtypeRootModel,
+};
 use crate::entity_codec::{
     hydrate_entity, lower_entity_create, map_validation_error, resolve_discovered_entity,
     resolve_entity_authority,
 };
 use crate::error::{Error, ModelValidationPhase};
+use crate::hooks::{CrudOperation, HookRunner, LifecycleHook, ModelKind};
 use crate::schema::Schema;
 use crate::{Database, Result};
 
@@ -253,6 +257,7 @@ where
 /// database/transaction/close, or hydration/model-validation errors as applicable.
 pub struct EntityManager<'db, S: Schema, M: EntityModel<Schema = S>> {
     db: &'db Database<S>,
+    hooks: HookRunner,
     marker: PhantomData<M>,
 }
 
@@ -292,10 +297,13 @@ where
     }
 }
 
-impl<'db, S: Schema, M: EntityModel<Schema = S>> Copy for EntityManager<'db, S, M> {}
 impl<'db, S: Schema, M: EntityModel<Schema = S>> Clone for EntityManager<'db, S, M> {
     fn clone(&self) -> Self {
-        *self
+        Self {
+            db: self.db,
+            hooks: self.hooks.clone(),
+            marker: PhantomData,
+        }
     }
 }
 
@@ -303,6 +311,7 @@ impl<S: Schema, M: EntityModel<Schema = S>> EntityManager<'_, S, M> {
     pub(crate) fn new(db: &Database<S>) -> EntityManager<'_, S, M> {
         EntityManager {
             db,
+            hooks: HookRunner::default(),
             marker: PhantomData,
         }
     }
@@ -313,17 +322,81 @@ where
     S: Schema,
     M: EntityModel<Schema = S> + CompleteModel,
 {
+    /// Register one generated-model lifecycle hook on this manager.
+    /// Pre-hooks run in registration order and post-hooks in reverse order.
+    pub fn add_hook(&mut self, hook: Arc<dyn LifecycleHook>) -> &mut Self {
+        self.hooks.add(hook);
+        self
+    }
+
+    fn encode_hook_input(input: &M::Create) -> Result<EncodedCreate> {
+        input
+            .clone()
+            .into_encoded_create()
+            .map_err(|error| map_validation_error(error, ModelValidationPhase::Input))
+    }
+
     /// Inserts one exact entity and returns its complete freshly hydrated model. Errors may
     /// be input/schema validation, database/transaction/close, or model hydration errors.
     pub async fn insert(&self, input: M::Create) -> Result<M> {
-        self.write(input, false).await
+        if !self.hooks.has_hooks() {
+            return self.write(input, false).await;
+        }
+        let encoded = Self::encode_hook_input(&input)?;
+        let metadata = self
+            .hooks
+            .run_pre(
+                M::TYPE_ID_JSON,
+                ModelKind::Entity,
+                CrudOperation::Insert,
+                None,
+                Some(&encoded),
+            )
+            .await?;
+        let output = self.write(input, false).await?;
+        self.hooks
+            .run_post(
+                M::TYPE_ID_JSON,
+                ModelKind::Entity,
+                CrudOperation::Insert,
+                Some(output.iid()),
+                Some(&encoded),
+                metadata,
+            )
+            .await;
+        Ok(output)
     }
     /// Uses a projected exact-model key when one is available; otherwise inserts. For an
     /// existing exact row, the supplied create value completely replaces non-key ownership:
     /// omitted optional values and empty multivalue collections remove prior ownership. It
     /// never reuses a subtype instance, and returns a complete freshly hydrated model.
     pub async fn put(&self, input: M::Create) -> Result<M> {
-        self.write(input, true).await
+        if !self.hooks.has_hooks() {
+            return self.write(input, true).await;
+        }
+        let encoded = Self::encode_hook_input(&input)?;
+        let metadata = self
+            .hooks
+            .run_pre(
+                M::TYPE_ID_JSON,
+                ModelKind::Entity,
+                CrudOperation::Put,
+                None,
+                Some(&encoded),
+            )
+            .await?;
+        let output = self.write(input, true).await?;
+        self.hooks
+            .run_post(
+                M::TYPE_ID_JSON,
+                ModelKind::Entity,
+                CrudOperation::Put,
+                Some(output.iid()),
+                Some(&encoded),
+                metadata,
+            )
+            .await;
+        Ok(output)
     }
     /// Inserts each item and returns complete freshly hydrated models in input order, or one
     /// error for the whole call with no partial result vector.
@@ -331,7 +404,41 @@ where
         if inputs.is_empty() {
             return Ok(Vec::new());
         }
-        self.write_many(inputs, false).await
+        if !self.hooks.has_hooks() {
+            return self.write_many(inputs, false).await;
+        }
+        let encoded = inputs
+            .iter()
+            .map(Self::encode_hook_input)
+            .collect::<Result<Vec<_>>>()?;
+        let mut metadata = Vec::with_capacity(inputs.len());
+        for input in &encoded {
+            metadata.push(
+                self.hooks
+                    .run_pre(
+                        M::TYPE_ID_JSON,
+                        ModelKind::Entity,
+                        CrudOperation::Insert,
+                        None,
+                        Some(input),
+                    )
+                    .await?,
+            );
+        }
+        let outputs = self.write_many(inputs.clone(), false).await?;
+        for ((input, output), metadata) in encoded.iter().zip(&outputs).zip(metadata) {
+            self.hooks
+                .run_post(
+                    M::TYPE_ID_JSON,
+                    ModelKind::Entity,
+                    CrudOperation::Insert,
+                    Some(output.iid()),
+                    Some(input),
+                    metadata,
+                )
+                .await;
+        }
+        Ok(outputs)
     }
     /// Applies the per-item [`Self::put`] key-or-insert rule, including complete replacement of
     /// non-key ownership for existing exact rows, returning complete freshly hydrated models
@@ -340,7 +447,41 @@ where
         if inputs.is_empty() {
             return Ok(Vec::new());
         }
-        self.write_many(inputs, true).await
+        if !self.hooks.has_hooks() {
+            return self.write_many(inputs, true).await;
+        }
+        let encoded = inputs
+            .iter()
+            .map(Self::encode_hook_input)
+            .collect::<Result<Vec<_>>>()?;
+        let mut metadata = Vec::with_capacity(inputs.len());
+        for input in &encoded {
+            metadata.push(
+                self.hooks
+                    .run_pre(
+                        M::TYPE_ID_JSON,
+                        ModelKind::Entity,
+                        CrudOperation::Put,
+                        None,
+                        Some(input),
+                    )
+                    .await?,
+            );
+        }
+        let outputs = self.write_many(inputs.clone(), true).await?;
+        for ((input, output), metadata) in encoded.iter().zip(&outputs).zip(metadata) {
+            self.hooks
+                .run_post(
+                    M::TYPE_ID_JSON,
+                    ModelKind::Entity,
+                    CrudOperation::Put,
+                    Some(output.iid()),
+                    Some(input),
+                    metadata,
+                )
+                .await;
+        }
+        Ok(outputs)
     }
     /// Completely replaces non-key ownership on the exact model at canonical `iid`, preserves
     /// that IID, and returns its complete freshly hydrated model. Omitted optional values and
@@ -349,6 +490,35 @@ where
         if !is_canonical_thing_iid(iid) {
             return Err(invalid_iid());
         }
+        if !self.hooks.has_hooks() {
+            return self.update_write(iid, input).await;
+        }
+        let encoded = Self::encode_hook_input(&input)?;
+        let state = self
+            .hooks
+            .run_pre(
+                M::TYPE_ID_JSON,
+                ModelKind::Entity,
+                CrudOperation::Update,
+                Some(iid),
+                Some(&encoded),
+            )
+            .await?;
+        let output = self.update_write(iid, input).await?;
+        self.hooks
+            .run_post(
+                M::TYPE_ID_JSON,
+                ModelKind::Entity,
+                CrudOperation::Update,
+                Some(output.iid()),
+                Some(&encoded),
+                state,
+            )
+            .await;
+        Ok(output)
+    }
+
+    async fn update_write(&self, iid: &str, input: M::Create) -> Result<M> {
         let installed = self.db.installed_schema().ok_or_else(schema_not_bound)?;
         let (id, descriptor) = resolve_entity_authority(
             M::TYPE_ID_JSON,
@@ -410,6 +580,34 @@ where
         if !is_canonical_thing_iid(iid) {
             return Err(invalid_iid());
         }
+        if !self.hooks.has_hooks() {
+            return self.delete_write(iid).await;
+        }
+        let state = self
+            .hooks
+            .run_pre(
+                M::TYPE_ID_JSON,
+                ModelKind::Entity,
+                CrudOperation::Delete,
+                Some(iid),
+                None,
+            )
+            .await?;
+        self.delete_write(iid).await?;
+        self.hooks
+            .run_post(
+                M::TYPE_ID_JSON,
+                ModelKind::Entity,
+                CrudOperation::Delete,
+                Some(iid),
+                None,
+                state,
+            )
+            .await;
+        Ok(())
+    }
+
+    async fn delete_write(&self, iid: &str) -> Result<()> {
         let installed = self.db.installed_schema().ok_or_else(schema_not_bound)?;
         let (_id, descriptor) = resolve_entity_authority(
             M::TYPE_ID_JSON,
@@ -433,6 +631,159 @@ where
         }
         tx.commit().await.map_err(Error::from_orm)
     }
+
+    /// Atomically replaces each exact entity identified by its canonical IID and returns
+    /// complete freshly hydrated models in input order. Every input and pre-hook completes
+    /// before database work begins; any write or hydration failure rolls back the whole batch.
+    pub async fn update_many(&self, inputs: Vec<(String, M::Create)>) -> Result<Vec<M>> {
+        if inputs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let installed = self.db.installed_schema().ok_or_else(schema_not_bound)?;
+        let (id, descriptor) = resolve_entity_authority(
+            M::TYPE_ID_JSON,
+            installed,
+            ModelValidationPhase::Input,
+            true,
+        )?;
+        let mut prepared = Vec::with_capacity(inputs.len());
+        for (iid, input) in inputs {
+            if !is_canonical_thing_iid(&iid) {
+                return Err(invalid_iid());
+            }
+            let encoded = Self::encode_hook_input(&input)?;
+            let attributes = lower_entity_create(input, &id, installed)?;
+            prepared.push((iid, encoded, attributes));
+        }
+
+        let mut states = Vec::new();
+        if self.hooks.has_hooks() {
+            states.reserve(prepared.len());
+            for (iid, encoded, _) in &prepared {
+                states.push(
+                    self.hooks
+                        .run_pre(
+                            M::TYPE_ID_JSON,
+                            ModelKind::Entity,
+                            CrudOperation::Update,
+                            Some(iid),
+                            Some(encoded),
+                        )
+                        .await?,
+                );
+            }
+        }
+
+        let tx = self
+            .db
+            .inner_orm()
+            .transaction_context(TxType::Write)
+            .await
+            .map_err(Error::from_orm)?;
+        let manager =
+            DynamicEntityManager::with_canonical_transaction(tx.clone(), Arc::new(descriptor));
+        let mut outputs = Vec::with_capacity(prepared.len());
+        for (iid, _, attributes) in &prepared {
+            if let Err(error) = manager.update_exact(iid, attributes).await {
+                let _ = tx.rollback().await;
+                return Err(Error::from_orm(error));
+            }
+            match rehydrate_written_entity::<M>(&manager, iid, &id, installed).await {
+                Ok(output) => outputs.push(output),
+                Err(error) => {
+                    let _ = tx.rollback().await;
+                    return Err(error);
+                }
+            }
+        }
+        tx.commit().await.map_err(Error::from_orm)?;
+
+        if self.hooks.has_hooks() {
+            for (((_, encoded, _), output), state) in prepared.iter().zip(&outputs).zip(states) {
+                self.hooks
+                    .run_post(
+                        M::TYPE_ID_JSON,
+                        ModelKind::Entity,
+                        CrudOperation::Update,
+                        Some(output.iid()),
+                        Some(encoded),
+                        state,
+                    )
+                    .await;
+            }
+        }
+        Ok(outputs)
+    }
+
+    /// Atomically deletes every exact entity at the supplied canonical IIDs. All IIDs and
+    /// pre-hooks are accepted before database work begins; any write failure rolls back the
+    /// whole batch, and post-hook failures do not change the committed result.
+    pub async fn delete_many(&self, iids: &[String]) -> Result<()> {
+        if iids.is_empty() {
+            return Ok(());
+        }
+        if iids.iter().any(|iid| !is_canonical_thing_iid(iid)) {
+            return Err(invalid_iid());
+        }
+        let installed = self.db.installed_schema().ok_or_else(schema_not_bound)?;
+        let (_id, descriptor) = resolve_entity_authority(
+            M::TYPE_ID_JSON,
+            installed,
+            ModelValidationPhase::Input,
+            true,
+        )?;
+
+        let mut states = Vec::new();
+        if self.hooks.has_hooks() {
+            states.reserve(iids.len());
+            for iid in iids {
+                states.push(
+                    self.hooks
+                        .run_pre(
+                            M::TYPE_ID_JSON,
+                            ModelKind::Entity,
+                            CrudOperation::Delete,
+                            Some(iid),
+                            None,
+                        )
+                        .await?,
+                );
+            }
+        }
+
+        let tx = self
+            .db
+            .inner_orm()
+            .transaction_context(TxType::Write)
+            .await
+            .map_err(Error::from_orm)?;
+        let manager =
+            DynamicEntityManager::with_canonical_transaction(tx.clone(), Arc::new(descriptor));
+        for iid in iids {
+            if let Err(error) = manager.delete_by_iid_exact(iid).await {
+                let _ = tx.rollback().await;
+                return Err(Error::from_orm(error));
+            }
+        }
+        tx.commit().await.map_err(Error::from_orm)?;
+
+        if self.hooks.has_hooks() {
+            for (iid, state) in iids.iter().zip(states) {
+                self.hooks
+                    .run_post(
+                        M::TYPE_ID_JSON,
+                        ModelKind::Entity,
+                        CrudOperation::Delete,
+                        Some(iid),
+                        None,
+                        state,
+                    )
+                    .await;
+            }
+        }
+        Ok(())
+    }
+
     async fn write(&self, input: M::Create, put: bool) -> Result<M> {
         let installed = self.db.installed_schema().ok_or_else(schema_not_bound)?;
         let (id, descriptor) = resolve_entity_authority(

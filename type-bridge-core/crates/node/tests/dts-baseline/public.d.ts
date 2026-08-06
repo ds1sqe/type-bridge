@@ -1,0 +1,3 @@
+/** Generated-only package root for @type-bridge/node. */
+export { AggregateSpec, BooleanExpr, ComparisonExpr, NotExpr, QueryExpr, QueryV2Authority, QueryV2Error, RustDatabase, RustTransactionContext, SortExpr, TypedGroupByQuery, TypedQuery, TypedQueryError, agg, boolean, date, datetime, datetimetz, decimal, double, duration, ensureDatabase, long, longFromNumberUnsafe, queryV2ExecuteLocal, queryV2PrepareRemote, queryV2RemoteCapabilities, string, } from "./index.js";
+export type { AggregateInput, AttributeInput, AttributeValue, EnsureDatabaseOptions, FilterInput, PendingQueryV2Remote, QueryV2ErrorCategory, QueryV2ErrorDetail, QueryV2ErrorPathSegment, QueryV2RemoteLimits, RustDatabaseConnectOptions, RuntimeAttributeValue, TransactionType, ValueType, } from "./index.js";

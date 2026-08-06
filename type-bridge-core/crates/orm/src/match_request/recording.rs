@@ -8,7 +8,7 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use crate::registry::DescriptorRegistry;
+use crate::_registry::DescriptorRegistry;
 
 use super::capability::CapabilitySet;
 use super::error::{MatchError, MatchErrorCategory, MatchErrorPathSegment};
@@ -148,13 +148,33 @@ impl RecordingMatchExecutor {
                 operation_group(validated),
                 vec![ReductionRow::new(None, values)],
             ),
-            RecordingMatchResponse::EmptyGroupedReduction => ProviderResultEvidence::reduction(
-                request_token,
-                shape_id,
-                operation_root(validated),
-                operation_group(validated),
-                Vec::new(),
-            ),
+            RecordingMatchResponse::EmptyGroupedReduction => match &validated.request().operation {
+                MatchOperation::ReduceByField { root, group, .. } => {
+                    ProviderResultEvidence::field_reduction(
+                        request_token,
+                        shape_id,
+                        *root,
+                        group.clone(),
+                        Vec::new(),
+                    )
+                }
+                MatchOperation::ReduceByFields { root, groups, .. } => {
+                    ProviderResultEvidence::field_tuple_reduction(
+                        request_token,
+                        shape_id,
+                        *root,
+                        groups.clone(),
+                        Vec::new(),
+                    )
+                }
+                _ => ProviderResultEvidence::reduction(
+                    request_token,
+                    shape_id,
+                    operation_root(validated),
+                    operation_group(validated),
+                    Vec::new(),
+                ),
+            },
             RecordingMatchResponse::ProviderFailure { code, message } => {
                 return Err(MatchError::new(MatchErrorCategory::Provider, code, message)
                     .at(MatchErrorPathSegment::ProviderEvidence));
@@ -170,7 +190,9 @@ fn operation_root(validated: &ValidatedMatchRequest) -> BindingId {
         MatchOperation::PageBy { root, .. }
         | MatchOperation::CountBy { root }
         | MatchOperation::ExistsBy { root }
-        | MatchOperation::ReduceBy { root, .. } => *root,
+        | MatchOperation::ReduceBy { root, .. }
+        | MatchOperation::ReduceByField { root, .. }
+        | MatchOperation::ReduceByFields { root, .. } => *root,
         MatchOperation::FetchRows { .. } => BindingId::new(0),
     }
 }
@@ -188,7 +210,9 @@ fn page_contract(validated: &ValidatedMatchRequest) -> (BindingId, Window) {
         MatchOperation::FetchRows { window, .. } => (BindingId::new(0), *window),
         MatchOperation::CountBy { root }
         | MatchOperation::ExistsBy { root }
-        | MatchOperation::ReduceBy { root, .. } => (
+        | MatchOperation::ReduceBy { root, .. }
+        | MatchOperation::ReduceByField { root, .. }
+        | MatchOperation::ReduceByFields { root, .. } => (
             *root,
             Window {
                 offset: 0,
@@ -203,9 +227,9 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::*;
-    use crate::attribute::ValueType;
-    use crate::descriptor::{EntityDescriptor, OwnedAttributeDescriptor};
-    use crate::entity::Annotation;
+    use crate::_attribute::ValueType;
+    use crate::_descriptor::{EntityDescriptor, OwnedAttributeDescriptor};
+    use crate::_entity::Annotation;
     use crate::match_request::ids::DescriptorId;
     use crate::match_request::model::{
         FetchShape, FetchSlot, MatchBinding, MatchMode, MatchPlan, MatchRequest, RowCardinality,

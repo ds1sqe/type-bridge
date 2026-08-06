@@ -596,7 +596,7 @@ pub fn project(
                     DeclaredRoleProjection::new(role_id.clone(), specializes),
                 );
             }
-            if !relates.is_abstract() {
+            if relates.accepts_players_at_effective_scope() {
                 if create_players.is_empty() && multiplicity.required() {
                     create_enabled = false;
                 } else if !create_players.is_empty() {

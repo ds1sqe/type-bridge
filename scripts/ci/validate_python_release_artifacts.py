@@ -4,7 +4,7 @@
 The validator uses only the Python standard library. It rejects missing or
 extra artifacts, unsafe/corrupt archives, filename/metadata/license
 disagreement, invalid wheel RECORD hashes, platform-matrix drift, retired
-band-9 fork payloads, and source-tree bytecode.
+provider-band payloads, and source-tree bytecode.
 """
 
 from __future__ import annotations
@@ -61,7 +61,7 @@ CORE_WHEEL_NOTICE = "type_bridge_core/THIRD_PARTY_NOTICES.md"
 CORE_SDIST_NOTICE = "python/type_bridge_core/THIRD_PARTY_NOTICES.md"
 MIT_LICENSE = "MIT"
 ROOT_LICENSE_FILE = "LICENSE"
-HISTORICAL_BAND9_COMPONENT = re.compile(r"(?:^|-)typedb-(?:driver|protocol)-b9(?:-|$)")
+RETIRED_PROVIDER_COMPONENT = re.compile(r"(?:^|-)typedb-(?:driver|protocol)-(?:b7|b9)(?:-|$)")
 LICENSE_LIKE_BASENAME = re.compile(
     r"^(?:licen[cs]e|copying|notice|third[-_]?party[-_]?(?:licenses?|notices?))"
     r"(?:$|[._-])",
@@ -83,8 +83,6 @@ CORE_SDIST_WORKSPACE_MEMBERS = (
     "crates/typedb-runtime",
     "crates/orm",
     "crates/toml-transpiler",
-    "vendor/typedb-protocol-b7",
-    "vendor/typedb-driver-b7",
     "vendor/typedb-protocol-b8",
     "vendor/typedb-driver-b8",
 )
@@ -127,9 +125,7 @@ CORE_SDIST_TRANSFORMED_MANIFESTS = (
 )
 CORE_SDIST_VENDOR_LICENSES = frozenset(
     {
-        "vendor/typedb-driver-b7/LICENSE",
         "vendor/typedb-driver-b8/LICENSE",
-        "vendor/typedb-protocol-b7/LICENSE",
         "vendor/typedb-protocol-b8/LICENSE",
     }
 )
@@ -192,11 +188,11 @@ def normalize_name(value: str) -> str:
     return re.sub(r"[-_.]+", "-", value).lower()
 
 
-def reject_historical_band9_member(name: str, *, artifact: Path) -> None:
-    """Reject any archived path component that identifies a retired band-9 fork."""
+def reject_retired_provider_member(name: str, *, artifact: Path) -> None:
+    """Reject any archived path component that identifies a retired provider package."""
     for component in PurePosixPath(name).parts:
-        if HISTORICAL_BAND9_COMPONENT.search(normalize_name(component)) is not None:
-            raise ValidationError(f"Historical band-9 fork payload in {artifact.name}: {name!r}")
+        if RETIRED_PROVIDER_COMPONENT.search(normalize_name(component)) is not None:
+            raise ValidationError(f"Retired provider-band payload in {artifact.name}: {name!r}")
 
 
 def is_license_like_member(name: str) -> bool:
@@ -999,7 +995,7 @@ def validate_wheel(path: Path, spec: PackageSpec) -> dict[str, Any]:
         infos: dict[str, zipfile.ZipInfo] = {}
         for info in archive.infolist():
             name = safe_archive_name(info.filename.rstrip("/"), archive=path)
-            reject_historical_band9_member(name, artifact=path)
+            reject_retired_provider_member(name, artifact=path)
             if name in infos:
                 raise ValidationError(f"Duplicate wheel member in {path.name}: {name}")
             if info.flag_bits & 0x1:
@@ -1157,11 +1153,11 @@ def validate_sdist(path: Path, spec: PackageSpec) -> dict[str, Any]:
             if PurePosixPath(name).parts[0] != archive_root:
                 raise ValidationError(f"Sdist member escapes canonical root in {path.name}: {name}")
             relative = PurePosixPath(*PurePosixPath(name).parts[1:]).as_posix()
-            reject_historical_band9_member(relative, artifact=path)
+            reject_retired_provider_member(relative, artifact=path)
             if relative in members:
                 raise ValidationError(f"Duplicate sdist member in {path.name}: {name}")
             if member.issym():
-                reject_historical_band9_member(member.linkname, artifact=path)
+                reject_retired_provider_member(member.linkname, artifact=path)
                 target = safe_sdist_symlink_target(
                     name,
                     member.linkname,

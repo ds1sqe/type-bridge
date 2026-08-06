@@ -14,6 +14,7 @@ use type_bridge_contract::limits::StructuralLimits;
 use type_bridge_contract::query_plan::QueryInvocation;
 use type_bridge_contract::query_remote_v2::RemoteLimitsV2;
 
+use crate::_registry::DescriptorRegistry;
 use crate::match_request::lowering::preflight_released_match_execution;
 use crate::match_request::result_validation::validated_match_result_from_v2;
 use crate::match_request::{MatchError, ValidatedMatchRequest, ValidatedMatchResult};
@@ -24,7 +25,6 @@ use crate::query_v2_adapter::{
 use crate::query_v2_prepared::{
     ClaimedRemoteReplyV2, PendingRemoteQueryV2, QueryAuthority, prepare_validated_remote_query_v2,
 };
-use crate::registry::DescriptorRegistry;
 
 /// A model-query remote failure retains its native structured error family.
 #[derive(Debug, Error)]
@@ -206,9 +206,10 @@ mod tests {
     use type_bridge_schema_compat::released_typeql_to_declared_projection;
 
     use super::*;
-    use crate::attribute::ValueType;
-    use crate::descriptor::{EntityDescriptor, OwnedAttributeDescriptor};
-    use crate::entity::Annotation;
+    use crate::_attribute::ValueType;
+    use crate::_descriptor::{EntityDescriptor, OwnedAttributeDescriptor};
+    use crate::_entity::Annotation;
+    use crate::_schema::{SchemaInfo, generator::generate_define_block};
     use crate::match_request::{
         BindingId, BoundFieldId, FetchShape, FetchSlot, FieldId, MatchBinding, MatchErrorCategory,
         MatchErrorPathSegment, MatchMode, MatchOperation, MatchOrder, MatchPlan, MatchRequest,
@@ -216,7 +217,6 @@ mod tests {
         validate_match_request,
     };
     use crate::query_v2_prepared::QueryAuthority;
-    use crate::schema::{SchemaInfo, generator::generate_define_block};
 
     fn nullable_order_registry() -> DescriptorRegistry {
         let registry = DescriptorRegistry::new();

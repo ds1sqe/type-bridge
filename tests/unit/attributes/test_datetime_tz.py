@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
-from type_bridge import DateTime, DateTimeTZ, Entity, TypeFlags
+from tests.utils.handwritten import DateTime, DateTimeTZ, Entity, TypeFlags
 
 
 def test_datetimetz_creation():

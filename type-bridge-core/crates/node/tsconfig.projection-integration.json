@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "lib": ["ES2022"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "noImplicitAny": false,
+    "outDir": "../../../tmp/node-projection-integration",
+    "rootDir": ".",
+    "strict": true,
+    "target": "ES2022"
+  },
+  "include": [
+    "typescript/public.ts",
+    "typescript/query-v2.ts",
+    "typescript/runtime-projection.ts",
+    "tests/integration/common/index.ts",
+    "tests/projection-integration/generated-package-live.test.ts"
+  ],
+  "exclude": [
+    "dist",
+    "../../../tmp/node-projection-integration"
+  ]
+}

@@ -1,11 +1,5 @@
-"""Test utilities for type-bridge integration tests."""
+"""Generated and retained-runtime integration-test utilities."""
 
-from tests.utils.assertions import (
-    assert_entity_count,
-    assert_entity_exists,
-    assert_relation_count,
-    assert_relation_exists,
-)
 from tests.utils.data_builders import (
     make_email,
     make_isbn,
@@ -22,11 +16,6 @@ from tests.utils.typedb_lifecycle import (
 )
 
 __all__ = [
-    # Assertions
-    "assert_entity_count",
-    "assert_entity_exists",
-    "assert_relation_count",
-    "assert_relation_exists",
     # Data builders
     "make_email",
     "make_isbn",

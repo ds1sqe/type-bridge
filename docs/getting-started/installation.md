@@ -9,7 +9,7 @@ semantic engine.
 Requirements:
 
 - CPython 3.12–3.14
-- TypeDB 3.8–3.12 for database operations
+- TypeDB 3.11–3.12 for database operations
 
 ```bash
 pip install type-bridge
@@ -67,15 +67,15 @@ type-bridge --help
 ```
 
 It validates Split-YAML workspaces, creates and applies migrations, and
-generates configured Python, TypeScript, and Rust projections. The retained
-single-file generator is also available through Python.
+generates configured Python, TypeScript, and Rust projections. Split-YAML
+workspace generation is the only active model-generation path.
 
 ## Server container
 
 The standalone V2 query server is published separately:
 
 ```bash
-docker pull ghcr.io/ds1sqe/type-bridge-server:2.0.0
+docker pull ghcr.io/ds1sqe/type-bridge-server:2.1.0
 ```
 
 Production deployments should use the immutable digest recorded in the release

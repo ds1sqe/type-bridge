@@ -135,11 +135,7 @@ async fn await_live_tls_stage<T>(stage: &'static str, future: impl Future<Output
         })
 }
 
-fn assert_expected_topology(
-    runtime: &TypeDBRuntime,
-    context: &LiveTlsContext,
-    http_discovery_succeeded: bool,
-) {
+fn assert_expected_topology(runtime: &TypeDBRuntime, context: &LiveTlsContext) {
     let Some(expected) = &context.expected else {
         return;
     };
@@ -154,19 +150,11 @@ fn assert_expected_topology(
         embedded_driver_versions()
     );
 
-    if http_discovery_succeeded || expected.driver_band != 7 {
-        assert_eq!(
-            runtime.server_version().map(|version| version.to_string()),
-            Some(expected.server_version.clone()),
-            "the live server version must match the CI topology"
-        );
-    } else {
-        assert_eq!(
-            runtime.server_version(),
-            None,
-            "band-7 gRPC fallback cannot report an exact server version"
-        );
-    }
+    assert_eq!(
+        runtime.server_version().map(|version| version.to_string()),
+        Some(expected.server_version.clone()),
+        "the live server version must match the CI topology"
+    );
 
     assert_eq!(
         runtime.supports_given_rows(),
@@ -307,7 +295,7 @@ async fn custom_root_http_discovery_and_grpc_lifecycle_live() {
     )
     .await
     .expect("custom-root HTTP discovery and gRPC connection both succeed");
-    assert_expected_topology(&runtime, &context, true);
+    assert_expected_topology(&runtime, &context);
     drop(runtime);
 
     delete_database_secure(
@@ -342,7 +330,7 @@ async fn custom_root_raw_stop_requires_connection_close_before_delete_live() {
     )
     .await
     .expect("custom-root terminal-close runtime connects over TLS");
-    assert_expected_topology(&runtime, &context, true);
+    assert_expected_topology(&runtime, &context);
     await_live_tls_stage(
         "raw-stop/create-database",
         runtime.create_database(&database),
@@ -512,7 +500,7 @@ async fn https_failure_falls_back_to_secure_grpc_without_plaintext_live() {
         !saw_plaintext_get,
         "an enabled HTTP discovery path must never retry a plaintext GET"
     );
-    assert_expected_topology(&runtime, &context, false);
+    assert_expected_topology(&runtime, &context);
     assert!(
         !runtime
             .database_exists(&unique_database("tb_tls_fallback_absent"))
@@ -544,7 +532,7 @@ async fn native_roots_cover_http_and_selected_grpc_band_live() {
     )
     .await
     .expect("native roots trust the CI-installed fixture root for HTTP and gRPC");
-    assert_expected_topology(&runtime, &context, true);
+    assert_expected_topology(&runtime, &context);
     assert!(
         !runtime
             .database_exists(&unique_database("tb_tls_native_absent"))

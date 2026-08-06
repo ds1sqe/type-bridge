@@ -30,7 +30,7 @@ pattern = {
 |-------|-------|
 | `ValidationEngine` | `type_bridge_core_lib::validation::ValidationEngine` |
 | `QueryCompiler` | `type_bridge_core_lib::compiler::QueryCompiler` |
-| `TypeSchema` | `type_bridge_core_lib::schema::TypeSchema` |
+| `TypeSchema` | `type_bridge_core_lib::_schema::TypeSchema` |
 | `ValueCoercer` | `type_bridge_core_lib::value_coercion::ValueCoercer` |
 
 **Standalone functions:** `parse_typeql_query()`, `format_value()`, `coerce_value()`

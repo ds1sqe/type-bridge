@@ -16,7 +16,7 @@ from tests.unit.typed_query._support import (
     invoke_untyped,
     runtime_attribute,
 )
-from type_bridge import Entity, Flag, Key, Relation, Role, String, TypeFlags
+from tests.utils.handwritten import Entity, Flag, Key, Relation, Role, String, TypeFlags
 from type_bridge.typed import (
     Page,
     Query,

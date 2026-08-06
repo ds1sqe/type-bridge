@@ -15,9 +15,18 @@ attribute party_name, value string;
 attribute rank, value integer;
 attribute manager_note, value string;
 attribute contractor_code, value string;
+attribute robot_id, value integer;
+attribute foo__bar, value integer;
+attribute score__gte, value integer;
+attribute counter_value, value integer;
 
 relation membership,
     relates member @card(1..1);
+relation interaction,
+    owns identifier @key,
+    owns nickname @card(0..1),
+    relates actor @card(0..1),
+    relates target @card(1..1);
 relation employment sub membership,
     relates employee as member @card(1..1);
 relation container,
@@ -31,12 +40,18 @@ relation network-link,
     relates origin @card(1..1),
     relates destination @card(1..1),
     relates participant @card(0..3);
+relation base-activity,
+    relates participant @abstract @card(1..1);
+relation plain-activity sub base-activity;
 
-entity person,
+entity actor @abstract,
+    owns nickname @card(0..1);
+entity person sub actor,
     owns identifier @key,
-    owns nickname @card(0..1),
     owns aliases @unique @card(0..3),
     owns score @card(1..1),
+    owns foo__bar @card(0..1),
+    owns score__gte @card(0..1),
     owns val_double @card(1..1),
     owns val_decimal @card(1..1),
     owns val_bool @card(1..1),
@@ -46,11 +61,14 @@ entity person,
     owns val_duration @card(1..1),
     owns val_constrained @card(1..1) @range(20..80),
     plays membership:member @card(0..2) @doc("membership player"),
+    plays interaction:actor @card(0..2) @doc("interaction actor"),
+    plays interaction:target @card(0..2) @doc("interaction target"),
     plays employment:employee @card(0..1) @doc("employment player"),
     plays event:subject @card(0..1) @doc("event subject player"),
     plays network-link:origin @card(0..3) @doc("directed link origin"),
     plays network-link:destination @card(0..3) @doc("directed link destination"),
-    plays network-link:participant @card(0..3) @doc("repeated link participant");
+    plays network-link:participant @card(0..3) @doc("repeated link participant"),
+    plays base-activity:participant @card(0..1) @doc("inherited abstract role player");
 entity party @abstract,
     owns identifier @key,
     owns party_name @card(1..1);
@@ -60,9 +78,13 @@ entity manager sub employee,
     owns manager_note @card(1..1);
 entity contractor sub party,
     owns contractor_code @card(1..1);
-entity robot,
+entity robot sub actor,
+    owns robot_id @key,
     owns val_constrained @card(1..1) @range(0..50),
-    plays membership:member @card(1..1) @doc("robot membership player");
+    plays membership:member @card(0..2) @doc("robot membership player"),
+    plays interaction:actor @card(0..2) @doc("robot interaction actor");
+entity counter,
+    owns counter_value @card(1..1);
 
 struct player-stats:
     nickname value string?,

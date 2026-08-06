@@ -15,7 +15,7 @@ on a separate semantic implementation.
 
 ## Upgrade
 
-Read [Upgrading to 2.0](upgrade-v2.md) before changing an existing 1.5.x
+Read [Upgrading to 2.1](upgrade-v2.md) before changing an existing 2.0.x
 application. It separates the source-compatible package upgrade from later,
 explicit adoption of V2 schema and query surfaces.
 

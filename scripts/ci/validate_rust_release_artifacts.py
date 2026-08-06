@@ -39,13 +39,22 @@ CANONICAL_LICENSE_DIGESTS = {
     MPL_2_LICENSE: "3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04",
 }
 FIRST_PARTY_PACKAGES = (
+    "type-bridge-contract",
     "type-bridge-core-lib",
+    "type-bridge-schema",
+    "type-bridge-query",
+    "type-bridge-schema-migration",
     "type-bridge-toml-transpiler",
+    "type-bridge-schema-compat",
+    "type-bridge-schema-codegen",
     "type-bridge-orm-derive",
     "type-bridge-typedb-runtime",
     "type-bridge-orm",
     "type-bridge-migration",
-    "type-bridge-server",
+    "type-bridge-schema-migration-typedb",
+    "type-bridge-workspace",
+    "type-bridge-cli",
+    "type-bridge",
 )
 VENDORED_PACKAGES = {
     "type-bridge-typedb-protocol-b8": ("3.11.0", MPL_2_LICENSE),
@@ -391,7 +400,7 @@ def validate_release_artifacts(
     expected_release_version: str,
     repository_root: Path = REPOSITORY_ROOT,
 ) -> dict[str, Any]:
-    """Validate the closed set of expected-new crates.io archive payloads."""
+    """Validate the closed packaged Cargo release graph."""
     if artifacts_dir.is_symlink() or not artifacts_dir.is_dir():
         raise ValidationError(
             f"Rust release artifact directory is missing, linked, or non-directory: {artifacts_dir}"

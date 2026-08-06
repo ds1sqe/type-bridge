@@ -398,6 +398,36 @@ impl ProviderResultEvidence {
         }
     }
 
+    /// Construct typed field-grouped reduction evidence.
+    pub(crate) fn field_reduction(
+        request_token: RequestToken,
+        shape_id: ResultShapeId,
+        root: BindingId,
+        group: super::ids::BoundFieldId,
+        rows: Vec<ReductionRow>,
+    ) -> Self {
+        Self {
+            request_token,
+            shape_id,
+            payload: ProviderResultPayload::FieldReduction { root, group, rows },
+        }
+    }
+
+    /// Construct typed tuple-field-grouped reduction evidence.
+    pub(crate) fn field_tuple_reduction(
+        request_token: RequestToken,
+        shape_id: ResultShapeId,
+        root: BindingId,
+        groups: Vec<super::ids::BoundFieldId>,
+        rows: Vec<ReductionRow>,
+    ) -> Self {
+        Self {
+            request_token,
+            shape_id,
+            payload: ProviderResultPayload::FieldTupleReduction { root, groups, rows },
+        }
+    }
+
     pub(super) const fn request_token(&self) -> RequestToken {
         self.request_token
     }
@@ -448,6 +478,24 @@ pub(super) enum ProviderResultPayload {
         root: BindingId,
         /// Claimed group binding echo.
         group: Option<BindingId>,
+        /// Claimed reduction rows.
+        rows: Vec<ReductionRow>,
+    },
+    /// Claimed typed field-grouped reduction rows.
+    FieldReduction {
+        /// Claimed reduced root.
+        root: BindingId,
+        /// Claimed descriptor-qualified group field echo.
+        group: super::ids::BoundFieldId,
+        /// Claimed reduction rows.
+        rows: Vec<ReductionRow>,
+    },
+    /// Claimed typed tuple-field-grouped reduction rows.
+    FieldTupleReduction {
+        /// Claimed reduced root.
+        root: BindingId,
+        /// Claimed ordered descriptor-qualified group fields echo.
+        groups: Vec<super::ids::BoundFieldId>,
         /// Claimed reduction rows.
         rows: Vec<ReductionRow>,
     },
@@ -524,23 +572,82 @@ pub enum ReducedValue {
     Double(Option<f64>),
 }
 
+/// Validated group evidence carried by one reduction row.
+///
+/// The untagged representation preserves the existing serialized shape for
+/// binding-grouped rows while permitting a canonical scalar field value.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ReductionGroupValue {
+    /// One grouped thing identity and its hydration evidence.
+    Thing(HydratedThing),
+    /// One descriptor-validated owned field value.
+    Field(AttributeValue),
+    /// One ordered tuple of descriptor-validated owned field values.
+    Fields(Vec<AttributeValue>),
+}
+
 /// One reduction result row: optional group evidence plus reducer outputs
 /// in exact requested reducer order.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ReductionRow {
-    group: Option<HydratedThing>,
+    group: Option<ReductionGroupValue>,
     values: Vec<ReducedValue>,
 }
 
 impl ReductionRow {
     /// Construct one reduction row inside the provider boundary.
     pub(crate) fn new(group: Option<HydratedThing>, values: Vec<ReducedValue>) -> Self {
-        Self { group, values }
+        Self {
+            group: group.map(ReductionGroupValue::Thing),
+            values,
+        }
+    }
+
+    /// Construct one field-grouped reduction row inside the provider boundary.
+    pub(crate) fn new_field(group: AttributeValue, values: Vec<ReducedValue>) -> Self {
+        Self {
+            group: Some(ReductionGroupValue::Field(group)),
+            values,
+        }
+    }
+
+    /// Construct one tuple-field-grouped reduction row inside the provider boundary.
+    pub(crate) fn new_fields(group: Vec<AttributeValue>, values: Vec<ReducedValue>) -> Self {
+        Self {
+            group: Some(ReductionGroupValue::Fields(group)),
+            values,
+        }
     }
 
     /// Return the witnessed group evidence for grouped reductions.
     pub fn group(&self) -> Option<&HydratedThing> {
-        self.group.as_ref()
+        match self.group.as_ref() {
+            Some(ReductionGroupValue::Thing(group)) => Some(group),
+            Some(ReductionGroupValue::Field(_) | ReductionGroupValue::Fields(_)) | None => None,
+        }
+    }
+
+    /// Return the witnessed descriptor-qualified field value for a
+    /// field-grouped reduction.
+    pub fn field_group(&self) -> Option<&AttributeValue> {
+        match self.group.as_ref() {
+            Some(ReductionGroupValue::Field(group)) => Some(group),
+            Some(ReductionGroupValue::Thing(_) | ReductionGroupValue::Fields(_)) | None => None,
+        }
+    }
+
+    /// Return the witnessed ordered descriptor-qualified field values for a
+    /// tuple-field-grouped reduction.
+    pub fn field_groups(&self) -> Option<&[AttributeValue]> {
+        match self.group.as_ref() {
+            Some(ReductionGroupValue::Fields(groups)) => Some(groups),
+            Some(ReductionGroupValue::Thing(_) | ReductionGroupValue::Field(_)) | None => None,
+        }
+    }
+
+    pub(crate) const fn has_group_evidence(&self) -> bool {
+        self.group.is_some()
     }
 
     /// Return reducer outputs in exact requested reducer order.
@@ -584,6 +691,24 @@ pub enum MatchResult {
         group: Option<BindingId>,
         /// Validated reduction rows; exactly one ungrouped row, or one row
         /// per witnessed distinct group identity.
+        rows: Vec<ReductionRow>,
+    },
+    /// Typed reduction rows grouped by an owned field value.
+    FieldReduction {
+        /// Root binding whose matched stream was reduced.
+        root: BindingId,
+        /// Descriptor-qualified owned field used as the group key.
+        group: super::ids::BoundFieldId,
+        /// Validated reduction rows, one per witnessed distinct field value.
+        rows: Vec<ReductionRow>,
+    },
+    /// Typed reduction rows grouped by an ordered tuple of owned field values.
+    FieldTupleReduction {
+        /// Root binding whose matched stream was reduced.
+        root: BindingId,
+        /// Ordered descriptor-qualified owned fields used as the group key.
+        groups: Vec<super::ids::BoundFieldId>,
+        /// Validated reduction rows, one per witnessed distinct value tuple.
         rows: Vec<ReductionRow>,
     },
     /// Whether any distinct matching root exists.
@@ -697,15 +822,15 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::*;
-    use crate::attribute::ValueType;
-    use crate::descriptor::{EntityDescriptor, OwnedAttributeDescriptor};
-    use crate::entity::Annotation;
+    use crate::_attribute::ValueType;
+    use crate::_descriptor::{EntityDescriptor, OwnedAttributeDescriptor};
+    use crate::_entity::Annotation;
+    use crate::_registry::DescriptorRegistry;
     use crate::match_request::model::{
         FetchShape, FetchSlot, MatchBinding, MatchMode, MatchOperation, MatchPlan, MatchRequest,
         RowCardinality, Window,
     };
     use crate::match_request::validation::validate_match_request;
-    use crate::registry::DescriptorRegistry;
 
     fn person(name: &str, concept_id: &str) -> HydratedThing {
         let descriptor = DescriptorId::new("entity:person");
@@ -887,6 +1012,31 @@ mod tests {
     }
 
     #[test]
+    fn field_grouping_extends_reduction_rows_without_changing_thing_group_json() {
+        let thing_group = ReductionRow::new(
+            Some(person("Alice", "person-1")),
+            vec![ReducedValue::Count(2)],
+        );
+        let encoded = serde_json::to_value(&thing_group).unwrap();
+        assert_eq!(encoded["group"]["concept_id"], "person-1");
+        assert!(encoded["group"].get("Thing").is_none());
+        assert!(encoded["group"].get("Field").is_none());
+        let decoded: ReductionRow = serde_json::from_value(encoded).unwrap();
+        assert_eq!(decoded, thing_group);
+
+        let field_group = ReductionRow::new_field(
+            AttributeValue::String("Engineering".into()),
+            vec![ReducedValue::Count(3)],
+        );
+        let encoded = serde_json::to_value(&field_group).unwrap();
+        assert_eq!(encoded["group"]["String"], "Engineering");
+        assert!(encoded["group"].get("Thing").is_none());
+        assert!(encoded["group"].get("Field").is_none());
+        let decoded: ReductionRow = serde_json::from_value(encoded).unwrap();
+        assert_eq!(decoded, field_group);
+    }
+
+    #[test]
     fn every_result_and_slot_variant_matches_the_checked_golden() {
         let results = vec![
             MatchResult::Rows {
@@ -909,6 +1059,45 @@ mod tests {
             MatchResult::Count {
                 root: BindingId::new(0),
                 value: u64::MAX,
+            },
+            MatchResult::Reduction {
+                root: BindingId::new(0),
+                group: Some(BindingId::new(1)),
+                rows: vec![ReductionRow::new(
+                    Some(person("Acme", "company-1")),
+                    vec![ReducedValue::Count(2), ReducedValue::Long(Some(72))],
+                )],
+            },
+            MatchResult::FieldReduction {
+                root: BindingId::new(0),
+                group: super::super::ids::BoundFieldId::new(
+                    BindingId::new(0),
+                    FieldId::new(DescriptorId::new("entity:person"), "age"),
+                ),
+                rows: vec![ReductionRow::new_field(
+                    AttributeValue::Long(36),
+                    vec![ReducedValue::Count(1)],
+                )],
+            },
+            MatchResult::FieldTupleReduction {
+                root: BindingId::new(0),
+                groups: vec![
+                    super::super::ids::BoundFieldId::new(
+                        BindingId::new(0),
+                        FieldId::new(DescriptorId::new("entity:person"), "department"),
+                    ),
+                    super::super::ids::BoundFieldId::new(
+                        BindingId::new(0),
+                        FieldId::new(DescriptorId::new("entity:person"), "age"),
+                    ),
+                ],
+                rows: vec![ReductionRow::new_fields(
+                    vec![
+                        AttributeValue::String("Engineering".into()),
+                        AttributeValue::Long(36),
+                    ],
+                    vec![ReducedValue::Count(1)],
+                )],
             },
             MatchResult::Exists {
                 root: BindingId::new(0),

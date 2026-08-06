@@ -22,7 +22,7 @@ struct TestSchema;
 impl sealed::Sealed for TestSchema {}
 impl Schema for TestSchema {}
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct RecordCreate {
     name: String,
     value: String,

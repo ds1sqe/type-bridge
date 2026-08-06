@@ -4,32 +4,36 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::str::FromStr;
 use std::sync::Arc;
 
+use napi::bindgen_prelude::BigInt;
 use napi::{Error, Status};
 use napi_derive::napi;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use type_bridge_contract::codec::to_canonical_json;
-use type_bridge_contract::id::{TypeId, TypeKind};
+use type_bridge_contract::id::{TypeId, TypeKind, is_canonical_thing_iid};
 use type_bridge_contract::projection::{BindingTarget, ProjectedModelForm};
 use type_bridge_contract::projection_wire::decode_runtime_projection_verified;
 use type_bridge_contract::temporal::{
     CanonicalDate, CanonicalDateTime, CanonicalDateTimeTz, CanonicalDuration,
 };
 use type_bridge_contract::value::{DecimalValue, ValueTypeTag};
-use type_bridge_orm::descriptor::{
+use type_bridge_orm::_descriptor::{
     EntityDescriptor, OwnedAttributeDescriptor, RelationDescriptor, RoleDescriptor, TypeDescriptor,
 };
-use type_bridge_orm::dynamic::{
-    DynamicAttributeMap, DynamicEntityRow, DynamicRelationRow, DynamicRolePlayer,
-    DynamicRolePlayerInput,
+use type_bridge_orm::_dynamic::{
+    DynamicAttributeMap, DynamicComparisonOp, DynamicEntityRow, DynamicExpr, DynamicRelationRow,
+    DynamicRolePlayer, DynamicRolePlayerInput,
 };
-use type_bridge_orm::manager::{DynamicEntityManager, DynamicRelationManager};
+use type_bridge_orm::_manager::{DynamicEntityManager, DynamicRelationManager};
 use type_bridge_orm::{
-    AttributeValue, Database, InstalledRuntimeProjection, ProviderRuntimeOwner, TransactionContext,
-    ValueType,
+    AttributeValue, Database, HydratedAttribute, InstalledRuntimeProjection, ProviderRuntimeOwner,
+    ThingKind, TransactionContext, ValueType,
 };
 
-use crate::{NodeRustDatabase, NodeRustTransactionContext};
+use crate::match_runtime::revalidate_diagnostic;
+use crate::{
+    NodeMatchSessionHandle, NodeRustDatabase, NodeRustTransactionContext, NodeValidatedThingHandle,
+};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -147,6 +151,7 @@ impl NodeRuntimeProjection {
             database: Some(database),
             transaction: None,
             runtime,
+            filters: vec![],
         })
     }
 
@@ -165,7 +170,207 @@ impl NodeRuntimeProjection {
             database: None,
             transaction: Some(transaction),
             runtime,
+            filters: vec![],
         })
+    }
+
+    /// Build an opaque match session from this exact installed projection only.
+    #[napi(js_name = "matchSession")]
+    pub fn match_session(&self) -> napi::Result<NodeMatchSessionHandle> {
+        let registry = self
+            .package
+            .projection
+            .match_registry()
+            .map_err(orm_error)?;
+        Ok(NodeMatchSessionHandle::from_registry(Arc::new(registry)))
+    }
+
+    /// Resolve one exact projected entity or relation token to its provider label.
+    #[napi(js_name = "matchModelType")]
+    pub fn match_model_type(&self, type_key: String) -> napi::Result<String> {
+        let id = manageable_type(self.package.as_ref(), &type_key)?;
+        Ok(id.label().as_str().to_owned())
+    }
+
+    /// Validate one generated attribute scalar through the installed Rust projection.
+    #[napi(js_name = "validateAttributeValueJson")]
+    pub fn validate_attribute_value_json(
+        &self,
+        type_key: String,
+        value_json: String,
+    ) -> napi::Result<()> {
+        let id = type_id_from_key(&type_key)?;
+        if id.kind() != TypeKind::Attribute {
+            return Err(invalid_error(
+                "generated scalar validation requires an attribute token",
+            ));
+        }
+        let model = self
+            .package
+            .projection
+            .projection()
+            .models()
+            .get(&id)
+            .ok_or_else(|| invalid_error("projection attribute model is absent"))?;
+        let value_type = model
+            .declaration()
+            .value_type()
+            .ok_or_else(|| invalid_error("projection attribute has no scalar domain"))?;
+        let wire: ScalarWire = serde_json::from_str(&value_json)
+            .map_err(|error| invalid_error(format!("invalid projected scalar wire: {error}")))?;
+        let value = scalar_to_attribute(&wire, projected_value_type(value_type))?;
+        self.package
+            .projection
+            .validate_attribute_value(&id, &value)
+            .map_err(|error| invalid_error(error.to_string()))
+    }
+
+    /// Validate one generated owned-field scalar through the installed Rust projection.
+    #[napi(js_name = "validateFieldValueJson")]
+    pub fn validate_field_value_json(
+        &self,
+        type_key: String,
+        field_name: String,
+        value_json: String,
+    ) -> napi::Result<()> {
+        let id = manageable_type(self.package.as_ref(), &type_key)?;
+        let model = self
+            .package
+            .projection
+            .projection()
+            .models()
+            .get(&id)
+            .ok_or_else(|| invalid_error("projection model is absent"))?;
+        let field = model
+            .query_tokens()
+            .fields()
+            .values()
+            .find(|field| field.target_name().as_str() == field_name)
+            .ok_or_else(|| {
+                invalid_error("generated value references an unknown projected field")
+            })?;
+        let attribute_id =
+            TypeId::new(TypeKind::Attribute, field.id().attribute().label().as_str())
+                .map_err(diagnostic_error)?;
+        let attribute = self
+            .package
+            .projection
+            .projection()
+            .models()
+            .get(&attribute_id)
+            .ok_or_else(|| invalid_error("projection field attribute is absent"))?;
+        let value_type = attribute
+            .declaration()
+            .value_type()
+            .ok_or_else(|| invalid_error("projection field attribute has no scalar domain"))?;
+        let wire: ScalarWire = serde_json::from_str(&value_json)
+            .map_err(|error| invalid_error(format!("invalid projected scalar wire: {error}")))?;
+        let value = scalar_to_attribute(&wire, projected_value_type(value_type))?;
+        self.package
+            .projection
+            .validate_field_value(&id, &field_name, &value)
+            .map_err(|error| invalid_error(error.to_string()))
+    }
+
+    /// Revalidate a diagnostic against this exact installed projection.
+    #[napi(js_name = "revalidateMatchDiagnostic")]
+    pub fn revalidate_match_diagnostic(&self, diagnostic: String) -> napi::Result<String> {
+        let registry = self
+            .package
+            .projection
+            .match_registry()
+            .map_err(orm_error)?;
+        revalidate_diagnostic(&registry, &diagnostic)
+    }
+
+    /// Materialize one validated match thing as the package's private wire.
+    #[napi(js_name = "materializeMatchThingJson")]
+    pub fn materialize_match_thing_json(
+        &self,
+        thing: &NodeValidatedThingHandle,
+    ) -> napi::Result<String> {
+        let registry = self
+            .package
+            .projection
+            .match_registry()
+            .map_err(orm_error)?;
+        let concrete = registry
+            .descriptor_type_name(thing.hydrated_descriptor())
+            .ok_or_else(|| runtime_error("validated result descriptor is no longer registered"))?;
+        let kind = match thing.hydrated_kind() {
+            ThingKind::Entity => TypeKind::Entity,
+            ThingKind::Relation => TypeKind::Relation,
+        };
+        let id = self.package.type_by_label(&concrete)?.clone();
+        if id.kind() != kind {
+            return Err(runtime_error(
+                "validated match thing kind disagrees with the installed projection",
+            ));
+        }
+        let attributes = match_attributes(self.package.as_ref(), &id, thing.hydrated_attributes())?;
+        let wire = match kind {
+            TypeKind::Entity => hydrate_entity(
+                self.package.as_ref(),
+                &id,
+                &DynamicEntityRow {
+                    iid: Some(thing.hydrated_concept_id().to_owned()),
+                    type_name: Some(concrete),
+                    attributes,
+                },
+            )?,
+            TypeKind::Relation => {
+                let mut role_players = Vec::new();
+                for role in thing.hydrated_roles() {
+                    for player in role.players() {
+                        let player_type = registry
+                            .descriptor_type_name(player.concrete_descriptor())
+                            .ok_or_else(|| {
+                                runtime_error(
+                                    "validated role-player descriptor is no longer registered",
+                                )
+                            })?;
+                        let player_id = self.package.type_by_label(&player_type)?.clone();
+                        let player_kind = match player.kind() {
+                            ThingKind::Entity => TypeKind::Entity,
+                            ThingKind::Relation => TypeKind::Relation,
+                        };
+                        if player_id.kind() != player_kind {
+                            return Err(runtime_error(
+                                "validated role player kind disagrees with the projection",
+                            ));
+                        }
+                        let player_attributes = match_attributes(
+                            self.package.as_ref(),
+                            &player_id,
+                            player.attributes(),
+                        )?
+                        .into_iter()
+                        .map(|(name, value)| (name, attribute_json_value(&value)))
+                        .collect();
+                        role_players.push(DynamicRolePlayer {
+                            role_name: role.role().name.clone(),
+                            player_iid: Some(player.concept_id().as_str().to_owned()),
+                            player_type_name: Some(player_type),
+                            attributes: player_attributes,
+                        });
+                    }
+                }
+                hydrate_relation(
+                    self.package.as_ref(),
+                    &id,
+                    &DynamicRelationRow {
+                        iid: Some(thing.hydrated_concept_id().to_owned()),
+                        type_name: Some(concrete),
+                        attributes,
+                        role_players,
+                    },
+                )?
+            }
+            TypeKind::Attribute | TypeKind::Struct => {
+                unreachable!("match things are always entities or relations")
+            }
+        };
+        serde_json::to_string(&wire).map_err(json_error)
     }
 }
 
@@ -177,6 +382,7 @@ pub struct NodeProjectedModelManager {
     database: Option<Arc<Database>>,
     transaction: Option<TransactionContext>,
     runtime: Arc<ProviderRuntimeOwner>,
+    filters: Vec<DynamicExpr>,
 }
 
 #[napi]
@@ -216,6 +422,141 @@ impl NodeProjectedModelManager {
         wire_json(&instance)
     }
 
+    /// Insert exact complete values atomically and return hydrated wires in input order.
+    #[napi(js_name = "insertManyJson")]
+    pub fn insert_many_json(&self, batch_json: String) -> napi::Result<String> {
+        self.write_many_json(&batch_json, false)
+    }
+
+    /// Insert or update one exact complete value and return its hydrated private wire.
+    #[napi(js_name = "putJson")]
+    pub fn put_json(&self, instance_json: String) -> napi::Result<String> {
+        let mut instance = parse_wire(&instance_json)?;
+        ensure_root_wire(self.package.as_ref(), &instance, &self.type_id)?;
+        let iid = match self.descriptor()? {
+            TypeDescriptor::Entity(descriptor) => {
+                let attributes = lower_attributes(
+                    self.package.as_ref(),
+                    &descriptor.owned_attributes,
+                    &instance,
+                )?;
+                let manager = self.entity_manager(Arc::new(descriptor))?;
+                self.runtime
+                    .block_on(manager.put_exact(&attributes))
+                    .map_err(orm_error)?
+            }
+            TypeDescriptor::Relation(descriptor) => {
+                let attributes = lower_attributes(
+                    self.package.as_ref(),
+                    &descriptor.owned_attributes,
+                    &instance,
+                )?;
+                let roles =
+                    lower_roles(self.package.as_ref(), &self.type_id, &descriptor, &instance)?;
+                let manager = self.relation_manager(Arc::new(descriptor))?;
+                self.runtime
+                    .block_on(manager.put_exact(&attributes, &roles))
+                    .map_err(orm_error)?
+            }
+        };
+        instance.iid = Some(iid);
+        wire_json(&instance)
+    }
+
+    /// Put exact complete values atomically and return hydrated wires in input order.
+    #[napi(js_name = "putManyJson")]
+    pub fn put_many_json(&self, batch_json: String) -> napi::Result<String> {
+        self.write_many_json(&batch_json, true)
+    }
+
+    /// Replace one exact complete value already identified by its TypeDB IID.
+    #[napi(js_name = "updateJson")]
+    pub fn update_json(&self, iid: String, instance_json: String) -> napi::Result<String> {
+        let instance = parse_wire(&instance_json)?;
+        ensure_root_wire(self.package.as_ref(), &instance, &self.type_id)?;
+        ensure_iid(&iid)?;
+        let stored = match self.descriptor()? {
+            TypeDescriptor::Entity(descriptor) => {
+                let attributes = lower_attributes(
+                    self.package.as_ref(),
+                    &descriptor.owned_attributes,
+                    &instance,
+                )?;
+                let manager = self.entity_manager(Arc::new(descriptor))?;
+                let row = self
+                    .runtime
+                    .block_on(manager.update_and_get_exact(&iid, &attributes))
+                    .map_err(orm_error)?;
+                hydrate_entity(self.package.as_ref(), &self.type_id, &row)?
+            }
+            TypeDescriptor::Relation(descriptor) => {
+                let attributes = lower_attributes(
+                    self.package.as_ref(),
+                    &descriptor.owned_attributes,
+                    &instance,
+                )?;
+                let roles =
+                    lower_roles(self.package.as_ref(), &self.type_id, &descriptor, &instance)?;
+                let manager = self.relation_manager(Arc::new(descriptor))?;
+                let row = self
+                    .runtime
+                    .block_on(manager.update_and_get_exact(&iid, &attributes, &roles))
+                    .map_err(orm_error)?;
+                hydrate_relation(self.package.as_ref(), &self.type_id, &row)?
+            }
+        };
+        wire_json(&stored)
+    }
+
+    /// Delete one exact projected value by its canonical TypeDB IID.
+    #[napi(js_name = "deleteByIid")]
+    pub fn delete_by_iid(&self, iid: String) -> napi::Result<()> {
+        ensure_iid(&iid)?;
+        match self.descriptor()? {
+            TypeDescriptor::Entity(descriptor) => {
+                let manager = self.entity_manager(Arc::new(descriptor))?;
+                self.runtime
+                    .block_on(manager.delete_by_iid_exact(&iid))
+                    .map_err(orm_error)?;
+            }
+            TypeDescriptor::Relation(descriptor) => {
+                let manager = self.relation_manager(Arc::new(descriptor))?;
+                self.runtime
+                    .block_on(manager.delete_by_iid_exact(&iid))
+                    .map_err(orm_error)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Return a new exact projected manager narrowed by generated attribute filters.
+    #[napi(js_name = "filterJson")]
+    pub fn filter_json(&self, filters_json: String) -> napi::Result<Self> {
+        let filters: BTreeMap<String, Value> =
+            serde_json::from_str(&filters_json).map_err(|error| {
+                invalid_error(format!("invalid projected manager filters: {error}"))
+            })?;
+        let descriptor = self.descriptor()?;
+        let attributes = match &descriptor {
+            TypeDescriptor::Entity(descriptor) => &descriptor.owned_attributes,
+            TypeDescriptor::Relation(descriptor) => &descriptor.owned_attributes,
+        };
+        let mut combined = self.filters.clone();
+        combined.extend(lower_filter_values(
+            self.package.as_ref(),
+            attributes,
+            filters,
+        )?);
+        Ok(Self {
+            package: Arc::clone(&self.package),
+            type_id: self.type_id.clone(),
+            database: self.database.clone(),
+            transaction: self.transaction.clone(),
+            runtime: Arc::clone(&self.runtime),
+            filters: combined,
+        })
+    }
+
     /// Fetch one exact projected value by IID.
     #[napi(js_name = "getByIidJson")]
     pub fn get_by_iid_json(&self, iid: String) -> napi::Result<String> {
@@ -252,31 +593,173 @@ impl NodeProjectedModelManager {
     /// Fetch all values whose concrete type exactly matches this projection.
     #[napi(js_name = "allJson")]
     pub fn all_json(&self) -> napi::Result<String> {
-        let values = match self.descriptor()? {
+        serde_json::to_string(&self.read_all_values()?).map_err(json_error)
+    }
+
+    /// Fetch the first exact filtered value, or `null` when no value matches.
+    #[napi(js_name = "firstJson")]
+    pub fn first_json(&self) -> napi::Result<String> {
+        let value = match self.descriptor()? {
             TypeDescriptor::Entity(descriptor) => {
                 let manager = self.entity_manager(Arc::new(descriptor))?;
                 self.runtime
-                    .block_on(manager.all_exact())
+                    .block_on(manager.first_exact_with_query(&self.filters))
                     .map_err(orm_error)?
-                    .iter()
+                    .as_ref()
                     .map(|row| hydrate_entity(self.package.as_ref(), &self.type_id, row))
-                    .collect::<napi::Result<Vec<_>>>()?
+                    .transpose()?
             }
             TypeDescriptor::Relation(descriptor) => {
                 let manager = self.relation_manager(Arc::new(descriptor))?;
                 self.runtime
-                    .block_on(manager.all_exact())
+                    .block_on(manager.first_exact_with_query(&self.filters))
                     .map_err(orm_error)?
-                    .iter()
+                    .as_ref()
                     .map(|row| hydrate_relation(self.package.as_ref(), &self.type_id, row))
-                    .collect::<napi::Result<Vec<_>>>()?
+                    .transpose()?
             }
         };
-        serde_json::to_string(&values).map_err(json_error)
+        serde_json::to_string(&value).map_err(json_error)
+    }
+
+    /// Count exact filtered values.
+    #[napi]
+    pub fn count(&self) -> napi::Result<BigInt> {
+        let count = match self.descriptor()? {
+            TypeDescriptor::Entity(descriptor) => {
+                let manager = self.entity_manager(Arc::new(descriptor))?;
+                self.runtime
+                    .block_on(manager.count_exact_with_query(&self.filters))
+                    .map_err(orm_error)?
+            }
+            TypeDescriptor::Relation(descriptor) => {
+                let manager = self.relation_manager(Arc::new(descriptor))?;
+                self.runtime
+                    .block_on(manager.count_exact_with_query(&self.filters))
+                    .map_err(orm_error)?
+            }
+        };
+        Ok(BigInt::from(count))
+    }
+
+    /// Return whether at least one exact filtered value exists.
+    #[napi]
+    pub fn exists(&self) -> napi::Result<bool> {
+        match self.descriptor()? {
+            TypeDescriptor::Entity(descriptor) => {
+                let manager = self.entity_manager(Arc::new(descriptor))?;
+                self.runtime
+                    .block_on(manager.exists_exact_with_query(&self.filters))
+                    .map_err(orm_error)
+            }
+            TypeDescriptor::Relation(descriptor) => {
+                let manager = self.relation_manager(Arc::new(descriptor))?;
+                self.runtime
+                    .block_on(manager.exists_exact_with_query(&self.filters))
+                    .map_err(orm_error)
+            }
+        }
     }
 }
 
 impl NodeProjectedModelManager {
+    fn write_many_json(&self, batch_json: &str, put: bool) -> napi::Result<String> {
+        let mut instances: Vec<ProjectedWire> = serde_json::from_str(batch_json)
+            .map_err(|error| invalid_error(format!("invalid projected batch wire: {error}")))?;
+        for instance in &instances {
+            ensure_root_wire(self.package.as_ref(), instance, &self.type_id)?;
+        }
+        if instances.is_empty() {
+            return Ok("[]".to_owned());
+        }
+        let iids = match self.descriptor()? {
+            TypeDescriptor::Entity(descriptor) => {
+                let items = instances
+                    .iter()
+                    .map(|instance| {
+                        lower_attributes(
+                            self.package.as_ref(),
+                            &descriptor.owned_attributes,
+                            instance,
+                        )
+                    })
+                    .collect::<napi::Result<Vec<_>>>()?;
+                let manager = self.entity_manager(Arc::new(descriptor))?;
+                if put {
+                    self.runtime
+                        .block_on(manager.put_many_exact(&items))
+                        .map_err(orm_error)?
+                } else {
+                    self.runtime
+                        .block_on(manager.insert_many(&items))
+                        .map_err(orm_error)?
+                }
+            }
+            TypeDescriptor::Relation(descriptor) => {
+                let items = instances
+                    .iter()
+                    .map(|instance| {
+                        Ok((
+                            lower_attributes(
+                                self.package.as_ref(),
+                                &descriptor.owned_attributes,
+                                instance,
+                            )?,
+                            lower_roles(
+                                self.package.as_ref(),
+                                &self.type_id,
+                                &descriptor,
+                                instance,
+                            )?,
+                        ))
+                    })
+                    .collect::<napi::Result<Vec<_>>>()?;
+                let manager = self.relation_manager(Arc::new(descriptor))?;
+                if put {
+                    self.runtime
+                        .block_on(manager.put_many_exact(&items))
+                        .map_err(orm_error)?
+                } else {
+                    self.runtime
+                        .block_on(manager.insert_many(&items))
+                        .map_err(orm_error)?
+                }
+            }
+        };
+        if iids.len() != instances.len() {
+            return Err(runtime_error(
+                "projected batch write returned an unexpected IID count",
+            ));
+        }
+        for (instance, iid) in instances.iter_mut().zip(iids) {
+            instance.iid = Some(iid);
+        }
+        serde_json::to_string(&instances).map_err(json_error)
+    }
+
+    fn read_all_values(&self) -> napi::Result<Vec<ProjectedWire>> {
+        match self.descriptor()? {
+            TypeDescriptor::Entity(descriptor) => {
+                let manager = self.entity_manager(Arc::new(descriptor))?;
+                self.runtime
+                    .block_on(manager.get_exact_with_query(&self.filters, &[], None, None))
+                    .map_err(orm_error)?
+                    .iter()
+                    .map(|row| hydrate_entity(self.package.as_ref(), &self.type_id, row))
+                    .collect()
+            }
+            TypeDescriptor::Relation(descriptor) => {
+                let manager = self.relation_manager(Arc::new(descriptor))?;
+                self.runtime
+                    .block_on(manager.get_exact_with_query(&self.filters, &[], None, None))
+                    .map_err(orm_error)?
+                    .iter()
+                    .map(|row| hydrate_relation(self.package.as_ref(), &self.type_id, row))
+                    .collect()
+            }
+        }
+    }
+
     fn descriptor(&self) -> napi::Result<TypeDescriptor> {
         self.package
             .projection
@@ -290,7 +773,7 @@ impl NodeProjectedModelManager {
         descriptor: Arc<EntityDescriptor>,
     ) -> napi::Result<DynamicEntityManager<'_>> {
         if let Some(transaction) = &self.transaction {
-            return Ok(DynamicEntityManager::with_transaction(
+            return Ok(DynamicEntityManager::with_canonical_transaction(
                 transaction.clone(),
                 descriptor,
             ));
@@ -299,7 +782,10 @@ impl NodeProjectedModelManager {
             .database
             .as_ref()
             .ok_or_else(|| runtime_error("projected manager has no execution target"))?;
-        Ok(DynamicEntityManager::new(database.as_ref(), descriptor))
+        Ok(DynamicEntityManager::new_canonical(
+            database.as_ref(),
+            descriptor,
+        ))
     }
 
     fn relation_manager(
@@ -307,7 +793,7 @@ impl NodeProjectedModelManager {
         descriptor: Arc<RelationDescriptor>,
     ) -> napi::Result<DynamicRelationManager<'_>> {
         if let Some(transaction) = &self.transaction {
-            return Ok(DynamicRelationManager::with_transaction(
+            return Ok(DynamicRelationManager::with_canonical_transaction(
                 transaction.clone(),
                 descriptor,
             ));
@@ -316,7 +802,10 @@ impl NodeProjectedModelManager {
             .database
             .as_ref()
             .ok_or_else(|| runtime_error("projected manager has no execution target"))?;
-        Ok(DynamicRelationManager::new(database.as_ref(), descriptor))
+        Ok(DynamicRelationManager::new_canonical(
+            database.as_ref(),
+            descriptor,
+        ))
     }
 }
 
@@ -486,6 +975,189 @@ fn lower_attributes(
     Ok(attributes)
 }
 
+fn lower_filter_values(
+    package: &InstalledPackage,
+    descriptors: &[OwnedAttributeDescriptor],
+    filters: BTreeMap<String, Value>,
+) -> napi::Result<Vec<DynamicExpr>> {
+    let mut lowered = Vec::with_capacity(filters.len());
+    for (key, value) in filters {
+        if matches!(key.as_str(), "iid" | "_iid" | "iid__eq" | "_iid__eq") {
+            lowered.push(DynamicExpr::Iid {
+                iid: projected_filter_iid(&value)?,
+            });
+            continue;
+        }
+        if matches!(key.as_str(), "iid__in" | "_iid__in") {
+            let values = value.as_array().ok_or_else(|| {
+                invalid_error("generated manager iid__in lookup requires an array")
+            })?;
+            if values.is_empty() {
+                return Err(invalid_error(
+                    "generated manager iid__in lookup requires at least one IID",
+                ));
+            }
+            lowered.push(DynamicExpr::Or {
+                exprs: values
+                    .iter()
+                    .map(|value| {
+                        Ok(DynamicExpr::Iid {
+                            iid: projected_filter_iid(value)?,
+                        })
+                    })
+                    .collect::<napi::Result<Vec<_>>>()?,
+            });
+            continue;
+        }
+        // Generated target names may themselves contain a recognised lookup
+        // suffix. Prefer the suffix only when its prefix is also a projected
+        // field; `scoreGte__eq` selects equality on the literal `scoreGte`.
+        let has_field = |name: &str| {
+            descriptors
+                .iter()
+                .any(|descriptor| descriptor.field_name == name || descriptor.attr_name == name)
+        };
+        let parsed_lookup = key.rsplit_once("__");
+        let (field_name, lookup) = match parsed_lookup {
+            Some((field_name, lookup))
+                if matches!(
+                    lookup,
+                    "eq" | "exact"
+                        | "ne"
+                        | "gt"
+                        | "gte"
+                        | "lt"
+                        | "lte"
+                        | "contains"
+                        | "startswith"
+                        | "endswith"
+                        | "regex"
+                        | "like"
+                        | "in"
+                        | "isnull"
+                ) && has_field(field_name) =>
+            {
+                (field_name, lookup)
+            }
+            _ if has_field(&key) => (key.as_str(), "eq"),
+            Some((field_name, lookup)) => (field_name, lookup),
+            None => (key.as_str(), "eq"),
+        };
+        let descriptor = descriptors
+            .iter()
+            .find(|descriptor| {
+                descriptor.field_name == field_name || descriptor.attr_name == field_name
+            })
+            .ok_or_else(|| {
+                invalid_error(format!("unknown generated manager filter {field_name:?}"))
+            })?;
+        if matches!(
+            lookup,
+            "contains" | "startswith" | "endswith" | "regex" | "like"
+        ) && descriptor.value_type != ValueType::String
+        {
+            return Err(invalid_error(format!(
+                "unsupported generated manager lookup {lookup:?} for non-string field {field_name:?}"
+            )));
+        }
+        if lookup == "isnull" {
+            let is_null = value.as_bool().ok_or_else(|| {
+                invalid_error("generated manager isnull lookup requires a boolean")
+            })?;
+            lowered.push(DynamicExpr::IsNull {
+                attr_name: descriptor.attr_name.clone(),
+                is_null,
+            });
+            continue;
+        }
+        if lookup == "in" {
+            let values = value
+                .as_array()
+                .ok_or_else(|| invalid_error("generated manager in lookup requires an array"))?;
+            if values.is_empty() {
+                return Err(invalid_error(
+                    "generated manager in lookup requires at least one value",
+                ));
+            }
+            lowered.push(DynamicExpr::Or {
+                exprs: values
+                    .iter()
+                    .map(|value| {
+                        Ok(DynamicExpr::Compare {
+                            attr_name: descriptor.attr_name.clone(),
+                            operator: DynamicComparisonOp::Eq,
+                            value: projected_filter_attribute_value(
+                                package, descriptor, field_name, value,
+                            )?,
+                        })
+                    })
+                    .collect::<napi::Result<Vec<_>>>()?,
+            });
+            continue;
+        }
+        let operator = match lookup {
+            "eq" | "exact" => DynamicComparisonOp::Eq,
+            "ne" => DynamicComparisonOp::Neq,
+            "gt" => DynamicComparisonOp::Gt,
+            "gte" => DynamicComparisonOp::Gte,
+            "lt" => DynamicComparisonOp::Lt,
+            "lte" => DynamicComparisonOp::Lte,
+            "contains" => DynamicComparisonOp::Contains,
+            "startswith" => DynamicComparisonOp::StartsWith,
+            "endswith" => DynamicComparisonOp::EndsWith,
+            "regex" | "like" => DynamicComparisonOp::Like,
+            _ => {
+                return Err(invalid_error(format!(
+                    "unsupported generated manager lookup {lookup:?}; expected exact, eq, ne, gt, gte, lt, lte, contains, startswith, endswith, regex, in, or isnull"
+                )));
+            }
+        };
+        lowered.push(DynamicExpr::Compare {
+            attr_name: descriptor.attr_name.clone(),
+            operator,
+            value: projected_filter_attribute_value(package, descriptor, field_name, &value)?,
+        });
+    }
+    Ok(lowered)
+}
+
+fn projected_filter_attribute_value(
+    package: &InstalledPackage,
+    descriptor: &OwnedAttributeDescriptor,
+    field_name: &str,
+    value: &Value,
+) -> napi::Result<AttributeValue> {
+    let wrapper = nested_wire(value)?;
+    let expected = package.type_by_label(&descriptor.attr_name)?;
+    ensure_wire_members(package, expected, &wrapper)?;
+    if expected.kind() != TypeKind::Attribute
+        || wrapper.form != WireForm::Complete
+        || type_id_from_key(&wrapper.type_key)? != *expected
+        || wrapper.iid.is_some()
+        || !wrapper.values.is_empty()
+    {
+        return Err(invalid_error(format!(
+            "generated manager filter {field_name:?} requires its exact attribute wrapper"
+        )));
+    }
+    let scalar = wrapper.value.as_ref().ok_or_else(|| {
+        invalid_error("complete generated manager filter wrapper has no scalar value")
+    })?;
+    scalar_to_attribute(scalar, descriptor.value_type)
+}
+
+fn projected_filter_iid(value: &Value) -> napi::Result<String> {
+    let iid = value
+        .as_str()
+        .ok_or_else(|| invalid_error("generated manager IID lookup requires strings"))?;
+    if !is_canonical_thing_iid(iid) {
+        return Err(invalid_error(
+            "generated manager IID lookup requires a canonical TypeDB thing IID",
+        ));
+    }
+    Ok(iid.to_owned())
+}
+
 fn lower_roles(
     package: &InstalledPackage,
     relation_id: &TypeId,
@@ -610,6 +1282,49 @@ fn normalized_values(
         ));
     }
     Ok(values)
+}
+
+fn match_attributes(
+    package: &InstalledPackage,
+    id: &TypeId,
+    hydrated: &[HydratedAttribute],
+) -> napi::Result<DynamicAttributeMap> {
+    let descriptor = package.projection.descriptor(id).map_err(orm_error)?;
+    let descriptors = match &descriptor {
+        TypeDescriptor::Entity(descriptor) => &descriptor.owned_attributes,
+        TypeDescriptor::Relation(descriptor) => &descriptor.owned_attributes,
+    };
+    let mut attributes = Vec::new();
+    for attribute in hydrated {
+        let descriptor = descriptors
+            .iter()
+            .find(|descriptor| descriptor.field_name == attribute.field().name)
+            .ok_or_else(|| {
+                runtime_error("validated match field is outside the installed projection")
+            })?;
+        attributes.extend(
+            attribute
+                .values()
+                .iter()
+                .cloned()
+                .map(|value| (descriptor.attr_name.clone(), value)),
+        );
+    }
+    Ok(attributes)
+}
+
+fn attribute_json_value(value: &AttributeValue) -> Value {
+    match value {
+        AttributeValue::String(value)
+        | AttributeValue::Date(value)
+        | AttributeValue::DateTime(value)
+        | AttributeValue::DateTimeTZ(value)
+        | AttributeValue::Decimal(value)
+        | AttributeValue::Duration(value) => Value::String(value.clone()),
+        AttributeValue::Long(value) => serde_json::json!(value),
+        AttributeValue::Double(value) => serde_json::json!(value),
+        AttributeValue::Boolean(value) => serde_json::json!(value),
+    }
 }
 
 fn hydrate_entity(
@@ -918,6 +1633,20 @@ const fn value_type_tag(value: ValueType) -> ValueTypeTag {
         ValueType::DateTimeTz => ValueTypeTag::DateTimeTz,
         ValueType::Decimal => ValueTypeTag::Decimal,
         ValueType::Duration => ValueTypeTag::Duration,
+    }
+}
+
+const fn projected_value_type(value: ValueTypeTag) -> ValueType {
+    match value {
+        ValueTypeTag::String => ValueType::String,
+        ValueTypeTag::Long => ValueType::Long,
+        ValueTypeTag::Double => ValueType::Double,
+        ValueTypeTag::Boolean => ValueType::Boolean,
+        ValueTypeTag::Date => ValueType::Date,
+        ValueTypeTag::DateTime => ValueType::DateTime,
+        ValueTypeTag::DateTimeTz => ValueType::DateTimeTz,
+        ValueTypeTag::Decimal => ValueType::Decimal,
+        ValueTypeTag::Duration => ValueType::Duration,
     }
 }
 

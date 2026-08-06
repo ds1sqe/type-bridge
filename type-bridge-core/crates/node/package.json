@@ -1,20 +1,15 @@
 {
   "name": "@type-bridge/node",
-  "version": "2.0.1",
+  "version": "2.1.0",
   "description": "TypeScript and Node SDK for the TypeBridge shared Rust semantic engine",
   "license": "MIT",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "main": "dist/public.js",
+  "types": "dist/public.d.ts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "require": "./dist/index.js",
-      "default": "./dist/index.js"
-    },
-    "./typed": {
-      "types": "./dist/typed/index.d.ts",
-      "require": "./dist/typed/index.js",
-      "default": "./dist/typed/index.js"
+      "types": "./dist/public.d.ts",
+      "require": "./dist/public.js",
+      "default": "./dist/public.js"
     },
     "./query-v2": {
       "types": "./dist/query-v2.d.ts",
@@ -39,21 +34,18 @@
     "build:native": "node scripts/build-native.js",
     "clean:types": "node scripts/clean-types.js",
     "build:types": "npm run clean:types && tsc -p tsconfig.json",
-    "build:typed-integration": "tsc -p tsconfig.typed-integration.json",
-    "build:parity-reader": "tsc -p tsconfig.parity.json",
-    "build:generator-parity": "tsc -p tsconfig.generator-parity.json",
     "scope:probe": "node --test tests/scope-probe.test.cjs && node tests/scope-probe.cjs",
     "dts:parity": "node tests/dts-parity.cjs",
     "dts:baseline": "node tests/dts-parity.cjs --update",
     "test:dts": "node --test tests/dts-parity.test.cjs",
     "smoke:package": "node tests/package-smoke.cjs",
-    "smoke:legacy-package": "node tests/compat/legacy-package/run.cjs",
-    "test:unit": "tsc -p tsconfig.unit.json && node scripts/run-unit.js",
+    "smoke:packed-package": "node tests/packed-package-smoke.cjs",
+    "test:unit": "node scripts/clean-unit.js && tsc -p tsconfig.unit.json && node scripts/run-unit.js",
     "test:contract-adapter": "cargo build -p type-bridge-node --features contract-test-adapter && node --test tests/native-contract-foundation.test.cjs",
     "typecheck": "tsc --noEmit",
-    "typecheck:query-contract": "tsc -p tests/compat/typed-query-contract/tsconfig.json --noEmit",
     "typecheck:integration": "tsc -p tsconfig.integration.json",
-    "test:typed-integration": "npm run build:typed-integration && node --test ../../../tmp/node-typed-integration/tests/typed-integration/*.test.js ../../../tmp/node-typed-integration/tests/integration/typed/*.test.js",
+    "typecheck:projection-integration": "tsc -p tsconfig.projection-integration.json",
+    "test:projection-integration": "node scripts/run-projection-integration.js",
     "test:integration": "node scripts/run-integration.js"
   },
   "engines": {

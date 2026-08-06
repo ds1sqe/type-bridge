@@ -4,11 +4,15 @@ use std::sync::{Arc, Mutex};
 
 use type_bridge_orm::*;
 
+#[path = "support/internal.rs"]
+mod internal;
+use internal::*;
+
 // ── Test entity ──────────────────────────────────────────────────────
 
-define_attribute!(Name, "name", "string");
-define_attribute!(Age, "age", "long");
-define_attribute!(Score, "score", "double");
+_define_attribute!(Name, "name", "string");
+_define_attribute!(Age, "age", "long");
+_define_attribute!(Score, "score", "double");
 
 #[derive(Debug)]
 struct Person {
@@ -76,7 +80,7 @@ impl TypeBridgeEntity for Person {
 
 // ── Test relation ──────────────────────────────────────────────────────
 
-define_attribute!(Since, "since", "string");
+_define_attribute!(Since, "since", "string");
 
 #[derive(Debug)]
 struct Friendship {

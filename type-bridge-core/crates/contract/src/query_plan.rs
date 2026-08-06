@@ -139,6 +139,7 @@ pub fn query_plan_v2_capability_vocabulary() -> CapabilitySet {
                 v2::CAP_DISJUNCTION,
                 v2::CAP_STRING_OPERATORS,
                 v2::CAP_LINKS_SUBTYPES,
+                v2::CAP_IID,
                 v2::CAP_CROSS_JOIN,
                 v2::CAP_OUTPUT_NAMED,
                 v2::CAP_OUTPUT_COLLECT,

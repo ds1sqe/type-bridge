@@ -47,6 +47,9 @@ def package_payload(**overrides: Any) -> dict[str, Any]:
         "version": VERSION,
         "license": validator.MIT_LICENSE,
         "files": list(PACKAGE_FILES),
+        "main": validator.EXPECTED_MAIN,
+        "types": validator.EXPECTED_TYPES,
+        "exports": validator.EXPECTED_EXPORTS,
     }
     payload.update(overrides)
     return payload
@@ -69,8 +72,20 @@ def write_tarball(
         "dist/index.js": b"module.exports = {};\n",
         "dist/native.d.ts": b"export declare function loadNative(): object;\n",
         "dist/native.js": b"exports.loadNative = () => ({});\n",
-        "dist/typed/index.d.ts": b"export {};\n",
-        "dist/typed/index.js": b"module.exports = {};\n",
+        "dist/owned-bytes.d.ts": b"export {};\n",
+        "dist/owned-bytes.js": b"module.exports = {};\n",
+        "dist/public.d.ts": b"export {};\n",
+        "dist/public.js": b"module.exports = {};\n",
+        "dist/query-v2-internals.d.ts": b"export {};\n",
+        "dist/query-v2-internals.js": b"module.exports = {};\n",
+        "dist/query-v2.d.ts": b"export {};\n",
+        "dist/query-v2.js": b"module.exports = {};\n",
+        "dist/query.d.ts": b"export {};\n",
+        "dist/query.js": b"module.exports = {};\n",
+        "dist/runtime-handles.d.ts": b"export {};\n",
+        "dist/runtime-handles.js": b"module.exports = {};\n",
+        "dist/runtime-projection.d.ts": b"export {};\n",
+        "dist/runtime-projection.js": b"module.exports = {};\n",
         validator.README: README_BYTES,
         validator.THIRD_PARTY_NOTICE: NOTICE_BYTES,
     }
@@ -332,10 +347,29 @@ def test_required_compiled_runtime_must_be_present(tmp_path: Path) -> None:
     write_tarball(
         artifact,
         package_payload(),
-        omit_runtime_member="dist/typed/index.d.ts",
+        omit_runtime_member="dist/runtime-projection.d.ts",
     )
 
     with pytest.raises(validator.ValidationError, match="required runtime members"):
+        validate(repository, artifact)
+
+
+@pytest.mark.parametrize(
+    "member",
+    [
+        "dist/manager.js",
+        "dist/typed/index.js",
+    ],
+)
+def test_handwritten_runtime_members_are_rejected(tmp_path: Path, member: str) -> None:
+    repository, artifact = release_fixture(tmp_path)
+    write_tarball(
+        artifact,
+        package_payload(),
+        extra_members={member: b"retired authoring runtime\n"},
+    )
+
+    with pytest.raises(validator.ValidationError, match="stale duplicate runtime outputs"):
         validate(repository, artifact)
 
 

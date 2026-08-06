@@ -14,9 +14,9 @@ remote server later without changing semantic systems.
 
 ## Before connecting
 
-You need a supported TypeDB 3.x server for database operations. TypeBridge
-2.0.x supports TypeDB 3.8–3.12, with 3.8 and 3.10 deprecated for removal in
-2.1. The exact interpreter, native-target, provider-band, and server matrix is
+You need a supported TypeDB 3.x server for database operations. TypeBridge 2.1
+supports TypeDB 3.11–3.12. The exact interpreter, native-target, provider-band,
+and server matrix is
 maintained in [TypeDB compatibility](../development/typedb.md#server-and-driver-compatibility).
 
 Schema parsing, validation, comparison, migration planning, and code generation

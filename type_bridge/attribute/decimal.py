@@ -113,3 +113,7 @@ class Decimal(NumericAttribute):
         if value_str.endswith("dec"):
             value_str = value_str[:-3]  # Remove 'dec' suffix
         return cls(DecimalType(value_str))
+
+
+_QueryDecimal = Decimal
+del Decimal

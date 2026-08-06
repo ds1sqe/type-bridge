@@ -2,7 +2,7 @@
 
 from decimal import Decimal as DecimalType
 
-from type_bridge import Decimal, Entity, Flag, Key, String, TypeFlags
+from tests.utils.handwritten import Decimal, Entity, Flag, Key, String, TypeFlags
 
 
 def test_decimal_creation():
@@ -198,7 +198,7 @@ def test_decimal_optional_attribute():
 
 def test_decimal_multi_value_attribute():
     """Test Decimal with multi-value attributes."""
-    from type_bridge import Card
+    from tests.utils.handwritten import Card
 
     class Payment(Decimal):
         pass

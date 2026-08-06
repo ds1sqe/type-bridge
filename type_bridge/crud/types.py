@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from type_bridge.attribute import AttributeFlags
+from type_bridge.attribute.flags import _QueryAttributeFlags as AttributeFlags
 from type_bridge.crud.formatting import unwrap_attribute
 
 if TYPE_CHECKING:
-    from type_bridge.models import TypeDBType
-    from type_bridge.models.utils import ModelAttrInfo
+    from type_bridge.models.base import _QueryTypeDBType as TypeDBType
+    from type_bridge.models.utils import _QueryModelAttrInfo as ModelAttrInfo
 
 
 def wrap_attribute_value(

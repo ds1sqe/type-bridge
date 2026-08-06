@@ -410,6 +410,13 @@ pub trait QueryValued: IntoEncodedScalar {
     type Domain;
 }
 
+/// A generated attribute wrapper that can materialize a validated grouped
+/// query key from its canonical scalar evidence.
+#[doc(hidden)]
+pub trait GroupedQueryValue: QueryValued + Sized {
+    fn from_group_scalar(value: EncodedScalar) -> Result<Self, ValidationError>;
+}
+
 impl QueryValued for String {
     type Domain = String;
 }
@@ -467,7 +474,7 @@ pub trait RelationModel: ThingModel {}
 
 /// A complete materialized generated model with a mandatory canonical IID.
 pub trait CompleteModel: ThingModel + MaterializeModel {
-    type Create: IntoEncodedCreate;
+    type Create: IntoEncodedCreate + Clone;
     fn iid(&self) -> &str;
 }
 
@@ -1031,6 +1038,20 @@ pub trait IntoEncodedCreate: sealed::Sealed {
     fn into_encoded_create(self) -> Result<EncodedCreate, ValidationError>;
 }
 
+/// Uninhabited create payload for a concrete read model whose schema shape
+/// cannot be instantiated at its own scope.
+#[doc(hidden)]
+#[derive(Clone, Debug, PartialEq)]
+pub enum UnconstructibleCreate {}
+
+impl sealed::Sealed for UnconstructibleCreate {}
+
+impl IntoEncodedCreate for UnconstructibleCreate {
+    fn into_encoded_create(self) -> Result<EncodedCreate, ValidationError> {
+        match self {}
+    }
+}
+
 /// Lowering trait from a generated reference into an `EncodedReference`.
 #[doc(hidden)]
 pub trait IntoEncodedReference: sealed::Sealed {
@@ -1072,6 +1093,16 @@ pub trait RoleTokenCompatible<Owner: RelationModel, Players>: RelationModel {}
 /// Positive generated evidence that a role's exact player union admits one
 /// bound player model.
 pub trait RolePlayer<Player: ThingModel> {}
+
+/// Positive generated evidence that a role admits one binding mode and model.
+pub trait RolePlayerBinding<Player: ThingModel, Mode> {}
+
+impl<Players, Player> RolePlayerBinding<Player, crate::query::Exact> for Players
+where
+    Player: ThingModel,
+    Players: RolePlayer<Player>,
+{
+}
 
 /// A schema type/query token branded by its exact owner.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

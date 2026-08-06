@@ -6,13 +6,8 @@ import logging
 import os
 import threading
 import warnings
-from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, overload
-
-from type_bridge_core import (
-    TYPEDB_LEGACY_SERVER_DEPRECATION_CODE as _TYPEDB_LEGACY_SERVER_DEPRECATION_CODE,
-)
 
 import type_bridge.typedb_driver as typedb_driver
 import type_bridge.version as version
@@ -29,40 +24,6 @@ if TYPE_CHECKING:
     from typedb.driver import Transaction as TypeDBTransaction
 
 logger = logging.getLogger(__name__)
-
-
-class TypeDBServerDeprecationWarning(FutureWarning):
-    """A connected TypeDB server line is scheduled for removal in 2.1.0."""
-
-    code = _TYPEDB_LEGACY_SERVER_DEPRECATION_CODE
-
-
-def _emit_server_deprecation_notice(
-    resolve: Callable[[], str | None],
-    *,
-    stacklevel: int,
-) -> None:
-    """Attempt one notice without changing a successful connection outcome."""
-    try:
-        notice = resolve()
-        if notice is not None:
-            warnings.warn(
-                notice,
-                TypeDBServerDeprecationWarning,
-                stacklevel=stacklevel,
-            )
-    except Exception:
-        logger.debug(
-            "Legacy TypeDB server notice delivery failed; preserving the successful connection",
-            exc_info=True,
-        )
-
-
-def _known_server_deprecation_notice(server_version: str) -> str | None:
-    """Resolve notice prose through the Rust version-policy SSOT."""
-    import type_bridge_core
-
-    return type_bridge_core.typedb_server_deprecation_notice(server_version)
 
 
 def _snapshot_tls_root_ca(path: str) -> tuple[Any, str]:
@@ -191,7 +152,7 @@ def _extract_values_from_dict(raw_dict: dict[str, Any]) -> dict[str, Any]:
 
 
 def _extract_concept_row(item: Any) -> dict[str, Any]:
-    """Extract concept data from a ConceptRow (legacy SELECT query results).
+    """Extract concept data from a ConceptRow (V1 SELECT query results).
 
     Note: With TypeQL 3.8.0+, FETCH queries include iid() and label() directly,
     so this function is primarily used for edge cases and backward compatibility.
@@ -503,17 +464,6 @@ class Database:
                         Credentials("admin", "password"),
                         driver_options,
                     )
-                try:
-                    _emit_server_deprecation_notice(
-                        lambda: _known_server_deprecation_notice(detected_server),
-                        stacklevel=4,
-                    )
-                except BaseException:
-                    try:
-                        created_driver.close()
-                    except BaseException:
-                        pass
-                    raise
                 self._driver = created_driver
                 self._owns_driver = True
                 self._transport_committed = True
@@ -603,7 +553,7 @@ class Database:
                     rust_close = getattr(rust_database, "close", None)
                     # Older test doubles and third-party compatibility shims
                     # may predate the explicit native-close seam. Real Rust
-                    # handles always expose it; legacy stand-ins remain safely
+                    # handles always expose it; V1 stand-ins remain safely
                     # releasable.
                     if callable(rust_close):
                         rust_close()
@@ -1140,15 +1090,6 @@ class TransactionContext:
             self._rust_finalized = True
             return
         self.transaction.rollback()
-
-    def manager(self, model_cls: Any):
-        """Get a TypeDBManager bound to this transaction."""
-        from type_bridge.models import Entity, Relation
-
-        if issubclass(model_cls, (Entity, Relation)):
-            return model_cls.manager(self)
-
-        raise TypeError("manager() expects an Entity or Relation subclass")
 
 
 # Type alias for unified connection type (includes proxy equivalents)

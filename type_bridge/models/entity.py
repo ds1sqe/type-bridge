@@ -13,12 +13,20 @@ from typing import (
 
 from pydantic import ConfigDict
 
-from type_bridge.attribute import Attribute, AttributeFlags, TypeFlags
+from type_bridge.attribute.base import _QueryAttribute as Attribute
+from type_bridge.attribute.flags import (
+    _QueryAttributeFlags as AttributeFlags,
+)
+from type_bridge.attribute.flags import (
+    _QueryTypeFlags as TypeFlags,
+)
 from type_bridge.crud.utils import unwrap_attribute
-from type_bridge.models.base import TypeDBType
+from type_bridge.models.base import _QueryTypeDBType as TypeDBType
 from type_bridge.models.utils import (
-    MatchClauseInfo,
-    ModelAttrInfo,
+    _QueryMatchClauseInfo as MatchClauseInfo,
+)
+from type_bridge.models.utils import (
+    _QueryModelAttrInfo as ModelAttrInfo,
 )
 
 if TYPE_CHECKING:
@@ -27,7 +35,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Type variable for self type
-E = TypeVar("E", bound="Entity")
+E = TypeVar("E", bound="_QueryEntity")
 
 
 @dataclass_transform(kw_only_default=True, field_specifiers=(AttributeFlags,))
@@ -82,25 +90,25 @@ class Entity(TypeDBType):
         super().__init_subclass__()
         logger.debug(f"Initializing Entity subclass: {cls.__name__}")
 
-        from type_bridge.models.schema_scanner import SchemaScanner
+        from type_bridge.models.schema_scanner import _QuerySchemaScanner as SchemaScanner
 
         scanner = SchemaScanner(cls)
         cls._owned_attrs = scanner.scan_attributes(is_relation=False)
 
-        from type_bridge.models.registry import ModelRegistry
+        from type_bridge.models.registry import _QueryModelRegistry as ModelRegistry
 
         ModelRegistry.register_attribute_owners(cls)
 
     @classmethod
-    def _get_base_type_class(cls) -> type[Entity]:
+    def _get_base_type_class(cls) -> type[_QueryEntity]:
         """Return Entity as the base type class for supertype resolution."""
-        return Entity
+        return _QueryEntity
 
     @classmethod
     def _get_manager_class(cls) -> type:
-        from type_bridge.crud import TypeDBManager
+        from type_bridge.crud.rust_manager import _QueryRustTypeDBManager
 
-        return TypeDBManager
+        return _QueryRustTypeDBManager
 
     @classmethod
     def to_schema_definition(cls) -> str | None:
@@ -333,7 +341,7 @@ class Entity(TypeDBType):
     def _unwrap_value(value: Any) -> Any:
         """Convert Attribute instances (or lists of them) to primitive values."""
         if isinstance(value, list):
-            return [Entity._unwrap_value(item) for item in value]
+            return [_QueryEntity._unwrap_value(item) for item in value]
         if isinstance(value, Attribute):
             return value.value
         return value
@@ -431,3 +439,7 @@ class Entity(TypeDBType):
             return f"{self.get_type_name()}({', '.join(all_parts)})"
         else:
             return f"{self.get_type_name()}()"
+
+
+_QueryEntity = Entity
+del Entity

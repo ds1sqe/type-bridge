@@ -2,13 +2,21 @@
 
 import pytest
 
-from type_bridge import Card, Entity, Flag, Integer, Key, Relation, Role, String, TypeFlags
-from type_bridge.expressions import RolePlayerExpr
-from type_bridge.fields.role import (
+from tests.utils.handwritten import (
+    Card,
+    Entity,
+    Flag,
+    Integer,
+    Key,
+    Relation,
+    Role,
     RolePlayerNumericFieldRef,
     RolePlayerStringFieldRef,
     RoleRef,
+    String,
+    TypeFlags,
 )
+from type_bridge.expressions import RolePlayerExpr
 
 
 # Test fixtures - define attribute and entity types

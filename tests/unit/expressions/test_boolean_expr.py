@@ -2,7 +2,7 @@
 
 import pytest
 
-from type_bridge import Integer, String
+from tests.utils.handwritten import Integer, String
 from type_bridge.expressions import BooleanExpr, ComparisonExpr
 
 

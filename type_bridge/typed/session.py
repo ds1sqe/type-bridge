@@ -11,14 +11,15 @@ from type_bridge_core import (
     MatchSessionHandle as _NativeSessionHandle,
 )
 from type_bridge_core import (
-    PyDescriptorRegistry as _NativeDescriptorRegistry,
+    _QueryDescriptorRegistry as _NativeDescriptorRegistry,
 )
 
 from type_bridge._rust_runtime import descriptor_for_model
-from type_bridge.fields.role import RoleRef, _typed_query_role_reference_owner
-from type_bridge.models.base import TypeDBType
-from type_bridge.models.entity import Entity
-from type_bridge.models.relation import Relation
+from type_bridge.fields.role import _QueryRoleRef as RoleRef
+from type_bridge.fields.role import _typed_query_role_reference_owner
+from type_bridge.models.base import _QueryTypeDBType as TypeDBType
+from type_bridge.models.entity import _QueryEntity as Entity
+from type_bridge.models.relation import _QueryRelation as Relation
 from type_bridge.session import Database, TransactionContext
 from type_bridge.typed.query import Query
 from type_bridge.typed.references import BoundVar, Predicate, Selection, _PlayerBinding

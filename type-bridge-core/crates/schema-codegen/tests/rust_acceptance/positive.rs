@@ -16,12 +16,78 @@ struct PersonGraph {
     events: Vec<Event>,
 }
 
+struct GeneratedLifecycleHook;
+
+impl type_bridge::LifecycleHook for GeneratedLifecycleHook {
+    fn name(&self) -> &str {
+        "generated-lifecycle"
+    }
+
+    fn before_operation<'a>(
+        &'a self,
+        context: &'a mut type_bridge::HookContext<'_>,
+    ) -> type_bridge::HookFuture<
+        'a,
+        std::result::Result<type_bridge::PreHookResult, type_bridge::HookError>,
+    > {
+        Box::pin(async move {
+            let _ = context.type_id_json();
+            let _ = context.type_name();
+            let _ = context.model_kind();
+            let _ = context.operation();
+            let _ = context.iid();
+            let _ = context.timestamp();
+            if let Some(input) = context.input() {
+                let _ = input.fields();
+                let _ = input.roles();
+            }
+            context.set_metadata("accepted", true);
+            Ok(type_bridge::PreHookResult::Continue)
+        })
+    }
+
+    fn after_operation<'a>(
+        &'a self,
+        context: &'a type_bridge::HookContext<'_>,
+    ) -> type_bridge::HookFuture<'a, std::result::Result<(), type_bridge::HookError>> {
+        Box::pin(async move {
+            let _ = context.metadata().get("accepted");
+            Ok(())
+        })
+    }
+}
+
+async fn generated_manager_mutation_parity_compiles(
+    database: &type_bridge::Database<AppSchema>,
+    person_iid: String,
+    person_input: PersonCreate,
+    employment_iid: String,
+    employment_input: EmploymentCreate,
+) -> type_bridge::Result<()> {
+    let mut people = database.entities::<Person>();
+    people.add_hook(std::sync::Arc::new(GeneratedLifecycleHook));
+    let _ = people
+        .update_many(vec![(person_iid.clone(), person_input)])
+        .await?;
+    people.delete_many(std::slice::from_ref(&person_iid)).await?;
+
+    let mut employments = database.relations::<Employment>();
+    employments.add_hook(std::sync::Arc::new(GeneratedLifecycleHook));
+    let _ = employments
+        .update_many(vec![(employment_iid.clone(), employment_input)])
+        .await?;
+    employments
+        .delete_many(std::slice::from_ref(&employment_iid))
+        .await
+}
+
 fn selected_shapes_compile(
     session: &type_bridge::QuerySession<'_, AppSchema>,
     person: type_bridge::Binding<AppSchema, Person>,
     event: type_bridge::Binding<AppSchema, Event>,
 ) -> type_bridge::Result<()> {
     let tuple = session.query((person, event))?;
+    let _ = tuple.allow_cross_join(person, event)?;
     let _ = tuple.count_by(person);
     let named = PersonEventRow::select(person, event)?;
     let named_query = session.query(named)?;
@@ -29,6 +95,11 @@ fn selected_shapes_compile(
     let graph = PersonGraph::select(person, event.collect().distinct())?;
     let graph_query = session.query(graph)?;
     let _ = graph_query.page_by(person, type_bridge::PageOptions::new(10));
+    let sixteen = session.query((
+        person, event, person, event, person, event, person, event, person, event, person, event,
+        person, event, person, event,
+    ))?;
+    let _ = sixteen.count_by(person);
     Ok(())
 }
 
@@ -50,13 +121,42 @@ fn bounded_reachability_compiles(
     Ok(())
 }
 
+fn polymorphic_role_binding_modes_compile(
+    database: &type_bridge::Database<AppSchema>,
+) -> type_bridge::Result<()> {
+    let mut session = database.query()?;
+    let actor = session.subtypes::<Actor>()?;
+    let interaction = session.exact::<Interaction>()?;
+    let predicate = interaction.role(InteractionType::actor).connects(actor)
+        & actor.field(ActorType::nickname).is_present();
+    let _ = session
+        .query(interaction)?
+        .match_(actor)?
+        .where_(predicate)?;
+    Ok(())
+}
+
 async fn reusable_read_context_compiles(
     database: &type_bridge::Database<AppSchema>,
 ) -> type_bridge::Result<()> {
     let read = database.read().await?;
     let mut session = read.query();
     let person = session.exact::<Person>()?;
+    let _ = session
+        .query(person)?
+        .where_(person.field(PersonType::score).is_present())?;
+    let _ = session.query(person)?.where_(person.iid("0x1"))?;
+    let _ = session
+        .query(person)?
+        .where_(person.iid_in(["0x1", "0x2"]))?;
     let query = session.query(person)?;
+    let tuple_field_grouped = query.group_by_fields((
+        person.field(PersonType::val_bool),
+        person.field(PersonType::score),
+    ))?;
+    let _: Vec<((ValBool, Score), (u64,))> = tuple_field_grouped
+        .aggregate((type_bridge::aggregate::count(),))
+        .await?;
     let _ = query.count().await?;
     let _ = query.exists().await?;
     let _ = query.count().await?;
@@ -119,6 +219,7 @@ async fn remote_generated_outputs_compile() -> type_bridge::Result<()> {
     let person = session.exact::<Person>()?;
     let event = session.exact::<Event>()?;
     let tuple = session.query((person, event))?;
+    let tuple = tuple.allow_cross_join(person, event)?;
     let _rows: Vec<(Person, Event)> =
         tuple.rows(type_bridge::RowsOptions::new(10)).await?;
     let graph = PersonGraph::select(person, event.collect())?;
@@ -157,9 +258,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let person_create = PersonCreate::new(
         vec![alias.clone(), alias.clone()],
+        None,
         identifier.clone(),
         Some(nickname),
         score.clone(),
+        None,
         v_bool.clone(),
         v_constrained.clone(),
         v_date.clone(),
@@ -231,6 +334,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let employment = EmploymentCreate::new(person_ref)?;
     assert_eq!(employment.employee().identifier().unwrap().value(), "person-1");
 
+    let plain_activity = PlainActivityCreate::new(person.reference())?;
+    assert_eq!(
+        plain_activity
+            .participant()
+            .identifier()
+            .unwrap()
+            .value(),
+        "person-1"
+    );
+
+    let counter = CounterCreate::new(CounterValue::new(1)?)?;
+    assert_eq!(counter.counter_value().value(), &1);
+
     let emp_row = HydratedRow::new(
         Employment::TYPE_ID_JSON,
         "emp-iid-1".to_owned(),
@@ -249,7 +365,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let stats = PlayerStats::try_new(Some("stable".to_owned()), 3);
     assert_eq!(*stats.wins(), 3);
-    assert_eq!(PLAYING_FACTS.len(), 8);
+    assert_eq!(PLAYING_FACTS.len(), 12);
     assert!(RUNTIME_PROJECTION_JSON.contains("validated-create-input"));
     assert!(MODEL_LINK_COMPONENTS.iter().any(|component| component.len() > 1));
     Ok(())

@@ -14,13 +14,17 @@ use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyString};
 use pythonize::{depythonize, pythonize};
 use serde_json::{Map, Value};
 use type_bridge_core_lib::version as core_version;
+use type_bridge_orm::_descriptor::{
+    EntityDescriptor, OwnedAttributeDescriptor, RelationDescriptor,
+};
+use type_bridge_orm::_manager::{DynamicEntityManager, DynamicRelationManager};
+use type_bridge_orm::_registry::DescriptorRegistry;
+use type_bridge_orm::_schema::{SchemaInfo, SchemaManager};
 use type_bridge_orm::session::backend::QueryResult;
 use type_bridge_orm::{
-    AttributeValue, DescriptorRegistry, DynamicAggregate, DynamicAttributeMap, DynamicComparisonOp,
-    DynamicEntityManager, DynamicEntityRow, DynamicExpr, DynamicRelationManager,
-    DynamicRelationRow, DynamicRolePlayerInput, DynamicSort, EntityDescriptor, Filter,
-    GivenRowsSpec, GivenValue, OrmError, ProviderRuntimeOwner, RelationDescriptor, SchemaInfo,
-    SortDir, TransactionContext, TxType, ValueType, require_legacy_writer_open_in_transaction,
+    AttributeValue, DynamicAggregate, DynamicAttributeMap, DynamicComparisonOp, DynamicEntityRow,
+    DynamicExpr, DynamicRelationRow, DynamicRolePlayerInput, DynamicSort, Filter, GivenRowsSpec,
+    GivenValue, OrmError, ProviderRuntimeOwner, SortDir, TransactionContext, TxType, ValueType,
 };
 
 fn drive_provider_future<F>(runtime: &ProviderRuntimeOwner, future: F) -> F::Output
@@ -66,7 +70,7 @@ where
 }
 
 /// Python-facing descriptor registry wrapper.
-#[pyclass]
+#[pyclass(name = "_QueryDescriptorRegistry", module = "type_bridge_core")]
 pub struct PyDescriptorRegistry {
     inner: Arc<DescriptorRegistry>,
 }
@@ -446,7 +450,7 @@ impl PyDynamicSort {
 }
 
 /// Build the TypeQL for a cross-type or narrowed attribute-owner lookup.
-#[pyfunction]
+#[pyfunction(name = "_query_build_has_lookup_query")]
 #[pyo3(signature = (kind, attr_name, expression=None, type_name=None))]
 fn build_has_lookup_query(
     kind: &str,
@@ -455,7 +459,7 @@ fn build_has_lookup_query(
     type_name: Option<&str>,
 ) -> PyResult<String> {
     let expression = expression.as_ref().map(|expr| expr.expr.clone());
-    type_bridge_orm::manager::query_builder::build_dynamic_has_lookup_query(
+    type_bridge_orm::_manager::query_builder::build_dynamic_has_lookup_query(
         kind,
         attr_name,
         expression.as_ref(),
@@ -605,11 +609,6 @@ impl PyRustDatabase {
         self.db.server_version().map(|version| version.to_string())
     }
 
-    /// Return the core-owned legacy-server notice for this connection.
-    fn server_deprecation_notice(&self) -> Option<String> {
-        self.db.server_deprecation_notice()
-    }
-
     /// Version-gate schema DDL that uses `@doc`/`@meta` annotations.
     ///
     /// Raises the versioned error when the TypeQL uses schema annotations
@@ -682,7 +681,7 @@ impl PyRustDatabase {
 
     /// Introspect the live TypeDB schema through the Rust schema manager.
     fn introspect_schema(&self, py: Python<'_>) -> PyResult<PyObject> {
-        let manager = type_bridge_orm::SchemaManager::new(self.db.as_ref());
+        let manager = SchemaManager::new(self.db.as_ref());
         let info = provider_block_on(py, self.runtime.as_ref(), manager.introspect())
             .map_err(py_orm_error)?;
         pythonize(py, &info)
@@ -726,17 +725,6 @@ impl PyRustTransactionContext {
 
 #[pymethods]
 impl PyRustTransactionContext {
-    /// Reject a TypeBridge-owned legacy writer before it mutates through this
-    /// already-open transaction.
-    fn require_legacy_writer_open(&self, py: Python<'_>) -> PyResult<()> {
-        provider_block_on(
-            py,
-            self.runtime.as_ref(),
-            require_legacy_writer_open_in_transaction(&self.context),
-        )
-        .map_err(py_orm_error)
-    }
-
     /// Execute a raw TypeQL query in this Rust transaction.
     fn execute(&self, py: Python<'_>, query: &str) -> PyResult<PyObject> {
         let query = query.to_owned();
@@ -790,7 +778,7 @@ impl PyRustTransactionContext {
 }
 
 /// Python-facing dynamic entity manager.
-#[pyclass]
+#[pyclass(name = "_QueryDynamicEntityManager", module = "type_bridge_core")]
 pub struct PyDynamicEntityManager {
     db: Option<Arc<type_bridge_orm::Database>>,
     tx: Option<TransactionContext>,
@@ -1027,7 +1015,7 @@ impl PyDynamicEntityManager {
 }
 
 /// Python-facing dynamic relation manager.
-#[pyclass]
+#[pyclass(name = "_QueryDynamicRelationManager", module = "type_bridge_core")]
 pub struct PyDynamicRelationManager {
     db: Option<Arc<type_bridge_orm::Database>>,
     tx: Option<TransactionContext>,
@@ -1328,7 +1316,7 @@ fn relation_attributes_from_py(
 }
 
 fn attributes_from_py(
-    descriptors: &[type_bridge_orm::OwnedAttributeDescriptor],
+    descriptors: &[OwnedAttributeDescriptor],
     value: Bound<'_, PyAny>,
 ) -> PyResult<DynamicAttributeMap> {
     if value.is_none() {
@@ -1346,7 +1334,7 @@ fn entity_attribute_list_from_py(
 }
 
 fn attribute_list_from_py(
-    descriptors: &[type_bridge_orm::OwnedAttributeDescriptor],
+    descriptors: &[OwnedAttributeDescriptor],
     value: Bound<'_, PyAny>,
 ) -> PyResult<Vec<DynamicAttributeMap>> {
     let value = py_to_json(value)?;
@@ -1360,7 +1348,7 @@ fn attribute_list_from_py(
 }
 
 fn attributes_from_json(
-    descriptors: &[type_bridge_orm::OwnedAttributeDescriptor],
+    descriptors: &[OwnedAttributeDescriptor],
     value: &Value,
 ) -> PyResult<DynamicAttributeMap> {
     let obj = value
@@ -1402,7 +1390,7 @@ fn relation_filters_from_py(
 }
 
 fn filters_from_py(
-    descriptors: &[type_bridge_orm::OwnedAttributeDescriptor],
+    descriptors: &[OwnedAttributeDescriptor],
     filters: Option<Bound<'_, PyAny>>,
 ) -> PyResult<Vec<Filter>> {
     let Some(filters) = filters else {
@@ -1494,7 +1482,7 @@ fn dynamic_sorts_from_py_list(sorts: Option<Bound<'_, PyList>>) -> PyResult<Vec<
 }
 
 fn aggregates_from_py(
-    descriptors: &[type_bridge_orm::OwnedAttributeDescriptor],
+    descriptors: &[OwnedAttributeDescriptor],
     aggregates: Bound<'_, PyAny>,
 ) -> PyResult<Vec<DynamicAggregate>> {
     let value = py_to_json(aggregates)?;
@@ -1535,7 +1523,7 @@ fn aggregates_from_py(
 }
 
 fn group_fields_from_py(
-    descriptors: &[type_bridge_orm::OwnedAttributeDescriptor],
+    descriptors: &[OwnedAttributeDescriptor],
     fields: Bound<'_, PyAny>,
 ) -> PyResult<Vec<String>> {
     let value = py_to_json(fields)?;

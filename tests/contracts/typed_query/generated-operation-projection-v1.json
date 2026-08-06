@@ -1,0 +1,19 @@
+{
+  "source_fixture": "identity-main",
+  "distinct_roots": [
+    "person:alice",
+    "person:bob"
+  ],
+  "page_by_person_offset_0_limit_1": {
+    "roots": [
+      "person:alice"
+    ],
+    "offset": 0,
+    "limit": 1,
+    "total": 2
+  },
+  "alice_collect_count": 3,
+  "alice_collect_distinct_count": 2,
+  "count_by_person": 2,
+  "exists_by_person": true
+}

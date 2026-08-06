@@ -3,7 +3,7 @@
 //! [`TypeDbStateStore`] persists the established migration projection and run
 //! log over the ORM [`Database`][type_bridge_orm::Database] seam. Its per-type
 //! bootstrap definitions are rendered from the canonical migration-state
-//! [`SchemaInfo`][type_bridge_orm::schema::SchemaInfo], and its row queries use
+//! [`SchemaInfo`][type_bridge_orm::_schema::SchemaInfo], and its row queries use
 //! the same semantic label constants. Existing labels, value types, keys, and
 //! storage behavior remain unchanged.
 //!
@@ -23,8 +23,8 @@ pub use type_bridge_contract::reserved::{
     LEGACY_CUTOVER_SENTINEL_MIGRATION_ID, LEGACY_CUTOVER_SENTINEL_NAME,
     LEGACY_WRITER_CUTOVER_MESSAGE,
 };
+use type_bridge_orm::_schema::{SchemaError, SchemaInfo};
 use type_bridge_orm::OrmError;
-use type_bridge_orm::schema::{SchemaError, SchemaInfo};
 use type_bridge_orm::session::backend::{BoxFuture, QueryResult, TxType};
 use type_bridge_orm::{
     Database, Transaction, TransactionContext,
@@ -243,6 +243,72 @@ impl TypeDbStateStore {
             (Ok(_), Err(cleanup)) => Err(cleanup),
             (Err(primary), Err(_)) => Err(primary),
         }
+    }
+
+    /// Read the frozen applied ledger without creating or repairing its schema.
+    ///
+    /// A completely absent legacy schema represents an empty history. A
+    /// partial schema is durable drift and fails closed. This is the Python
+    /// archival-reader boundary after the generated-only cutover.
+    pub async fn load_applied_archival(&self) -> Result<Vec<AppliedMigrationRecord>> {
+        if !self.archival_schema_is_complete().await? {
+            return Ok(Vec::new());
+        }
+        parse_applied_documents(&self.query_documents(&applied_query()).await?)
+    }
+
+    /// Read the frozen legacy run log without any schema bootstrap or repair.
+    pub async fn load_runs_archival(&self) -> Result<Vec<MigrationRunRecord>> {
+        if !self.archival_schema_is_complete().await? {
+            return Ok(Vec::new());
+        }
+        self.load_runs_documents().await
+    }
+
+    async fn archival_schema_is_complete(&self) -> Result<bool> {
+        let mut transaction = self.db.read_transaction().await.map_err(map_orm_error)?;
+        let inspected = legacy_state_schema_presence(&mut transaction)
+            .await
+            .map_err(legacy_sentinel_error_into_migration_error);
+        let closed = transaction.close().await.map_err(map_orm_error);
+        let presence = match (inspected, closed) {
+            (Ok(presence), Ok(())) => presence,
+            (Err(primary), Ok(())) => return Err(primary),
+            (Ok(_), Err(cleanup)) => return Err(cleanup),
+            (Err(primary), Err(_)) => return Err(primary),
+        };
+        match presence {
+            LegacyStateSchemaPresence::Absent => Ok(false),
+            LegacyStateSchemaPresence::Complete => Ok(true),
+            LegacyStateSchemaPresence::Partial => Err(MigrationError::State {
+                message: "the frozen legacy ledger schema is partially present".to_owned(),
+            }),
+        }
+    }
+
+    async fn load_runs_documents(&self) -> Result<Vec<MigrationRunRecord>> {
+        let query = format!(
+            "\nmatch\n$r isa {RUN_ENTITY},\n    has {RUN_ID} $run_id,\n    has {APP_LABEL} $app,\n    has {NAME} $name,\n    has {CHECKSUM} $checksum,\n    has {DIRECTION} $direction,\n    has {STATUS} $status,\n    has {STARTED_AT} $started;\nfetch {{\n    \"run_id\": $run_id,\n    \"app\": $app,\n    \"name\": $name,\n    \"checksum\": $checksum,\n    \"direction\": $direction,\n    \"status\": $status,\n    \"started\": $started\n}};\n"
+        );
+        let mut runs = parse_run_documents(&self.query_documents(&query).await?)?;
+
+        let finished_query = optional_run_field_query(FINISHED_AT, "finished");
+        let finished_docs = self.query_documents(&finished_query).await?;
+        merge_optional_run_field(&mut runs, &finished_docs, "finished_at", "finished");
+
+        let error_query = optional_run_field_query(ERROR, "error");
+        let error_docs = self.query_documents(&error_query).await?;
+        merge_optional_run_field(&mut runs, &error_docs, "error", "error");
+
+        let ip_query = optional_run_field_query(EXECUTOR_IP, "executor_ip");
+        let ip_docs = self.query_documents(&ip_query).await?;
+        merge_optional_run_field(&mut runs, &ip_docs, "executor_ip", "executor_ip");
+
+        let mac_query = optional_run_field_query(EXECUTOR_MAC, "executor_mac");
+        let mac_docs = self.query_documents(&mac_query).await?;
+        merge_optional_run_field(&mut runs, &mac_docs, "executor_mac", "executor_mac");
+
+        Ok(runs)
     }
 
     /// Read the complete released applied ledger through an already-retained
@@ -900,29 +966,7 @@ impl MigrationStateStore for TypeDbStateStore {
     fn load_runs(&self) -> BoxFuture<'_, Result<Vec<MigrationRunRecord>>> {
         Box::pin(async move {
             self.ensure_schema_for_read().await?;
-
-            let query = format!(
-                "\nmatch\n$r isa {RUN_ENTITY},\n    has {RUN_ID} $run_id,\n    has {APP_LABEL} $app,\n    has {NAME} $name,\n    has {CHECKSUM} $checksum,\n    has {DIRECTION} $direction,\n    has {STATUS} $status,\n    has {STARTED_AT} $started;\nfetch {{\n    \"run_id\": $run_id,\n    \"app\": $app,\n    \"name\": $name,\n    \"checksum\": $checksum,\n    \"direction\": $direction,\n    \"status\": $status,\n    \"started\": $started\n}};\n"
-            );
-            let mut runs = parse_run_documents(&self.query_documents(&query).await?)?;
-
-            let finished_query = optional_run_field_query(FINISHED_AT, "finished");
-            let finished_docs = self.query_documents(&finished_query).await?;
-            merge_optional_run_field(&mut runs, &finished_docs, "finished_at", "finished");
-
-            let error_query = optional_run_field_query(ERROR, "error");
-            let error_docs = self.query_documents(&error_query).await?;
-            merge_optional_run_field(&mut runs, &error_docs, "error", "error");
-
-            let ip_query = optional_run_field_query(EXECUTOR_IP, "executor_ip");
-            let ip_docs = self.query_documents(&ip_query).await?;
-            merge_optional_run_field(&mut runs, &ip_docs, "executor_ip", "executor_ip");
-
-            let mac_query = optional_run_field_query(EXECUTOR_MAC, "executor_mac");
-            let mac_docs = self.query_documents(&mac_query).await?;
-            merge_optional_run_field(&mut runs, &mac_docs, "executor_mac", "executor_mac");
-
-            Ok(runs)
+            self.load_runs_documents().await
         })
     }
 

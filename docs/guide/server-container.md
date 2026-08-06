@@ -3,7 +3,7 @@
 The TypeBridge container product is the V2-capable standalone query server:
 
 ```text
-ghcr.io/ds1sqe/type-bridge-server:2.0.0
+ghcr.io/ds1sqe/type-bridge-server:2.1.0
 ```
 
 The generated Rust SDK is source code, and `typedb/typedb:3.12.1` is an
@@ -16,13 +16,13 @@ Release notes record the accepted multi-platform digest. Prefer it for
 deployments:
 
 ```bash
-export TYPE_BRIDGE_SERVER_IMAGE='ghcr.io/ds1sqe/type-bridge-server@sha256:<digest-from-v2.0.0-release>'
+export TYPE_BRIDGE_SERVER_IMAGE='ghcr.io/ds1sqe/type-bridge-server@sha256:<digest-from-v2.1.0-release>'
 docker pull "$TYPE_BRIDGE_SERVER_IMAGE"
 ```
 
-The stable `2.0.0` tag points to the same digest. After acceptance, `2.0`,
+The stable `2.1.0` tag points to the same digest. After acceptance, `2.1`,
 `2`, and `latest` are aliases of that exact stable manifest. Candidate
-workflows validate `2.0.0-rc.0` bytes without publishing them by default and
+workflows validate `2.1.0-rc.0` bytes without publishing them by default and
 never move `latest`.
 
 Published platforms are `linux/amd64` and `linux/arm64`.
@@ -99,7 +99,7 @@ authority_mode = "managed"
 
 Supply `TYPEDB_USERNAME` and `TYPEDB_PASSWORD` at runtime. `managed`
 authority requires the complete migration-control partition and singleton;
-use `query_only` only for a database with neither V2 nor legacy migration
+use `query_only` only for a database with neither canonical nor archived migration
 controls.
 
 ## Health and version identity
@@ -113,7 +113,7 @@ docker run --rm "$TYPE_BRIDGE_SERVER_IMAGE" --version
 
 The image deliberately has no shell `HEALTHCHECK`. `/health.version` remains
 the frozen V1 compatibility value `1.5.11`, while `--version`, the exact tag,
-and the OCI version label report `2.0.0`.
+and the OCI version label report `2.1.0`.
 
 ## Verify supply-chain evidence
 
@@ -123,7 +123,7 @@ GitHub build-provenance attestations. With Cosign:
 ```bash
 cosign verify \
   --certificate-identity-regexp \
-    '^https://github.com/ds1sqe/type-bridge/.github/workflows/release.yml@refs/tags/v2[.]0[.]0$' \
+    '^https://github.com/ds1sqe/type-bridge/.github/workflows/release.yml@refs/tags/v2[.]1[.]0$' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   "$TYPE_BRIDGE_SERVER_IMAGE"
 ```

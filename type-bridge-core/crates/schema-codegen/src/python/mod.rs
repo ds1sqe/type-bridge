@@ -9,10 +9,14 @@ use crate::{GeneratedPackage, invalid};
 
 const RUNTIME_SOURCE: &[u8] = include_bytes!("runtime.py");
 const RUNTIME_STUB: &[u8] = include_bytes!("runtime.pyi");
+const QUERY_SOURCE: &[u8] = include_bytes!("query.py");
+const QUERY_STUB: &[u8] = include_bytes!("query.pyi");
 const PY_TYPED: &[u8] = b"";
 
 const RUNTIME_SOURCE_ID: &str = "typebridge.generator.python.runtime-source";
 const RUNTIME_STUB_ID: &str = "typebridge.generator.python.runtime-stub";
+const QUERY_SOURCE_ID: &str = "typebridge.generator.python.query-source";
+const QUERY_STUB_ID: &str = "typebridge.generator.python.query-stub";
 const PY_TYPED_ID: &str = "typebridge.generator.python.py-typed";
 
 /// Version-one Python package emitter.
@@ -38,12 +42,14 @@ impl PythonEmitter {
             CodeResourceDigest::from_bytes(PY_TYPED_ID, PY_TYPED)?,
             CodeResourceDigest::from_bytes(RUNTIME_SOURCE_ID, RUNTIME_SOURCE)?,
             CodeResourceDigest::from_bytes(RUNTIME_STUB_ID, RUNTIME_STUB)?,
+            CodeResourceDigest::from_bytes(QUERY_SOURCE_ID, QUERY_SOURCE)?,
+            CodeResourceDigest::from_bytes(QUERY_STUB_ID, QUERY_STUB)?,
         ];
         resources.sort_by(|left, right| left.id().cmp(right.id()));
         Ok(resources)
     }
 
-    /// Emit exactly eight deterministic files without filesystem mutation.
+    /// Emit exactly ten deterministic files without filesystem mutation.
     pub fn emit(&self, projection: &RuntimeProjection) -> Result<GeneratedPackage, Diagnostic> {
         let handlers = self.generator_handlers();
         let resources = self.code_resources()?;
@@ -57,6 +63,13 @@ impl PythonEmitter {
                 "projection target, handler, or resource evidence does not match this emitter",
             ));
         }
-        render::render(projection, RUNTIME_SOURCE, RUNTIME_STUB, PY_TYPED)
+        render::render(
+            projection,
+            RUNTIME_SOURCE,
+            RUNTIME_STUB,
+            QUERY_SOURCE,
+            QUERY_STUB,
+            PY_TYPED,
+        )
     }
 }

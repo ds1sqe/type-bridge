@@ -2,10 +2,10 @@
 
 TypeScript and Node SDK for the TypeBridge shared Rust semantic engine.
 
-This package is a boundary layer only. Descriptor validation, query
-construction, CRUD execution, hydration, and transaction behavior live in
-`type-bridge-orm`; the Node package loads the native module, marshals
-JavaScript values, and exposes TypeScript-friendly wrappers.
+This package is the runtime boundary used by bindings generated from a split
+schema YAML. CRUD, hydration, and query semantics live in the shared Rust
+engine; application model constructors, fields, roles, and managers come only
+from the generated package.
 
 ## Build
 
@@ -13,9 +13,10 @@ JavaScript values, and exposes TypeScript-friendly wrappers.
 npm run build
 ```
 
-The package entry is `dist/index.js`, with declarations emitted to
-`dist/index.d.ts`. The additive typed-query subpath resolves to
-`dist/typed/index.js` and `dist/typed/index.d.ts`.
+The package entry is `dist/public.js`, with declarations emitted to
+`dist/public.d.ts`. Generated packages consume the exported
+`./runtime-projection` subpath. The separately retained low-level Query V2 plan
+builder is exported from `./query-v2`.
 
 For local smoke runs after `cargo build -p type-bridge-node`, copy the built
 library to a `.node` file or point the loader at one:
@@ -42,50 +43,26 @@ Linux musl and processor architectures outside this list are not prebuilt.
 ## Public Surface
 
 ```ts
-import {
-  DescriptorRegistry,
-  Marshalling,
-  RustDatabase,
-  long,
-  string,
-} from "@type-bridge/node";
-
-const registry = new DescriptorRegistry();
-const person = registry.registerEntity({
-  type_name: "person",
-  is_abstract: false,
-  parent_type: null,
-  owned_attributes: [
-    {
-      field_name: "name",
-      attr_name: "person-name",
-      value_type: "string",
-      annotations: ["Key"],
-      is_optional: false,
-      is_ordered: false,
-    },
-    {
-      field_name: "age",
-      attr_name: "age",
-      value_type: "long",
-      annotations: [],
-      is_optional: true,
-      is_ordered: false,
-    },
-  ],
-});
-
-const attrs = { name: string("Alice"), age: long(42n) };
-new Marshalling().entityAttributes(person, attrs);
+import { RustDatabase } from "@type-bridge/node";
+import { Age, Person, PersonId } from "./generated/index.js";
 
 const db = RustDatabase.connect("127.0.0.1:1729", "example", {
   httpPort: 8000,
-  // Optional: skip HTTP probing when only gRPC is reachable.
   serverVersion: "3.11.5",
 });
-const manager = db.entityManager(person);
-manager.insert(attrs);
+const ada = Person.create({
+  personId: PersonId.create("ada"),
+  age: Age.create(36n),
+});
+Person.manager(db).put(ada);
+const adults = Person.manager(db)
+  .filter({ age__gte: Age.create(18n) })
+  .all();
 ```
+
+There is no runtime API for registering handwritten entity or relation
+descriptors. Change the schema YAML and regenerate the application package when
+the model changes.
 
 Scheme-free `host:port` addresses are recommended. Released matching URI forms
 remain accepted: `http://host:port` with disabled TLS and
@@ -122,48 +99,41 @@ Do not rely on a later synchronous `db.close()` call as the timeout mechanism.
 
 ## Immutable Typed Queries
 
-The additive `./typed` subpath builds owner-aware matches over the same model
-constructors. It does not replace the package-root managers or raw query
-surface:
+Schema generation emits immutable owner-aware query classes beside each
+application's generated models and tokens. The base package supplies the
+connection and verified runtime projection; it does not register handwritten
+model descriptors:
 
 ```ts
-import { Entity, Key, attr, field } from "@type-bridge/node";
-import { QuerySession, references } from "@type-bridge/node/typed";
+import { Person, QuerySession } from "./generated/app-models/index.js";
+import { RustDatabase } from "@type-bridge/node";
 
-class PersonName extends attr.String("person-name") {}
-class Person extends Entity("person", {
-  name: field(PersonName, Key),
-}) {}
-
+const db = RustDatabase.connect("localhost:1729", "example");
 const session = new QuerySession(db);
-const person = session.var(Person);
-const personRefs = references(Person);
+const person = session.exact(Person);
 
 const page = session.query(person).pageBy(person, {
-  limit: 25,
-  orderBy: [person.field(personRefs.fields.name).asc()],
+  limit: 25n,
+  orderBy: [person.field(Person.name).asc()],
   includeTotal: true,
 });
 ```
 
-Variables, bound fields and roles, predicates, orders, and queries retain
-opaque native handles. `references(Model)` returns frozen, owner-branded
-JavaScript reference tokens; resolving one against a variable creates the
-native field or role handle. The same immutable `Query` supports exact or
+Variables, generated field and role tokens, predicates, orders, and queries
+retain opaque native handles. The same immutable `Query` supports exact or
 subtype matching, 1–16 selected models, hidden graph witnesses,
-named/collected pages, distinct-root counts, and existence checks. Subtype
-queries must register constructors that JavaScript cannot discover with
-`session.registerModels(...)`. See the
+named/collected pages, distinct-root counts, and existence checks. Constructors
+and subtype closures come only from the installed generated projection. See the
 [typed-query guide](https://ds1sqe.github.io/type-bridge/guide/typed-queries/)
 for the complete contract and transaction rules.
 
 ## V2 Plan Authoring and Prepared Execution
 
-The additive `./query-v2` subpath exposes `QueryPlanBuilder`,
+The `./query-v2` subpath exposes `QueryPlanBuilder`,
 `AuthoredQueryPlan`, and `AuthoredQueryInvocation`. Every operation delegates
 to the shared Rust builder through opaque native handles; Node never assembles
-mutable plan JSON or owns a second validator. The `./typed` subpath also
-provides `RemoteQuerySession`, whose composition is synchronous and whose
+mutable plan JSON or owns a second validator. Generated query packages also
+provide `RemoteQuerySession`, whose composition is synchronous and whose
 awaited terminal performs exactly one caller-owned exchange.
 
 The package root retains the lower-level prepared-plan execution boundary for

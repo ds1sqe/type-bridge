@@ -220,7 +220,9 @@ fn v2_root_topology(plan: &QueryPlan) -> BTreeSet<(BindingId, BindingId)> {
 
 fn definite_v2_edges(pattern: &QueryPatternV2) -> BTreeSet<(BindingId, BindingId)> {
     match pattern {
-        QueryPatternV2::FieldValue { .. } => BTreeSet::new(),
+        QueryPatternV2::FieldValue { .. }
+        | QueryPatternV2::FieldPresence { .. }
+        | QueryPatternV2::BindingIid { .. } => BTreeSet::new(),
         QueryPatternV2::FieldComparison { left, right, .. } => {
             BTreeSet::from([canonical_topology_edge(left.binding(), right.binding())])
         }

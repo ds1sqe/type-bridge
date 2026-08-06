@@ -14,15 +14,19 @@ use serde_json::{Value, json};
 use type_bridge_core_lib::ast::{
     TypedFetchRows, TypedHydrateThings, TypedPageRematch, TypedRootScan,
 };
+use type_bridge_orm::_descriptor::{
+    EntityDescriptor, OwnedAttributeDescriptor, RelationDescriptor, RoleDescriptor,
+};
+use type_bridge_orm::_entity::Annotation;
+use type_bridge_orm::_registry::DescriptorRegistry;
 use type_bridge_orm::session::backend::{
     AnswerConsumer, AnswerControl, AnswerItem, BoundedAnswerLimits, BoundedAnswerReader,
     BoundedAnswerStats, BoxFuture, DriverBackend, QueryResult, TransactionOps,
 };
 use type_bridge_orm::{
-    Annotation, BindingId, BindingPair, CapabilitySet, Database, DescriptorRegistry,
-    EntityDescriptor, FetchShape, FetchSlot, MatchBinding, MatchExpr, MatchMode, MatchOperation,
-    MatchPlan, MatchRequest, MatchResult, OrmError, OwnedAttributeDescriptor, RelationDescriptor,
-    RoleDescriptor, RoleEdgeId, RowCardinality, SlotValue, ThingKind, TxType, ValueType, Window,
+    BindingId, BindingPair, CapabilitySet, Database, FetchShape, FetchSlot, MatchBinding,
+    MatchExpr, MatchMode, MatchOperation, MatchPlan, MatchRequest, MatchResult, OrmError,
+    RoleEdgeId, RowCardinality, SlotValue, ThingKind, TxType, ValueType, Window,
 };
 
 const FIXTURE_JSON: &str = include_str!(concat!(

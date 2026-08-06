@@ -118,15 +118,6 @@ class ProxyTransactionContext:
         """Rollback the active transaction."""
         self.transaction.rollback()
 
-    def manager(self, model_cls: Any) -> Any:
-        """Get a TypeDBManager bound to this proxy transaction."""
-        from type_bridge.crud import TypeDBManager
-        from type_bridge.models import Entity, Relation
-
-        if issubclass(model_cls, (Entity, Relation)):
-            return TypeDBManager(self.transaction, model_cls)
-        raise TypeError("manager() expects an Entity or Relation subclass")
-
 
 class ProxyDatabase:
     """Drop-in replacement for Database that routes queries through a type-bridge proxy server.

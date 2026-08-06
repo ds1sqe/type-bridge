@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import assert_type
 
-from type_bridge import Database, Entity, Relation, TransactionContext, TypeFlags
+from tests.utils.handwritten import Entity, Relation, TypeFlags
+from type_bridge.session import Database, TransactionContext
 from type_bridge.typed import Page, Query, QuerySession
 
 

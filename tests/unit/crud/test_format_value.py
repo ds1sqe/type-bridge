@@ -5,8 +5,7 @@ from decimal import Decimal
 
 import isodate
 
-from type_bridge import Integer, String
-from type_bridge.attribute import AttributeFlags
+from tests.utils.handwritten import AttributeFlags, Integer, String
 from type_bridge.crud.utils import format_value, is_multi_value_attribute
 
 

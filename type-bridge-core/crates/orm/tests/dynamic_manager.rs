@@ -6,9 +6,13 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use common::*;
-use type_bridge_orm::manager::query_builder;
+use type_bridge_orm::_manager::query_builder;
 use type_bridge_orm::session::backend::{BoxFuture, DriverBackend, QueryResult, TransactionOps};
 use type_bridge_orm::*;
+
+#[path = "support/internal.rs"]
+mod internal;
+use internal::*;
 
 #[derive(Debug, Default)]
 struct RecordingState {
@@ -128,6 +132,133 @@ fn dynamic_relation_exact_count_query_contrasts_inclusive() {
 }
 
 #[test]
+fn dynamic_relation_exact_scalar_queries_keep_filters_database_side() {
+    let expressions = [DynamicExpr::Compare {
+        attr_name: "salary".into(),
+        operator: DynamicComparisonOp::Gte,
+        value: AttributeValue::Long(100),
+    }];
+    let count = query_builder::build_dynamic_relation_expr_count_exact(
+        &employment_descriptor(),
+        &expressions,
+        "$r",
+    )
+    .unwrap();
+    let exists = query_builder::build_dynamic_relation_expr_exists_exact(
+        &employment_descriptor(),
+        &expressions,
+        "$r",
+    )
+    .unwrap();
+
+    assert!(count.contains("$r isa! employment"));
+    assert!(count.contains("$count = count($r)"));
+    assert!(!count.contains("fetch"));
+    assert!(exists.contains("$r isa! employment"));
+    assert!(exists.contains("limit 1"));
+    assert!(exists.contains("\"iid\": iid($r)"));
+    assert!(!exists.contains("$count = count($r)"));
+    assert!(!exists.contains("attributes"));
+}
+
+#[tokio::test]
+async fn dynamic_relation_exact_scalar_terminals_do_not_hydrate_models() {
+    let (backend, state) = RecordingBackend::new(vec![
+        RecordingResponse::Result(QueryResult::Rows(vec![serde_json::json!({"$count": 3})])),
+        RecordingResponse::Result(QueryResult::Documents(vec![serde_json::json!({
+            "malformed-model": true
+        })])),
+        RecordingResponse::Result(QueryResult::Documents(vec![])),
+    ]);
+    let db = Database::with_backend(Box::new(backend), "testdb");
+    let manager = DynamicRelationManager::new(&db, Arc::new(employment_descriptor()));
+    let expressions = [DynamicExpr::Compare {
+        attr_name: "salary".into(),
+        operator: DynamicComparisonOp::Gte,
+        value: AttributeValue::Long(100),
+    }];
+
+    assert_eq!(
+        manager.count_exact_with_query(&expressions).await.unwrap(),
+        3
+    );
+    assert!(manager.exists_exact_with_query(&expressions).await.unwrap());
+    assert!(!manager.exists_exact_with_query(&expressions).await.unwrap());
+
+    let state = state.lock().unwrap();
+    assert_eq!(state.opens, vec![TxType::Read, TxType::Read, TxType::Read]);
+    assert!(
+        state
+            .queries
+            .iter()
+            .all(|query| query.contains("isa! employment"))
+    );
+    assert!(state.queries[0].contains("$count = count($r)"));
+    assert!(!state.queries[0].contains("fetch"));
+    for query in &state.queries[1..] {
+        assert!(query.contains("limit 1"));
+        assert!(query.contains("\"iid\": iid($r)"));
+        assert!(!query.contains("attributes"));
+    }
+}
+
+#[tokio::test]
+async fn dynamic_relation_exact_first_limits_and_hydrates_only_one_row() {
+    let first = serde_json::json!({
+        "_iid": "0xabc",
+        "_type": "employment",
+        "attributes": {"position": [{"value": "Engineer"}]},
+        "_role_0_iid": "0x101",
+        "_role_0_type": "person",
+        "_role_0_attributes": {
+            "name": [{"value": "Alice"}],
+            "age": [{"value": 30}]
+        },
+        "_role_1_iid": "0x102",
+        "_role_1_type": "company",
+        "_role_1_attributes": {"name": [{"value": "Acme"}]}
+    });
+    let (backend, state) = RecordingBackend::new(vec![RecordingResponse::Result(
+        QueryResult::Documents(vec![first, serde_json::json!({"malformed": true})]),
+    )]);
+    let db = Database::with_backend(Box::new(backend), "testdb");
+    let row = DynamicRelationManager::new(&db, Arc::new(employment_descriptor()))
+        .first_exact_with_query(&[])
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(row.iid.as_deref(), Some("0xabc"));
+    let state = state.lock().unwrap();
+    assert_eq!(state.opens, vec![TxType::Read]);
+    assert_eq!(state.queries.len(), 1);
+    assert!(state.queries[0].contains("isa! employment"));
+    assert!(state.queries[0].contains("limit 1"));
+}
+
+#[tokio::test]
+async fn dynamic_relation_exact_delete_batch_rolls_back_on_second_failure() {
+    let (backend, state) = RecordingBackend::new(vec![
+        RecordingResponse::Result(QueryResult::Ok),
+        RecordingResponse::Error("second relation delete failed"),
+    ]);
+    let db = Database::with_backend(Box::new(backend), "testdb");
+    let manager = DynamicRelationManager::new(&db, Arc::new(employment_descriptor()));
+
+    assert!(matches!(
+        manager
+            .delete_many_by_iid_exact(&["0xaaa".into(), "0xbbb".into()])
+            .await,
+        Err(OrmError::QueryExecution(message)) if message == "second relation delete failed"
+    ));
+    let state = state.lock().unwrap();
+    assert_eq!(state.opens, vec![TxType::Write]);
+    assert_eq!(state.queries.len(), 2);
+    assert_eq!(state.commits, 0);
+    assert_eq!(state.rollbacks, 1);
+}
+
+#[test]
 fn dynamic_relation_exact_delete_query_contrasts_inclusive() {
     let d = employment_descriptor();
     let inclusive = query_builder::build_dynamic_relation_delete_by_iid(&d, "0x1", "$r").unwrap();
@@ -149,7 +280,7 @@ fn dynamic_relation_update_exact_attribute_builder_is_complete_and_strict() {
             OwnedAttributeDescriptor {
                 field_name: field.into(),
                 attr_name: name.into(),
-                value_type: type_bridge_orm::attribute::ValueType::String,
+                value_type: type_bridge_orm::_attribute::ValueType::String,
                 annotations: {
                     let mut a = Vec::new();
                     if key {
@@ -3322,7 +3453,7 @@ async fn dynamic_relation_new_methods_reuse_canonical_write_transaction() {
 
 #[test]
 fn dynamic_relation_identity_hydration_accepts_exact_direct_and_wrapped() {
-    use type_bridge_orm::manager::hydration::hydrate_dynamic_relation_identity;
+    use type_bridge_orm::_manager::hydration::hydrate_dynamic_relation_identity;
     let direct = serde_json::json!({"_iid":"0x1","_type":"employment"});
     let wrapped = serde_json::json!({"_iid":{"value":"0x2"},"_type":{"value":"contract"}});
     assert_eq!(
@@ -3343,7 +3474,7 @@ fn dynamic_relation_identity_hydration_accepts_exact_direct_and_wrapped() {
 
 #[test]
 fn dynamic_relation_identity_hydration_rejects_exact_malformed_matrix() {
-    use type_bridge_orm::manager::hydration::hydrate_dynamic_relation_identity;
+    use type_bridge_orm::_manager::hydration::hydrate_dynamic_relation_identity;
     let cases = [
         (
             serde_json::json!(null),
@@ -4235,6 +4366,36 @@ fn dynamic_entity_exact_count_query_contrasts_inclusive_target() {
 }
 
 #[test]
+fn dynamic_entity_exact_scalar_queries_keep_filters_database_side() {
+    let expressions = [DynamicExpr::Compare {
+        attr_name: "age".into(),
+        operator: DynamicComparisonOp::Gte,
+        value: AttributeValue::Long(18),
+    }];
+    let count = query_builder::build_dynamic_entity_expr_count_exact(
+        &person_descriptor(),
+        &expressions,
+        "$e",
+    )
+    .unwrap();
+    let exists = query_builder::build_dynamic_entity_expr_exists_exact(
+        &person_descriptor(),
+        &expressions,
+        "$e",
+    )
+    .unwrap();
+
+    assert!(count.contains("$e isa! person"));
+    assert!(count.contains("$count = count($e)"));
+    assert!(!count.contains("fetch"));
+    assert!(exists.contains("$e isa! person"));
+    assert!(exists.contains("limit 1"));
+    assert!(exists.contains("\"iid\": iid($e)"));
+    assert!(!exists.contains("$count = count($e)"));
+    assert!(!exists.contains("attributes"));
+}
+
+#[test]
 fn dynamic_entity_exact_update_query_contrasts_inclusive_target() {
     let inclusive = query_builder::build_dynamic_entity_update(
         &person_descriptor(),
@@ -4919,6 +5080,131 @@ async fn dynamic_entity_manager_exact_count_update_delete_use_strict_targets() {
     );
     assert!(state.queries[1].contains("iid 0xaaa"));
     assert!(state.queries[2].contains("iid 0xaaa"));
+}
+
+#[tokio::test]
+async fn dynamic_entity_exact_scalar_terminals_do_not_hydrate_models() {
+    let (backend, state) = RecordingBackend::new(vec![
+        RecordingResponse::Result(QueryResult::Rows(vec![serde_json::json!({"$count": 2})])),
+        RecordingResponse::Result(QueryResult::Documents(vec![serde_json::json!({
+            "malformed-model": true
+        })])),
+        RecordingResponse::Result(QueryResult::Documents(vec![])),
+    ]);
+    let db = Database::with_backend(Box::new(backend), "testdb");
+    let manager = DynamicEntityManager::new(&db, Arc::new(person_descriptor()));
+    let expressions = [DynamicExpr::Compare {
+        attr_name: "age".into(),
+        operator: DynamicComparisonOp::Gte,
+        value: AttributeValue::Long(18),
+    }];
+
+    assert_eq!(
+        manager.count_exact_with_query(&expressions).await.unwrap(),
+        2
+    );
+    assert!(manager.exists_exact_with_query(&expressions).await.unwrap());
+    assert!(!manager.exists_exact_with_query(&expressions).await.unwrap());
+
+    let state = state.lock().unwrap();
+    assert_eq!(state.opens, vec![TxType::Read, TxType::Read, TxType::Read]);
+    assert!(
+        state
+            .queries
+            .iter()
+            .all(|query| query.contains("isa! person"))
+    );
+    assert!(state.queries[0].contains("$count = count($e)"));
+    assert!(!state.queries[0].contains("fetch"));
+    for query in &state.queries[1..] {
+        assert!(query.contains("limit 1"));
+        assert!(query.contains("\"iid\": iid($e)"));
+        assert!(!query.contains("attributes"));
+    }
+}
+
+#[tokio::test]
+async fn dynamic_entity_exact_first_limits_and_hydrates_only_one_row() {
+    let first = serde_json::json!({
+        "_iid": "0xaaa",
+        "_type": "person",
+        "attributes": {
+            "name": [{"value": "Alice"}],
+            "age": [{"value": 30}]
+        }
+    });
+    let (backend, state) = RecordingBackend::new(vec![RecordingResponse::Result(
+        QueryResult::Documents(vec![first, serde_json::json!({"malformed": true})]),
+    )]);
+    let db = Database::with_backend(Box::new(backend), "testdb");
+    let row = DynamicEntityManager::new(&db, Arc::new(person_descriptor()))
+        .first_exact_with_query(&[])
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(row.iid.as_deref(), Some("0xaaa"));
+    let state = state.lock().unwrap();
+    assert_eq!(state.opens, vec![TxType::Read]);
+    assert_eq!(state.queries.len(), 1);
+    assert!(state.queries[0].contains("isa! person"));
+    assert!(state.queries[0].contains("limit 1"));
+}
+
+#[tokio::test]
+async fn dynamic_entity_exact_update_batch_rolls_back_on_missing_second_row() {
+    let first = serde_json::json!({
+        "_iid": "0xaaa",
+        "_type": "person",
+        "attributes": {
+            "name": [{"value": "Alice"}],
+            "age": [{"value": 31}]
+        }
+    });
+    let (backend, state) = RecordingBackend::new(vec![
+        RecordingResponse::Result(QueryResult::Ok),
+        RecordingResponse::Result(QueryResult::Documents(vec![first])),
+        RecordingResponse::Result(QueryResult::Ok),
+        RecordingResponse::Result(QueryResult::Documents(vec![])),
+    ]);
+    let db = Database::with_backend(Box::new(backend), "testdb");
+    let manager = DynamicEntityManager::new(&db, Arc::new(person_descriptor()));
+    let items = vec![
+        ("0xaaa".into(), person_attrs()),
+        ("0xbbb".into(), person_attrs()),
+    ];
+
+    assert!(matches!(
+        manager.update_many_and_get_exact(&items).await,
+        Err(OrmError::NotFound(message)) if message.contains("0xbbb")
+    ));
+    let state = state.lock().unwrap();
+    assert_eq!(state.opens, vec![TxType::Write]);
+    assert_eq!(state.queries.len(), 4);
+    assert_eq!(state.commits, 0);
+    assert_eq!(state.rollbacks, 1);
+}
+
+#[tokio::test]
+async fn dynamic_entity_exact_delete_batch_rolls_back_on_second_failure() {
+    let (backend, state) = RecordingBackend::new(vec![
+        RecordingResponse::Result(QueryResult::Ok),
+        RecordingResponse::Error("second delete failed"),
+    ]);
+    let db = Database::with_backend(Box::new(backend), "testdb");
+    let manager = DynamicEntityManager::new(&db, Arc::new(person_descriptor()));
+
+    assert!(matches!(
+        manager
+            .delete_many_by_iid_exact(&["0xaaa".into(), "0xbbb".into()])
+            .await,
+        Err(OrmError::QueryExecution(message)) if message == "second delete failed"
+    ));
+    let state = state.lock().unwrap();
+    assert_eq!(state.opens, vec![TxType::Write]);
+    assert_eq!(state.queries.len(), 2);
+    assert_eq!(state.commits, 0);
+    assert_eq!(state.rollbacks, 1);
 }
 
 #[tokio::test]

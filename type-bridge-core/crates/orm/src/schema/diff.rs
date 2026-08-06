@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::attribute::ValueType;
+use crate::_attribute::ValueType;
 
 use super::annotations;
 use super::info::{AttributeSchemaEntry, OwnedAttributeEntry, SchemaInfo};
@@ -1016,9 +1016,9 @@ fn diff_owned_attributes(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::attribute::ValueType;
-    use crate::entity::Annotation;
-    use crate::schema::info::*;
+    use crate::_attribute::ValueType;
+    use crate::_entity::Annotation;
+    use crate::_schema::info::*;
 
     type TestRoleSpec<'a> = (&'a str, Vec<&'a str>, Option<(u32, Option<u32>)>);
 

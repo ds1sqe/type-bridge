@@ -184,6 +184,48 @@ relations:
 }
 
 #[test]
+fn inherited_abstract_role_is_playable_only_below_its_declaring_scope() {
+    let schema = declared(
+        r#"format: typebridge.schema/v2
+entities:
+  actor: {}
+relations:
+  base-event:
+    relates:
+      participant: { abstract: true, card: 1 }
+  plain-event:
+    sub: base-event
+  specialized-event:
+    sub: base-event
+    relates:
+      actor: { as: participant, card: 1 }
+plays:
+  actor:
+    base-event: [participant]
+    specialized-event: [actor]
+"#,
+    );
+    let resolved = resolve(&schema, &profile()).expect("schema resolves");
+    let base_event = TypeId::new(TypeKind::Relation, "base-event").unwrap();
+    let plain_event = TypeId::new(TypeKind::Relation, "plain-event").unwrap();
+    let specialized_event = TypeId::new(TypeKind::Relation, "specialized-event").unwrap();
+    let participant = RoleId::new("base-event", "participant").unwrap();
+
+    let declared_role = &resolved.types()[&base_event].relates()[&participant];
+    assert!(declared_role.is_abstract());
+    assert!(declared_role.origin().is_direct());
+    assert!(!declared_role.accepts_players_at_effective_scope());
+    assert!(!resolved.types()[&base_event].is_constructible());
+
+    let inherited_role = &resolved.types()[&plain_event].relates()[&participant];
+    assert!(inherited_role.is_abstract());
+    assert!(!inherited_role.origin().is_direct());
+    assert!(inherited_role.accepts_players_at_effective_scope());
+    assert!(resolved.types()[&plain_event].is_constructible());
+    assert!(resolved.types()[&specialized_event].is_constructible());
+}
+
+#[test]
 fn specialized_roles_accept_only_explicit_effective_players() {
     let schema = declared(
         r#"format: typebridge.schema/v2

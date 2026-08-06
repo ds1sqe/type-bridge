@@ -1,6 +1,6 @@
 [package]
 name = "type-bridge-query"
-version = "2.0.1"
+version = "2.1.0"
 edition = "2024"
 description = "Validated query-plan analysis and lowering for type-bridge"
 license.workspace = true
@@ -10,8 +10,8 @@ authors.workspace = true
 publish = ["crates-io"]
 
 [dependencies]
-type-bridge-contract = { path = "../contract", version = "2.0.1" }
-type-bridge-schema = { path = "../schema", version = "2.0.1" }
+type-bridge-contract = { path = "../contract", version = "2.1.0" }
+type-bridge-schema = { path = "../schema", version = "2.1.0" }
 
 [lints]
 workspace = true

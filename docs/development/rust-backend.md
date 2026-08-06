@@ -1,48 +1,37 @@
-# Rust Backend
+# Rust semantic backend
 
-The Rust backend is the default ORM execution path. Python Pydantic models
-register runtime descriptors with the shared Rust ORM and route manager CRUD,
-query, hydration, and transaction operations through PyO3.
+Rust is the only semantic execution path for generated Python, TypeScript/Node,
+and Rust applications. Generated packages install canonical projection evidence
+and route CRUD, immutable queries, hydration, transactions, migration, and
+provider work through the shared engine.
 
-The Python ORM backend fallback was removed in #125 Phase 4. If
-`TYPE_BRIDGE_BACKEND` is set, only `rust` is accepted.
+There is no Python or Node ORM fallback. If `TYPE_BRIDGE_BACKEND` is supplied,
+only `rust` is accepted.
 
-Current Rust backend scope:
+The backend supports the exact operation set recorded in
+`tests/fixtures/generated-only-operation-parity-inventory.json`, including:
 
-- entity `insert`, `insert_many`, `update`, `update_many`, `put`, `put_many`,
-  `get`, `get_by_iid`, `all`, `count`, chainable
-  `filter(...).execute()/all()/first()/count()/delete()/update_with()/aggregate()`,
-  lookup filters, boolean/string/comparison expressions, ordering, pagination,
-  `group_by(...).aggregate()`, IID/key-based `delete`, and `delete_many`;
-- relation `insert`, `insert_many`, `update`, `update_many`, `put`, `put_many`,
-  `get`, `get_by_iid`, `all`, `count`, chainable
-  `filter(...).execute()/all()/first()/count()/delete()/update_with()/aggregate()`,
-  relation attribute filters, exact role-player filters, role-player
-  expressions, ordering, pagination, `group_by(...).aggregate()`, and delete;
-- Rust-backed `Database.transaction("write")` / `"read"` contexts for the
-  manager CRUD/query surface;
-- Python-owned lifecycle hooks for supported `insert`, `insert_many`, `update`,
-  `update_many`, `put`, `put_many`, and delete operations;
-- descriptor registration without an active manager or database.
+- generated entity and relation CRUD, batches, IID/key fallback, and hooks;
+- exact field, ownership, role-player, subtype, and scalar validation;
+- concise filters and immutable multi-model direct/remote queries;
+- rows, pages, count/existence, reducers, and grouping;
+- caller-owned transactions and exact generated hydration;
+- TypeDB 3.11/3.12 provider selection and fail-closed version checks.
 
-Phase 4 status as of 2026-06-04:
+Private dynamic managers and descriptors are execution machinery for verified
+generated projections. They are not a public target-language declaration API.
 
-- full Rust backend integration wrapper passes:
-  `TYPE_BRIDGE_BACKEND=rust UV_CACHE_DIR=/tmp/uv-cache ./test.sh --no-isolated`;
-- unit suite passes with the Rust backend as the selector default;
-- `typedb-driver` is no longer a default dependency. It remains in the
-  `dev` and `typedb-driver` extras for tests and direct Python driver APIs.
-
-Relation `get`, `get_by_iid`, and `all` hydrate role players from Rust dynamic
-relation rows, including repeated players for a role when TypeDB returns
-multiple rows for one relation IID.
-
-Rust backend validation should reuse the existing integration tests. The wrapper
-defaults to Rust:
+Run focused Rust tests while changing the engine, then generated cross-language
+acceptance and the live suite:
 
 ```bash
-./test.sh --no-isolated
+cd type-bridge-core
+cargo test -p type-bridge-orm
+cargo test -p type-bridge-schema-codegen
+cd ..
+./test.sh
 ```
 
-Python `TransactionContext` instances select a Rust-owned transaction adapter
-by default; raw Python driver transactions are not shared with Rust.
+Python `Database` and `TransactionContext` objects wrap Rust-owned handles. Raw
+Python-driver transactions are separate and cannot be shared with generated
+manager operations.

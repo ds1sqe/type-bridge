@@ -8,12 +8,11 @@
 //! | Symbol | Kind | Description |
 //! |--------|------|-------------|
 //! | `VersionError` | exception | Raised for window, band-mismatch, probe, and parse failures |
-//! | `min_supported_version` | function | Returns the floor as `"3.8.0"` |
+//! | `min_supported_version` | function | Returns the floor as `"3.11.0"` |
 //! | `max_supported_line` | function | Returns the ceiling line as `"3.12"` |
 //! | `band` | function | Protocol-band lookup; `None` for unmapped versions |
 //! | `check_supported` | function | Window + band gate (installed driver); raises `VersionError` on failure |
 //! | `check_server_supported` | function | Embedded-runtime gate (band-set membership); raises `VersionError` on failure |
-//! | `typedb_server_deprecation_notice` | function | Core-owned notice for a known or unknown legacy server |
 //! | `embedded_driver_version` | function | The band-8 typedb-driver version compiled into the Rust runtime (back-compat) |
 //! | `embedded_driver_versions` | function | All compiled-in driver versions as `{band: version}` dict |
 //! | `server_version` | function | HTTP probe → detected server version string |
@@ -92,7 +91,7 @@ impl PyCustomRootCaSnapshot {
 // Window accessors
 // ---------------------------------------------------------------------------
 
-/// Return the minimum supported TypeDB version as a string (`"3.8.0"`).
+/// Return the minimum supported TypeDB version as a string (`"3.11.0"`).
 ///
 /// This value is the floor of the declared compatibility window.
 #[pyfunction]
@@ -166,7 +165,7 @@ pub fn embedded_driver_version() -> &'static str {
 ///
 /// Returns a Python `dict` mapping `int` band → `str` version for every band
 /// feature compiled into this build.  The default build embeds all supported
-/// bands and returns `{7: "3.8.1", 8: "3.11.5", 9: "3.12.1"}`.  A
+/// bands and returns `{8: "3.11.5", 9: "3.12.1"}`.  A
 /// single-band build returns only the one entry for its compiled band — the
 /// dict is cfg-derived, never hardcoded (master-plan I6).
 ///
@@ -188,12 +187,12 @@ pub fn embedded_driver_versions(py: Python<'_>) -> PyResult<Py<PyDict>> {
 ///
 /// Uses band-set intersection: the server is accepted when any band it
 /// accepts connections from is compiled into this build. For the default
-/// build (all three bands embedded), any in-window server passes. Confirmed
+/// build (both retained bands embedded), any in-window server passes. Confirmed
 /// 3.12 servers normally negotiate native band 9, with band 8 retained for
 /// discovery/fallback.
 ///
 /// The embedded band set is derived from the cfg-gated
-/// `embedded_driver_versions()` — never a hardcoded `[7, 8, 9]` literal
+/// `embedded_driver_versions()` — never a hardcoded `[8, 9]` literal
 /// (master-plan I6).
 ///
 /// # Errors
@@ -213,31 +212,13 @@ pub fn check_server_supported(server: &str) -> PyResult<()> {
     core_version::check_server_supported(&s, &embedded_bands).map_err(to_py_err)
 }
 
-/// Return the core-owned legacy-server notice, when applicable.
-///
-/// `None` as the input represents the connected legacy fallback whose exact
-/// server version is unavailable. Supported 3.11/3.12 versions return
-/// `None`; malformed versions raise [`VersionError`].
-#[pyfunction(signature = (server=None))]
-pub fn typedb_server_deprecation_notice(server: Option<&str>) -> PyResult<Option<String>> {
-    match server {
-        Some(server) => {
-            let server = server.parse::<core_version::Version>().map_err(to_py_err)?;
-            Ok(core_version::known_server_deprecation_notice(&server))
-        }
-        None => Ok(Some(
-            core_version::unknown_legacy_fallback_deprecation_notice(),
-        )),
-    }
-}
-
 // ---------------------------------------------------------------------------
 // HTTP probe
 // ---------------------------------------------------------------------------
 
 /// Query the TypeDB HTTP API for the server version.
 ///
-/// Returns the detected version as a string (e.g. `"3.10.4"`).
+/// Returns the detected version as a string (e.g. `"3.12.1"`).
 ///
 /// The `address` is a gRPC-style address (`"host:1729"` or bare `"host"`).
 /// `http_port` defaults to `8000`; `tls` defaults to `False`.
@@ -298,14 +279,9 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(band, m)?)?;
     m.add_function(wrap_pyfunction!(check_supported, m)?)?;
     m.add_function(wrap_pyfunction!(check_server_supported, m)?)?;
-    m.add_function(wrap_pyfunction!(typedb_server_deprecation_notice, m)?)?;
     m.add_function(wrap_pyfunction!(embedded_driver_version, m)?)?;
     m.add_function(wrap_pyfunction!(embedded_driver_versions, m)?)?;
     m.add_function(wrap_pyfunction!(server_version, m)?)?;
     m.add("DEFAULT_HTTP_PORT", core_version::DEFAULT_HTTP_PORT)?;
-    m.add(
-        "TYPEDB_LEGACY_SERVER_DEPRECATION_CODE",
-        core_version::TYPEDB_LEGACY_SERVER_DEPRECATION_CODE,
-    )?;
     Ok(())
 }

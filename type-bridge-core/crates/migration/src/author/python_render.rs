@@ -9,9 +9,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use type_bridge_core_lib::bindgen::python_class_name;
-use type_bridge_orm::Annotation;
-use type_bridge_orm::schema::info::SchemaInfo;
+use type_bridge_core_lib::_bindgen::python_class_name;
+use type_bridge_orm::_entity::Annotation;
+use type_bridge_orm::_schema::info::SchemaInfo;
 
 use crate::spec::OperationSpec;
 
@@ -680,10 +680,10 @@ fn py_repr_dict(map: &BTreeMap<String, String>) -> String {
 mod tests {
     use std::collections::BTreeMap;
 
-    use type_bridge_orm::ValueType;
-    use type_bridge_orm::schema::info::{
+    use type_bridge_orm::_schema::info::{
         AttributeSchemaEntry, EntitySchemaEntry, OwnedAttributeEntry,
     };
+    use type_bridge_orm::ValueType;
 
     use super::*;
 
@@ -932,7 +932,7 @@ mod tests {
         let mut target = SchemaInfo::default();
         target.entities.insert(
             "person".to_string(),
-            type_bridge_orm::schema::info::EntitySchemaEntry {
+            type_bridge_orm::_schema::info::EntitySchemaEntry {
                 type_name: "person".to_string(),
                 is_abstract: false,
                 parent_type: None,

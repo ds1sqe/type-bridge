@@ -45,7 +45,7 @@
       "evidence": [
         {
           "path": "type-bridge-core/crates/schema-codegen/tests/rust_projection_live.rs",
-          "anchors": ["generated_rust_projection_round_trips_exact_live_models", "dependency-isolated client consumer starts", "test result: ok. 5 passed; 0 failed"]
+          "anchors": ["generated_rust_projection_round_trips_exact_live_models", "dependency-isolated client consumer starts", "test result: ok. {} passed; 0 failed", "CONSUMER_TESTS.len()"]
         }
       ]
     },
@@ -189,18 +189,14 @@
       "status": "accepted_live",
       "python": [
         {
-          "path": "tests/integration/crud/entities/test_insert.py",
-          "anchors": ["test_insert_many", "manager.insert_many"]
-        },
-        {
-          "path": "tests/integration/crud/entities/test_bulk_operations.py",
-          "anchors": ["test_update_many", "test_delete_many_instances"]
+          "path": "tests/integration/schema/test_generated_projection_live.py",
+          "anchors": ["person_manager.insert_many(batch_people)", "person_manager.put_many(batch_people)", "person_manager.update(person)", "person_manager.delete(transaction_person)"]
         }
       ],
       "node": [
         {
-          "path": "type-bridge-core/crates/node/tests/integration/typed/entity-crud.test.ts",
-          "anchors": ["insert, getByIid, get, all, count, and delete"]
+          "path": "type-bridge-core/crates/node/tests/projection-integration/generated-package-live.test.ts",
+          "anchors": ["personManager.insertMany(batchPeople)", "personManager.putMany(insertedBatch)", "personManager.update", "personManager.delete(transactionPersonIid)"]
         }
       ],
       "rust": [
@@ -217,14 +213,14 @@
       "status": "accepted_live",
       "python": [
         {
-          "path": "tests/integration/crud/test_polymorphic_queries.py",
-          "anchors": ["subtype"]
+          "path": "tests/integration/schema/test_generated_projection_live.py",
+          "anchors": ["query_session.subtypes(generated.Party)", "generated.Employee", "generated.Manager"]
         }
       ],
       "node": [
         {
-          "path": "type-bridge-core/crates/node/tests/integration/typed/inheritance.test.ts",
-          "anchors": ["inherited and child-local fields", "getByIid round-trips inherited"]
+          "path": "type-bridge-core/crates/node/tests/projection-integration/generated-package-live.test.ts",
+          "anchors": ["querySession.subtypes(Party)", "[Employee.typeKey, Manager.typeKey]"]
         }
       ],
       "rust": [
@@ -241,22 +237,14 @@
       "status": "accepted_live",
       "python": [
         {
-          "path": "tests/integration/crud/attributes/test_multi_value.py",
-          "anchors": ["multi"]
-        },
-        {
-          "path": "tests/integration/crud/attributes/test_datetimetz.py",
-          "anchors": ["datetime"]
+          "path": "tests/integration/schema/test_generated_projection_live.py",
+          "anchors": ["generated.Aliases(\"alpha\")", "generated.ValDatetimeTz", "generated.ValDecimal", "stored_person.aliases"]
         }
       ],
       "node": [
         {
-          "path": "type-bridge-core/crates/node/tests/integration/crud/attributes.test.ts",
-          "anchors": ["all 9 primitives"]
-        },
-        {
-          "path": "type-bridge-core/crates/node/tests/integration/typed/multivalue.test.ts",
-          "anchors": ["insert with 3 tags"]
+          "path": "type-bridge-core/crates/node/tests/projection-integration/generated-package-live.test.ts",
+          "anchors": ["Aliases.create(\"alpha\")", "ValDatetimeTz.create", "ValDecimal.create", "storedPerson.aliases"]
         }
       ],
       "rust": [
@@ -273,18 +261,14 @@
       "status": "accepted_live",
       "python": [
         {
-          "path": "tests/integration/crud/relations/test_multi_role.py",
-          "anchors": ["role"]
-        },
-        {
-          "path": "tests/integration/crud/test_complex_relations.py",
-          "anchors": ["relation"]
+          "path": "tests/integration/schema/test_generated_projection_live.py",
+          "anchors": ["network_manager.put(network)", "network_manager.update(network)", "participant=[person, batch_people[0]]", "generated.EventRef(event.iid)"]
         }
       ],
       "node": [
         {
-          "path": "type-bridge-core/crates/node/tests/integration/typed/relation-crud.test.ts",
-          "anchors": ["insert by key fallback", "repeated role merge"]
+          "path": "type-bridge-core/crates/node/tests/projection-integration/generated-package-live.test.ts",
+          "anchors": ["networkManager.put", "networkManager.update", "participant: [insertedPerson, insertedBatch[0]]", "Event.reference(insertedEvent.iid, {})"]
         }
       ],
       "rust": [
@@ -301,18 +285,14 @@
       "status": "accepted_live",
       "python": [
         {
-          "path": "tests/integration/queries/test_expressions.py",
-          "anchors": ["test_complex_boolean", "test_not_logic"]
-        },
-        {
-          "path": "tests/integration/queries/test_pagination.py",
-          "anchors": ["test_query_first_method", "test_query_count_method"]
+          "path": "tests/integration/schema/test_generated_projection_live.py",
+          "anchors": ["identifier_field.starts_with", "~identifier_field.neq", "offset=1", "all_people_query.first"]
         }
       ],
       "node": [
         {
-          "path": "type-bridge-core/crates/node/tests/integration/typed/query-expressions.test.ts",
-          "anchors": ["orderBy + offset + limit", "count and exists"]
+          "path": "type-bridge-core/crates/node/tests/projection-integration/generated-package-live.test.ts",
+          "anchors": ["identifierField.startsWith", "identifierField.ne(identifierValue).not()", "offset: 1n", "allPeopleQuery.first"]
         }
       ],
       "rust": [
@@ -329,20 +309,20 @@
       "status": "accepted_live",
       "python": [
         {
-          "path": "tests/integration/queries/test_expressions.py",
-          "anchors": ["test_single_aggregation", "test_group_by_single_field"]
+          "path": "tests/integration/schema/test_generated_projection_live.py",
+          "anchors": ["generated.aggregate.count()", "generated.aggregate.median(score_field)", "direct_tuple_field_grouped = all_people_query.group_by(", ".group_by(person_var, aggregate_employment_var)"]
         }
       ],
       "node": [
         {
-          "path": "type-bridge-core/crates/node/tests/integration/typed/query-aggregates.test.ts",
-          "anchors": ["median and std", "groupBy returns"]
+          "path": "type-bridge-core/crates/node/tests/projection-integration/generated-package-live.test.ts",
+          "anchors": ["aggregate.count()", "aggregate.median(scoreField)", "directTupleFieldGroupedAggregate = allPeopleQuery", ".groupBy(personVariable, eventVariable)"]
         }
       ],
       "rust": [
         {
           "path": "type-bridge-core/crates/schema-codegen/tests/rust_projection_live/consumer.rs",
-          "anchors": ["generated_relation_query_and_remote_lifecycle", "aggregate::count()", "score.mean()", "role-grouped"]
+          "anchors": ["generated_relation_query_and_remote_lifecycle", "aggregate::count()", "score.mean()", ".group_by_fields((val_bool, score))", "role-grouped"]
         }
       ],
       "release_exclusion": null
@@ -353,14 +333,14 @@
       "status": "accepted_live",
       "python": [
         {
-          "path": "tests/integration/queries/test_typed_query_executor.py",
-          "anchors": ["test_typed_pages_count_exists_and_named_collections"]
+          "path": "tests/integration/schema/test_generated_projection_live.py",
+          "anchors": ["network_session.query_as", ".collect()", ".distinct()", ".page_by("]
         }
       ],
       "node": [
         {
-          "path": "type-bridge-core/crates/node/tests/integration/typed/query-v2.test.ts",
-          "anchors": ["named collected pages deduplicate roots"]
+          "path": "type-bridge-core/crates/node/tests/projection-integration/generated-package-live.test.ts",
+          "anchors": ["queryNamed({ person: personVariable })", "collectedPersonVariable.collect().distinct()", ".pageBy(personVariable"]
         }
       ],
       "rust": [
@@ -377,14 +357,14 @@
       "status": "accepted_live",
       "python": [
         {
-          "path": "tests/integration/queries/test_typed_query_executor.py",
-          "anchors": ["test_typed_bounded_reachability_depths_cycles_and_shared_subtrees"]
+          "path": "tests/integration/schema/test_generated_projection_live.py",
+          "anchors": ["network_session.reachable", "remote_session.reachable", ".allow_cross_join(cross_left, cross_right)"]
         }
       ],
       "node": [
         {
-          "path": "type-bridge-core/crates/node/tests/integration/typed/query-v2.test.ts",
-          "anchors": ["bounded reachability preserves subtype hydration across cycles and shared subtrees"]
+          "path": "type-bridge-core/crates/node/tests/projection-integration/generated-package-live.test.ts",
+          "anchors": ["querySession.reachable", "remoteSession.reachable", ".allowCrossJoin(crossLeft, crossRight)"]
         }
       ],
       "rust": [
@@ -405,18 +385,14 @@
       "status": "accepted_live",
       "python": [
         {
-          "path": "tests/integration/queries/test_typed_query_executor.py",
-          "anchors": ["test_typed_borrowed_read_context_survives_multiple_terminals"]
+          "path": "tests/integration/schema/test_generated_projection_live.py",
+          "anchors": ["generated rollback sentinel", "generated.Person.manager(transaction)", "generated.Person.query(transaction)"]
         }
       ],
       "node": [
         {
-          "path": "type-bridge-core/crates/node/tests/integration/transactions/commit_rollback.test.ts",
-          "anchors": ["rollback isolation", "commit durability"]
-        },
-        {
-          "path": "type-bridge-core/crates/node/tests/integration/typed/query-v2.test.ts",
-          "anchors": ["borrowed read contexts remain reusable"]
+          "path": "type-bridge-core/crates/node/tests/projection-integration/generated-package-live.test.ts",
+          "anchors": ["rollbackTransaction.rollback()", "Person.manager(writeTransaction)", "new QuerySession(readTransaction)"]
         }
       ],
       "rust": [
@@ -433,14 +409,14 @@
       "status": "accepted_live",
       "python": [
         {
-          "path": "tests/integration/queries/test_remote_query_session_parity.py",
-          "anchors": ["test_public_remote_query_session_matches_direct_subtype_hydration"]
+          "path": "tests/integration/schema/test_generated_projection_live.py",
+          "anchors": ["generated.RemoteQuerySession", "remote_people.one()", "remote_people.page_by(", "remote_named_network.participants"]
         }
       ],
       "node": [
         {
-          "path": "type-bridge-core/crates/node/tests/integration/queries/typed-remote-query-parity.test.ts",
-          "anchors": ["public remote model query matches local"]
+          "path": "type-bridge-core/crates/node/tests/projection-integration/generated-package-live.test.ts",
+          "anchors": ["new RemoteQuerySession", "remoteDirectQuery.one()", ".pageBy(remotePerson", "remoteNamed.person.iid"]
         }
       ],
       "rust": [
@@ -491,8 +467,8 @@
       ],
       "node": [
         {
-          "path": "type-bridge-core/crates/node/tests/compat/legacy-package/run.cjs",
-          "anchors": ["packed consumer passed"]
+          "path": "type-bridge-core/crates/node/tests/projection-integration/generated-package-live.test.ts",
+          "anchors": ["emit_typescript_acceptance", "node_modules/@type-bridge", "dist/index.js"]
         }
       ],
       "rust": [
@@ -531,8 +507,8 @@
           "path": "test.sh",
           "anchors": [
             "TLS generated Rust application parity",
-            "TLS Python and packed Node remote model parity",
-            "TLS Node remote model subtype hydration"
+            "TLS generated Python application parity",
+            "TLS generated Node application parity"
           ]
         }
       ]

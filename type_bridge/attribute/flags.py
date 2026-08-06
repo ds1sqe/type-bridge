@@ -109,11 +109,11 @@ def format_type_name(class_name: str, case: TypeNameCase) -> str:
         >>> format_type_name("PersonName", TypeNameCase.SNAKE_CASE)
         'person_name'
     """
-    if case == TypeNameCase.LOWERCASE:
+    if case == _QueryTypeNameCase.LOWERCASE:
         return class_name.lower()
-    elif case == TypeNameCase.CLASS_NAME:
+    elif case == _QueryTypeNameCase.CLASS_NAME:
         return class_name
-    elif case == TypeNameCase.SNAKE_CASE:
+    elif case == _QueryTypeNameCase.SNAKE_CASE:
         return _to_snake_case(class_name)
     else:
         # Default to lowercase for unknown cases
@@ -278,7 +278,7 @@ class AttributeFlags:
     card_max: int | None = None
     has_explicit_card: bool = False  # Track if Card(...) was explicitly used
     name: str | None = None  # Override attribute type name explicitly
-    case: "TypeNameCase | None" = None  # Case formatting for type name
+    case: "_QueryTypeNameCase | None" = None  # Case formatting for type name
     doc: str | None = None  # TypeDB 3.12+ @doc("...") annotation
     meta: dict[str, str] = field(default_factory=dict)  # TypeDB 3.12+ @meta annotations
 
@@ -352,27 +352,27 @@ def Flag(*annotations: Any) -> Annotated[Any, AttributeFlags]:
             tags: list[Tag] = Flag(Card(min=2))       # @card(2..)
             jobs: list[Job] = Flag(Card(1, 5))        # @card(1..5)
     """
-    flags = AttributeFlags()
+    flags = _QueryAttributeFlags()
     has_card = False
 
     for ann in annotations:
-        if ann is Key:
+        if ann is _QueryKey:
             flags.is_key = True
-        elif ann is Unique:
+        elif ann is _QueryUnique:
             flags.is_unique = True
-        elif ann is Ordered:
+        elif ann is _QueryOrdered:
             flags.is_ordered = True
-        elif ann is Distinct:
+        elif ann is _QueryDistinct:
             flags.is_distinct = True
-        elif isinstance(ann, Card):
+        elif isinstance(ann, _QueryCard):
             # Extract cardinality from Card instance
             flags.card_min = ann.min
             flags.card_max = ann.max
             flags.has_explicit_card = True
             has_card = True
-        elif isinstance(ann, Doc):
+        elif isinstance(ann, _QueryDoc):
             flags.doc = ann.text
-        elif isinstance(ann, Meta):
+        elif isinstance(ann, _QueryMeta):
             flags.meta[ann.key] = ann.value
 
     # Distinct requires Ordered: the TypeDB list form (`owns attr[]`) is the
@@ -389,3 +389,30 @@ def Flag(*annotations: Any) -> Annotated[Any, AttributeFlags]:
         flags.card_max = 1
 
     return flags
+
+
+# Retained V1 query execution uses these private identities. The handwritten
+# declaration spellings are intentionally absent from the module namespace.
+_QueryKey = Key
+_QueryUnique = Unique
+_QueryOrdered = Ordered
+_QueryDistinct = Distinct
+_QueryDoc = Doc
+_QueryMeta = Meta
+_QueryTypeNameCase = TypeNameCase
+_QueryTypeFlags = TypeFlags
+_QueryCard = Card
+_QueryAttributeFlags = AttributeFlags
+_query_flag = Flag
+
+del Key
+del Unique
+del Ordered
+del Distinct
+del Doc
+del Meta
+del TypeNameCase
+del TypeFlags
+del Card
+del AttributeFlags
+del Flag

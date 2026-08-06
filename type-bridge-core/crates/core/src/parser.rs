@@ -1,6 +1,6 @@
 //! Winnow-based parser for TypeQL `define` blocks.
 //!
-//! Converts TypeQL schema text into [`TypeSchema`](crate::schema::TypeSchema) structs.
+//! Converts TypeQL schema text into [`TypeSchema`](crate::_schema::TypeSchema) structs.
 
 use std::collections::BTreeMap;
 
@@ -9,7 +9,7 @@ use winnow::error::ContextError;
 use winnow::prelude::*;
 use winnow::token::{literal, take_until, take_while};
 
-use crate::schema::{
+use crate::_schema::{
     AttributeType, Cardinality, EntityType, FunctionType, OwnedAttribute, Parameter, PlayedRole,
     RelationType, ReturnType, ReturnTypeItem, RoleSpec, SchemaError, StructField, StructType,
     TypeSchema,

@@ -7,11 +7,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
-use type_bridge_core_lib::schema as core_schema;
+use type_bridge_core_lib::_schema as core_schema;
 
-use crate::attribute::ValueType;
-use crate::descriptor::{OwnedAttributeDescriptor, TypeDescriptor};
-use crate::entity::Annotation;
+use crate::_attribute::ValueType;
+use crate::_descriptor::{OwnedAttributeDescriptor, TypeDescriptor};
+use crate::_entity::Annotation;
 
 use super::diff::SchemaDiff;
 use super::error::SchemaError;
@@ -747,7 +747,7 @@ fn register_attribute_types(info: &mut SchemaInfo, attributes: &[OwnedAttributeD
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::descriptor::{
+    use crate::_descriptor::{
         EntityDescriptor, OwnedAttributeDescriptor, RelationDescriptor, RoleDescriptor,
     };
 

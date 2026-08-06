@@ -70,7 +70,7 @@ def raise_missing_typedb_driver() -> None:
 
 
 def _load_tls_config() -> Any:
-    """Import and return ``DriverTlsConfig`` from a band-8+ typedb driver.
+    """Import and return ``DriverTlsConfig`` from a supported typedb driver.
 
     Isolated so tests can patch ``type_bridge.typedb_driver._load_tls_config``
     without needing a real band-8/band-9 driver installed.
@@ -117,12 +117,11 @@ def create_driver_options(
     *,
     tls_root_ca: str | os.PathLike[str] | None = None,
 ) -> DriverOptions:
-    """Create TypeDB driver options using explicit band-keyed dispatch.
+    """Create TypeDB driver options for the retained driver lines.
 
-    The same band map that drives the version gate drives option construction:
-    band-7 drivers (3.8/3.10) use the keyword form
-    ``DriverOptions(is_tls_enabled=…)``; band-8 (3.11) and band-9 (3.12)
-    drivers use the positional ``DriverOptions(tls_config)`` form.
+    The same band map that drives the version gate drives option construction.
+    Supported 3.11 and 3.12 drivers both use the positional
+    ``DriverOptions(tls_config)`` form.
 
     Args:
         is_tls_enabled: Whether to enable TLS for the driver connection.
@@ -144,11 +143,7 @@ def create_driver_options(
     installed = driver_version()
     b = _ensure_driver_interpreter_supported(installed)
 
-    if b == 7:
-        if root_ca_path is not None:
-            return DriverOptions(is_tls_enabled=True, tls_root_ca_path=root_ca_path)
-        return DriverOptions(is_tls_enabled=is_tls_enabled)
-    elif b in (8, 9):
+    if b in (8, 9):
         driver_tls_config = _load_tls_config()
         if root_ca_path is not None:
             tls_config = driver_tls_config.enabled_with_root_ca(root_ca_path)
@@ -157,26 +152,26 @@ def create_driver_options(
         else:
             tls_config = driver_tls_config.disabled()
         return DriverOptions(tls_config)
-    else:
-        import type_bridge.version as _version  # local import avoids circular dependency
 
-        min_v = _version.min_supported_version()
-        max_l = _version.max_supported_line()
-        if sys.version_info >= (3, 14):
-            remediation = (
-                "Install `type-bridge[typedb-driver]` (driver 3.12.1 on "
-                "CPython 3.14) and target TypeDB 3.12."
-            )
-        else:
-            remediation = (
-                "Install `type-bridge[typedb-driver]` and select a driver line "
-                "accepted by the target server."
-            )
-        raise _version.UnsupportedVersionError(
-            f"Installed typedb-driver {installed!r} has no known protocol band; "
-            f"supported driver lines fall in {min_v}–{max_l}.x. "
-            f"{remediation}"
+    import type_bridge.version as _version  # local import avoids circular dependency
+
+    min_v = _version.min_supported_version()
+    max_l = _version.max_supported_line()
+    if sys.version_info >= (3, 14):
+        remediation = (
+            "Install `type-bridge[typedb-driver]` (driver 3.12.1 on "
+            "CPython 3.14) and target TypeDB 3.12."
         )
+    else:
+        remediation = (
+            "Install `type-bridge[typedb-driver]` and select a driver line "
+            "accepted by the target server."
+        )
+    raise _version.UnsupportedVersionError(
+        f"Installed typedb-driver {installed!r} has no known protocol band; "
+        f"supported driver lines fall in {min_v}–{max_l}.x. "
+        f"{remediation}"
+    )
 
 
 def driver_version() -> str:
@@ -207,7 +202,7 @@ def embedded_driver_versions() -> dict[int, str]:
     """Return all driver versions compiled into the Rust runtime, keyed by band.
 
     Delegates to ``type_bridge_core.embedded_driver_versions``.  The default
-    build returns ``{7: "3.8.1", 8: "3.11.5", 9: "3.12.1"}``; a
+    build returns ``{8: "3.11.5", 9: "3.12.1"}``; a
     single-band build returns only the one entry for its compiled band.
     """
     return _core.embedded_driver_versions()
@@ -234,7 +229,7 @@ def server_version(
             probe. The root path does not enable TLS implicitly.
 
     Returns:
-        Version string reported by the server (e.g. ``"3.10.4"``).
+        Version string reported by the server (e.g. ``"3.12.1"``).
 
     Raises:
         type_bridge_core.VersionError: When the endpoint is unreachable or the

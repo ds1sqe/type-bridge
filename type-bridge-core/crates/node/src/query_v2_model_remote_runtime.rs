@@ -23,8 +23,9 @@ use type_bridge_orm::{
 };
 
 use crate::match_runtime::{
-    NodeMatchBindingHandle, NodeMatchOrderHandle, NodeMatchQueryHandle, NodeMatchResultContext,
-    NodeValidatedMatchResultHandle, napi_match_error, order_handles, parse_cardinality,
+    NodeMatchBindingHandle, NodeMatchFieldHandle, NodeMatchOrderHandle, NodeMatchQueryHandle,
+    NodeMatchResultContext, NodeValidatedMatchResultHandle, borrow_reduce_terms, napi_match_error,
+    order_handles, parse_cardinality, reduce_terms,
 };
 use crate::query_v2_runtime::{
     NodeQueryV2Authority, bounded_response_snapshot, napi_error, non_shared_buffer,
@@ -247,6 +248,68 @@ pub fn query_v2_prepare_remote_model_exists(
     let request = query
         .inner()
         .validate_exists_by(root.inner())
+        .map_err(crate::napi_orm_error)?;
+    prepare_pending(query, context, request)
+}
+
+/// Prepare one typed ungrouped or grouped reduction over a distinct root.
+#[napi(js_name = "queryV2PrepareRemoteModelReduce")]
+pub fn query_v2_prepare_remote_model_reduce(
+    query: &NodeMatchQueryHandle,
+    context: &NodeRemoteModelQueryContext,
+    root: &NodeMatchBindingHandle,
+    group: Option<&NodeMatchBindingHandle>,
+    reducers: Vec<String>,
+    inputs: Vec<Option<Reference<NodeMatchFieldHandle>>>,
+) -> napi::Result<NodePendingRemoteModelQuery> {
+    let terms = reduce_terms(&reducers, &inputs)?;
+    let terms = borrow_reduce_terms(&terms);
+    let request = query
+        .inner()
+        .validate_reduce_by(
+            root.inner(),
+            group.map(NodeMatchBindingHandle::inner),
+            &terms,
+        )
+        .map_err(crate::napi_orm_error)?;
+    prepare_pending(query, context, request)
+}
+
+/// Prepare one typed reduction grouped by a projected owned field.
+#[napi(js_name = "queryV2PrepareRemoteModelReduceByField")]
+pub fn query_v2_prepare_remote_model_reduce_by_field(
+    query: &NodeMatchQueryHandle,
+    context: &NodeRemoteModelQueryContext,
+    root: &NodeMatchBindingHandle,
+    group: &NodeMatchFieldHandle,
+    reducers: Vec<String>,
+    inputs: Vec<Option<Reference<NodeMatchFieldHandle>>>,
+) -> napi::Result<NodePendingRemoteModelQuery> {
+    let terms = reduce_terms(&reducers, &inputs)?;
+    let terms = borrow_reduce_terms(&terms);
+    let request = query
+        .inner()
+        .validate_reduce_by_field(root.inner(), group.inner(), &terms)
+        .map_err(crate::napi_orm_error)?;
+    prepare_pending(query, context, request)
+}
+
+/// Prepare one typed reduction grouped by an ordered tuple of projected owned fields.
+#[napi(js_name = "queryV2PrepareRemoteModelReduceByFields")]
+pub fn query_v2_prepare_remote_model_reduce_by_fields(
+    query: &NodeMatchQueryHandle,
+    context: &NodeRemoteModelQueryContext,
+    root: &NodeMatchBindingHandle,
+    groups: Vec<Reference<NodeMatchFieldHandle>>,
+    reducers: Vec<String>,
+    inputs: Vec<Option<Reference<NodeMatchFieldHandle>>>,
+) -> napi::Result<NodePendingRemoteModelQuery> {
+    let groups = groups.iter().map(|group| group.inner()).collect::<Vec<_>>();
+    let terms = reduce_terms(&reducers, &inputs)?;
+    let terms = borrow_reduce_terms(&terms);
+    let request = query
+        .inner()
+        .validate_reduce_by_fields(root.inner(), &groups, &terms)
         .map_err(crate::napi_orm_error)?;
     prepare_pending(query, context, request)
 }

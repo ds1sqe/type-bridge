@@ -9,10 +9,11 @@ use std::sync::Arc;
 use pyo3::exceptions::{PyIndexError, PyRuntimeError};
 use pyo3::prelude::*;
 use pythonize::pythonize;
+use type_bridge_orm::_registry::DescriptorRegistry;
 use type_bridge_orm::{
-    AttributeValue, DescriptorId, DescriptorRegistry, FetchShape, HydratedAttribute, HydratedRole,
-    HydratedRolePlayer, HydratedThing, MatchOperation, MatchResult, MatchRow, ReducedValue,
-    ReductionRow, SlotValue, ThingKind, ValidatedMatchRequest, ValidatedMatchResult, Window,
+    AttributeValue, DescriptorId, FetchShape, HydratedAttribute, HydratedRole, HydratedRolePlayer,
+    HydratedThing, MatchOperation, MatchResult, MatchRow, ReducedValue, ReductionRow, SlotValue,
+    ThingKind, ValidatedMatchRequest, ValidatedMatchResult, Window,
 };
 
 use crate::match_runtime::py_match_error;
@@ -111,6 +112,22 @@ impl ValidatedResultProof {
                 },
                 MatchResult::Reduction { root, group, rows },
             ) if root == expected_root && group == expected_group => Ok(rows),
+            (
+                MatchOperation::ReduceByField {
+                    root: expected_root,
+                    group: expected_group,
+                    ..
+                },
+                MatchResult::FieldReduction { root, group, rows },
+            ) if root == expected_root && group == expected_group => Ok(rows),
+            (
+                MatchOperation::ReduceByFields {
+                    root: expected_root,
+                    groups: expected_groups,
+                    ..
+                },
+                MatchResult::FieldTupleReduction { root, groups, rows },
+            ) if root == expected_root && groups == expected_groups => Ok(rows),
             _ => Err(access_error(
                 "validated reduction handle contains a non-reduction or foreign result",
             )),
@@ -400,6 +417,25 @@ impl PyValidatedMatchResultHandle {
             path,
         })
     }
+
+    fn reduction_group_value(&self, py: Python<'_>, row: usize) -> PyResult<PyObject> {
+        let value = self
+            .proof
+            .reduction_row(row)?
+            .field_group()
+            .ok_or_else(|| access_error("reduction row carries no field group evidence"))?;
+        attribute_value_to_py(py, value)
+    }
+
+    fn reduction_group_values(&self, py: Python<'_>, row: usize) -> PyResult<Vec<PyObject>> {
+        self.proof
+            .reduction_row(row)?
+            .field_groups()
+            .ok_or_else(|| access_error("reduction row carries no tuple field group evidence"))?
+            .iter()
+            .map(|value| attribute_value_to_py(py, value))
+            .collect()
+    }
 }
 
 #[pyclass(name = "ValidatedMatchRowHandle", frozen)]
@@ -468,9 +504,19 @@ impl PyValidatedMatchSlotHandle {
 
 #[pyclass(name = "ValidatedMatchThingHandle", frozen)]
 #[derive(Clone)]
-struct PyValidatedMatchThingHandle {
+pub(crate) struct PyValidatedMatchThingHandle {
     proof: Arc<ValidatedResultProof>,
     path: ThingPath,
+}
+
+impl PyValidatedMatchThingHandle {
+    pub(crate) fn hydrated(&self) -> PyResult<&HydratedThing> {
+        self.proof.thing(self.path)
+    }
+
+    pub(crate) fn descriptor_type_name(&self, descriptor: &DescriptorId) -> PyResult<String> {
+        self.proof.descriptor_type_name(descriptor)
+    }
 }
 
 #[pymethods]
@@ -697,13 +743,15 @@ mod tests {
     use type_bridge_core_lib::ast::{
         TypedFetchRows, TypedHydrateThings, TypedPageRematch, TypedRootScan,
     };
+    use type_bridge_orm::_descriptor::{EntityDescriptor, OwnedAttributeDescriptor};
+    use type_bridge_orm::_entity::Annotation;
+    use type_bridge_orm::_registry::DescriptorRegistry;
     use type_bridge_orm::session::backend::{
         AnswerConsumer, AnswerControl, AnswerItem, BoundedAnswerLimits, BoundedAnswerReader,
         BoundedAnswerStats, BoxFuture, DriverBackend, QueryResult, TransactionOps, TxType,
     };
     use type_bridge_orm::{
-        Annotation, Database, DescriptorRegistry, EntityDescriptor, OrmError,
-        OwnedAttributeDescriptor, Reduction, RowCardinality, SessionHandle, ValueType, Window,
+        Database, OrmError, Reduction, RowCardinality, SessionHandle, ValueType, Window,
     };
 
     use super::*;

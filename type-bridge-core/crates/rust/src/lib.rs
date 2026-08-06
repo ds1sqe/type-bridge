@@ -13,6 +13,7 @@ pub mod aggregate;
 mod entity_codec;
 mod entity_manager;
 pub mod error;
+pub mod hooks;
 pub mod model;
 mod query;
 #[allow(dead_code)]
@@ -25,12 +26,18 @@ mod transaction;
 pub mod value;
 
 pub use entity_manager::{EntityManager, EntitySubtypeManager};
-pub use error::{Error, ErrorCategory, ModelValidationPhase, Result};
+pub use error::{
+    Error, ErrorCategory, ErrorDetail, ErrorDiagnostic, ErrorPathSegment, ModelValidationPhase,
+    Result,
+};
+pub use hooks::{
+    CrudOperation, HookContext, HookError, HookFuture, LifecycleHook, ModelKind, PreHookResult,
+};
 pub use query::{
-    Binding, BoundField, BoundRole, Collected, Exact, GroupedQuery, NamedSelection, Order,
-    OrderedOperand, Page, PageOptions, Predicate, Query, QueryOperand, QuerySession, RowsOptions,
-    Selectable, SelectedRowSpec, SelectedShape, SelectedSlot, SelectionMode, SingularSelectedShape,
-    Subtypes,
+    Binding, BoundField, BoundRole, Collected, Exact, FieldGroupedQuery, GroupedQuery,
+    NamedSelection, Order, OrderedOperand, Page, PageOptions, Predicate, Query, QueryOperand,
+    QuerySession, RowsOptions, Selectable, SelectedRowSpec, SelectedShape, SelectedSlot,
+    SelectionMode, SingularSelectedShape, Subtypes,
 };
 pub use relation_manager::{RelationManager, RelationSubtypeManager};
 pub use remote::{

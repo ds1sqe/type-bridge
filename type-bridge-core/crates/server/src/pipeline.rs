@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
+use type_bridge_core_lib::_schema::TypeSchema;
 use type_bridge_core_lib::ast::Clause;
 use type_bridge_core_lib::compiler::QueryCompiler;
-use type_bridge_core_lib::schema::TypeSchema;
 use type_bridge_core_lib::validation::ValidationEngine;
 
 use crate::error::PipelineError;

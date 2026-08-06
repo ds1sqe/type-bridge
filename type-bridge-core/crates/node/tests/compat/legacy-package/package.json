@@ -1,9 +1,0 @@
-{
-  "name": "type-bridge-legacy-package-compat-consumer",
-  "version": "0.0.0",
-  "private": true,
-  "type": "commonjs",
-  "dependencies": {
-    "@type-bridge/node": "*"
-  }
-}

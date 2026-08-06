@@ -95,16 +95,16 @@ enum MigrationCommand {
         #[arg(long)]
         environment: String,
     },
-    /// Adopt a completed legacy (v1) history as the canonical genesis.
+    /// Adopt a completed archived V1 history as the canonical genesis.
     Adopt {
         /// The manifest environment holding the migrated v1 database.
         #[arg(long)]
         environment: String,
-        /// Directory containing the completed legacy migration files.
+        /// Directory containing the completed archived migration files.
         #[arg(long)]
-        legacy_directory: PathBuf,
+        archive_directory: PathBuf,
         /// Migration name recorded for the zero-operation bridge manifest.
-        #[arg(long, default_value = "0000_legacy_frontier")]
+        #[arg(long, default_value = "0000_archive_frontier")]
         name: String,
     },
 }
@@ -231,13 +231,13 @@ fn run(cli: &Cli) -> Result<(), String> {
             }
             MigrationCommand::Adopt {
                 environment,
-                legacy_directory,
+                archive_directory,
                 name,
             } => run_connected(
                 &workspace,
                 environment,
                 ConnectedAction::Adopt {
-                    legacy_directory: legacy_directory.clone(),
+                    archive_directory: archive_directory.clone(),
                     name: name.clone(),
                 },
             ),
@@ -537,7 +537,7 @@ enum ConnectedAction {
     },
     Verify,
     Adopt {
-        legacy_directory: PathBuf,
+        archive_directory: PathBuf,
         name: String,
     },
 }
@@ -626,13 +626,17 @@ async fn run_connected_async(
         .ensure_supported_by(&execution_capability_vocabulary().map_err(display)?)
         .map_err(display)?;
 
-    // Validate the name and capture one immutable legacy-history authority
+    // Validate the name and capture one immutable archive-history authority
     // before creating the canonical directory or resolving credentials.
     let prepared_adoption = match &action {
         ConnectedAction::Adopt {
-            legacy_directory,
+            archive_directory,
             name,
-        } => Some(prepare_legacy_adoption(workspace, legacy_directory, name)?),
+        } => Some(prepare_archive_adoption(
+            workspace,
+            archive_directory,
+            name,
+        )?),
         ConnectedAction::Apply { .. } | ConnectedAction::Verify => None,
     };
 
@@ -915,7 +919,7 @@ async fn run_connected_async(
                 Ok(
                     type_bridge_schema_migration_typedb::MigrationDirectoryApplyOutcome::UpToDate,
                 ) => {
-                    println!("legacy history is already adopted; the bridged ledger is current");
+                    println!("archive history is already adopted; the bridged ledger is current");
                     Ok(())
                 }
                 Ok(
@@ -924,7 +928,7 @@ async fn run_connected_async(
                     ),
                 ) => {
                     println!(
-                        "adopted the legacy history\n  genesis: {}\n  bridge: {}",
+                        "adopted the archive history\n  genesis: {}\n  bridge: {}",
                         migration_directory
                             .display_path()
                             .join(type_bridge_schema_compat::ADOPTED_GENESIS_FILE_NAME)
@@ -947,7 +951,7 @@ async fn run_connected_async(
     }
 }
 
-struct PreparedLegacyAdoption {
+struct PreparedArchiveAdoption {
     history: type_bridge_migration::LegacyAdoptionHistory,
     reconstructed: type_bridge_migration::VerifiedLegacyHead,
     authority: type_bridge_schema_compat::AdoptedGenesisAuthority,
@@ -956,24 +960,24 @@ struct PreparedLegacyAdoption {
     bridge_bytes: Vec<u8>,
 }
 
-/// Validate and derive every filesystem authority from one retained legacy
+/// Validate and derive every filesystem authority from one retained archive
 /// history capture. This function performs no canonical-directory writes.
-fn prepare_legacy_adoption(
+fn prepare_archive_adoption(
     workspace: &TypeBridgeWorkspace,
-    legacy_directory: &std::path::Path,
+    archive_directory: &std::path::Path,
     name: &str,
-) -> Result<PreparedLegacyAdoption, String> {
+) -> Result<PreparedArchiveAdoption, String> {
     // Validate the caller-controlled name before loading history or creating
     // the configured canonical directory.
     let migration_name =
         type_bridge_contract::migration::MigrationName::new(name.to_owned()).map_err(display)?;
     let bridge_name = format!("{}.tbmigration.json", migration_name.as_str());
     let history =
-        type_bridge_migration::load_adoption_history(legacy_directory).map_err(|error| {
-            format!("legacy migration directory failed the checked adoption loader: {error}")
+        type_bridge_migration::load_adoption_history(archive_directory).map_err(|error| {
+            format!("archive migration directory failed the checked adoption loader: {error}")
         })?;
     let reconstructed = type_bridge_migration::reconstruct_legacy_head(&history)
-        .map_err(|error| format!("legacy head reconstruction failed: {error}"))?;
+        .map_err(|error| format!("archive head reconstruction failed: {error}"))?;
     let authority = type_bridge_schema_compat::parse_adopted_genesis_authority(
         type_bridge_contract::schema::DocumentId::new("legacy-head-snapshot.typeql")
             .map_err(display)?,
@@ -1005,9 +1009,9 @@ fn prepare_legacy_adoption(
     history
         .require_unchanged_head(&reconstructed)
         .map_err(|error| {
-            format!("legacy migration directory changed during adoption preparation: {error}")
+            format!("archive migration directory changed during adoption preparation: {error}")
         })?;
-    Ok(PreparedLegacyAdoption {
+    Ok(PreparedArchiveAdoption {
         history,
         reconstructed,
         authority,
@@ -1021,7 +1025,7 @@ fn prepare_legacy_adoption(
 /// using live state as publication authority.
 async fn verify_prepared_adoption_live(
     managed: &type_bridge_orm::Database,
-    prepared: &PreparedLegacyAdoption,
+    prepared: &PreparedArchiveAdoption,
 ) -> Result<(), String> {
     let export = managed
         .schema_text()
@@ -1030,7 +1034,7 @@ async fn verify_prepared_adoption_live(
     prepared
         .history
         .require_unchanged_head(&prepared.reconstructed)
-        .map_err(|error| format!("legacy adoption history changed during live export: {error}"))?;
+        .map_err(|error| format!("archive adoption history changed during live export: {error}"))?;
     let expected_internal = type_bridge_schema_compat::released_typeql_to_declared_projection(
         type_bridge_contract::schema::DocumentId::new("managed-fence-schema.typeql")
             .map_err(display)?,
@@ -1053,7 +1057,7 @@ async fn verify_prepared_adoption_live(
         || live.released_extension_identity() != prepared.authority.released_extension_identity()
     {
         return Err(
-            "live managed schema differs from the independently verified legacy-head snapshot"
+            "live managed schema differs from the independently verified archive-head snapshot"
                 .to_owned(),
         );
     }
@@ -1069,7 +1073,7 @@ async fn verify_prepared_adoption_live(
 fn publish_prepared_adoption(
     workspace: &TypeBridgeWorkspace,
     migration_directory: &type_bridge_workspace::MigrationDirectoryAuthority,
-    prepared: &PreparedLegacyAdoption,
+    prepared: &PreparedArchiveAdoption,
 ) -> Result<PathBuf, String> {
     publish_prepared_adoption_with_after_bridge(workspace, migration_directory, prepared, || {})
 }
@@ -1077,7 +1081,7 @@ fn publish_prepared_adoption(
 fn publish_prepared_adoption_with_after_bridge<F>(
     workspace: &TypeBridgeWorkspace,
     migration_directory: &type_bridge_workspace::MigrationDirectoryAuthority,
-    prepared: &PreparedLegacyAdoption,
+    prepared: &PreparedArchiveAdoption,
     after_bridge: F,
 ) -> Result<PathBuf, String>
 where
@@ -1102,7 +1106,7 @@ where
             && existing != genesis_bytes
         {
             return Err(format!(
-                "{genesis_name} already exists but differs from the verified legacy-head snapshot"
+                "{genesis_name} already exists but differs from the verified archive-head snapshot"
             ));
         }
         let bridge_already_published =
@@ -1143,7 +1147,7 @@ where
             .history
             .require_unchanged_head(&prepared.reconstructed)
             .map_err(|error| {
-                format!("legacy adoption history changed before pair publication: {error}")
+                format!("archive adoption history changed before pair publication: {error}")
             })?;
 
         if !bridge_already_published {
@@ -1157,14 +1161,14 @@ where
             .history
             .require_unchanged_head(&prepared.reconstructed)
             .map_err(|error| {
-                format!("legacy adoption history changed before genesis publication: {error}")
+                format!("archive adoption history changed before genesis publication: {error}")
             })?;
         genesis_created = publish_authority(directory, genesis_name, genesis_bytes)?;
         prepared
             .history
             .require_unchanged_head(&prepared.reconstructed)
             .map_err(|error| {
-                format!("legacy adoption history changed after pair publication: {error}")
+                format!("archive adoption history changed after pair publication: {error}")
             })?;
         workspace
             .discover_migrations_in(migration_directory)
@@ -1890,12 +1894,12 @@ mod adoption_file_tests {
     #[test]
     fn invalid_adoption_name_creates_no_canonical_directory() {
         let (directory, workspace) = adoption_workspace();
-        let missing_legacy = directory.path().join("missing-legacy");
+        let missing_archive = directory.path().join("missing-legacy");
         let error = run_connected(
             &workspace,
             "dev",
             ConnectedAction::Adopt {
-                legacy_directory: missing_legacy,
+                archive_directory: missing_archive,
                 name: String::new(),
             },
         )
@@ -1939,7 +1943,7 @@ mod adoption_file_tests {
         for orphan in ["genesis", "bridge"] {
             let (directory, workspace) = adoption_workspace();
             let legacy = write_legacy_fixture(directory.path());
-            let prepared = prepare_legacy_adoption(&workspace, &legacy, "0000_legacy_frontier")
+            let prepared = prepare_archive_adoption(&workspace, &legacy, "0000_archive_frontier")
                 .expect("adoption prepares");
             let migration_directory = workspace
                 .ensure_migration_directory()
@@ -1988,7 +1992,7 @@ mod adoption_file_tests {
     fn legacy_history_race_after_bridge_rolls_back_new_publication() {
         let (directory, workspace) = adoption_workspace();
         let legacy = write_legacy_fixture(directory.path());
-        let prepared = prepare_legacy_adoption(&workspace, &legacy, "0000_legacy_frontier")
+        let prepared = prepare_archive_adoption(&workspace, &legacy, "0000_archive_frontier")
             .expect("adoption prepares");
         let migration_directory = workspace
             .ensure_migration_directory()

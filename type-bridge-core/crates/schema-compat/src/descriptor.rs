@@ -13,7 +13,7 @@ use type_bridge_contract::schema::{
     SourceSpan, SubFact, SubFactId, TypeFact, ValueFact, ValueFactId,
 };
 use type_bridge_contract::value::{CanonicalString, CanonicalValue, Cardinality, ValueTypeTag};
-use type_bridge_core_lib::schema::TypeSchema;
+use type_bridge_core_lib::_schema::TypeSchema;
 use type_bridge_schema::FactAssembler;
 
 use crate::released_syntax::ReleasedSyntax;
@@ -203,7 +203,7 @@ pub fn typeql_to_generated_descriptors(
     document: DocumentId,
     source: &str,
 ) -> Result<String, SchemaDiagnostics> {
-    if type_bridge_core_lib::parser::parse_typeql(source).is_ok_and(|schema| {
+    if type_bridge_core_lib::_parser::parse_typeql(source).is_ok_and(|schema| {
         schema.attributes.is_empty()
             && schema.entities.is_empty()
             && schema.relations.is_empty()
@@ -223,7 +223,7 @@ pub fn typeql_to_generated_descriptors(
     // The descriptor snapshot deliberately excludes functions, and released
     // generator input carries opaque dummy function bodies the strict
     // grammar rejects; strip them with the released parser's own extents.
-    let source = type_bridge_core_lib::parser::strip_function_definitions(source);
+    let source = type_bridge_core_lib::_parser::strip_function_definitions(source);
     // List capabilities and released-only annotations sit outside the
     // overlap grammar: pin the plain capability, record each construct,
     // and mark the snapshot open-world instead of failing the whole
@@ -331,7 +331,7 @@ fn released_descriptors_to_declared(
                     redacted.insert(range.start, evidence_source[range.clone()].to_owned());
                 }
                 let extents = released_annotation_redaction_extents(&portable, &ranges);
-                portable = type_bridge_core_lib::parser::blank_source_extents(&portable, &extents);
+                portable = type_bridge_core_lib::_parser::blank_source_extents(&portable, &extents);
             }
         }
     }
@@ -367,7 +367,7 @@ fn preceding_released_annotation_comma(
     source: &str,
     annotation_start: usize,
 ) -> Option<core::ops::Range<usize>> {
-    use type_bridge_core_lib::parser::{SourceRegionKind, scan_source_regions};
+    use type_bridge_core_lib::_parser::{SourceRegionKind, scan_source_regions};
 
     for (range, kind) in scan_source_regions(source).into_iter().rev() {
         if range.start >= annotation_start {
@@ -402,7 +402,7 @@ fn released_unresolved_ranges(
     document: &DocumentId,
     source: &str,
 ) -> Result<crate::ReleasedReferenceProjection, SchemaDiagnostics> {
-    let source = type_bridge_core_lib::parser::strip_function_definitions(source);
+    let source = type_bridge_core_lib::_parser::strip_function_definitions(source);
     let (source, _) = strip_unportable_constructs(&source);
     // The strict TypeQL AST used by the index accepts a narrower comment
     // vocabulary than the frozen generator. Comment blanking is byte-length
@@ -691,7 +691,7 @@ fn released_typeql_to_declared_stripped_projection_with_references(
         // opaque-body fallback is used only when the strict importer cannot
         // parse the released function spelling.
         let without_definitions =
-            type_bridge_core_lib::parser::strip_function_definitions(&without_comments);
+            type_bridge_core_lib::_parser::strip_function_definitions(&without_comments);
         if let Some(released) =
             ReleasedSyntax::accepted_with_size_policy(&without_definitions, size_policy)
         {
@@ -720,7 +720,9 @@ fn released_typeql_to_declared_stripped_projection_with_references(
                 Ok(declared) => Ok(declared),
                 Err(_) => {
                     let without_definitions =
-                        type_bridge_core_lib::parser::strip_function_definitions(&without_comments);
+                        type_bridge_core_lib::_parser::strip_function_definitions(
+                            &without_comments,
+                        );
                     crate::typeql_to_declared_with_references_with_size_policy(
                         document,
                         &without_definitions,
@@ -736,7 +738,7 @@ fn released_typeql_to_declared_stripped_projection_with_references(
 /// narrower comment vocabulary. This preserves every byte offset and line
 /// break and never touches markers inside string literals.
 fn blank_released_comments(source: &str) -> String {
-    use type_bridge_core_lib::parser::{
+    use type_bridge_core_lib::_parser::{
         SourceRegionKind, blank_source_extents, scan_source_regions,
     };
     let comments = scan_source_regions(source)
@@ -759,7 +761,7 @@ fn blank_released_comments(source: &str) -> String {
 /// length-preserving (spans become spaces) so descriptor offsets keep
 /// indexing the original document.
 fn strip_unportable_constructs(source: &str) -> (String, Vec<(usize, String)>) {
-    use type_bridge_core_lib::parser::{
+    use type_bridge_core_lib::_parser::{
         SourceRegionKind, blank_source_extents, scan_source_regions,
     };
     let ident_byte = |byte: u8| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-';
@@ -915,9 +917,9 @@ pub fn generated_declared_descriptors_json(source: &str) -> Result<String, Strin
 /// Render models and attach the direct declaration snapshot from the same input.
 pub fn generate_package_with_declared_descriptors(
     input: &str,
-    target: type_bridge_core_lib::bindgen::TargetLanguage,
-    options: &type_bridge_core_lib::bindgen::BindgenOptions,
-) -> Result<type_bridge_core_lib::bindgen::GeneratedPackage, String> {
+    target: type_bridge_core_lib::_bindgen::TargetLanguage,
+    options: &type_bridge_core_lib::_bindgen::BindgenOptions,
+) -> Result<type_bridge_core_lib::_bindgen::GeneratedPackage, String> {
     let descriptors = generated_declared_descriptors_json(input)
         .map_err(|error| format!("Failed to render declared descriptor snapshot: {error}"))?;
     let document = DocumentId::new("generated/schema.tql")
@@ -940,12 +942,12 @@ pub fn generate_package_with_declared_descriptors(
             })
         })
         .collect::<Vec<_>>();
-    let render_source = type_bridge_core_lib::parser::blank_source_extents(input, &ranges);
+    let render_source = type_bridge_core_lib::_parser::blank_source_extents(input, &ranges);
     let mut render_schema = TypeSchema::from_typeql(&render_source).map_err(|error| {
         format!("Failed to parse released schema for model generation: {error}")
     })?;
     sanitize_released_render_schema(&mut render_schema);
-    let mut package = type_bridge_core_lib::bindgen::BindgenPlan::from_schema(&render_schema)
+    let mut package = type_bridge_core_lib::_bindgen::BindgenPlan::from_schema(&render_schema)
         .render(target, options);
     attach_declared_descriptors(&mut package, descriptors, target)?;
     Ok(package)
@@ -960,7 +962,7 @@ fn released_render_capability_range(
     capability_start: usize,
     capability_end: usize,
 ) -> core::ops::Range<usize> {
-    use type_bridge_core_lib::parser::{SourceRegionKind, scan_source_regions};
+    use type_bridge_core_lib::_parser::{SourceRegionKind, scan_source_regions};
 
     let separator = scan_source_regions(&source[..capability_start])
         .into_iter()
@@ -1049,7 +1051,7 @@ fn sanitize_released_render_schema(schema: &mut TypeSchema) {
 
 fn retain_known_ownerships(
     attribute_names: &BTreeSet<String>,
-    owns: &mut Vec<type_bridge_core_lib::schema::OwnedAttribute>,
+    owns: &mut Vec<type_bridge_core_lib::_schema::OwnedAttribute>,
     owns_order: &mut Vec<String>,
 ) {
     owns.retain(|owned| attribute_names.contains(&owned.name));
@@ -1107,11 +1109,11 @@ pub fn empty_generated_declared_descriptors_json() -> Result<String, String> {
 /// package exactly like the standard generation path: the snapshot file
 /// plus, for Python, the registry constant.
 pub fn attach_declared_descriptors(
-    package: &mut type_bridge_core_lib::bindgen::GeneratedPackage,
+    package: &mut type_bridge_core_lib::_bindgen::GeneratedPackage,
     descriptors: String,
-    target: type_bridge_core_lib::bindgen::TargetLanguage,
+    target: type_bridge_core_lib::_bindgen::TargetLanguage,
 ) -> Result<(), String> {
-    if target == type_bridge_core_lib::bindgen::TargetLanguage::Python {
+    if target == type_bridge_core_lib::_bindgen::TargetLanguage::Python {
         let registry = package
             .files
             .iter_mut()
@@ -1128,7 +1130,7 @@ pub fn attach_declared_descriptors(
 
     package
         .files
-        .push(type_bridge_core_lib::bindgen::GeneratedFile {
+        .push(type_bridge_core_lib::_bindgen::GeneratedFile {
             path: GENERATED_DECLARED_DESCRIPTOR_PATH.to_string(),
             contents: descriptors,
         });

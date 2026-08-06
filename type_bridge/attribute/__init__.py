@@ -1,58 +1,18 @@
-"""TypeDB attribute types - base classes and concrete implementations.
+"""Private compatibility implementation for retained V1 query execution.
 
-This package provides the attribute type system for TypeBridge, including:
-- Base Attribute ABC
-- Concrete attribute types (String, Integer, Double, Boolean, Date, DateTime, DateTimeTZ, Decimal, Duration)
-- Flag system for annotations (Key, Unique, Card)
+Application attribute classes are emitted by ``type-bridge schema generate``.
+This package intentionally has no public authoring exports.
 """
 
-from type_bridge.attribute.base import Attribute
-from type_bridge.attribute.boolean import Boolean
-from type_bridge.attribute.date import Date
-from type_bridge.attribute.datetime import DateTime
-from type_bridge.attribute.datetimetz import DateTimeTZ
-from type_bridge.attribute.decimal import Decimal
-from type_bridge.attribute.double import Double
-from type_bridge.attribute.duration import Duration
-from type_bridge.attribute.flags import (
-    AttributeFlags,
-    Card,
-    Distinct,
-    Doc,
-    Flag,
-    Key,
-    Meta,
-    Ordered,
-    TypeFlags,
-    TypeNameCase,
-    Unique,
-)
-from type_bridge.attribute.integer import Integer
-from type_bridge.attribute.string import String
+from __future__ import annotations
 
-__all__ = [
-    # Base class
-    "Attribute",
-    # Concrete types
-    "String",
-    "Integer",
-    "Double",
-    "Boolean",
-    "Date",
-    "DateTime",
-    "DateTimeTZ",
-    "Decimal",
-    "Duration",
-    # Flag system
-    "Flag",
-    "Key",
-    "Unique",
-    "Ordered",
-    "Distinct",
-    "Doc",
-    "Meta",
-    "Card",
-    "AttributeFlags",
-    "TypeFlags",
-    "TypeNameCase",
-]
+from typing import Any
+
+
+def __getattr__(name: str) -> Any:
+    from type_bridge.migration._archive_imports import archive_attribute
+
+    return archive_attribute(__name__, name)
+
+
+__all__: list[str] = []

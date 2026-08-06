@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from isodate import Duration as IsodateDuration
 
-from type_bridge import (
+from tests.utils.handwritten import (
     DateTime,
     DateTimeTZ,
     Duration,
@@ -350,7 +350,7 @@ def test_duration_optional_attribute():
 
 def test_duration_multi_value_attribute():
     """Test Duration with multi-value attributes."""
-    from type_bridge import Card
+    from tests.utils.handwritten import Card
 
     class Interval(Duration):
         pass

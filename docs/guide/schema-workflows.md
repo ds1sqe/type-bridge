@@ -15,19 +15,14 @@ is the canonical authoring authority.
 6. Deploy application and server artifacts bound to the resulting schema
    fingerprint.
 
-## Compatibility authoring paths
-
-- [Python model-driven schema management](schema.md) remains available in the
-  2.0 compatibility line.
-- Existing TypeQL files can generate application models.
-- Direct [TOML schema authoring](toml.md) is deprecated for removal in 2.1;
-  translate it to Split-YAML before upgrading.
-
-Generated files are projections, not alternate schema authorities. Regenerate
-them after an accepted schema change; do not hand-edit them.
+Split-YAML is the only active authoring path. Existing TOML and historical
+migration material is handled only by the documented read-only conversion and
+recovery workflows. Generated files are projections, not alternate schema
+authorities: regenerate them after an accepted schema change and never edit or
+subclass their runtime bases.
 
 ## API boundary projections
 
-[API DTO generation](dto.md) creates Pydantic request and response shapes from
-the model contract. Generated TypeScript and Rust packages retain language
-specific types while sharing canonical field, role, and schema identities.
+Application-boundary DTOs should be defined by the application around generated
+models. Generated Python, TypeScript, and Rust packages retain language-specific
+types while sharing canonical field, role, and schema identities.

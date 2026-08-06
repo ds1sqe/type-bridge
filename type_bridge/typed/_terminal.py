@@ -8,10 +8,12 @@ from type_bridge_core import (
     MatchBindingHandle,
     MatchOrderHandle,
     MatchQueryHandle,
-    PyDescriptorRegistry,
     PyRustTransactionContext,
     ValidatedMatchResultHandle,
     revalidate_match_diagnostic,
+)
+from type_bridge_core import (
+    _QueryDescriptorRegistry as PyDescriptorRegistry,
 )
 
 from type_bridge._rust_runtime import rust_database_for

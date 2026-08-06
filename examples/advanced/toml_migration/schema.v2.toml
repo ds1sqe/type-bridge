@@ -1,3 +1,5 @@
+# Frozen read-only TOML conversion fixture. Do not use as active schema authority.
+
 [attributes.customer-name]
 value = "string"
 

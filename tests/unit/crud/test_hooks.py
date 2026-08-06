@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from type_bridge import Entity, Flag, Integer, Key, String, TypeFlags
+from tests.utils.handwritten import Entity, Flag, Integer, Key, String, TypeFlags
 from type_bridge.crud.hooks import CrudEvent, HookCancelled, HookRunner
 
 # ---------------------------------------------------------------------------

@@ -59,7 +59,9 @@ const FIXED_PUBLIC_NAMES: &[&str] = &[
     "RoleUpcast",
     "RoleTokenCompatible",
     "RolePlayer",
+    "RolePlayerBinding",
     "QueryValued",
+    "GroupedQueryValue",
     "TypeToken",
     "FieldToken",
     "RoleToken",
@@ -96,6 +98,7 @@ const FIXED_PUBLIC_NAMES: &[&str] = &[
     "ConstraintDescriptor",
     "IntoEncodedScalar",
     "IntoEncodedCreate",
+    "UnconstructibleCreate",
     "IntoEncodedReference",
     "MaterializeModel",
     "validate_canonical_string",
@@ -203,8 +206,8 @@ fn render_declaration(projection: &RuntimeProjection) -> Result<String, Diagnost
         let create = projected_model
             .create()
             .target_name()
-            .map(|name| name.as_str().to_owned())
-            .unwrap_or_else(|| "()".to_owned());
+            .map(|name| format!("crate::create::{}", name.as_str()))
+            .unwrap_or_else(|| "runtime::UnconstructibleCreate".to_owned());
         let _ = writeln!(output, "impl runtime::sealed::Sealed for {name} {{}}");
         let _ = writeln!(
             output,
@@ -222,7 +225,7 @@ fn render_declaration(projection: &RuntimeProjection) -> Result<String, Diagnost
                 } else {
                     let _ = writeln!(
                         output,
-                        "impl CompleteModel for {name} {{ type Create = crate::create::{create}; fn iid(&self) -> &str {{ self.iid() }} }}"
+                        "impl CompleteModel for {name} {{ type Create = {create}; fn iid(&self) -> &str {{ self.iid() }} }}"
                     );
                 }
             }
@@ -237,7 +240,7 @@ fn render_declaration(projection: &RuntimeProjection) -> Result<String, Diagnost
                 } else {
                     let _ = writeln!(
                         output,
-                        "impl CompleteModel for {name} {{ type Create = crate::create::{create}; fn iid(&self) -> &str {{ self.iid() }} }}"
+                        "impl CompleteModel for {name} {{ type Create = {create}; fn iid(&self) -> &str {{ self.iid() }} }}"
                     );
                 }
             }
@@ -445,7 +448,7 @@ fn render_create(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
                     (ProjectedContainer::Scalar, false) => {
                         let _ = writeln!(
                             enc_roles_code,
-                            "    if let Some(__tb_reference) = self.{mname}.as_ref() {{ __tb_roles.push(({token_str:?}, vec![__tb_reference.value().clone().into_encoded_reference()?])); }} else {{ __tb_roles.push(({token_str:?}, vec![])); }}"
+                            "    if let Some(__tb_reference) = self.{mname}.as_ref() {{ __tb_roles.push(({token_str:?}, vec![__tb_reference.clone().into_encoded_reference()?])); }} else {{ __tb_roles.push(({token_str:?}, vec![])); }}"
                         );
                     }
                     (ProjectedContainer::Sequence, _) => {
@@ -638,6 +641,21 @@ fn render_read(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
             let _ = writeln!(
                 output,
                 "impl QueryValued for {name} {{ type Domain = {scalar_t}; }}\n"
+            );
+            let scalar_variant = match value_type {
+                ValueTypeTag::String => "String",
+                ValueTypeTag::Long => "Long",
+                ValueTypeTag::Double => "Double",
+                ValueTypeTag::Boolean => "Boolean",
+                ValueTypeTag::Decimal => "Decimal",
+                ValueTypeTag::Date => "Date",
+                ValueTypeTag::DateTime => "DateTime",
+                ValueTypeTag::DateTimeTz => "DateTimeTz",
+                ValueTypeTag::Duration => "Duration",
+            };
+            let _ = writeln!(
+                output,
+                "impl GroupedQueryValue for {name} {{\n  fn from_group_scalar(value: EncodedScalar) -> Result<Self, ValidationError> {{\n    match value {{\n      EncodedScalar::{scalar_variant}(value) => Self::new(value),\n      _ => Err(ValidationError::new(\"\", \"wrong_group_scalar_domain\")),\n    }}\n  }}\n}}\n"
             );
         } else {
             let members = read_members(projection, model)?;
@@ -1258,6 +1276,25 @@ fn render_tokens(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
             for player in token.accepted_players() {
                 let player_name = model(projection, player)?.target_name().as_str();
                 let _ = writeln!(output, "impl RolePlayer<{player_name}> for {union} {{}}");
+            }
+            let mut subtype_roots = BTreeSet::new();
+            for player in token.accepted_players() {
+                let player_model = model(projection, player)?;
+                subtype_roots.insert(player.clone());
+                subtype_roots.extend(
+                    player_model
+                        .complete_read()
+                        .nominal_upcasts()
+                        .iter()
+                        .cloned(),
+                );
+            }
+            for root in subtype_roots {
+                let root_name = model(projection, &root)?.target_name().as_str();
+                let _ = writeln!(
+                    output,
+                    "impl RolePlayerBinding<{root_name}, type_bridge::Subtypes> for {union} {{}}"
+                );
             }
             output.push('\n');
         }

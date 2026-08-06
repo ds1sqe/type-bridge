@@ -15,7 +15,7 @@
 
 use std::marker::PhantomData;
 
-use crate::attribute::TypeBridgeAttribute;
+use crate::_attribute::TypeBridgeAttribute;
 use crate::expr::{Agg, Expr, SortDir};
 
 /// A typed reference to an entity/relation attribute field.
@@ -326,10 +326,10 @@ impl RoleRef {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::define_attribute;
+    use crate::_define_attribute;
 
-    define_attribute!(TestName, "name", "string");
-    define_attribute!(TestAge, "age", "long");
+    _define_attribute!(TestName, "name", "string");
+    _define_attribute!(TestAge, "age", "long");
 
     #[test]
     fn field_ref_eq() {

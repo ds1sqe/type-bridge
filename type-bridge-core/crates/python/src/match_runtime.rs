@@ -4,10 +4,13 @@
 //! canonical diagnostics only. Python never owns a match plan, binding map,
 //! validated request, provider row, TypeQL string, or invocation token here.
 
+use std::sync::Arc;
+
 use pyo3::exceptions::{PyException, PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyInt};
 use pythonize::pythonize;
+use type_bridge_orm::_registry::DescriptorRegistry;
 use type_bridge_orm::{
     BindingHandle, ComparisonOp, FieldHandle, MatchError, MissingOrder, OrderHandle, OrmError,
     PredicateHandle, QueryHandle, Reduction, RoleHandle, RowCardinality, SelectionHandle,
@@ -30,7 +33,7 @@ pyo3::create_exception!(
 
 #[pyclass(name = "MatchSessionHandle", frozen)]
 #[derive(Clone)]
-struct PyMatchSessionHandle {
+pub(crate) struct PyMatchSessionHandle {
     inner: SessionHandle,
 }
 
@@ -42,7 +45,7 @@ pub(crate) struct PyMatchBindingHandle {
 
 #[pyclass(name = "MatchFieldHandle", frozen)]
 #[derive(Clone)]
-struct PyMatchFieldHandle {
+pub(crate) struct PyMatchFieldHandle {
     inner: FieldHandle,
 }
 
@@ -88,9 +91,23 @@ impl PyMatchBindingHandle {
     }
 }
 
+impl PyMatchFieldHandle {
+    pub(crate) const fn inner(&self) -> &FieldHandle {
+        &self.inner
+    }
+}
+
 impl PyMatchQueryHandle {
     pub(crate) const fn inner(&self) -> &QueryHandle {
         &self.inner
+    }
+}
+
+impl PyMatchSessionHandle {
+    pub(crate) fn from_registry(registry: Arc<DescriptorRegistry>) -> Self {
+        Self {
+            inner: SessionHandle::new(registry),
+        }
     }
 }
 
@@ -98,9 +115,7 @@ impl PyMatchQueryHandle {
 impl PyMatchSessionHandle {
     #[new]
     fn new(registry: PyRef<'_, PyDescriptorRegistry>) -> Self {
-        Self {
-            inner: SessionHandle::new(registry.registry_arc()),
-        }
+        Self::from_registry(registry.registry_arc())
     }
 
     fn exact(&self, type_name: &str) -> PyResult<PyMatchBindingHandle> {
@@ -224,6 +239,20 @@ fn python_reachability_depth(value: &Bound<'_, PyAny>, name: &str) -> PyResult<u
 
 #[pymethods]
 impl PyMatchBindingHandle {
+    fn iid(&self, iid: &str) -> PyResult<PyMatchPredicateHandle> {
+        self.inner
+            .iid(iid)
+            .map(|inner| PyMatchPredicateHandle { inner })
+            .map_err(py_match_orm_error)
+    }
+
+    fn iid_in(&self, iids: Vec<String>) -> PyResult<PyMatchPredicateHandle> {
+        self.inner
+            .iid_in(iids)
+            .map(|inner| PyMatchPredicateHandle { inner })
+            .map_err(py_match_orm_error)
+    }
+
     fn field(&self, field_name: &str) -> PyResult<PyMatchFieldHandle> {
         self.inner
             .field(field_name)
@@ -267,6 +296,12 @@ impl PyMatchBindingHandle {
 
 #[pymethods]
 impl PyMatchFieldHandle {
+    fn presence(&self, present: bool) -> PyMatchPredicateHandle {
+        PyMatchPredicateHandle {
+            inner: self.inner.presence(present),
+        }
+    }
+
     fn compare_value(
         &self,
         operator: &str,
@@ -649,9 +684,139 @@ impl PyMatchQueryHandle {
             .map_err(py_match_orm_error)?;
         execute_validated_borrowed(py, transaction, validated, self.inner.registry_arc())
     }
+
+    #[pyo3(signature = (root, group, reducers, inputs))]
+    fn reduce_by_field_diagnostic(
+        &self,
+        py: Python<'_>,
+        root: PyRef<'_, PyMatchBindingHandle>,
+        group: PyRef<'_, PyMatchFieldHandle>,
+        reducers: Vec<String>,
+        inputs: Vec<Option<Py<PyMatchFieldHandle>>>,
+    ) -> PyResult<String> {
+        let terms = reduce_terms(py, &reducers, &inputs)?;
+        let terms = borrow_reduce_terms(&terms);
+        diagnostic_from_request(
+            self.inner
+                .reduce_by_field(&root.inner, &group.inner, &terms),
+        )
+    }
+
+    // PyO3 exposes these operation-local arguments as the stable Python terminal contract.
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (database, root, group, reducers, inputs))]
+    fn execute_reduce_by_field_owned(
+        &self,
+        py: Python<'_>,
+        database: &PyRustDatabase,
+        root: PyRef<'_, PyMatchBindingHandle>,
+        group: PyRef<'_, PyMatchFieldHandle>,
+        reducers: Vec<String>,
+        inputs: Vec<Option<Py<PyMatchFieldHandle>>>,
+    ) -> PyResult<PyValidatedMatchResultHandle> {
+        let terms = reduce_terms(py, &reducers, &inputs)?;
+        let terms = borrow_reduce_terms(&terms);
+        let validated = self
+            .inner
+            .validate_reduce_by_field(&root.inner, &group.inner, &terms)
+            .map_err(py_match_orm_error)?;
+        execute_validated_owned(py, database, validated, self.inner.registry_arc())
+    }
+
+    // PyO3 exposes these operation-local arguments as the stable Python terminal contract.
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (transaction, root, group, reducers, inputs))]
+    fn execute_reduce_by_field_borrowed(
+        &self,
+        py: Python<'_>,
+        transaction: &PyRustTransactionContext,
+        root: PyRef<'_, PyMatchBindingHandle>,
+        group: PyRef<'_, PyMatchFieldHandle>,
+        reducers: Vec<String>,
+        inputs: Vec<Option<Py<PyMatchFieldHandle>>>,
+    ) -> PyResult<PyValidatedMatchResultHandle> {
+        let terms = reduce_terms(py, &reducers, &inputs)?;
+        let terms = borrow_reduce_terms(&terms);
+        let validated = self
+            .inner
+            .validate_reduce_by_field(&root.inner, &group.inner, &terms)
+            .map_err(py_match_orm_error)?;
+        execute_validated_borrowed(py, transaction, validated, self.inner.registry_arc())
+    }
+
+    #[pyo3(signature = (root, groups, reducers, inputs))]
+    fn reduce_by_fields_diagnostic(
+        &self,
+        py: Python<'_>,
+        root: PyRef<'_, PyMatchBindingHandle>,
+        groups: Vec<Py<PyMatchFieldHandle>>,
+        reducers: Vec<String>,
+        inputs: Vec<Option<Py<PyMatchFieldHandle>>>,
+    ) -> PyResult<String> {
+        let groups = groups
+            .iter()
+            .map(|group| group.borrow(py).inner.clone())
+            .collect::<Vec<_>>();
+        let groups = groups.iter().collect::<Vec<_>>();
+        let terms = reduce_terms(py, &reducers, &inputs)?;
+        let terms = borrow_reduce_terms(&terms);
+        diagnostic_from_request(self.inner.reduce_by_fields(&root.inner, &groups, &terms))
+    }
+
+    // PyO3 exposes these operation-local arguments as the stable Python terminal contract.
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (database, root, groups, reducers, inputs))]
+    fn execute_reduce_by_fields_owned(
+        &self,
+        py: Python<'_>,
+        database: &PyRustDatabase,
+        root: PyRef<'_, PyMatchBindingHandle>,
+        groups: Vec<Py<PyMatchFieldHandle>>,
+        reducers: Vec<String>,
+        inputs: Vec<Option<Py<PyMatchFieldHandle>>>,
+    ) -> PyResult<PyValidatedMatchResultHandle> {
+        let groups = groups
+            .iter()
+            .map(|group| group.borrow(py).inner.clone())
+            .collect::<Vec<_>>();
+        let groups = groups.iter().collect::<Vec<_>>();
+        let terms = reduce_terms(py, &reducers, &inputs)?;
+        let terms = borrow_reduce_terms(&terms);
+        let validated = self
+            .inner
+            .validate_reduce_by_fields(&root.inner, &groups, &terms)
+            .map_err(py_match_orm_error)?;
+        execute_validated_owned(py, database, validated, self.inner.registry_arc())
+    }
+
+    // PyO3 exposes these operation-local arguments as the stable Python terminal contract.
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (transaction, root, groups, reducers, inputs))]
+    fn execute_reduce_by_fields_borrowed(
+        &self,
+        py: Python<'_>,
+        transaction: &PyRustTransactionContext,
+        root: PyRef<'_, PyMatchBindingHandle>,
+        groups: Vec<Py<PyMatchFieldHandle>>,
+        reducers: Vec<String>,
+        inputs: Vec<Option<Py<PyMatchFieldHandle>>>,
+    ) -> PyResult<PyValidatedMatchResultHandle> {
+        let groups = groups
+            .iter()
+            .map(|group| group.borrow(py).inner.clone())
+            .collect::<Vec<_>>();
+        let groups = groups.iter().collect::<Vec<_>>();
+        let terms = reduce_terms(py, &reducers, &inputs)?;
+        let terms = borrow_reduce_terms(&terms);
+        let validated = self
+            .inner
+            .validate_reduce_by_fields(&root.inner, &groups, &terms)
+            .map_err(py_match_orm_error)?;
+        execute_validated_borrowed(py, transaction, validated, self.inner.registry_arc())
+    }
 }
 
-fn reduce_terms(
+pub(crate) fn reduce_terms(
     py: Python<'_>,
     reducers: &[String],
     inputs: &[Option<Py<PyMatchFieldHandle>>],
@@ -673,7 +838,7 @@ fn reduce_terms(
         .collect()
 }
 
-fn borrow_reduce_terms(
+pub(crate) fn borrow_reduce_terms(
     terms: &[(Reduction, Option<FieldHandle>)],
 ) -> Vec<(Reduction, Option<&FieldHandle>)> {
     terms
@@ -686,7 +851,7 @@ fn execute_validated_owned(
     py: Python<'_>,
     database: &PyRustDatabase,
     validated: ValidatedMatchRequest,
-    registry: std::sync::Arc<type_bridge_orm::DescriptorRegistry>,
+    registry: std::sync::Arc<DescriptorRegistry>,
 ) -> PyResult<PyValidatedMatchResultHandle> {
     let (database, runtime) = database.handles();
     let result = provider_block_on(
@@ -704,7 +869,7 @@ fn execute_validated_borrowed(
     py: Python<'_>,
     transaction: &PyRustTransactionContext,
     validated: ValidatedMatchRequest,
-    registry: std::sync::Arc<type_bridge_orm::DescriptorRegistry>,
+    registry: std::sync::Arc<DescriptorRegistry>,
 ) -> PyResult<PyValidatedMatchResultHandle> {
     let (transaction, runtime) = transaction.handles();
     let result = provider_block_on(
@@ -736,7 +901,7 @@ fn diagnostic_from_request(
 }
 
 fn revalidate_diagnostic(
-    registry: &type_bridge_orm::DescriptorRegistry,
+    registry: &DescriptorRegistry,
     diagnostic: &str,
 ) -> Result<String, MatchError> {
     let unvalidated = UnvalidatedMatchRequest::from_canonical_bytes(diagnostic.as_bytes())?;
@@ -876,14 +1041,14 @@ mod tests {
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
+    use type_bridge_orm::_descriptor::{EntityDescriptor, OwnedAttributeDescriptor};
+    use type_bridge_orm::_entity::Annotation;
+    use type_bridge_orm::_registry::DescriptorRegistry;
     use type_bridge_orm::session::backend::{
         AnswerCancellation, BoundedAnswerLimits, BoundedAnswerReader, BoxFuture, DriverBackend,
         TransactionOps, TxType,
     };
-    use type_bridge_orm::{
-        Annotation, AttributeValue, CapabilitySet, Database, DescriptorRegistry, EntityDescriptor,
-        OwnedAttributeDescriptor, ValueType,
-    };
+    use type_bridge_orm::{AttributeValue, CapabilitySet, Database, ValueType};
 
     use super::*;
 

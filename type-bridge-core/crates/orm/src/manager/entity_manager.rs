@@ -6,7 +6,7 @@
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use crate::entity::TypeBridgeEntity;
+use crate::_entity::TypeBridgeEntity;
 use crate::error::{OrmError, Result};
 use crate::filter::Filter;
 use crate::hooks::{CrudOperation, HookRunner, LifecycleHook, TypeKind};

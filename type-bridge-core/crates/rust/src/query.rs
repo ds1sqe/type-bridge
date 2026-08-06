@@ -13,6 +13,8 @@ use type_bridge_contract::query_plan::CompatibilityValueV2;
 use type_bridge_contract::temporal::{
     CanonicalDate, CanonicalDateTime, CanonicalDateTimeTz, CanonicalDuration,
 };
+use type_bridge_orm::_descriptor::TypeDescriptorRef;
+use type_bridge_orm::_registry::DescriptorRegistry;
 use type_bridge_orm::match_request::handles::{
     BindingHandle as OrmBindingHandle, FieldHandle as OrmFieldHandle,
     OrderHandle as OrmOrderHandle, PredicateHandle as OrmPredicateHandle,
@@ -27,14 +29,14 @@ use type_bridge_orm::match_request::result::{
 };
 use type_bridge_orm::match_request::validation::ValidatedMatchRequest;
 use type_bridge_orm::{
-    AttributeValue, DescriptorRegistry, DynamicEntityRow, DynamicRelationRow, DynamicRolePlayer,
+    AttributeValue, DynamicEntityRow, DynamicRelationRow, DynamicRolePlayer,
     InstalledRuntimeProjection,
 };
 
 use crate::__codegen::{
-    CompleteModel, EncodedScalar, FieldToken, HydratedRow, HydrationCapability, Model, QueryValued,
-    RelationModel, RolePlayer, RoleToken, RoleTokenCompatible, SubtypeRootModel, ThingModel,
-    TypeToken, ValidationError,
+    CompleteModel, EncodedScalar, FieldToken, GroupedQueryValue, HydratedRow, HydrationCapability,
+    Model, QueryValued, RelationModel, RolePlayerBinding, RoleToken, RoleTokenCompatible,
+    SubtypeRootModel, ThingModel, TypeToken, ValidationError,
 };
 use crate::entity_codec::{hydrate_entity, map_validation_error};
 use crate::error::{Error, ModelValidationPhase};
@@ -215,6 +217,24 @@ impl<S: Schema, M: ThingModel<Schema = S>, Mode: SelectionMode> Binding<S, M, Mo
         self.key
     }
 
+    /// Match this generated binding by one canonical TypeDB thing IID.
+    #[must_use]
+    pub fn iid(self, iid: impl Into<String>) -> Predicate<S> {
+        Predicate::new(PredicateExpr::BindingIid {
+            binding: self.key,
+            iid: iid.into(),
+        })
+    }
+
+    /// Match this generated binding by one of a non-empty bounded IID set.
+    #[must_use]
+    pub fn iid_in(self, iids: impl IntoIterator<Item = impl Into<String>>) -> Predicate<S> {
+        Predicate::new(PredicateExpr::BindingIidIn {
+            binding: self.key,
+            iids: iids.into_iter().map(Into::into).collect(),
+        })
+    }
+
     /// Select this binding as an owned collection per distinct page root,
     /// preserving match multiplicity by default.
     #[must_use]
@@ -351,12 +371,12 @@ impl<'db, S: Schema> QuerySession<'db, S> {
             )
         })?;
         let found = match &descriptor {
-            type_bridge_orm::TypeDescriptorRef::Entity(entity) => entity
+            TypeDescriptorRef::Entity(entity) => entity
                 .owned_attributes
                 .iter()
                 .find(|attribute| attribute.attr_name == attribute_label)
                 .map(|attribute| attribute.field_name.clone()),
-            type_bridge_orm::TypeDescriptorRef::Relation(relation) => relation
+            TypeDescriptorRef::Relation(relation) => relation
                 .owned_attributes
                 .iter()
                 .find(|attribute| attribute.attr_name == attribute_label)
@@ -414,6 +434,19 @@ impl<'db, S: Schema> QuerySession<'db, S> {
                 left.compare_field(*operator, &right)
                     .map_err(Error::from_orm)
             }
+            PredicateExpr::FieldPresence {
+                binding,
+                owns_id_json,
+                present,
+            } => Ok(self.lower_field(*binding, owns_id_json)?.presence(*present)),
+            PredicateExpr::BindingIid { binding, iid } => self
+                .handle_by_key(*binding)?
+                .iid(iid.clone())
+                .map_err(Error::from_orm),
+            PredicateExpr::BindingIidIn { binding, iids } => self
+                .handle_by_key(*binding)?
+                .iid_in(iids.clone())
+                .map_err(Error::from_orm),
             PredicateExpr::Connects {
                 relation,
                 role_id_json,
@@ -649,6 +682,34 @@ fn canonicalize_selected_value(value: AttributeValue) -> Result<AttributeValue> 
     }
 }
 
+fn encoded_group_scalar(value: &AttributeValue) -> Result<EncodedScalar> {
+    let value = canonicalize_selected_value(value.clone())?;
+    let map = |error| map_validation_error(error, ModelValidationPhase::Hydration);
+    match value {
+        AttributeValue::String(value) => Ok(EncodedScalar::String(value)),
+        AttributeValue::Long(value) => Ok(EncodedScalar::Long(value)),
+        AttributeValue::Double(value) => crate::__codegen::CanonicalDouble::try_new(value)
+            .map(EncodedScalar::Double)
+            .map_err(map),
+        AttributeValue::Boolean(value) => Ok(EncodedScalar::Boolean(value)),
+        AttributeValue::Date(value) => crate::__codegen::Date::try_new(value)
+            .map(EncodedScalar::Date)
+            .map_err(map),
+        AttributeValue::DateTime(value) => crate::__codegen::DateTime::try_new(value)
+            .map(EncodedScalar::DateTime)
+            .map_err(map),
+        AttributeValue::DateTimeTZ(value) => crate::__codegen::DateTimeTz::try_new(value)
+            .map(EncodedScalar::DateTimeTz)
+            .map_err(map),
+        AttributeValue::Decimal(value) => crate::__codegen::Decimal::try_new(value)
+            .map(EncodedScalar::Decimal)
+            .map_err(map),
+        AttributeValue::Duration(value) => crate::__codegen::Duration::try_new(value)
+            .map(EncodedScalar::Duration)
+            .map_err(map),
+    }
+}
+
 fn normalize_provider_datetime_tz(value: String) -> String {
     let mut normalized = normalize_provider_fraction(value);
     for zero_offset in ["+00:00:00", "-00:00:00", "+00:00", "-00:00"] {
@@ -818,6 +879,19 @@ pub(crate) enum PredicateExpr {
         right_binding: BindingKey,
         right_owns_id_json: &'static str,
     },
+    FieldPresence {
+        binding: BindingKey,
+        owns_id_json: &'static str,
+        present: bool,
+    },
+    BindingIid {
+        binding: BindingKey,
+        iid: String,
+    },
+    BindingIidIn {
+        binding: BindingKey,
+        iids: Vec<String>,
+    },
     Connects {
         relation: BindingKey,
         role_id_json: &'static str,
@@ -923,8 +997,8 @@ impl<'db, S: Schema> QuerySession<'db, S> {
             + RoleTokenCompatible<ToOwner, ToPlayers>,
         FromOwner: RelationModel<Schema = S>,
         ToOwner: RelationModel<Schema = S>,
-        FromPlayers: RolePlayer<Source>,
-        ToPlayers: RolePlayer<Target>,
+        FromPlayers: RolePlayerBinding<Source, SourceMode>,
+        ToPlayers: RolePlayerBinding<Target, TargetMode>,
         Source: ThingModel<Schema = S>,
         SourceMode: SelectionMode,
         Target: ThingModel<Schema = S>,
@@ -1169,6 +1243,26 @@ impl<S: Schema, Owner: Model<Schema = S>, V> BoundField<S, Owner, V> {
         )
     }
 
+    /// Require at least one owned value for this generated field.
+    #[must_use]
+    pub fn is_present(self) -> Predicate<S> {
+        Predicate::new(PredicateExpr::FieldPresence {
+            binding: self.key,
+            owns_id_json: self.owns_id_json,
+            present: true,
+        })
+    }
+
+    /// Require no owned value for this generated field.
+    #[must_use]
+    pub fn is_missing(self) -> Predicate<S> {
+        Predicate::new(PredicateExpr::FieldPresence {
+            binding: self.key,
+            owns_id_json: self.owns_id_json,
+            present: false,
+        })
+    }
+
     /// Compare against another compatible bound field of the same scalar
     /// value type; the comparison carries no literal.
     #[must_use]
@@ -1310,7 +1404,7 @@ impl<S: Schema, Owner: Model<Schema = S>, Players> BoundRole<S, Owner, Players> 
         player: Binding<S, MP, ModeP>,
     ) -> Predicate<S>
     where
-        Players: RolePlayer<MP>,
+        Players: RolePlayerBinding<MP, ModeP>,
     {
         Predicate::new(PredicateExpr::Connects {
             relation: self.key,
@@ -1916,7 +2010,9 @@ impl<T> Page<T> {
 pub struct Query<'s, 'db, S: Schema, Shape: SelectedShape<S>> {
     session: &'s QuerySession<'db, S>,
     selection: Shape,
+    hidden: Vec<BindingKey>,
     predicates: Vec<Predicate<S>>,
+    allowed_cross_joins: Vec<(BindingKey, BindingKey)>,
 }
 
 impl<'s, 'db, S: Schema, Shape: SelectedShape<S>> Clone for Query<'s, 'db, S, Shape> {
@@ -1924,7 +2020,9 @@ impl<'s, 'db, S: Schema, Shape: SelectedShape<S>> Clone for Query<'s, 'db, S, Sh
         Self {
             session: self.session,
             selection: self.selection.clone(),
+            hidden: self.hidden.clone(),
             predicates: self.predicates.clone(),
+            allowed_cross_joins: self.allowed_cross_joins.clone(),
         }
     }
 }
@@ -1939,12 +2037,27 @@ impl<'db, S: Schema> QuerySession<'db, S> {
         Ok(Query {
             session: self,
             selection,
+            hidden: Vec::new(),
             predicates: Vec::new(),
+            allowed_cross_joins: Vec::new(),
         })
     }
 }
 
 impl<'s, 'db, S: Schema, Shape: SelectedShape<S>> Query<'s, 'db, S, Shape> {
+    /// Attach one generated binding for predicates without selecting it.
+    pub fn match_<M: ThingModel<Schema = S>, Mode: SelectionMode>(
+        &self,
+        binding: Binding<S, M, Mode>,
+    ) -> Result<Self> {
+        self.session.handle_by_key(binding.key())?;
+        let mut next = self.clone();
+        if !next.hidden.contains(&binding.key()) {
+            next.hidden.push(binding.key());
+        }
+        Ok(next)
+    }
+
     /// Attach one predicate; repeated calls form a conjunction in call order.
     pub fn where_(&self, predicate: Predicate<S>) -> Result<Self> {
         let mut next = self.clone();
@@ -1959,15 +2072,61 @@ impl<'s, 'db, S: Schema, Shape: SelectedShape<S>> Query<'s, 'db, S, Shape> {
         Ok(next)
     }
 
-    fn lineage(&self) -> Result<OrmQueryHandle> {
-        self.lineage_with_hidden(None)
+    /// Explicitly permit one topology-level cross join between two attached
+    /// generated bindings. The returned lineage is immutable and reusable.
+    pub fn allow_cross_join<L: Selectable<S>, R: Selectable<S>>(
+        &self,
+        left: L,
+        right: R,
+    ) -> Result<Self> {
+        let left = left.binding_key();
+        let right = right.binding_key();
+        self.session.handle_by_key(left)?;
+        self.session.handle_by_key(right)?;
+        if left == right {
+            return Err(Error::model_validation(
+                ModelValidationPhase::Input,
+                "self_cross_join",
+                vec![],
+                "cross-join permission requires two distinct generated bindings",
+                None,
+            ));
+        }
+        let pair = if left.index < right.index {
+            (left, right)
+        } else {
+            (right, left)
+        };
+        let mut next = self.clone();
+        if !next.allowed_cross_joins.contains(&pair) {
+            next.allowed_cross_joins.push(pair);
+        }
+        Ok(next)
     }
 
-    fn lineage_with_hidden(&self, hidden: Option<&OrmBindingHandle>) -> Result<OrmQueryHandle> {
+    fn lineage(&self) -> Result<OrmQueryHandle> {
+        self.lineage_with_hidden(&[])
+    }
+
+    fn lineage_with_hidden(&self, hidden: &[BindingKey]) -> Result<OrmQueryHandle> {
         let shape = self.selection.__shape_handle(self.session)?;
         let mut query = self.session.session.query(shape).map_err(Error::from_orm)?;
-        if let Some(hidden) = hidden {
+        let mut hidden_keys = self.hidden.clone();
+        for key in hidden {
+            if !hidden_keys.contains(key) {
+                hidden_keys.push(*key);
+            }
+        }
+        for key in hidden_keys {
+            let hidden = self.session.handle_by_key(key)?;
             query = query.add_hidden(hidden.clone()).map_err(Error::from_orm)?;
+        }
+        for (left, right) in &self.allowed_cross_joins {
+            let left = self.session.handle_by_key(*left)?;
+            let right = self.session.handle_by_key(*right)?;
+            query = query
+                .allow_cross_join(left, right)
+                .map_err(Error::from_orm)?;
         }
         for predicate in &self.predicates {
             let lowered = self.session.lower_predicate(&predicate.expr)?;
@@ -1988,6 +2147,19 @@ impl<'s, 'db, S: Schema, Shape: SelectedShape<S>> Query<'s, 'db, S, Shape> {
         }
         lineage
             .validate_fetch_rows(&lowered_orders, window, RowCardinality::BoundedMany)
+            .map_err(Error::from_orm)
+    }
+
+    pub(crate) fn validated_one(&self) -> Result<ValidatedMatchRequest> {
+        self.lineage()?
+            .validate_fetch_rows(
+                &[],
+                Window {
+                    offset: 0,
+                    limit: 1,
+                },
+                RowCardinality::ExactlyOne,
+            )
             .map_err(Error::from_orm)
     }
 
@@ -2127,13 +2299,7 @@ where
     /// Return exactly one distinct selected identity, failing `no_result` on
     /// an empty stream and `not_unique` on more than one.
     pub async fn one(&self) -> Result<Shape::Output> {
-        let validated = self.validated_rows(
-            &[],
-            Window {
-                offset: 0,
-                limit: 2,
-            },
-        )?;
+        let validated = self.validated_one()?;
         let (validated, result) = self.execute(validated).await?;
         let mut outputs = self.outputs_from_rows(&validated, &result)?;
         match outputs.len() {
@@ -2297,10 +2463,14 @@ impl<'s, 'db, S: Schema, B: Selectable<S>> Query<'s, 'db, S, B> {
         )],
     ) -> Result<ValidatedMatchRequest> {
         let root = self.session.handle_by_key(self.selection.binding_key())?;
+        let hidden_groups = group
+            .filter(|key| *key != self.selection.binding_key())
+            .into_iter()
+            .collect::<Vec<_>>();
+        let lineage = self.lineage_with_hidden(&hidden_groups)?;
         let group_handle = group
             .map(|key| self.session.handle_by_key(key))
             .transpose()?;
-        let lineage = self.lineage_with_hidden(group_handle)?;
         let lowered_inputs = self.lowered_reduce_terms(terms)?;
         let mut inputs = lowered_inputs.iter();
         let mut pairs = Vec::with_capacity(terms.len());
@@ -2317,6 +2487,74 @@ impl<'s, 'db, S: Schema, B: Selectable<S>> Query<'s, 'db, S, B> {
             .map_err(Error::from_orm)
     }
 
+    fn validated_reduce_by_field<Owner: Model<Schema = S>, V>(
+        &self,
+        group: BoundField<S, Owner, V>,
+        terms: &[(
+            type_bridge_orm::match_request::Reduction,
+            Option<(BindingKey, &'static str)>,
+        )],
+    ) -> Result<ValidatedMatchRequest> {
+        let root = self.session.handle_by_key(self.selection.binding_key())?;
+        let hidden_groups = (group.key != self.selection.binding_key())
+            .then_some(group.key)
+            .into_iter()
+            .collect::<Vec<_>>();
+        let lineage = self.lineage_with_hidden(&hidden_groups)?;
+        let group = self.session.lower_field(group.key, group.owns_id_json)?;
+        let lowered_inputs = self.lowered_reduce_terms(terms)?;
+        let mut inputs = lowered_inputs.iter();
+        let mut pairs = Vec::with_capacity(terms.len());
+        for (reduction, input) in terms {
+            let handle = if input.is_some() {
+                Some(inputs.next().expect("one lowered handle per input"))
+            } else {
+                None
+            };
+            pairs.push((*reduction, handle));
+        }
+        lineage
+            .validate_reduce_by_field(root, &group, &pairs)
+            .map_err(Error::from_orm)
+    }
+
+    fn validated_reduce_by_fields(
+        &self,
+        groups: &[(BindingKey, &'static str)],
+        terms: &[(
+            type_bridge_orm::match_request::Reduction,
+            Option<(BindingKey, &'static str)>,
+        )],
+    ) -> Result<ValidatedMatchRequest> {
+        let root = self.session.handle_by_key(self.selection.binding_key())?;
+        let mut hidden_keys = Vec::new();
+        for (key, _) in groups {
+            if *key != self.selection.binding_key() && !hidden_keys.contains(key) {
+                hidden_keys.push(*key);
+            }
+        }
+        let lineage = self.lineage_with_hidden(&hidden_keys)?;
+        let lowered_groups = groups
+            .iter()
+            .map(|(key, owns_id_json)| self.session.lower_field(*key, owns_id_json))
+            .collect::<Result<Vec<_>>>()?;
+        let group_refs = lowered_groups.iter().collect::<Vec<_>>();
+        let lowered_inputs = self.lowered_reduce_terms(terms)?;
+        let mut inputs = lowered_inputs.iter();
+        let mut pairs = Vec::with_capacity(terms.len());
+        for (reduction, input) in terms {
+            let handle = if input.is_some() {
+                Some(inputs.next().expect("one lowered handle per input"))
+            } else {
+                None
+            };
+            pairs.push((*reduction, handle));
+        }
+        lineage
+            .validate_reduce_by_fields(root, &group_refs, &pairs)
+            .map_err(Error::from_orm)
+    }
+
     fn decoded_reduction_rows(
         validated: &ValidatedMatchRequest,
         result: &ValidatedMatchResult,
@@ -2325,7 +2563,9 @@ impl<'s, 'db, S: Schema, B: Selectable<S>> Query<'s, 'db, S, B> {
             .for_request(validated)
             .map_err(|error| Error::from_orm_hydration(error.into()))?
         {
-            MatchResult::Reduction { rows, .. } => Ok(rows.clone()),
+            MatchResult::Reduction { rows, .. }
+            | MatchResult::FieldReduction { rows, .. }
+            | MatchResult::FieldTupleReduction { rows, .. } => Ok(rows.clone()),
             _ => Err(Error::model_validation(
                 ModelValidationPhase::Hydration,
                 "wrong_result_shape",
@@ -2367,6 +2607,38 @@ impl<'s, 'db, S: Schema, B: Selectable<S>> Query<'s, 'db, S, B> {
             group,
         })
     }
+
+    /// Group the distinct selected stream by each witnessed value of one
+    /// generated owned field before aggregating.
+    pub fn group_by_field<Owner, V>(
+        &self,
+        group: BoundField<S, Owner, V>,
+    ) -> Result<FieldGroupedQuery<'s, 'db, S, B, Owner, V>>
+    where
+        Owner: Model<Schema = S>,
+        V: GroupedQueryValue,
+    {
+        self.session.lower_field(group.key, group.owns_id_json)?;
+        Ok(FieldGroupedQuery {
+            query: self.clone(),
+            group,
+        })
+    }
+
+    /// Group the distinct selected stream by the Cartesian tuple of multiple
+    /// generated owned fields' witnessed values before aggregating.
+    pub fn group_by_fields<G>(&self, groups: G) -> Result<FieldTupleGroupedQuery<'s, 'db, S, B, G>>
+    where
+        G: FieldGroupTuple<S>,
+    {
+        for (key, owns_id_json) in groups.fields() {
+            self.session.lower_field(key, owns_id_json)?;
+        }
+        Ok(FieldTupleGroupedQuery {
+            query: self.clone(),
+            groups,
+        })
+    }
 }
 
 /// One query lineage grouped by a second attached binding for aggregation.
@@ -2404,6 +2676,316 @@ impl<'s, 'db, S: Schema, B: Selectable<S>, G: Selectable<S>> GroupedQuery<'s, 'd
                 crate::entity_codec::map_validation_error(error, ModelValidationPhase::Hydration)
             })?;
             outputs.push((key, T::decode(row.values())?));
+        }
+        Ok(outputs)
+    }
+}
+
+/// One query lineage grouped by a generated owned field value for
+/// aggregation.
+pub struct FieldGroupedQuery<
+    's,
+    'db,
+    S: Schema,
+    B: Selectable<S>,
+    Owner: Model<Schema = S>,
+    V: GroupedQueryValue,
+> {
+    query: Query<'s, 'db, S, B>,
+    group: BoundField<S, Owner, V>,
+}
+
+impl<'s, 'db, S, B, Owner, V> FieldGroupedQuery<'s, 'db, S, B, Owner, V>
+where
+    S: Schema,
+    B: Selectable<S>,
+    Owner: Model<Schema = S>,
+    V: GroupedQueryValue,
+{
+    /// Reduce each witnessed distinct field value to one typed tuple,
+    /// returning its exact generated attribute wrapper with the aggregates.
+    pub async fn aggregate<T: crate::aggregate::AggregateTuple<S>>(
+        &self,
+        terms: T,
+    ) -> Result<Vec<(V, T::Output)>> {
+        let term_list = terms.terms();
+        let validated = self
+            .query
+            .validated_reduce_by_field(self.group, &term_list)?;
+        let (validated, result) = self.query.execute(validated).await?;
+        let rows = Query::<S, B>::decoded_reduction_rows(&validated, &result)?;
+        let mut outputs = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let value = row.field_group().ok_or_else(|| {
+                Error::model_validation(
+                    ModelValidationPhase::Hydration,
+                    "wrong_result_shape",
+                    vec![],
+                    "field-grouped aggregates require scalar group evidence per row",
+                    None,
+                )
+            })?;
+            let key = V::from_group_scalar(encoded_group_scalar(value)?)
+                .map_err(|error| map_validation_error(error, ModelValidationPhase::Hydration))?;
+            outputs.push((key, T::decode(row.values())?));
+        }
+        Ok(outputs)
+    }
+}
+
+/// A sealed tuple of two through sixteen generated owned fields used as one
+/// typed grouped-reduction key.
+pub trait FieldGroupTuple<S: Schema>: field_group_tuple_sealed::Sealed<S> + Copy {
+    /// Exact generated attribute-wrapper tuple returned for each group row.
+    type Output;
+
+    #[doc(hidden)]
+    fn fields(&self) -> Vec<(BindingKey, &'static str)>;
+
+    #[doc(hidden)]
+    fn decode(values: &[AttributeValue]) -> Result<Self::Output>;
+}
+
+mod field_group_tuple_sealed {
+    pub trait Sealed<S> {}
+}
+
+macro_rules! field_group_tuple {
+    ($(($owner:ident, $value:ident, $index:tt)),+) => {
+        impl<S, $($owner, $value),+> field_group_tuple_sealed::Sealed<S>
+            for ($(BoundField<S, $owner, $value>,)+)
+        where
+            S: Schema,
+            $($owner: Model<Schema = S>, $value: GroupedQueryValue),+
+        {
+        }
+
+        impl<S, $($owner, $value),+> FieldGroupTuple<S>
+            for ($(BoundField<S, $owner, $value>,)+)
+        where
+            S: Schema,
+            $($owner: Model<Schema = S>, $value: GroupedQueryValue),+
+        {
+            type Output = ($($value,)+);
+
+            fn fields(&self) -> Vec<(BindingKey, &'static str)> {
+                vec![$((self.$index.key, self.$index.owns_id_json)),+]
+            }
+
+            fn decode(values: &[AttributeValue]) -> Result<Self::Output> {
+                let expected = [$(stringify!($owner)),+].len();
+                if values.len() != expected {
+                    return Err(Error::model_validation(
+                        ModelValidationPhase::Hydration,
+                        "wrong_result_shape",
+                        vec![],
+                        "tuple-field-grouped aggregate key has the wrong arity",
+                        None,
+                    ));
+                }
+                Ok(($(
+                    $value::from_group_scalar(encoded_group_scalar(&values[$index])?)
+                        .map_err(|error| {
+                            map_validation_error(error, ModelValidationPhase::Hydration)
+                        })?,
+                )+))
+            }
+        }
+    };
+}
+
+field_group_tuple!((O1, V1, 0), (O2, V2, 1));
+field_group_tuple!((O1, V1, 0), (O2, V2, 1), (O3, V3, 2));
+field_group_tuple!((O1, V1, 0), (O2, V2, 1), (O3, V3, 2), (O4, V4, 3));
+field_group_tuple!(
+    (O1, V1, 0),
+    (O2, V2, 1),
+    (O3, V3, 2),
+    (O4, V4, 3),
+    (O5, V5, 4)
+);
+field_group_tuple!(
+    (O1, V1, 0),
+    (O2, V2, 1),
+    (O3, V3, 2),
+    (O4, V4, 3),
+    (O5, V5, 4),
+    (O6, V6, 5)
+);
+field_group_tuple!(
+    (O1, V1, 0),
+    (O2, V2, 1),
+    (O3, V3, 2),
+    (O4, V4, 3),
+    (O5, V5, 4),
+    (O6, V6, 5),
+    (O7, V7, 6)
+);
+field_group_tuple!(
+    (O1, V1, 0),
+    (O2, V2, 1),
+    (O3, V3, 2),
+    (O4, V4, 3),
+    (O5, V5, 4),
+    (O6, V6, 5),
+    (O7, V7, 6),
+    (O8, V8, 7)
+);
+field_group_tuple!(
+    (O1, V1, 0),
+    (O2, V2, 1),
+    (O3, V3, 2),
+    (O4, V4, 3),
+    (O5, V5, 4),
+    (O6, V6, 5),
+    (O7, V7, 6),
+    (O8, V8, 7),
+    (O9, V9, 8)
+);
+field_group_tuple!(
+    (O1, V1, 0),
+    (O2, V2, 1),
+    (O3, V3, 2),
+    (O4, V4, 3),
+    (O5, V5, 4),
+    (O6, V6, 5),
+    (O7, V7, 6),
+    (O8, V8, 7),
+    (O9, V9, 8),
+    (O10, V10, 9)
+);
+field_group_tuple!(
+    (O1, V1, 0),
+    (O2, V2, 1),
+    (O3, V3, 2),
+    (O4, V4, 3),
+    (O5, V5, 4),
+    (O6, V6, 5),
+    (O7, V7, 6),
+    (O8, V8, 7),
+    (O9, V9, 8),
+    (O10, V10, 9),
+    (O11, V11, 10)
+);
+field_group_tuple!(
+    (O1, V1, 0),
+    (O2, V2, 1),
+    (O3, V3, 2),
+    (O4, V4, 3),
+    (O5, V5, 4),
+    (O6, V6, 5),
+    (O7, V7, 6),
+    (O8, V8, 7),
+    (O9, V9, 8),
+    (O10, V10, 9),
+    (O11, V11, 10),
+    (O12, V12, 11)
+);
+field_group_tuple!(
+    (O1, V1, 0),
+    (O2, V2, 1),
+    (O3, V3, 2),
+    (O4, V4, 3),
+    (O5, V5, 4),
+    (O6, V6, 5),
+    (O7, V7, 6),
+    (O8, V8, 7),
+    (O9, V9, 8),
+    (O10, V10, 9),
+    (O11, V11, 10),
+    (O12, V12, 11),
+    (O13, V13, 12)
+);
+field_group_tuple!(
+    (O1, V1, 0),
+    (O2, V2, 1),
+    (O3, V3, 2),
+    (O4, V4, 3),
+    (O5, V5, 4),
+    (O6, V6, 5),
+    (O7, V7, 6),
+    (O8, V8, 7),
+    (O9, V9, 8),
+    (O10, V10, 9),
+    (O11, V11, 10),
+    (O12, V12, 11),
+    (O13, V13, 12),
+    (O14, V14, 13)
+);
+field_group_tuple!(
+    (O1, V1, 0),
+    (O2, V2, 1),
+    (O3, V3, 2),
+    (O4, V4, 3),
+    (O5, V5, 4),
+    (O6, V6, 5),
+    (O7, V7, 6),
+    (O8, V8, 7),
+    (O9, V9, 8),
+    (O10, V10, 9),
+    (O11, V11, 10),
+    (O12, V12, 11),
+    (O13, V13, 12),
+    (O14, V14, 13),
+    (O15, V15, 14)
+);
+field_group_tuple!(
+    (O1, V1, 0),
+    (O2, V2, 1),
+    (O3, V3, 2),
+    (O4, V4, 3),
+    (O5, V5, 4),
+    (O6, V6, 5),
+    (O7, V7, 6),
+    (O8, V8, 7),
+    (O9, V9, 8),
+    (O10, V10, 9),
+    (O11, V11, 10),
+    (O12, V12, 11),
+    (O13, V13, 12),
+    (O14, V14, 13),
+    (O15, V15, 14),
+    (O16, V16, 15)
+);
+
+/// One query lineage grouped by a generated owned-field tuple for
+/// aggregation.
+pub struct FieldTupleGroupedQuery<'s, 'db, S: Schema, B: Selectable<S>, G: FieldGroupTuple<S>> {
+    query: Query<'s, 'db, S, B>,
+    groups: G,
+}
+
+impl<'s, 'db, S, B, G> FieldTupleGroupedQuery<'s, 'db, S, B, G>
+where
+    S: Schema,
+    B: Selectable<S>,
+    G: FieldGroupTuple<S>,
+{
+    /// Reduce each witnessed distinct field-value tuple to one typed tuple,
+    /// returning exact generated attribute wrappers with the aggregates.
+    pub async fn aggregate<T: crate::aggregate::AggregateTuple<S>>(
+        &self,
+        terms: T,
+    ) -> Result<Vec<(G::Output, T::Output)>> {
+        let term_list = terms.terms();
+        let group_fields = self.groups.fields();
+        let validated = self
+            .query
+            .validated_reduce_by_fields(&group_fields, &term_list)?;
+        let (validated, result) = self.query.execute(validated).await?;
+        let rows = Query::<S, B>::decoded_reduction_rows(&validated, &result)?;
+        let mut outputs = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let values = row.field_groups().ok_or_else(|| {
+                Error::model_validation(
+                    ModelValidationPhase::Hydration,
+                    "wrong_result_shape",
+                    vec![],
+                    "tuple-field-grouped aggregates require tuple group evidence per row",
+                    None,
+                )
+            })?;
+            outputs.push((G::decode(values)?, T::decode(row.values())?));
         }
         Ok(outputs)
     }

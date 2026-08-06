@@ -102,10 +102,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - band: band7
-            features: band7,axum-transport
           - band: band8
             features: band8,axum-transport
+          - band: band9
+            features: band9,axum-transport
     steps:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -275,8 +275,8 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
-      - name: Unified Query contract typecheck
-        run: npm run typecheck:query-contract
+      - name: Compile generated projection integration harness
+        run: npm run typecheck:projection-integration
 
       - name: Thin-binding scope probe
         run: npm run scope:probe
@@ -296,18 +296,14 @@ jobs:
       - name: Package smoke
         run: npm run smoke:package
 
-      - name: Legacy packed-package compatibility
-        run: npm run smoke:legacy-package
-
       - name: Contract foundation adapter
         run: npm run test:contract-adapter
 
-  # Exercise both legacy and typed Python APIs from the artifacts users receive.
-  # The native wheel comes from the existing Linux x86_64 build-wheels leg. The
-  # legacy runner installs the wheels; the typed runner only extracts the same
-  # prebuilt artifacts and uses an explicitly prepared interpreter/tool pair.
-  python-legacy-package-compat:
-    name: Python ${{ matrix.python-version }} installed/built-wheel compatibility
+  # Compile and execute a clean generated package against the exact wheel pair
+  # on every supported Python line. The consumer extracts candidates outside
+  # the checkout and rejects source leakage or handwritten root exports.
+  python-generated-package-compat:
+    name: Python ${{ matrix.python-version }} generated wheel compatibility
     runs-on: ubuntu-latest
     needs: build-wheels
     strategy:
@@ -327,6 +323,11 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
+
       - name: Install uv
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
         with:
@@ -336,50 +337,43 @@ jobs:
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: wheels-linux-x86_64
-          path: tmp/legacy-python-wheels/core
+          path: tmp/generated-python-wheels/core
 
       - name: Build root Python wheel
-        run: |
-          uv build --wheel --package type-bridge \
-            --out-dir tmp/legacy-python-wheels/root
+        run: >-
+          uv build --wheel --package type-bridge
+          --out-dir tmp/generated-python-wheels/root
 
-      - name: Prepare typed consumer interpreter and Pyright
+      - name: Prepare generated package and consumer tools
         run: |
-          uv venv --python python tmp/typed-python-tools
-          uv pip install --python tmp/typed-python-tools/bin/python \
+          scripts/ci/prepare_generated_live_fixture.sh python \
+            tmp/generated-python-wheels/generated
+          uv venv --python python tmp/generated-python-tools
+          uv pip install --python tmp/generated-python-tools/bin/python \
             'pydantic>=2.12.4' 'isodate==0.7.2' 'jinja2>=3.1.0' \
             'typer>=0.15.0' 'pyright>=1.1.407'
 
-      - name: Run isolated installed-package compatibility
+      - name: Run isolated generated-package compatibility
         run: |
           mapfile -t core_wheels < <(
-            find tmp/legacy-python-wheels/core -maxdepth 1 -type f \
+            find tmp/generated-python-wheels/core -maxdepth 1 -type f \
               -name 'type_bridge_core-*.whl' -print
           )
           mapfile -t root_wheels < <(
-            find tmp/legacy-python-wheels/root -maxdepth 1 -type f \
+            find tmp/generated-python-wheels/root -maxdepth 1 -type f \
               -name 'type_bridge-*.whl' -print
           )
-          if [[ ${#core_wheels[@]} -ne 1 ]]; then
-            printf 'Expected exactly one Linux x86_64 core wheel, found %s\n' \
-              "${#core_wheels[@]}" >&2
+          if [[ ${#core_wheels[@]} -ne 1 || ${#root_wheels[@]} -ne 1 ]]; then
+            printf 'Expected one root/core wheel pair; root=%s core=%s\n' \
+              "${#root_wheels[@]}" "${#core_wheels[@]}" >&2
             exit 1
           fi
-          if [[ ${#root_wheels[@]} -ne 1 ]]; then
-            printf 'Expected exactly one root Python wheel, found %s\n' \
-              "${#root_wheels[@]}" >&2
-            exit 1
-          fi
-          python scripts/ci/run_legacy_python_compat.py \
-            --artifact "${core_wheels[0]}" \
-            --artifact "${root_wheels[0]}"
-
-          python scripts/ci/run_typed_python_artifact.py \
+          python scripts/ci/run_generated_python_artifact.py \
             --root-wheel "${root_wheels[0]}" \
             --core-wheel "${core_wheels[0]}" \
-            --python "$PWD/tmp/typed-python-tools/bin/python" \
-            --pyright "$PWD/tmp/typed-python-tools/bin/pyright"
-
+            --generated-stage tmp/generated-python-wheels/generated \
+            --python "$PWD/tmp/generated-python-tools/bin/python" \
+            --pyright "$PWD/tmp/generated-python-tools/bin/pyright"
   # Code quality: linting and formatting (parallel)
   lint:
     name: Python ${{ matrix.check }}
@@ -454,6 +448,10 @@ jobs:
       - name: Install maturin
         if: matrix.target == 'tests'
         run: uv pip install maturin==1.14.1
+
+      - name: Generate example Python package
+        if: matrix.target == 'examples'
+        run: uv run type-bridge --manifest examples/typebridge.yaml schema generate
 
       - name: Run pyright on ${{ matrix.target }}
         run: uv run pyright ${{ matrix.target }}/
@@ -536,37 +534,26 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        # Every ordinary integration directory is represented here. Parity and
-        # proxy retain their dedicated jobs because they require extra runtimes.
+        # Every populated ordinary integration directory is represented here.
+        # Generated CRUD and generation coverage now lives in the schema suite;
+        # parity and proxy retain dedicated jobs because they need extra runtimes.
         test-group:
-          [crud, queries, schema, expressions, migration, session, generator, validation]
-        # Fan across all four server lines: band-7 (3.8.3, 3.10.4), band-8
-        # (3.11.5), and the dual-band 3.12 line. The 3.12 leg prefers the
+          [queries, schema, expressions, session]
+        # Fan across the retained server lines: band 8 (3.11.5) and the
+        # dual-band 3.12 line. The 3.12 leg prefers the
         # embedded band-9 driver after safe discovery, with band-8 retained as
         # the compatibility fallback. Keep in sync with compose default and
         # version SSOT in crates/core.
         typedb-server:
-          - "typedb/typedb:3.8.3"
-          - "typedb/typedb:3.10.4"
           - "typedb/typedb:3.11.5"
           - "typedb/typedb:3.12.1"
         include:
-          # Band-7 legs pair the band-7 installed Python driver — a band-7 user
-          # has this driver installed, and the gate must not spuriously fire.
-          - typedb-server: "typedb/typedb:3.8.3"
-            python-driver: "3.10.0"
-            legacy-warning: "1"
-          - typedb-server: "typedb/typedb:3.10.4"
-            python-driver: "3.10.0"
-            legacy-warning: "1"
           - typedb-server: "typedb/typedb:3.11.5"
             python-driver: "3.11.5"
-            legacy-warning: "0"
           # The 3.12 leg pairs the band-9 installed driver a 3.12 user has;
           # server 3.12 accepts it natively.
           - typedb-server: "typedb/typedb:3.12.1"
             python-driver: "3.12.1"
-            legacy-warning: "0"
 
     # Start TypeDB as a service container (runs first, before steps)
     services:
@@ -635,13 +622,12 @@ jobs:
         env:
           USE_DOCKER: false
           TYPEDB_ADDRESS: localhost:1729
-          TYPE_BRIDGE_EXPECT_LEGACY_WARNING: ${{ matrix.legacy-warning }}
         run: uv run pytest tests/integration/${{ matrix.test-group }} -m integration -v --tb=short
 
   # Rust ORM live-TypeDB integration. The ordinary rust-check job deliberately
   # leaves `integration-tests` disabled so it remains an offline gate. This job
-  # selects the non-ignored real-provider target explicitly. Earlier protocol
-  # bands remain compatibility subjects; the 3.12 leg pins Phase 0's current
+  # selects the non-ignored real-provider target explicitly. The 3.12 leg pins
+  # Phase 0's current
   # provider baseline rather than inheriting an older patch from another job.
   rust-integration:
     name: Rust integration (${{ matrix.typedb-server }})
@@ -651,10 +637,13 @@ jobs:
       fail-fast: false
       matrix:
         typedb-server:
-          - "typedb/typedb:3.8.3"
-          - "typedb/typedb:3.10.4"
           - "typedb/typedb:3.11.5"
           - "typedb/typedb:3.12.1"
+        include:
+          - typedb-server: "typedb/typedb:3.11.5"
+            semantic-profile: "typedb-3.11.5/v1"
+          - typedb-server: "typedb/typedb:3.12.1"
+            semantic-profile: "typedb-3.12.1/v1"
 
     services:
       typedb:
@@ -738,11 +727,11 @@ jobs:
           -- --ignored --exact --nocapture
 
       - name: Run generated Rust projection live smoke
-        if: matrix.typedb-server == 'typedb/typedb:3.12.1'
         env:
           TYPEDB_ADDRESS: localhost:1729
           TYPEDB_HTTP_PORT: "8000"
           TYPE_BRIDGE_RUST_PROJECTION_INTG_DATABASE: type_bridge_rust_projection_live
+          TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE: ${{ matrix.semantic-profile }}
         run: >-
           cargo test --manifest-path type-bridge-core/Cargo.toml
           -p type-bridge-schema-codegen --test rust_projection_live
@@ -796,8 +785,8 @@ jobs:
   # Required, bounded TLS proof over one server per supported protocol band.
   # This intentionally runs only typedb-runtime's focused live target: the
   # broader plaintext, binding, CLI, and remote-envelope suites have separate
-  # gates. Band 7/8 consume the namespaced compatibility packages; band 9 consumes the
-  # official upstream 3.12.1 driver against the current 3.12.1 server baseline.
+  # gates. Band 8 consumes the namespaced compatibility package; band 9
+  # consumes the official upstream 3.12.1 driver against the current server.
   tls-transport-matrix:
     name: TLS transport (${{ matrix.lane }})
     runs-on: ubuntu-latest
@@ -806,11 +795,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - lane: band7-packaging
-            typedb-server: "typedb/typedb:3.8.3"
-            server-version: "3.8.3"
-            driver-band: "7"
-            driver-version: "3.8.1"
           - lane: band8-packaging
             typedb-server: "typedb/typedb:3.11.5"
             server-version: "3.11.5"
@@ -933,14 +917,11 @@ jobs:
           -- --nocapture --test-threads=1
 
       - name: Run generated Rust application over TLS
-        # The acceptance schema intentionally carries TypeDB 3.12
-        # @doc annotations. Older-band lanes prove transport above; the ORM
-        # version-gate suite proves that this schema fails before dispatch.
-        if: matrix.driver-band == '9'
         env:
           SSL_CERT_FILE: ${{ github.workspace }}/tests/fixtures/tls/root-ca.pem
           TYPE_BRIDGE_RUST_PROJECTION_TLS: "1"
           TYPE_BRIDGE_RUST_PROJECTION_INTG_DATABASE: type_bridge_rust_projection_tls
+          TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE: typedb-${{ matrix.server-version }}/v1
           ACCEPTANCE_TARGET_DIR: ${{ github.workspace }}/type-bridge-core/target/tmp_projection_live_target
         run: |
           export TYPEDB_ADDRESS="$TYPEDB_TLS_ADDRESS"
@@ -962,50 +943,13 @@ jobs:
           docker compose -f docker-compose.yml -p type-bridge-tls-ci
           down -v --remove-orphans
 
-  # Cross-language parity gate: the #110 single-core / thin-bindings invariant only
-  # holds if a semantic divergence between the Python and Node sides reds CI. These
-  # tests shell out to the Node binding, so this job builds the Node prerequisites
-  # first, then runs them against live TypeDB under TYPE_BRIDGE_PARITY_STRICT so a
-  # "Node not built" skip fails the job instead of passing it silently (false green).
+  # Preserve the established job identity while making its authority generated-only.
+  # Binding-specific live jobs execute generated applications; this gate proves
+  # every removed handwritten operation maps to those exact sources and that
+  # all three emitters agree on the canonical projection.
   cross-language-parity:
-    name: Cross-language parity (${{ matrix.typedb-server }})
+    name: Generated cross-language parity inventory
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        # Fan across one representative line per protocol band, per I5:
-        # band-7 (3.8.3), band-8 (3.11.5), and the dual-band 3.12 line.
-        # 3.10.4 is redundant for a parity proof.
-        # Keep in sync with compose + the version SSOT.
-        typedb-server:
-          - "typedb/typedb:3.8.3"
-          - "typedb/typedb:3.11.5"
-          - "typedb/typedb:3.12.1"
-        include:
-          # Band-7 leg pairs the band-7 installed Python driver. The strict
-          # parity gate requires the per-lane legacy-warning expectation, and
-          # the given expectation pins the band's native transport claim:
-          # only the band-9 3.12 leg serves native `given` rows.
-          - typedb-server: "typedb/typedb:3.8.3"
-            python-driver: "3.10.0"
-            legacy-warning: "1"
-            expect-given: "0"
-          - typedb-server: "typedb/typedb:3.11.5"
-            python-driver: "3.11.5"
-            legacy-warning: "0"
-            expect-given: "0"
-          - typedb-server: "typedb/typedb:3.12.1"
-            python-driver: "3.12.1"
-            legacy-warning: "0"
-            expect-given: "1"
-
-    services:
-      typedb:
-        image: ${{ matrix.typedb-server }}
-        ports:
-          - 1729:1729
-          # TypeDB HTTP API; the connect-time version gate probes /v1/version.
-          - 8000:8000
-
     steps:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -1027,7 +971,7 @@ jobs:
             ${{ env.CARGO_HOME }}/registry
             ${{ env.CARGO_HOME }}/git
             type-bridge-core/target
-          key: ${{ runner.os }}-cargo-parity-v2-${{ hashFiles('type-bridge-core/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-generated-parity-${{ hashFiles('type-bridge-core/Cargo.lock') }}
 
       - name: Install uv
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
@@ -1037,122 +981,19 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra dev
 
-      - name: Install the band's Python driver
-        run: uv pip install "typedb-driver==${{ matrix.python-driver }}"
+      - name: Audit generated successors and removed-source mapping
+        run: >-
+          uv run pytest
+          tests/unit/compat/test_generated_only_operation_parity_inventory.py
+          tests/unit/compat/test_handwritten_operation_removal_map.py
+          -q --tb=short
 
-      - name: Build exact Python parity wheels
-        run: |
-          uv build --wheel --package type-bridge-core \
-            --out-dir tmp/typed-query-parity-wheels/core
-          uv build --wheel --package type-bridge \
-            --out-dir tmp/typed-query-parity-wheels/root
-
-      - name: Export exact Python parity wheel paths
-        run: |
-          mapfile -t core_wheels < <(
-            find tmp/typed-query-parity-wheels/core -maxdepth 1 -type f \
-              -name 'type_bridge_core-*.whl' -print
-          )
-          mapfile -t root_wheels < <(
-            find tmp/typed-query-parity-wheels/root -maxdepth 1 -type f \
-              -name 'type_bridge-*.whl' -print
-          )
-          if [[ ${#core_wheels[@]} -ne 1 ]]; then
-            printf 'Expected exactly one parity core wheel, found %s\n' \
-              "${#core_wheels[@]}" >&2
-            exit 1
-          fi
-          if [[ ${#root_wheels[@]} -ne 1 ]]; then
-            printf 'Expected exactly one parity root wheel, found %s\n' \
-              "${#root_wheels[@]}" >&2
-            exit 1
-          fi
-          printf 'TYPE_BRIDGE_PARITY_CORE_WHEEL=%s\n' \
-            "$(realpath "${core_wheels[0]}")" >> "$GITHUB_ENV"
-          printf 'TYPE_BRIDGE_PARITY_ROOT_WHEEL=%s\n' \
-            "$(realpath "${root_wheels[0]}")" >> "$GITHUB_ENV"
-
-      - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: "20"
-          cache: npm
-          cache-dependency-path: type-bridge-core/crates/node/package-lock.json
-
-      - name: Install Node dependencies
-        working-directory: type-bridge-core/crates/node
-        run: npm ci
-
-      # build:types is required too: the dynamic parity readers require() the package
-      # root, which resolves to dist/index.js — build:native only produces the cdylib.
-      - name: Build Node parity prerequisites
-        working-directory: type-bridge-core/crates/node
-        run: |
-          npm run build:native
-          npm run build:types
-          npm run build:typed-integration
-          npm run build:parity-reader
-          npm run build:generator-parity
-
-      - name: Export native artifact path
-        working-directory: type-bridge-core/crates/node
-        run: echo "TYPE_BRIDGE_NODE_NATIVE_PATH=$(ls "$PWD"/type_bridge_node.*.node | head -1)" >> "$GITHUB_ENV"
-
-      - name: Wait for TypeDB server to be ready
-        run: |
-          for i in {1..30}; do
-            if nc -z localhost 1729 2>/dev/null; then
-              echo "TypeDB server is ready on port 1729"
-              break
-            fi
-            echo "Waiting for port 1729... ($i/30)"
-            sleep 2
-          done
-          if ! nc -z localhost 1729 2>/dev/null; then
-            echo "ERROR: TypeDB server did not start within 60 seconds"
-            docker logs ${{ job.services.typedb.id }} 2>&1 || true
-            exit 1
-          fi
-
-      - name: Run cross-language parity (strict — skips for an unbuilt Node binding fail)
-        env:
-          USE_DOCKER: false
-          TYPEDB_ADDRESS: localhost:1729
-          TYPE_BRIDGE_PARITY_STRICT: "1"
-          TYPE_BRIDGE_PARITY_EXPECT_LEGACY_WARNING: ${{ matrix.legacy-warning }}
-          TYPE_BRIDGE_PARITY_EXPECT_GIVEN: ${{ matrix.expect-given }}
-        # The `integration or not integration` marker overrides pyproject's default
-        # `-m 'not integration'` filter so this gate runs BOTH the live-TypeDB parity
-        # tests and the offline cross-language ones (descriptor snapshots, generator
-        # parity, fixture contract) — the latter otherwise run in no CI job.
-        run: |
-          uv run pytest tests/integration/parity -m "integration or not integration" \
-            -ra --tb=short --junitxml=parity-results.xml
-
-      - name: Assert parity tests actually ran (guard against zero-collected)
-        if: always()
-        run: |
-          uv run python - <<'PY'
-          import sys
-          import xml.etree.ElementTree as ET
-
-          tree = ET.parse("parity-results.xml")
-          root = tree.getroot()
-          suite = root if root.tag == "testsuite" else root.find("testsuite")
-          tests = int(suite.get("tests", "0"))
-          skipped = int(suite.get("skipped", "0"))
-          ran = tests - skipped
-          print(f"parity: tests={tests} skipped={skipped} ran={ran}")
-          if ran <= 0:
-              print("ERROR: no parity test executed — gate would be a no-op")
-              sys.exit(1)
-          PY
-
-  # Node binding live-TypeDB integration. `node-check` covers the offline Node gates and
-  # `cross-language-parity` runs the Python parity suite against the binding — but neither
-  # runs the binding's OWN integration suites. This job mirrors the Python `test-integration`
-  # job for Node: a TypeDB service container plus the native build, then the binding's
-  # `test:integration` suite (which itself chains `test:typed-integration`).
+      - name: Check canonical Python, TypeScript, and Rust projection parity
+        run: >-
+          cargo test --locked --manifest-path type-bridge-core/Cargo.toml
+          -p type-bridge-schema-codegen --test cross_binding
+  # Node binding live-TypeDB integration. Source TypeScript is always compiled
+  # before Node executes it, including the generated-package application suite.
   node-integration:
     name: Node integration (${{ matrix.typedb-server }})
     runs-on: ubuntu-latest
@@ -1161,28 +1002,16 @@ jobs:
         working-directory: type-bridge-core/crates/node
     strategy:
       matrix:
-        # Fan across all four server lines: band-7 (3.8.3, 3.10.4), band-8
-        # (3.11.5), and the 3.12.1 V2 acceptance baseline. No python-driver
-        # pairing is needed because Node reaches TypeDB only through the
-        # embedded Rust orm seam.
         typedb-server:
-          - "typedb/typedb:3.8.3"
-          - "typedb/typedb:3.10.4"
           - "typedb/typedb:3.11.5"
           - "typedb/typedb:3.12.1"
         include:
-          - typedb-server: "typedb/typedb:3.8.3"
-            legacy-warning: "1"
-            typedb-version: "3.8.3"
-          - typedb-server: "typedb/typedb:3.10.4"
-            legacy-warning: "1"
-            typedb-version: "3.10.4"
           - typedb-server: "typedb/typedb:3.11.5"
-            legacy-warning: "0"
             typedb-version: "3.11.5"
+            semantic-profile: "typedb-3.11.5/v1"
           - typedb-server: "typedb/typedb:3.12.1"
-            legacy-warning: "0"
             typedb-version: "3.12.1"
+            semantic-profile: "typedb-3.12.1/v1"
 
     services:
       typedb:
@@ -1210,13 +1039,10 @@ jobs:
             type-bridge-core/target
           key: ${{ runner.os }}-cargo-node-v2-${{ hashFiles('type-bridge-core/Cargo.lock') }}
 
-      # Node >= 22 is required here (unlike the other Node jobs): run-integration.js
-      # executes the .test.ts files directly via node --test, relying on Node's
-      # built-in type stripping, which Node 20 does not have.
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: "22"
+          node-version: "20"
           cache: npm
           cache-dependency-path: type-bridge-core/crates/node/package-lock.json
 
@@ -1247,38 +1073,33 @@ jobs:
             exit 1
           fi
 
-      # The Node suites default TYPEDB_ADDRESS to :1730; the service is on :1729, so set it
-      # explicitly. test:integration runs the plain integration suite then chains
-      # test:typed-integration, so one command covers the binding's full live-DB surface.
+      # The suite defaults TYPEDB_ADDRESS to :1730; the service is on :1729.
       - name: Run Node integration suite
         env:
           USE_DOCKER: false
           TYPEDB_ADDRESS: localhost:1729
           TYPEDB_VERSION: ${{ matrix.typedb-version }}
-          TYPE_BRIDGE_EXPECT_LEGACY_WARNING: ${{ matrix.legacy-warning }}
         run: npm run test:integration
 
       - name: Run generated projection live smoke
-        if: matrix.typedb-server == 'typedb/typedb:3.12.1'
         env:
           USE_DOCKER: false
           TYPEDB_ADDRESS: localhost:1729
           TYPEDB_HTTP_PORT: 8000
+          TYPEDB_VERSION: ${{ matrix.typedb-version }}
+          TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE: ${{ matrix.semantic-profile }}
           TYPE_BRIDGE_NODE_INTG_DATABASE: type_bridge_projection_live
-        run: node --test --test-concurrency=1 tests/projection-integration/generated-package-live.test.ts
+        run: npm run test:projection-integration
 
   # Version-gate cells: each cell boots a server and checks either a positive
   # connect path or the expected rejection class.
   #   POS-grpc-fallback-band8: wrong HTTP port still connects through gRPC band 8.
-  #   POS-grpc-fallback-band7: wrong HTTP port tries band 8, then connects through band 7.
   #   NEG-window: Database.connect() rejects unsupported servers.
   #   NEG-driver: Database.driver rejects incompatible installed Python drivers.
   #   NEG-driver-band9: the asymmetric 3.12 pair — a band-9 driver against a
   #     3.11 server is rejected, while band-8 against 3.12 is served.
-  # The band-7 servers (3.8.3, 3.10.4) are now SERVED: normal operation is
-  # proven green by the test-integration and node-integration legs, while the
-  # gRPC-only fallback is covered here as an explicit positive cell. Cell
-  # versions mirror the version SSOT in crates/core and the compatibility table.
+  # Retired 3.10 servers are rejected before data work. Cell versions mirror
+  # the version SSOT in crates/core and the compatibility table.
   version-gate-cells:
     name: Version gate (${{ matrix.cell }})
     runs-on: ubuntu-latest
@@ -1292,28 +1113,18 @@ jobs:
             probe: connect
             http-port: 1
             expect: ok
-            expect-warning: none
-          - cell: POS-grpc-fallback-band7
-            typedb-server: "typedb/typedb:3.10.4"
-            python-driver: "3.10.0"
-            probe: connect
-            http-port: 1
-            expect: ok
-            expect-warning: legacy
           - cell: NEG-window
-            typedb-server: "typedb/typedb:3.7.3"
+            typedb-server: "typedb/typedb:3.10.4"
             python-driver: "3.11.5"
             probe: connect
             http-port: 8000
             expect: window
-            expect-warning: none
           - cell: NEG-driver
             typedb-server: "typedb/typedb:3.11.5"
             python-driver: "3.10.0"
             probe: driver
             http-port: 8000
             expect: installed
-            expect-warning: none
           # Asymmetric band acceptance (measured live): a band-9 (3.12) driver
           # is refused by a 3.11 server even though the reverse pair —
           # band-8 driver against a 3.12 server — is served.
@@ -1323,7 +1134,6 @@ jobs:
             probe: driver
             http-port: 8000
             expect: installed
-            expect-warning: none
 
     services:
       typedb:
@@ -1379,4 +1189,4 @@ jobs:
           nc -z localhost 1729
 
       - name: Assert version-gate cell
-        run: uv run python scripts/ci/assert_gate_rejection.py --address localhost:1729 --probe ${{ matrix.probe }} --http-port ${{ matrix.http-port }} --expect ${{ matrix.expect }} --expect-warning ${{ matrix.expect-warning }}
+        run: uv run python scripts/ci/assert_gate_rejection.py --address localhost:1729 --probe ${{ matrix.probe }} --http-port ${{ matrix.http-port }} --expect ${{ matrix.expect }}
