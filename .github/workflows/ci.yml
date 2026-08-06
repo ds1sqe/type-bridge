@@ -1101,7 +1101,7 @@ jobs:
   # connect path or the expected rejection class.
   #   POS-grpc-fallback-band8: wrong HTTP port still connects through gRPC band 8.
   #   NEG-window: Database.connect() rejects unsupported servers.
-  #   NEG-driver: Database.driver rejects incompatible installed Python drivers.
+  #   NEG-driver-window: Database.driver rejects retired installed Python drivers.
   #   NEG-driver-band9: the asymmetric 3.12 pair — a band-9 driver against a
   #     3.11 server is rejected, while band-8 against 3.12 is served.
   # Retired 3.10 servers are rejected before data work. Cell versions mirror
@@ -1125,12 +1125,12 @@ jobs:
             probe: connect
             http-port: 8000
             expect: window
-          - cell: NEG-driver
+          - cell: NEG-driver-window
             typedb-server: "typedb/typedb:3.11.5"
             python-driver: "3.10.0"
             probe: driver
             http-port: 8000
-            expect: installed
+            expect: window
           # Asymmetric band acceptance (measured live): a band-9 (3.12) driver
           # is refused by a 3.11 server even though the reverse pair —
           # band-8 driver against a 3.12 server — is served.
