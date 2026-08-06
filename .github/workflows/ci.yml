@@ -682,6 +682,12 @@ jobs:
             type-bridge-core/target
           key: ${{ runner.os }}-cargo-rust-integration-v1-${{ hashFiles('type-bridge-core/Cargo.lock') }}
 
+      # The generated Rust live test stages a clean consumer crate and checks
+      # it offline. Populate every package in the locked workspace graph first
+      # so a partial cache cannot make that clean-consumer proof band-dependent.
+      - name: Fetch the locked Rust graph
+        run: cargo fetch --locked --manifest-path type-bridge-core/Cargo.toml
+
       - name: Install the source-tree Python product
         if: matrix.typedb-server == 'typedb/typedb:3.12.1'
         env:
