@@ -15,8 +15,8 @@ through the TypeBridge server.
 
     ---
 
-    Declarative Pydantic models, schema management, CRUD, expressions, and
-    immutable typed queries.
+    Generated value/model classes, concise managers, transactions, and
+    immutable direct or remote queries.
 
     [:octicons-arrow-right-24: Python quick start](getting-started/quickstart.md)
 
@@ -24,8 +24,8 @@ through the TypeBridge server.
 
     ---
 
-    Branded attributes, typed managers, native execution, model generation,
-    and direct or remote queries.
+    Generated branded values, typed managers, native execution, and direct or
+    remote queries.
 
     [:octicons-arrow-right-24: Node SDK](guide/typescript.md)
 
@@ -52,7 +52,7 @@ through the TypeBridge server.
 ## One semantic engine
 
 ```text
-Split-YAML / TypeQL schema
+       Split-YAML workspace
              │
              ▼
   Rust schema · query · migration · ORM
@@ -64,10 +64,11 @@ Split-YAML / TypeQL schema
               TypeDB 3.x / server
 ```
 
-Python and Node are typed language facades, not independent implementations.
-Generated Rust applications and the standalone server consume the same
-canonical contracts. This keeps cardinality, roles, inheritance, value
-coercion, query validation, and migration behavior aligned.
+Python and Node generated packages are typed language projections, not schema
+authorities or independent implementations. Generated Rust applications and
+the standalone server consume the same canonical contracts. This keeps
+cardinality, roles, inheritance, value coercion, query validation, and
+migration behavior aligned.
 
 ## Choose a path
 
@@ -76,12 +77,10 @@ coercion, query validation, and migration behavior aligned.
 - Building reads and writes? Use the [data workflows](guide/data.md).
 - Owning schema evolution? Follow [schema and migration workflows](guide/schema-workflows.md).
 - Evaluating languages and deployment shapes? [Compare the SDKs](guide/sdks.md).
-- Upgrading an application? Read [Upgrading to 2.0](guide/upgrade-v2.md) and
+- Upgrading an application? Read [Upgrading to 2.1](guide/upgrade-v2.md) and
   the exact [deprecation inventory](guide/v2-deprecations.md).
 - Contributing? Start with the [development guide](development/index.md).
 
-!!! note "Compatibility"
-
-    TypeBridge 2.0.x supports TypeDB 3.8–3.12. TypeDB 3.8 and 3.10 support is
-    deprecated for removal in TypeBridge 2.1. See the
-    [server and driver matrix](development/typedb.md#server-and-driver-compatibility).
+The exact retained provider window and upgrade policy are in the
+[server and driver matrix](development/typedb.md#server-and-driver-compatibility)
+and [compatibility inventory](guide/v2-deprecations.md).

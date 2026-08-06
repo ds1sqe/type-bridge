@@ -2,8 +2,8 @@
 
 import warnings
 
-import type_bridge as tbg
-from type_bridge import Role, String, TypeFlags
+import tests.utils.handwritten as tbg
+from tests.utils.handwritten import Role, String, TypeFlags
 
 
 class TestBaseFlag:
@@ -186,39 +186,6 @@ class TestBaseFlag:
         assert "relates friend1" in schema
         assert "relates friend2" in schema
         assert "sub" not in schema  # No supertype
-
-    def test_schema_manager_skips_base_classes(self):
-        """Test that SchemaManager properly handles base classes."""
-        from type_bridge import Database, SchemaManager
-
-        class Name(String):
-            pass
-
-        # Base class
-        class Entity(tbg.Entity):
-            flags = TypeFlags(base=True)
-
-        # Concrete entities
-        class Person(Entity):
-            flags = TypeFlags(name="person")
-            name: Name
-
-        class Company(Person):
-            flags = TypeFlags(name="company")
-
-        # Create schema manager
-        schema_manager = SchemaManager(Database("localhost:1729", "test"))
-        schema_manager.register(Entity, Person, Company)
-
-        # Generate schema
-        schema = schema_manager.generate_schema()
-
-        # Base class should NOT appear in schema
-        assert "entity entity" not in schema.lower()
-
-        # Concrete entities should appear
-        assert "entity person" in schema
-        assert "entity company sub person" in schema
 
     def test_is_base_default_false(self):
         """Test that base defaults to False for normal entities."""

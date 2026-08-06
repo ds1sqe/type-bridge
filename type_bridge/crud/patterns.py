@@ -12,7 +12,8 @@ from type_bridge.query.ast import (
 from type_bridge.query.compiler import QueryCompiler
 
 if TYPE_CHECKING:
-    from type_bridge.models import Entity, Relation
+    from type_bridge.models.entity import _QueryEntity as Entity
+    from type_bridge.models.relation import _QueryRelation as Relation
 
 
 def _get_literal_type(

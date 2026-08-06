@@ -65,7 +65,7 @@ both gRPC (`1729`) and version HTTP (`8000`). Its backend links remain local,
 plaintext container traffic; only the dynamically published host endpoints
 are used by the TLS tests.
 
-CI runs the focused runtime target against TypeDB 3.8.3, 3.11.5, and 3.12.1.
+CI runs the focused runtime target against TypeDB 3.11.5 and 3.12.1.
 For the `NativeRoots` proof on Linux, the test process scopes the standard
 `SSL_CERT_FILE` native-store override to `root-ca.pem` after Cargo has fetched
 the locked dependency graph; Cargo then stays offline. This makes native-root

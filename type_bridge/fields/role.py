@@ -1,4 +1,4 @@
-# ruff: noqa: UP046 -- the defaulted contravariant owner preserves legacy generic arity.
+# ruff: noqa: UP046 -- the defaulted contravariant owner preserves V1 generic arity.
 
 """Role-player field references for type-safe query building.
 
@@ -19,11 +19,11 @@ from weakref import ReferenceType, WeakKeyDictionary, ref
 
 from typing_extensions import TypeVar
 
-from type_bridge.models.base import TypeDBType
+from type_bridge.models.base import _QueryTypeDBType as TypeDBType
 
 if TYPE_CHECKING:
-    from type_bridge.attribute.base import Attribute
-    from type_bridge.attribute.string import String
+    from type_bridge.attribute.base import _QueryAttribute as Attribute
+    from type_bridge.attribute.string import _QueryString as String
     from type_bridge.expressions.base import Expression
     from type_bridge.expressions.role_player import RolePlayerExpr
 
@@ -212,6 +212,11 @@ class RolePlayerNumericFieldRef[T: "Attribute"](RolePlayerFieldRef[T]):
     pass  # Inherits comparison methods; aggregations not applicable for role-player fields
 
 
+_QueryRolePlayerFieldRef = RolePlayerFieldRef
+_QueryRolePlayerStringFieldRef = RolePlayerStringFieldRef
+_QueryRolePlayerNumericFieldRef = RolePlayerNumericFieldRef
+
+
 class RoleRef(Generic[T_Player, T_RelationOwner_contra]):
     """Reference to a role for type-safe attribute access.
 
@@ -278,7 +283,7 @@ class RoleRef(Generic[T_Player, T_RelationOwner_contra]):
             self._player_attrs = all_attrs
         return self._player_attrs
 
-    def __getattr__(self, name: str) -> RolePlayerFieldRef[Any]:
+    def __getattr__(self, name: str) -> _QueryRolePlayerFieldRef[Any]:
         """Access role-player attribute for query building.
 
         Args:
@@ -306,7 +311,7 @@ class RoleRef(Generic[T_Player, T_RelationOwner_contra]):
         attr_type, _attr_info = player_attrs[name]
         return self._make_field_ref(name, attr_type)
 
-    def _make_field_ref(self, field_name: str, attr_type: type) -> RolePlayerFieldRef[Any]:
+    def _make_field_ref(self, field_name: str, attr_type: type) -> _QueryRolePlayerFieldRef[Any]:
         """Create appropriate RolePlayerFieldRef subclass based on attribute type.
 
         Args:
@@ -316,13 +321,13 @@ class RoleRef(Generic[T_Player, T_RelationOwner_contra]):
         Returns:
             RolePlayerFieldRef, RolePlayerStringFieldRef, or RolePlayerNumericFieldRef
         """
-        from type_bridge.attribute.decimal import Decimal
-        from type_bridge.attribute.double import Double
-        from type_bridge.attribute.integer import Integer
-        from type_bridge.attribute.string import String
+        from type_bridge.attribute.decimal import _QueryDecimal as Decimal
+        from type_bridge.attribute.double import _QueryDouble as Double
+        from type_bridge.attribute.integer import _QueryInteger as Integer
+        from type_bridge.attribute.string import _QueryString as String
 
         if issubclass(attr_type, String):
-            return RolePlayerStringFieldRef(
+            return _QueryRolePlayerStringFieldRef(
                 role_name=self.role_name,
                 field_name=field_name,
                 attr_type=attr_type,
@@ -330,14 +335,14 @@ class RoleRef(Generic[T_Player, T_RelationOwner_contra]):
             )
 
         if issubclass(attr_type, (Integer, Double, Decimal)):
-            return RolePlayerNumericFieldRef(
+            return _QueryRolePlayerNumericFieldRef(
                 role_name=self.role_name,
                 field_name=field_name,
                 attr_type=attr_type,
                 player_types=self.player_types,
             )
 
-        return RolePlayerFieldRef(
+        return _QueryRolePlayerFieldRef(
             role_name=self.role_name,
             field_name=field_name,
             attr_type=attr_type,
@@ -353,6 +358,9 @@ class RoleRef(Generic[T_Player, T_RelationOwner_contra]):
         return sorted(self._get_player_attrs().keys())
 
 
+_QueryRoleRef = RoleRef
+
+
 type _RoleReferenceSnapshot = tuple[
     ReferenceType[object],
     str,
@@ -365,7 +373,7 @@ _TYPED_QUERY_ROLE_REFERENCES: WeakKeyDictionary[object, _RoleReferenceSnapshot] 
 )
 
 
-def _mark_typed_query_role_reference[ReferenceT: RoleRef[Any, Any]](
+def _mark_typed_query_role_reference[ReferenceT: _QueryRoleRef[Any, Any]](
     reference: ReferenceT,
 ) -> ReferenceT:
     """Record that a role reference came from a real model descriptor."""
@@ -386,7 +394,7 @@ def _typed_query_role_reference_owner(
     reference: object,
 ) -> tuple[type[TypeDBType], str] | None:
     """Return immutable owner provenance for one genuine, unchanged reference."""
-    if not isinstance(reference, RoleRef):
+    if not isinstance(reference, _QueryRoleRef):
         return None
     try:
         snapshot = _TYPED_QUERY_ROLE_REFERENCES.get(reference)
@@ -422,3 +430,9 @@ def _typed_query_role_reference_owner_name(reference: object) -> str | None:
 def _is_typed_query_role_reference(reference: object) -> bool:
     """Return whether a role reference came from a real model descriptor."""
     return _typed_query_role_reference_owner_name(reference) is not None
+
+
+del RolePlayerFieldRef
+del RolePlayerStringFieldRef
+del RolePlayerNumericFieldRef
+del RoleRef

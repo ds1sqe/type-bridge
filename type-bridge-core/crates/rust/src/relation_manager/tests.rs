@@ -40,7 +40,7 @@ fn worker_role() -> &'static str {
     )
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct AssignmentCreate {
     position: String,
     worker_iid: String,

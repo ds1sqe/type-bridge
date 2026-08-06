@@ -105,7 +105,7 @@ nav:
       - Abstract Types: guide/abstract-types.md
       - Cardinality & Flags: guide/cardinality.md
       - Validation: guide/validation.md
-      - API DTOs: guide/dto.md
+      - Application DTOs: guide/dto.md
     - Read and Write Data:
       - Overview: guide/data.md
       - CRUD & Transactions: guide/crud.md
@@ -117,8 +117,8 @@ nav:
       - Split-YAML & Workspace V1: guide/split-yaml-v1.md
       - Migrations: guide/migrations.md
       - Code Generator: guide/generator.md
-      - Python Schema Management: guide/schema.md
-      - TOML Schema DSL: guide/toml.md
+      - Schema Commands: guide/schema.md
+      - TOML Recovery: guide/toml.md
     - Operate and Upgrade:
       - Overview: guide/operations.md
       - Server Container: guide/server-container.md

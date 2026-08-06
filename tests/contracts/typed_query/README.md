@@ -17,9 +17,10 @@ the production Rust selected-result executor performs tuple/root distinctness,
 page windows, collection multiplicity, hydration, count, and existence.
 
 The ten marked documentation blocks are concatenated without semantic edits
-into `python/documented_examples.py` and the Node contract's
-`documented-examples.typecheck.ts`. The contract test checks source parity;
-Pyright and `tsc` compile those complete language examples.
+into `python/documented_examples.py` and
+`typescript/documented_examples.ts`. The contract test checks source parity;
+the schema-codegen acceptance runners emit the canonical fixture package and
+then compile both complete examples with Pyright and `tsc`.
 
 Python and TypeScript bindings must consume the same Rust semantics. A
 language-specific test may render or type a case, but it must not change the

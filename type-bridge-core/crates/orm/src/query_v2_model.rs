@@ -3054,6 +3054,13 @@ fn evaluate_pattern(
             }
             Ok(false)
         }
+        QueryPatternV2::FieldPresence { field, present } => {
+            Ok(solution_field_values(solution, graph, field)?.is_empty() != *present)
+        }
+        QueryPatternV2::BindingIid { binding, iid } => Ok(solution
+            .bindings
+            .get(&binding.get())
+            .is_some_and(|candidate| candidate.eq_ignore_ascii_case(iid))),
         QueryPatternV2::RoleEdge {
             relation,
             role,

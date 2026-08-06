@@ -3,18 +3,18 @@
 use std::collections::HashMap;
 use std::marker::PhantomData;
 
+use crate::_manager::hydration::{extract_count, hydrate_relation};
+use crate::_manager::query_builder;
+use crate::_relation::TypeBridgeRelation;
 use crate::error::{OrmError, Result};
 use crate::expr::{Agg, AggResult, Expr, SortDir};
-use crate::manager::hydration::{extract_count, hydrate_relation};
-use crate::manager::query_builder;
 use crate::query::group_by_query::GroupByRelationQuery;
-use crate::relation::TypeBridgeRelation;
 use crate::session::Database;
 use crate::session::backend::{QueryResult, TxType};
 
 /// A chainable query builder for relation types.
 ///
-/// Created via [`RelationManager::query()`](crate::manager::RelationManager::query).
+/// Created via [`RelationManager::query()`](crate::_manager::RelationManager::query).
 ///
 /// # Example
 ///

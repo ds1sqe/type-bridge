@@ -9,7 +9,7 @@
 //!
 //! | Item | Role |
 //! |------|------|
-//! | [`MIN_SUPPORTED`] | Floor of the support window (`3.8.0`) |
+//! | [`MIN_SUPPORTED`] | Floor of the support window (`3.11.0`) |
 //! | [`MAX_SUPPORTED_LINE`] | Ceiling of the support window as `(major, minor)` (`3.12`) |
 //! | [`window_contains`] | Range predicate combining both bounds |
 //! | [`band`] | Band a driver natively speaks (data; measured against live servers) |
@@ -17,9 +17,6 @@
 //! | [`negotiate_server_band`] | Pick the embedded band to connect a server with |
 //! | [`check_supported`] | Installed-driver gate: window + driver band ∈ server's accepted set |
 //! | [`check_server_supported`] | Embedded-runtime gate: window + accepted ∩ embedded ≠ ∅ |
-//! | [`support_status`] | Pure supported/deprecated/unsupported server-line classification |
-//! | [`known_server_deprecation_notice`] | Core-owned notice for a known deprecated server version |
-//! | [`unknown_legacy_fallback_deprecation_notice`] | Core-owned notice for an unknown legacy fallback |
 //! | [`server_version`] | Released Boolean adapter for the HTTP version probe |
 //! | [`server_version_plaintext`] | Explicit plaintext HTTP version probe |
 //! | [`server_version_native_roots`] | HTTPS version probe using native trust roots |
@@ -144,10 +141,10 @@ pub const DEFAULT_HTTP_PORT: u16 = 8000;
 // Window constants (SSOT — declared exactly once, here)
 // ---------------------------------------------------------------------------
 
-/// Floor of the TypeDB support window (`3.8.0`, inclusive).
+/// Floor of the TypeDB support window (`3.11.0`, inclusive).
 ///
 /// Anything below this version is unsupported and must fail fast at connect.
-pub const MIN_SUPPORTED: Version = Version::new(3, 8, 0);
+pub const MIN_SUPPORTED: Version = Version::new(3, 11, 0);
 
 /// Ceiling of the TypeDB support window as `(major, minor)`, inclusive.
 ///
@@ -162,7 +159,7 @@ pub const MAX_SUPPORTED_LINE: (u32, u32) = (3, 12);
 /// Return `true` when `v` falls within the support window.
 ///
 /// A version is in-window when:
-/// - `v >= MIN_SUPPORTED` (i.e. at least `3.8.0`), **and**
+/// - `v >= MIN_SUPPORTED` (i.e. at least `3.11.0`), **and**
 /// - `(v.major, v.minor) <= MAX_SUPPORTED_LINE` (i.e. at most `3.12.x`).
 pub fn window_contains(v: &Version) -> bool {
     *v >= MIN_SUPPORTED && (v.major, v.minor) <= MAX_SUPPORTED_LINE
@@ -180,12 +177,8 @@ pub fn window_contains(v: &Version) -> bool {
 /// band (see [`server_accepted_bands`]).  This map lets the gate detect the
 /// mismatch **before** attempting a connection.
 ///
-/// Measured by connecting every driver line (3.7.0, 3.8.1, 3.10.0, 3.11.5,
-/// 3.12.0) against every server line (3.7.3, 3.8.3, 3.10.4, 3.11.5, 3.12.0):
-///
 /// | Minor line | Band |
 /// |-----------|------|
-/// | 3.7, 3.8, 3.10 | `7` (protocol 7) |
 /// | 3.11 | `8` (protocol 8) |
 /// | 3.12 | `9` (protocol 3.12.0-rc0) |
 /// | anything else (incl. 3.9, 3.13, 2.x) | `None` |
@@ -199,7 +192,6 @@ pub fn band(v: &Version) -> Option<u8> {
         return None;
     }
     match v.minor {
-        7 | 8 | 10 => Some(7),
         11 => Some(8),
         12 => Some(9),
         // 3.9 was never released; 3.13+ not yet mapped.
@@ -226,7 +218,6 @@ pub fn band(v: &Version) -> Option<u8> {
 ///
 /// | Server line | Accepts |
 /// |-------------|---------|
-/// | 3.7, 3.8, 3.10 | `[7]` |
 /// | 3.11 | `[8]` |
 /// | 3.12 | `[9, 8]` |
 /// | anything else | `[]` |
@@ -235,7 +226,6 @@ pub fn server_accepted_bands(v: &Version) -> &'static [u8] {
         return &[];
     }
     match v.minor {
-        7 | 8 | 10 => &[7],
         11 => &[8],
         12 => &[9, 8],
         _ => &[],
@@ -319,7 +309,7 @@ pub fn check_supported(driver: &Version, server: &Version) -> Result<(), Version
 /// build embeds band 9 and negotiates that native band first.
 ///
 /// `embedded_bands` is supplied by the caller and is cfg-derived from the
-/// `band7` / `band8` / `band9` features compiled into that crate — core
+/// `band8` / `band9` features compiled into that crate — core
 /// declares no band features and never hardcodes the set.
 ///
 /// # Errors
@@ -361,118 +351,6 @@ pub fn check_server_supported(server: &Version, embedded_bands: &[u8]) -> Result
         // In-window, mapped, but this build embeds no driver the server accepts.
         Err(VersionError::EmbeddedUnavailable { server: *server })
     }
-}
-
-// ---------------------------------------------------------------------------
-// Server support and deprecation status
-// ---------------------------------------------------------------------------
-
-/// Stable cross-binding code for TypeDB legacy-server deprecation notices.
-///
-/// Rust tracing, Python warnings, and Node process warnings use this exact
-/// identifier so callers can filter the notice without matching prose.
-pub const TYPEDB_LEGACY_SERVER_DEPRECATION_CODE: &str = "TYPE_BRIDGE_TYPEDB_LEGACY_SERVER";
-
-/// TypeBridge release that removes active TypeDB 3.8/3.10 server support.
-///
-/// The legacy window closes in the 2.1.0 minor release: it is a scheduled,
-/// deliberate exception to the ordinary major-version removal schedule, and
-/// from 2.1.0 the wheel embeds only the band-8 and band-9 driver lines.
-/// Every TypeBridge 2.0.x release continues to support these server lines.
-pub const TYPEDB_LEGACY_SERVER_REMOVAL_RELEASE: &str = "2.1.0";
-
-/// Support status for one exact, known TypeDB server version.
-///
-/// This classification is pure and does not emit a warning. Bindings decide
-/// how to surface a [`Self::Deprecated`] result while sharing the stable code
-/// and core-owned prose below.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum ServerSupportStatus {
-    /// The server is in the active window and has no scheduled compatibility
-    /// removal.
-    Supported,
-    /// The server remains fully supported throughout TypeBridge 2.0.x but its
-    /// active provider support is scheduled for removal in TypeBridge 2.1.0.
-    Deprecated,
-    /// The server is outside the active window or has no mapped accepted
-    /// protocol path.
-    Unsupported,
-}
-
-impl ServerSupportStatus {
-    /// Return the stable warning code when this status is deprecated.
-    #[must_use]
-    pub const fn deprecation_code(self) -> Option<&'static str> {
-        match self {
-            Self::Deprecated => Some(TYPEDB_LEGACY_SERVER_DEPRECATION_CODE),
-            Self::Supported | Self::Unsupported => None,
-        }
-    }
-
-    /// Return the scheduled TypeBridge removal release when deprecated.
-    #[must_use]
-    pub const fn removal_release(self) -> Option<&'static str> {
-        match self {
-            Self::Deprecated => Some(TYPEDB_LEGACY_SERVER_REMOVAL_RELEASE),
-            Self::Supported | Self::Unsupported => None,
-        }
-    }
-}
-
-/// Classify one exact, known TypeDB server version.
-///
-/// TypeDB 3.8.x and 3.10.x are deprecated but remain operational throughout
-/// TypeBridge 2.x. TypeDB 3.11.x and 3.12.x are supported without a scheduled
-/// removal. Versions rejected by the existing server gate, including the
-/// unreleased 3.9 line, classify as [`ServerSupportStatus::Unsupported`].
-#[must_use]
-pub fn support_status(server: &Version) -> ServerSupportStatus {
-    if !window_contains(server) || server_accepted_bands(server).is_empty() {
-        return ServerSupportStatus::Unsupported;
-    }
-
-    if server.major == 3 && matches!(server.minor, 8 | 10) {
-        ServerSupportStatus::Deprecated
-    } else {
-        ServerSupportStatus::Supported
-    }
-}
-
-/// Return the shared notice for one exact deprecated server version.
-///
-/// Supported and unsupported versions return `None`; unsupported versions
-/// remain the responsibility of the existing version gate.
-#[must_use]
-pub fn known_server_deprecation_notice(server: &Version) -> Option<String> {
-    if support_status(server) != ServerSupportStatus::Deprecated {
-        return None;
-    }
-
-    Some(format!(
-        "TypeDB {server} is on the 3.8/3.10 line, which is deprecated in \
-         type-bridge 2.0. Support for this server line will be removed in \
-         type-bridge {TYPEDB_LEGACY_SERVER_REMOVAL_RELEASE}. Connections keep \
-         working throughout 2.0.x. Upgrade the server to TypeDB 3.11 or 3.12, \
-         or pin type-bridge>=2,<2.1."
-    ))
-}
-
-/// Return the shared notice for a connection whose legacy fallback cannot
-/// report an exact TypeDB version.
-///
-/// The wording names the compatibility path rather than claiming that an
-/// unknown server is definitely on a particular semantic-version line.
-#[must_use]
-pub fn unknown_legacy_fallback_deprecation_notice() -> String {
-    format!(
-        "This connection uses the legacy TypeDB 3.8/3.10-compatible fallback \
-         path, which is deprecated in type-bridge 2.0. Support for this path \
-         will be removed in type-bridge {TYPEDB_LEGACY_SERVER_REMOVAL_RELEASE}. \
-         Connections keep working throughout 2.0.x. Upgrade the server to TypeDB \
-         3.11 or 3.12, or pin type-bridge>=2,<2.1. Configure an exact server \
-         version for strict validation."
-    )
 }
 
 // ---------------------------------------------------------------------------
@@ -1431,7 +1309,7 @@ pub(crate) fn version_endpoint(address: &str, http_port: u16, tls: bool) -> Stri
 
 /// Parse the JSON body returned by TypeDB's `GET /v1/version` endpoint.
 ///
-/// Expected shape: `{"distribution": "TypeDB CE", "version": "3.10.4"}`.
+/// Expected shape: `{"distribution": "TypeDB CE", "version": "3.12.1"}`.
 /// Any deviation — including a missing `version` field or an unparseable
 /// version string — is returned as [`VersionError::Probe`].
 pub(crate) fn parse_version_response(json: &str) -> Result<Version, VersionError> {
@@ -1625,7 +1503,7 @@ pub enum VersionError {
 }
 
 /// Human-readable window string used consistently in error messages.
-const WINDOW_HUMAN: &str = "3.8.0–3.12.x";
+const WINDOW_HUMAN: &str = "3.11.0–3.12.x";
 
 impl fmt::Display for VersionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1713,7 +1591,7 @@ mod tests {
     #[test]
     fn parse_error_on_prerelease() {
         // Strict — pre-release suffix is not accepted.
-        assert!("3.10.4-alpha".parse::<Version>().is_err());
+        assert!("3.12.1-alpha".parse::<Version>().is_err());
     }
 
     #[test]
@@ -1723,8 +1601,8 @@ mod tests {
 
     #[test]
     fn display_round_trips() {
-        let v = Version::new(3, 10, 4);
-        assert_eq!(v.to_string(), "3.10.4");
+        let v = Version::new(3, 12, 1);
+        assert_eq!(v.to_string(), "3.12.1");
         let v2 = Version::new(3, 11, 0);
         assert_eq!(v2.to_string(), "3.11.0");
     }
@@ -1732,17 +1610,13 @@ mod tests {
     // -- window_contains -----------------------------------------------------
 
     #[test]
-    fn window_rejects_3_7_9() {
-        assert!(!window_contains(&Version::new(3, 7, 9)));
+    fn window_rejects_versions_below_3_11() {
+        assert!(!window_contains(&Version::new(3, 8, 0)));
+        assert!(!window_contains(&Version::new(3, 10, 99)));
     }
 
     #[test]
-    fn window_accepts_3_8_0_floor() {
-        assert!(window_contains(&Version::new(3, 8, 0)));
-    }
-
-    #[test]
-    fn window_accepts_3_11_0() {
+    fn window_accepts_3_11_0_floor() {
         assert!(window_contains(&Version::new(3, 11, 0)));
     }
 
@@ -1769,18 +1643,10 @@ mod tests {
     // -- band ----------------------------------------------------------------
 
     #[test]
-    fn band_3_7_is_7() {
-        assert_eq!(band(&Version::new(3, 7, 0)), Some(7));
-    }
-
-    #[test]
-    fn band_3_8_is_7() {
-        assert_eq!(band(&Version::new(3, 8, 1)), Some(7));
-    }
-
-    #[test]
-    fn band_3_10_is_7() {
-        assert_eq!(band(&Version::new(3, 10, 4)), Some(7));
+    fn retired_lines_have_no_active_band() {
+        assert_eq!(band(&Version::new(3, 7, 0)), None);
+        assert_eq!(band(&Version::new(3, 8, 1)), None);
+        assert_eq!(band(&Version::new(3, 10, 4)), None);
     }
 
     #[test]
@@ -1812,9 +1678,9 @@ mod tests {
     // -- server_accepted_bands -------------------------------------------------
 
     #[test]
-    fn server_accepts_band7_lines() {
-        assert_eq!(server_accepted_bands(&Version::new(3, 8, 3)), &[7]);
-        assert_eq!(server_accepted_bands(&Version::new(3, 10, 4)), &[7]);
+    fn retired_server_lines_accept_no_active_band() {
+        assert!(server_accepted_bands(&Version::new(3, 8, 3)).is_empty());
+        assert!(server_accepted_bands(&Version::new(3, 10, 4)).is_empty());
     }
 
     #[test]
@@ -1839,9 +1705,9 @@ mod tests {
 
     #[test]
     fn negotiate_3_12_without_band9_picks_band8() {
-        // A reduced {7, 8} build uses the server's compatible band-8 fallback.
+        // A reduced band-8 build uses the server's compatible fallback.
         assert_eq!(
-            negotiate_server_band(&Version::new(3, 12, 0), &[7, 8]),
+            negotiate_server_band(&Version::new(3, 12, 0), &[8]),
             Some(8)
         );
     }
@@ -1857,40 +1723,38 @@ mod tests {
 
     #[test]
     fn negotiate_none_when_no_overlap() {
-        assert_eq!(negotiate_server_band(&Version::new(3, 11, 5), &[7]), None);
+        assert_eq!(negotiate_server_band(&Version::new(3, 11, 5), &[9]), None);
     }
 
     // -- check_supported -----------------------------------------------------
 
     #[test]
-    fn check_driver_310_server_383_accept() {
-        // Band A × Band A — cross-line intra-band interop must work.
-        assert!(check_supported(&Version::new(3, 10, 0), &Version::new(3, 8, 3)).is_ok());
-    }
-
-    #[test]
-    fn check_driver_381_server_104_accept() {
-        // Band A × Band A — same direction.
-        assert!(check_supported(&Version::new(3, 8, 1), &Version::new(3, 10, 4)).is_ok());
-    }
-
-    #[test]
-    fn check_driver_3115_server_3104_reject_band_mismatch() {
-        // Band B driver vs Band A server.
+    fn check_retired_server_rejects_as_unsupported() {
         let err = check_supported(&Version::new(3, 11, 5), &Version::new(3, 10, 4)).unwrap_err();
         assert!(
-            matches!(err, VersionError::BandMismatch { .. }),
-            "expected BandMismatch, got {err:?}"
+            matches!(
+                err,
+                VersionError::Unsupported {
+                    component: "server",
+                    ..
+                }
+            ),
+            "expected Unsupported(server), got {err:?}"
         );
     }
 
     #[test]
-    fn check_driver_3100_server_3115_reject_band_mismatch() {
-        // Band A driver vs Band B server.
+    fn check_retired_driver_rejects_as_unsupported() {
         let err = check_supported(&Version::new(3, 10, 0), &Version::new(3, 11, 5)).unwrap_err();
         assert!(
-            matches!(err, VersionError::BandMismatch { .. }),
-            "expected BandMismatch, got {err:?}"
+            matches!(
+                err,
+                VersionError::Unsupported {
+                    component: "driver",
+                    ..
+                }
+            ),
+            "expected Unsupported(driver), got {err:?}"
         );
     }
 
@@ -1934,7 +1798,7 @@ mod tests {
 
     #[test]
     fn check_server_2_28_reject_window() {
-        let err = check_supported(&Version::new(3, 10, 0), &Version::new(2, 28, 0)).unwrap_err();
+        let err = check_supported(&Version::new(3, 11, 5), &Version::new(2, 28, 0)).unwrap_err();
         assert!(
             matches!(
                 err,
@@ -1950,21 +1814,14 @@ mod tests {
     // -- check_server_supported ----------------------------------------------
 
     #[test]
-    fn server_383_both_bands_accept() {
-        // In-window band-7 server, both bands embedded → served.
-        assert!(check_server_supported(&Version::new(3, 8, 3), &[7, 8]).is_ok());
-    }
-
-    #[test]
-    fn server_3115_both_bands_accept() {
-        // In-window band-8 server, both bands embedded → served.
-        assert!(check_server_supported(&Version::new(3, 11, 5), &[7, 8]).is_ok());
+    fn server_3115_retained_bands_accept() {
+        assert!(check_server_supported(&Version::new(3, 11, 5), &[8, 9]).is_ok());
     }
 
     #[test]
     fn server_373_reject_window() {
         // Below the floor — window class, never a band/embedded message.
-        let err = check_server_supported(&Version::new(3, 7, 3), &[7, 8]).unwrap_err();
+        let err = check_server_supported(&Version::new(3, 7, 3), &[8, 9]).unwrap_err();
         assert!(
             matches!(
                 err,
@@ -1985,13 +1842,12 @@ mod tests {
     fn server_3120_both_bands_accept() {
         // Dual-band server: accepts [9, 8]; the default build's band-8 driver
         // serves it (measured live).
-        assert!(check_server_supported(&Version::new(3, 12, 0), &[7, 8]).is_ok());
+        assert!(check_server_supported(&Version::new(3, 12, 0), &[8, 9]).is_ok());
     }
 
     #[test]
-    fn server_3120_band7_only_unavailable() {
-        // Server 3.12 accepts [9, 8]; a band-7-only build embeds neither.
-        let err = check_server_supported(&Version::new(3, 12, 0), &[7]).unwrap_err();
+    fn server_3120_without_retained_overlap_is_unavailable() {
+        let err = check_server_supported(&Version::new(3, 12, 0), &[1]).unwrap_err();
         assert!(
             matches!(err, VersionError::EmbeddedUnavailable { .. }),
             "expected EmbeddedUnavailable, got {err:?}"
@@ -2001,7 +1857,7 @@ mod tests {
     #[test]
     fn server_3130_reject_window() {
         // Above the ceiling — window class.
-        let err = check_server_supported(&Version::new(3, 13, 0), &[7, 8]).unwrap_err();
+        let err = check_server_supported(&Version::new(3, 13, 0), &[8, 9]).unwrap_err();
         assert!(
             matches!(
                 err,
@@ -2019,19 +1875,23 @@ mod tests {
     }
 
     #[test]
-    fn server_383_band8_only_unavailable() {
-        // Band-7 server, only band-8 embedded → embedded-unavailable.
-        let err = check_server_supported(&Version::new(3, 8, 3), &[8]).unwrap_err();
+    fn retired_server_is_unsupported_even_with_retained_bands() {
+        let err = check_server_supported(&Version::new(3, 10, 4), &[8, 9]).unwrap_err();
         assert!(
-            matches!(err, VersionError::EmbeddedUnavailable { .. }),
-            "expected EmbeddedUnavailable, got {err:?}"
+            matches!(
+                err,
+                VersionError::Unsupported {
+                    component: "server",
+                    ..
+                }
+            ),
+            "expected Unsupported(server), got {err:?}"
         );
     }
 
     #[test]
-    fn server_3115_band7_only_unavailable() {
-        // Band-8 server, only band-7 embedded → embedded-unavailable.
-        let err = check_server_supported(&Version::new(3, 11, 5), &[7]).unwrap_err();
+    fn server_3115_band9_only_unavailable() {
+        let err = check_server_supported(&Version::new(3, 11, 5), &[9]).unwrap_err();
         assert!(
             matches!(err, VersionError::EmbeddedUnavailable { .. }),
             "expected EmbeddedUnavailable, got {err:?}"
@@ -2041,12 +1901,12 @@ mod tests {
     #[test]
     fn embedded_unavailable_message_names_server_no_forbidden_tokens() {
         let err = VersionError::EmbeddedUnavailable {
-            server: Version::new(3, 8, 3),
+            server: Version::new(3, 11, 5),
         };
         let msg = err.to_string();
-        assert!(msg.contains("3.8.3"), "missing server version: {msg}");
+        assert!(msg.contains("3.11.5"), "missing server version: {msg}");
         // The forbidden tokens must never appear in any gate message.
-        for forbidden in ["band 7", "band 8", "0.0.0"] {
+        for forbidden in ["band 8", "band 9", "0.0.0"] {
             assert!(
                 !msg.contains(forbidden),
                 "embedded-unavailable message leaked forbidden token {forbidden:?}: {msg}"
@@ -2057,129 +1917,13 @@ mod tests {
     #[test]
     fn check_server_supported_window_reject_no_forbidden_tokens() {
         // The window-class rejection from the embedded gate must also be clean.
-        let err = check_server_supported(&Version::new(3, 7, 3), &[7, 8]).unwrap_err();
+        let err = check_server_supported(&Version::new(3, 7, 3), &[8, 9]).unwrap_err();
         let msg = err.to_string();
-        for forbidden in ["band 7", "band 8", "0.0.0"] {
+        for forbidden in ["band 8", "band 9", "0.0.0"] {
             assert!(
                 !msg.contains(forbidden),
                 "window rejection leaked forbidden token {forbidden:?}: {msg}"
             );
-        }
-    }
-
-    // -- server support status / deprecation prose ---------------------------
-
-    #[test]
-    fn support_status_classifies_every_current_server_line() {
-        for version in [
-            Version::new(3, 8, 0),
-            Version::new(3, 8, 99),
-            Version::new(3, 10, 0),
-            Version::new(3, 10, 4),
-        ] {
-            assert_eq!(
-                support_status(&version),
-                ServerSupportStatus::Deprecated,
-                "{version}"
-            );
-        }
-
-        for version in [Version::new(3, 11, 5), Version::new(3, 12, 1)] {
-            assert_eq!(
-                support_status(&version),
-                ServerSupportStatus::Supported,
-                "{version}"
-            );
-        }
-    }
-
-    #[test]
-    fn support_status_does_not_reclassify_rejected_versions_as_supported() {
-        for version in [
-            Version::new(3, 7, 3),
-            Version::new(3, 9, 0),
-            Version::new(3, 13, 0),
-            Version::new(4, 0, 0),
-        ] {
-            assert_eq!(
-                support_status(&version),
-                ServerSupportStatus::Unsupported,
-                "{version}"
-            );
-        }
-    }
-
-    #[test]
-    fn deprecated_status_owns_the_stable_code_and_legacy_window_removal_release() {
-        assert_eq!(
-            ServerSupportStatus::Deprecated.deprecation_code(),
-            Some("TYPE_BRIDGE_TYPEDB_LEGACY_SERVER")
-        );
-        assert_eq!(
-            ServerSupportStatus::Deprecated.removal_release(),
-            Some("2.1.0")
-        );
-        assert_eq!(
-            TYPEDB_LEGACY_SERVER_DEPRECATION_CODE,
-            "TYPE_BRIDGE_TYPEDB_LEGACY_SERVER"
-        );
-        assert_eq!(TYPEDB_LEGACY_SERVER_REMOVAL_RELEASE, "2.1.0");
-
-        for status in [
-            ServerSupportStatus::Supported,
-            ServerSupportStatus::Unsupported,
-        ] {
-            assert_eq!(status.deprecation_code(), None);
-            assert_eq!(status.removal_release(), None);
-        }
-    }
-
-    #[test]
-    fn known_server_deprecation_notice_is_exact_and_core_owned() {
-        let notice = known_server_deprecation_notice(&Version::new(3, 10, 4))
-            .expect("3.10 must carry the shared deprecation notice");
-        assert_eq!(
-            notice,
-            "TypeDB 3.10.4 is on the 3.8/3.10 line, which is deprecated in \
-             type-bridge 2.0. Support for this server line will be removed in \
-             type-bridge 2.1.0. Connections keep working throughout 2.0.x. \
-             Upgrade the server to TypeDB 3.11 or 3.12, or pin \
-             type-bridge>=2,<2.1."
-        );
-
-        for forbidden in ["band 7", "band 8", "band 9", "3.0.0", ">=2,<3"] {
-            assert!(!notice.contains(forbidden), "{forbidden}: {notice}");
-        }
-    }
-
-    #[test]
-    fn known_server_notice_only_exists_for_deprecated_supported_lines() {
-        assert!(
-            known_server_deprecation_notice(&Version::new(3, 8, 3))
-                .expect("3.8 must carry a notice")
-                .contains("TypeDB 3.8.3")
-        );
-        assert!(known_server_deprecation_notice(&Version::new(3, 11, 5)).is_none());
-        assert!(known_server_deprecation_notice(&Version::new(3, 12, 1)).is_none());
-        assert!(known_server_deprecation_notice(&Version::new(3, 7, 3)).is_none());
-        assert!(known_server_deprecation_notice(&Version::new(3, 13, 0)).is_none());
-    }
-
-    #[test]
-    fn unknown_legacy_fallback_notice_is_exact_without_claiming_a_server_version() {
-        let notice = unknown_legacy_fallback_deprecation_notice();
-        assert_eq!(
-            notice,
-            "This connection uses the legacy TypeDB 3.8/3.10-compatible \
-             fallback path, which is deprecated in type-bridge 2.0. Support \
-             for this path will be removed in type-bridge 2.1.0. Connections \
-             keep working throughout 2.0.x. Upgrade the server to TypeDB 3.11 \
-             or 3.12, or pin type-bridge>=2,<2.1. Configure an exact server \
-             version for strict validation."
-        );
-
-        for forbidden in ["band 7", "band 8", "band 9", "3.0.0", ">=2,<3"] {
-            assert!(!notice.contains(forbidden), "{forbidden}: {notice}");
         }
     }
 
@@ -2193,27 +1937,27 @@ mod tests {
         };
         let msg = err.to_string();
         assert!(msg.contains("2.28.0"), "missing detected version: {msg}");
-        assert!(msg.contains("3.8.0"), "missing window floor: {msg}");
+        assert!(msg.contains("3.11.0"), "missing window floor: {msg}");
         assert!(msg.contains("3.12.x"), "missing window ceiling: {msg}");
     }
 
     #[test]
     fn band_mismatch_message_contains_versions_and_remediation() {
         let err = VersionError::BandMismatch {
-            driver: Version::new(3, 11, 5),
-            server: Version::new(3, 10, 4),
-            driver_band: 8,
-            server_band: 7,
+            driver: Version::new(3, 12, 0),
+            server: Version::new(3, 11, 5),
+            driver_band: 9,
+            server_band: 8,
         };
         let msg = err.to_string();
-        assert!(msg.contains("3.11.5"), "missing driver version: {msg}");
-        assert!(msg.contains("3.10.4"), "missing server version: {msg}");
+        assert!(msg.contains("3.12.0"), "missing driver version: {msg}");
+        assert!(msg.contains("3.11.5"), "missing server version: {msg}");
         // Remediation must mention the server line.
         assert!(
-            msg.contains("3.10"),
+            msg.contains("3.11"),
             "missing server line in remediation: {msg}"
         );
-        // Must NOT expose bare band numbers (7/8) as the primary explanation.
+        // Must not expose bare band numbers as the primary explanation.
         assert!(
             !msg.starts_with("band"),
             "message starts with band number: {msg}"
@@ -2756,9 +2500,9 @@ mod tests {
 
     #[test]
     fn parse_response_ok() {
-        let json = r#"{"distribution":"TypeDB CE","version":"3.10.4"}"#;
+        let json = r#"{"distribution":"TypeDB CE","version":"3.12.1"}"#;
         let v = parse_version_response(json).unwrap();
-        assert_eq!(v, Version::new(3, 10, 4));
+        assert_eq!(v, Version::new(3, 12, 1));
     }
 
     #[test]

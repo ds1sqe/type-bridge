@@ -1,6 +1,6 @@
 [package]
 name = "type-bridge-server"
-version = "2.0.1"
+version = "2.1.0"
 edition = "2024"
 description = "Query-intercepting proxy server for TypeDB with validation and audit logging"
 license.workspace = true
@@ -19,9 +19,8 @@ path = "src/main.rs"
 required-features = ["typedb", "axum-transport"]
 
 [features]
-default = ["band7", "band8", "band9", "axum-transport"]
+default = ["band8", "band9", "axum-transport"]
 typedb = ["dep:type-bridge-typedb-runtime"]
-band7 = ["typedb", "type-bridge-typedb-runtime/band7"]
 band8 = ["typedb", "type-bridge-typedb-runtime/band8"]
 band9 = ["typedb", "type-bridge-typedb-runtime/band9"]
 axum-transport = [
@@ -40,13 +39,13 @@ v2-query = [
 test-helpers = []
 
 [dependencies]
-type-bridge-core-lib = { path = "../core", version = "2.0.1" }
-type-bridge-typedb-runtime = { path = "../typedb-runtime", version = "2.0.1", default-features = false, optional = true }
-type-bridge-contract = { path = "../contract", version = "2.0.1", optional = true }
-type-bridge-query = { path = "../query", version = "2.0.1", optional = true }
-type-bridge-orm = { path = "../orm", version = "2.0.1", optional = true }
-type-bridge-schema = { path = "../schema", version = "2.0.1", optional = true }
-type-bridge-schema-migration-typedb = { path = "../schema-migration-typedb", version = "2.0.1", optional = true }
+type-bridge-core-lib = { path = "../core", version = "2.1.0" }
+type-bridge-typedb-runtime = { path = "../typedb-runtime", version = "2.1.0", default-features = false, optional = true }
+type-bridge-contract = { path = "../contract", version = "2.1.0", optional = true }
+type-bridge-query = { path = "../query", version = "2.1.0", optional = true }
+type-bridge-orm = { path = "../orm", version = "2.1.0", optional = true }
+type-bridge-schema = { path = "../schema", version = "2.1.0", optional = true }
+type-bridge-schema-migration-typedb = { path = "../schema-migration-typedb", version = "2.1.0", optional = true }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -74,7 +73,7 @@ name = "v2_smoke_server"
 required-features = ["v2-query"]
 
 [dev-dependencies]
-type-bridge-server = { path = ".", version = "2.0.1", features = ["test-helpers", "axum-transport", "v2-query"] }
+type-bridge-server = { path = ".", version = "2.1.0", features = ["test-helpers", "axum-transport", "v2-query"] }
 tempfile = "3"
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }

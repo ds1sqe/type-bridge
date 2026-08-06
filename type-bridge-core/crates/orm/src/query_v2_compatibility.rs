@@ -318,13 +318,16 @@ fn collect_pattern_fields<'plan>(
             insert_field(fields, left);
             insert_field(fields, right);
         }
+        QueryPatternV2::FieldPresence { field, .. } => insert_field(fields, field),
         QueryPatternV2::And { patterns } | QueryPatternV2::Or { patterns } => {
             for child in patterns {
                 collect_pattern_fields(child, fields);
             }
         }
         QueryPatternV2::Not { pattern } => collect_pattern_fields(pattern, fields),
-        QueryPatternV2::RoleEdge { .. } | QueryPatternV2::Reachable { .. } => {}
+        QueryPatternV2::BindingIid { .. }
+        | QueryPatternV2::RoleEdge { .. }
+        | QueryPatternV2::Reachable { .. } => {}
     }
 }
 
@@ -407,6 +410,14 @@ fn lower_pattern(
             left: field_id(fields, left)?,
             operator: lower_comparator(*comparator),
             right: field_id(fields, right)?,
+        },
+        QueryPatternV2::FieldPresence { field, present } => TypedMatchPredicate::FieldPresence {
+            field: field_id(fields, field)?,
+            present: *present,
+        },
+        QueryPatternV2::BindingIid { binding, iid } => TypedMatchPredicate::BindingIid {
+            binding: binding.get(),
+            iid: iid.clone(),
         },
         QueryPatternV2::RoleEdge {
             relation,

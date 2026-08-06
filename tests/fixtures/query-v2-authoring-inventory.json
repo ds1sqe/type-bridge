@@ -230,11 +230,12 @@
       {
         "family": "python_authenticated_structured_remote_diagnostic",
         "needles": [
-          "def test_public_remote_session_preserves_authenticated_structured_failure()",
-          "{\"kind\": \"identifier\", \"value\": \"smoke-person\"}",
-          "\"kind\": \"text_list\""
+          "generated_remote_session = RemoteQuerySession(",
+          "assert error.code == \"remote_application_failure\"",
+          "\"kind\": \"text_list\"",
+          "assert generated_remote_exchanges == 1"
         ],
-        "path": "tests/unit/typed_query/test_remote_query.py"
+        "path": "type-bridge-core/crates/schema-codegen/tests/acceptance/runtime_check.py"
       },
       {
         "family": "python_static_struct_rejection",
@@ -255,11 +256,12 @@
       {
         "family": "node_authenticated_structured_remote_diagnostic",
         "needles": [
-          "test(\"public remote facade preserves every authenticated structured failure field\"",
-          "{ kind: \"identifier\", value: \"smoke-person\" }",
-          "attempt: { kind: \"long\", value: \"7\" }"
+          "const generatedRemoteSession = new RemoteQuerySession(",
+          "{ kind: \"identifier\", value: \"person\" }",
+          "expected: { kind: \"text_list\", value: [\"person\", \"employee\"] }",
+          "assert.equal(generatedRemoteExchanges, 1)"
         ],
-        "path": "type-bridge-core/crates/node/tests/unit/typed-remote-query.test.ts"
+        "path": "type-bridge-core/crates/schema-codegen/tests/typescript_acceptance/runtime_check.mjs"
       }
     ],
     "diagnostic_code_classification": [

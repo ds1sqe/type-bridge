@@ -27,15 +27,15 @@ use sha2::{Digest, Sha256};
 use super::backend::{DriverBackend, GivenRowsSpec, QueryResult, TxType};
 use super::context::TransactionContext;
 use super::transaction::Transaction;
+use crate::_registry::DescriptorRegistry;
 use crate::error::Result;
 use crate::match_request::selected_result_executor::SelectedResultExecutor;
 use crate::match_request::{MatchExecutionLimits, ValidatedMatchRequest, ValidatedMatchResult};
-use crate::registry::DescriptorRegistry;
 
 /// Primary connection handle wrapping a TypeDB driver.
 ///
 /// Provides methods to create transactions and execute raw queries.
-/// Use [`EntityManager`](crate::manager::EntityManager) for typed CRUD.
+/// Use [`EntityManager`](crate::_manager::EntityManager) for typed CRUD.
 ///
 /// `Database` is `Send + Sync`, so it can be shared across tasks via
 /// [`Arc`]. The TypeDB driver handles connection pooling internally.
@@ -434,34 +434,22 @@ impl Database {
         self.backend.server_version()
     }
 
-    /// Return the shared legacy-server deprecation notice for this connection.
-    ///
-    /// Real TypeDB 3.8/3.10 connections and an unknown connection that
-    /// negotiated the legacy band-7 fallback return the core-owned prose.
-    /// Current negotiated bands, supported known versions, and custom
-    /// backends return `None`.
-    #[must_use]
-    pub fn server_deprecation_notice(&self) -> Option<String> {
-        self.backend.server_deprecation_notice()
-    }
-
     /// Version-gate schema DDL that uses `@doc`/`@meta` annotations.
     ///
     /// When the TypeQL uses schema annotations (TypeDB 3.12+) and the detected
     /// server version predates 3.12, fail with an actionable versioned error
-    /// instead of letting the server produce a syntax error. When the server
-    /// version is unknown (band-7 gRPC fallback without `server_version=`),
-    /// the DDL is sent as-is and the server decides.
+    /// instead of letting the server produce a syntax error. When a custom
+    /// backend cannot report a server version, the DDL is sent as-is and the
+    /// backend decides.
     pub fn check_schema_annotation_support(&self, typeql: &str) -> Result<()> {
-        crate::schema::annotations::check_schema_annotation_support(typeql, self.server_version())
+        crate::_schema::annotations::check_schema_annotation_support(typeql, self.server_version())
     }
 
     /// Whether both the connected server and the active negotiated provider
     /// support `given`-stage parameterized queries.
     ///
-    /// `false` when the server predates 3.12 or its version is unknown
-    /// (band-7 gRPC fallback) — callers with a per-row fallback should use
-    /// it in both cases.
+    /// `false` when the server predates 3.12 or its version is unknown. Callers
+    /// with a per-row fallback should use it in both cases.
     pub fn supports_given_stage(&self) -> bool {
         use type_bridge_core_lib::version::{Feature, check_feature_supported};
 

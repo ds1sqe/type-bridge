@@ -213,6 +213,16 @@ impl EffectiveRelates {
     pub const fn is_abstract(&self) -> bool {
         self.is_abstract
     }
+
+    /// Report whether players may fill this role at the effective relation scope.
+    ///
+    /// TypeDB forbids players only at the relation that directly declares an
+    /// abstract role. A concrete child relation may use the same role when it is
+    /// inherited without specialization, while the role remains schema-abstract.
+    #[must_use]
+    pub fn accepts_players_at_effective_scope(&self) -> bool {
+        !self.is_abstract || !self.origin.is_direct()
+    }
 }
 
 /// Effective direct or inherited attribute value domain.
@@ -763,8 +773,11 @@ pub fn resolve_schema_with_capabilities(
             .map(|owns| owns.id.attribute().clone())
             .collect();
         resolved.owned_attribute_order = resolved.owns.keys().cloned().collect();
-        resolved.constructible =
-            !resolved.is_abstract && !resolved.relates.values().any(EffectiveRelates::is_abstract);
+        resolved.constructible = !resolved.is_abstract
+            && resolved
+                .relates
+                .values()
+                .all(EffectiveRelates::accepts_players_at_effective_scope);
         types.insert(id, resolved);
     }
 

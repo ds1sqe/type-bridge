@@ -1,79 +1,44 @@
-//! Async ORM for TypeDB built on `type-bridge-core-lib`.
+//! Shared TypeDB execution engine for generated TypeBridge clients.
 //!
-//! This crate provides:
-//!
-//! - **[`TypeBridgeEntity`]** trait for mapping Rust structs to TypeDB entity types
-//! - **[`TypeBridgeRelation`]** trait for mapping Rust structs to TypeDB relation types
-//! - **[`TypeBridgeAttribute`]** trait and [`define_attribute!`] macro for attribute types
-//! - **[`EntityManager`]** / **[`RelationManager`]** for typed CRUD operations
-//! - **[`DescriptorRegistry`]** plus dynamic managers for runtime schemas
-//! - **[`Database`]** + [`Transaction`] + [`TransactionContext`] session layer
-//! - **[`Filter`]** for equality-based queries
-//!
-//! # Quick start
-//!
-//! ```ignore
-//! use type_bridge_orm::{
-//!     define_attribute, Database, EntityManager, Filter,
-//!     TypeBridgeEntity, OwnedAttributeInfo, AttributeValue,
-//! };
-//!
-//! // Define attribute types
-//! define_attribute!(Name, "name", "string");
-//! define_attribute!(Age, "age", "long");
-//!
-//! // Define entity (manual impl; derive macros in a later phase)
-//! struct Person { iid: Option<String>, name: Name, age: Age }
-//! // impl TypeBridgeEntity for Person { ... }
-//!
-//! // CRUD operations
-//! let db = Database::connect("localhost:1729", "mydb", "admin", "password").await?;
-//! let manager = EntityManager::<Person>::new(&db);
-//! manager.insert(&mut person).await?;
-//! let people = manager.all().await?;
-//! ```
-//!
-//! # Runtime descriptors
-//!
-//! Runtime descriptors are the shared Rust substrate for generated schemas and
-//! language bindings. They are registered without a database and then used to
-//! construct dynamic managers:
-//!
-//! ```ignore
-//! use type_bridge_orm::{
-//!     DescriptorRegistry, DynamicEntityManager, EntityDescriptor,
-//!     OwnedAttributeDescriptor, ValueType,
-//! };
-//!
-//! let registry = DescriptorRegistry::new();
-//! let person = registry.register_entity(EntityDescriptor {
-//!     type_name: "person".into(),
-//!     is_abstract: false,
-//!     parent_type: None,
-//!     owned_attributes: vec![OwnedAttributeDescriptor {
-//!         field_name: "name".into(),
-//!         attr_name: "name".into(),
-//!         value_type: ValueType::String,
-//!         annotations: vec![],
-//!         is_optional: false,
-//!         is_ordered: false,
-//!     }],
-//! })?;
-//!
-//! let manager = DynamicEntityManager::new(&db, person);
-//! ```
+//! Public application model construction lives in generated `type-bridge`
+//! packages. This crate exposes connection, query, transaction, and verified
+//! runtime-projection execution; handwritten model traits, derives, registries,
+//! descriptors, managers, and schema authoring are not package-root APIs.
 
-pub mod attribute;
-pub mod codegen;
-pub mod descriptor;
-pub mod dynamic;
-pub mod entity;
+#[doc(hidden)]
+#[path = "attribute.rs"]
+pub mod _attribute;
+#[doc(hidden)]
+#[path = "codegen/mod.rs"]
+pub mod _codegen;
+#[doc(hidden)]
+#[path = "descriptor.rs"]
+pub mod _descriptor;
+#[doc(hidden)]
+#[path = "dynamic.rs"]
+pub mod _dynamic;
+#[doc(hidden)]
+#[path = "entity.rs"]
+pub mod _entity;
+#[doc(hidden)]
+#[path = "field_ref.rs"]
+pub mod _field_ref;
+#[doc(hidden)]
+#[path = "manager/mod.rs"]
+pub mod _manager;
+#[doc(hidden)]
+#[path = "registry.rs"]
+pub mod _registry;
+#[doc(hidden)]
+#[path = "relation.rs"]
+pub mod _relation;
+#[doc(hidden)]
+#[path = "schema/mod.rs"]
+pub mod _schema;
 pub mod error;
 pub mod expr;
-pub mod field_ref;
 pub mod filter;
 pub mod hooks;
-pub mod manager;
 pub mod match_request;
 pub mod migration_assertion;
 pub mod provider_runtime;
@@ -88,10 +53,7 @@ mod query_v2_model;
 mod query_v2_model_remote;
 pub mod query_v2_prepared;
 pub mod query_v2_remote;
-pub mod registry;
-pub mod relation;
 pub mod runtime_projection;
-pub mod schema;
 pub mod session;
 pub mod value;
 
@@ -109,12 +71,12 @@ pub mod integration_test_support {
     use type_bridge_contract::query_plan::QueryOperation;
     use type_bridge_query::ValidatedQuery;
 
+    use crate::_registry::DescriptorRegistry;
     use crate::match_request::ValidatedMatchRequest;
     use crate::query_v2::failure;
     use crate::query_v2_adapter::{
         MatchRequestAdaptation, MatchRequestAdapterAuthority, adapt_match_request,
     };
-    use crate::registry::DescriptorRegistry;
 
     /// Adapt a validated V1 request through the production registry authority.
     ///
@@ -145,26 +107,19 @@ pub mod integration_test_support {
     }
 }
 
-// Re-exports for convenient access
-pub use attribute::{TypeBridgeAttribute, ValueType};
-pub use descriptor::{
-    EntityDescriptor, OwnedAttributeDescriptor, RelationDescriptor, RoleDescriptor, TypeDescriptor,
-    TypeDescriptorRef,
-};
-pub use dynamic::{
+// Generated/runtime execution exports.
+pub use _attribute::ValueType;
+pub use _dynamic::{
     DynamicAggregate, DynamicAttributeMap, DynamicComparisonOp, DynamicEntityIdentity,
     DynamicEntityRow, DynamicExpr, DynamicRelationIdentity, DynamicRelationRow, DynamicRolePlayer,
     DynamicRolePlayerInput, DynamicSort,
 };
-pub use entity::{Annotation, OwnedAttributeInfo, TypeBridgeEntity};
 pub use error::{ClassifiedCommitError, CommitFailureCertainty, OrmError, Result};
 pub use expr::{Agg, AggResult, Expr, GroupByResult, SortDir};
-pub use field_ref::{FieldRef, RolePlayerFieldRef, RoleRef};
 pub use filter::Filter;
 pub use hooks::{
     CrudOperation, HookContext, HookError, HookRunner, LifecycleHook, PreHookResult, TypeKind,
 };
-pub use manager::{DynamicEntityManager, DynamicRelationManager, EntityManager, RelationManager};
 pub use match_request::*;
 pub use provider_runtime::ProviderRuntimeOwner;
 pub use query::{EntityQuery, GroupByEntityQuery, GroupByRelationQuery, RelationQuery};
@@ -172,10 +127,7 @@ pub use query_v2_model_remote::{
     ClaimedRemoteModelReplyV2, PendingRemoteModelQueryV2, RemoteModelQueryV2Error,
     prepare_remote_model_query_v2,
 };
-pub use registry::DescriptorRegistry;
-pub use relation::{RoleInfo, RolePlayerRef, TypeBridgeRelation};
 pub use runtime_projection::InstalledRuntimeProjection;
-pub use schema::{SchemaDiff, SchemaInfo, SchemaManager};
 pub use session::backend::AnswerCancellation;
 #[cfg(feature = "typedb")]
 pub use session::embedded_driver_versions;
@@ -196,13 +148,3 @@ pub use session::{
     ensure_database_exists_prepared_secure, ensure_database_exists_secure,
 };
 pub use value::AttributeValue;
-
-// Re-export derive macros when the `derive` feature is enabled.
-#[cfg(feature = "derive")]
-pub use type_bridge_orm_derive::TypeBridgeAttribute as DeriveAttribute;
-#[cfg(feature = "derive")]
-pub use type_bridge_orm_derive::TypeBridgeEntity as DeriveEntity;
-#[cfg(feature = "derive")]
-pub use type_bridge_orm_derive::TypeBridgeRelation as DeriveRelation;
-#[cfg(feature = "derive")]
-pub use type_bridge_orm_derive::include_schema;

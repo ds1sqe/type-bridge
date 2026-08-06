@@ -21,9 +21,9 @@ use type_bridge_contract::value::CanonicalValue;
 use type_bridge_core_lib::decimal::parse_decimal;
 use unicase::UniCase;
 
-use crate::descriptor::{OwnedAttributeDescriptor, RoleDescriptor, TypeDescriptorRef};
-use crate::entity::Annotation;
-use crate::registry::DescriptorRegistry;
+use crate::_descriptor::{OwnedAttributeDescriptor, RoleDescriptor, TypeDescriptorRef};
+use crate::_entity::Annotation;
+use crate::_registry::DescriptorRegistry;
 use crate::value::AttributeValue;
 
 use super::error::{MatchError, MatchErrorCategory, MatchErrorPathSegment};
@@ -285,7 +285,7 @@ pub(crate) fn validate_provider_result_with_limits(
             }
             match group {
                 None => {
-                    if rows.len() != 1 || rows[0].group().is_some() {
+                    if rows.len() != 1 || rows[0].has_group_evidence() {
                         return Err(result_error(
                             "reduction_ungrouped_shape",
                             "ungrouped reductions require exactly one keyless row",
@@ -294,7 +294,7 @@ pub(crate) fn validate_provider_result_with_limits(
                 }
                 Some(_) => {
                     for row in &rows {
-                        if row.group().is_none() {
+                        if row.group().is_none() || row.field_group().is_some() {
                             return Err(result_error(
                                 "reduction_group_key_missing",
                                 "grouped reduction rows require group evidence",
@@ -303,37 +303,154 @@ pub(crate) fn validate_provider_result_with_limits(
                     }
                 }
             }
-            for row in &rows {
-                if row.values().len() != reducers.len() {
-                    return Err(result_error(
-                        "reduction_arity_mismatch",
-                        "reduction rows must carry one value per requested reducer",
-                    ));
-                }
-                for (value, term) in row.values().iter().zip(reducers) {
-                    let variant_valid = matches!(
-                        (term.reduction, value),
-                        (Reduction::Count, ReducedValue::Count(_))
-                            | (
-                                Reduction::Sum | Reduction::Min | Reduction::Max,
-                                ReducedValue::Long(_) | ReducedValue::Double(_),
-                            )
-                            | (
-                                Reduction::Mean | Reduction::Median | Reduction::Std,
-                                ReducedValue::Double(_),
-                            )
-                    );
-                    if !variant_valid {
-                        return Err(result_error(
-                            "reduction_value_domain",
-                            "reduction value variant does not fit its reducer",
-                        ));
-                    }
-                }
-            }
+            validate_reduction_values(&rows, reducers)?;
             MatchResult::Reduction {
                 root: *root,
                 group: *group,
+                rows,
+            }
+        }
+        (
+            MatchOperation::ReduceByField {
+                root,
+                group,
+                reducers,
+            },
+            ProviderResultPayload::FieldReduction {
+                root: actual_root,
+                group: actual_group,
+                rows,
+            },
+        ) => {
+            require_root(*root, actual_root, "field_reduction_root_mismatch")?;
+            if *group != actual_group {
+                return Err(result_error(
+                    "field_reduction_group_mismatch",
+                    "provider reduction echoed the wrong descriptor-qualified group field",
+                ));
+            }
+            let field_value_type = reduction_group_field_value_type(registry, validated, group)?;
+            let mut witnessed = BTreeSet::new();
+            for row in &rows {
+                if row.group().is_some() {
+                    return Err(result_error(
+                        "field_reduction_group_kind",
+                        "field-grouped reduction rows cannot carry thing group evidence",
+                    ));
+                }
+                let value = row.field_group().ok_or_else(|| {
+                    result_error(
+                        "field_reduction_group_key_missing",
+                        "field-grouped reduction rows require scalar group evidence",
+                    )
+                })?;
+                budget.charge_attribute_values(std::slice::from_ref(value))?;
+                if field_value_type != value.value_type_name() || !safe_value(value) {
+                    return Err(result_error(
+                        "field_reduction_group_value_type",
+                        "field-grouped reduction value does not fit its projected field",
+                    )
+                    .at(MatchErrorPathSegment::Field(group.field.clone())));
+                }
+                let canonical = canonicalize_provider_attribute_value(value.clone())?;
+                if canonical != *value {
+                    return Err(result_error(
+                        "field_reduction_group_value_noncanonical",
+                        "field-grouped reduction value is not canonical",
+                    )
+                    .at(MatchErrorPathSegment::Field(group.field.clone())));
+                }
+                if !witnessed.insert(reduction_group_value_key(value)?) {
+                    return Err(result_error(
+                        "field_reduction_group_duplicate",
+                        "field-grouped reduction returned one value more than once",
+                    )
+                    .at(MatchErrorPathSegment::Field(group.field.clone())));
+                }
+            }
+            validate_reduction_values(&rows, reducers)?;
+            MatchResult::FieldReduction {
+                root: *root,
+                group: group.clone(),
+                rows,
+            }
+        }
+        (
+            MatchOperation::ReduceByFields {
+                root,
+                groups,
+                reducers,
+            },
+            ProviderResultPayload::FieldTupleReduction {
+                root: actual_root,
+                groups: actual_groups,
+                rows,
+            },
+        ) => {
+            require_root(*root, actual_root, "field_tuple_reduction_root_mismatch")?;
+            if *groups != actual_groups {
+                return Err(result_error(
+                    "field_tuple_reduction_groups_mismatch",
+                    "provider reduction echoed the wrong ordered group fields",
+                ));
+            }
+            let field_value_types = groups
+                .iter()
+                .map(|group| reduction_group_field_value_type(registry, validated, group))
+                .collect::<Result<Vec<_>, _>>()?;
+            let mut witnessed = BTreeSet::new();
+            for row in &rows {
+                if row.group().is_some() || row.field_group().is_some() {
+                    return Err(result_error(
+                        "field_tuple_reduction_group_kind",
+                        "tuple-field-grouped reduction rows cannot carry singular group evidence",
+                    ));
+                }
+                let values = row.field_groups().ok_or_else(|| {
+                    result_error(
+                        "field_tuple_reduction_group_key_missing",
+                        "tuple-field-grouped reduction rows require tuple group evidence",
+                    )
+                })?;
+                if values.len() != groups.len() {
+                    return Err(result_error(
+                        "field_tuple_reduction_group_arity",
+                        "tuple-field-grouped reduction row has the wrong key arity",
+                    ));
+                }
+                budget.charge_attribute_values(values)?;
+                let mut key = Vec::with_capacity(values.len());
+                for ((value, value_type), group) in
+                    values.iter().zip(&field_value_types).zip(groups)
+                {
+                    if value_type != value.value_type_name() || !safe_value(value) {
+                        return Err(result_error(
+                            "field_tuple_reduction_group_value_type",
+                            "tuple-field-grouped reduction value does not fit its projected field",
+                        )
+                        .at(MatchErrorPathSegment::Field(group.field.clone())));
+                    }
+                    let canonical = canonicalize_provider_attribute_value(value.clone())?;
+                    if canonical != *value {
+                        return Err(result_error(
+                            "field_tuple_reduction_group_value_noncanonical",
+                            "tuple-field-grouped reduction value is not canonical",
+                        )
+                        .at(MatchErrorPathSegment::Field(group.field.clone())));
+                    }
+                    key.push(reduction_group_value_key(value)?);
+                }
+                if !witnessed.insert(key) {
+                    return Err(result_error(
+                        "field_tuple_reduction_group_duplicate",
+                        "tuple-field-grouped reduction returned one value tuple more than once",
+                    ));
+                }
+            }
+            validate_reduction_values(&rows, reducers)?;
+            MatchResult::FieldTupleReduction {
+                root: *root,
+                groups: groups.clone(),
                 rows,
             }
         }
@@ -351,6 +468,105 @@ pub(crate) fn validate_provider_result_with_limits(
         validated.shape_id().clone(),
         result,
     ))
+}
+
+fn validate_reduction_values(
+    rows: &[super::result::ReductionRow],
+    reducers: &[super::model::ReduceTerm],
+) -> Result<(), MatchError> {
+    for row in rows {
+        if row.values().len() != reducers.len() {
+            return Err(result_error(
+                "reduction_arity_mismatch",
+                "reduction rows must carry one value per requested reducer",
+            ));
+        }
+        for (value, term) in row.values().iter().zip(reducers) {
+            let variant_valid = matches!(
+                (term.reduction, value),
+                (Reduction::Count, ReducedValue::Count(_))
+                    | (
+                        Reduction::Sum | Reduction::Min | Reduction::Max,
+                        ReducedValue::Long(_) | ReducedValue::Double(_),
+                    )
+                    | (
+                        Reduction::Mean | Reduction::Median | Reduction::Std,
+                        ReducedValue::Double(_),
+                    )
+            );
+            if !variant_valid {
+                return Err(result_error(
+                    "reduction_value_domain",
+                    "reduction value variant does not fit its reducer",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn reduction_group_field_value_type(
+    registry: &DescriptorRegistry,
+    validated: &ValidatedMatchRequest,
+    group: &BoundFieldId,
+) -> Result<String, MatchError> {
+    let binding = validated
+        .request()
+        .plan
+        .bindings
+        .iter()
+        .find(|binding| binding.id == group.binding)
+        .ok_or_else(|| {
+            result_error("field_reduction_binding_missing", "group binding is absent")
+        })?;
+    let type_name = registry
+        .descriptor_type_name(&binding.descriptor)
+        .ok_or_else(|| {
+            result_error(
+                "field_reduction_descriptor_missing",
+                "group descriptor is absent",
+            )
+        })?;
+    let descriptor = registry.get(&type_name).ok_or_else(|| {
+        result_error(
+            "field_reduction_descriptor_missing",
+            "group descriptor is absent",
+        )
+    })?;
+    descriptor_attributes(&descriptor)
+        .iter()
+        .find(|field| field.field_name == group.field.name)
+        .map(|field| field.value_type.as_str().to_owned())
+        .ok_or_else(|| {
+            result_error(
+                "field_reduction_field_missing",
+                "group field is absent from its validated descriptor",
+            )
+            .at(MatchErrorPathSegment::Field(group.field.clone()))
+        })
+}
+
+fn reduction_group_value_key(value: &AttributeValue) -> Result<String, MatchError> {
+    Ok(match value {
+        AttributeValue::String(value) => format!("string:{value:?}"),
+        AttributeValue::Long(value) => format!("long:{value}"),
+        AttributeValue::Double(value) if value.is_finite() => {
+            let bits = if *value == 0.0 { 0 } else { value.to_bits() };
+            format!("double:{bits:016x}")
+        }
+        AttributeValue::Double(_) => {
+            return Err(result_error(
+                "field_reduction_group_value_type",
+                "field-grouped reduction received a non-finite double",
+            ));
+        }
+        AttributeValue::Boolean(value) => format!("boolean:{value}"),
+        AttributeValue::Date(value) => format!("date:{value}"),
+        AttributeValue::DateTime(value) => format!("datetime:{value}"),
+        AttributeValue::DateTimeTZ(value) => format!("datetime-tz:{value}"),
+        AttributeValue::Decimal(value) => format!("decimal:{value}"),
+        AttributeValue::Duration(value) => format!("duration:{value}"),
+    })
 }
 
 /// Convert one fully contract-validated V2 compatibility outcome back into
@@ -1718,6 +1934,8 @@ fn collect_role_edge_ids(expression: &MatchExpr, edges: &mut BTreeSet<RoleEdgeId
         MatchExpr::Not { expression } => collect_role_edge_ids(expression, edges),
         MatchExpr::FieldValue { .. }
         | MatchExpr::FieldComparison { .. }
+        | MatchExpr::FieldPresence { .. }
+        | MatchExpr::BindingIid { .. }
         | MatchExpr::Reachable { .. } => {}
     }
 }
@@ -1732,6 +1950,8 @@ fn find_role_edge(expression: Option<&MatchExpr>, id: RoleEdgeId) -> Option<&Mat
         MatchExpr::Not { expression } => find_role_edge(Some(expression), id),
         MatchExpr::FieldValue { .. }
         | MatchExpr::FieldComparison { .. }
+        | MatchExpr::FieldPresence { .. }
+        | MatchExpr::BindingIid { .. }
         | MatchExpr::RoleEdge { .. }
         | MatchExpr::Reachable { .. } => None,
     }
@@ -1824,6 +2044,12 @@ fn evaluate_expression(
             }
             Ok(false)
         }
+        MatchExpr::FieldPresence { field, present } => {
+            Ok(field_values(bindings, field).is_empty() != *present)
+        }
+        MatchExpr::BindingIid { binding, iid } => Ok(bindings
+            .get(binding)
+            .is_some_and(|thing| thing.concept_id().as_str().eq_ignore_ascii_case(iid))),
         MatchExpr::RoleEdge { id, .. } => Ok(satisfied_role_edges.contains(id)),
         MatchExpr::Reachable {
             source,
@@ -2608,8 +2834,8 @@ fn resource_error(code: &'static str, message: &'static str) -> MatchError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::attribute::ValueType;
-    use crate::descriptor::{EntityDescriptor, RelationDescriptor};
+    use crate::_attribute::ValueType;
+    use crate::_descriptor::{EntityDescriptor, RelationDescriptor};
     use crate::match_request::ids::{ResultShapeId, RoleId};
     use crate::match_request::model::{BindingPair, MatchPlan, MatchRequest};
     use crate::match_request::result::BoundConceptEvidence;
@@ -2650,6 +2876,7 @@ mod tests {
                         false,
                     ),
                     attribute("age", ValueType::Long, vec![], true, false),
+                    attribute("seen_at", ValueType::DateTime, vec![], true, false),
                 ],
                 doc: None,
                 meta: Default::default(),
@@ -3950,6 +4177,279 @@ mod tests {
                 value: true
             } if *root == BindingId::new(0)
         ));
+    }
+
+    #[test]
+    fn field_grouped_reduction_rejects_wrong_kind_domain_duplicates_and_noncanonical_keys() {
+        let registry = registry();
+        let root = BindingId::new(0);
+        let age = BoundFieldId::new(root, field(&registry, "person", "age"));
+        let request_for = |group: BoundFieldId| {
+            validate_match_request(
+                &registry,
+                MatchRequest::v1(
+                    MatchPlan {
+                        bindings: vec![binding(
+                            &registry,
+                            0,
+                            "person",
+                            ThingKind::Entity,
+                            MatchMode::Exact,
+                        )],
+                        predicate: None,
+                        allowed_cross_joins: BTreeSet::new(),
+                    },
+                    MatchOperation::ReduceByField {
+                        root,
+                        group,
+                        reducers: vec![
+                            super::super::model::ReduceTerm {
+                                reduction: Reduction::Count,
+                                input: None,
+                            },
+                            super::super::model::ReduceTerm {
+                                reduction: Reduction::Sum,
+                                input: Some(age.clone()),
+                            },
+                        ],
+                    },
+                ),
+            )
+            .unwrap()
+        };
+        let validated = request_for(age.clone());
+        let evidence = |group: BoundFieldId, rows| {
+            ProviderResultEvidence::field_reduction(
+                validated.request_token(),
+                validated.shape_id().clone(),
+                root,
+                group,
+                rows,
+            )
+        };
+
+        let valid = evidence(
+            age.clone(),
+            vec![super::super::result::ReductionRow::new_field(
+                AttributeValue::Long(20),
+                vec![ReducedValue::Count(2), ReducedValue::Long(Some(40))],
+            )],
+        );
+        let result = validate_provider_result(&registry, &validated, valid).unwrap();
+        let MatchResult::FieldReduction { group, rows, .. } = result.result() else {
+            panic!("expected field-grouped reduction")
+        };
+        assert_eq!(group, &age);
+        assert_eq!(rows[0].field_group(), Some(&AttributeValue::Long(20)));
+
+        let wrong_kind = evidence(
+            age.clone(),
+            vec![super::super::result::ReductionRow::new(
+                Some(person(&registry, "person-1", "Alice")),
+                vec![ReducedValue::Count(1), ReducedValue::Long(Some(20))],
+            )],
+        );
+        assert_eq!(
+            error_code(&validate_provider_result(&registry, &validated, wrong_kind).unwrap_err()),
+            "field_reduction_group_kind"
+        );
+
+        let wrong_domain = evidence(
+            age.clone(),
+            vec![super::super::result::ReductionRow::new_field(
+                AttributeValue::String("20".into()),
+                vec![ReducedValue::Count(1), ReducedValue::Long(Some(20))],
+            )],
+        );
+        assert_eq!(
+            error_code(&validate_provider_result(&registry, &validated, wrong_domain).unwrap_err()),
+            "field_reduction_group_value_type"
+        );
+
+        let duplicate = evidence(
+            age.clone(),
+            vec![
+                super::super::result::ReductionRow::new_field(
+                    AttributeValue::Long(20),
+                    vec![ReducedValue::Count(1), ReducedValue::Long(Some(20))],
+                ),
+                super::super::result::ReductionRow::new_field(
+                    AttributeValue::Long(20),
+                    vec![ReducedValue::Count(1), ReducedValue::Long(Some(20))],
+                ),
+            ],
+        );
+        assert_eq!(
+            error_code(&validate_provider_result(&registry, &validated, duplicate).unwrap_err()),
+            "field_reduction_group_duplicate"
+        );
+
+        let seen_at = BoundFieldId::new(root, field(&registry, "person", "seen_at"));
+        let datetime_validated = request_for(seen_at.clone());
+        let noncanonical = ProviderResultEvidence::field_reduction(
+            datetime_validated.request_token(),
+            datetime_validated.shape_id().clone(),
+            root,
+            seen_at,
+            vec![super::super::result::ReductionRow::new_field(
+                AttributeValue::DateTime("2026-07-28T03:55:00.000000000".into()),
+                vec![ReducedValue::Count(1), ReducedValue::Long(Some(20))],
+            )],
+        );
+        assert_eq!(
+            error_code(
+                &validate_provider_result(&registry, &datetime_validated, noncanonical)
+                    .unwrap_err()
+            ),
+            "field_reduction_group_value_noncanonical"
+        );
+    }
+
+    #[test]
+    fn tuple_field_grouped_reduction_validates_order_arity_domains_and_uniqueness() {
+        let registry = registry();
+        let root = BindingId::new(0);
+        let age = BoundFieldId::new(root, field(&registry, "person", "age"));
+        let name = BoundFieldId::new(root, field(&registry, "person", "name"));
+        let groups = vec![age.clone(), name.clone()];
+        let validated = validate_match_request(
+            &registry,
+            MatchRequest::v1(
+                MatchPlan {
+                    bindings: vec![binding(
+                        &registry,
+                        0,
+                        "person",
+                        ThingKind::Entity,
+                        MatchMode::Exact,
+                    )],
+                    predicate: None,
+                    allowed_cross_joins: BTreeSet::new(),
+                },
+                MatchOperation::ReduceByFields {
+                    root,
+                    groups: groups.clone(),
+                    reducers: vec![
+                        super::super::model::ReduceTerm {
+                            reduction: Reduction::Count,
+                            input: None,
+                        },
+                        super::super::model::ReduceTerm {
+                            reduction: Reduction::Sum,
+                            input: Some(age.clone()),
+                        },
+                    ],
+                },
+            ),
+        )
+        .unwrap();
+        let evidence = |echoed_groups: Vec<BoundFieldId>, rows| {
+            ProviderResultEvidence::field_tuple_reduction(
+                validated.request_token(),
+                validated.shape_id().clone(),
+                root,
+                echoed_groups,
+                rows,
+            )
+        };
+        let reduced = vec![ReducedValue::Count(1), ReducedValue::Long(Some(20))];
+
+        let valid = evidence(
+            groups.clone(),
+            vec![super::super::result::ReductionRow::new_fields(
+                vec![
+                    AttributeValue::Long(20),
+                    AttributeValue::String("Alice".into()),
+                ],
+                reduced.clone(),
+            )],
+        );
+        let result = validate_provider_result(&registry, &validated, valid).unwrap();
+        let MatchResult::FieldTupleReduction {
+            groups: actual_groups,
+            rows,
+            ..
+        } = result.result()
+        else {
+            panic!("expected tuple-field-grouped reduction")
+        };
+        assert_eq!(actual_groups, &groups);
+        assert_eq!(
+            rows[0].field_groups(),
+            Some(
+                [
+                    AttributeValue::Long(20),
+                    AttributeValue::String("Alice".into()),
+                ]
+                .as_slice()
+            )
+        );
+
+        let wrong_order = evidence(
+            vec![name.clone(), age.clone()],
+            vec![super::super::result::ReductionRow::new_fields(
+                vec![
+                    AttributeValue::String("Alice".into()),
+                    AttributeValue::Long(20),
+                ],
+                reduced.clone(),
+            )],
+        );
+        assert_eq!(
+            error_code(&validate_provider_result(&registry, &validated, wrong_order).unwrap_err()),
+            "field_tuple_reduction_groups_mismatch"
+        );
+
+        let wrong_arity = evidence(
+            groups.clone(),
+            vec![super::super::result::ReductionRow::new_fields(
+                vec![AttributeValue::Long(20)],
+                reduced.clone(),
+            )],
+        );
+        assert_eq!(
+            error_code(&validate_provider_result(&registry, &validated, wrong_arity).unwrap_err()),
+            "field_tuple_reduction_group_arity"
+        );
+
+        let wrong_domain = evidence(
+            groups.clone(),
+            vec![super::super::result::ReductionRow::new_fields(
+                vec![
+                    AttributeValue::String("20".into()),
+                    AttributeValue::String("Alice".into()),
+                ],
+                reduced.clone(),
+            )],
+        );
+        assert_eq!(
+            error_code(&validate_provider_result(&registry, &validated, wrong_domain).unwrap_err()),
+            "field_tuple_reduction_group_value_type"
+        );
+
+        let duplicate = evidence(
+            groups,
+            vec![
+                super::super::result::ReductionRow::new_fields(
+                    vec![
+                        AttributeValue::Long(20),
+                        AttributeValue::String("Alice".into()),
+                    ],
+                    reduced.clone(),
+                ),
+                super::super::result::ReductionRow::new_fields(
+                    vec![
+                        AttributeValue::Long(20),
+                        AttributeValue::String("Alice".into()),
+                    ],
+                    reduced,
+                ),
+            ],
+        );
+        assert_eq!(
+            error_code(&validate_provider_result(&registry, &validated, duplicate).unwrap_err()),
+            "field_tuple_reduction_group_duplicate"
+        );
     }
 
     #[test]

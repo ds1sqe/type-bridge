@@ -1,4 +1,4 @@
-# TypeDB multi-band compatibility packaging
+# TypeDB retained-band compatibility packaging
 
 TypeBridge's default/native band-9 path consumes the official upstream
 `typedb-driver` and `typedb-protocol` crates directly. The source manifest is
@@ -10,40 +10,37 @@ The retained `typedb-driver-b9/` and `typedb-protocol-b9/` directories are
 historical, `publish = false`, workspace-excluded quarantine snapshots. They
 are forbidden for consumption and are not release inputs.
 
-The legacy band-7 packages are unofficial, already-published packaging-only
-republications maintained by TypeBridge. The band-8 trees are unofficial and
-source-unmodified. The TypeBridge owner authorized their first publication for
+The band-8 trees are unofficial and source-unmodified. The TypeBridge owner
+authorized their first publication for
 Cargo distribution on 2026-08-03. These exact source-unmodified packages are
 the authorized compatibility artifacts, with protocol preceding driver.
 TypeBridge does not carry a terminal-close patch or any other behavioral driver
-change. The TypeBridge package names exist solely so Cargo can resolve all
-three protocol bands in one native graph. TypeDB remains the upstream project
+change. The TypeBridge package names exist solely so Cargo can resolve both
+retained protocol bands in one native graph. TypeDB remains the upstream project
 and original source; TypeDB is not responsible for the downstream package
 names or packaging metadata.
 
 | Band | Runtime packages | Upstream source | Registry disposition |
 | --- | --- | --- | --- |
-| 7 | `type-bridge-typedb-driver-b7` 3.8.1 and `type-bridge-typedb-protocol-b7` 3.7.0 | driver 3.8.1, protocol 3.7.0 | consume the already-published immutable packaging-only packages |
 | 8 | `type-bridge-typedb-driver-b8` 3.11.5 and `type-bridge-typedb-protocol-b8` 3.11.0 | driver 3.11.5, protocol 3.11.0 | owner-authorized Cargo distribution uses the exact source-unmodified protocol-before-driver packages |
 | 9 | official `typedb-driver` 3.12.1 and `typedb-protocol` 3.12.0 | official crates.io packages | consume upstream directly; never publish a TypeBridge fork |
 
 Cargo treats the upstream 3.11 and 3.12 protocol requirements as one
 semver-compatible package identity, so they cannot be resolved at different
-exact versions in one graph. Renaming the legacy protocol crates lets all
-three bands coexist without changing their generated wire definitions or
-driver behavior. Namespacing is a Cargo package-identity mechanism, not a
-behavioral fork.
+exact versions in one graph. Renaming the band-8 protocol crate lets both
+retained bands coexist without changing generated wire definitions or driver
+behavior. Namespacing is a Cargo package-identity mechanism, not a behavioral
+fork.
 
 ## Packaging-only differences
 
-The `src/` trees and license bodies in every active legacy package are
+The `src/` trees and license bodies in every active compatibility package are
 byte-identical to their corresponding official upstream archives. Differences
 are confined to Cargo packaging metadata needed for the TypeBridge namespace,
 same-band dependency aliases, workspace lint/doctest accommodation, and the
-band-8 disclosure prepended to the otherwise preserved upstream README. The
-already-published band-7 package bytes retain their immutable registry
-identity. Terminal transaction close therefore has the exact behavior of the
-matching upstream driver release.
+band-8 disclosure prepended to the otherwise preserved upstream README.
+Terminal transaction close therefore has the exact behavior of the matching
+upstream driver release.
 
 ## Licensing boundary
 
@@ -58,16 +55,6 @@ The compatibility trees originate from these exact upstream crates.io
 archives:
 
 ```text
-typedb-protocol 3.7.0
-  https://static.crates.io/crates/typedb-protocol/typedb-protocol-3.7.0.crate
-  sha256 0062374abd0c14afa55e5b1d8e095ac110830da29943ad43f6c6b5d5912a811f
-  git tag 3.7.0, commit 3b75931f30f2b5cecf192515bb95071cd98a6e10
-
-typedb-driver 3.8.1
-  https://static.crates.io/crates/typedb-driver/typedb-driver-3.8.1.crate
-  sha256 bf5f617f8d670dd75dc752ae6f42e2bf28ca612ab4feae353c2c89d052adfab0
-  git tag 3.8.1, commit 8e8d4a43da32adc1c56084f4d34174bebd0ce34a
-
 typedb-protocol 3.11.0
   https://static.crates.io/crates/typedb-protocol/typedb-protocol-3.11.0.crate
   sha256 f051694ab18c9fb31f15e4567421b55a70e7dddbc1af60a6a1c4cf73ffe8d5e8
@@ -93,7 +80,7 @@ disclosure may differ. Protocol generated source and every retained license
 body compare byte-for-byte. Local compatibility trees may contain only
 `Cargo.toml`, `README.md`, `LICENSE`, and `src/`.
 
-A legacy-package refresh starts from a verified upstream archive, reapplies
+A compatibility-package refresh starts from a verified upstream archive, reapplies
 only the namespaced packaging metadata and disclosure, then proves the source
 trees remain upstream-identical. Band 9 changes only the official upstream
 exact pin. Before the first immutable release-graph package is published, the

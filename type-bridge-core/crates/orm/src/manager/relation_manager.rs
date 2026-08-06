@@ -6,11 +6,11 @@
 use std::marker::PhantomData;
 use std::sync::Arc;
 
+use crate::_relation::TypeBridgeRelation;
 use crate::error::{OrmError, Result};
 use crate::filter::Filter;
 use crate::hooks::{CrudOperation, HookRunner, LifecycleHook, TypeKind};
 use crate::query::RelationQuery;
-use crate::relation::TypeBridgeRelation;
 use crate::session::Database;
 use crate::session::backend::{QueryResult, TxType};
 

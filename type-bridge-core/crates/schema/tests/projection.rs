@@ -518,6 +518,55 @@ plays:
 }
 
 #[test]
+fn projects_plain_inherited_abstract_roles_as_child_create_inputs() {
+    let source = r#"format: typebridge.schema/v2
+entities:
+  actor: {}
+relations:
+  base-event:
+    relates:
+      participant: { abstract: true, card: 1 }
+  plain-event:
+    sub: base-event
+plays:
+  actor:
+    base-event: [participant]
+"#;
+    let base_event = TypeId::new(TypeKind::Relation, "base-event").unwrap();
+    let plain_event = TypeId::new(TypeKind::Relation, "plain-event").unwrap();
+    let participant = RoleId::new("base-event", "participant").unwrap();
+
+    for (target, config, handler) in [
+        (
+            BindingTarget::Python,
+            ProjectionConfig::python(),
+            ProjectionHandler::python_v1(),
+        ),
+        (
+            BindingTarget::TypeScript,
+            ProjectionConfig::typescript(),
+            ProjectionHandler::typescript_v1(),
+        ),
+        (
+            BindingTarget::Rust,
+            ProjectionConfig::rust(),
+            ProjectionHandler::rust_v1(),
+        ),
+    ] {
+        let projected = projection_for(source, target, config, handler);
+        let base = &projected.models()[&base_event];
+        assert!(!base.declaration().is_constructible());
+        assert!(!base.create().enabled());
+
+        let child = &projected.models()[&plain_event];
+        assert!(child.declaration().is_constructible());
+        assert!(child.create().enabled());
+        assert!(child.create().roles().contains_key(&participant));
+        assert!(child.query_tokens().roles()[&participant].is_abstract());
+    }
+}
+
+#[test]
 fn inherited_annotations_use_effective_projected_subject_identities() {
     let projected = projection(
         r#"format: typebridge.schema/v2

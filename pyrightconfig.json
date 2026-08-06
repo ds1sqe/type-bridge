@@ -6,11 +6,14 @@
   ],
   "exclude": [
     "tests/unit/type-check-except",
-    "tests/contracts/typed_query/python/negative.py",
-    "tests/compat/typed_python/negative.py"
+    "tests/contracts/typed_query/python/documented_examples.py",
+    "tests/contracts/typed_query/python/negative.py"
   ],
   "venvPath": ".",
   "venv": ".venv",
+  "extraPaths": [
+    "examples/generated/python"
+  ],
   "pythonVersion": "3.12",
   "typeCheckingMode": "standard",
   "reportMissingModuleSource": "none"

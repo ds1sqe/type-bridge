@@ -1,4 +1,4 @@
-"""Private, retained import environment for legacy migration adoption.
+"""Private, retained import environment for archive migration adoption.
 
 The released loader imports a migrations package from an ambient filesystem
 path.  Adoption cannot do that safely: a path component can be redirected

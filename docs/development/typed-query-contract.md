@@ -1,14 +1,17 @@
-# Unified Typed Query Contract
+# Generated Typed Query Contract
 
-Status: implemented normative contract for
+Status: implemented normative semantics for
 [#170](https://github.com/ds1sqe/type-bridge/issues/170) through
-[#177](https://github.com/ds1sqe/type-bridge/issues/177).
+[#177](https://github.com/ds1sqe/type-bridge/issues/177), consumed through
+generated packages after the #189 cutover.
 
-!!! note "Additive typed-query imports"
+!!! note "Generated-package imports"
 
-    The immutable facade is available from `type_bridge.typed` and
-    `@type-bridge/node/typed`. Existing package-root query APIs remain available
-    and unchanged; importing the new subpath is an explicit migration choice.
+    `Query`, `QuerySession`, field tokens, role tokens, and model classes are
+    emitted together inside each generated Python or TypeScript package. The
+    base SDK supplies connections, the verified runtime projection, and
+    low-level Query V2; it does not accept handwritten descriptors as schema
+    authority.
 
 This document fixes the public behavior shared by the Rust request, Python and
 TypeScript facades, and TypeDB executor. When implementation details
@@ -20,17 +23,17 @@ explicitly revises it.
 There is one new immutable public `Query`, whether it selects one model or many.
 There are no separate public model-query, match-query, or fetch-query classes.
 
-| Language | Typed-query import | Required connection |
+| Language | Generated-query import | Required connection |
 | --- | --- | --- |
-| Python | `from type_bridge.typed import Query, QuerySession` | `Database | TransactionContext` |
-| TypeScript | `import { Query, QuerySession } from "@type-bridge/node/typed"` | `RustDatabase | RustTransactionContext` |
+| Python | `from your_generated_package import Query, QuerySession` | `Database | TransactionContext` |
+| TypeScript | `import { Query, QuerySession } from "./your-generated-package/index.js"` | `RustDatabase | RustTransactionContext` |
 
 Python's package-root `Query` and `QueryBuilder` remain the mutable raw-TypeQL
-builders. TypeScript's package-root `TypedQuery<T, Row>` remains the current
-mutable two-parameter manager query. Python manager queries remain mutable too.
-Their imports, ignored-return mutation, generic arity, filters, ordering,
-terminals, aggregates, updates, deletes, and hydration do not migrate as part of
-#170.
+builders. TypeScript's package-root `TypedQuery<T, Row>` remains the separately
+unscheduled mutable compatibility query. Generated model managers provide the
+concise single-type CRUD/query path; generated `QuerySession` provides immutable
+multi-binding queries. None of these retained behaviors reopens model or schema
+declaration in the base SDK.
 
 `QuerySession.var(Model)` returns one `BoundVar[Model]`. Two calls for the same
 model have the same static type and different opaque runtime identities. New
@@ -40,7 +43,8 @@ matching must be requested explicitly on that binding.
 `QuerySession.query(selection, ...)` requires between 1 and 16 selections. The
 arguments declare the positional output in construction order. Selecting the
 same binding handle twice is invalid; selecting two different handles for the
-same model is valid. `Query.match(binding, ...)` adds hidden predicate witnesses
+same model is valid. A seventeenth selection is rejected statically and by the
+Rust validator. `Query.match(binding, ...)` adds hidden predicate witnesses
 without changing the selected result type.
 
 Every builder call returns a new query handle. Its base and sibling handles stay
@@ -54,76 +58,40 @@ handles; they do not hold a mirrored semantic plan or raw TypeQL.
 from dataclasses import dataclass
 from typing import assert_type
 
-from type_bridge import (
-    Database,
-    Entity,
-    Flag,
-    Integer,
-    Key,
-    Relation,
-    Role,
-    String,
-    TypeFlags,
+from generated_v2 import (
+    Container,
+    Employment,
+    Event,
+    Identifier,
+    Page,
+    Person,
+    Query,
+    Score,
 )
-from type_bridge.typed import BoundRole, Page, Query, QuerySession, RoleRef
 
-
-class Name(String):
-    pass
-
-
-class Age(Integer):
-    pass
-
-
-class Industry(String):
-    pass
-
-
-class Position(String):
-    pass
-
-
-class Person(Entity):
-    flags = TypeFlags(name="person")
-    name: Name = Flag(Key)
-    age: Age
-
-
-class Company(Entity):
-    flags = TypeFlags(name="company")
-    name: Name = Flag(Key)
-    industry: Industry
-
-
-class Employment(Relation):
-    flags = TypeFlags(name="employment")
-    employee: Role[Person] = Role("employee", Person)
-    employer: Role[Company] = Role("employer", Company)
-    position: Position
-
-
-# Attribute classes are owner-derived field tokens. The bound variable supplies
-# the model owner; no descriptor cast or public string is part of the API.
-person_name = Name
-person_age = Age
-company_name = Name
-company_industry = Industry
+from type_bridge import Database
 
 db = Database(address="localhost:1729", database="typed_query_example")
 db.connect()
-session = QuerySession(db)
-person = session.var(Person)
-employment = session.var(Employment)
-company = session.var(Company)
-assert_type(Employment.employee, RoleRef[Person, Employment])
-assert_type(Employment.employer, RoleRef[Company, Employment])
-assert_type(employment.role(Employment.employee), BoundRole[Person])
+session = Person.query(db)
+person = session.exact(Person)
+event = session.exact(Event)
+container = session.exact(Container)
+employment = session.exact(Employment)
+
+employee = employment.role(Employment.employee).connects(person)
+subject = event.role(Event.subject).connects(person)
+contained = container.role(Container.item).connects(event)
 ```
 
+`generated_v2` is the checked fixture package in this repository. Applications
+use the package name emitted for their own Split-YAML workspace; they never
+write the classes shown above themselves.
+
 The scalar, tuple, five-slot, and repeated-model forms retain their exact static
-shapes. The five-slot graph below is connected through one company. The repeated
-two-person output uses hidden bindings to connect its selected variables.
+shapes. The five-slot graph below is connected through one container. The
+repeated two-person output uses hidden bindings to connect its selected
+variables.
 
 <!-- typed-query-example: python-selection-arities -->
 ```python
@@ -131,54 +99,43 @@ one_person: Query[Person] = session.query(person)
 assert_type(one_person.one(), Person)
 assert_type(one_person.rows(limit=20), list[Person])
 
-two_slots: Query[Person, Company] = (
-    session.query(person, company)
-    .match(employment)
-    .where(
-        employment.role(Employment.employee).is_(person),
-        employment.role(Employment.employer).is_(company),
-    )
-)
-assert_type(two_slots.one(), tuple[Person, Company])
-assert_type(two_slots.rows(limit=20), list[tuple[Person, Company]])
+two_slots: Query[Person, Event] = session.query(person, event).where(subject)
+assert_type(two_slots.one(), tuple[Person, Event])
+assert_type(two_slots.rows(limit=20), list[tuple[Person, Event]])
 
-colleague = session.var(Person)
-other_employment = session.var(Employment)
-five_slots: Query[Person, Employment, Company, Employment, Person] = session.query(
+colleague = session.exact(Person)
+other_event = session.exact(Event)
+five_slots: Query[Person, Event, Container, Event, Person] = session.query(
     person,
-    employment,
-    company,
-    other_employment,
+    event,
+    container,
+    other_event,
     colleague,
 ).where(
-    employment.role(Employment.employee).is_(person),
-    employment.role(Employment.employer).is_(company),
-    other_employment.role(Employment.employee).is_(colleague),
-    other_employment.role(Employment.employer).is_(company),
+    subject,
+    contained,
+    other_event.role(Event.subject).connects(colleague),
+    container.role(Container.item).connects(other_event),
 )
 assert_type(
     five_slots.rows(limit=20),
-    list[tuple[Person, Employment, Company, Employment, Person]],
+    list[tuple[Person, Event, Container, Event, Person]],
 )
 
 person_pair: Query[Person, Person] = (
     session.query(person, colleague)
-    .match(
-        employment,
-        other_employment,
-        company,
-    )
+    .match(event, other_event, container)
     .where(
-        employment.role(Employment.employee).is_(person),
-        employment.role(Employment.employer).is_(company),
-        other_employment.role(Employment.employee).is_(colleague),
-        other_employment.role(Employment.employer).is_(company),
+        subject,
+        contained,
+        other_event.role(Event.subject).connects(colleague),
+        container.role(Container.item).connects(other_event),
     )
 )
 assert_type(person_pair.rows(limit=20), list[tuple[Person, Person]])
 
-# QuerySession.query has checked overloads through 16 selections. A seventeenth
-# selection is a static diagnostic and Rust rejects forged unchecked requests.
+# Generated QuerySession.query has checked overloads through 16 selections. A
+# seventeenth selection is a static diagnostic and Rust rejects forged input.
 ```
 
 Fields and roles are bound through their owning variables. Python string
@@ -189,21 +146,20 @@ components.
 
 <!-- typed-query-example: python-topology-and-strings -->
 ```python
-adults_in_ai = two_slots.where(
-    person.field(person_age).gte(Age(18)),
-    company.field(company_industry).eq(Industry("AI")),
-    person.field(person_name).starts_with(Name("Al")),
-    company.field(company_name).contains(Name("Research")),
-    company.field(company_name).ends_with(Name("Labs")),
-    person.field(person_name).regex(Name(r"^A[[:alpha:]]+$")),
+adults = one_person.where(
+    person.field(Person.score).gte(Score(18)),
+    person.field(Person.identifier).starts_with(Identifier("Al")),
+    person.field(Person.identifier).contains(Identifier("Research")),
+    person.field(Person.identifier).ends_with(Identifier("Labs")),
+    person.field(Person.identifier).regex(Identifier(r"^A[[:alpha:]]+$")),
 )
 
 # Percent is literal input here; it has no SQL wildcard meaning.
-literal_percent = one_person.where(person.field(person_name).contains(Name("50%")))
+literal_percent = one_person.where(person.field(Person.identifier).contains(Identifier("50%")))
 
 # Cross joins are explicit topology permission, never a boolean predicate.
-independent_pairs: Query[Person, Company] = session.query(person, company).allow_cross_join(
-    person, company
+independent_pairs: Query[Person, Container] = session.query(person, container).allow_cross_join(
+    person, container
 )
 ```
 
@@ -216,37 +172,32 @@ identity. Counts and existence do not inherit row/page order or windows.
 ordered_people = one_person.rows(
     limit=50,
     offset=0,
-    order_by=(person.field(person_name).asc(),),
+    order_by=(person.field(Person.identifier).asc(),),
 )
 
 person_count: int = two_slots.count_by(person)
 any_person: bool = two_slots.exists_by(person)
 
 @dataclass(frozen=True, slots=True)
-class PersonWork:
+class PersonEvents:
     person: Person
-    employments: tuple[Employment, ...]
-    companies: tuple[Company, ...]
+    events: tuple[Event, ...]
 
 
-work: Query[PersonWork] = session.query_as(
-    PersonWork,
+work: Query[PersonEvents] = session.query_as(
+    PersonEvents,
     person=person,
-    employments=employment.collect(),
-    companies=company.collect().distinct(),
-).where(
-    employment.role(Employment.employee).is_(person),
-    employment.role(Employment.employer).is_(company),
-)
+    events=event.collect().distinct(),
+).where(subject)
 
-page: Page[PersonWork] = work.page_by(
+page: Page[PersonEvents] = work.page_by(
     person,
     limit=50,
     offset=0,
-    order_by=(person.field(person_name).asc(),),
+    order_by=(person.field(Person.identifier).asc(),),
     include_total=True,
 )
-assert_type(page.items, tuple[PersonWork, ...])
+assert_type(page.items, tuple[PersonEvents, ...])
 assert_type(page.total, int | None)
 ```
 
@@ -257,14 +208,14 @@ nor closes it.
 <!-- typed-query-example: python-transaction-ownership -->
 ```python
 # Owned: rows() opens one read transaction and closes it on success or error.
-owned = QuerySession(db)
-owned_person = owned.var(Person)
+owned = Person.query(db)
+owned_person = owned.exact(Person)
 owned_rows = owned.query(owned_person).rows(limit=10)
 
 # Borrowed: the surrounding context owns lifecycle and may run more work.
 with db.transaction("read") as tx:
-    borrowed = QuerySession(tx)
-    borrowed_person = borrowed.var(Person)
+    borrowed = Person.query(tx)
+    borrowed_person = borrowed.exact(Person)
     first_page = borrowed.query(borrowed_person).rows(limit=10)
     second_page = borrowed.query(borrowed_person).rows(limit=10, offset=10)
 ```
@@ -274,95 +225,70 @@ with db.transaction("read") as tx:
 <!-- typed-query-example: typescript-models-and-session -->
 ```typescript
 import {
-  Entity,
-  Key,
-  Relation,
-  RustDatabase,
-  attr,
-  field,
-  role,
-  type RustTransactionContext,
-} from "@type-bridge/node";
-import {
+  Container,
+  Employment,
+  Event,
+  Identifier,
+  Person,
   QuerySession,
-  references,
+  Score,
   type Page,
   type Query,
-} from "@type-bridge/node/typed";
-
-class Name extends attr.String("name") {}
-class Age extends attr.Integer("age") {}
-class Industry extends attr.String("industry") {}
-class Position extends attr.String("position") {}
-
-class Person extends Entity("person", {
-  name: field(Name, Key),
-  age: field(Age),
-}) {}
-
-class Company extends Entity("company", {
-  name: field(Name, Key),
-  industry: field(Industry),
-}) {}
-
-class Employment extends Relation("employment", {
-  employee: role(Person),
-  employer: role(Company),
-  position: field(Position),
-}) {}
+} from "./generated_v2/src/index.js";
+import {
+  RustDatabase,
+  type RustTransactionContext,
+} from "@type-bridge/node";
 
 const db = RustDatabase.connect("localhost:1729", "typed_query_example");
 const session = new QuerySession(db);
-const person = session.var(Person);
-const employment = session.var(Employment);
-const company = session.var(Company);
-const personRefs = references(Person);
-const companyRefs = references(Company);
-const employmentRefs = references(Employment);
+const person = session.exact(Person);
+const event = session.exact(Event);
+const container = session.exact(Container);
+const employment = session.exact(Employment);
+
+const employee = employment.role(Employment.employee).connects(person);
+const subject = event.role(Event.subject).connects(person);
+const contained = container.role(Container.item).connects(event);
 ```
 
-TypeScript uses one readonly tuple parameter because it has no variadic generic
-parameter list. `QueryRow<Slots>` scalarizes a one-slot tuple and preserves a
-readonly tuple for two or more slots.
+TypeScript scalarizes a one-slot generated query and preserves a readonly tuple
+for two or more slots.
 
 <!-- typed-query-example: typescript-selection-arities -->
 ```typescript
-const onePerson: Query<readonly [Person]> = session.query(person);
+const onePerson: Query<Person> = session.query(person);
 const scalar: Person = onePerson.one();
-const scalarRows: readonly Person[] = onePerson.rows({ limit: 20 });
+const scalarRows: readonly Person[] = onePerson.rows({ limit: 20n });
 
-const twoSlots: Query<readonly [Person, Company]> = session
-  .query(person, company)
-  .match(employment)
-  .where(
-    employment.role(employmentRefs.roles.employee).is(person),
-    employment.role(employmentRefs.roles.employer).is(company),
-  );
-const pairRows: readonly (readonly [Person, Company])[] = twoSlots.rows({
-  limit: 20,
+const twoSlots: Query<readonly [Person, Event]> = session
+  .query(person, event)
+  .where(subject);
+const pairRows: readonly (readonly [Person, Event])[] = twoSlots.rows({
+  limit: 20n,
 });
 
-const colleague = session.var(Person);
-const otherEmployment = session.var(Employment);
+const colleague = session.exact(Person);
+const otherEvent = session.exact(Event);
 const fiveSlots: Query<
-  readonly [Person, Employment, Company, Employment, Person]
+  readonly [Person, Event, Container, Event, Person]
 > = session
-  .query(person, employment, company, otherEmployment, colleague)
+  .query(person, event, container, otherEvent, colleague)
   .where(
-    employment.role(employmentRefs.roles.employee).is(person),
-    employment.role(employmentRefs.roles.employer).is(company),
-    otherEmployment.role(employmentRefs.roles.employee).is(colleague),
-    otherEmployment.role(employmentRefs.roles.employer).is(company),
+    subject,
+    contained,
+    otherEvent.role(Event.subject).connects(colleague),
+    container.role(Container.item).connects(otherEvent),
   );
 
 const personPair: Query<readonly [Person, Person]> = session
   .query(person, colleague)
-  .match(employment, otherEmployment, company)
+  .match(event, otherEvent, container)
   .where(
-    employment.role(employmentRefs.roles.employee).is(person),
-    employment.role(employmentRefs.roles.employer).is(company),
-    otherEmployment.role(employmentRefs.roles.employee).is(colleague),
-    otherEmployment.role(employmentRefs.roles.employer).is(company),
+    subject,
+    contained,
+    otherEvent.role(Event.subject).connects(colleague),
+    container.role(Container.item).connects(otherEvent),
   );
 
 void scalar;
@@ -370,29 +296,29 @@ void scalarRows;
 void pairRows;
 void fiveSlots;
 void personPair;
-// query() accepts 1..16 selections. Seventeen is a tsc and Rust diagnostic.
+// Generated query() accepts 1..16 selections. Seventeen is a tsc and Rust
+// diagnostic.
 ```
 
 <!-- typed-query-example: typescript-topology-and-strings -->
 ```typescript
-const adultsInAi = twoSlots.where(
-  person.field(personRefs.fields.age).gte(new Age(18n)),
-  company.field(companyRefs.fields.industry).eq(new Industry("AI")),
-  person.field(personRefs.fields.name).startsWith("Al"),
-  company.field(companyRefs.fields.name).contains("Research"),
-  company.field(companyRefs.fields.name).endsWith("Labs"),
-  person.field(personRefs.fields.name).regex(String.raw`^A[[:alpha:]]+$`),
+const adults = onePerson.where(
+  person.field(Person.score).gte(Score.create(18n)),
+  person.field(Person.identifier).startsWith(Identifier.create("Al")),
+  person.field(Person.identifier).contains(Identifier.create("Research")),
+  person.field(Person.identifier).endsWith(Identifier.create("Labs")),
+  person.field(Person.identifier).regex(Identifier.create(String.raw`^A[[:alpha:]]+$`)),
 );
 
 const literalPercent = onePerson.where(
-  person.field(personRefs.fields.name).contains("50%"),
+  person.field(Person.identifier).contains(Identifier.create("50%")),
 );
 
-const independentPairs: Query<readonly [Person, Company]> = session
-  .query(person, company)
-  .allowCrossJoin(person, company);
+const independentPairs: Query<readonly [Person, Container]> = session
+  .query(person, container)
+  .allowCrossJoin(person, container);
 
-void adultsInAi;
+void adults;
 void literalPercent;
 void independentPairs;
 ```
@@ -400,35 +326,29 @@ void independentPairs;
 <!-- typed-query-example: typescript-terminals-and-collections -->
 ```typescript
 const orderedPeople: readonly Person[] = onePerson.rows({
-  limit: 50,
-  offset: 0,
-  orderBy: [person.field(personRefs.fields.name).asc()],
+  limit: 50n,
+  offset: 0n,
+  orderBy: [person.field(Person.identifier).asc()],
 });
 
 const personCount: bigint = twoSlots.countBy(person);
 const anyPerson: boolean = twoSlots.existsBy(person);
 
-const work: Query<readonly [Readonly<{
+const work: Query<Readonly<{
   person: Person;
-  employments: readonly Employment[];
-  companies: readonly Company[];
-}>]> = session.queryNamed({
+  events: readonly Event[];
+}>> = session.queryNamed({
   person,
-  employments: employment.collect(),
-  companies: company.collect().distinct(),
-}).where(
-  employment.role(employmentRefs.roles.employee).is(person),
-  employment.role(employmentRefs.roles.employer).is(company),
-);
+  events: event.collect().distinct(),
+}).where(subject);
 
 const page: Page<Readonly<{
   person: Person;
-  employments: readonly Employment[];
-  companies: readonly Company[];
+  events: readonly Event[];
 }>> = work.pageBy(person, {
-  limit: 50,
-  offset: 0,
-  orderBy: [person.field(personRefs.fields.name).asc()],
+  limit: 50n,
+  offset: 0n,
+  orderBy: [person.field(Person.identifier).asc()],
   includeTotal: true,
 });
 
@@ -442,18 +362,18 @@ void page;
 ```typescript
 // Owned: rows() opens and closes one read transaction on every exit path.
 const ownedSession = new QuerySession(db);
-const ownedPerson = ownedSession.var(Person);
-const ownedRows = ownedSession.query(ownedPerson).rows({ limit: 10 });
+const ownedPerson = ownedSession.exact(Person);
+const ownedRows = ownedSession.query(ownedPerson).rows({ limit: 10n });
 
 // Borrowed: only the caller closes the context, which remains reusable.
 const tx: RustTransactionContext = db.transaction("read");
 try {
   const borrowed = new QuerySession(tx);
-  const borrowedPerson = borrowed.var(Person);
-  const firstPage = borrowed.query(borrowedPerson).rows({ limit: 10 });
+  const borrowedPerson = borrowed.exact(Person);
+  const firstPage = borrowed.query(borrowedPerson).rows({ limit: 10n });
   const secondPage = borrowed.query(borrowedPerson).rows({
-    limit: 10,
-    offset: 10,
+    limit: 10n,
+    offset: 10n,
   });
   void firstPage;
   void secondPage;
@@ -461,6 +381,7 @@ try {
   tx.close();
 }
 
+void employee;
 void ownedRows;
 ```
 
@@ -638,24 +559,26 @@ API fact, not a fabricated runtime error.
 
 ## Legacy Compatibility Baseline
 
-The following current-major behavior remains fixed while the new subpaths are
-added:
+The #189 cutover does not schedule the existing query facades themselves for
+removal. It does remove their use as active schema/model authoring authority.
+The retained boundary is therefore narrow:
 
 - Python package-root raw-TypeQL `Query`/`QueryBuilder` imports, in-place
-  mutation, and build output;
-- Python manager-query ignored-return mutation for `filter`, `limit`, and
-  `offset`, plus `all`, `first`, `execute`, `count`, `exists`, aggregate,
-  group-by, update, and delete;
-- dictionary/Django-style filters, string ordering, polymorphic managers, and
-  #117 cross-type `has` behavior;
-- Pydantic class-level descriptors and instance model values;
-- TypeScript package-root `TypedQuery<T, Row>` export, two-parameter generic,
-  mutation, terminals, aggregate, and group-by;
-- root package model, field, role, and attribute declarations.
+  mutation, and build output remain;
+- generated Python managers retain concise single-type filters, ordering,
+  terminals, aggregates, updates, deletes, and hydration;
+- TypeScript package-root `TypedQuery<T, Row>` retains its two-parameter query
+  behavior for released compatibility artifacts;
+- low-level Python and Node Query V2 authority remains public;
+- the Python `type_bridge.typed` implementation remains isolated compatibility
+  machinery, but generated applications import their package-local facade;
+- the former Node handwritten `/typed` registration surface and root model,
+  field, role, attribute, flag, registry, and descriptor declarations are not
+  active application paths.
 
-No new path may fall back to raw TypeQL, strings, dictionaries, `Any`,
-`unknown`, client-side filtering/grouping/deduplication, or binding-side
-hydration.
+No generated path may fall back to raw TypeQL, public strings or dictionaries
+as schema meaning, `Any`, `unknown`, client-side filtering/grouping/
+deduplication, or binding-side hydration.
 
 ## Fixture and Implementation Handoff
 
@@ -664,20 +587,19 @@ The versioned language-neutral corpus lives at
 `schema-v1.json`, and identity outcomes are in `expected-results-v1.json`.
 Every case references paired Python and TypeScript example IDs from this
 document. #172 consumed the plan/error/capability vocabulary; #174 activated
-the public facade checks; #176 and #177 prove the expected results against
-recording and live providers. All ten marked examples are concatenated into
-checked Pyright and `tsc` inputs, so marker presence alone is not accepted.
+the facade checks; #176 and #177 proved the expected results against recording
+and live providers. #189 moved those semantics into verified generated
+packages. All ten marked examples are concatenated into checked Pyright and
+`tsc` inputs after the canonical fixture package is emitted, so marker presence
+alone is not accepted.
 
 The exact logical IDs, duplicate hidden-witness solution, selected rows, and
 collection ID sequences in `expected-results-v1.json` are recording-backed.
-The separate live TypeDB dataset intentionally has different employment and
-company IDs. Its source Python, extracted-wheel Python, and packed-Node readers
-execute an exact one-root page plus the larger collection page, count, and
-exists, then compare a normalized projection derived from the normative
-manifest: distinct logical roots, the one-root page envelope, collection and
-collection-distinct cardinalities, count, and existence. This is live-equivalent
-semantic evidence; it is not a claim that the live dataset contains every exact
-manifest identity.
+The clean generated-package live suites for Python, Node, and Rust execute the
+same one-root page, collection, count, existence, grouping, direct, and remote
+journeys through exact generated models and tokens. The generated-only
+operation inventory maps those outcomes to their binding-specific evidence.
 
-The compiler fixtures import the real public typed subpaths, while the legacy
-artifact baselines remain permanent.
+The compiler fixtures import the emitted package, not a handwritten authoring
+barrel. Separately unscheduled query compatibility and read-only archive
+baselines remain independent gates.

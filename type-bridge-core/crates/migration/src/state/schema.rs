@@ -9,9 +9,12 @@ use std::collections::BTreeMap;
 use std::sync::LazyLock;
 
 use serde::{Deserialize, Serialize};
-use type_bridge_orm::schema::SchemaInfo;
-use type_bridge_orm::schema::info::{AttributeSchemaEntry, EntitySchemaEntry, OwnedAttributeEntry};
-use type_bridge_orm::{Annotation, ValueType};
+use type_bridge_orm::_entity::Annotation;
+use type_bridge_orm::_schema::SchemaInfo;
+use type_bridge_orm::_schema::info::{
+    AttributeSchemaEntry, EntitySchemaEntry, OwnedAttributeEntry,
+};
+use type_bridge_orm::ValueType;
 
 /// Semantic labels used by the TypeDB-backed migration state store.
 ///

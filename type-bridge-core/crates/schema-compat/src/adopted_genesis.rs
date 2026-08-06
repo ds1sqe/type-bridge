@@ -453,7 +453,7 @@ pub fn parse_adopted_genesis_authority_with_internal(
     // The frozen V1 parser owns identity for constructs absent from the V2
     // fact vocabulary. Serialize its resolved, map-ordered representation
     // after removing only the already-verified legacy ledger partition.
-    let unresolved = type_bridge_core_lib::parser::parse_typeql(source).map_err(|_| {
+    let unresolved = type_bridge_core_lib::_parser::parse_typeql(source).map_err(|_| {
         failure(
             DiagnosticCategory::InvalidContract,
             "adopted_genesis_released_parse_failed",
@@ -476,7 +476,7 @@ pub fn parse_adopted_genesis_authority_with_internal(
     );
 
     let mut legacy =
-        type_bridge_core_lib::schema::TypeSchema::from_typeql(source).map_err(|_| {
+        type_bridge_core_lib::_schema::TypeSchema::from_typeql(source).map_err(|_| {
             failure(
                 DiagnosticCategory::InvalidContract,
                 "adopted_genesis_released_parse_failed",
@@ -536,7 +536,7 @@ pub fn parse_adopted_genesis_authority_with_internal(
     }
     #[derive(serde::Serialize)]
     struct ReleasedAuthorityIdentity<'a> {
-        schema: &'a type_bridge_core_lib::schema::TypeSchema,
+        schema: &'a type_bridge_core_lib::_schema::TypeSchema,
         compatibility_extensions: &'a [ReleasedExtensionFact],
     }
     let canonical = serde_json::to_vec(&ReleasedAuthorityIdentity {
@@ -623,7 +623,7 @@ enum ScannedDefinitionToken<'a> {
 }
 
 fn released_extensions(
-    schema: &type_bridge_core_lib::schema::TypeSchema,
+    schema: &type_bridge_core_lib::_schema::TypeSchema,
     portable: &DeclaredSchema,
     source: &str,
 ) -> Result<Vec<ReleasedExtensionFact>, Diagnostic> {
@@ -645,21 +645,21 @@ fn released_extensions(
         }
     }
     let mut final_definitions = BTreeMap::new();
-    for definition in type_bridge_core_lib::parser::released_definition_extents(source) {
+    for definition in type_bridge_core_lib::_parser::released_definition_extents(source) {
         let kind = match definition.kind {
-            type_bridge_core_lib::parser::ReleasedDefinitionKind::Function => 0_u8,
-            type_bridge_core_lib::parser::ReleasedDefinitionKind::Struct => 1_u8,
+            type_bridge_core_lib::_parser::ReleasedDefinitionKind::Function => 0_u8,
+            type_bridge_core_lib::_parser::ReleasedDefinitionKind::Struct => 1_u8,
         };
         final_definitions.insert((kind, definition.label.clone()), definition);
     }
     for definition in final_definitions.into_values() {
         let omitted = match definition.kind {
-            type_bridge_core_lib::parser::ReleasedDefinitionKind::Function => portable
+            type_bridge_core_lib::_parser::ReleasedDefinitionKind::Function => portable
                 .fact(&SchemaFactId::Function(FunctionId::new(
                     definition.label.as_str(),
                 )?))
                 .is_none(),
-            type_bridge_core_lib::parser::ReleasedDefinitionKind::Struct => portable
+            type_bridge_core_lib::_parser::ReleasedDefinitionKind::Struct => portable
                 .fact(&SchemaFactId::Struct(StructId::new(
                     definition.label.as_str(),
                 )?))
@@ -678,7 +678,7 @@ fn released_extensions(
         })?;
         let tokens = scan_released_definition_tokens(spelling)?;
         match definition.kind {
-            type_bridge_core_lib::parser::ReleasedDefinitionKind::Function => {
+            type_bridge_core_lib::_parser::ReleasedDefinitionKind::Function => {
                 let function =
                     validate_omitted_function(schema, definition.label.as_str(), &tokens)?;
                 facts.push(ReleasedExtensionFact::OmittedFunction {
@@ -689,7 +689,7 @@ fn released_extensions(
                     body_tokens: function.body_tokens,
                 });
             }
-            type_bridge_core_lib::parser::ReleasedDefinitionKind::Struct => {
+            type_bridge_core_lib::_parser::ReleasedDefinitionKind::Struct => {
                 let fields = validate_omitted_struct(schema, definition.label.as_str(), &tokens)?;
                 facts.push(ReleasedExtensionFact::OmittedStruct {
                     name: definition.label,
@@ -707,7 +707,7 @@ const MAX_RELEASED_DEFINITION_TOKENS: usize = 1_000_000;
 fn scan_released_definition_tokens(
     source: &str,
 ) -> Result<Vec<ScannedDefinitionToken<'_>>, Diagnostic> {
-    use type_bridge_core_lib::parser::{SourceRegionKind, scan_source_regions};
+    use type_bridge_core_lib::_parser::{SourceRegionKind, scan_source_regions};
 
     let mut tokens = Vec::new();
     for (range, kind) in scan_source_regions(source) {
@@ -851,7 +851,7 @@ struct ValidatedOmittedFunction {
 }
 
 fn validate_omitted_function(
-    schema: &type_bridge_core_lib::schema::TypeSchema,
+    schema: &type_bridge_core_lib::_schema::TypeSchema,
     label: &str,
     tokens: &[ScannedDefinitionToken<'_>],
 ) -> Result<ValidatedOmittedFunction, Diagnostic> {
@@ -917,7 +917,7 @@ fn validate_omitted_function(
 }
 
 fn validate_omitted_struct(
-    schema: &type_bridge_core_lib::schema::TypeSchema,
+    schema: &type_bridge_core_lib::_schema::TypeSchema,
     label: &str,
     tokens: &[ScannedDefinitionToken<'_>],
 ) -> Result<Vec<ReleasedStructField>, Diagnostic> {
@@ -1010,7 +1010,7 @@ fn token_is_operator(token: &ScannedDefinitionToken<'_>, expected: &str) -> bool
 fn collect_owns_extensions(
     owner_kind: &'static str,
     owner: &str,
-    ownerships: &[type_bridge_core_lib::schema::OwnedAttribute],
+    ownerships: &[type_bridge_core_lib::_schema::OwnedAttribute],
     facts: &mut Vec<ReleasedExtensionFact>,
 ) {
     for ownership in ownerships {

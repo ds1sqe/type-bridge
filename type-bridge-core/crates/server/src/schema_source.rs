@@ -1,4 +1,4 @@
-use type_bridge_core_lib::schema::TypeSchema;
+use type_bridge_core_lib::_schema::TypeSchema;
 
 use crate::error::PipelineError;
 
@@ -11,7 +11,7 @@ use crate::error::PipelineError;
 ///
 /// ```rust,ignore
 /// use type_bridge_server::{SchemaSource, PipelineError};
-/// use type_bridge_core_lib::schema::TypeSchema;
+/// use type_bridge_core_lib::_schema::TypeSchema;
 ///
 /// struct RemoteSchemaSource { url: String }
 ///

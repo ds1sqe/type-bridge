@@ -1,6 +1,6 @@
 use std::{env, fs, process};
 
-use type_bridge_core_lib::bindgen::{
+use type_bridge_core_lib::_bindgen::{
     BindgenOptions, PythonRenderMetadata, TargetLanguage, generate_json_from_typeql,
 };
 

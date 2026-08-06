@@ -5,36 +5,10 @@ Tests that FunctionQuery generates valid TypeQL that executes correctly.
 
 import pytest
 
-from type_bridge import Database, Entity, TypeFlags
-from type_bridge.attribute import AttributeFlags, Integer, String
-from type_bridge.attribute.flags import Flag, Key
+from type_bridge import Database
 from type_bridge.expressions import FunctionQuery, ReturnType
 
-# ============================================================================
-# Test Schema
-# ============================================================================
-
-
-class ArtifactId(String):
-    flags = AttributeFlags(name="artifact-id")
-
-
-class ArtifactName(String):
-    flags = AttributeFlags(name="artifact-name")
-
-
-class ArtifactScore(Integer):
-    flags = AttributeFlags(name="artifact-score")
-
-
-class Artifact(Entity):
-    flags = TypeFlags(name="test_artifact")
-    artifact_id: ArtifactId = Flag(Key)
-    name: ArtifactName
-    score: ArtifactScore | None = None
-
-
-# Schema with function definition
+# Raw schema fixture for the retained FunctionQuery facade.
 SCHEMA_WITH_FUNCTION = """
 define
 attribute artifact-id, value string;
@@ -101,36 +75,21 @@ def setup_schema_with_functions(db):
         tx.execute(SCHEMA_WITH_FUNCTION)
         tx.commit()
 
-    # Insert test data
-    manager = Artifact.manager(db)
-    test_artifacts = [
-        Artifact(
-            artifact_id=ArtifactId("art-001"),
-            name=ArtifactName("First Artifact"),
-            score=ArtifactScore(85),
-        ),
-        Artifact(
-            artifact_id=ArtifactId("art-002"),
-            name=ArtifactName("Second Artifact"),
-            score=ArtifactScore(92),
-        ),
-        Artifact(
-            artifact_id=ArtifactId("art-003"),
-            name=ArtifactName("Third Artifact"),
-            score=ArtifactScore(78),
-        ),
-        Artifact(
-            artifact_id=ArtifactId("art-004"),
-            name=ArtifactName("Fourth Artifact"),
-            score=ArtifactScore(95),
-        ),
-        Artifact(
-            artifact_id=ArtifactId("art-005"),
-            name=ArtifactName("Fifth Artifact"),
-            score=ArtifactScore(67),
-        ),
-    ]
-    manager.insert_many(test_artifacts)
+    with db.transaction("write") as tx:
+        tx.execute(
+            "insert "
+            '$a isa test_artifact, has artifact-id "art-001", '
+            'has artifact-name "First Artifact", has artifact-score 85; '
+            '$b isa test_artifact, has artifact-id "art-002", '
+            'has artifact-name "Second Artifact", has artifact-score 92; '
+            '$c isa test_artifact, has artifact-id "art-003", '
+            'has artifact-name "Third Artifact", has artifact-score 78; '
+            '$d isa test_artifact, has artifact-id "art-004", '
+            'has artifact-name "Fourth Artifact", has artifact-score 95; '
+            '$e isa test_artifact, has artifact-id "art-005", '
+            'has artifact-name "Fifth Artifact", has artifact-score 67;'
+        )
+        tx.commit()
 
     yield db
 

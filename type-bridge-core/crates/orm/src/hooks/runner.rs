@@ -12,8 +12,8 @@ use super::error::HookError;
 use super::traits::{LifecycleHook, PreHookResult};
 
 /// Shared hook execution engine used by both
-/// [`EntityManager`](crate::manager::EntityManager) and
-/// [`RelationManager`](crate::manager::RelationManager).
+/// [`EntityManager`](crate::_manager::EntityManager) and
+/// [`RelationManager`](crate::_manager::RelationManager).
 ///
 /// When no hooks are registered, all methods are effectively no-ops.
 #[derive(Default, Clone)]

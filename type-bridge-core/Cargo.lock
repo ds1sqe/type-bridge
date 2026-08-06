@@ -3110,12 +3110,13 @@ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
 name = "type-bridge"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "regex",
  "serde_json",
  "thiserror",
  "tokio",
+ "tracing",
  "type-bridge-contract",
  "type-bridge-orm",
  "type-bridge-orm-derive",
@@ -3125,7 +3126,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-cli"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "clap",
  "serde_json",
@@ -3146,7 +3147,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-contract"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -3156,7 +3157,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-core"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "pyo3",
  "pythonize",
@@ -3175,7 +3176,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-core-lib"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "cap-fs-ext",
  "cap-std",
@@ -3201,7 +3202,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-migration"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "anstream 0.6.21",
  "anstyle",
@@ -3227,7 +3228,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-node"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "napi",
  "napi-build",
@@ -3238,12 +3239,11 @@ dependencies = [
  "type-bridge-contract",
  "type-bridge-core-lib",
  "type-bridge-orm",
- "type-bridge-schema-compat",
 ]
 
 [[package]]
 name = "type-bridge-orm"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "base64",
  "criterion",
@@ -3258,7 +3258,6 @@ dependencies = [
  "tracing",
  "type-bridge-contract",
  "type-bridge-core-lib",
- "type-bridge-orm-derive",
  "type-bridge-query",
  "type-bridge-schema",
  "type-bridge-schema-compat",
@@ -3270,7 +3269,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-orm-derive"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3280,7 +3279,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-query"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "type-bridge-contract",
  "type-bridge-schema",
@@ -3288,7 +3287,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-schema"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "chrono",
  "chrono-tz",
@@ -3302,7 +3301,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-schema-codegen"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "type-bridge-contract",
  "type-bridge-schema",
@@ -3310,7 +3309,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-schema-compat"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -3323,7 +3322,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-schema-migration"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "cap-fs-ext",
  "cap-std",
@@ -3339,7 +3338,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-schema-migration-typedb"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -3356,7 +3355,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-server"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "axum 0.8.8",
  "axum-server",
@@ -3392,37 +3391,12 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-toml-transpiler"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "indexmap 2.13.1",
  "serde",
  "thiserror",
  "toml",
-]
-
-[[package]]
-name = "type-bridge-typedb-driver-b7"
-version = "3.8.1"
-dependencies = [
- "chrono",
- "chrono-tz",
- "crossbeam",
- "futures",
- "http",
- "itertools 0.10.5",
- "maybe-async",
- "prost",
- "rand 0.8.5",
- "serde",
- "serde_json",
- "tokio",
- "tokio-stream",
- "tonic",
- "tonic-types",
- "tracing",
- "tracing-subscriber",
- "type-bridge-typedb-protocol-b7",
- "uuid",
 ]
 
 [[package]]
@@ -3451,14 +3425,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "type-bridge-typedb-protocol-b7"
-version = "3.7.0"
-dependencies = [
- "prost",
- "tonic",
-]
-
-[[package]]
 name = "type-bridge-typedb-protocol-b8"
 version = "3.11.0"
 dependencies = [
@@ -3468,7 +3434,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-typedb-runtime"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "chrono",
  "chrono-tz",
@@ -3480,14 +3446,13 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "type-bridge-core-lib",
- "type-bridge-typedb-driver-b7",
  "type-bridge-typedb-driver-b8",
  "typedb-driver",
 ]
 
 [[package]]
 name = "type-bridge-workspace"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "cap-fs-ext",
  "cap-std",

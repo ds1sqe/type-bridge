@@ -7,6 +7,10 @@
 
 use std::sync::{Arc, Mutex};
 
+use type_bridge_orm::_attribute::TypeBridgeAttribute;
+use type_bridge_orm::_define_attribute;
+use type_bridge_orm::_entity::{Annotation, OwnedAttributeInfo, TypeBridgeEntity};
+use type_bridge_orm::_relation::{RoleInfo, RolePlayerRef, TypeBridgeRelation};
 use type_bridge_orm::session::backend::{BoxFuture, DriverBackend, QueryResult, TransactionOps};
 use type_bridge_orm::*;
 
@@ -141,9 +145,9 @@ pub fn insert_response(iid: &str) -> QueryResult {
 
 // ── Attribute types ──────────────────────────────────────────────────
 
-define_attribute!(Name, "name", "string");
-define_attribute!(Age, "age", "long");
-define_attribute!(Position, "position", "string");
+_define_attribute!(Name, "name", "string");
+_define_attribute!(Age, "age", "long");
+_define_attribute!(Position, "position", "string");
 
 // ── Person entity ────────────────────────────────────────────────────
 

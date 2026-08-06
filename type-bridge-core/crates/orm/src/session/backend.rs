@@ -806,16 +806,6 @@ pub trait DriverBackend: Send + Sync {
         None
     }
 
-    /// Return the core-owned legacy-server notice for this connection.
-    ///
-    /// Custom backends default to no notice because they carry no TypeDB
-    /// version-gate provenance. The real backend reports known 3.8/3.10 and
-    /// unknown connections that actually negotiated the legacy band-7
-    /// fallback.
-    fn server_deprecation_notice(&self) -> Option<String> {
-        None
-    }
-
     /// Whether the active negotiated provider can transport `given` rows.
     ///
     /// Server syntax support and provider transport support are separate: a

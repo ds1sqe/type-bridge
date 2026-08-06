@@ -1,29 +1,18 @@
-"""Field reference system for type-safe query building.
+"""Private field-reference implementation for retained V1 query execution.
 
-This module provides field descriptors and references that enable type-safe
-query expressions like Person.age.gt(Age(30)) and Employment.employee.age.gt(Age(30)).
+Generated packages expose their own projection-bound field and role tokens.
+This package intentionally has no public authoring exports.
 """
 
-from type_bridge.fields.base import (
-    FieldDescriptor,
-    FieldRef,
-    NumericFieldRef,
-    StringFieldRef,
-)
-from type_bridge.fields.role import (
-    RolePlayerFieldRef,
-    RolePlayerNumericFieldRef,
-    RolePlayerStringFieldRef,
-    RoleRef,
-)
+from __future__ import annotations
 
-__all__ = [
-    "FieldDescriptor",
-    "FieldRef",
-    "NumericFieldRef",
-    "RolePlayerFieldRef",
-    "RolePlayerNumericFieldRef",
-    "RolePlayerStringFieldRef",
-    "RoleRef",
-    "StringFieldRef",
-]
+from typing import Any
+
+
+def __getattr__(name: str) -> Any:
+    from type_bridge.migration._archive_imports import archive_attribute
+
+    return archive_attribute(__name__, name)
+
+
+__all__: list[str] = []

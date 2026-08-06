@@ -33,7 +33,7 @@ def canonical_license(license_id: str) -> bytes:
     """Return the repository's canonical body for one package family."""
     paths = {
         validator.MIT_LICENSE: ROOT / "LICENSE",
-        validator.APACHE_2_LICENSE: ROOT / "type-bridge-core/vendor/typedb-driver-b7/LICENSE",
+        validator.APACHE_2_LICENSE: ROOT / "type-bridge-core/vendor/typedb-driver-b8/LICENSE",
         validator.MPL_2_LICENSE: ROOT / "type-bridge-core/vendor/typedb-protocol-b8/LICENSE",
     }
     return paths[license_id].read_bytes()
@@ -205,7 +205,7 @@ def test_complete_rust_release_archive_set_is_accepted(tmp_path: Path) -> None:
     )
 
     assert report["status"] == "ok"
-    assert len(report["artifacts"]) == 9
+    assert len(report["artifacts"]) == 18
     assert {entry["license"] for entry in report["artifacts"]} == {
         "MIT",
         "Apache-2.0",
@@ -223,17 +223,17 @@ def test_expected_rust_archive_identity_set_is_closed() -> None:
     assert "type-bridge-typedb-protocol-b7" not in expected
     assert "type-bridge-typedb-driver-b7" not in expected
     assert expected["type-bridge-core-lib"] == ("2.0.0", "MIT")
-    assert not {
-        "type-bridge-contract",
-        "type-bridge-schema",
-        "type-bridge-query",
-        "type-bridge-schema-migration",
-        "type-bridge-schema-migration-typedb",
-        "type-bridge-schema-codegen",
-        "type-bridge-schema-compat",
-        "type-bridge-workspace",
-        "type-bridge-cli",
-    } & set(expected)
+    assert expected["type-bridge-contract"] == ("2.0.0", "MIT")
+    assert expected["type-bridge-schema"] == ("2.0.0", "MIT")
+    assert expected["type-bridge-query"] == ("2.0.0", "MIT")
+    assert expected["type-bridge-schema-migration"] == ("2.0.0", "MIT")
+    assert expected["type-bridge-schema-migration-typedb"] == ("2.0.0", "MIT")
+    assert expected["type-bridge-schema-codegen"] == ("2.0.0", "MIT")
+    assert expected["type-bridge-schema-compat"] == ("2.0.0", "MIT")
+    assert expected["type-bridge-workspace"] == ("2.0.0", "MIT")
+    assert expected["type-bridge-cli"] == ("2.0.0", "MIT")
+    assert expected["type-bridge"] == ("2.0.0", "MIT")
+    assert "type-bridge-server" not in expected
     assert expected["type-bridge-typedb-protocol-b8"] == ("3.11.0", "MPL-2.0")
     assert expected["type-bridge-typedb-driver-b8"] == ("3.11.5", "Apache-2.0")
 

@@ -26,8 +26,8 @@ from typing import TYPE_CHECKING
 from type_bridge.expressions.base import Expression
 
 if TYPE_CHECKING:
-    from type_bridge.attribute.base import Attribute
-    from type_bridge.models.base import TypeDBType
+    from type_bridge.attribute.base import _QueryAttribute as Attribute
+    from type_bridge.models.base import _QueryTypeDBType as TypeDBType
     from type_bridge.query.ast import Pattern
 
 

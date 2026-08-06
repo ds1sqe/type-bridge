@@ -2,7 +2,7 @@
 
 import warnings
 
-from type_bridge import (
+from tests.utils.handwritten import (
     Entity,
     Integer,
     Relation,

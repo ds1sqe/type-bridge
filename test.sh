@@ -370,26 +370,24 @@ if [[ "$integration" == 1 ]]; then
         env USE_DOCKER=false TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
         uv run pytest -m integration --tb=short "${pytest_args[@]}"
 
-    # The parity suite mixes live-TypeDB tests with deliberately unmarked
-    # offline ones (descriptor snapshots, generator parity); the marker
-    # override mirrors CI's cross-language-parity job so the offline tests
-    # don't fall through both the unit and `-m integration` selections.
-    printf "${BOLD}━━━ Python (cross-language parity) ━━━${RESET}\n\n"
-    run_step "pytest tests/integration/parity" \
-        timeout --foreground 10m \
-        env USE_DOCKER=false TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
-        uv run pytest tests/integration/parity -m "integration or not integration" \
-        --tb=short "${pytest_args[@]}"
-
     printf "${BOLD}━━━ Node (integration) ━━━${RESET}\n\n"
-    # The Node suites default TYPEDB_ADDRESS to :1730; we pass it explicitly. test:integration
-    # chains test:typed-integration, so this one command covers both Node integration suites.
+    # The Node suite defaults TYPEDB_ADDRESS to :1730; pass the live endpoint explicitly.
     native="$(ls "$NODE_DIR"/type_bridge_node.*.node 2>/dev/null | head -1 || true)"
+    if [[ -n "$native" ]]; then
+        native="$ROOT/$native"
+    fi
     run_step "npm run test:integration" \
         timeout --foreground 15m \
-        bash -c "cd '$NODE_DIR' && TYPE_BRIDGE_NODE_NATIVE_PATH='${native:+$PWD/$native}' \
+        bash -c "cd '$NODE_DIR' && TYPE_BRIDGE_NODE_NATIVE_PATH='$native' \
             USE_DOCKER=false TYPEDB_ADDRESS='$TYPEDB_ADDRESS' TYPEDB_HTTP_PORT='$TYPEDB_HTTP_PORT' \
             npm run test:integration"
+    run_step "npm run test:projection-integration" \
+        timeout --foreground 15m \
+        env TYPE_BRIDGE_NODE_NATIVE_PATH="$native" \
+            USE_DOCKER=false TYPEDB_ADDRESS="$TYPEDB_ADDRESS" \
+            TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
+            TYPE_BRIDGE_NODE_INTG_DATABASE="type_bridge_projection_live_${$}" \
+        npm --prefix "$NODE_DIR" run test:projection-integration
 fi
 
 # ── TLS transport tier (opt-in) ──────────────────────────────────────────────
@@ -471,16 +469,17 @@ run_tls_transport_steps() {
             tests/integration/queries/test_query_v2_binding_smoke.py::test_prepared_plan_executes_locally_and_remotely \
             -m integration --tb=short -q
 
-    run_step "TLS Python and packed Node remote model parity" \
+    run_step "TLS generated Python application parity" \
         timeout --foreground 10m \
-        env TYPEDB_TLS_ADDRESS="$tls_address" \
-            TYPEDB_TLS_HTTP_PORT="$tls_http_port" \
+        env USE_DOCKER=false \
+            TYPEDB_ADDRESS="$tls_address" \
+            TYPEDB_HTTP_PORT="$tls_http_port" \
             TYPEDB_TLS_ROOT_CA="$tls_root_ca" \
             SMOKE_TLS_CERT="$fixture_server_cert" \
             SMOKE_TLS_KEY="$fixture_server_key" \
             SMOKE_TLS_ROOT_CA="$fixture_root_ca" \
         uv run pytest \
-            tests/integration/queries/test_remote_query_session_parity.py::test_public_remote_query_session_matches_direct_subtype_hydration \
+            tests/integration/schema/test_generated_projection_live.py::test_generated_package_preserves_application_operation_outcomes_live \
             -m integration --tb=short -q
 
     run_step "TLS Node local query + HTTPS remote envelope" \
@@ -495,17 +494,17 @@ run_tls_transport_steps() {
         node --test \
             "$NODE_DIR/tests/integration/queries/query-v2-smoke.test.ts"
 
-    run_step "TLS Node remote model subtype hydration" \
+    run_step "TLS generated Node application parity" \
         timeout --foreground 10m \
         env TYPE_BRIDGE_NODE_NATIVE_PATH="$node_native" \
-            TYPEDB_TLS_ADDRESS="$tls_address" \
-            TYPEDB_TLS_HTTP_PORT="$tls_http_port" \
+            TYPEDB_ADDRESS="$tls_address" \
+            TYPEDB_HTTP_PORT="$tls_http_port" \
             TYPEDB_TLS_ROOT_CA="$tls_root_ca" \
             SMOKE_TLS_CERT="$fixture_server_cert" \
             SMOKE_TLS_KEY="$fixture_server_key" \
             NODE_EXTRA_CA_CERTS="$fixture_root_ca" \
-        node --test \
-            "$NODE_DIR/tests/integration/queries/typed-remote-query-parity.test.ts"
+            TYPE_BRIDGE_NODE_INTG_DATABASE="type_bridge_projection_tls_${$}" \
+        npm --prefix "$NODE_DIR" run test:projection-integration
 }
 
 if [[ "$tls" == 1 ]]; then

@@ -3,14 +3,15 @@
     "lib": ["ES2022"],
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
-    "noEmit": true,
+    "outDir": "../../../tmp/node-integration",
     "strict": true,
     "target": "ES2022",
-    "allowImportingTsExtensions": true,
     "rootDir": "."
   },
   "include": [
-    "typescript/**/*.ts",
+    "typescript/public.ts",
+    "typescript/query-v2.ts",
+    "typescript/runtime-projection.ts",
     "tests/integration/**/*.ts"
   ],
   "exclude": [

@@ -15,14 +15,16 @@ use type_bridge_contract::query_remote::{
     RemoteCapabilities, checked_remote_deadline, checked_remote_limit,
 };
 use type_bridge_contract::query_remote_v2::RemoteLimitsV2;
+use type_bridge_orm::_registry::DescriptorRegistry;
 use type_bridge_orm::{
     OrderHandle, PendingRemoteModelQueryV2, RemoteModelQueryV2Error, Window,
     prepare_remote_model_query_v2, validate_public_order_term_count,
 };
 
 use crate::match_runtime::{
-    PyMatchBindingHandle, PyMatchOrderHandle, PyMatchQueryHandle, order_handles, parse_cardinality,
-    py_match_error, py_match_orm_error,
+    PyMatchBindingHandle, PyMatchFieldHandle, PyMatchOrderHandle, PyMatchQueryHandle,
+    borrow_reduce_terms, order_handles, parse_cardinality, py_match_error, py_match_orm_error,
+    reduce_terms,
 };
 use crate::query_v2_runtime::{
     PyQueryV2Authority, PythonBytes, python_limit, python_optional_limit, value_error,
@@ -209,10 +211,78 @@ pub(crate) fn query_v2_prepare_remote_model_exists(
     prepare_pending(py, context, registry, request)
 }
 
+/// Prepare one typed ungrouped or grouped reduction over a distinct root.
+#[pyfunction]
+#[pyo3(signature = (query, context, root, group, reducers, inputs))]
+pub(crate) fn query_v2_prepare_remote_model_reduce(
+    py: Python<'_>,
+    query: &PyMatchQueryHandle,
+    context: &PyRemoteModelQueryContext,
+    root: &PyMatchBindingHandle,
+    group: Option<&PyMatchBindingHandle>,
+    reducers: Vec<String>,
+    inputs: Vec<Option<Py<PyMatchFieldHandle>>>,
+) -> PyResult<PyPendingRemoteModelQuery> {
+    let terms = reduce_terms(py, &reducers, &inputs)?;
+    let terms = borrow_reduce_terms(&terms);
+    let request = query
+        .inner()
+        .validate_reduce_by(root.inner(), group.map(PyMatchBindingHandle::inner), &terms)
+        .map_err(py_match_orm_error)?;
+    prepare_pending(py, context, query.inner().registry_arc(), request)
+}
+
+/// Prepare one typed reduction grouped by a projected owned field.
+#[pyfunction]
+#[pyo3(signature = (query, context, root, group, reducers, inputs))]
+pub(crate) fn query_v2_prepare_remote_model_reduce_by_field(
+    py: Python<'_>,
+    query: &PyMatchQueryHandle,
+    context: &PyRemoteModelQueryContext,
+    root: &PyMatchBindingHandle,
+    group: &PyMatchFieldHandle,
+    reducers: Vec<String>,
+    inputs: Vec<Option<Py<PyMatchFieldHandle>>>,
+) -> PyResult<PyPendingRemoteModelQuery> {
+    let terms = reduce_terms(py, &reducers, &inputs)?;
+    let terms = borrow_reduce_terms(&terms);
+    let request = query
+        .inner()
+        .validate_reduce_by_field(root.inner(), group.inner(), &terms)
+        .map_err(py_match_orm_error)?;
+    prepare_pending(py, context, query.inner().registry_arc(), request)
+}
+
+/// Prepare one typed reduction grouped by an ordered tuple of projected owned fields.
+#[pyfunction]
+#[pyo3(signature = (query, context, root, groups, reducers, inputs))]
+pub(crate) fn query_v2_prepare_remote_model_reduce_by_fields(
+    py: Python<'_>,
+    query: &PyMatchQueryHandle,
+    context: &PyRemoteModelQueryContext,
+    root: &PyMatchBindingHandle,
+    groups: Vec<Py<PyMatchFieldHandle>>,
+    reducers: Vec<String>,
+    inputs: Vec<Option<Py<PyMatchFieldHandle>>>,
+) -> PyResult<PyPendingRemoteModelQuery> {
+    let groups = groups
+        .iter()
+        .map(|group| group.borrow(py).inner().clone())
+        .collect::<Vec<_>>();
+    let groups = groups.iter().collect::<Vec<_>>();
+    let terms = reduce_terms(py, &reducers, &inputs)?;
+    let terms = borrow_reduce_terms(&terms);
+    let request = query
+        .inner()
+        .validate_reduce_by_fields(root.inner(), &groups, &terms)
+        .map_err(py_match_orm_error)?;
+    prepare_pending(py, context, query.inner().registry_arc(), request)
+}
+
 fn prepare_pending(
     py: Python<'_>,
     context: &PyRemoteModelQueryContext,
-    registry: Arc<type_bridge_orm::DescriptorRegistry>,
+    registry: Arc<DescriptorRegistry>,
     request: type_bridge_orm::ValidatedMatchRequest,
 ) -> PyResult<PyPendingRemoteModelQuery> {
     let authority = Arc::clone(&context.authority);
@@ -297,6 +367,18 @@ pub fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     )?)?;
     module.add_function(wrap_pyfunction!(
         query_v2_prepare_remote_model_exists,
+        module
+    )?)?;
+    module.add_function(wrap_pyfunction!(
+        query_v2_prepare_remote_model_reduce,
+        module
+    )?)?;
+    module.add_function(wrap_pyfunction!(
+        query_v2_prepare_remote_model_reduce_by_field,
+        module
+    )?)?;
+    module.add_function(wrap_pyfunction!(
+        query_v2_prepare_remote_model_reduce_by_fields,
         module
     )?)?;
     Ok(())

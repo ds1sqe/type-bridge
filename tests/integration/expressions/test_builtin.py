@@ -6,37 +6,9 @@ These tests verify that the generated TypeQL syntax works correctly with TypeDB.
 import pytest
 
 from tests.integration.conftest import TEST_DB_ADDRESS
-from type_bridge import (
-    Database,
-    Entity,
-    Flag,
-    Integer,
-    Key,
-    SchemaManager,
-    String,
-    TypeFlags,
-)
+from tests.utils.typeql import define_schema
+from type_bridge import Database
 from type_bridge.expressions.builtin import abs_, iid, label
-
-
-# Test schema
-class PersonId(String):
-    pass
-
-
-class PersonName(String):
-    pass
-
-
-class PersonAge(Integer):
-    pass
-
-
-class Person(Entity):
-    flags = TypeFlags(name="person")
-    person_id: PersonId = Flag(Key)
-    name: PersonName
-    age: PersonAge | None = None
 
 
 @pytest.fixture(scope="module")
@@ -50,15 +22,32 @@ def db(docker_typedb):
         database.delete_database()
     database.create_database()
 
-    # Create schema
-    schema_manager = SchemaManager(database)
-    schema_manager.register(Person)
-    schema_manager.sync_schema(force=True)
-
-    # Insert test data
-    manager = Person.manager(database)
-    manager.insert(Person(person_id=PersonId("p1"), name=PersonName("Alice"), age=PersonAge(25)))
-    manager.insert(Person(person_id=PersonId("p2"), name=PersonName("Bob"), age=PersonAge(35)))
+    define_schema(
+        database,
+        """
+        attribute PersonId, value string;
+        attribute PersonName, value string;
+        attribute PersonAge, value integer;
+        entity person,
+            owns PersonId @key,
+            owns PersonName,
+            owns PersonAge;
+        """,
+    )
+    database.execute_query(
+        """
+        insert
+        $alice isa person,
+            has PersonId "p1",
+            has PersonName "Alice",
+            has PersonAge 25;
+        $bob isa person,
+            has PersonId "p2",
+            has PersonName "Bob",
+            has PersonAge 35;
+        """,
+        transaction_type="write",
+    )
 
     yield database
 

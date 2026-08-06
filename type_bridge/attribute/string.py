@@ -3,7 +3,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Self, TypeVar
 
 from pydantic_core import core_schema
 
-from type_bridge.attribute.base import Attribute
+from type_bridge.attribute.base import _QueryAttribute
 
 if TYPE_CHECKING:
     from type_bridge.expressions import Expression, StringExpr
@@ -12,10 +12,10 @@ if TYPE_CHECKING:
 StrValue = TypeVar("StrValue", bound=str)
 
 # Type alias for String subclasses
-StringType = TypeVar("StringType", bound="String")
+StringType = TypeVar("StringType", bound="_QueryString")
 
 
-class String(Attribute):
+class String(_QueryAttribute):
     """String attribute type that accepts str values.
 
     Example:
@@ -51,19 +51,19 @@ class String(Attribute):
         """Convert to string."""
         return str(self.value)
 
-    def __add__(self, other: object) -> "String":
+    def __add__(self, other: object) -> Self:
         """Concatenate strings."""
         if isinstance(other, str):
-            return String(self.value + other)
-        elif isinstance(other, String):
-            return String(self.value + other.value)
+            return type(self)(self.value + other)
+        elif isinstance(other, _QueryString):
+            return type(self)(self.value + other.value)
         else:
             return NotImplemented
 
-    def __radd__(self, other: object) -> "String":
+    def __radd__(self, other: object) -> Self:
         """Right-hand string concatenation."""
         if isinstance(other, str):
-            return String(other + self.value)
+            return type(self)(other + self.value)
         else:
             return NotImplemented
 
@@ -103,7 +103,7 @@ class String(Attribute):
     # ========================================================================
 
     @classmethod
-    def contains(cls, value: "String") -> "StringExpr":
+    def contains(cls, value: Self) -> "StringExpr":
         """Create contains string expression.
 
         Args:
@@ -120,7 +120,7 @@ class String(Attribute):
         return StringExpr(attr_type=cls, operation="contains", pattern=value)
 
     @classmethod
-    def like(cls, pattern: "String") -> "StringExpr":
+    def like(cls, pattern: Self) -> "StringExpr":
         """Create regex pattern matching expression.
 
         Args:
@@ -137,7 +137,7 @@ class String(Attribute):
         return StringExpr(attr_type=cls, operation="like", pattern=pattern)
 
     @classmethod
-    def regex(cls, pattern: "String") -> "StringExpr":
+    def regex(cls, pattern: Self) -> "StringExpr":
         """Create regex pattern matching expression (alias for like).
 
         Note:
@@ -158,7 +158,7 @@ class String(Attribute):
         return StringExpr(attr_type=cls, operation="regex", pattern=pattern)
 
     @classmethod
-    def startswith(cls, prefix: "String") -> "StringExpr":
+    def startswith(cls, prefix: Self) -> "StringExpr":
         """Create startswith string expression.
 
         Args:
@@ -169,12 +169,12 @@ class String(Attribute):
         """
         # Unwrap if it's an Attribute instance to get the raw string for regex construction
         # Note: Type-safe signature says "String", but we need the raw value
-        raw_prefix = prefix.value if isinstance(prefix, String) else str(prefix)
+        raw_prefix = prefix.value if isinstance(prefix, _QueryString) else str(prefix)
         pattern = f"^{re.escape(raw_prefix)}.*"
         return cls.regex(cls(pattern))
 
     @classmethod
-    def endswith(cls, suffix: "String") -> "StringExpr":
+    def endswith(cls, suffix: Self) -> "StringExpr":
         """Create endswith string expression.
 
         Args:
@@ -184,7 +184,7 @@ class String(Attribute):
             StringExpr for attr like ".*suffix$"
         """
         # Unwrap if it's an Attribute instance to get the raw string for regex construction
-        raw_suffix = suffix.value if isinstance(suffix, String) else str(suffix)
+        raw_suffix = suffix.value if isinstance(suffix, _QueryString) else str(suffix)
         pattern = f".*{re.escape(raw_suffix)}$"
         return cls.regex(cls(pattern))
 
@@ -209,3 +209,7 @@ class String(Attribute):
 
         # Delegate to base for standard operators (eq, in, isnull, etc.)
         return super().build_lookup(lookup, value)
+
+
+_QueryString = String
+del String

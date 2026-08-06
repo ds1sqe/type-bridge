@@ -4,7 +4,7 @@ use type_bridge_core_lib::ast::{Clause, Constraint, FetchItem, Pattern, Statemen
 
 use serde::{Deserialize, Serialize};
 
-use crate::attribute::ValueType;
+use crate::_attribute::ValueType;
 use crate::error::Result;
 use crate::filter::Filter;
 use crate::value::AttributeValue;
@@ -69,7 +69,7 @@ impl OwnedAttributeInfo {
 /// Trait for TypeDB entity types.
 ///
 /// Implement this for each entity struct to enable CRUD operations via
-/// [`EntityManager`](crate::manager::EntityManager). Phase 1 uses manual
+/// [`EntityManager`](crate::_manager::EntityManager). Phase 1 uses manual
 /// implementations; derive macros will be added in a later phase.
 ///
 /// # Required methods

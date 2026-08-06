@@ -12,7 +12,7 @@ from tests.unit.typed_query._support import (
     diagnostic_session,
     invoke_untyped,
 )
-from type_bridge import (
+from tests.utils.handwritten import (
     Entity,
     Flag,
     Key,
@@ -21,9 +21,7 @@ from type_bridge import (
     String,
     TypeFlags,
 )
-from type_bridge import (
-    Query as LegacyQuery,
-)
+from type_bridge import Query as LegacyQuery
 from type_bridge.session import Database
 from type_bridge.typed import (
     Query,

@@ -420,7 +420,7 @@ impl TypeSchema {
 
     /// Parse a TypeQL `define` block into a fully-resolved `TypeSchema`.
     pub fn from_typeql(input: &str) -> Result<TypeSchema, SchemaError> {
-        let mut schema = super::parser::parse_typeql(input)?;
+        let mut schema = super::_parser::parse_typeql(input)?;
         schema.validate()?;
         schema.resolve_inheritance()?;
         Ok(schema)

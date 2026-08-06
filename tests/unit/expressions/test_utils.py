@@ -1,7 +1,6 @@
 """Unit tests for expression utilities (variable generation)."""
 
-from type_bridge import Integer, String
-from type_bridge.attribute.flags import AttributeFlags
+from tests.utils.handwritten import AttributeFlags, Integer, String
 from type_bridge.expressions.utils import generate_attr_var, generate_has_pattern
 
 

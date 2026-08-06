@@ -1,6 +1,6 @@
 """Unit tests for Relation.to_ast method."""
 
-from type_bridge import (
+from tests.utils.handwritten import (
     Boolean,
     Card,
     Entity,
@@ -9,10 +9,10 @@ from type_bridge import (
     Key,
     Relation,
     Role,
+    RoleRef,
     String,
     TypeFlags,
 )
-from type_bridge.fields.role import RoleRef
 from type_bridge.query.ast import EntityPattern, InsertClause, LiteralValue, RelationStatement
 
 
@@ -157,7 +157,7 @@ def test_optional_role_omitted_is_not_rendered_in_insert_ast():
 
 def test_optional_role_omitted_is_skipped_by_relation_insert_strategy():
     """The CRUD insert strategy should not identify missing optional roles."""
-    from type_bridge.crud.strategies import RelationStrategy
+    from type_bridge.crud.strategies import _QueryRelationStrategy as RelationStrategy
 
     emp = Employee(name=Name("Alice"))
     employment = OptionalEmployment(employee=emp)

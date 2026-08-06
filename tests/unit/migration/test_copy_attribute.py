@@ -11,9 +11,8 @@ from typing import ClassVar
 
 import pytest
 
-from type_bridge import Entity, Flag, Integer, Key, String, TypeFlags
-from type_bridge.attribute import AttributeFlags
-from type_bridge.migration import operations as ops
+from tests.utils.handwritten import AttributeFlags, Entity, Flag, Integer, Key, String, TypeFlags
+from type_bridge.migration import _operations as ops
 
 # ── Test fixtures ──────────────────────────────────────────────────────────────
 
@@ -150,8 +149,8 @@ def test_copy_attribute_execution_lowering_produces_write_typed_step() -> None:
     """lower_execution_migration must produce a step with kind='copy_attribute' for CopyAttribute."""
     from pathlib import Path
 
+    from type_bridge.migration._archive_base import _ArchivedMigration as Migration
     from type_bridge.migration._lower import lower_execution_migration
-    from type_bridge.migration.base import Migration
     from type_bridge.migration.loader import LoadedMigration
 
     class BackfillMigration(Migration):
@@ -187,8 +186,8 @@ def test_copy_attribute_execution_lowering_in_execution_graph() -> None:
     """lower_execution_graph must emit copy_attribute ops for CopyAttribute."""
     from pathlib import Path
 
+    from type_bridge.migration._archive_base import _ArchivedMigration as Migration
     from type_bridge.migration._lower import lower_execution_graph
-    from type_bridge.migration.base import Migration
     from type_bridge.migration.loader import LoadedMigration
 
     class BackfillMigration2(Migration):

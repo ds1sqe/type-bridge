@@ -1,1044 +1,112 @@
-# Code Generator
+# Generate application bindings
 
-Generate TypeBridge models from TypeDB schema files (`.tql`).
+`type-bridge schema generate` projects a checked Split-YAML workspace into the
+configured Python, TypeScript/Node, and Rust outputs. It is the only supported
+model-generation entry point.
 
-The released TypeQL input remains available during the 2.0 compatibility
-window; TOML authoring input is deprecated and is removed in 2.1.0 (it
-emits a `DeprecationWarning` — see [TOML Schema DSL](toml.md)). New
-canonical V2 workspaces use `type-bridge schema generate`; their
-closed authoring grammar and executable example are in the
-[Split-YAML and Workspace V1 Reference](split-yaml-v1.md).
+## Configure outputs
 
-## Overview
+```yaml
+format: typebridge.workspace/v1
 
-The generator eliminates manual synchronization between TypeDB schemas and model code. Instead of writing both `.tql` and language classes, you write the schema once in TypeQL and generate type-safe models. Rust is the bindgen single source of truth for Python, TypeScript, and Rust target rendering.
+schema:
+  root: schema/schema.yaml
+  ownership: exclusive
+  managed-scope: application
 
-```text
-schema.tql  →  generator  →  attributes.py
-                          →  entities.py
-                          →  relations.py
-                          →  __init__.py
-                          →  generated TypeScript crate/package
-                          →  generated Rust schema crate
+compatibility:
+  semantic-profile: typedb-3.12.1/v1
+
+migrations:
+  directory: migrations/v2
+  app-label: application
+  destructive: require-approval
+
+bindings:
+  python:
+    output: generated/python/app_models
+  typescript:
+    output: generated/typescript
+  rust:
+    output: generated/rust
 ```
 
-## Quick Start
+Output paths are confined relative to the workspace and may not overlap the
+schema, migration directory, or each other.
 
-### CLI Usage
+## Generate
 
 ```bash
-# Generate Python models from a schema file
-python -m type_bridge.generator schema.tql -o ./myapp/models/
-
-# With options
-python -m type_bridge.generator schema.tql \
-    --output ./myapp/models/ \
-    --version 2.0.0 \
-    --implicit-keys id
-
-# Cross-target generation through the same Rust bindgen engine
-python -m type_bridge.generator schema.tql \
-    --output ./generated/rust-models \
-    --target rust
+type-bridge --manifest typebridge.yaml schema check
+type-bridge --manifest typebridge.yaml schema generate
 ```
 
-Schemas can also be authored in TOML, though that route is deprecated and
-removed in 2.1.0 — see [TOML Schema DSL](toml.md).
+`schema check` and `schema generate` are offline. They do not connect to TypeDB
+or apply a migration. Use the explicit [migration workflow](migrations.md) for
+database changes.
 
-### TOML Bindgen and Migrations
+## Generated package contract
 
-For a `schema.toml` project, use the generator as the bindgen step and then run
-`makemigrations` against the generated package:
+Every target contains:
 
-```bash
-python -m type_bridge.generator schema.toml -o generated_models
+- exact attribute, entity, relation, and reference types;
+- field and role tokens tied to their declaring model;
+- concise single-type CRUD managers;
+- immutable direct and remote query facades;
+- canonical runtime-projection and schema fingerprints;
+- target-language declarations suitable for Pyright, TypeScript, or Rust.
 
-python -m type_bridge.migration makemigrations \
-  --models generated_models \
-  --migrations-dir migrations \
-  --name initial
+Python and TypeScript packages install their embedded projection into the native
+runtime during import. Installation verifies exact generated classes and
+fingerprints. Rust generated crates bind the equivalent `SchemaPackage` through
+the public SDK.
 
-python -m type_bridge.migration migrate --migrations-dir migrations
-```
+Generated code is deterministic for the same workspace inputs and toolchain
+version. Do not edit, subclass, or reconstruct it. Change Split-YAML, review the
+schema/migration diff, regenerate, and run the target type checker.
 
-Generated migration files use historical snapshot bindings by default, so
-historical migrations do not import the latest generated model package:
+## Use the outputs
 
-```python
-from migrations.snapshots.v0001 import Name, Person
-from type_bridge.migration import operations as ops
+=== "Python"
 
-operations = [
-    ops.AddAttribute(Name),
-    ops.AddEntity(Person),
-    ops.AddOwnership(Person, Name, key=True),
-]
-```
+    ```python
+    from app_models import Age, Person, PersonId
 
-The `.json` sidecar beside the migration keeps the typed Rust `OperationSpec`
-payloads needed for execution. The `.py` file stays readable and stable across
-bindgen removals because `migrations.snapshots.vNNNN` is append-only migration
-history, not the active application model package. `ops.RunTypeQL` remains
-available for explicit custom TypeQL, but schema diffs are not flattened to
-`RunTypeQL` by default.
+    ada = Person(person_id=PersonId("ada"), age=Age(36))
+    Person.manager(db).put(ada)
+    ```
 
-Existing files in `--migrations-dir` determine the next migration number and
-dependency. The current diff source is the live TypeDB schema, so apply each
-generated migration before generating the next one. `MigrationGenerator`
-removes TypeBridge's own ledger types from that live view with the public
-`without_migration_state_schema` helper, backed by the canonical
-`MIGRATION_STATE_SCHEMA` contract. Embedding schema exporters should use the
-same helper, or `is_migration_state_type` for individual objects, rather than
-copying the reserved labels. See
-[`examples/advanced/toml_migration`](https://github.com/ds1sqe/type-bridge/tree/master/examples/advanced/toml_migration)
-for a two-step `schema.toml` example, and see [Migrations](migrations.md) for
-the full migration workflow, snapshot rationale, data migrations, rollback, and
-migration-state backends.
+=== "TypeScript"
 
-### Programmatic Usage
+    ```ts
+    import { Age, Person, PersonId } from "./generated/typescript/dist/index.js";
 
-```python
-from type_bridge.generator import generate_models
+    const ada = Person.create({
+      personId: PersonId.create("ada"),
+      age: Age.create(36n),
+    });
+    Person.manager(db).put(ada);
+    ```
 
-# From a file path
-generate_models("schema.tql", "./myapp/models/")
+=== "Rust"
 
-# From schema text
-schema = """
-define
-entity person, owns name @key;
-attribute name, value string;
-"""
-generate_models(schema, "./myapp/models/")
+    ```rust
+    let person = db.entities::<Person>().put(PersonCreate::new(
+        PersonId::new("ada".to_owned()),
+        Some(Age::new(36)),
+    )).await?;
+    ```
 
-# Generate Rust or TypeScript models from Python
-generate_models(schema, "./generated/rust-models/", target="rust")
-generate_models(schema, "./generated/ts-models/", target="typescript")
-```
+Exact constructor order and optional fields in Rust are schema-generated; use
+the emitted API rather than copying this illustrative signature.
 
-## CLI Reference
+## CI check
 
-```text
-Usage: python -m type_bridge.generator [OPTIONS] SCHEMA
+Run generation in a clean checkout and fail when tracked generated artifacts
+change unexpectedly, or generate into the build directory and compile the clean
+consumer. TypeBridge's own acceptance suites generate fresh packages and reject
+dependencies on handwritten authoring modules.
 
-Arguments:
-  SCHEMA  Path to the TypeDB schema file (.tql) [required]
-
-Options:
-  -o, --output PATH       Output directory for generated package [required]
-  --version TEXT          Schema version string [default: 1.0.0]
-  --no-copy-schema        Don't copy the schema file to the output directory
-  --implicit-keys TEXT    Attribute names to treat as @key even if not marked
-  --dto                   Generate Pydantic API DTOs (api_dto.py)
-  --dto-config TEXT       Python module path to DTOConfig (e.g., myapp.config:dto_config)
-  --target [python|typescript|rust]
-                          Output model language [default: python]
-  --help                  Show this message and exit
-```
-
-The `--output` directory is **required**. We recommend a dedicated directory like `./myapp/models/` or `./src/schema/` to keep generated code separate from hand-written code.
-
-## Generated Package Structure
-
-```text
-myapp/models/
-├── __init__.py      # Package exports, SCHEMA_VERSION, schema_text()
-├── attributes.py    # Attribute class definitions
-├── entities.py      # Entity class definitions
-├── relations.py     # Relation class definitions
-├── structs.py       # Struct definitions (if schema has structs)
-├── functions.py     # Function metadata (if schema has functions)
-├── registry.py      # Pre-computed schema metadata
-├── api_dto.py       # Pydantic API DTOs (if --dto flag used)
-└── schema.tql       # Copy of original schema (unless --no-copy-schema)
-```
-
-### Using the Generated Package
-
-```python
-from myapp.models import attributes, entities, relations
-from myapp.models import SCHEMA_VERSION, schema_text
-
-# Access generated classes
-person = entities.Person(name=attributes.Name("Alice"))
-
-# Get schema version
-print(SCHEMA_VERSION)  # "1.0.0"
-
-# Get original schema text
-print(schema_text())
-```
-
-### Schema Registry
-
-The generated `registry.py` provides pre-computed schema metadata for runtime queries without reflection:
-
-```python
-from myapp.models.registry import (
-    get_entity_attributes,
-    get_relation_attributes,
-    get_role_players,
-    ENTITY_ATTRIBUTES,
-    RELATION_ATTRIBUTES,
-    RELATION_ROLES,
-)
-
-# Get attributes owned by an entity type
-attrs = get_entity_attributes("person")  # frozenset({"name", "age", "email"})
-
-# Get attributes owned by a relation type
-rel_attrs = get_relation_attributes("employment")  # frozenset({"start-date", "salary"})
-
-# Get role player types for a relation role
-players = get_role_players("employment", "employee")  # ("person",)
-```
-
-## Supported TypeQL Features
-
-The generator supports the full TypeDB 3.0 schema syntax:
-
-| Feature                     | Status |
-| --------------------------- | ------ |
-| Attributes with value types | ✓      |
-| `@abstract` types           | ✓      |
-| `@independent` attributes   | ✓      |
-| `sub` inheritance           | ✓      |
-| `@regex` constraints        | ✓      |
-| `@values` constraints       | ✓      |
-| `@range` constraints        | ✓      |
-| `@key` / `@unique`          | ✓      |
-| `@card` on owns             | ✓      |
-| `@card` on plays            | ✓      |
-| `@card` on relates          | ✓      |
-| `@cascade` on owns          | ✓      |
-| `@subkey` on owns           | ✓      |
-| `owns attr[]` (list)        | ✓ (schema-side; REP256) |
-| `relates role[]` (list)     | ✓ (schema-side; REP256) |
-| `@distinct` on owns/relates | ✓ (schema-side; REP256) |
-| Role overrides (`as`)       | ✓      |
-| `relates ... as ...`        | ✓      |
-| `@abstract` on relates      | ✓      |
-| `@doc` / `@meta` (3.12+)    | ✓      |
-| Functions (`fun`)           | ✓      |
-| Structs (`struct`)          | ✓      |
-| `#` and `//` comments       | ✓      |
-
-### Attributes
-
-```typeql
-// Basic attribute with value type
-attribute name, value string;
-
-// Abstract attribute (generates inheritance)
-attribute id @abstract, value string;
-attribute person-id sub id;
-
-// Independent attribute (can exist without owner)
-attribute language @independent, value string;
-
-// With constraints
-attribute email, value string @regex("^.*@.*$");
-attribute status, value string @values("active", "inactive");
-
-// Range constraints
-attribute age, value integer @range(0..150);
-attribute latitude, value double @range(-90.0..90.0);
-attribute birth-date, value date @range(1900-01-01..2100-12-31);
-attribute created-at, value datetime @range(1970-01-01T00:00:00..);  // Open-ended
-```
-
-**Generated Python:**
-
-```python
-class Name(String):
-    flags = AttributeFlags(name="name")
-
-class Id(String):
-    flags = AttributeFlags(name="id")
-
-class PersonId(Id):
-    flags = AttributeFlags(name="person-id")
-
-class Language(String):
-    flags = AttributeFlags(name="language")
-    independent: ClassVar[bool] = True
-
-class Email(String):
-    flags = AttributeFlags(name="email")
-    regex: ClassVar[str] = r"^.*@.*$"
-
-class Status(String):
-    flags = AttributeFlags(name="status")
-    allowed_values: ClassVar[tuple[str, ...]] = ("active", "inactive",)
-
-class Age(Integer):
-    flags = AttributeFlags(name="age")
-    range_constraint: ClassVar[tuple[str | None, str | None]] = ("0", "150")
-```
-
-### Entities
-
-```typeql
-// Basic entity
-entity person,
-    owns name @key,
-    owns age,
-    plays employment:employee;
-
-// Abstract entity with inheritance
-entity content @abstract,
-    owns id @key;
-
-entity post sub content,
-    owns title,
-    owns body;
-
-// Cardinality constraints on owns
-entity page,
-    owns tag @card(0..10),
-    owns name @card(1..3);
-
-// Cardinality constraints on plays
-entity user,
-    plays friendship:friend @card(0..100),
-    plays posting:author @card(0..);
-```
-
-**Generated Python:**
-
-```python
-class Person(Entity):
-    flags = TypeFlags(name="person")
-    plays: ClassVar[tuple[str, ...]] = ("employment:employee",)
-    name: attributes.Name = Flag(Key)
-    age: attributes.Age | None = None
-
-class Content(Entity):
-    flags = TypeFlags(name="content", abstract=True)
-    id: attributes.Id = Flag(Key)
-
-class Post(Content):
-    flags = TypeFlags(name="post")
-    title: attributes.Title | None = None
-    body: attributes.Body | None = None
-
-class Page(Entity):
-    flags = TypeFlags(name="page")
-    tag: list[attributes.Tag] = Flag(Card(0, 10))
-    name: list[attributes.Name] = Flag(Card(1, 3))
-```
-
-### Relations
-
-```typeql
-// Basic relation
-relation employment,
-    relates employer,
-    relates employee;
-
-// Relation with inheritance and role override
-relation contribution @abstract,
-    relates contributor,
-    relates work;
-
-relation authoring sub contribution,
-    relates author as contributor;  // Role override
-
-// Relation with attributes
-relation review,
-    relates reviewer,
-    relates reviewed,
-    owns score @card(1),      // Required attribute
-    owns timestamp;           // Optional (no @card = 0..1)
-
-// Cardinality constraints on roles
-relation social-relation @abstract,
-    relates related @card(0..);
-
-relation friendship sub social-relation,
-    relates friend as related @card(0..1000);
-
-relation parentship,
-    relates parent @card(1..2),
-    relates child @card(1..);
-```
-
-**Generated Python:**
-
-```python
-class Employment(Relation):
-    flags = TypeFlags(name="employment")
-    employer: Role[entities.Company] = Role("employer", entities.Company)
-    employee: Role[entities.Person] = Role("employee", entities.Person)
-
-class Friendship(SocialRelation):
-    flags = TypeFlags(name="friendship")
-    # Symmetric role - multiple friends allowed per friendship
-    friend: Role[entities.User] = Role(
-        "friend",
-        entities.User,
-        cardinality=Card(0, 1000),
-        plays_cardinality=Card(0, 100),
-    )
-
-class Parentship(Relation):
-    flags = TypeFlags(name="parentship")
-    parent: Role[entities.Person] = Role("parent", entities.Person, cardinality=Card(1, 2))
-    child: Role[entities.Person] = Role("child", entities.Person, cardinality=Card(1))
-
-class Contribution(Relation):
-    flags = TypeFlags(name="contribution", abstract=True)
-    contributor: Role[entities.Contributor] = Role("contributor", entities.Contributor)
-    work: Role[entities.Publication] = Role("work", entities.Publication)
-
-class Authoring(Contribution):
-    flags = TypeFlags(name="authoring")
-    author: Role[entities.Contributor] = Role("author", entities.Contributor)
-
-class Review(Relation):
-    flags = TypeFlags(name="review")
-    score: attributes.Score                      # Required (@card(1))
-    timestamp: attributes.Timestamp | None = None  # Optional (no @card)
-    reviewer: Role[entities.User] = Role("reviewer", entities.User)
-    reviewed: Role[entities.Publication] = Role("reviewed", entities.Publication)
-```
-
-### Structs (TypeDB 3.0)
-
-Structs are composite value types introduced in TypeDB 3.0. They are rendered as frozen dataclasses.
-
-```typeql
-struct person-name,
-    value first-name string,
-    value last-name string,
-    value middle-name string?;  // Optional field
-
-struct address,
-    value street string,
-    value city string,
-    value postal-code string,
-    value country string;
-```
-
-**Generated Python (`structs.py`):**
-
-```python
-from dataclasses import dataclass
-from typing import ClassVar
-
-@dataclass(frozen=True, slots=True)
-class PersonName:
-    """Struct for `person-name`."""
-    first_name: str
-    last_name: str
-    middle_name: str | None = None
-
-@dataclass(frozen=True, slots=True)
-class Address:
-    """Struct for `address`."""
-    street: str
-    city: str
-    postal_code: str
-    country: str
-```
-
-### Additional Annotations
-
-#### `@doc` / `@meta` - Documentation and Metadata (TypeDB 3.12+)
-
-Schema annotations round-trip through the generator on all three targets
-(Python, TypeScript, Rust):
-
-```typeql
-attribute email @doc("A contact email address.") @meta("pii", "true"), value string;
-entity person @doc("A person known to the system."),
-    owns email @key @doc("Primary contact address.");
-relation employment,
-    relates employee @doc("The employed party.");
-```
-
-**Generated (Python):**
-
-```python
-class Email(String):
-    flags = AttributeFlags(name="email", doc="A contact email address.", meta={"pii": "true"})
-
-class Person(Entity):
-    flags = TypeFlags(name="person", doc="A person known to the system.")
-    email: Email = Flag(Key, Doc("Primary contact address."))
-```
-
-Regenerating models from an annotated schema and re-emitting the schema
-produces byte-identical annotations (surface parity across targets).
-
-#### `@cascade` - Cascading Deletes
-
-When an entity is deleted, cascade delete to owned attributes:
-
-```typeql
-entity person,
-    owns email @cascade,      // Delete emails when person is deleted
-    owns name @key;
-```
-
-**Generated (metadata tracked on EntitySpec/RelationSpec):**
-
-```python
-# Accessible via schema registry
-cascades: set[str] = {"email"}
-```
-
-#### `@subkey` - Composite Keys
-
-Group attributes into composite keys:
-
-```typeql
-entity order-item,
-    owns order-id @subkey(order),
-    owns product-id @subkey(order),
-    owns quantity;
-```
-
-**Generated (metadata tracked):**
-
-```python
-subkeys: dict[str, str] = {"order-id": "order", "product-id": "order"}
-```
-
-#### `@distinct` on list roles and list owns
-
-`@distinct` is only valid on the list forms (`relates role[]` or `owns attr[]`).  It
-requires that all players / attribute values in the ordered list are unique.
-
-```typeql
-relation rating, relates reviewer[] @distinct;
-entity book, owns tag[] @distinct;
-```
-
-Generated Python:
-
-```python
-# Relation role
-reviewer: Role[Reviewer] = Role("reviewer", Reviewer, ordered=True, distinct=True)
-
-# Entity attribute
-tag: list[Tag] = Flag(Ordered, Distinct)
-```
-
-**Engine caveat — REP256**: schema-side declarations are accepted; instance-level
-list operations are not yet implemented.
-
-## Cardinality Mapping
-
-The following cardinality rules apply to attributes on both **entities** and **relations**:
-
-| TypeQL                         | Python Type                             | Default                   |
-| ------------------------------ | --------------------------------------- | ------------------------- |
-| `@card(1)` or `@card(1..1)`    | `Type`                                  | Required                  |
-| `@card(0..1)` or no annotation | `Type \| None = None`                   | Optional                  |
-| `@card(0..)`                   | `list[Type] = Flag(Card(min=0))`        | Optional list (unordered) |
-| `@card(1..)`                   | `list[Type] = Flag(Card(min=1))`        | Required list (unordered) |
-| `@card(2..5)`                  | `list[Type] = Flag(Card(2, 5))`         | Bounded list (unordered)  |
-| `owns attr[]`                  | `list[Type] = Flag(Ordered)`            | Ordered list              |
-| `owns attr[] @distinct`        | `list[Type] = Flag(Ordered, Distinct)`  | Ordered, unique list      |
-| `@key`                         | `Type = Flag(Key)`                      | Key (implies required)    |
-| `@unique`                      | `Type \| None = Flag(Unique)`           | Unique, optional by default |
-
-**Inheritance:** Child types inherit cardinality constraints from parent types. A child can override inherited constraints by redeclaring the attribute with a different `@card`.
-
-## Comments
-
-The parser supports both `#` (shell-style) and `//` (C-style) comments:
-
-```typeql
-# This is a shell-style comment
-// This is a C-style comment
-attribute name, value string;  // Inline comment
-entity person, owns name;  # Also inline
-```
-
-### Comment Annotations
-
-The generator supports special comment annotations for customizing output:
-
-```typeql
-# @prefix(PERSON_)
-# Custom prefix for IDs
-entity person,
-    owns id @key;
-
-# @internal
-# This entity is for internal use
-entity audit-log,
-    owns timestamp;
-
-# @tags(api, public)
-entity user,
-    owns username @key;
-```
-
-| Annotation            | Effect                               |
-| --------------------- | ------------------------------------ |
-| `# @prefix(XXX)`      | Adds `prefix: ClassVar[str] = "XXX"` |
-| `# @internal`         | Sets `internal = True` on the spec   |
-| `# @transform(xxx)`   | Adds `transform = "xxx"` attribute   |
-| `# @tags(a, b, c)`    | Adds list annotation                 |
-| `# Any other comment` | Becomes the class docstring          |
-
-### Automatic Type Name Case Inference
-
-When generating Python models, the generator automatically infers the correct `TypeNameCase` for each type based on its TypeDB name. You do not need to manually specify a case or use annotations, but you can override it if you want.
-
-To override the case, you can use the `@case` annotation. The argument is case-insensitive:
-```typeql
-# Applies to all languages
-# @case(PascalCase)
-entity forced_class_name;
-
-# Applies only to Python
-# @case(Python, SnakeCase)
-entity forced_python_snake;
-```
-
-
-- If the TypeDB name is `person_name`, the generator assigns `flags = TypeFlags(case=TypeNameCase.SNAKE_CASE)`.
-- If the TypeDB name is `PersonName`, it assigns `flags = TypeFlags(case=TypeNameCase.CLASS_NAME)`.
-- If the TypeDB name is `personname`, it assigns `flags = TypeFlags(case=TypeNameCase.LOWERCASE)`.
-- For names that don't fit these conventions (e.g., kebab-case `person-name`), the generator falls back to explicitly emitting `name="person-name"`.
-
-## Functions
-
-TypeDB functions (`fun` declarations) are fully parsed and can be used for metadata. The generator extracts function signatures including parameters and return types.
-
-### Supported Function Syntax
-
-```typeql
-// Stream return (single type)
-fun user_phones($user: user) -> { phone }:
-    match $user has phone $phone;
-    return { $phone };
-
-// Stream return (tuple)
-fun all_users_and_phones() -> { user, phone, string }:
-    match $user isa user, has phone $phone;
-    return { $user, $phone, "value" };
-
-// Single scalar return
-fun add($x: integer, $y: integer) -> integer:
-    match let $z = $x + $y;
-    return first $z;
-
-// Tuple return
-fun divide($a: integer, $b: integer) -> integer, integer:
-    match let $q = $a / $b;
-    return first $q, $r;
-
-// Bool return type
-fun is_reachable($from: node, $to: node) -> bool:
-    match ($from, $to) isa edge;
-    return first true;
-
-// Optional return type
-fun any_place_with_optional_name() -> place, name?:
-    match $p isa place;
-    return first $p, $n;
-
-// No parameters
-fun mean_karma() -> double:
-    match $user isa user, has karma $karma;
-    return mean($karma);
-
-// Aggregate returns
-fun karma_sum_and_squares() -> double, double:
-    match $karma isa karma;
-    return sum($karma), sum($karma);
-```
-
-### Function Return Types
-
-The parser produces a structured `ReturnTypeSpec` — a stream flag plus an
-ordered list of `ReturnTypeItem(name, optional)` — instead of a formatted
-string. A `{ ... }` clause sets `is_stream=True`; a trailing `?` sets
-`optional=True` on that item.
-
-| TypeQL          | `is_stream` | `types` (`name`, `optional`)          |
-| --------------- | ----------- | ------------------------------------- |
-| `-> { type }`   | `True`      | `[("type", False)]`                   |
-| `-> { t1, t2 }` | `True`      | `[("t1", False), ("t2", False)]`      |
-| `-> type`       | `False`     | `[("type", False)]`                   |
-| `-> t1, t2`     | `False`     | `[("t1", False), ("t2", False)]`      |
-| `-> t1, t2?`    | `False`     | `[("t1", False), ("t2", True)]`       |
-| `-> bool`       | `False`     | `[("bool", False)]`                   |
-
-## API Reference
-
-### `generate_models()`
-
-```python
-def generate_models(
-    schema: str | Path,
-    output_dir: str | Path,
-    *,
-    implicit_key_attributes: Iterable[str] | None = None,
-    schema_version: str = "1.0.0",
-    copy_schema: bool = True,
-    schema_path: str | Path | None = None,
-    generate_dto: bool = False,
-) -> None:
-    """Generate TypeBridge models from a TypeDB schema.
-
-    Args:
-        schema: Path to .tql file or schema text content
-        output_dir: Directory to write generated package
-        implicit_key_attributes: Attribute names to treat as @key
-        schema_version: Version string for SCHEMA_VERSION constant
-        copy_schema: Whether to copy schema.tql to output directory
-        schema_path: Custom path for the schema file (relative to output_dir)
-        generate_dto: Whether to generate Pydantic API DTOs (api_dto.py)
-    """
-```
-
-### `parse_tql_schema()`
-
-```python
-def parse_tql_schema(schema_content: str) -> ParsedSchema:
-    """Parse a TypeDB schema into intermediate representation.
-
-    Args:
-        schema_content: TypeQL schema text
-
-    Returns:
-        ParsedSchema with attributes, entities, and relations
-    """
-```
-
-### `ParsedSchema`
-
-```python
-@dataclass
-class ParsedSchema:
-    """Container for parsed schema components."""
-    attributes: dict[str, AttributeSpec]
-    entities: dict[str, EntitySpec]
-    relations: dict[str, RelationSpec]
-    functions: dict[str, FunctionSpec]
-    structs: dict[str, StructSpec]
-
-    def accumulate_inheritance(self) -> None:
-        """Propagate owns/plays/keys down inheritance hierarchies."""
-```
-
-### `StructSpec`
-
-```python
-@dataclass
-class StructSpec:
-    """Struct definition extracted from a TypeDB schema."""
-    name: str                           # e.g., "person-name"
-    fields: list[StructFieldSpec]       # Struct fields
-    docstring: str | None               # Optional docstring
-    annotations: dict[str, Any]         # Custom annotations
-
-@dataclass
-class StructFieldSpec:
-    """Field definition within a struct."""
-    name: str        # e.g., "first-name"
-    value_type: str  # e.g., "string"
-    optional: bool   # Whether field is optional (?)
-```
-
-### `FunctionSpec`
-
-```python
-@dataclass
-class FunctionSpec:
-    """Function definition extracted from a TypeDB schema."""
-    name: str                        # e.g., "calculate-age"
-    parameters: list[ParameterSpec]  # Function parameters
-    return_type: ReturnTypeSpec      # Structured return type
-    docstring: str | None = None     # Optional docstring
-
-@dataclass
-class ReturnTypeSpec:
-    """Structured function return type (stream flag + ordered items)."""
-    is_stream: bool                  # True for a `{ ... }` stream clause
-    types: list[ReturnTypeItem]      # Ordered return items
-
-@dataclass(frozen=True)
-class ReturnTypeItem:
-    """One return-type entry: a type token plus its optionality."""
-    name: str                        # e.g., "person"
-    optional: bool = False           # True when marked with a trailing `?`
-
-@dataclass
-class ParameterSpec:
-    """Parameter definition for a TypeDB function."""
-    name: str   # e.g., "birth-date"
-    type: str   # e.g., "date" or "user"
-```
-
-## API DTOs (Pydantic)
-
-The generator can optionally create Pydantic-based Data Transfer Objects for building REST APIs. Enable this with `--dto` on the CLI or `generate_dto=True` programmatically.
-
-### Generated DTO Structure
-
-When enabled, `api_dto.py` is generated with:
-
-- **Base classes**: `BaseDTO`, `BaseDTOOut`, `BaseDTOCreate`, `BaseDTOPatch`
-- **Entity DTOs**: `{Entity}Out`, `{Entity}Create`, `{Entity}Patch` for each non-abstract entity
-- **Relation DTOs**: `{Relation}Out`, `{Relation}Create` for each non-abstract relation
-- **Union types**: `EntityOut`, `EntityCreate`, `EntityPatch`, `RelationOut`, `RelationCreate`
-
-### Example Usage
-
-```bash
-# Generate with Pydantic DTOs
-python -m type_bridge.generator schema.tql -o ./myapp/models/ --dto
-```
-
-```python
-# Programmatic generation
-from type_bridge.generator import generate_models
-
-generate_models("schema.tql", "./myapp/models/", generate_dto=True)
-```
-
-### Using Generated DTOs
-
-```python
-from myapp.models.api_dto import PersonOut, PersonCreate, EntityOut
-
-# Create a new person via API
-@app.post("/persons")
-def create_person(data: PersonCreate) -> PersonOut:
-    # data is validated by Pydantic
-    person = Person(name=Name(data.name), age=Age(data.age))
-    person_manager.insert(person)
-    return PersonOut(iid=person.iid, name=data.name, age=data.age, type="person")
-
-# Handle any entity type with discriminated union
-@app.get("/entities/{id}")
-def get_entity(id: str) -> EntityOut:
-    # Returns the appropriate *Out type based on "type" field
-    ...
-```
-
-### DTO Class Hierarchy
-
-```text
-BaseDTO
-├── BaseDTOOut          # For entity responses (includes 'iid' field)
-├── BaseDTOCreate       # For entity create payloads
-├── BaseDTOPatch        # For entity partial updates (extra="forbid")
-├── BaseRelationOut     # For relation responses
-└── BaseRelationCreate  # For relation create payloads
-```
-
-For each entity `Foo` in your schema:
-
-- `FooOut` - Response DTO with all attributes and a `type` discriminator
-- `FooCreate` - Create payload DTO (required fields from `@key` or cardinality with a minimum of 1)
-- `FooPatch` - Partial update DTO (all fields optional)
-
-For each relation `Bar` in your schema:
-
-- `BarOut` - Response DTO with role player IIDs and owned attributes
-- `BarCreate` - Create payload with role player identifiers
-
-### Features
-
-- **Schema-driven**: All DTOs are generated directly from your TypeDB schema
-- **Inheritance support**: DTO inheritance mirrors your schema's type hierarchy
-- **Required field detection**: Uses `@key` and `@card`; bare `@unique` remains optional
-- **Literal type discriminators**: Each DTO has a `type` field for union discrimination
-- **Pydantic validation**: All DTOs use Pydantic for automatic validation
-- **Discriminated unions**: `EntityOut`, `RelationCreate`, etc. use the `type` field
-
-### DTOConfig - Custom Configuration
-
-For advanced use cases, you can configure DTO generation with `DTOConfig`:
-
-```python
-from type_bridge.generator import (
-    DTOConfig,
-    BaseClassConfig,
-    ValidatorConfig,
-    FieldSyncConfig,
-    generate_models,
-)
-
-config = DTOConfig(
-    # Custom base classes for entity hierarchies
-    base_classes=[
-        BaseClassConfig(
-            source_entity="artifact",         # Entities inheriting from 'artifact'
-            base_name="BaseArtifact",         # Will use BaseArtifactOut, etc.
-            inherited_attrs=["display_id", "name", "description", "status"],
-            extra_fields={"version": "int | None = None"},  # Add computed fields
-            field_syncs=[FieldSyncConfig("description", "content")],
-        ),
-    ],
-
-    # Custom validators (generates Annotated types with AfterValidator)
-    validators=[
-        ValidatorConfig(name="DisplayId", pattern=r"^[A-Z]{1,10}-\d+$"),
-    ],
-
-    # Custom Python code injected after imports
-    preamble='''
-def _validate_node_id(value: str) -> str:
-    """Accept display IDs, UUIDs, or TypeDB IIDs."""
-    # Custom validation logic here
-    return value
-
-NodeId = Annotated[str, AfterValidator(_validate_node_id)]
-''',
-
-    # Customize union type names (default: "Entity", "Relation")
-    entity_union_name="GraphNode",      # GraphNodeOut, GraphNodeCreate, etc.
-    relation_union_name="GraphRelation",
-
-    # Exclude internal entities from generation
-    exclude_entities=["display_id_counter", "schema_status"],
-
-    # Rename IID field (default: "iid", use "id" for conventional REST APIs)
-    iid_field_name="id",
-
-    # Skip generating relation Out classes (use with relation_preamble for custom output)
-    skip_relation_output=True,
-
-    # Custom base class for relation creates (must be defined in preamble/relation_preamble)
-    relation_create_base_class="BaseRelationCreate",
-
-    # Custom code for relation section (custom output classes, base classes)
-    relation_preamble='''
-class GraphEdgeOut(BaseDTO):
-    """Custom edge output for graph API."""
-    iid: str
-    source: str
-    target: str
-    type: str
-
-class BaseRelationCreate(BaseDTO):
-    """Base for relation creates with generic source/target."""
-    source_id: str
-    target_id: str
-''',
-)
-
-generate_models("schema.tql", "./models/", generate_dto=True, dto_config=config)
-```
-
-**CLI usage:**
-
-```bash
-# With a config module
-python -m type_bridge.generator schema.tql -o ./models/ --dto --dto-config myapp.config:dto_config
-```
-
-The config module (`myapp/config.py`):
-
-```python
-from type_bridge.generator import DTOConfig, BaseClassConfig
-
-dto_config = DTOConfig(
-    base_classes=[
-        BaseClassConfig(
-            source_entity="artifact",
-            base_name="BaseArtifact",
-            inherited_attrs=["display_id", "name", "description"],
-        ),
-    ],
-)
-```
-
-### DTOConfig Reference
-
-| Option                       | Type                          | Default      | Description                                                 |
-| ---------------------------- | ----------------------------- | ------------ | ----------------------------------------------------------- |
-| `base_classes`               | `list[BaseClassConfig]`       | `[]`         | Custom base classes for entity hierarchies                  |
-| `validators`                 | `list[ValidatorConfig]`       | `[]`         | Custom validator types with regex patterns                  |
-| `preamble`                   | `str \| None`                 | `None`       | Python code injected after imports                          |
-| `entity_union_name`          | `str`                         | `"Entity"`   | Name prefix for entity union types                          |
-| `relation_union_name`        | `str`                         | `"Relation"` | Name prefix for relation union types                        |
-| `exclude_entities`           | `list[str]`                   | `[]`         | Entity names to exclude from generation                     |
-| `iid_field_name`             | `str`                         | `"iid"`      | Field name for TypeDB IID (use `"id"` for REST conventions) |
-| `skip_relation_output`       | `bool`                        | `False`      | Skip generating relation Out classes                        |
-| `relation_create_base_class` | `str \| None`                 | `None`       | Custom base class for relation Create DTOs                  |
-| `relation_preamble`          | `str \| None`                 | `None`       | Python code injected in relation section                    |
-| `composite_entities`         | `list[CompositeEntityConfig]` | `[]`         | Composite (flat/merged) DTOs configuration                  |
-| `strict_out_models`          | `bool`                        | `False`      | Required fields are non-Optional in Out DTOs                |
-| `entity_field_overrides`     | `list[EntityFieldOverride]`   | `[]`         | Per-entity, per-variant field requiredness overrides        |
-
-### CompositeEntityConfig Highlights
-
-In addition to the options documented in [dto.md](dto.md), composites support:
-
-- **`skip_variants`** (`set[str]`): Skip generating specific variant classes (`"out"`, `"create"`, `"patch"`). The type `Literal` enum is always generated. Useful when you prefer discriminated unions over flat composite models.
-- **`extra_fields_out`** (`dict[str, str]`): Per-variant override for `extra_fields` on Out DTOs. When a field name appears here, the Out variant uses this annotation instead of the one from `extra_fields`. Useful when Out fields have different requiredness (e.g., `id` required on Out but optional on Create).
-
-### BaseClassConfig Reference
-
-| Option                   | Type                       | Default  | Description                                            |
-| ------------------------ | -------------------------- | -------- | ------------------------------------------------------ |
-| `source_entity`          | `str`                      | Required | Schema entity that triggers this base class            |
-| `base_name`              | `str`                      | Required | Base class name prefix (e.g., `"BaseArtifact"`)        |
-| `inherited_attrs`        | `list[str]`                | `[]`     | Attributes defined in base class (skipped in children) |
-| `extra_fields`           | `dict[str, str]`           | `{}`     | Additional fields as `{name: type_annotation}`         |
-| `field_syncs`            | `list[FieldSyncConfig]`    | `[]`     | Field sync validators for this base                    |
-| `validators`             | `list[str]`                | `[]`     | Validator names to apply to fields                     |
-| `create_field_overrides` | `dict[str, FieldOverride]` | `{}`     | Per-field overrides for Create variant                 |
-
-## Best Practices
-
-### 1. Keep Generated Code Separate
-
-```text
-myapp/
-├── models/          # Generated (don't edit!)
-│   ├── __init__.py
-│   ├── attributes.py
-│   ├── entities.py
-│   └── relations.py
-├── services/        # Hand-written business logic
-└── schema.tql       # Source of truth
-```
-
-### 2. Regenerate After Schema Changes
-
-```bash
-# Add to your workflow
-python -m type_bridge.generator schema.tql -o ./myapp/models/
-```
-
-### 3. Version Control the Schema, Not Generated Code
-
-```gitignore
-# .gitignore
-myapp/models/  # Generated - regenerate from schema.tql
-```
-
-Or version control both for CI/CD verification:
-
-```bash
-# CI check: ensure generated code is up to date
-python -m type_bridge.generator schema.tql -o ./myapp/models/
-git diff --exit-code myapp/models/
-```
-
-### 4. Use `--implicit-keys` for Convention-Based Keys
-
-If your schema uses `id` as a key by convention:
-
-```bash
-python -m type_bridge.generator schema.tql -o ./models/ --implicit-keys id
-```
-
-## See Also
-
-- [API DTOs Documentation](dto.md) - Complete DTOConfig reference and examples
-- [Entities Documentation](entities.md) - Entity inheritance and ownership
-- [Relations Documentation](relations.md) - Relations, roles, and role players
-- [Attributes Documentation](attributes.md) - Attribute types and constraints
-- [Cardinality Documentation](cardinality.md) - Card API and Flag system
+Programmatic TypeQL/TOML-to-model functions and target-language model factories
+are not generator alternatives. Historical TOML is supported only through the
+read-only conversion described in [TOML recovery](toml.md).

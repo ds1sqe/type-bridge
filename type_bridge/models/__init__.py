@@ -1,23 +1,19 @@
-"""TypeDB model classes - Entity, Relation, and Role."""
+"""Private compatibility implementation for retained V1 query execution.
 
-from type_bridge.models.base import TypeDBType
-from type_bridge.models.entity import Entity
-from type_bridge.models.relation import Relation
-from type_bridge.models.role import Role
-from type_bridge.models.utils import (
-    FieldInfo,
-    MatchClauseInfo,
-    ModelAttrInfo,
-    WriteQueryInfo,
-)
+Application entity and relation classes are emitted by
+``type-bridge schema generate``. This package intentionally has no public
+authoring exports.
+"""
 
-__all__ = [
-    "Entity",
-    "FieldInfo",
-    "MatchClauseInfo",
-    "ModelAttrInfo",
-    "Relation",
-    "Role",
-    "TypeDBType",
-    "WriteQueryInfo",
-]
+from __future__ import annotations
+
+from typing import Any
+
+
+def __getattr__(name: str) -> Any:
+    from type_bridge.migration._archive_imports import archive_attribute
+
+    return archive_attribute(__name__, name)
+
+
+__all__: list[str] = []

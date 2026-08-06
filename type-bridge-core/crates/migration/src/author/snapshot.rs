@@ -11,9 +11,9 @@ use std::collections::BTreeMap;
 
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use type_bridge_core_lib::bindgen::{BindgenOptions, BindgenPlan, TargetLanguage};
-use type_bridge_core_lib::schema::TypeSchema;
-use type_bridge_orm::schema::info::SchemaInfo;
+use type_bridge_core_lib::_bindgen::{BindgenOptions, BindgenPlan, TargetLanguage};
+use type_bridge_core_lib::_schema::TypeSchema;
+use type_bridge_orm::_schema::info::SchemaInfo;
 
 use crate::error::MigrationError;
 

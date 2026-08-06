@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any
 from type_bridge.expressions import Expression
 
 if TYPE_CHECKING:
-    from type_bridge.attribute import Attribute
+    from type_bridge.attribute.base import _QueryAttribute as Attribute
 
 
 def build_lookup_expression(

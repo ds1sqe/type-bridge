@@ -1,6 +1,6 @@
+use crate::_schema::TypeSchema;
 use crate::ast::{Clause, Constraint, FetchItem, Pattern, Statement, Value};
 use crate::reserved_words::is_reserved_word;
-use crate::schema::TypeSchema;
 use crate::validation_rule_wire::ReleasedF64;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -1789,8 +1789,8 @@ mod tests {
 #[cfg(test)]
 mod schema_validation_tests {
     use super::*;
+    use crate::_schema::*;
     use crate::ast::*;
-    use crate::schema::*;
     use serde_json::json;
 
     /// Build a test schema:

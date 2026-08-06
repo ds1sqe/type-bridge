@@ -1,6 +1,6 @@
 """Tests for TypeNameCase formatting options for Attribute types."""
 
-from type_bridge import (
+from tests.utils.handwritten import (
     Boolean,
     DateTime,
     Double,

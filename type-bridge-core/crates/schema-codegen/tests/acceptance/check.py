@@ -11,6 +11,9 @@ HERE = Path(__file__).resolve().parent
 CORE = HERE.parents[3]
 ROOT = HERE.parents[4]
 STAGE = CORE / "target" / "schema-codegen-python-acceptance"
+DOCUMENTED_EXAMPLES = (
+    ROOT / "tests" / "contracts" / "typed_query" / "python" / "documented_examples.py"
+)
 MARKER = re.compile(r"# E: (?P<marker>[a-z][a-z0-9_]*):(?P<rule>report[A-Za-z]+)$")
 
 
@@ -82,16 +85,18 @@ def check_negative(report: dict[str, object], path: Path) -> None:
 
 
 def main() -> None:
-    for fixture in (
-        "positive.py",
-        "negative.py",
-        "runtime_check.py",
-        "fingerprint_check.py",
-    ):
-        source = (HERE / fixture).read_text()
+    fixtures = [
+        HERE / "positive.py",
+        HERE / "negative.py",
+        HERE / "runtime_check.py",
+        HERE / "fingerprint_check.py",
+        DOCUMENTED_EXAMPLES,
+    ]
+    for fixture in fixtures:
+        source = fixture.read_text()
         for forbidden in ("# type: ignore", "cast(", "# pyright:"):
             if forbidden in source:
-                raise AssertionError(f"{fixture} contains forbidden typing escape {forbidden}")
+                raise AssertionError(f"{fixture.name} contains forbidden typing escape {forbidden}")
 
     shutil.rmtree(STAGE, ignore_errors=True)
     STAGE.mkdir(parents=True)
@@ -103,6 +108,7 @@ def main() -> None:
         "pyrightconfig.json",
     ):
         shutil.copy2(HERE / fixture, STAGE / fixture)
+    shutil.copy2(DOCUMENTED_EXAMPLES, STAGE / "documented_examples.py")
 
     command(["maturin", "develop"], cwd=CORE)
 
@@ -120,6 +126,7 @@ def main() -> None:
             "--",
             str(HERE / "schema.yaml"),
             str(STAGE / "generated_v2"),
+            str(STAGE / "declared-schema.json"),
         ]
     )
 
@@ -156,6 +163,10 @@ def main() -> None:
     positive = pyright(STAGE / "positive.py", expected_exit=0)
     if positive["summary"]["errorCount"] != 0:
         raise AssertionError(f"positive Pyright fixture failed: {positive}")
+
+    documented = pyright(STAGE / "documented_examples.py", expected_exit=0)
+    if documented["summary"]["errorCount"] != 0:
+        raise AssertionError(f"documented Pyright fixture failed: {documented}")
 
     negative_path = STAGE / "negative.py"
     negative = pyright(negative_path, expected_exit=1)

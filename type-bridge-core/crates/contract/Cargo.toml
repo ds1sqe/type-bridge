@@ -1,6 +1,6 @@
 [package]
 name = "type-bridge-contract"
-version = "2.0.1"
+version = "2.1.0"
 edition = "2024"
 description = "Versioned binding-neutral contract primitives for type-bridge"
 license.workspace = true

@@ -1,300 +1,236 @@
 "use strict";
 
-const assert = require("assert");
+const assert = require("node:assert/strict");
+const { execSync } = require("node:child_process");
+const fs = require("node:fs");
+const path = require("node:path");
+const packageJson = require("../package.json");
 const typeBridge = require("../");
 
-assert.strictEqual(typeof typeBridge.QueryV2Error, "function");
+const retainedFunctions = [
+  "QueryV2Authority",
+  "QueryV2Error",
+  "RustDatabase",
+  "RustTransactionContext",
+  "TypedGroupByQuery",
+  "TypedQuery",
+  "TypedQueryError",
+  "boolean",
+  "date",
+  "datetime",
+  "datetimetz",
+  "decimal",
+  "double",
+  "duration",
+  "ensureDatabase",
+  "long",
+  "longFromNumberUnsafe",
+  "queryV2ExecuteLocal",
+  "queryV2PrepareRemote",
+  "queryV2RemoteCapabilities",
+  "string",
+];
+for (const name of retainedFunctions) {
+  assert.equal(typeof typeBridge[name], "function", `${name} must remain public`);
+}
 
-// ---------------------------------------------------------------------------
-// Low-level facade — DescriptorRegistry, Marshalling, value builders
-// ---------------------------------------------------------------------------
-
-const registry = new typeBridge.DescriptorRegistry();
-
-const person = registry.registerEntity({
-  type_name: "person",
-  is_abstract: false,
-  parent_type: null,
-  owned_attributes: [
-    {
-      field_name: "name",
-      attr_name: "person-name",
-      value_type: "string",
-      annotations: ["Key"],
-      is_optional: false,
-      is_ordered: false,
-    },
-    {
-      field_name: "age",
-      attr_name: "age",
-      value_type: "long",
-      annotations: [],
-      is_optional: true,
-      is_ordered: false,
-    },
-  ],
+assert.deepEqual(typeBridge.long(9223372036854775807n), {
+  value_type: "long",
+  value: "9223372036854775807",
 });
-
-const employment = registry.registerRelation({
-  type_name: "employment",
-  is_abstract: false,
-  parent_type: null,
-  owned_attributes: [
-    {
-      field_name: "since",
-      attr_name: "since",
-      value_type: "date",
-      annotations: [],
-      is_optional: true,
-      is_ordered: false,
-    },
-  ],
-  roles: [
-    {
-      role_name: "employee",
-      player_type_names: ["person"],
-      cardinality: [1, 1],
-      overrides: null,
-      is_abstract: false,
-      ordered: false,
-      distinct: false,
-    },
-    {
-      role_name: "employer",
-      player_type_names: ["company"],
-      cardinality: [1, 1],
-      overrides: null,
-      is_abstract: false,
-      ordered: false,
-      distinct: false,
-    },
-  ],
-});
-
-assert.strictEqual(person.type_name, "person");
-assert.strictEqual(employment.type_name, "employment");
-assert.deepStrictEqual(registry.entity("person"), person);
-assert.deepStrictEqual(registry.relation("employment"), employment);
-assert.strictEqual(registry.snapshot().length, 2);
-
-const accepts = registry.registerRelation({
-  type_name: "accepts",
-  is_abstract: false,
-  parent_type: null,
-  owned_attributes: [],
-  roles: [
-    {
-      role_name: "definition",
-      player_type_names: [],
-      cardinality: null,
-    },
-    {
-      role_name: "allowed_value",
-      player_type_names: ["person"],
-      cardinality: null,
-    },
-  ],
-});
-
-assert.deepStrictEqual(accepts.roles[0].player_type_names, []);
-const acceptsTypeql = typeBridge.generateDefineBlock(registry.schemaInfo());
-assert.match(acceptsTypeql, /relates definition/);
-assert.match(acceptsTypeql, /person plays accepts:allowed_value;/);
-assert.doesNotMatch(acceptsTypeql, /plays accepts:definition/);
-
-const rawPlaysCardSchema = {
-  entities: {
-    company: {
-      type_name: "company",
-      is_abstract: false,
-      parent_type: null,
-      owned_attributes: [],
-      plays_cardinalities: {
-        "employment:employer": [0, 1],
-      },
-    },
-  },
-  relations: {
-    employment: {
-      type_name: "employment",
-      is_abstract: false,
-      parent_type: null,
-      owned_attributes: [],
-      roles: [
-        {
-          role_name: "employer",
-          player_type_names: ["company"],
-          cardinality: null,
-        },
-      ],
-      plays_cardinalities: {},
-    },
-  },
-  attributes: {},
-};
-const rawPlaysCardTypeql = typeBridge.generateDefineBlock(rawPlaysCardSchema);
-assert.match(rawPlaysCardTypeql, /company plays employment:employer @card\(0\.\.1\);/);
-
-const rawBarePlaysSchema = structuredClone(rawPlaysCardSchema);
-rawBarePlaysSchema.entities.company.plays_cardinalities = {};
-const rawBarePlaysTypeql = typeBridge.generateDefineBlock(rawBarePlaysSchema);
-assert.match(rawBarePlaysTypeql, /^company plays employment:employer;$/m);
-assert.doesNotMatch(rawBarePlaysTypeql, /company plays employment:employer @card/);
-
-const marshalling = new typeBridge.Marshalling();
-assert.deepStrictEqual(
-  typeBridge.long(9223372036854775807n),
-  { value_type: "long", value: "9223372036854775807" },
-);
-assert.deepStrictEqual(marshalling.attributeValue(typeBridge.long(42n)), { Long: 42 });
-
 assert.throws(() => typeBridge.long(1), /bigint/);
 
-const attrs = marshalling.entityAttributes(person, {
-  name: typeBridge.string("Alice"),
-  age: typeBridge.long(42n),
-});
-
-assert.deepStrictEqual(attrs, [
-  ["age", { Long: 42 }],
-  ["person-name", { String: "Alice" }],
-]);
-
-// ---------------------------------------------------------------------------
-// Facade presence — loadNative is a real function
-// ---------------------------------------------------------------------------
-
-assert.strictEqual(typeof typeBridge.loadNative, "function", "loadNative must be a function");
-assert.strictEqual(
-  typeBridge.TYPE_DB_SERVER_DEPRECATION_WARNING,
-  "DeprecationWarning",
-  "the packaged warning must retain Node's filterable standard type",
-);
-assert.strictEqual(
-  typeBridge.TYPE_DB_SERVER_DEPRECATION_CODE,
-  "TYPE_BRIDGE_TYPEDB_LEGACY_SERVER",
-  "the packaged warning code must remain stable",
-);
-assert.strictEqual(
-  typeBridge.loadNative().TYPE_DB_SERVER_DEPRECATION_CODE,
-  typeBridge.TYPE_DB_SERVER_DEPRECATION_CODE,
-  "the packaged warning code must equal the real addon's Rust export",
-);
-for (const preparedV2Export of [
-  "QueryV2Authority",
-  "queryV2ExecuteLocal",
-  "queryV2RemoteCapabilities",
-  "queryV2PrepareRemote",
-]) {
-  assert.strictEqual(
-    typeof typeBridge[preparedV2Export],
-    "function",
-    `${preparedV2Export} must be a public prepared V2 export`,
+const removedAuthoringNames = [
+  "Attribute",
+  "AttributeFlags",
+  "Card",
+  "DescriptorRegistry",
+  "Doc",
+  "Entity",
+  "Flag",
+  "Key",
+  "Marshalling",
+  "Meta",
+  "Relation",
+  "RustDynamicEntityManager",
+  "RustDynamicRelationManager",
+  "TypeFlags",
+  "TypeNameCase",
+  "Unique",
+  "attr",
+  "buildRolePlayers",
+  "entityManagerFor",
+  "field",
+  "formatTypeName",
+  "generateDefineBlock",
+  "generateModels",
+  "generateModelsForTarget",
+  "loadNative",
+  "parseSchema",
+  "relationManagerFor",
+  "resolveFlags",
+  "role",
+];
+for (const name of removedAuthoringNames) {
+  assert.equal(
+    Object.hasOwn(typeBridge, name),
+    false,
+    `${name} must be absent from the generated-only package root`,
   );
 }
-const queryV2Authoring = require("@type-bridge/node/query-v2");
-assert.deepStrictEqual(
-  Object.keys(queryV2Authoring).sort(),
-  [
-    "AuthoredQueryInvocation",
-    "AuthoredQueryPlan",
-    "QueryPlanBuilder",
-    "QueryV2Authority",
-  ],
-  "the query-v2 subpath must expose exactly the four frozen authoring values",
+
+const nativeArtifact = process.env.TYPE_BRIDGE_NODE_NATIVE_PATH ?? fs
+  .readdirSync(path.resolve(__dirname, ".."))
+  .filter((name) => name.endsWith(".node"))
+  .sort()[0];
+assert.ok(nativeArtifact, "package smoke requires a built native artifact");
+const native = require(path.isAbsolute(nativeArtifact)
+  ? nativeArtifact
+  : path.resolve(__dirname, "..", nativeArtifact));
+for (const name of [
+  "NodeDescriptorRegistry",
+  "NodeDynamicEntityManager",
+  "NodeDynamicRelationManager",
+  "generateDefineBlockJson",
+  "generatedDeclaredDescriptorsJson",
+  "normalizeAggregatesJson",
+  "normalizeAttributeValueJson",
+  "normalizeEntityAttributesJson",
+  "normalizeFiltersJson",
+  "normalizeRelationAttributesJson",
+  "normalizeRelationFiltersJson",
+  "normalizeRelationWriteBatchJson",
+  "normalizeRolePlayersJson",
+  "parseSchemaJson",
+  "renderModelsJson",
+  "revalidateMatchDiagnostic",
+  "validateMatchOrderTermCount",
+]) {
+  assert.equal(
+    Object.hasOwn(native, name),
+    false,
+    `${name} must be absent from the native addon`,
+  );
+}
+for (const name of [
+  "NodeRuntimeProjection",
+  "connectRustDatabase",
+  "ensureRustDatabase",
+  "queryV2Authority",
+]) {
+  assert.equal(typeof native[name], "function", `${name} must remain native`);
+}
+assert.throws(
+  () => new native.NodeMatchSessionHandle(),
+  /contains no `constructor`|not a constructor/i,
+  "match sessions must come from a verified runtime projection",
 );
-assert.strictEqual(
-  queryV2Authoring.QueryV2Authority,
-  typeBridge.QueryV2Authority,
-  "the query-v2 subpath must re-export the existing authority by identity",
+assert.equal(
+  Object.hasOwn(native.NodeRustDatabase.prototype, "entityManagerJson"),
+  false,
 );
-const typedQuery = require("@type-bridge/node/typed");
-assert.strictEqual(
-  typeof typedQuery.RemoteQuerySession,
-  "function",
-  "the typed subpath must expose the remote query session",
+assert.equal(
+  Object.hasOwn(native.NodeRustDatabase.prototype, "relationManagerJson"),
+  false,
 );
-assert.strictEqual(
-  typeof typedQuery.RemoteQuery,
-  "function",
-  "the typed subpath must expose the distinct remote query facade",
+assert.equal(
+  Object.hasOwn(native.NodeRustTransactionContext.prototype, "entityManagerJson"),
+  false,
+);
+assert.equal(
+  Object.hasOwn(native.NodeRustTransactionContext.prototype, "relationManagerJson"),
+  false,
 );
 
-// ---------------------------------------------------------------------------
-// Typed layer — presence assertions
-// ---------------------------------------------------------------------------
+assert.equal(
+  Object.hasOwn(typeBridge.RustDatabase.prototype, "entityManager"),
+  false,
+  "RustDatabase must not construct descriptor-driven entity managers",
+);
+assert.equal(
+  Object.hasOwn(typeBridge.RustDatabase.prototype, "relationManager"),
+  false,
+  "RustDatabase must not construct descriptor-driven relation managers",
+);
+assert.equal(
+  Object.hasOwn(typeBridge.RustTransactionContext.prototype, "entityManager"),
+  false,
+  "RustTransactionContext must not construct descriptor-driven entity managers",
+);
+assert.equal(
+  Object.hasOwn(typeBridge.RustTransactionContext.prototype, "relationManager"),
+  false,
+  "RustTransactionContext must not construct descriptor-driven relation managers",
+);
 
-assert.strictEqual(typeof typeBridge.Entity, "function", "Entity must be a function");
-// attr is a namespace object (attr.String, attr.Integer, …)
-assert.strictEqual(typeof typeBridge.attr, "object", "attr must be an object");
-assert.strictEqual(typeof typeBridge.attr.String, "function", "attr.String must be a function");
-assert.strictEqual(typeof typeBridge.field, "function", "field must be a function");
-assert.strictEqual(typeof typeBridge.role, "function", "role must be a function");
-assert.strictEqual(typeof typeBridge.Card, "function", "Card must be a function");
-// Key/Unique are string flag tokens passed to field(Attr, Key).
-assert.strictEqual(typeBridge.Key, "Key", "Key must be the 'Key' flag token");
-assert.strictEqual(typeBridge.Unique, "Unique", "Unique must be the 'Unique' flag token");
-assert.strictEqual(typeof typeBridge.TypeFlags, "function", "TypeFlags must be a function");
-assert.strictEqual(typeof typeBridge.generateModels, "function", "generateModels must be a function");
-assert.strictEqual(typeof typeBridge.parseSchema, "function", "parseSchema must be a function");
+assert.equal(packageJson.main, "dist/public.js");
+assert.equal(packageJson.types, "dist/public.d.ts");
+assert.equal(packageJson.exports["."].default, "./dist/public.js");
+assert.equal(packageJson.exports["."].types, "./dist/public.d.ts");
+for (const forbiddenSubpath of [
+  "./attribute",
+  "./flags",
+  "./generator",
+  "./index",
+  "./manager",
+  "./model",
+  "./native",
+  "./parser",
+  "./typed",
+]) {
+  assert.equal(
+    Object.hasOwn(packageJson.exports, forbiddenSubpath),
+    false,
+    `${forbiddenSubpath} must not be a package export`,
+  );
+}
 
-// ---------------------------------------------------------------------------
-// Typed layer — constructive check: define a model class and read its descriptor
-// ---------------------------------------------------------------------------
+const queryV2 = require("@type-bridge/node/query-v2");
+assert.deepEqual(Object.keys(queryV2).sort(), [
+  "AuthoredQueryInvocation",
+  "AuthoredQueryPlan",
+  "QueryPlanBuilder",
+  "QueryV2Authority",
+]);
+assert.equal(queryV2.QueryV2Authority, typeBridge.QueryV2Authority);
 
-// attr.String("type-name") returns an attribute class (constructor).
-class SmokePersonName extends typeBridge.attr.String("smoke-person-name") {}
-
-// field(AttrClass, ...flags) returns a FieldSpec.
-const nameField = typeBridge.field(SmokePersonName, typeBridge.Key);
-
-// Entity("type-name", { fieldKey: FieldSpec }) returns a model base class.
-class SmokePerson extends typeBridge.Entity("smoke-person", {
-  name: nameField,
-}) {}
-
-const descriptor = SmokePerson.descriptor();
-assert.strictEqual(descriptor.type_name, "smoke-person", "Entity descriptor type_name must match");
-assert.ok(Array.isArray(descriptor.owned_attributes), "Entity descriptor owned_attributes must be an array");
-assert.strictEqual(descriptor.owned_attributes.length, 1, "SmokePerson must have exactly one owned attribute");
-assert.strictEqual(descriptor.owned_attributes[0].field_name, "name", "Field name must be 'name'");
-assert.deepStrictEqual(descriptor.owned_attributes[0].annotations, ["Key"], "Key annotation must be present");
-
-// ---------------------------------------------------------------------------
-// Published-tarball contents — the publish artifact must ship the compiled
-// runtime + the native module, or an installed consumer cannot load them.
-// ---------------------------------------------------------------------------
-
-const { execSync } = require("node:child_process");
 const packed = JSON.parse(execSync("npm pack --dry-run --json", { encoding: "utf8" }));
 const packInfo = Array.isArray(packed) ? packed[0] : Object.values(packed)[0];
 assert.ok(packInfo && Array.isArray(packInfo.files), "npm pack must return a file manifest");
-const packedFiles = packInfo.files.map((f) => f.path);
-assert.ok(packedFiles.includes("dist/index.js"), "tarball must include dist/index.js");
-assert.ok(packedFiles.includes("dist/native.js"), "tarball must include dist/native.js (the loader)");
+const packedFiles = packInfo.files.map((file) => file.path);
+for (const required of [
+  "dist/public.js",
+  "dist/public.d.ts",
+  "dist/query-v2.js",
+  "dist/query-v2.d.ts",
+  "dist/runtime-projection.js",
+  "dist/runtime-projection.d.ts",
+  "THIRD_PARTY_NOTICES.md",
+]) {
+  assert.ok(packedFiles.includes(required), `tarball must include ${required}`);
+}
+assert.ok(packedFiles.some((file) => file.endsWith(".node")), "tarball must include native code");
 assert.ok(
-  packedFiles.includes("dist/query-v2.js") &&
-    packedFiles.includes("dist/query-v2.d.ts"),
-  "tarball must include the typed query-v2 authoring subpath",
+  !packedFiles.some((file) => file.startsWith("dist/typescript/")),
+  "tarball must not include stale duplicate TypeScript outputs",
 );
-assert.ok(
-  packedFiles.includes("dist/typed/remote-session.js") &&
-    packedFiles.includes("dist/typed/remote-session.d.ts") &&
-    packedFiles.includes("dist/typed/remote-query.js") &&
-    packedFiles.includes("dist/typed/remote-query.d.ts") &&
-    packedFiles.includes("dist/typed/remote-limits.d.ts"),
-  "tarball must include the remote typed-query facade",
-);
-assert.ok(
-  packedFiles.includes("THIRD_PARTY_NOTICES.md"),
-  "tarball must include third-party license, fork, and source notices",
-);
-assert.ok(
-  packedFiles.some((f) => f.endsWith(".node")),
-  "tarball must include the native .node module",
-);
-assert.ok(
-  !packedFiles.some((f) => f.startsWith("dist/typescript/")),
-  "tarball must not include stale duplicate dist/typescript outputs",
-);
-assert.ok(!packedFiles.includes("index.js"), "the deleted root index.js must not be published");
+for (const removedModule of [
+  "attribute",
+  "codec",
+  "flags",
+  "generator",
+  "iid",
+  "manager",
+  "model",
+  "parser",
+  "typed",
+]) {
+  assert.ok(
+    !packedFiles.some((file) =>
+      file === `dist/${removedModule}.js` ||
+      file === `dist/${removedModule}.d.ts` ||
+      file.startsWith(`dist/${removedModule}/`)
+    ),
+    `tarball must not contain removed authoring module ${removedModule}`,
+  );
+}

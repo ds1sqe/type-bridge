@@ -1,38 +1,25 @@
 """Integration tests for session and transaction lifecycle."""
 
-import os
 import warnings
 
 import pytest
-import type_bridge_core
 from typedb.driver import TransactionType
 
-from type_bridge import (
-    Database,
-    Entity,
-    Flag,
-    Integer,
-    Key,
-    SchemaManager,
-    String,
-    TypeDBServerDeprecationWarning,
-    TypeFlags,
-)
+from tests.utils.typeql import define_schema
+from type_bridge import Database
 
 
-# Attribute and entity types for session lifecycle tests
-class SessionName(String):
-    pass
-
-
-class SessionAge(Integer):
-    pass
-
-
-class SessionTestPerson(Entity):
-    flags = TypeFlags(name="session_test_person")
-    name: SessionName = Flag(Key)
-    age: SessionAge | None = None
+def _install_session_schema(database: Database) -> None:
+    define_schema(
+        database,
+        """
+        attribute SessionName, value string;
+        attribute SessionAge, value integer;
+        entity session_test_person,
+            owns SessionName @key,
+            owns SessionAge;
+        """,
+    )
 
 
 @pytest.mark.integration
@@ -40,11 +27,11 @@ class SessionTestPerson(Entity):
 class TestDatabaseLifecycle:
     """Tests for Database connection lifecycle."""
 
-    def test_server_deprecation_notice_matches_live_embedded_and_installed_lines(
+    def test_live_embedded_and_installed_connections_emit_no_deprecation_warning(
         self,
         test_database,
     ):
-        """Each successful live connection warns exactly when its server line is legacy."""
+        """Retained live connections do not emit a deprecation warning."""
         from tests.integration.conftest import TEST_DB_ADDRESS, TEST_DB_HTTP_PORT
 
         database = Database(
@@ -53,38 +40,11 @@ class TestDatabaseLifecycle:
             http_port=TEST_DB_HTTP_PORT,
         )
         try:
-            with warnings.catch_warnings(record=True) as embedded_warnings:
-                warnings.simplefilter("always")
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", DeprecationWarning)
                 database.connect()
-
-            server_version = database.detected_server_version()
-            assert server_version is not None
-            expected_count = int(os.environ.get("TYPE_BRIDGE_EXPECT_LEGACY_WARNING", "0"))
-            assert expected_count in (0, 1)
-            expected_notice = type_bridge_core.typedb_server_deprecation_notice(server_version)
-            assert (expected_notice is not None) is bool(expected_count)
-            embedded_notices = [
-                warning
-                for warning in embedded_warnings
-                if warning.category is TypeDBServerDeprecationWarning
-            ]
-            assert len(embedded_notices) == expected_count
-            assert [str(warning.message) for warning in embedded_notices] == (
-                [] if expected_count == 0 else [expected_notice]
-            )
-
-            with warnings.catch_warnings(record=True) as installed_warnings:
-                warnings.simplefilter("always")
                 _ = database.driver
-            installed_notices = [
-                warning
-                for warning in installed_warnings
-                if warning.category is TypeDBServerDeprecationWarning
-            ]
-            assert len(installed_notices) == expected_count
-            assert [str(warning.message) for warning in installed_notices] == (
-                [] if expected_count == 0 else [expected_notice]
-            )
+            assert database.detected_server_version() is not None
         finally:
             database.close()
 
@@ -205,10 +165,7 @@ class TestTransactionTypes:
 
     def test_read_transaction(self, clean_db):
         """Read transaction should allow queries."""
-        # Setup schema first
-        schema_manager = SchemaManager(clean_db)
-        schema_manager.register(SessionTestPerson)
-        schema_manager.sync_schema(force=True)
+        _install_session_schema(clean_db)
 
         with clean_db.transaction(TransactionType.READ) as tx:
             # Should be able to read (even if empty)
@@ -217,10 +174,7 @@ class TestTransactionTypes:
 
     def test_write_transaction(self, clean_db):
         """Write transaction should allow inserts."""
-        # Setup schema first
-        schema_manager = SchemaManager(clean_db)
-        schema_manager.register(SessionTestPerson)
-        schema_manager.sync_schema(force=True)
+        _install_session_schema(clean_db)
 
         with clean_db.transaction(TransactionType.WRITE) as tx:
             tx.execute('insert $p isa session_test_person, has SessionName "Alice";')
@@ -249,10 +203,7 @@ class TestTransactionOperations:
 
     def test_execute_returns_results(self, clean_db):
         """execute() should return query results."""
-        # Setup schema and data
-        schema_manager = SchemaManager(clean_db)
-        schema_manager.register(SessionTestPerson)
-        schema_manager.sync_schema(force=True)
+        _install_session_schema(clean_db)
 
         # Insert test data
         with clean_db.transaction(TransactionType.WRITE) as tx:
@@ -267,19 +218,14 @@ class TestTransactionOperations:
 
     def test_is_open_property(self, clean_db):
         """is_open should reflect transaction state."""
-        # Setup schema
-        schema_manager = SchemaManager(clean_db)
-        schema_manager.register(SessionTestPerson)
-        schema_manager.sync_schema(force=True)
+        _install_session_schema(clean_db)
 
         with clean_db.transaction(TransactionType.READ) as tx:
             assert tx.transaction.is_open is True
 
     def test_explicit_commit(self, clean_db):
         """Explicit commit should persist changes."""
-        schema_manager = SchemaManager(clean_db)
-        schema_manager.register(SessionTestPerson)
-        schema_manager.sync_schema(force=True)
+        _install_session_schema(clean_db)
 
         with clean_db.transaction(TransactionType.WRITE) as tx:
             tx.execute('insert $p isa session_test_person, has SessionName "Charlie";')
@@ -298,9 +244,7 @@ class TestExecuteQuery:
 
     def test_execute_query_read(self, clean_db):
         """execute_query with read type should return results."""
-        schema_manager = SchemaManager(clean_db)
-        schema_manager.register(SessionTestPerson)
-        schema_manager.sync_schema(force=True)
+        _install_session_schema(clean_db)
 
         results = clean_db.execute_query(
             "match $p isa session_test_person; fetch { $p.* };", transaction_type="read"
@@ -309,9 +253,7 @@ class TestExecuteQuery:
 
     def test_execute_query_write_commits(self, clean_db):
         """execute_query with write type should commit changes."""
-        schema_manager = SchemaManager(clean_db)
-        schema_manager.register(SessionTestPerson)
-        schema_manager.sync_schema(force=True)
+        _install_session_schema(clean_db)
 
         clean_db.execute_query(
             'insert $p isa session_test_person, has SessionName "Dave";', transaction_type="write"
@@ -346,9 +288,7 @@ class TestGetSchema:
 
     def test_get_schema_includes_defined_types(self, clean_db):
         """get_schema() should include defined types."""
-        schema_manager = SchemaManager(clean_db)
-        schema_manager.register(SessionTestPerson)
-        schema_manager.sync_schema(force=True)
+        _install_session_schema(clean_db)
 
         schema = clean_db.get_schema()
         assert "session_test_person" in schema

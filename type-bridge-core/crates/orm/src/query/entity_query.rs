@@ -3,18 +3,18 @@
 use std::collections::HashMap;
 use std::marker::PhantomData;
 
-use crate::entity::TypeBridgeEntity;
+use crate::_entity::TypeBridgeEntity;
+use crate::_manager::hydration::{extract_count, hydrate_entity};
+use crate::_manager::query_builder;
 use crate::error::{OrmError, Result};
 use crate::expr::{Agg, AggResult, Expr, SortDir};
-use crate::manager::hydration::{extract_count, hydrate_entity};
-use crate::manager::query_builder;
 use crate::query::group_by_query::GroupByEntityQuery;
 use crate::session::Database;
 use crate::session::backend::{QueryResult, TxType};
 
 /// A chainable query builder for entity types.
 ///
-/// Created via [`EntityManager::query()`](crate::manager::EntityManager::query).
+/// Created via [`EntityManager::query()`](crate::_manager::EntityManager::query).
 ///
 /// # Example
 ///

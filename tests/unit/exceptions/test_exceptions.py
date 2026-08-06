@@ -1,5 +1,7 @@
 """Unit tests for exception classes."""
 
+from types import SimpleNamespace
+
 import pytest
 
 from type_bridge.crud.exceptions import (
@@ -10,9 +12,20 @@ from type_bridge.crud.exceptions import (
     RelationNotFoundError,
 )
 from type_bridge.expressions.boolean import BooleanExpr
-from type_bridge.migration.diff import SchemaDiff
 from type_bridge.migration.exceptions import SchemaConflictError, SchemaValidationError
 from type_bridge.validation import ReservedWordError, ValidationError
+
+
+def _schema_diff() -> SimpleNamespace:
+    return SimpleNamespace(
+        removed_entities=set(),
+        removed_relations=set(),
+        removed_attributes=set(),
+        modified_attributes=set(),
+        modified_entities=set(),
+        modified_relations=set(),
+        added_entities=set(),
+    )
 
 
 class TestCrudExceptions:
@@ -155,95 +168,53 @@ class TestSchemaExceptions:
 
     def test_schema_conflict_error_stores_diff(self):
         """SchemaConflictError should store the diff."""
-        diff = SchemaDiff()
+        diff = _schema_diff()
         error = SchemaConflictError(diff)
         assert error.diff is diff
 
     def test_schema_conflict_error_custom_message(self):
         """SchemaConflictError should accept custom message."""
-        diff = SchemaDiff()
+        diff = _schema_diff()
         error = SchemaConflictError(diff, message="Custom conflict message")
         assert str(error) == "Custom conflict message"
 
     def test_schema_conflict_error_default_message(self):
         """SchemaConflictError should generate default message."""
-        diff = SchemaDiff()
+        diff = _schema_diff()
         error = SchemaConflictError(diff)
         assert "Schema conflict detected" in str(error)
 
     def test_has_breaking_changes_with_empty_diff(self):
         """has_breaking_changes should return False for empty diff."""
-        diff = SchemaDiff()
+        diff = _schema_diff()
         error = SchemaConflictError(diff)
         assert error.has_breaking_changes() is False
 
     def test_has_breaking_changes_with_removed_entities(self):
         """has_breaking_changes should return True when entities removed."""
-        from type_bridge import Entity, TypeFlags
-        from type_bridge.attribute import String
-        from type_bridge.attribute.flags import Flag, Key
-
-        class RemovedName(String):
-            pass
-
-        class RemovedEntity(Entity):
-            flags = TypeFlags(name="removed_entity")
-            name: RemovedName = Flag(Key)
-
-        diff = SchemaDiff()
-        diff.removed_entities.add(RemovedEntity)
+        diff = _schema_diff()
+        diff.removed_entities.add("removed-entity")
         error = SchemaConflictError(diff)
         assert error.has_breaking_changes() is True
 
     def test_has_breaking_changes_with_removed_relations(self):
         """has_breaking_changes should return True when relations removed."""
-        from type_bridge import Entity, Relation, Role, TypeFlags
-        from type_bridge.attribute import String
-        from type_bridge.attribute.flags import Flag, Key
-
-        class RemovedName2(String):
-            pass
-
-        class RemovedParty(Entity):
-            flags = TypeFlags(name="removed_party")
-            name: RemovedName2 = Flag(Key)
-
-        class RemovedRelation(Relation):
-            flags = TypeFlags(name="removed_relation")
-            party: Role[RemovedParty] = Role("party", RemovedParty)
-
-        diff = SchemaDiff()
-        diff.removed_relations.add(RemovedRelation)
+        diff = _schema_diff()
+        diff.removed_relations.add("removed-relation")
         error = SchemaConflictError(diff)
         assert error.has_breaking_changes() is True
 
     def test_has_breaking_changes_with_removed_attributes(self):
         """has_breaking_changes should return True when attributes removed."""
-        from type_bridge.attribute import String
-
-        class RemovedAttr(String):
-            pass
-
-        diff = SchemaDiff()
-        diff.removed_attributes.add(RemovedAttr)
+        diff = _schema_diff()
+        diff.removed_attributes.add("removed-attribute")
         error = SchemaConflictError(diff)
         assert error.has_breaking_changes() is True
 
     def test_no_breaking_changes_when_only_additions(self):
         """has_breaking_changes should return False when only additions."""
-        from type_bridge import Entity, TypeFlags
-        from type_bridge.attribute import String
-        from type_bridge.attribute.flags import Flag, Key
-
-        class NewName(String):
-            pass
-
-        class NewEntity(Entity):
-            flags = TypeFlags(name="new_entity")
-            name: NewName = Flag(Key)
-
-        diff = SchemaDiff()
-        diff.added_entities.add(NewEntity)
+        diff = _schema_diff()
+        diff.added_entities.add("new-entity")
         error = SchemaConflictError(diff)
         # Only additions, no removals or modifications
         assert error.has_breaking_changes() is False
@@ -296,9 +267,7 @@ class TestBooleanExprValidation:
 
     def test_not_with_two_operands_raises(self):
         """NOT with two operands should raise ValueError."""
-        from type_bridge import Entity, TypeFlags
-        from type_bridge.attribute import Integer
-        from type_bridge.attribute.flags import Flag, Key
+        from tests.utils.handwritten import Entity, Flag, Integer, Key, TypeFlags
 
         class BoolTestAge(Integer):
             pass
@@ -319,9 +288,7 @@ class TestBooleanExprValidation:
 
     def test_and_with_one_operand_raises(self):
         """AND with one operand should raise ValueError."""
-        from type_bridge import Entity, TypeFlags
-        from type_bridge.attribute import Integer
-        from type_bridge.attribute.flags import Flag, Key
+        from tests.utils.handwritten import Entity, Flag, Integer, Key, TypeFlags
 
         class AndTestAge(Integer):
             pass
@@ -341,9 +308,7 @@ class TestBooleanExprValidation:
 
     def test_or_with_one_operand_raises(self):
         """OR with one operand should raise ValueError."""
-        from type_bridge import Entity, TypeFlags
-        from type_bridge.attribute import Integer
-        from type_bridge.attribute.flags import Flag, Key
+        from tests.utils.handwritten import Entity, Flag, Integer, Key, TypeFlags
 
         class OrTestAge(Integer):
             pass
@@ -363,9 +328,7 @@ class TestBooleanExprValidation:
 
     def test_and_with_two_operands_succeeds(self):
         """AND with two operands should succeed."""
-        from type_bridge import Entity, TypeFlags
-        from type_bridge.attribute import Integer
-        from type_bridge.attribute.flags import Flag, Key
+        from tests.utils.handwritten import Entity, Flag, Integer, Key, TypeFlags
 
         class AndOkAge(Integer):
             pass
@@ -388,9 +351,7 @@ class TestBooleanExprValidation:
 
     def test_not_with_one_operand_succeeds(self):
         """NOT with one operand should succeed."""
-        from type_bridge import Entity, TypeFlags
-        from type_bridge.attribute import Integer
-        from type_bridge.attribute.flags import Flag, Key
+        from tests.utils.handwritten import Entity, Flag, Integer, Key, TypeFlags
 
         class NotOkAge(Integer):
             pass

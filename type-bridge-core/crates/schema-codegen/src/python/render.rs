@@ -13,7 +13,35 @@ use type_bridge_contract::value::ValueTypeTag;
 
 use crate::{GeneratedPackage, documentation_annotation, invalid, model_documentation};
 
-const PUBLIC_RUNTIME_NAMES: &[&str] = &["FieldToken", "FunctionRef", "RoleToken"];
+const PUBLIC_RUNTIME_NAMES: &[&str] = &[
+    "CrudEvent",
+    "CrudHook",
+    "FieldToken",
+    "FunctionRef",
+    "HookCancelled",
+    "ProjectedModelManager",
+    "ProjectedModelNotFoundError",
+    "RoleToken",
+];
+const PUBLIC_QUERY_NAMES: &[&str] = &[
+    "Aggregate",
+    "BoundField",
+    "BoundRole",
+    "BoundVar",
+    "Collected",
+    "GroupedQuery",
+    "Page",
+    "Predicate",
+    "Query",
+    "QueryOrder",
+    "QuerySession",
+    "RemoteQuery",
+    "RemoteGroupedQuery",
+    "RemoteQueryLimits",
+    "RemoteQuerySession",
+    "SubtypeBoundVar",
+    "aggregate",
+];
 const PUBLIC_SCHEMA_NAMES: &[&str] = &[
     "PLAYING_FACTS",
     "PROJECTION_FINGERPRINT_JSON",
@@ -35,6 +63,7 @@ const MODEL_RESERVED_NAMES: &[&str] = &[
     "initialize_runtime_reference",
     "initialize_runtime_values",
     "manager",
+    "query",
     "runtime_attribute_value",
     "runtime_values",
 ];
@@ -47,6 +76,8 @@ pub(super) fn render(
     projection: &RuntimeProjection,
     runtime_source: &[u8],
     runtime_stub: &[u8],
+    query_source: &[u8],
+    query_stub: &[u8],
     py_typed: &[u8],
 ) -> Result<GeneratedPackage, Diagnostic> {
     validate_projection(projection)?;
@@ -69,6 +100,8 @@ pub(super) fn render(
         ),
         ("_runtime.py".to_owned(), runtime_source.to_vec()),
         ("_runtime.pyi".to_owned(), runtime_stub.to_vec()),
+        ("_query.py".to_owned(), query_source.to_vec()),
+        ("_query.pyi".to_owned(), query_stub.to_vec()),
         ("_schema.py".to_owned(), finish(render_schema(projection)?)),
         ("py.typed".to_owned(), py_typed.to_vec()),
     ])
@@ -84,9 +117,31 @@ fn finish(mut source: String) -> Vec<u8> {
 
 fn render_init(projection: &RuntimeProjection, stub: bool) -> String {
     let mut output = String::from(
-        "from ._runtime import FieldToken as FieldToken\n\
+        "from ._runtime import CrudEvent as CrudEvent\n\
+         from ._runtime import CrudHook as CrudHook\n\
+         from ._runtime import FieldToken as FieldToken\n\
          from ._runtime import FunctionRef as FunctionRef\n\
-         from ._runtime import RoleToken as RoleToken\n",
+         from ._runtime import HookCancelled as HookCancelled\n\
+         from ._runtime import ProjectedModelManager as ProjectedModelManager\n\
+         from ._runtime import ProjectedModelNotFoundError as ProjectedModelNotFoundError\n\
+         from ._runtime import RoleToken as RoleToken\n\
+         from ._query import Aggregate as Aggregate\n\
+         from ._query import BoundField as BoundField\n\
+         from ._query import BoundRole as BoundRole\n\
+         from ._query import BoundVar as BoundVar\n\
+         from ._query import Collected as Collected\n\
+         from ._query import GroupedQuery as GroupedQuery\n\
+         from ._query import Page as Page\n\
+         from ._query import Predicate as Predicate\n\
+         from ._query import Query as Query\n\
+         from ._query import QueryOrder as QueryOrder\n\
+         from ._query import QuerySession as QuerySession\n\
+         from ._query import RemoteGroupedQuery as RemoteGroupedQuery\n\
+         from ._query import RemoteQuery as RemoteQuery\n\
+         from ._query import RemoteQueryLimits as RemoteQueryLimits\n\
+         from ._query import RemoteQuerySession as RemoteQuerySession\n\
+         from ._query import SubtypeBoundVar as SubtypeBoundVar\n\
+         from ._query import aggregate as aggregate\n",
     );
     if stub {
         output.push_str(
@@ -106,6 +161,7 @@ fn render_init(projection: &RuntimeProjection, stub: bool) -> String {
     }
     let mut exports = PUBLIC_RUNTIME_NAMES
         .iter()
+        .chain(PUBLIC_QUERY_NAMES)
         .chain(PUBLIC_SCHEMA_NAMES)
         .map(|name| (*name).to_owned())
         .collect::<Vec<_>>();
@@ -287,6 +343,12 @@ fn render_model_header(body: &str, stub: bool) -> String {
     if body.contains("(_Attribute)") {
         runtime.push("AttributeBase as _Attribute");
     }
+    if body.contains("(_LongAttribute)") {
+        runtime.push("LongAttributeBase as _LongAttribute");
+    }
+    if body.contains("(_DoubleAttribute)") {
+        runtime.push("DoubleAttributeBase as _DoubleAttribute");
+    }
     if body.contains("(_Entity)") {
         runtime.push("EntityBase as _Entity");
     }
@@ -329,6 +391,11 @@ fn render_model_header(body: &str, stub: bool) -> String {
     if !runtime.is_empty() {
         let _ = writeln!(output, "from ._runtime import {}", runtime.join(", "));
     }
+    if body.contains("_BoundVar[") || body.contains("_SubtypeBoundVar[") {
+        output.push_str(
+            "from ._query import BoundVar as _BoundVar, SubtypeBoundVar as _SubtypeBoundVar\n",
+        );
+    }
     if body.contains("_install_runtime_projection(") {
         output.push_str(
             "from ._schema import PROJECTION_FINGERPRINT_JSON as _PROJECTION_FINGERPRINT_JSON\n\
@@ -351,7 +418,11 @@ fn render_model(
     let base = match model.declaration().parent() {
         Some(parent) => projection.models()[parent].target_name().as_str(),
         None => match model.id().kind() {
-            TypeKind::Attribute => "_Attribute",
+            TypeKind::Attribute => match model.declaration().value_type() {
+                Some(ValueTypeTag::Long) => "_LongAttribute",
+                Some(ValueTypeTag::Double) => "_DoubleAttribute",
+                _ => "_Attribute",
+            },
             TypeKind::Entity => "_Entity",
             TypeKind::Relation => "_Relation",
             TypeKind::Struct => {
@@ -483,10 +554,12 @@ fn render_descriptors(
         if let Some(documentation) = documentation_annotation(token.annotations()) {
             render_python_doc_comment(output, "    ", documentation);
         }
+        let attribute = TypeId::new(TypeKind::Attribute, id.attribute().label().as_str())?;
         let _ = writeln!(
             output,
-            "    {}: _FieldDescriptor[{owner}, {read}, {assign}]",
-            token.target_name().as_str()
+            "    {}: _FieldDescriptor[{owner}, {}, {read}, {assign}]",
+            token.target_name().as_str(),
+            projection.models()[&attribute].target_name().as_str()
         );
     }
     for (id, token) in model
@@ -526,12 +599,13 @@ fn render_descriptors(
         } else {
             &logical
         };
+        let compatible = compatible_role_bindings(projection, token.accepted_players())?;
         if let Some(documentation) = documentation_annotation(token.annotations()) {
             render_python_doc_comment(output, "    ", documentation);
         }
         let _ = writeln!(
             output,
-            "    {}: _RoleDescriptor[{owner}, {logical}, {read}, {assign}]",
+            "    {}: _RoleDescriptor[{owner}, {logical}, {compatible}, {read}, {assign}]",
             token.target_name().as_str()
         );
     }
@@ -829,6 +903,39 @@ fn projected_union(
         .join(" | "))
 }
 
+fn compatible_role_bindings(
+    projection: &RuntimeProjection,
+    accepted_players: &BTreeSet<TypeId>,
+) -> Result<String, Diagnostic> {
+    let mut bindings = BTreeSet::new();
+    for player in accepted_players {
+        let projected = projection
+            .models()
+            .get(player)
+            .ok_or_else(|| facet_error("role token references an absent player model"))?;
+        bindings.insert(format!("_BoundVar[{}]", projected.target_name().as_str()));
+        bindings.insert(format!(
+            "_SubtypeBoundVar[{}]",
+            projected.target_name().as_str()
+        ));
+        for ancestor in projected.complete_read().nominal_upcasts() {
+            let ancestor = projection
+                .models()
+                .get(ancestor)
+                .ok_or_else(|| facet_error("role token references an absent nominal ancestor"))?;
+            bindings.insert(format!(
+                "_SubtypeBoundVar[{}]",
+                ancestor.target_name().as_str()
+            ));
+        }
+    }
+    if bindings.is_empty() {
+        Ok("Never".to_owned())
+    } else {
+        Ok(bindings.into_iter().collect::<Vec<_>>().join(" | "))
+    }
+}
+
 #[derive(Clone, Copy)]
 enum Position {
     Create,
@@ -897,7 +1004,11 @@ fn safe_python_doc_line(line: &str) -> String {
 
 fn validate_projection(projection: &RuntimeProjection) -> Result<(), Diagnostic> {
     let mut public = BTreeMap::<String, String>::new();
-    for name in PUBLIC_RUNTIME_NAMES.iter().chain(PUBLIC_SCHEMA_NAMES) {
+    for name in PUBLIC_RUNTIME_NAMES
+        .iter()
+        .chain(PUBLIC_QUERY_NAMES)
+        .chain(PUBLIC_SCHEMA_NAMES)
+    {
         public.insert((*name).to_owned(), "generated runtime".to_owned());
     }
     let mut emitted = BTreeSet::<TypeId>::new();

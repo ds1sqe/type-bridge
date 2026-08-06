@@ -2,7 +2,7 @@
 
 from datetime import date, datetime
 
-from type_bridge import Card, Date, Entity, Flag, Key, String, TypeFlags
+from tests.utils.handwritten import Card, Date, Entity, Flag, Key, String, TypeFlags
 
 
 def test_date_creation():
@@ -306,7 +306,7 @@ def test_date_ordering():
 
 def test_date_add_duration():
     """Test adding Duration to Date."""
-    from type_bridge import Duration
+    from tests.utils.handwritten import Duration
 
     class EventDate(Date):
         pass
@@ -325,7 +325,7 @@ def test_date_add_duration():
 
 def test_date_radd_duration():
     """Test reverse addition: Duration + Date."""
-    from type_bridge import Duration
+    from tests.utils.handwritten import Duration
 
     class EventDate(Date):
         pass
@@ -344,7 +344,7 @@ def test_date_radd_duration():
 
 def test_date_sub_duration():
     """Test subtracting Duration from Date."""
-    from type_bridge import Duration
+    from tests.utils.handwritten import Duration
 
     class EventDate(Date):
         pass
@@ -385,7 +385,7 @@ def test_date_sub_invalid_type():
 
 def test_date_vs_datetime_distinction():
     """Test that Date and DateTime are distinct types."""
-    from type_bridge import DateTime
+    from tests.utils.handwritten import DateTime
 
     class EventDate(Date):
         pass

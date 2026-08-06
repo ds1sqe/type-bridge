@@ -1,367 +1,168 @@
-"""Driver-band and default-server coherence.
-
-The GitHub Actions ``services:`` block cannot read the ``env`` context, so the
-default server image is necessarily repeated as a literal in several places.
-These tests keep the current band-9 server baseline, the three embedded driver
-identities, compatibility matrices, and direct-Python-driver extras explicit
-without pretending server and driver patch releases share one version.
-
-Phase 4 extension: also asserts both embedded pins (band-7 and band-8) via
-``embedded_driver_versions()``, and that band-7 CI/compose literals trace the
-band-7 pin (3.8.x line).
-"""
+"""Retained TypeDB driver-band and live-matrix coherence."""
 
 from __future__ import annotations
 
 import re
 import tomllib
 from pathlib import Path
+from typing import Any
 
+import pytest
 import type_bridge_core
+import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+RUNTIME_MANIFEST = REPO_ROOT / "type-bridge-core/crates/typedb-runtime/Cargo.toml"
+WORKSPACE_MANIFEST = REPO_ROOT / "type-bridge-core/Cargo.toml"
+CI_WORKFLOW = REPO_ROOT / ".github/workflows/ci.yml"
 
-# Expected embedded pins for the default (all-bands) build.
-EXPECTED_BAND7_VERSION = "3.8.1"
-EXPECTED_BAND8_VERSION = "3.11.5"
-EXPECTED_BAND9_VERSION = "3.12.1"
-EXPECTED_DEFAULT_SERVER_VERSION = "3.12.1"
-
-
-def _embedded_version() -> str:
-    """Band-8 pin — back-compat; used by the default-band (CI/compose) assertions."""
-    return type_bridge_core.embedded_driver_version()
+EXPECTED_DRIVERS = {8: "3.11.5", 9: "3.12.1"}
+EXPECTED_SERVERS = {"typedb/typedb:3.11.5", "typedb/typedb:3.12.1"}
 
 
-def _embedded_versions() -> dict[int, str]:
-    """All compiled-in embedded pins, keyed by protocol band."""
-    return type_bridge_core.embedded_driver_versions()
+def _ci_jobs() -> dict[str, Any]:
+    payload = yaml.safe_load(CI_WORKFLOW.read_text(encoding="utf-8"))
+    return payload["jobs"]
 
 
-class TestEmbeddedPins:
-    """Both embedded pins are present and match expected values."""
-
-    def test_embedded_driver_versions_contains_all_bands(self):
-        """Default build must report band-7, band-8, and band-9 pins."""
-        versions = _embedded_versions()
-        assert 7 in versions, f"band-7 pin missing from embedded_driver_versions(): {versions}"
-        assert 8 in versions, f"band-8 pin missing from embedded_driver_versions(): {versions}"
-        assert 9 in versions, f"band-9 pin missing from embedded_driver_versions(): {versions}"
-
-    def test_band7_pin_value(self):
-        """Band-7 embedded pin must equal the expected renamed-driver version."""
-        versions = _embedded_versions()
-        assert versions[7] == EXPECTED_BAND7_VERSION, (
-            f"band-7 embedded pin is {versions[7]!r}; expected {EXPECTED_BAND7_VERSION!r}"
-        )
-
-    def test_band8_pin_value(self):
-        """Band-8 embedded pin must equal the expected compatibility-fork version."""
-        versions = _embedded_versions()
-        assert versions[8] == EXPECTED_BAND8_VERSION, (
-            f"band-8 embedded pin is {versions[8]!r}; expected {EXPECTED_BAND8_VERSION!r}"
-        )
-
-    def test_band9_pin_value(self):
-        """Band-9 embedded pin must equal the expected official upstream version."""
-        versions = _embedded_versions()
-        assert versions[9] == EXPECTED_BAND9_VERSION, (
-            f"band-9 embedded pin is {versions[9]!r}; expected {EXPECTED_BAND9_VERSION!r}"
-        )
-
-    def test_band7_pin_on_3_8_line(self):
-        """Band-7 embedded pin must be on the 3.8.x server line."""
-        versions = _embedded_versions()
-        pin = versions[7]
-        line = ".".join(pin.split(".")[:2])
-        assert line == "3.8", f"band-7 embedded pin {pin!r} is not on the 3.8.x line"
-
-    def test_back_compat_embedded_driver_version_is_band8_pin(self):
-        """embedded_driver_version() (back-compat) must return the band-8 pin."""
-        assert _embedded_version() == EXPECTED_BAND8_VERSION, (
-            f"embedded_driver_version() returned {_embedded_version()!r}; "
-            f"expected band-8 pin {EXPECTED_BAND8_VERSION!r}"
-        )
+def test_native_runtime_exposes_exactly_the_retained_driver_pins() -> None:
+    assert type_bridge_core.embedded_driver_versions() == EXPECTED_DRIVERS
+    assert type_bridge_core.embedded_driver_version() == EXPECTED_DRIVERS[8]
 
 
-class TestDefaultBandCoherence:
-    """Default server literals use the current band-9 conformance baseline."""
+@pytest.mark.parametrize("server", ["3.8.3", "3.10.4"])
+def test_retired_server_lines_fail_the_native_gate(server: str) -> None:
+    with pytest.raises(type_bridge_core.VersionError):
+        type_bridge_core.check_server_supported(server)
 
-    def test_compose_defaults_match_band9_server_baseline(self):
-        """Both compose files default to the frozen 3.12.1 server baseline."""
-        expected = f"typedb/typedb:{EXPECTED_DEFAULT_SERVER_VERSION}"
-        for name in ("docker-compose.yml", "docker-compose.proxy.yml"):
-            text = (REPO_ROOT / name).read_text()
-            match = re.search(r"\$\{TYPEDB_IMAGE:-(typedb/typedb:[\w.\-]+)\}", text)
-            assert match, f"{name}: TYPEDB_IMAGE default not found"
-            assert match.group(1) == expected, (
-                f"{name} defaults to {match.group(1)} instead of the "
-                f"band-9 server baseline {expected}; flip every default together"
-            )
 
-    def test_isolated_suite_defaults_to_band9_server_baseline(self):
-        """The source-tree integration harness uses the same default server."""
-        script = (REPO_ROOT / "test.sh").read_text()
-        expected = f"${{TYPEDB_IMAGE:-typedb/typedb:{EXPECTED_DEFAULT_SERVER_VERSION}}}"
-        assert script.count(expected) == 2
+@pytest.mark.parametrize("server", ["3.11.5", "3.12.1"])
+def test_retained_server_lines_pass_the_native_gate(server: str) -> None:
+    type_bridge_core.check_server_supported(server)
 
-    def test_isolated_tls_suite_requires_the_complete_band9_topology(self):
-        """The local TLS lane must not silently skip native-root or plaintext proofs."""
-        script = (REPO_ROOT / "test.sh").read_text()
-        expected_assignments = {
-            'SSL_CERT_FILE="$fixture_root_ca"',
-            "TYPE_BRIDGE_TLS_LIVE_REQUIRED=1",
-            "TYPE_BRIDGE_TLS_NATIVE_ROOTS=1",
-            f"TYPE_BRIDGE_TLS_EXPECTED_SERVER_VERSION={EXPECTED_DEFAULT_SERVER_VERSION}",
-            "TYPE_BRIDGE_TLS_EXPECTED_DRIVER_BAND=9",
-            f"TYPE_BRIDGE_TLS_EXPECTED_DRIVER_VERSION={EXPECTED_BAND9_VERSION}",
-            "-- --nocapture --test-threads=1",
-        }
-        for assignment in expected_assignments:
-            assert assignment in script
-        assert "External TLS runtime proof is custom-root only" in script
 
-    def test_required_tls_matrix_covers_each_driver_topology(self):
-        """The focused TLS gate must cover every shipped band without suite duplication."""
-        workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text()
-        header = re.search(r"^  tls-transport-matrix:\n", workflow, re.MULTILINE)
-        assert header is not None, "ci.yml: required tls-transport-matrix job is missing"
-        next_job = re.search(r"^  [a-z][a-z0-9-]*:\n", workflow[header.end() :], re.MULTILINE)
-        end = header.end() + next_job.start() if next_job is not None else len(workflow)
-        block = workflow[header.start() : end]
+def test_runtime_manifest_has_only_band8_and_band9_features() -> None:
+    runtime = tomllib.loads(RUNTIME_MANIFEST.read_text(encoding="utf-8"))
+    features = runtime["features"]
+    dependencies = runtime["dependencies"]
 
-        expected_cells = {
-            ("band7-packaging", "3.8.3", "3.8.3", "7", EXPECTED_BAND7_VERSION),
-            ("band8-packaging", "3.11.5", "3.11.5", "8", EXPECTED_BAND8_VERSION),
-            (
-                "band9-upstream",
-                EXPECTED_DEFAULT_SERVER_VERSION,
-                EXPECTED_DEFAULT_SERVER_VERSION,
-                "9",
-                EXPECTED_BAND9_VERSION,
-            ),
-        }
-        actual_cells = set(
-            re.findall(
-                r"- lane: ([^\n]+)\n"
-                r'\s+typedb-server: "typedb/typedb:([\d.]+)"\n'
-                r'\s+server-version: "([\d.]+)"\n'
-                r'\s+driver-band: "(\d+)"\n'
-                r'\s+driver-version: "([\d.]+)"',
-                block,
-            )
-        )
-        assert actual_cells == expected_cells
-        assert "timeout-minutes: 20" in block
-        assert "continue-on-error" not in block
-        assert 'TYPE_BRIDGE_TLS_LIVE_REQUIRED: "1"' in block
-        assert 'TYPE_BRIDGE_TLS_NATIVE_ROOTS: "1"' in block
-        assert "SSL_CERT_FILE:" in block
-        assert 'CARGO_NET_OFFLINE: "true"' in block
-        assert "cargo fetch --locked" in block
-        assert "-p type-bridge-typedb-runtime --test tls_live" in block
-        assert "test.sh" not in block, "the focused TLS gate must not duplicate the full suite"
+    assert features["default"] == ["band8", "band9"]
+    assert set(features) == {"default", "band8", "band9"}
+    assert dependencies["type-bridge-typedb-driver-b8"]["version"] == "=3.11.5"
+    assert dependencies["typedb-driver"]["version"] == "=3.12.1"
+    assert all("b7" not in name and "band7" not in name for name in dependencies)
 
-    def test_ci_default_band_matrices_match_embedded(self):
-        """Live CI matrices contain the band-8 embedded image; band-7 images trace band-7 pin.
 
-        The four live jobs (test-integration, rust-integration, node-integration,
-        cross-language-parity)
-        each fan across multiple server versions.  This test asserts:
+def test_workspace_contains_only_the_active_namespaced_vendor_band() -> None:
+    workspace = tomllib.loads(WORKSPACE_MANIFEST.read_text(encoding="utf-8"))["workspace"]
+    members = set(workspace["members"])
 
-        1. Every live matrix contains the band-8 embedded image (typedb/typedb:3.11.5).
-           No default-band literal may silently diverge from the embedded pin.
-        2. Every other server image in those matrices is served by the embedded
-           runtime — confirmed via the version SSOT (check_server_supported), not a
-           hardcoded list.  Band-7 lines (3.8.x, 3.10.x) and the dual-band 3.12.x
-           line all qualify; a typo'd or dropped line fails.
-        3. The version-gate-cells matrix may contain served band-7 servers only
-           as explicit positive gRPC fallback cells.  They must not reappear as
-           rejection cells, because band-7 servers are now served by the embedded
-           runtime.
-        """
-        versions = _embedded_versions()
-        band8_pin = versions[8]
-        band8_image = f"typedb/typedb:{band8_pin}"
+    assert "vendor/typedb-driver-b8" in members
+    assert "vendor/typedb-protocol-b8" in members
+    assert not any("b7" in member for member in members)
+    assert not (REPO_ROOT / "type-bridge-core/vendor/typedb-driver-b7").exists()
+    assert not (REPO_ROOT / "type-bridge-core/vendor/typedb-protocol-b7").exists()
 
-        text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text()
 
-        # --- Extract per-job server image sets ---
-        # Parse each job block by splitting on top-level job names.  A simpler
-        # approach: extract all typedb/typedb:X.Y.Z literals per named section.
-        # We use a block-level split: find each job header and slice its text.
+def test_single_feature_ci_compiles_each_retained_band() -> None:
+    include = _ci_jobs()["band-feature-check"]["strategy"]["matrix"]["include"]
+    assert include == [
+        {"band": "band8", "features": "band8,axum-transport"},
+        {"band": "band9", "features": "band9,axum-transport"},
+    ]
 
-        def _job_block(job_name: str) -> str:
-            """Return the YAML text of a named top-level job (heuristic slice)."""
-            pattern = rf"^\s+{re.escape(job_name)}:\n"
-            m = re.search(pattern, text, re.MULTILINE)
-            if not m:
-                return ""
-            start = m.start()
-            # Find the next top-level job (2-space indented key followed by ':')
-            next_job = re.search(r"^\s{2}\S", text[start + 1 :], re.MULTILINE)
-            end = start + 1 + next_job.start() if next_job else len(text)
-            return text[start:end]
 
-        live_jobs = [
-            "test-integration",
-            "rust-integration",
-            "node-integration",
-            "cross-language-parity",
-        ]
-        gate_job = "version-gate-cells"
+@pytest.mark.parametrize(
+    "job_name",
+    ["test-integration", "rust-integration", "node-integration"],
+)
+def test_positive_live_matrices_contain_only_retained_servers(job_name: str) -> None:
+    matrix = _ci_jobs()[job_name]["strategy"]["matrix"]
+    assert set(matrix["typedb-server"]) == EXPECTED_SERVERS
 
-        for job in live_jobs:
-            block = _job_block(job)
-            assert block, f"ci.yml: job '{job}' not found"
-            images = re.findall(r'"typedb/typedb:([\d.]+)"', block)
-            assert images, f"ci.yml job '{job}': no typedb/typedb:X.Y.Z image literals found"
 
-            # Band-8 pin must be present in every live matrix.
-            assert band8_image.split("typedb/typedb:")[1] in images, (
-                f"ci.yml job '{job}': band-8 embedded image {band8_image!r} not found "
-                f"in matrix images {images!r}; flip the live matrix to include it"
-            )
+def test_python_live_matrix_pairs_each_server_with_its_driver() -> None:
+    job = _ci_jobs()["test-integration"]
+    include = job["strategy"]["matrix"]["include"]
+    assert include == [
+        {
+            "typedb-server": "typedb/typedb:3.11.5",
+            "python-driver": "3.11.5",
+        },
+        {
+            "typedb-server": "typedb/typedb:3.12.1",
+            "python-driver": "3.12.1",
+        },
+    ]
+    workflow_text = CI_WORKFLOW.read_text(encoding="utf-8")
+    assert "TYPE_BRIDGE_EXPECT_LEGACY_WARNING" not in workflow_text
+    assert "legacy-warning:" not in workflow_text
 
-            # Every non-band-8 image must be a server the embedded runtime
-            # serves (SSOT decision, covers band-7 lines and dual-band 3.12.x).
-            for ver in images:
-                if ver == band8_pin:
-                    continue  # band-8: already checked above
-                try:
-                    type_bridge_core.check_server_supported(ver)
-                except type_bridge_core.VersionError as exc:
-                    raise AssertionError(
-                        f"ci.yml job '{job}': image typedb/typedb:{ver!r} is not "
-                        f"served by the embedded runtime: {exc}"
-                    ) from exc
 
-        # --- Gate cells: served band-7 servers are only positive fallback cells ---
-        gate_block = _job_block(gate_job)
-        assert gate_block, f"ci.yml: job '{gate_job}' not found"
-        gate_cells = re.findall(
-            r"\n\s+- cell: ([^\n]+)(.*?)(?=\n\s+- cell:|\n\s+services:)",
-            gate_block,
-            re.DOTALL,
-        )
-        assert gate_cells, f"ci.yml job '{gate_job}': no matrix cells found"
+def test_tls_matrix_covers_exactly_the_retained_topologies() -> None:
+    include = _ci_jobs()["tls-transport-matrix"]["strategy"]["matrix"]["include"]
+    assert include == [
+        {
+            "lane": "band8-packaging",
+            "typedb-server": "typedb/typedb:3.11.5",
+            "server-version": "3.11.5",
+            "driver-band": "8",
+            "driver-version": "3.11.5",
+        },
+        {
+            "lane": "band9-upstream",
+            "typedb-server": "typedb/typedb:3.12.1",
+            "server-version": "3.12.1",
+            "driver-band": "9",
+            "driver-version": "3.12.1",
+        },
+    ]
 
-        # A "served" band-7 server is one that (a) is within the support window
-        # (check_server_supported passes) AND (b) is on band 7.  These were
-        # formerly SAFE rejection cells (3.8.3, 3.10.4).  They are valid here
-        # only when the cell proves the HTTP-failure -> gRPC fallback path.
-        for cell_name, cell_block in gate_cells:
-            images = re.findall(r'"typedb/typedb:([\d.]+)"', cell_block)
-            for ver in images:
-                try:
-                    type_bridge_core.check_server_supported(ver)
-                    server_in_window = True
-                except type_bridge_core.VersionError:
-                    server_in_window = False
 
-                if not server_in_window:
-                    continue  # Below-floor or out-of-window rejection cell — fine
+def test_gate_matrix_keeps_retired_lines_negative_only() -> None:
+    include = _ci_jobs()["version-gate-cells"]["strategy"]["matrix"]["include"]
+    retired_cells = [
+        cell
+        for cell in include
+        if "3.10." in cell["typedb-server"] or str(cell["python-driver"]).startswith("3.10.")
+    ]
+    assert retired_cells
+    assert all(str(cell["cell"]).startswith("NEG-") for cell in retired_cells)
+    assert any(
+        cell["typedb-server"] == "typedb/typedb:3.10.4"
+        and cell["probe"] == "connect"
+        and cell["expect"] == "window"
+        for cell in retired_cells
+    )
 
-                server_band = type_bridge_core.band(ver)
-                if server_band != 7:
-                    continue
 
-                assert cell_name.startswith("POS-grpc-fallback-"), (
-                    f"ci.yml job '{gate_job}': within-window band-7 server "
-                    f"typedb/typedb:{ver!r} appears in non-fallback cell "
-                    f"{cell_name!r}; band-7 servers must be positive fallback "
-                    f"regressions, not rejection cells"
-                )
-                assert "http-port: 1" in cell_block and "expect: ok" in cell_block, (
-                    f"ci.yml job '{gate_job}' cell {cell_name!r}: band-7 fallback "
-                    f"regression must force HTTP failure with http-port: 1 and "
-                    f"expect success with expect: ok"
-                )
-                assert "expect-warning: legacy" in cell_block, (
-                    f"ci.yml job '{gate_job}' cell {cell_name!r}: the live "
-                    "unknown-version band-7 fallback must assert exactly one "
-                    "filterable legacy-server warning"
-                )
+def test_compose_and_local_harness_default_to_the_band9_server() -> None:
+    expected = "typedb/typedb:3.12.1"
+    for name in ("docker-compose.yml", "docker-compose.proxy.yml"):
+        text = (REPO_ROOT / name).read_text(encoding="utf-8")
+        match = re.search(r"\$\{TYPEDB_IMAGE:-(typedb/typedb:[\w.\-]+)\}", text)
+        assert match is not None
+        assert match.group(1) == expected
 
-    def test_python_live_matrix_asserts_legacy_warning_by_server_line(self):
-        """The live Python matrix owns the expected warning count independently."""
-        workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text()
-        header = re.search(r"^  test-integration:\n", workflow, re.MULTILINE)
-        assert header is not None
-        next_job = re.search(r"^  [a-z][a-z0-9-]*:\n", workflow[header.end() :], re.MULTILINE)
-        end = header.end() + next_job.start() if next_job is not None else len(workflow)
-        block = workflow[header.start() : end]
+    assert (REPO_ROOT / "test.sh").read_text(encoding="utf-8").count(
+        "${TYPEDB_IMAGE:-typedb/typedb:3.12.1}"
+    ) == 2
 
-        expected = {
-            ("3.8.3", "3.10.0", "1"),
-            ("3.10.4", "3.10.0", "1"),
-            ("3.11.5", "3.11.5", "0"),
-            ("3.12.1", "3.12.1", "0"),
-        }
-        actual = set(
-            re.findall(
-                r'- typedb-server: "typedb/typedb:([\d.]+)"\n'
-                r'\s+python-driver: "([\d.]+)"\n'
-                r'\s+legacy-warning: "([01])"',
-                block,
-            )
-        )
-        assert actual == expected
-        assert "TYPE_BRIDGE_EXPECT_LEGACY_WARNING: ${{ matrix.legacy-warning }}" in block
 
-    def test_dev_pin_matches_embedded_line(self):
-        """The CPython 3.12–3.13 dev pin matches the embedded driver's minor line."""
-        pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
-        dependencies = set(pyproject["project"]["optional-dependencies"]["dev"])
-        requirement = "typedb-driver~=3.11.5; python_version < '3.14'"
-        assert requirement in dependencies, "CPython 3.12–3.13 dev-extra driver pin not found"
-        embedded = _embedded_version()
-        pin_line = "3.11"
-        embedded_line = ".".join(embedded.split(".")[:2])
-        assert pin_line == embedded_line, (
-            f"dev extra pins {requirement!r} (line {pin_line}) but the wheel "
-            f"embeds driver {embedded} (line {embedded_line})"
-        )
-
-    def test_optional_driver_groups_have_complete_interpreter_split(self):
-        """Each optional group declares its complete interpreter split."""
-        pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
-        groups = pyproject["project"]["optional-dependencies"]
-        expected = {
-            "dev": {
-                "typedb-driver~=3.11.5; python_version < '3.14'",
-                "typedb-driver==3.12.1; python_version >= '3.14'",
-            },
-            "typedb-driver": {
-                "typedb-driver>=3.8,<3.13; python_version < '3.14'",
-                "typedb-driver==3.12.1; python_version >= '3.14'",
-            },
-        }
-        for group, requirements in expected.items():
-            actual = {item for item in groups[group] if item.startswith("typedb-driver")}
-            assert actual == requirements, f"{group} driver marker split drifted: {actual}"
-
-    def test_band7_live_cells_trace_band7_pin(self):
-        """Band-7 server references (3.8.x line) trace the band-7 embedded pin.
-
-        Checks that any 3.8.x server image literal in ci.yml aligns with the
-        band-7 pin's minor line.  This assertion provides the green target for
-        sub-plan 04's CI literal updates.
-        """
-        versions = _embedded_versions()
-        band7_pin = versions.get(7)
-        if band7_pin is None:
-            return  # single-band8 build — skip
-        band7_line = ".".join(band7_pin.split(".")[:2])  # "3.8"
-
-        text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text()
-        # Find explicit band-7 server image literals (3.8.x lines) in the file.
-        band7_images = re.findall(r"typedb/typedb:(3\.\d+\.\d+)", text)
-        band7_images_filtered = [
-            img for img in band7_images if img.startswith("3.8.") or img.startswith("3.10.")
-        ]
-        for img_ver in band7_images_filtered:
-            img_line = ".".join(img_ver.split(".")[:2])
-            assert img_line in ("3.8", "3.10"), (
-                f"ci.yml band-7 image uses {img_ver!r} which is not on a band-7 line"
-            )
+def test_optional_python_driver_groups_exclude_retired_lines() -> None:
+    groups = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"][
+        "optional-dependencies"
+    ]
+    expected = {
+        "dev": {
+            "typedb-driver~=3.11.5; python_version < '3.14'",
+            "typedb-driver==3.12.1; python_version >= '3.14'",
+        },
+        "typedb-driver": {
+            "typedb-driver>=3.11,<3.13; python_version < '3.14'",
+            "typedb-driver==3.12.1; python_version >= '3.14'",
+        },
+    }
+    for group, requirements in expected.items():
+        actual = {item for item in groups[group] if item.startswith("typedb-driver")}
+        assert actual == requirements

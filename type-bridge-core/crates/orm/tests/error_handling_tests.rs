@@ -9,6 +9,10 @@ use common::*;
 use type_bridge_orm::session::backend::QueryResult;
 use type_bridge_orm::*;
 
+#[path = "support/internal.rs"]
+mod internal;
+use internal::*;
+
 // ── FailingMockBackend tests ────────────────────────────────────────
 
 #[tokio::test]

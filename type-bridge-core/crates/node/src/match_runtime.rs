@@ -9,16 +9,19 @@ use napi_derive::napi;
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::sync::Arc;
+use type_bridge_orm::_registry::DescriptorRegistry;
 use type_bridge_orm::{
-    BindingHandle, ComparisonOp, FieldHandle, HydratedAttribute, HydratedRole, HydratedRolePlayer,
-    HydratedThing, MatchError, MatchErrorCategory, MatchRequest, MatchResult, MissingOrder,
-    OrderHandle, PredicateHandle, QueryHandle, ReducedValue, Reduction, ReductionRow, RoleHandle,
-    RowCardinality, SelectionHandle, SessionHandle, ShapeHandle, SlotValue, SortDirection,
-    ThingKind, UnvalidatedMatchRequest, ValidatedMatchRequest, ValidatedMatchResult, Window,
-    validate_public_order_term_count,
+    BindingHandle, ComparisonOp, DescriptorId, FieldHandle, HydratedAttribute, HydratedRole,
+    HydratedRolePlayer, HydratedThing, MatchError, MatchErrorCategory, MatchRequest, MatchResult,
+    MissingOrder, OrderHandle, PredicateHandle, QueryHandle, ReducedValue, Reduction, ReductionRow,
+    RoleHandle, RowCardinality, SelectionHandle, SessionHandle, ShapeHandle, SlotValue,
+    SortDirection, ThingKind, UnvalidatedMatchRequest, ValidatedMatchRequest, ValidatedMatchResult,
+    Window,
 };
 
-use crate::{NodeDescriptorRegistry, NodeRustDatabase, NodeRustTransactionContext};
+#[cfg(test)]
+use crate::NodeDescriptorRegistry;
+use crate::{NodeRustDatabase, NodeRustTransactionContext};
 
 /// Stable JSON payload placed in the reason of an N-API match error.
 #[derive(Serialize)]
@@ -131,7 +134,7 @@ fn parse_reduction(value: &str) -> Result<Reduction> {
     }
 }
 
-fn reduce_terms(
+pub(crate) fn reduce_terms(
     reducers: &[String],
     inputs: &[Option<Reference<NodeMatchFieldHandle>>],
 ) -> Result<Vec<(Reduction, Option<FieldHandle>)>> {
@@ -152,7 +155,7 @@ fn reduce_terms(
         .collect()
 }
 
-fn borrow_reduce_terms(
+pub(crate) fn borrow_reduce_terms(
     terms: &[(Reduction, Option<FieldHandle>)],
 ) -> Vec<(Reduction, Option<&FieldHandle>)> {
     terms
@@ -194,26 +197,24 @@ pub(crate) fn order_handles(orders: &[Reference<NodeMatchOrderHandle>]) -> Vec<O
 ///
 /// The validation proof and its invocation token remain native and are not
 /// serialized or returned to JavaScript.
-#[napi(js_name = "revalidateMatchDiagnostic")]
-pub fn revalidate_match_diagnostic(
+#[cfg(test)]
+pub(crate) fn revalidate_match_diagnostic(
     registry: &NodeDescriptorRegistry,
     diagnostic_json: String,
+) -> Result<String> {
+    revalidate_diagnostic(registry.shared_registry().as_ref(), &diagnostic_json)
+}
+
+pub(crate) fn revalidate_diagnostic(
+    registry: &DescriptorRegistry,
+    diagnostic_json: &str,
 ) -> Result<String> {
     let unvalidated = UnvalidatedMatchRequest::from_canonical_bytes(diagnostic_json.as_bytes())
         .map_err(napi_match_error)?;
     let canonical = unvalidated.to_canonical_bytes().map_err(napi_match_error)?;
-    unvalidated
-        .validate(registry.shared_registry().as_ref())
-        .map_err(napi_match_error)?;
+    unvalidated.validate(registry).map_err(napi_match_error)?;
     String::from_utf8(canonical)
         .map_err(|_| Error::new(Status::GenericFailure, "diagnostic JSON was not UTF-8"))
-}
-
-/// Apply the canonical public-order ceiling before JavaScript maps a caller
-/// array into native order handles.
-#[napi(js_name = "validateMatchOrderTermCount")]
-pub fn validate_match_order_term_count(actual: u32) -> Result<()> {
-    validate_public_order_term_count(actual as usize).map_err(napi_match_error)
 }
 
 /// Opaque owner of one native match-handle construction session.
@@ -222,15 +223,21 @@ pub struct NodeMatchSessionHandle {
     inner: SessionHandle,
 }
 
-#[napi]
 impl NodeMatchSessionHandle {
-    #[napi(constructor)]
-    pub fn new(registry: &NodeDescriptorRegistry) -> Self {
+    pub(crate) fn from_registry(registry: Arc<DescriptorRegistry>) -> Self {
         Self {
-            inner: SessionHandle::new(registry.shared_registry()),
+            inner: SessionHandle::new(registry),
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn new(registry: &NodeDescriptorRegistry) -> Self {
+        Self::from_registry(registry.shared_registry())
+    }
+}
+
+#[napi]
+impl NodeMatchSessionHandle {
     #[napi]
     pub fn exact(&self, type_name: String) -> Result<NodeMatchBindingHandle> {
         self.inner
@@ -356,6 +363,22 @@ impl NodeMatchBindingHandle {
 #[napi]
 impl NodeMatchBindingHandle {
     #[napi]
+    pub fn iid(&self, iid: String) -> Result<NodeMatchPredicateHandle> {
+        self.inner
+            .iid(iid)
+            .map(|inner| NodeMatchPredicateHandle { inner })
+            .map_err(crate::napi_orm_error)
+    }
+
+    #[napi(js_name = "iidIn")]
+    pub fn iid_in(&self, iids: Vec<String>) -> Result<NodeMatchPredicateHandle> {
+        self.inner
+            .iid_in(iids)
+            .map(|inner| NodeMatchPredicateHandle { inner })
+            .map_err(crate::napi_orm_error)
+    }
+
+    #[napi]
     pub fn field(&self, field_name: String) -> Result<NodeMatchFieldHandle> {
         self.inner
             .field(&field_name)
@@ -418,8 +441,21 @@ pub struct NodeMatchFieldHandle {
     inner: FieldHandle,
 }
 
+impl NodeMatchFieldHandle {
+    pub(crate) const fn inner(&self) -> &FieldHandle {
+        &self.inner
+    }
+}
+
 #[napi]
 impl NodeMatchFieldHandle {
+    #[napi]
+    pub fn presence(&self, present: bool) -> NodeMatchPredicateHandle {
+        NodeMatchPredicateHandle {
+            inner: self.inner.presence(present),
+        }
+    }
+
     #[napi(js_name = "compareValueJson")]
     pub fn compare_value_json(
         &self,
@@ -1016,6 +1052,155 @@ impl NodeMatchQueryHandle {
             lineage: Arc::clone(&self.lineage),
         })
     }
+
+    #[napi(js_name = "reduceByFieldDiagnostic")]
+    pub fn reduce_by_field_diagnostic(
+        &self,
+        root: &NodeMatchBindingHandle,
+        group: &NodeMatchFieldHandle,
+        reducers: Vec<String>,
+        inputs: Vec<Option<Reference<NodeMatchFieldHandle>>>,
+    ) -> Result<String> {
+        let terms = reduce_terms(&reducers, &inputs)?;
+        let terms = borrow_reduce_terms(&terms);
+        diagnostic(
+            self.inner
+                .reduce_by_field(&root.inner, &group.inner, &terms)
+                .map_err(crate::napi_orm_error)?,
+        )
+    }
+
+    #[napi(js_name = "executeReduceByFieldOwned")]
+    pub fn execute_reduce_by_field_owned(
+        &self,
+        database: &NodeRustDatabase,
+        root: &NodeMatchBindingHandle,
+        group: &NodeMatchFieldHandle,
+        reducers: Vec<String>,
+        inputs: Vec<Option<Reference<NodeMatchFieldHandle>>>,
+    ) -> Result<NodeValidatedMatchResultHandle> {
+        let terms = reduce_terms(&reducers, &inputs)?;
+        let terms = borrow_reduce_terms(&terms);
+        let validated = self
+            .inner
+            .validate_reduce_by_field(&root.inner, &group.inner, &terms)
+            .map_err(crate::napi_orm_error)?;
+        let registry = self.inner.registry_arc();
+        let (database, runtime) = database.handles();
+        let inner = runtime
+            .block_on(database.execute_match(&registry, &validated))
+            .map_err(crate::napi_orm_error)?;
+        Ok(NodeValidatedMatchResultHandle {
+            inner,
+            request: validated,
+            output: Arc::clone(&self.output),
+            lineage: Arc::clone(&self.lineage),
+        })
+    }
+
+    #[napi(js_name = "executeReduceByFieldBorrowed")]
+    pub fn execute_reduce_by_field_borrowed(
+        &self,
+        transaction: &NodeRustTransactionContext,
+        root: &NodeMatchBindingHandle,
+        group: &NodeMatchFieldHandle,
+        reducers: Vec<String>,
+        inputs: Vec<Option<Reference<NodeMatchFieldHandle>>>,
+    ) -> Result<NodeValidatedMatchResultHandle> {
+        let terms = reduce_terms(&reducers, &inputs)?;
+        let terms = borrow_reduce_terms(&terms);
+        let validated = self
+            .inner
+            .validate_reduce_by_field(&root.inner, &group.inner, &terms)
+            .map_err(crate::napi_orm_error)?;
+        let registry = self.inner.registry_arc();
+        let (transaction, runtime) = transaction.handles();
+        let inner = runtime
+            .block_on(transaction.execute_match(&registry, &validated))
+            .map_err(crate::napi_orm_error)?;
+        Ok(NodeValidatedMatchResultHandle {
+            inner,
+            request: validated,
+            output: Arc::clone(&self.output),
+            lineage: Arc::clone(&self.lineage),
+        })
+    }
+
+    #[napi(js_name = "reduceByFieldsDiagnostic")]
+    pub fn reduce_by_fields_diagnostic(
+        &self,
+        root: &NodeMatchBindingHandle,
+        groups: Vec<Reference<NodeMatchFieldHandle>>,
+        reducers: Vec<String>,
+        inputs: Vec<Option<Reference<NodeMatchFieldHandle>>>,
+    ) -> Result<String> {
+        let groups = groups.iter().map(|group| &group.inner).collect::<Vec<_>>();
+        let terms = reduce_terms(&reducers, &inputs)?;
+        let terms = borrow_reduce_terms(&terms);
+        diagnostic(
+            self.inner
+                .reduce_by_fields(&root.inner, &groups, &terms)
+                .map_err(crate::napi_orm_error)?,
+        )
+    }
+
+    #[napi(js_name = "executeReduceByFieldsOwned")]
+    pub fn execute_reduce_by_fields_owned(
+        &self,
+        database: &NodeRustDatabase,
+        root: &NodeMatchBindingHandle,
+        groups: Vec<Reference<NodeMatchFieldHandle>>,
+        reducers: Vec<String>,
+        inputs: Vec<Option<Reference<NodeMatchFieldHandle>>>,
+    ) -> Result<NodeValidatedMatchResultHandle> {
+        let groups = groups.iter().map(|group| &group.inner).collect::<Vec<_>>();
+        let terms = reduce_terms(&reducers, &inputs)?;
+        let terms = borrow_reduce_terms(&terms);
+        let validated = self
+            .inner
+            .validate_reduce_by_fields(&root.inner, &groups, &terms)
+            .map_err(crate::napi_orm_error)?;
+        let registry = self.inner.registry_arc();
+        let (database, runtime) = database.handles();
+        let inner = runtime
+            .block_on(database.execute_match(&registry, &validated))
+            .map_err(crate::napi_orm_error)?;
+        Ok(NodeValidatedMatchResultHandle {
+            inner,
+            request: validated,
+            output: Arc::clone(&self.output),
+            lineage: Arc::clone(&self.lineage),
+        })
+    }
+
+    #[napi(js_name = "executeReduceByFieldsBorrowed")]
+    pub fn execute_reduce_by_fields_borrowed(
+        &self,
+        transaction: &NodeRustTransactionContext,
+        root: &NodeMatchBindingHandle,
+        groups: Vec<Reference<NodeMatchFieldHandle>>,
+        reducers: Vec<String>,
+        inputs: Vec<Option<Reference<NodeMatchFieldHandle>>>,
+    ) -> Result<NodeValidatedMatchResultHandle> {
+        let groups = groups.iter().map(|group| &group.inner).collect::<Vec<_>>();
+        let terms = reduce_terms(&reducers, &inputs)?;
+        let terms = borrow_reduce_terms(&terms);
+        let validated = self
+            .inner
+            .validate_reduce_by_fields(&root.inner, &groups, &terms)
+            .map_err(crate::napi_orm_error)?;
+        let registry = self.inner.registry_arc();
+        let (transaction, runtime) = transaction.handles();
+        let inner = runtime
+            .block_on(transaction.execute_match(&registry, &validated))
+            .map_err(crate::napi_orm_error)?;
+        Ok(NodeValidatedMatchResultHandle {
+            inner,
+            request: validated,
+            output: Arc::clone(&self.output),
+            lineage: Arc::clone(&self.lineage),
+        })
+    }
 }
 
 /// Opaque proof that Rust validated one FetchRows provider result.
@@ -1163,7 +1348,9 @@ impl NodeValidatedMatchResultHandle {
 
     fn reduction<'a>(&'a self, query: &NodeMatchQueryHandle) -> Result<&'a [ReductionRow]> {
         match self.result(query)? {
-            MatchResult::Reduction { rows, .. } => Ok(rows),
+            MatchResult::Reduction { rows, .. }
+            | MatchResult::FieldReduction { rows, .. }
+            | MatchResult::FieldTupleReduction { rows, .. } => Ok(rows),
             _ => Err(result_decode_error(
                 "result_operation_mismatch",
                 "validated result is not a ReduceBy result",
@@ -1527,6 +1714,86 @@ impl NodeValidatedMatchResultHandle {
             inner: NodeValidatedThing::Selected(group.clone()),
         })
     }
+
+    #[napi(js_name = "reductionGroupValueJson")]
+    pub fn reduction_group_value_json(
+        &self,
+        query: &NodeMatchQueryHandle,
+        row_index: u32,
+    ) -> Result<String> {
+        let value = self
+            .reduction_row(query, row_index)?
+            .field_group()
+            .ok_or_else(|| {
+                result_decode_error(
+                    "result_reduction_not_field_grouped",
+                    "reduction row carries no field group evidence",
+                )
+            })?;
+        let (value_type, value) = match value {
+            type_bridge_orm::AttributeValue::String(value) => ("string", json!(value)),
+            type_bridge_orm::AttributeValue::Long(value) => ("long", json!(value.to_string())),
+            type_bridge_orm::AttributeValue::Double(value) => ("double", json!(value)),
+            type_bridge_orm::AttributeValue::Boolean(value) => ("boolean", json!(value)),
+            type_bridge_orm::AttributeValue::Date(value) => ("date", json!(value)),
+            type_bridge_orm::AttributeValue::DateTime(value) => ("datetime", json!(value)),
+            type_bridge_orm::AttributeValue::DateTimeTZ(value) => ("datetime_tz", json!(value)),
+            type_bridge_orm::AttributeValue::Decimal(value) => ("decimal", json!(value)),
+            type_bridge_orm::AttributeValue::Duration(value) => ("duration", json!(value)),
+        };
+        serde_json::to_string(&json!({ "valueType": value_type, "value": value })).map_err(
+            |error| {
+                result_decode_error(
+                    "result_reduction_group_encoding_failed",
+                    format!("field group value could not be encoded: {error}"),
+                )
+            },
+        )
+    }
+
+    #[napi(js_name = "reductionGroupValuesJson")]
+    pub fn reduction_group_values_json(
+        &self,
+        query: &NodeMatchQueryHandle,
+        row_index: u32,
+    ) -> Result<String> {
+        let values = self
+            .reduction_row(query, row_index)?
+            .field_groups()
+            .ok_or_else(|| {
+                result_decode_error(
+                    "result_reduction_not_tuple_field_grouped",
+                    "reduction row carries no tuple field group evidence",
+                )
+            })?;
+        let encoded = values
+            .iter()
+            .map(|value| {
+                let (value_type, value) = match value {
+                    type_bridge_orm::AttributeValue::String(value) => ("string", json!(value)),
+                    type_bridge_orm::AttributeValue::Long(value) => {
+                        ("long", json!(value.to_string()))
+                    }
+                    type_bridge_orm::AttributeValue::Double(value) => ("double", json!(value)),
+                    type_bridge_orm::AttributeValue::Boolean(value) => ("boolean", json!(value)),
+                    type_bridge_orm::AttributeValue::Date(value) => ("date", json!(value)),
+                    type_bridge_orm::AttributeValue::DateTime(value) => ("datetime", json!(value)),
+                    type_bridge_orm::AttributeValue::DateTimeTZ(value) => {
+                        ("datetime_tz", json!(value))
+                    }
+                    type_bridge_orm::AttributeValue::Decimal(value) => ("decimal", json!(value)),
+                    type_bridge_orm::AttributeValue::Duration(value) => ("duration", json!(value)),
+                };
+                json!({ "valueType": value_type, "value": value })
+            })
+            .collect::<Vec<_>>();
+        serde_json::to_string(&encoded).map_err(|error| {
+            result_decode_error(
+                "result_reduction_group_encoding_failed",
+                format!("tuple field group values could not be encoded: {error}"),
+            )
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -1547,6 +1814,13 @@ impl NodeValidatedThing {
         match self {
             Self::Selected(thing) => thing.concrete_descriptor().as_str(),
             Self::RolePlayer(player) => player.concrete_descriptor().as_str(),
+        }
+    }
+
+    fn descriptor_id(&self) -> &DescriptorId {
+        match self {
+            Self::Selected(thing) => thing.concrete_descriptor(),
+            Self::RolePlayer(player) => player.concrete_descriptor(),
         }
     }
 
@@ -1587,6 +1861,26 @@ pub struct NodeValidatedThingHandle {
 
 #[napi]
 impl NodeValidatedThingHandle {
+    pub(crate) fn hydrated_kind(&self) -> ThingKind {
+        self.inner.kind()
+    }
+
+    pub(crate) fn hydrated_attributes(&self) -> &[HydratedAttribute] {
+        self.inner.attributes()
+    }
+
+    pub(crate) fn hydrated_roles(&self) -> &[HydratedRole] {
+        self.inner.roles()
+    }
+
+    pub(crate) fn hydrated_concept_id(&self) -> &str {
+        self.inner.concept_id()
+    }
+
+    pub(crate) fn hydrated_descriptor(&self) -> &DescriptorId {
+        self.inner.descriptor_id()
+    }
+
     #[napi]
     pub fn iid(&self) -> String {
         self.inner.concept_id().to_owned()

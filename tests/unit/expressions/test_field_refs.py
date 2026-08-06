@@ -1,10 +1,17 @@
 """Unit tests for field reference system."""
 
-from type_bridge import Entity, TypeFlags
-from type_bridge.attribute import Double, Integer, String
-from type_bridge.attribute.flags import Flag, Key
+from tests.utils.handwritten import (
+    Double,
+    Entity,
+    Flag,
+    Integer,
+    Key,
+    NumericFieldRef,
+    String,
+    StringFieldRef,
+    TypeFlags,
+)
 from type_bridge.expressions import AggregateExpr, ComparisonExpr, StringExpr
-from type_bridge.fields import NumericFieldRef, StringFieldRef
 
 
 # Test attribute types

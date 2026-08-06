@@ -1,0 +1,1559 @@
+{
+  "format": "typebridge.generated-only-operation-parity/v1",
+  "scope": "Split-YAML to clean generated package to generated models and tokens to supported operation to materialized result",
+  "parity_rule": "Equivalent supported outcomes in every binding that exposed them; omitted bindings never advertised that operation. Handwritten declaration syntax and retired handwritten-only conveniences are not compatibility evidence.",
+  "bindings": [
+    "python",
+    "node",
+    "rust"
+  ],
+  "statuses": [
+    "accepted_live",
+    "accepted_offline",
+    "uniform_unsupported"
+  ],
+  "operations": [
+    {
+      "id": "split_yaml_clean_generation_and_package_isolation",
+      "status": "accepted_live",
+      "support": {
+        "python": {
+          "surface": "generated_package",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "tests/integration/schema/test_generated_projection_live.py",
+              "anchors": [
+                "Import a generated package emitted now or supplied as immutable test evidence",
+                "emit_python_acceptance",
+                "importlib.import_module(\"generated_v2\")"
+              ]
+            }
+          ]
+        },
+        "node": {
+          "surface": "generated_package",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "type-bridge-core/crates/node/tests/projection-integration/generated-package-live.test.ts",
+              "anchors": [
+                "emit_typescript_acceptance",
+                "tsconfig.json",
+                "dist/index.js"
+              ]
+            }
+          ]
+        },
+        "rust": {
+          "surface": "generated_external_crate",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "type-bridge-core/crates/schema-codegen/tests/rust_projection_live.rs",
+              "anchors": [
+                "RustEmitter::new()",
+                "preflight consumer check",
+                "dependency-isolated client consumer starts"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "model_construction_scalar_domains_optional_multivalue_and_references",
+      "status": "accepted_live",
+      "support": {
+        "python": {
+          "surface": "generated_models",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "tests/integration/schema/test_generated_projection_live.py",
+              "anchors": [
+                "generated.ValDatetimeTz",
+                "generated.ValDecimal",
+                "generated.Aliases(\"alpha\")",
+                "generated.EventRef(event.iid)"
+              ]
+            }
+          ]
+        },
+        "node": {
+          "surface": "generated_models",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "type-bridge-core/crates/node/tests/projection-integration/generated-package-live.test.ts",
+              "anchors": [
+                "ValDatetimeTz.create",
+                "ValDecimal.create",
+                "Aliases.create(\"alpha\")",
+                "Event.reference(insertedEvent.iid, {})"
+              ]
+            }
+          ]
+        },
+        "rust": {
+          "surface": "generated_models",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "type-bridge-core/crates/schema-codegen/tests/rust_projection_live/consumer.rs",
+              "anchors": [
+                "ValDatetimeTz::new",
+                "ValDecimal::new",
+                "optional absence read",
+                "container insert with a relation player"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "projected_attribute_and_ownership_constraint_validation",
+      "status": "accepted_offline",
+      "support": {
+        "python": {
+          "surface": "generated_models",
+          "evidence": [
+            {
+              "mode": "offline",
+              "path": "type-bridge-core/crates/schema-codegen/tests/acceptance/runtime_check.py",
+              "anchors": [
+                "person-range-low",
+                "Robot(robot_id=RobotId(1), val_constrained=ValConstrained(51))",
+                "generated ownership range was not enforced",
+                "generated assignment bypassed its ownership range"
+              ]
+            }
+          ]
+        },
+        "node": {
+          "surface": "generated_models",
+          "evidence": [
+            {
+              "mode": "offline",
+              "path": "type-bridge-core/crates/schema-codegen/tests/typescript_acceptance/runtime_check.mjs",
+              "anchors": [
+                "valConstrained: ValConstrained.create(19n)",
+                "valConstrained: ValConstrained.create(51n),",
+                "/range_violation/"
+              ]
+            }
+          ]
+        },
+        "rust": {
+          "surface": "generated_models",
+          "evidence": [
+            {
+              "mode": "offline",
+              "path": "type-bridge-core/crates/schema-codegen/tests/rust_acceptance.rs",
+              "anchors": [
+                "Attribute-value @regex, @range, and @values.",
+                "Owns-edge @range differs for the same attribute under two owners.",
+                "values_violation",
+                "regex_violation"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "entity_single_crud_iid_and_manager_terminals",
+      "status": "accepted_live",
+      "support": {
+        "python": {
+          "surface": "generated_manager",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "tests/integration/schema/test_generated_projection_live.py",
+              "anchors": [
+                "person_manager.put(person)",
+                "person_manager.get_by_iid(person.iid)",
+                "person_manager.update(person)",
+                "person_manager.get_by_iid(\"not-a-valid-iid\") is None",
+                "mutation_edge.nickname = None",
+                "cleared_ownerships.aliases == ()",
+                "person_manager.delete(transaction_person)",
+                "person_manager.count() == 4"
+              ]
+            }
+          ]
+        },
+        "node": {
+          "surface": "generated_manager",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "type-bridge-core/crates/node/tests/projection-integration/generated-package-live.test.ts",
+              "anchors": [
+                "personManager.put",
+                "personManager.getByIid",
+                "personManager.update",
+                "const specialAlias =",
+                "clearedOwnerships.aliases, []",
+                "personManager.delete(transactionPersonIid)",
+                "personManager.count(), 4n"
+              ]
+            }
+          ]
+        },
+        "rust": {
+          "surface": "generated_entity_manager",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "type-bridge-core/crates/schema-codegen/tests/rust_projection_live/consumer.rs",
+              "anchors": [
+                "generated_entity_crud_batches_and_scalar_domains",
+                "db.entities::<Person>().put",
+                ".get_by_iid(&iid)",
+                ".update(",
+                "special ownership replacement",
+                "cleared_ownerships.aliases().is_empty()",
+                "db.entities::<Person>().delete(&iid)"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "entity_insert_and_put_batches",
+      "status": "accepted_live",
+      "support": {
+        "python": {
+          "surface": "generated_manager",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "tests/integration/schema/test_generated_projection_live.py",
+              "anchors": [
+                "person_manager.insert_many(batch_people)",
+                "person_manager.put_many(batch_people)",
+                "batch_manager.insert_many([]) == []",
+                "batch_manager.put_many([]) == []"
+              ]
+            }
+          ]
+        },
+        "node": {
+          "surface": "generated_manager",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "type-bridge-core/crates/node/tests/projection-integration/generated-package-live.test.ts",
+              "anchors": [
+                "personManager.insertMany(batchPeople)",
+                "personManager.putMany(insertedBatch)",
+                "personManager.insertMany([])",
+                "personManager.putMany([])"
+              ]
+            }
+          ]
+        },
+        "rust": {
+          "surface": "generated_entity_manager",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "type-bridge-core/crates/schema-codegen/tests/rust_projection_live/consumer.rs",
+              "anchors": [
+                ".insert_many(vec![",
+                ".put_many(vec![",
+                "person insert_many",
+                "employee put_many",
+                "empty person insert batch",
+                "empty person put batch"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "relation_single_crud_roles_iid_and_manager_terminals",
+      "status": "accepted_live",
+      "support": {
+        "python": {
+          "surface": "generated_manager",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "tests/integration/schema/test_generated_projection_live.py",
+              "anchors": [
+                "network_manager.insert(network)",
+                "network_manager.put(network)",
+                "network_manager.update(network)",
+                "network_manager.get_by_iid(network_iid)",
+                "filtered_networks.exists() is True",
+                "network_manager.delete(network)"
+              ]
+            }
+          ]
+        },
+        "node": {
+          "surface": "generated_manager",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "type-bridge-core/crates/node/tests/projection-integration/generated-package-live.test.ts",
+              "anchors": [
+                "networkManager.insert",
+                "networkManager.put",
+                "networkManager.update",
+                "networkManager.getByIid",
+                "filteredNetworks.exists(), true",
+                "networkManager.delete(insertedNetwork)"
+              ]
+            }
+          ]
+        },
+        "rust": {
+          "surface": "generated_relation_manager",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "type-bridge-core/crates/schema-codegen/tests/rust_projection_live/consumer.rs",
+              "anchors": [
+                "keyed network insert",
+                "keyed network put hit",
+                "network update replaces attributes and roles",
+                "network relation lifecycle count",
+                "keyed network cleanup"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "relation_insert_and_put_batches",
+      "status": "accepted_live",
+      "support": {
+        "python": {
+          "surface": "generated_manager",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "tests/integration/schema/test_generated_projection_live.py",
+              "anchors": [
+                "network_manager.insert_many(relation_batch)",
+                "network_manager.put_many(relation_batch)",
+                "network_batch_manager.insert_many([]) == []",
+                "network_batch_manager.put_many([]) == []"
+              ]
+            }
+          ]
+        },
+        "node": {
+          "surface": "generated_manager",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "type-bridge-core/crates/node/tests/projection-integration/generated-package-live.test.ts",
+              "anchors": [
+                "networkManager.insertMany",
+                "networkManager.putMany(relationBatch)",
+                "membershipManager.insertMany([])",
+                "membershipManager.putMany([])"
+              ]
+            }
+          ]
+        },
+        "rust": {
+          "surface": "generated_relation_manager",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "type-bridge-core/crates/schema-codegen/tests/rust_projection_live/consumer.rs",
+              "anchors": [
+                "employment insert_many by typed key reference",
+                "network relation put_many",
+                "network relation batch count",
+                "empty relation insert batch",
+                "empty relation put batch"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "entity_relation_batch_update_delete_and_atomicity",
+      "status": "accepted_live",
+      "required_bindings": [
+        "python",
+        "rust"
+      ],
+      "support": {
+        "python": {
+          "surface": "generated_entity_and_relation_managers",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "tests/integration/schema/test_generated_projection_live.py",
+              "anchors": [
+                "batch_manager.update_many(batch_people)",
+                "person_manager.delete_many([batch_people[0], strict_missing], strict=True)",
+                "network_batch_manager.update_many(networks)",
+                "network_batch_manager.delete_many(relation_delete_batch)",
+                "batch_manager.update_many([]) == []",
+                "network_batch_manager.delete_many([]) == []",
+                "second update cancelled"
+              ]
+            }
+          ]
+        },
+        "rust": {
+          "surface": "generated_entity_and_relation_managers",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "type-bridge-core/crates/schema-codegen/tests/rust_projection_live/consumer.rs",
+              "anchors": [
+                "generated_lifecycle_hooks_and_atomic_mutation_batches",
+                ".update_many(vec![",
+                ".delete_many(&[first_employment_iid, second_employment_iid])",
+                "empty person update batch",
+                "empty relation delete batch",
+                "first_after_rollback.aliases()[0].value()"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "lifecycle_hook_ordering_cancellation_and_post_failure",
+      "status": "accepted_live",
+      "required_bindings": [
+        "python",
+        "rust"
+      ],
+      "support": {
+        "python": {
+          "surface": "generated_entity_and_relation_manager_hooks",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "tests/integration/schema/test_generated_projection_live.py",
+              "anchors": [
+                "class TraceHook(generated.CrudHook)",
+                "(\"second\", \"post_put\", \"parity-hooked\")",
+                "class PutOnlyTraceHook(generated.CrudHook)",
+                "generated.CrudEvent.PRE_PUT",
+                "generated CRUD post-hook failed for post_insert",
+                "raise generated.HookCancelled(\"insert cancelled\")",
+                "class RelationBatchTraceHook(generated.CrudHook)"
+              ]
+            }
+          ]
+        },
+        "rust": {
+          "surface": "generated_entity_and_relation_manager_hooks",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "type-bridge-core/crates/schema-codegen/tests/rust_projection_live/consumer.rs",
+              "anchors": [
+                "RecordingLifecycleHook::new(\"second\"",
+                ".only(type_bridge::CrudOperation::Update)",
+                ".rejecting(\"cancel-b\")",
+                ".failing_after()",
+                "post-hook failure is non-fatal after atomic update",
+                "relation delete batch with hooks"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "python_filtered_callback_update_and_filtered_delete",
+      "status": "accepted_live",
+      "required_bindings": [
+        "python"
+      ],
+      "support": {
+        "python": {
+          "surface": "generated_filtered_manager",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "tests/integration/schema/test_generated_projection_live.py",
+              "anchors": [
+                ").update_with(lambda value:",
+                "callback failure sentinel",
+                "filtered-relation",
+                ").delete()",
+                "second delete cancelled"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "python_cross_type_attribute_owner_lookup",
+      "status": "accepted_live",
+      "required_bindings": [
+        "python"
+      ],
+      "support": {
+        "python": {
+          "surface": "generated_attribute_and_model_owner_lookup",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "tests/integration/schema/test_generated_projection_live.py",
+              "anchors": [
+                "generated.Identifier.owners(",
+                "generated.Party.has(",
+                "kind=\"relation\"",
+                "relation_attribute_owners[0].origin.iid"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "python_key_fallback_update_delete_without_iid",
+      "status": "accepted_live",
+      "required_bindings": [
+        "python"
+      ],
+      "support": {
+        "python": {
+          "surface": "generated_entity_and_relation_managers",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "tests/integration/schema/test_generated_projection_live.py",
+              "anchors": [
+                "assert person_manager.update(detached_update) is detached_update",
+                "assert person_manager.delete(detached_delete) is detached_delete",
+                "assert person_manager.delete(missing_delete) is missing_delete",
+                "assert person_manager.delete_many([missing_delete]) == []",
+                "assert membership_manager.update(detached_membership_update)",
+                "assert membership_manager.delete(detached_membership_delete)",
+                "assert membership_manager.delete(missing_membership) is missing_membership",
+                "assert network_manager.update(detached_network)"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "borrowed_write_commit_rollback_and_reusable_read",
+      "status": "accepted_live",
+      "support": {
+        "python": {
+          "surface": "generated_manager_and_query",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "tests/integration/schema/test_generated_projection_live.py",
+              "anchors": [
+                "generated rollback sentinel",
+                "generated.Person.manager(transaction)",
+                "generated.Person.query(transaction)",
+                "transaction_query.count_by"
+              ]
+            }
+          ]
+        },
+        "node": {
+          "surface": "generated_manager_and_query",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "type-bridge-core/crates/node/tests/projection-integration/generated-package-live.test.ts",
+              "anchors": [
+                "rollbackTransaction.rollback()",
+                "Person.manager(writeTransaction)",
+                "new QuerySession(readTransaction)",
+                "transactionQuery.countBy"
+              ]
+            }
+          ]
+        },
+        "rust": {
+          "surface": "generated_transaction_managers_and_query",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "type-bridge-core/crates/schema-codegen/tests/rust_projection_live/consumer.rs",
+              "anchors": [
+                "generated_write_transaction_commit_rollback_and_drop",
+                "multi-operation commit",
+                "explicit rollback",
+                "F4 second read count",
+                "F4 read transaction closes"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "concise_single_type_filters_and_dunder_field_names",
+      "status": "accepted_live",
+      "support": {
+        "python": {
+          "surface": "generated_manager",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "tests/integration/schema/test_generated_projection_live.py",
+              "anchors": [
+                "person_manager.filter(score__gte=generated.Score(3))",
+                "score__gte__eq",
+                "foo__bar",
+                "unsupported generated manager lookup"
+              ]
+            }
+          ]
+        },
+        "node": {
+          "surface": "generated_manager",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "type-bridge-core/crates/node/tests/projection-integration/generated-package-live.test.ts",
+              "anchors": [
+                "score__gte: Score.create(3n)",
+                "scoreGte__eq",
+                "fooBar: FooBar.create(7n)"
+              ]
+            }
+          ]
+        },
+        "rust": {
+          "surface": "generated_typed_query_and_accessors",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "type-bridge-core/crates/schema-codegen/tests/rust_projection_live/consumer.rs",
+              "anchors": [
+                "foo__bar()",
+                "score__gte()",
+                "score.ge(70_i64)"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "optional_ownership_and_iid_set_predicates",
+      "status": "accepted_live",
+      "support": {
+        "python": {
+          "surface": "generated_direct_and_remote_query",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "tests/integration/schema/test_generated_projection_live.py",
+              "anchors": [
+                ".is_present()",
+                ".is_missing()",
+                "person_var.iid_in([person.iid])",
+                "remote_person.iid_in((person.iid, batch_people[0].iid))"
+              ]
+            }
+          ]
+        },
+        "node": {
+          "surface": "generated_direct_and_remote_query",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "type-bridge-core/crates/node/tests/projection-integration/generated-package-live.test.ts",
+              "anchors": [
+                ".isPresent()",
+                ".isMissing()",
+                "personVariable.iidIn([insertedPerson.iid, insertedBatch[0].iid])",
+                "remotePerson.iidIn([insertedPerson.iid, insertedBatch[0].iid])"
+              ]
+            }
+          ]
+        },
+        "rust": {
+          "surface": "generated_direct_and_remote_query",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "type-bridge-core/crates/schema-codegen/tests/rust_projection_live/consumer.rs",
+              "anchors": [
+                "aliases.is_present()",
+                "nickname.is_missing()",
+                "person_binding.iid_in([worker_a.iid(), worker_b.iid()])",
+                "F4 remote worker IID set rows"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "exact_subtype_binding_and_concrete_hydration",
+      "status": "accepted_live",
+      "support": {
+        "python": {
+          "surface": "generated_query",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "tests/integration/schema/test_generated_projection_live.py",
+              "anchors": [
+                "query_session.subtypes(generated.Party)",
+                "generated.Employee",
+                "generated.Manager",
+                "membership_session.subtypes(generated.Membership)",
+                "type(queried_subtype_relation) is generated.Employment",
+                "remote_session.subtypes(generated.Party)"
+              ]
+            }
+          ]
+        },
+        "node": {
+          "surface": "generated_query",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "type-bridge-core/crates/node/tests/projection-integration/generated-package-live.test.ts",
+              "anchors": [
+                "querySession.subtypes(Party)",
+                "[Employee.typeKey, Manager.typeKey]",
+                "querySession.subtypes(Membership)",
+                "queriedSubtypeRelation.__typebridgeModel, Employment.typeKey",
+                "remoteSession.subtypes(Party)"
+              ]
+            }
+          ]
+        },
+        "rust": {
+          "surface": "generated_query_and_subtype_manager",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "type-bridge-core/crates/schema-codegen/tests/rust_projection_live/consumer.rs",
+              "anchors": [
+                "generated_inheritance_exact_and_subtype_reads",
+                "PartyFamily::Manager",
+                "EmployeeFamily::Manager",
+                "party subtype count"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "comparison_string_boolean_and_field_predicates",
+      "status": "accepted_live",
+      "support": {
+        "python": {
+          "surface": "generated_query",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "tests/integration/schema/test_generated_projection_live.py",
+              "anchors": [
+                "identifier_field.starts_with",
+                "identifier_field.contains",
+                "identifier_field.regex",
+                "~identifier_field.neq",
+                "same_person_var.field"
+              ]
+            }
+          ]
+        },
+        "node": {
+          "surface": "generated_query",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "type-bridge-core/crates/node/tests/projection-integration/generated-package-live.test.ts",
+              "anchors": [
+                "identifierField.startsWith",
+                "identifierField.contains",
+                "identifierField.regex",
+                "identifierField.ne(identifierValue).not()",
+                ".eqField(personVariable.field(Person.identifier))"
+              ]
+            }
+          ]
+        },
+        "rust": {
+          "surface": "generated_query",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "type-bridge-core/crates/schema-codegen/tests/rust_projection_live/consumer.rs",
+              "anchors": [
+                "identifier.starts_with",
+                "identifier.contains",
+                "identifier.regex",
+                "score.ge(70_i64)",
+                "identifier.eq_field(member_identifier)"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "role_player_constraints_and_relation_references",
+      "status": "accepted_live",
+      "support": {
+        "python": {
+          "surface": "generated_query_and_models",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "tests/integration/schema/test_generated_projection_live.py",
+              "anchors": [
+                "generated.Employment.employee).connects(person_var)",
+                "generated.EventRef(event.iid)",
+                "stored_employment.employee.iid"
+              ]
+            }
+          ]
+        },
+        "node": {
+          "surface": "generated_query_and_models",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "type-bridge-core/crates/node/tests/projection-integration/generated-package-live.test.ts",
+              "anchors": [
+                "eventVariable.role(Event.subject).connects(personVariable)",
+                "Event.reference(insertedEvent.iid, {})",
+                "storedEmployment.employee.iid"
+              ]
+            }
+          ]
+        },
+        "rust": {
+          "surface": "generated_query_and_models",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "type-bridge-core/crates/schema-codegen/tests/rust_projection_live/consumer.rs",
+              "anchors": [
+                "employee_role.connects(person_binding)",
+                "PersonRef::from_key",
+                "container insert with a relation player"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "bounded_reachability_and_explicit_cross_join",
+      "status": "accepted_live",
+      "support": {
+        "python": {
+          "surface": "generated_direct_and_remote_query",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "tests/integration/schema/test_generated_projection_live.py",
+              "anchors": [
+                "network_session.reachable",
+                "remote_session.reachable",
+                ".allow_cross_join(cross_left, cross_right)",
+                ".allow_cross_join(remote_cross_left, remote_cross_right)"
+              ]
+            }
+          ]
+        },
+        "node": {
+          "surface": "generated_direct_and_remote_query",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "type-bridge-core/crates/node/tests/projection-integration/generated-package-live.test.ts",
+              "anchors": [
+                "querySession.reachable",
+                "remoteSession.reachable",
+                ".allowCrossJoin(crossLeft, crossRight)",
+                ".allowCrossJoin(remoteCrossLeft, remoteCrossRight)"
+              ]
+            }
+          ]
+        },
+        "rust": {
+          "surface": "generated_direct_and_remote_query",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "type-bridge-core/crates/schema-codegen/tests/rust_projection_live/consumer.rs",
+              "anchors": [
+                "F5 bounded reachability predicate",
+                "explicit cross-join permission",
+                "F4 remote explicit cross-join permission"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "positional_named_collected_distinct_and_ordered_shapes",
+      "status": "accepted_live",
+      "support": {
+        "python": {
+          "surface": "generated_query",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "tests/integration/schema/test_generated_projection_live.py",
+              "anchors": [
+                "network_session.query_as",
+                ".collect()",
+                ".distinct()",
+                ".order_by(participant_var.field"
+              ]
+            },
+            {
+              "mode": "offline",
+              "path": "type-bridge-core/crates/schema-codegen/tests/acceptance/positive.py",
+              "anchors": [
+                "sixteen = query_session.query(",
+                "sixteen.one()"
+              ]
+            }
+          ]
+        },
+        "node": {
+          "surface": "generated_query",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "type-bridge-core/crates/node/tests/projection-integration/generated-package-live.test.ts",
+              "anchors": [
+                "queryNamed({ person: personVariable })",
+                "collectedPersonVariable.collect().distinct()",
+                "pageBy(personVariable"
+              ]
+            },
+            {
+              "mode": "offline",
+              "path": "type-bridge-core/crates/schema-codegen/tests/typescript_acceptance/positive.ts",
+              "anchors": [
+                "const sixteenQuery = querySession.query(",
+                "void sixteenQuery"
+              ]
+            }
+          ]
+        },
+        "rust": {
+          "surface": "generated_query",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "type-bridge-core/crates/schema-codegen/tests/rust_projection_live/consumer.rs",
+              "anchors": [
+                "PersonGraph::select",
+                ".collect()",
+                ".distinct()",
+                "F4 local collection order"
+              ]
+            },
+            {
+              "mode": "offline",
+              "path": "type-bridge-core/crates/schema-codegen/tests/rust_acceptance/positive.rs",
+              "anchors": [
+                "let sixteen = session.query((",
+                "let _ = sixteen.count_by(person)"
+              ]
+            },
+            {
+              "mode": "offline",
+              "path": "type-bridge-core/crates/schema-codegen/tests/rust_acceptance/negative.rs",
+              "anchors": [
+                "struct TooManySelectedOutputs",
+                "q: Person"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "ordered_windowed_one_first_rows_page_count_and_exists",
+      "status": "accepted_live",
+      "support": {
+        "python": {
+          "surface": "generated_direct_and_remote_query",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "tests/integration/schema/test_generated_projection_live.py",
+              "anchors": [
+                "matching_people.one()",
+                "all_people_query.first",
+                "offset=1",
+                ".page_by(",
+                "remote_people.count_by",
+                "remote_people.exists_by"
+              ]
+            }
+          ]
+        },
+        "node": {
+          "surface": "generated_direct_and_remote_query",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "type-bridge-core/crates/node/tests/projection-integration/generated-package-live.test.ts",
+              "anchors": [
+                "directQuery.one()",
+                "allPeopleQuery.first",
+                "offset: 1n",
+                ".pageBy(personVariable",
+                "remoteDirectQuery.countBy",
+                "remoteDirectQuery.existsBy"
+              ]
+            }
+          ]
+        },
+        "rust": {
+          "surface": "generated_direct_and_remote_query",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "type-bridge-core/crates/schema-codegen/tests/rust_projection_live/consumer.rs",
+              "anchors": [
+                ".one()",
+                ".first(party_name.asc())",
+                "RowsOptions::new(2).offset(1)",
+                ".page_by(",
+                "F4 remote distinct root count",
+                "F4 remote distinct root exists"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "direct_reducers_and_grouping",
+      "status": "accepted_live",
+      "support": {
+        "python": {
+          "surface": "generated_direct_query",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "tests/integration/schema/test_generated_projection_live.py",
+              "anchors": [
+                "generated.aggregate.count()",
+                "generated.aggregate.sum(score_field)",
+                "generated.aggregate.median(score_field)",
+                "person_var.field(generated.Person.val_bool)",
+                "direct_field_group.value is True",
+                "direct_tuple_field_grouped = all_people_query.group_by(",
+                "(bool_group.value, score_group.value, values)",
+                ".group_by(person_var, aggregate_employment_var)"
+              ]
+            }
+          ]
+        },
+        "node": {
+          "surface": "generated_direct_query",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "type-bridge-core/crates/node/tests/projection-integration/generated-package-live.test.ts",
+              "anchors": [
+                "aggregate.count()",
+                "aggregate.sum(scoreField)",
+                "aggregate.median(scoreField)",
+                "personVariable.field(Person.valBool)",
+                "directFieldGroupedAggregate[0][0].value",
+                "directTupleFieldGroupedAggregate = allPeopleQuery",
+                "boolGroup.value",
+                "scoreGroup.value",
+                ".groupBy(personVariable, eventVariable)"
+              ]
+            }
+          ]
+        },
+        "rust": {
+          "surface": "generated_direct_query",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "type-bridge-core/crates/schema-codegen/tests/rust_projection_live/consumer.rs",
+              "anchors": [
+                "aggregate::count()",
+                "score.sum()",
+                "score.median()",
+                ".group_by_field(val_bool)",
+                "field_grouped[0].0.value()",
+                ".group_by_fields((val_bool, score))",
+                "tuple_field_grouped[0].0.1.value()",
+                ".group_by(person_binding)"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "remote_rows_terminals_and_identical_materialization",
+      "status": "accepted_live",
+      "support": {
+        "python": {
+          "surface": "generated_remote_query",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "tests/integration/schema/test_generated_projection_live.py",
+              "anchors": [
+                "generated.RemoteQuerySession",
+                "remote_people.one()",
+                "remote_people.rows(",
+                "remote_people.page_by(",
+                "remote_named_network.participants"
+              ]
+            }
+          ]
+        },
+        "node": {
+          "surface": "generated_remote_query",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "type-bridge-core/crates/node/tests/projection-integration/generated-package-live.test.ts",
+              "anchors": [
+                "new RemoteQuerySession",
+                "remoteDirectQuery.one()",
+                "remotePersonOnly.rows",
+                ".pageBy(remotePerson",
+                "remoteNamed.person.iid"
+              ]
+            }
+          ]
+        },
+        "rust": {
+          "surface": "generated_remote_query",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "type-bridge-core/crates/schema-codegen/tests/rust_projection_live/consumer.rs",
+              "anchors": [
+                "RemoteDatabase<AppSchema>",
+                "F4 remote collected page",
+                "assert_eq!(observed_page, expected_page)",
+                "F4 public selected/read/remote lifecycle: passed"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "authenticated_remote_structured_diagnostics",
+      "status": "accepted_offline",
+      "support": {
+        "python": {
+          "surface": "generated_remote_query",
+          "evidence": [
+            {
+              "mode": "offline",
+              "path": "type-bridge-core/crates/schema-codegen/tests/acceptance/runtime_check.py",
+              "anchors": [
+                "generated_remote_session = RemoteQuerySession(",
+                "except QueryV2Error as error:",
+                "assert error.code == \"remote_application_failure\"",
+                "\"kind\": \"text_list\"",
+                "assert generated_remote_exchanges == 1"
+              ]
+            }
+          ]
+        },
+        "node": {
+          "surface": "generated_remote_query",
+          "evidence": [
+            {
+              "mode": "offline",
+              "path": "type-bridge-core/crates/schema-codegen/tests/typescript_acceptance/runtime_check.mjs",
+              "anchors": [
+                "const generatedRemoteSession = new RemoteQuerySession(",
+                "assert.equal(error.code, \"remote_application_failure\")",
+                "expected: { kind: \"text_list\", value: [\"person\", \"employee\"] }",
+                "assert.equal(generatedRemoteExchanges, 1)"
+              ]
+            }
+          ]
+        },
+        "rust": {
+          "surface": "generated_remote_query",
+          "evidence": [
+            {
+              "mode": "offline",
+              "path": "type-bridge-core/crates/rust/src/remote.rs",
+              "anchors": [
+                "generated_remote_query_preserves_complete_authenticated_structured_diagnostic",
+                "RemoteQueryFailureV2::bound(",
+                "error.diagnostic_path()",
+                "crate::ErrorDetail::TextList",
+                "assert_eq!(exchanges.lock().unwrap().len(), 1)"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "remote_reducers_fail_uniformly_before_exchange",
+      "status": "uniform_unsupported",
+      "diagnostic": "query_remote_v2_native_only_operation",
+      "support": {
+        "python": {
+          "surface": "generated_remote_query",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "tests/integration/schema/test_generated_projection_live.py",
+              "anchors": [
+                "requests_before_reduction",
+                "query_remote_v2_native_only_operation",
+                "len(remote_requests) == requests_before_reduction"
+              ]
+            }
+          ]
+        },
+        "node": {
+          "surface": "generated_remote_query",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "type-bridge-core/crates/node/tests/projection-integration/generated-package-live.test.ts",
+              "anchors": [
+                "requestsBeforeReduction",
+                "query_remote_v2_native_only_operation",
+                "requests.length, requestsBeforeReduction"
+              ]
+            }
+          ]
+        },
+        "rust": {
+          "surface": "generated_remote_query",
+          "evidence": [
+            {
+              "mode": "offline",
+              "path": "type-bridge-core/crates/rust/src/remote.rs",
+              "anchors": [
+                "native-only reductions fail before transport exchange",
+                "query_remote_v2_native_only_operation",
+                "assert_eq!(requests.len(), 4)"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "python_retained_raw_query_builder_generated_models",
+      "status": "accepted_offline",
+      "required_bindings": [
+        "python"
+      ],
+      "support": {
+        "python": {
+          "surface": "retained_root_query_builder_with_generated_projection",
+          "evidence": [
+            {
+              "mode": "offline",
+              "path": "type-bridge-core/crates/schema-codegen/tests/acceptance/runtime_check.py",
+              "anchors": [
+                "QueryBuilder.match_entity(",
+                "QueryBuilder.insert_entity(person, \"$person\")",
+                "QueryBuilder.match_relation(",
+                "raw QueryBuilder accepted an uninstalled model class"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "integer_keys_polymorphic_roles_and_optional_role_survival",
+      "status": "accepted_live",
+      "support": {
+        "python": {
+          "surface": "generated_models_managers_and_direct_query",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "tests/integration/schema/test_generated_projection_live.py",
+              "anchors": [
+                "integer_key_values = (-42, 1, 100, 9999)",
+                "polymorphic_actor_rows = (",
+                "assert surviving_interaction.actor is None"
+              ]
+            }
+          ]
+        },
+        "node": {
+          "surface": "generated_models_managers_and_direct_query",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "type-bridge-core/crates/node/tests/projection-integration/generated-package-live.test.ts",
+              "anchors": [
+                "const integerKeyValues = [-42n, 1n, 100n, 9999n] as const",
+                "const polymorphicActorRows = querySession",
+                "assert.equal(survivingInteraction.actor, null)"
+              ]
+            }
+          ]
+        },
+        "rust": {
+          "surface": "generated_models_managers_and_direct_query",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "type-bridge-core/crates/schema-codegen/tests/rust_projection_live/consumer.rs",
+              "anchors": [
+                "generated_integer_keys_and_polymorphic_role_parity",
+                "assert!(surviving.actor().is_none())",
+                "generated integer keys and polymorphic role parity: passed"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "plain_inherited_abstract_relation_role_lifecycle",
+      "status": "accepted_live",
+      "support": {
+        "python": {
+          "surface": "generated_relation_manager_and_direct_query",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "tests/integration/schema/test_generated_projection_live.py",
+              "anchors": [
+                "generated.PlainActivity(participant=person)",
+                "plain_activity_var.role(generated.PlainActivity.participant).connects(",
+                "plain_activity_manager.delete(plain_activity)"
+              ]
+            }
+          ]
+        },
+        "node": {
+          "surface": "generated_relation_manager_and_direct_query",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "type-bridge-core/crates/node/tests/projection-integration/generated-package-live.test.ts",
+              "anchors": [
+                "PlainActivity.create({ participant: insertedPerson })",
+                "plainActivityVariable.role(PlainActivity.participant).connects(plainParticipantVariable)",
+                "plainActivityManager.delete(insertedPlainActivity)"
+              ]
+            }
+          ]
+        },
+        "rust": {
+          "surface": "generated_relation_manager_and_direct_query",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "type-bridge-core/crates/schema-codegen/tests/rust_projection_live/consumer.rs",
+              "anchors": [
+                "generated_plain_inherited_abstract_role_parity",
+                "plain-inherited abstract role create input",
+                "plain-inherited abstract role predicate"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "unkeyed_entity_iid_lifecycle_and_singular_query",
+      "status": "accepted_live",
+      "support": {
+        "python": {
+          "surface": "generated_entity_manager_and_direct_query",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "tests/integration/schema/test_generated_projection_live.py",
+              "anchors": [
+                "detached_counter = generated.Counter",
+                "attached IID or projected key",
+                "queried_counter = counter_query.one()",
+                "counter_query.rows(limit=2)"
+              ]
+            }
+          ]
+        },
+        "node": {
+          "surface": "generated_entity_manager_and_direct_query",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "type-bridge-core/crates/node/tests/projection-integration/generated-package-live.test.ts",
+              "anchors": [
+                "const detachedCounter = Counter.create",
+                "attached TypeDB IID",
+                "assert.equal(counterQuery.one().iid, insertedCounter.iid)",
+                "counterQuery.rows({ limit: 2n })"
+              ]
+            }
+          ]
+        },
+        "rust": {
+          "surface": "generated_entity_manager_and_direct_query",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "type-bridge-core/crates/schema-codegen/tests/rust_projection_live/consumer.rs",
+              "anchors": [
+                "generated_unkeyed_entity_iid_lifecycle_and_singular_query",
+                "CounterCreate::new(CounterValue::new(42)",
+                "singular keyless counter result",
+                "missing_stable_unique_key"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "scalar_domain_equality_and_ordered_domain_predicates",
+      "status": "accepted_live",
+      "support": {
+        "python": {
+          "surface": "generated_manager_and_direct_query",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "tests/integration/schema/test_generated_projection_live.py",
+              "anchors": [
+                "scalar_predicates = (",
+                "\"duration-equality\"",
+                "val_datetime_tz__gte=generated.ValDatetimeTz("
+              ]
+            }
+          ]
+        },
+        "node": {
+          "surface": "generated_manager_and_direct_query",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "type-bridge-core/crates/node/tests/projection-integration/generated-package-live.test.ts",
+              "anchors": [
+                "const scalarDomainPerson = querySession",
+                ".field(Person.valDatetimeTz)",
+                "valDuration: ValDuration.create(\"PT3S\")"
+              ]
+            }
+          ]
+        },
+        "rust": {
+          "surface": "generated_direct_query",
+          "evidence": [
+            {
+              "mode": "live",
+              "path": "type-bridge-core/crates/schema-codegen/tests/rust_projection_live/consumer.rs",
+              "anchors": [
+                "scalar-domain predicates",
+                "QueryDateTimeTz::new",
+                ".field(PersonType::val_duration).eq("
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "foreign_package_token_and_projection_evidence_rejection",
+      "status": "accepted_offline",
+      "support": {
+        "python": {
+          "surface": "generated_package_boundary",
+          "evidence": [
+            {
+              "mode": "offline",
+              "path": "type-bridge-core/crates/schema-codegen/tests/acceptance/runtime_check.py",
+              "anchors": [
+                "projection match session accepted an unprojected type",
+                "generated query accepted a foreign-package model",
+                "generated query accepted a foreign-package field token"
+              ]
+            }
+          ]
+        },
+        "node": {
+          "surface": "generated_package_boundary",
+          "evidence": [
+            {
+              "mode": "offline",
+              "path": "type-bridge-core/crates/schema-codegen/tests/typescript_acceptance/runtime_check.mjs",
+              "anchors": [
+                "AliasesTampered",
+                "/fingerprint|canonical/i",
+                "installRuntimeProjection"
+              ]
+            },
+            {
+              "mode": "live",
+              "path": "type-bridge-core/crates/node/tests/projection-integration/generated-package-live.test.ts",
+              "anchors": [
+                "querySession.var(foreign.Person)",
+                "exact package model token"
+              ]
+            }
+          ]
+        },
+        "rust": {
+          "surface": "generated_crate_boundary",
+          "evidence": [
+            {
+              "mode": "offline",
+              "path": "type-bridge-core/crates/schema-codegen/tests/rust_acceptance.rs",
+              "anchors": [
+                "negative generated consumer unexpectedly compiled",
+                "query-cross-owner-field",
+                "query-role-rejects-non-player",
+                "query-equality-rejects-wrong-domain"
+              ]
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "non_operations": [
+    {
+      "id": "remote_mutations",
+      "disposition": "not_advertised",
+      "bindings": {
+        "python": "not_advertised",
+        "node": "not_advertised",
+        "rust": "not_advertised"
+      },
+      "reason": "Generated remote sessions are query-only in every shipped binding; no remote mutation successor is promised by the cutover."
+    }
+  ]
+}

@@ -12,69 +12,71 @@
 </p>
 
 TypeBridge is a typed application toolkit for [TypeDB](https://typedb.com/).
-It defines and evolves schemas, generates application models, and provides
-native Python, TypeScript/Node, and Rust data APIs. One Rust semantic engine
-owns schema, query, migration, validation, and ORM behavior across every SDK
-and the standalone query server.
+A versioned Split-YAML workspace is the schema authority. TypeBridge validates
+that workspace and generates Python, TypeScript/Node, and Rust bindings that
+share one Rust-owned schema, query, migration, validation, and ORM engine.
 
-## One system, several ways in
+## One system, three generated SDKs
 
-| Surface | Use it for | Distribution |
+| Surface | Generated application API | Distribution |
 | --- | --- | --- |
-| Python | Declarative Pydantic models, CRUD, queries, schema management | [`type-bridge`](https://pypi.org/project/type-bridge/) |
-| TypeScript / Node | Branded models, typed managers, queries, native runtime | [`@type-bridge/node`](https://www.npmjs.com/package/@type-bridge/node) |
-| Rust | Generated schema crates, async CRUD and immutable queries | [`type-bridge`](https://crates.io/crates/type-bridge) |
-| CLI and generators | Split-YAML schemas, migrations, Python/Node/Rust projections | Included with the Python package |
-| Server | Remote V2 query execution over the same contracts | `ghcr.io/ds1sqe/type-bridge-server` |
+| Python | Value classes, model managers, transactions, direct/remote queries | [`type-bridge`](https://pypi.org/project/type-bridge/) |
+| TypeScript / Node | Branded values, model managers, native and remote queries | [`@type-bridge/node`](https://www.npmjs.com/package/@type-bridge/node) |
+| Rust | Schema-bound create/model types, async CRUD and immutable queries | [`type-bridge`](https://crates.io/crates/type-bridge) |
+| CLI | Split-YAML checks, migrations, and all three projections | Included with the Python package |
+| Server | Remote V2 query execution over the same generated contract | `ghcr.io/ds1sqe/type-bridge-server` |
 
-TypeBridge is designed around TypeDB rather than flattened into a relational
-ORM shape:
+TypeBridge preserves TypeDB concepts directly: independent attributes,
+entities, relations, roles, inheritance, cardinality, ordering, keys, and
+uniqueness remain typed from schema through hydrated results.
 
-- attributes remain independent types owned by entities and relations;
-- roles, inheritance, cardinality, ordering, `@key`, and `@unique` stay typed;
-- schema generation and migration use the same rules as runtime queries;
-- direct and remote immutable queries preserve typed, owner-aware results;
-- Python and Node are thin facades over the shared Rust runtime.
+## Start from Split-YAML
 
-## Start with Python
-
-Requires Python 3.12–3.14 and a supported TypeDB 3.x server.
+Install the CLI and Python runtime:
 
 ```bash
 pip install type-bridge
 ```
 
+Create `typebridge.yaml`, a schema-set manifest, and one or more schema
+fragments. Configure the generated package output in the workspace, then run:
+
+```bash
+type-bridge --manifest typebridge.yaml schema check
+type-bridge --manifest typebridge.yaml migration make --name initial
+type-bridge --manifest typebridge.yaml migration apply --environment development
+type-bridge --manifest typebridge.yaml schema generate
+```
+
+The generated Python package owns the concise single-type manager:
+
 ```python
-from type_bridge import Database, Entity, Flag, Integer, Key, SchemaManager, String
-
-class PersonId(String):
-    pass
-
-class Age(Integer):
-    pass
-
-class Person(Entity):
-    person_id: PersonId = Flag(Key)
-    age: Age | None = None
+from app_models import Age, Person, PersonId
+from type_bridge import Database
 
 db = Database(address="localhost:1729", database="example")
 db.connect()
-db.create_database()
-
-schema = SchemaManager(db)
-schema.register(Person)
-schema.sync_schema()
 
 ada = Person(person_id=PersonId("ada"), age=Age(36))
 Person.manager(db).put(ada)
 people = Person.manager(db).filter(age__gte=18).all()
 ```
 
+Use its package-local query session when a query spans types:
+
+```python
+session = Person.query(db)
+person = session.exact(Person)
+adults = (
+    session.query(person)
+    .where(person.field(Person.age).gte(Age(18)))
+    .rows(limit=100)
+)
+```
+
 Continue with the [Python quick start](https://ds1sqe.github.io/type-bridge/getting-started/quickstart/),
-then choose the [model](https://ds1sqe.github.io/type-bridge/guide/models/),
-[data](https://ds1sqe.github.io/type-bridge/guide/data/), or
-[schema](https://ds1sqe.github.io/type-bridge/guide/schema-workflows/)
-workflow.
+[Split-YAML reference](https://ds1sqe.github.io/type-bridge/guide/split-yaml-v1/),
+and [data guide](https://ds1sqe.github.io/type-bridge/guide/data/).
 
 ## TypeScript / Node
 
@@ -82,55 +84,49 @@ workflow.
 npm install @type-bridge/node
 ```
 
+Import application values from the generated package and connection primitives
+from `@type-bridge/node`:
+
 ```ts
-import { Entity, Key, attr, field } from "@type-bridge/node";
+import { RustDatabase } from "@type-bridge/node";
+import { Age, Person, PersonId } from "./generated/models/index.js";
 
-class PersonId extends attr.String("person-id") {}
-class Person extends Entity("person", {
-  personId: field(PersonId, Key),
-}) {}
-
-const ada = new Person({ personId: new PersonId("ada") });
+const db = RustDatabase.connect("localhost:1729", "example", {
+  username: "admin",
+  password: "password",
+});
+const ada = Person.create({
+  personId: PersonId.create("ada"),
+  age: Age.create(36n),
+});
+Person.manager(db).put(ada);
+const people = Person.manager(db).filter({ age__gte: Age.create(18n) }).all();
 ```
 
 See the [TypeScript/Node guide](https://ds1sqe.github.io/type-bridge/guide/typescript/)
-for native targets, database lifecycle, managers, queries, and generation.
+for generated managers, transactions, and direct/remote queries.
 
-## Schema-first and Rust workflows
+## Rust
 
-The V2 workspace makes a versioned Split-YAML schema the authority and projects
-it into each configured SDK:
+The same workspace emits a schema-bound Rust crate. The generated SDK uses
+Rust 1.88+ and the crates.io `type-bridge` runtime:
 
-```bash
-type-bridge --manifest typebridge.yaml schema check
-type-bridge --manifest typebridge.yaml schema generate
-type-bridge --manifest typebridge.yaml migration make --name initial
-type-bridge --manifest typebridge.yaml migration apply --environment development
+```toml
+[dependencies]
+type-bridge = "2"
 ```
 
-The generated Rust SDK requires Rust 1.88+ and, starting with 2.0.1, resolves
-from crates.io with `type-bridge = "2"`. TypeBridge 2.0.0 remains available
-from its exact Git revision. Follow the
-[Rust client guide](https://ds1sqe.github.io/type-bridge/guide/rust/) and
-[Split-YAML reference](https://ds1sqe.github.io/type-bridge/guide/split-yaml-v1/)
-for the reproducible setup.
+Follow the [Rust client guide](https://ds1sqe.github.io/type-bridge/guide/rust/)
+for generation, direct execution, transactions, and remote queries.
 
 ## Documentation
 
 - [Install a surface](https://ds1sqe.github.io/type-bridge/getting-started/installation/)
-- [Choose an SDK](https://ds1sqe.github.io/type-bridge/guide/sdks/)
-- [Model TypeDB data](https://ds1sqe.github.io/type-bridge/guide/models/)
-- [Read and write data](https://ds1sqe.github.io/type-bridge/guide/data/)
+- [Model data in Split-YAML](https://ds1sqe.github.io/type-bridge/guide/models/)
+- [Read and write generated models](https://ds1sqe.github.io/type-bridge/guide/data/)
 - [Manage schemas and migrations](https://ds1sqe.github.io/type-bridge/guide/schema-workflows/)
-- [Run the server](https://ds1sqe.github.io/type-bridge/guide/server-container/)
-- [Upgrade to 2.0](https://ds1sqe.github.io/type-bridge/guide/upgrade-v2/)
-- [Python API reference](https://ds1sqe.github.io/type-bridge/reference/)
-
-TypeBridge 2.0.x supports TypeDB 3.8–3.12. Support for 3.8 and 3.10 is
-deprecated and scheduled for removal in 2.1; consult the
-[compatibility matrix](https://ds1sqe.github.io/type-bridge/development/typedb/#server-and-driver-compatibility)
-and [deprecation inventory](https://ds1sqe.github.io/type-bridge/guide/v2-deprecations/)
-before upgrading production deployments.
+- [Run the query server](https://ds1sqe.github.io/type-bridge/guide/server-container/)
+- [Compatibility and removals](https://ds1sqe.github.io/type-bridge/guide/v2-deprecations/)
 
 ## Development
 
@@ -142,12 +138,10 @@ uv run pytest
 uv run --extra docs mkdocs build --strict
 ```
 
-See [DEVELOPMENT.md](DEVELOPMENT.md) for repository layout, test tiers, docs
-architecture, and contribution checks.
+See [DEVELOPMENT.md](DEVELOPMENT.md) for repository boundaries and verification.
 
 ## License
 
 TypeBridge-authored code is MIT licensed. Native artifacts also include
 third-party TypeDB components under Apache-2.0 and MPL-2.0; exact notices ship
-with each artifact and are documented in
-[`type-bridge-core/vendor/README.md`](type-bridge-core/vendor/README.md).
+with each artifact.

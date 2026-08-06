@@ -11,7 +11,7 @@ import {
   registerRustDatabaseHandle,
   registerRustTransactionHandle,
   rustDatabaseHandle,
-} from "./typed/runtime-handles.js";
+} from "./runtime-handles.js";
 
 export { QueryV2Error } from "./query-v2-internals.js";
 export type {
@@ -31,153 +31,6 @@ export type ValueType =
   | "decimal"
   | "duration";
 
-export type Annotation = "Key" | "Unique" | "Distinct" | { Card: [number, number | null] };
-
-export interface OwnedAttributeDescriptor {
-  field_name: string;
-  attr_name: string;
-  value_type: ValueType;
-  annotations: Annotation[];
-  is_optional: boolean;
-  /** Whether this ownership is declared as an ordered list (`owns name[]`).
-   * Instance-level list semantics are engine-unimplemented (REP256); this is a
-   * schema-emission marker only. */
-  is_ordered: boolean;
-  parent_type?: string | null;
-  is_abstract?: boolean;
-  is_independent?: boolean;
-  regex?: string | null;
-  allowed_values?: string[] | null;
-  range?: [string | null, string | null] | null;
-  /** TypeDB 3.12+ `@doc("...")` annotation. Omitted when not declared. */
-  doc?: string;
-  /** TypeDB 3.12+ `@meta("key", "value")` annotations, keyed by meta key. */
-  meta?: Record<string, string>;
-}
-
-export interface EntityDescriptor {
-  type_name: string;
-  is_abstract: boolean;
-  parent_type: string | null;
-  owned_attributes: OwnedAttributeDescriptor[];
-  /** TypeDB 3.12+ `@doc("...")` annotation. Omitted when not declared. */
-  doc?: string;
-  /** TypeDB 3.12+ `@meta("key", "value")` annotations, keyed by meta key. */
-  meta?: Record<string, string>;
-}
-
-export interface RoleDescriptor {
-  role_name: string;
-  player_type_names: string[];
-  cardinality: [number, number | null] | null;
-  /** Plays-side cardinality for this role's players. Authoring datum consumed
-   * by `SchemaInfo.from_descriptors` to build the per-player `plays_cardinalities`
-   * overlay. `null` when no plays-side constraint is declared. */
-  plays_cardinality: [number, number | null] | null;
-  overrides: string | null;
-  is_abstract: boolean;
-  /** Whether this role is declared as an ordered list (`relates name[]`).
-   * Instance-level list semantics are engine-unimplemented (REP256); this is a
-   * schema-emission marker only. */
-  ordered: boolean;
-  /** Whether this role carries `@distinct`. Valid only when `ordered` is true. */
-  distinct: boolean;
-  /** TypeDB 3.12+ `@doc("...")` annotation. Omitted when not declared. */
-  doc?: string;
-  /** TypeDB 3.12+ `@meta("key", "value")` annotations, keyed by meta key. */
-  meta?: Record<string, string>;
-}
-
-export interface RelationDescriptor {
-  type_name: string;
-  is_abstract: boolean;
-  parent_type: string | null;
-  owned_attributes: OwnedAttributeDescriptor[];
-  roles: RoleDescriptor[];
-  /** TypeDB 3.12+ `@doc("...")` annotation. Omitted when not declared. */
-  doc?: string;
-  /** TypeDB 3.12+ `@meta("key", "value")` annotations, keyed by meta key. */
-  meta?: Record<string, string>;
-}
-
-export type TypeDescriptor =
-  | { kind: "entity"; descriptor: EntityDescriptor }
-  | { kind: "relation"; descriptor: RelationDescriptor };
-
-export interface OwnedAttributeEntry {
-  attr_name: string;
-  value_type: ValueType;
-  annotations: Annotation[];
-  /** Whether this ownership is declared as an ordered list (`owns name[]`).
-   * Instance-level list semantics are engine-unimplemented (REP256); this is a
-   * schema-emission marker only. */
-  is_ordered: boolean;
-  /** TypeDB 3.12+ `@doc("...")` annotation. Omitted when not declared. */
-  doc?: string;
-  /** TypeDB 3.12+ `@meta("key", "value")` annotations, keyed by meta key. */
-  meta?: Record<string, string>;
-}
-
-export interface RoleEntry {
-  role_name: string;
-  player_type_names: string[];
-  cardinality: [number, number | null] | null;
-  /** Plays-side cardinality authoring datum. Mirrors `RoleDescriptor.plays_cardinality`
-   * at the SchemaInfo (info-level) role entry. `null` when not declared. */
-  plays_cardinality: [number, number | null] | null;
-  overrides: string | null;
-  is_abstract: boolean;
-  /** Whether this role is declared as an ordered list (`relates name[]`).
-   * Instance-level list semantics are engine-unimplemented (REP256); this is a
-   * schema-emission marker only. */
-  ordered: boolean;
-  /** Whether this role carries `@distinct`. Valid only when `ordered` is true. */
-  distinct: boolean;
-  /** TypeDB 3.12+ `@doc("...")` annotation. Omitted when not declared. */
-  doc?: string;
-  /** TypeDB 3.12+ `@meta("key", "value")` annotations, keyed by meta key. */
-  meta?: Record<string, string>;
-}
-
-export interface EntitySchemaEntry {
-  type_name: string;
-  is_abstract: boolean;
-  parent_type: string | null;
-  owned_attributes: OwnedAttributeEntry[];
-  plays_cardinalities?: Record<string, [number, number | null]>;
-  /** TypeDB 3.12+ `@doc("...")` annotation. Omitted when not declared. */
-  doc?: string;
-  /** TypeDB 3.12+ `@meta("key", "value")` annotations, keyed by meta key. */
-  meta?: Record<string, string>;
-}
-
-export interface RelationSchemaEntry extends EntitySchemaEntry {
-  roles: RoleEntry[];
-}
-
-export interface AttributeSchemaEntry {
-  attr_name: string;
-  value_type: ValueType;
-  parent_type?: string | null;
-  is_abstract?: boolean;
-  is_independent?: boolean;
-  regex?: string | null;
-  allowed_values?: string[] | null;
-  range?: [string | null, string | null] | null;
-  /** TypeDB 3.12+ `@doc("...")` annotation. Omitted when not declared. */
-  doc?: string;
-  /** TypeDB 3.12+ `@meta("key", "value")` annotations, keyed by meta key. */
-  meta?: Record<string, string>;
-}
-
-export interface SchemaInfo {
-  entities: Record<string, EntitySchemaEntry>;
-  relations: Record<string, RelationSchemaEntry>;
-  attributes: Record<string, AttributeSchemaEntry>;
-}
-
-const ATTRIBUTE_SCHEMA_METADATA = Symbol.for("@type-bridge/node.attributeSchemaMetadata");
-
 export type TransactionType = "read" | "write" | "schema";
 
 export type AttributeValue =
@@ -191,7 +44,10 @@ export type AttributeValue =
   | { value_type: "decimal"; value: string }
   | { value_type: "duration"; value: string };
 
-export type AttributeInput = Record<string, AttributeValue | AttributeValue[] | null | undefined>;
+export type AttributeInput = Record<
+  string,
+  AttributeValue | AttributeValue[] | null | undefined
+>;
 
 export interface FilterInput {
   attr_name: string;
@@ -203,26 +59,6 @@ export interface AggregateInput {
   result_key: string;
   function: string;
   attr_name?: string | null;
-}
-
-export interface RolePlayerInput {
-  role_name: string;
-  /**
-   * The concrete type of the player. The binding validates only that the role
-   * exists; whether this type may actually play the role (including via
-   * subtyping of an abstract declared player type) is enforced by TypeDB at
-   * insert time, so an incompatible type surfaces as a TypeDB error, not a
-   * binding error.
-   */
-  player_type_name: string;
-  iid?: string | null;
-  key_attr?: string | null;
-  key_value?: AttributeValue | null;
-}
-
-export interface RelationWriteInput {
-  attributes?: AttributeInput | null;
-  role_players: RolePlayerInput[];
 }
 
 export type RuntimeAttributeValue =
@@ -237,16 +73,6 @@ export type RuntimeAttributeValue =
   | { Duration: string };
 
 export {
-  Attribute,
-  attr,
-  type AttributeBase,
-  type AttributeTypeOptions,
-  type AttributeTypeParent,
-  type ComparableAttributeBase,
-  type NumericAttributeBase,
-  type StringAttributeBase,
-} from "./attribute.js";
-export {
   AggregateSpec,
   BooleanExpr,
   ComparisonExpr,
@@ -257,91 +83,8 @@ export {
   TypedQuery,
   TypedQueryError,
   agg,
+  type QueryGroupField,
 } from "./query.js";
-export {
-  AttributeFlags,
-  Card,
-  Doc,
-  Flag,
-  Key,
-  Meta,
-  TypeFlags,
-  TypeNameCase,
-  Unique,
-  formatTypeName,
-  resolveFlags,
-  type AttributeFlagsOptions,
-  type CardSpec,
-  type DocSpec,
-  type FlagInput,
-  type FlagSpec,
-  type MetaSpec,
-  type ResolvedAttributeFlags,
-  type ResolvedTypeFlags,
-  type TypeFlagsOptions,
-} from "./flags.js";
-export {
-  Entity,
-  FieldSpec,
-  ListFieldSpec,
-  Relation,
-  RoleSpec,
-  field,
-  role,
-  type AttributeClass,
-  type EntitySchema,
-  type FieldValue,
-  type IidBearing,
-  type InstanceDict,
-  type InstanceFields,
-  type MergedSchema,
-  type ModelClass,
-  type ModelInstance,
-  type ParentModelClass,
-  type ParentOption,
-  type PlainFieldValue,
-  type RelationSchema,
-  type SchemaSpec,
-} from "./model.js";
-export {
-  TypedCodecError,
-  attributeToPlain,
-  hydrateAttributeEntries,
-  hydrateAttributes,
-  keyAttributeDescriptor,
-  lowerAttributes,
-  lowerAttributeValue,
-  lowerFilters,
-  plainToAttribute,
-  runtimeAttributeValueFromUnknown,
-} from "./codec.js";
-export {
-  TypedEntityManager,
-  TypedRelationManager,
-  buildRolePlayers,
-  entityManagerFor,
-  relationManagerFor,
-  type ExactFilters,
-  type ManagerConnection,
-} from "./manager.js";
-export {
-  parseSchema,
-  type SchemaParserNative,
-  type AttributeType as SchemaAttributeType,
-  type Cardinality as SchemaCardinality,
-  type EntityType as SchemaEntityType,
-  type FunctionType as SchemaFunctionType,
-  type OwnedAttribute as SchemaOwnedAttribute,
-  type Parameter as SchemaParameter,
-  type PlayedRole as SchemaPlayedRole,
-  type RelationType as SchemaRelationType,
-  type ReturnType as SchemaReturnType,
-  type ReturnTypeItem as SchemaReturnTypeItem,
-  type RoleSpec as SchemaRoleSpec,
-  type StructField as SchemaStructField,
-  type StructType as SchemaStructType,
-  type TypeSchema,
-} from "./parser.js";
 
 export interface DynamicEntityRow {
   iid: string | null;
@@ -360,10 +103,7 @@ export interface DynamicRelationRow extends DynamicEntityRow {
   role_players: DynamicRolePlayer[];
 }
 
-/**
- * Wire shape of the Rust `DynamicComparisonOp`. `starts_with`/`ends_with` carry
- * the raw literal only — Rust owns regex anchoring and escaping.
- */
+/** Wire shape accepted by the separately retained V1 query facade. */
 export type DynamicComparisonOp =
   | "eq"
   | "neq"
@@ -376,15 +116,13 @@ export type DynamicComparisonOp =
   | "starts_with"
   | "ends_with";
 
-/**
- * Wire shape of the Rust `DynamicExpr` expression tree. Comparison values use the
- * same precision-safe {@link AttributeValue} `{ value_type, value }` encoding as
- * CRUD filters (`long` carried as a string) — the Node binding decodes them
- * through its shared value convention, so `long` keeps full i64 precision rather
- * than being capped at the JS safe-integer range.
- */
 export type DynamicExpr =
-  | { kind: "compare"; attr_name: string; operator: DynamicComparisonOp; value: AttributeValue }
+  | {
+      kind: "compare";
+      attr_name: string;
+      operator: DynamicComparisonOp;
+      value: AttributeValue;
+    }
   | { kind: "iid"; iid: string }
   | { kind: "is_null"; attr_name: string; is_null: boolean }
   | { kind: "and"; exprs: DynamicExpr[] }
@@ -392,19 +130,17 @@ export type DynamicExpr =
   | { kind: "not"; expr: DynamicExpr }
   | { kind: "role_player"; role_name: string; expr: DynamicExpr };
 
-/** Wire shape of the Rust `SortDir` (bare PascalCase variant names). */
 export type DynamicSortDir = "Asc" | "Desc";
 
-/** Wire shape of the Rust `DynamicSort`. */
 export type DynamicSort =
   | { kind: "attribute"; attr_name: string; direction: DynamicSortDir }
-  | { kind: "role_player_attribute"; role_name: string; attr_name: string; direction: DynamicSortDir };
+  | {
+      kind: "role_player_attribute";
+      role_name: string;
+      attr_name: string;
+      direction: DynamicSortDir;
+    };
 
-/**
- * Wire shape of the Rust `DynamicQuerySpecJson`. All fields are optional; an empty
- * `expr` matches every row. `limit`/`offset` apply only to `query`, not to
- * `queryCount`/`queryAggregate`/`queryGroupByAggregate`.
- */
 export interface DynamicQuerySpec {
   expr?: DynamicExpr[];
   sort?: DynamicSort[];
@@ -417,8 +153,6 @@ export function string(value: string): AttributeValue {
 }
 
 export function long(value: bigint): AttributeValue {
-  // Runtime guard for JavaScript callers (the static `bigint` type is erased):
-  // a non-bigint would silently stringify to a wrong wire value otherwise.
   if (typeof value !== "bigint") {
     throw new TypeError(
       "long requires a bigint; use longFromNumberUnsafe for explicit number conversion",
@@ -465,29 +199,8 @@ export function duration(value: string): AttributeValue {
   return { value_type: "duration", value };
 }
 
-interface NativeDescriptorRegistry {
-  registerEntityJson(descriptorJson: string): string;
-  registerRelationJson(descriptorJson: string): string;
-  entityJson(typeName: string): string;
-  relationJson(typeName: string): string;
-  snapshotJson(): string;
-  schemaInfoJson(): string;
-}
-
-interface NativeMarshalling {
-  normalizeAttributeValueJson(valueJson: string): string;
-  normalizeEntityAttributesJson(descriptorJson: string, attributesJson: string): string;
-  normalizeRelationAttributesJson(descriptorJson: string, attributesJson: string): string;
-  normalizeFiltersJson(descriptorJson: string, filtersJson: string): string;
-  normalizeRelationFiltersJson(descriptorJson: string, filtersJson: string): string;
-  normalizeAggregatesJson(descriptorJson: string, aggregatesJson: string): string;
-  normalizeRolePlayersJson(descriptorJson: string, rolePlayersJson: string): string;
-  normalizeRelationWriteBatchJson(descriptorJson: string, batchJson: string): string;
-}
-
 export interface NativeRustDatabase {
   isConnected(): boolean;
-  serverDeprecationNotice?(): TypeDBServerDeprecationNotice | null;
   close(): void;
   databaseName(): string;
   databaseExists(): boolean;
@@ -495,24 +208,7 @@ export interface NativeRustDatabase {
   deleteDatabase(): void;
   resetDatabase(): void;
   transaction(transactionType?: TransactionType): NativeRustTransactionContext;
-  entityManagerJson(descriptorJson: string): NativeDynamicEntityManager;
-  relationManagerJson(descriptorJson: string): NativeDynamicRelationManager;
 }
-
-/** Structured metadata for one legacy TypeDB server warning. */
-export interface TypeDBServerDeprecationNotice {
-  readonly code: typeof TYPE_DB_SERVER_DEPRECATION_CODE;
-  readonly message: string;
-}
-
-/** TypeBridge-specific machine-readable identity for the server notice. */
-export const TYPE_DB_SERVER_DEPRECATION_CODE = "TYPE_BRIDGE_TYPEDB_LEGACY_SERVER";
-
-/** Standard Node warning type used so `--no-deprecation` remains effective.
- * Inspect {@link TYPE_DB_SERVER_DEPRECATION_CODE} for the TypeBridge-specific
- * machine-readable identity.
- */
-export const TYPE_DB_SERVER_DEPRECATION_WARNING = "DeprecationWarning";
 
 export interface NativeRustTransactionContext {
   queryJson(query: string): string;
@@ -520,8 +216,6 @@ export interface NativeRustTransactionContext {
   rollback(): void;
   close(): void;
   transactionType(): TransactionType;
-  entityManagerJson(descriptorJson: string): NativeDynamicEntityManager;
-  relationManagerJson(descriptorJson: string): NativeDynamicRelationManager;
 }
 
 interface NativePendingQueryV2Remote {
@@ -529,11 +223,8 @@ interface NativePendingQueryV2Remote {
   decodeReply(response: Uint8Array): Promise<string>;
 }
 
-/** Opaque one-shot decoder for one exact prepared V2 remote request. */
 export interface PendingQueryV2Remote {
-  /** Exact canonical bytes to send to the executor's `/v2/query` route. */
   requestBytes(): Uint8Array;
-  /** Atomically consume and decode the only accepted request-bound reply off-thread. */
   decodeReply(response: Uint8Array): Promise<string>;
 }
 
@@ -569,45 +260,6 @@ interface NativeQueryV2Runtime {
   ): NativePendingQueryV2Remote;
 }
 
-export interface NativeDynamicEntityManager {
-  insertJson(attributesJson: string): string;
-  insertManyJson(batchJson: string): string;
-  putJson(attributesJson: string): string;
-  putManyJson(batchJson: string): string;
-  updateJson(attributesJson: string, iid?: string | null): void;
-  getJson(filtersJson?: string | null): string;
-  getByIidJson(iid: string): string;
-  allJson(): string;
-  countJson(filtersJson?: string | null): string;
-  aggregateJson(aggregatesJson: string, filtersJson?: string | null): string;
-  groupByAggregateJson(groupFieldsJson: string, aggregatesJson: string, filtersJson?: string | null): string;
-  deleteByIid(iid: string): void;
-  queryJson(specJson: string): string;
-  queryCountJson(specJson: string): string;
-  queryAggregateJson(specJson: string, aggregatesJson: string): string;
-  queryGroupByAggregateJson(specJson: string, groupFieldsJson: string, aggregatesJson: string): string;
-}
-
-export interface NativeDynamicRelationManager {
-  insertJson(attributesJson: string, rolePlayersJson: string): string;
-  insertManyJson(batchJson: string): string;
-  putJson(attributesJson: string, rolePlayersJson: string): string;
-  putManyJson(batchJson: string): string;
-  updateJson(attributesJson: string, rolePlayersJson: string, iid?: string | null): void;
-  getJson(filtersJson?: string | null): string;
-  getWithRolePlayersJson(filtersJson?: string | null, rolePlayersJson?: string | null): string;
-  getByIidJson(iid: string): string;
-  allJson(): string;
-  countJson(filtersJson?: string | null): string;
-  aggregateJson(aggregatesJson: string, filtersJson?: string | null): string;
-  groupByAggregateJson(groupFieldsJson: string, aggregatesJson: string, filtersJson?: string | null): string;
-  deleteByIid(iid: string): void;
-  queryJson(specJson: string): string;
-  queryCountJson(specJson: string): string;
-  queryAggregateJson(specJson: string, aggregatesJson: string): string;
-  queryGroupByAggregateJson(specJson: string, groupFieldsJson: string, aggregatesJson: string): string;
-}
-
 export interface NativeRuntime {
   ensureRustDatabase(
     address: string,
@@ -631,55 +283,23 @@ export interface NativeRuntime {
   ): NativeRustDatabase;
 }
 
-interface NativeSchemaParser {
-  parseSchemaJson(input: string): string;
-  renderModelsJson(input: string, target: string, optionsJson?: string | null): string;
-}
-
+/** Package-private native contract used by retained runtime entry points. */
 export interface NativeModule
   extends NativeRuntime,
-    NativeMarshalling,
-    NativeSchemaParser,
     NativeQueryV2Runtime,
-    NativeQueryV2BuilderRuntime {
-  readonly TYPE_DB_SERVER_DEPRECATION_CODE: string;
-  NodeDescriptorRegistry: new () => NativeDescriptorRegistry;
-  generateDefineBlockJson(schemaInfoJson: string): string;
-}
+    NativeQueryV2BuilderRuntime {}
 
 export interface RustDatabaseConnectOptions {
   username?: string | null;
   password?: string | null;
-  /** Port of the TypeDB HTTP API used for the connect-time version probe. */
   httpPort?: number;
-  /** Exact TypeDB server version; skips HTTP probing for gRPC-only deployments. */
   serverVersion?: string | null;
-  /** Enable TLS using native trust roots, or a custom root when tlsRootCa is set. */
   tlsEnabled?: boolean;
-  /** PEM root-CA path. Requires an explicit tlsEnabled: true. */
   tlsRootCa?: string;
 }
 
-export interface EnsureDatabaseOptions {
-  username?: string | null;
-  password?: string | null;
-  /** Port of the TypeDB HTTP API used for the connect-time version probe. */
-  httpPort?: number;
-  /** Exact TypeDB server version; skips HTTP probing for gRPC-only deployments. */
-  serverVersion?: string | null;
-  /** Enable TLS using native trust roots, or a custom root when tlsRootCa is set. */
-  tlsEnabled?: boolean;
-  /** PEM root-CA path. Requires an explicit tlsEnabled: true. */
-  tlsRootCa?: string;
-}
+export interface EnsureDatabaseOptions extends RustDatabaseConnectOptions {}
 
-/**
- * Ensure the named TypeDB database exists, creating it if absent.
- *
- * Fails hard when TypeDB is unreachable — callers should let the error
- * propagate so that a missing server shows up as a clear failure, not a
- * silent skip.
- */
 export function ensureDatabase(
   address: string,
   database: string,
@@ -698,8 +318,6 @@ export function ensureDatabase(
   );
 }
 
-export { loadNative };
-
 /** Opaque declared-schema authority for prepared V2 plan execution. */
 export class QueryV2Authority {
   readonly #brand = undefined;
@@ -707,18 +325,21 @@ export class QueryV2Authority {
   constructor(declaredSchema: Uint8Array, scope: string, profile: string) {
     registerQueryV2AuthorityHandle(
       this,
-      queryV2NativeCall(() => loadNative().queryV2Authority(declaredSchema, scope, profile)),
+      queryV2NativeCall(() =>
+        loadNative().queryV2Authority(declaredSchema, scope, profile),
+      ),
     );
   }
 
-  /** Build a local-only authority for an exact database with no migration controls. */
   static queryOnly(
     database: RustDatabase,
     declaredSchema: Uint8Array,
     scope: string,
     profile: string,
   ): QueryV2Authority {
-    const authority = Object.create(QueryV2Authority.prototype) as QueryV2Authority;
+    const authority = Object.create(
+      QueryV2Authority.prototype,
+    ) as QueryV2Authority;
     registerQueryV2AuthorityHandle(
       authority,
       queryV2NativeCall(() =>
@@ -734,16 +355,8 @@ export class QueryV2Authority {
   }
 }
 
-/** Caller ceilings bound into one prepared V2 remote request.
- * `deadlineMs` is resolved once into an absolute expiry (30 seconds by
- * default, maximum five minutes).
- */
 export interface QueryV2RemoteLimits {
   readonly maxItems: bigint;
-  /** Maximum signed bytes for a successful typed response. Authenticated
-   * failure envelopes use the protocol hard ceiling so their diagnostic is
-   * still available when this success budget is zero or otherwise tiny.
-   */
   readonly maxBytes: bigint;
   readonly maxCollectionMembers: bigint;
   readonly deadlineMs?: bigint | null;
@@ -752,20 +365,25 @@ export interface QueryV2RemoteLimits {
 function preparedV2DatabaseHandle(database: RustDatabase): NativeRustDatabase {
   const native = rustDatabaseHandle(database);
   if (native === undefined) {
-    throw new TypeError("queryV2ExecuteLocal requires a type-bridge RustDatabase");
+    throw new TypeError(
+      "queryV2ExecuteLocal requires a type-bridge RustDatabase",
+    );
   }
   return native;
 }
 
-function preparedV2AuthorityHandle(authority: QueryV2Authority): NativeQueryV2Authority {
+function preparedV2AuthorityHandle(
+  authority: QueryV2Authority,
+): NativeQueryV2Authority {
   const native = queryV2AuthorityHandle(authority);
   if (native === undefined) {
-    throw new TypeError("prepared V2 execution requires a type-bridge QueryV2Authority");
+    throw new TypeError(
+      "prepared V2 execution requires a type-bridge QueryV2Authority",
+    );
   }
   return native;
 }
 
-/** Execute canonical prepared-plan bytes against a local Rust database. */
 export function queryV2ExecuteLocal(
   database: RustDatabase,
   authority: QueryV2Authority,
@@ -786,12 +404,14 @@ export function queryV2ExecuteLocal(
   );
 }
 
-/** Decode the executor's exact prepared-query capability advertisement. */
-export function queryV2RemoteCapabilities(advertisement: Uint8Array): readonly string[] {
-  return queryV2NativeCall(() => loadNative().queryV2RemoteCapabilities(advertisement));
+export function queryV2RemoteCapabilities(
+  advertisement: Uint8Array,
+): readonly string[] {
+  return queryV2NativeCall(() =>
+    loadNative().queryV2RemoteCapabilities(advertisement),
+  );
 }
 
-/** Prepare one request bound to the exact advertised executor epoch and expiry. */
 export function queryV2PrepareRemote(
   authority: QueryV2Authority,
   plan: Uint8Array,
@@ -815,178 +435,10 @@ export function queryV2PrepareRemote(
     requestBytes: (): Uint8Array =>
       queryV2NativeCall(() => new Uint8Array(pending.requestBytes())),
     decodeReply: (response: Uint8Array): Promise<string> =>
-      queryV2NativePromise(queryV2NativeCall(() => pending.decodeReply(response))),
+      queryV2NativePromise(
+        queryV2NativeCall(() => pending.decodeReply(response)),
+      ),
   });
-}
-
-export function generateDefineBlock(info: SchemaInfo): string {
-  return loadNative().generateDefineBlockJson(JSON.stringify(info));
-}
-
-export class DescriptorRegistry {
-  readonly #native: NativeDescriptorRegistry;
-  readonly #attributeSchemas = new Map<string, AttributeSchemaEntry>();
-
-  constructor(nativeRegistry?: NativeDescriptorRegistry | null) {
-    this.#native = nativeRegistry ?? new (loadNative().NodeDescriptorRegistry)();
-  }
-
-  registerEntity(descriptor: EntityDescriptor): EntityDescriptor {
-    this.#rememberAttributeSchemas(descriptor);
-    return parseJson(this.#native.registerEntityJson(JSON.stringify(descriptor)));
-  }
-
-  registerRelation(descriptor: RelationDescriptor): RelationDescriptor {
-    this.#rememberAttributeSchemas(descriptor);
-    return parseJson<RelationDescriptor>(
-      this.#native.registerRelationJson(JSON.stringify(descriptor)),
-    );
-  }
-
-  entity(typeName: string): EntityDescriptor {
-    return parseJson(this.#native.entityJson(typeName));
-  }
-
-  relation(typeName: string): RelationDescriptor {
-    return parseJson(this.#native.relationJson(typeName));
-  }
-
-  snapshot(): TypeDescriptor[] {
-    return parseJson(this.#native.snapshotJson());
-  }
-
-  schemaInfo(): SchemaInfo {
-    // Rust from_descriptors builds plays_cardinalities overlays and nulls foreign
-    // parent_types; the Python attributes-section merge remains the only Python-side
-    // projection.
-    const info = parseJson<SchemaInfo>(this.#native.schemaInfoJson());
-    for (const [attrName, entry] of this.#attributeSchemas) {
-      info.attributes[attrName] = {
-        ...(info.attributes[attrName] ?? { attr_name: attrName, value_type: entry.value_type }),
-        ...copyAttributeSchemaEntry(entry),
-      };
-    }
-    return info;
-  }
-
-  #rememberAttributeSchemas(descriptor: EntityDescriptor | RelationDescriptor): void {
-    for (const entry of descriptorAttributeSchemaMetadata(descriptor)) {
-      this.#attributeSchemas.set(entry.attr_name, copyAttributeSchemaEntry(entry));
-    }
-    for (const attribute of descriptor.owned_attributes) {
-      const entry = ownedAttributeSchemaEntry(attribute);
-      if (entry !== null) {
-        this.#attributeSchemas.set(entry.attr_name, entry);
-      }
-    }
-  }
-}
-
-function descriptorAttributeSchemaMetadata(
-  descriptor: EntityDescriptor | RelationDescriptor,
-): AttributeSchemaEntry[] {
-  const metadata = (descriptor as unknown as Record<PropertyKey, unknown>)[
-    ATTRIBUTE_SCHEMA_METADATA
-  ];
-  if (metadata === null || typeof metadata !== "object") {
-    return [];
-  }
-  return Object.values(metadata as Record<string, AttributeSchemaEntry>).map(copyAttributeSchemaEntry);
-}
-
-function ownedAttributeSchemaEntry(
-  attribute: OwnedAttributeDescriptor,
-): AttributeSchemaEntry | null {
-  if (!hasAttributeTypeMetadata(attribute)) {
-    return null;
-  }
-  const entry: AttributeSchemaEntry = {
-    attr_name: attribute.attr_name,
-    value_type: attribute.value_type,
-  };
-  if (attribute.parent_type !== undefined) entry.parent_type = attribute.parent_type;
-  if (attribute.is_abstract !== undefined) entry.is_abstract = attribute.is_abstract;
-  if (attribute.is_independent !== undefined) entry.is_independent = attribute.is_independent;
-  if (attribute.regex !== undefined) entry.regex = attribute.regex;
-  if (attribute.allowed_values !== undefined) {
-    entry.allowed_values =
-      attribute.allowed_values == null ? null : [...attribute.allowed_values];
-  }
-  if (attribute.range !== undefined) {
-    entry.range = attribute.range == null ? null : [attribute.range[0], attribute.range[1]];
-  }
-  return entry;
-}
-
-function hasAttributeTypeMetadata(attribute: OwnedAttributeDescriptor): boolean {
-  return (
-    attribute.parent_type !== undefined ||
-    attribute.is_abstract !== undefined ||
-    attribute.is_independent !== undefined ||
-    attribute.regex !== undefined ||
-    attribute.allowed_values !== undefined ||
-    attribute.range !== undefined
-  );
-}
-
-function copyAttributeSchemaEntry(entry: AttributeSchemaEntry): AttributeSchemaEntry {
-  const copy: AttributeSchemaEntry = { ...entry };
-  if (entry.allowed_values !== undefined) {
-    copy.allowed_values = entry.allowed_values === null ? null : [...entry.allowed_values];
-  }
-  if (entry.range !== undefined) {
-    copy.range = entry.range === null ? null : [entry.range[0], entry.range[1]];
-  }
-  return copy;
-}
-
-export class Marshalling {
-  readonly #native: NativeMarshalling;
-
-  constructor(nativeMarshalling?: NativeMarshalling | null) {
-    this.#native = nativeMarshalling ?? loadNative();
-  }
-
-  attributeValue(value: AttributeValue): unknown {
-    return parseJson(this.#native.normalizeAttributeValueJson(JSON.stringify(value)));
-  }
-
-  entityAttributes(descriptor: EntityDescriptor, attributes: AttributeInput): unknown {
-    return parseJson(
-      this.#native.normalizeEntityAttributesJson(JSON.stringify(descriptor), JSON.stringify(attributes)),
-    );
-  }
-
-  relationAttributes(descriptor: RelationDescriptor, attributes: AttributeInput): unknown {
-    return parseJson(
-      this.#native.normalizeRelationAttributesJson(JSON.stringify(descriptor), JSON.stringify(attributes)),
-    );
-  }
-
-  filters(descriptor: EntityDescriptor, filters: Record<string, AttributeValue> | FilterInput[]): unknown {
-    return parseJson(this.#native.normalizeFiltersJson(JSON.stringify(descriptor), JSON.stringify(filters)));
-  }
-
-  relationFilters(
-    descriptor: RelationDescriptor,
-    filters: Record<string, AttributeValue> | FilterInput[],
-  ): unknown {
-    return parseJson(this.#native.normalizeRelationFiltersJson(JSON.stringify(descriptor), JSON.stringify(filters)));
-  }
-
-  aggregates(descriptor: EntityDescriptor, aggregates: AggregateInput[]): unknown {
-    return parseJson(this.#native.normalizeAggregatesJson(JSON.stringify(descriptor), JSON.stringify(aggregates)));
-  }
-
-  rolePlayers(descriptor: RelationDescriptor, rolePlayers: RolePlayerInput[]): unknown {
-    return parseJson(
-      this.#native.normalizeRolePlayersJson(JSON.stringify(descriptor), JSON.stringify(rolePlayers)),
-    );
-  }
-
-  relationWriteBatch(descriptor: RelationDescriptor, batch: RelationWriteInput[]): unknown {
-    return parseJson(this.#native.normalizeRelationWriteBatchJson(JSON.stringify(descriptor), JSON.stringify(batch)));
-  }
 }
 
 export class RustDatabase {
@@ -997,46 +449,23 @@ export class RustDatabase {
     registerRustDatabaseHandle(this, native);
   }
 
-  static connect(address: string, database: string, options?: RustDatabaseConnectOptions): RustDatabase;
   static connect(
-    native: NativeRuntime,
     address: string,
-    database: string,
-    options?: RustDatabaseConnectOptions,
-  ): RustDatabase;
-  static connect(
-    nativeOrAddress: NativeRuntime | string,
-    addressOrDatabase: string,
-    databaseOrOptions: string | RustDatabaseConnectOptions = {},
-    maybeOptions: RustDatabaseConnectOptions = {},
+    databaseName: string,
+    options: RustDatabaseConnectOptions = {},
   ): RustDatabase {
-    const parsed = parseConnectArguments(nativeOrAddress, addressOrDatabase, databaseOrOptions, maybeOptions);
-    validateConnectionTransport(parsed.options);
-    const native = parsed.native.connectRustDatabase(
-      parsed.address,
-      parsed.database,
-      parsed.options.username ?? null,
-      parsed.options.password ?? null,
-      parsed.options.httpPort ?? null,
-      parsed.options.serverVersion ?? null,
-      parsed.options.tlsEnabled ?? null,
-      parsed.options.tlsRootCa ?? null,
+    validateConnectionTransport(options);
+    const native = loadNative().connectRustDatabase(
+      address,
+      databaseName,
+      options.username ?? null,
+      options.password ?? null,
+      options.httpPort ?? null,
+      options.serverVersion ?? null,
+      options.tlsEnabled ?? null,
+      options.tlsRootCa ?? null,
     );
-    const database = new RustDatabase(native);
-    try {
-      const notice = native.serverDeprecationNotice?.();
-      if (notice != null && !process.throwDeprecation) {
-        process.emitWarning(notice.message, {
-          type: TYPE_DB_SERVER_DEPRECATION_WARNING,
-          code: notice.code,
-        });
-      }
-    } catch {
-      // A compatibility notice is best-effort and cannot change a successful
-      // connection into a failure when a synchronous replacement of
-      // process.emitWarning throws.
-    }
-    return database;
+    return new RustDatabase(native);
   }
 
   isConnected(): boolean {
@@ -1067,23 +496,29 @@ export class RustDatabase {
     this.#native.resetDatabase();
   }
 
-  transaction(transactionType: TransactionType = "read"): RustTransactionContext {
-    return new RustTransactionContext(this.#native.transaction(transactionType));
-  }
-
-  entityManager(descriptor: EntityDescriptor): RustDynamicEntityManager {
-    return new RustDynamicEntityManager(this.#native.entityManagerJson(JSON.stringify(descriptor)));
-  }
-
-  relationManager(descriptor: RelationDescriptor): RustDynamicRelationManager {
-    return new RustDynamicRelationManager(this.#native.relationManagerJson(JSON.stringify(descriptor)));
+  transaction(
+    transactionType: TransactionType = "read",
+  ): RustTransactionContext {
+    return createRustTransactionContext(
+      this.#native.transaction(transactionType),
+    );
   }
 }
+
+const TRANSACTION_CONSTRUCTOR = Symbol("RustTransactionContext");
 
 export class RustTransactionContext {
   readonly #native: NativeRustTransactionContext;
 
-  constructor(native: NativeRustTransactionContext) {
+  private constructor(
+    native: NativeRustTransactionContext,
+    token: typeof TRANSACTION_CONSTRUCTOR,
+  ) {
+    if (token !== TRANSACTION_CONSTRUCTOR) {
+      throw new TypeError(
+        "RustTransactionContext values are created by RustDatabase.transaction()",
+      );
+    }
     this.#native = native;
     registerRustTransactionHandle(this, native);
   }
@@ -1107,237 +542,20 @@ export class RustTransactionContext {
   transactionType(): TransactionType {
     return this.#native.transactionType();
   }
-
-  entityManager(descriptor: EntityDescriptor): RustDynamicEntityManager {
-    return new RustDynamicEntityManager(this.#native.entityManagerJson(JSON.stringify(descriptor)));
-  }
-
-  relationManager(descriptor: RelationDescriptor): RustDynamicRelationManager {
-    return new RustDynamicRelationManager(this.#native.relationManagerJson(JSON.stringify(descriptor)));
-  }
 }
 
-export class RustDynamicEntityManager {
-  readonly #native: NativeDynamicEntityManager;
-
-  constructor(native: NativeDynamicEntityManager) {
-    this.#native = native;
-  }
-
-  insert(attributes: AttributeInput): string {
-    return this.#native.insertJson(JSON.stringify(attributes));
-  }
-
-  insertMany(batch: AttributeInput[]): string[] {
-    return parseJson(this.#native.insertManyJson(JSON.stringify(batch)));
-  }
-
-  put(attributes: AttributeInput): string {
-    return this.#native.putJson(JSON.stringify(attributes));
-  }
-
-  putMany(batch: AttributeInput[]): string[] {
-    return parseJson(this.#native.putManyJson(JSON.stringify(batch)));
-  }
-
-  update(attributes: AttributeInput, iid?: string | null): void {
-    this.#native.updateJson(JSON.stringify(attributes), iid ?? null);
-  }
-
-  get(filters?: Record<string, AttributeValue> | FilterInput[] | null): DynamicEntityRow[] {
-    return parseJson(this.#native.getJson(optionalJson(filters)));
-  }
-
-  getByIid(iid: string): DynamicEntityRow | null {
-    return parseJson(this.#native.getByIidJson(iid));
-  }
-
-  all(): DynamicEntityRow[] {
-    return parseJson(this.#native.allJson());
-  }
-
-  count(filters?: Record<string, AttributeValue> | FilterInput[] | null): bigint {
-    return BigInt(this.#native.countJson(optionalJson(filters)));
-  }
-
-  aggregate(aggregates: AggregateInput[], filters?: Record<string, AttributeValue> | FilterInput[] | null): unknown[] {
-    return parseJson(this.#native.aggregateJson(JSON.stringify(aggregates), optionalJson(filters)));
-  }
-
-  groupByAggregate(
-    groupFields: string[],
-    aggregates: AggregateInput[],
-    filters?: Record<string, AttributeValue> | FilterInput[] | null,
-  ): unknown[] {
-    return parseJson(
-      this.#native.groupByAggregateJson(JSON.stringify(groupFields), JSON.stringify(aggregates), optionalJson(filters)),
-    );
-  }
-
-  query(spec: DynamicQuerySpec): DynamicEntityRow[] {
-    return parseJson(this.#native.queryJson(JSON.stringify(spec)));
-  }
-
-  queryCount(spec: DynamicQuerySpec): bigint {
-    return BigInt(this.#native.queryCountJson(JSON.stringify(spec)));
-  }
-
-  queryAggregate(spec: DynamicQuerySpec, aggregates: AggregateInput[]): unknown[] {
-    return parseJson(this.#native.queryAggregateJson(JSON.stringify(spec), JSON.stringify(aggregates)));
-  }
-
-  queryGroupByAggregate(
-    spec: DynamicQuerySpec,
-    groupFields: string[],
-    aggregates: AggregateInput[],
-  ): unknown[] {
-    return parseJson(
-      this.#native.queryGroupByAggregateJson(
-        JSON.stringify(spec),
-        JSON.stringify(groupFields),
-        JSON.stringify(aggregates),
-      ),
-    );
-  }
-
-  deleteByIid(iid: string): void {
-    this.#native.deleteByIid(iid);
-  }
-}
-
-export class RustDynamicRelationManager {
-  readonly #native: NativeDynamicRelationManager;
-
-  constructor(native: NativeDynamicRelationManager) {
-    this.#native = native;
-  }
-
-  insert(attributes: AttributeInput, rolePlayers: RolePlayerInput[]): string {
-    return this.#native.insertJson(JSON.stringify(attributes), JSON.stringify(rolePlayers));
-  }
-
-  insertMany(batch: RelationWriteInput[]): string[] {
-    return parseJson(this.#native.insertManyJson(JSON.stringify(batch)));
-  }
-
-  put(attributes: AttributeInput, rolePlayers: RolePlayerInput[]): string {
-    return this.#native.putJson(JSON.stringify(attributes), JSON.stringify(rolePlayers));
-  }
-
-  putMany(batch: RelationWriteInput[]): string[] {
-    return parseJson(this.#native.putManyJson(JSON.stringify(batch)));
-  }
-
-  update(attributes: AttributeInput, rolePlayers: RolePlayerInput[], iid?: string | null): void {
-    this.#native.updateJson(JSON.stringify(attributes), JSON.stringify(rolePlayers), iid ?? null);
-  }
-
-  get(filters?: Record<string, AttributeValue> | FilterInput[] | null): DynamicRelationRow[] {
-    return parseJson(this.#native.getJson(optionalJson(filters)));
-  }
-
-  getWithRolePlayers(
-    filters?: Record<string, AttributeValue> | FilterInput[] | null,
-    rolePlayers?: RolePlayerInput[] | null,
-  ): DynamicRelationRow[] {
-    return parseJson(this.#native.getWithRolePlayersJson(optionalJson(filters), optionalJson(rolePlayers)));
-  }
-
-  getByIid(iid: string): DynamicRelationRow[] {
-    return parseJson(this.#native.getByIidJson(iid));
-  }
-
-  all(): DynamicRelationRow[] {
-    return parseJson(this.#native.allJson());
-  }
-
-  count(filters?: Record<string, AttributeValue> | FilterInput[] | null): bigint {
-    return BigInt(this.#native.countJson(optionalJson(filters)));
-  }
-
-  aggregate(aggregates: AggregateInput[], filters?: Record<string, AttributeValue> | FilterInput[] | null): unknown[] {
-    return parseJson(this.#native.aggregateJson(JSON.stringify(aggregates), optionalJson(filters)));
-  }
-
-  groupByAggregate(
-    groupFields: string[],
-    aggregates: AggregateInput[],
-    filters?: Record<string, AttributeValue> | FilterInput[] | null,
-  ): unknown[] {
-    return parseJson(
-      this.#native.groupByAggregateJson(JSON.stringify(groupFields), JSON.stringify(aggregates), optionalJson(filters)),
-    );
-  }
-
-  query(spec: DynamicQuerySpec): DynamicRelationRow[] {
-    return parseJson(this.#native.queryJson(JSON.stringify(spec)));
-  }
-
-  queryCount(spec: DynamicQuerySpec): bigint {
-    return BigInt(this.#native.queryCountJson(JSON.stringify(spec)));
-  }
-
-  queryAggregate(spec: DynamicQuerySpec, aggregates: AggregateInput[]): unknown[] {
-    return parseJson(this.#native.queryAggregateJson(JSON.stringify(spec), JSON.stringify(aggregates)));
-  }
-
-  queryGroupByAggregate(
-    spec: DynamicQuerySpec,
-    groupFields: string[],
-    aggregates: AggregateInput[],
-  ): unknown[] {
-    return parseJson(
-      this.#native.queryGroupByAggregateJson(
-        JSON.stringify(spec),
-        JSON.stringify(groupFields),
-        JSON.stringify(aggregates),
-      ),
-    );
-  }
-
-  deleteByIid(iid: string): void {
-    this.#native.deleteByIid(iid);
-  }
+function createRustTransactionContext(
+  native: NativeRustTransactionContext,
+): RustTransactionContext {
+  const TransactionContext = RustTransactionContext as unknown as new (
+    native: NativeRustTransactionContext,
+    token: typeof TRANSACTION_CONSTRUCTOR,
+  ) => RustTransactionContext;
+  return new TransactionContext(native, TRANSACTION_CONSTRUCTOR);
 }
 
 function parseJson<T>(value: string): T {
   return JSON.parse(value) as T;
-}
-
-function optionalJson(value: unknown | null | undefined): string | null {
-  return value == null ? null : JSON.stringify(value);
-}
-
-function parseConnectArguments(
-  nativeOrAddress: NativeRuntime | string,
-  addressOrDatabase: string,
-  databaseOrOptions: string | RustDatabaseConnectOptions,
-  maybeOptions: RustDatabaseConnectOptions,
-): {
-  native: NativeRuntime;
-  address: string;
-  database: string;
-  options: RustDatabaseConnectOptions;
-} {
-  if (typeof nativeOrAddress === "string") {
-    return {
-      native: loadNative(),
-      address: nativeOrAddress,
-      database: addressOrDatabase,
-      options: (databaseOrOptions as RustDatabaseConnectOptions) ?? {},
-    };
-  }
-
-  if (typeof databaseOrOptions !== "string") {
-    throw new TypeError("RustDatabase.connect(native, address, database, options?) requires a database string");
-  }
-
-  return {
-    native: nativeOrAddress,
-    address: addressOrDatabase,
-    database: databaseOrOptions,
-    options: maybeOptions ?? {},
-  };
 }
 
 function validateConnectionTransport(
@@ -1345,7 +563,11 @@ function validateConnectionTransport(
 ): void {
   for (const key in options) {
     const normalized = key.replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
-    if (normalized.startsWith("tls") && key !== "tlsEnabled" && key !== "tlsRootCa") {
+    if (
+      normalized.startsWith("tls") &&
+      key !== "tlsEnabled" &&
+      key !== "tlsRootCa"
+    ) {
       throw new TypeError(`unknown TLS connection option ${JSON.stringify(key)}`);
     }
   }
@@ -1362,23 +584,12 @@ function validateConnectionTransport(
       throw new TypeError("tlsRootCa requires explicit tlsEnabled=true");
     }
     if (!tlsEnabled) {
-      throw new TypeError("tlsRootCa contradicts explicit tlsEnabled=false");
+      throw new TypeError(
+        "tlsRootCa contradicts explicit tlsEnabled=false",
+      );
     }
     if (tlsRootCa.length === 0) {
       throw new TypeError("tlsRootCa must not be empty");
     }
   }
 }
-
-// ---------------------------------------------------------------------------
-// Generator — additive re-export
-// ---------------------------------------------------------------------------
-export {
-  generateModels,
-  generateModelsForTarget,
-  type BindgenRenderOptions,
-  type BindgenTarget,
-  type GenerateModelsOptions,
-  type GenerateTargetModelsOptions,
-  type NamingOptions,
-} from "./generator/index.js";

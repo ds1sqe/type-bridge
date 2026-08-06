@@ -35,7 +35,7 @@ separate compatibility boundaries.
 The nine V2 implementation crates are workspace-internal: `contract`,
 `schema`, `query`, `schema-migration`, `schema-migration-typedb`,
 `schema-codegen`, `schema-compat`, `workspace`, and `cli`. Their first-party
-versions track the repository release identity (currently `2.0.1`). The
+versions track the repository release identity (currently `2.1.0`). The
 public Rust SDK closure is published to crates.io in dependency order;
 `type-bridge-core` and `type-bridge-node` remain native binding crates for the
 Python and Node products, respectively, and are not crates.io identities.

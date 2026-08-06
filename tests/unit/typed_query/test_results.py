@@ -10,8 +10,17 @@ import pytest
 import type_bridge_core
 
 import type_bridge.typed.results as typed_results
-from type_bridge import Card, Entity, Flag, Key, Relation, Role, String, TypeFlags
-from type_bridge.models.base import TypeDBType
+from tests.utils.handwritten import (
+    Card,
+    Entity,
+    Flag,
+    Key,
+    Relation,
+    Role,
+    String,
+    TypeDBType,
+    TypeFlags,
+)
 from type_bridge.typed.page import Page
 from type_bridge.typed.results import TypedQueryMaterializationError
 

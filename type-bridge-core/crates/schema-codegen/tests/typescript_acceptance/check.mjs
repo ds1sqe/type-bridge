@@ -8,7 +8,12 @@ const CORE = resolve(HERE, "../../../..");
 const ROOT = resolve(CORE, "..");
 const STAGE = resolve(CORE, "target/schema-codegen-typescript-acceptance");
 const GENERATED = resolve(STAGE, "generated_v2");
+const FOREIGN = resolve(STAGE, "generated_foreign");
 const NODE_PACKAGE = resolve(CORE, "crates/node");
+const DOCUMENTED_EXAMPLES = resolve(
+  ROOT,
+  "tests/contracts/typed_query/typescript/documented_examples.ts",
+);
 
 function command(program, args, cwd = ROOT) {
   const completed = spawnSync(program, args, {
@@ -31,6 +36,11 @@ for (const fixture of ["positive.ts", "negative.ts", "runtime_check.mjs"]) {
     }
   }
 }
+for (const forbidden of ["as unknown as", "@ts-ignore"]) {
+  if (readFileSync(DOCUMENTED_EXAMPLES, "utf8").includes(forbidden)) {
+    throw new Error(`documented_examples.ts contains forbidden escape ${forbidden}`);
+  }
+}
 if (!readFileSync(resolve(HERE, "negative.ts"), "utf8").includes("@ts-expect-error")) {
   throw new Error("negative fixture has no @ts-expect-error assertions");
 }
@@ -50,14 +60,30 @@ command("cargo", [
   "--",
   resolve(HERE, "../acceptance/schema.yaml"),
   GENERATED,
+  resolve(STAGE, "declared-schema.json"),
+]);
+command("cargo", [
+  "run",
+  "--quiet",
+  "--manifest-path",
+  resolve(CORE, "Cargo.toml"),
+  "--package",
+  "type-bridge-schema-codegen",
+  "--example",
+  "emit_typescript_acceptance",
+  "--",
+  resolve(HERE, "../acceptance/schema.yaml"),
+  FOREIGN,
 ]);
 mkdirSync(resolve(STAGE, "node_modules/@type-bridge"), { recursive: true });
 symlinkSync(NODE_PACKAGE, resolve(STAGE, "node_modules/@type-bridge/node"), "dir");
 command("tsc", ["--project", resolve(GENERATED, "tsconfig.json")]);
+command("tsc", ["--project", resolve(FOREIGN, "tsconfig.json")]);
 
 for (const fixture of ["positive.ts", "negative.ts", "runtime_check.mjs"]) {
   copyFileSync(resolve(HERE, fixture), resolve(STAGE, fixture));
 }
+copyFileSync(DOCUMENTED_EXAMPLES, resolve(STAGE, "documented_examples.ts"));
 writeFileSync(resolve(STAGE, "package.json"), "{\"type\":\"module\"}\n");
 writeFileSync(
   resolve(STAGE, "tsconfig.json"),
@@ -73,7 +99,13 @@ writeFileSync(
       noEmit: true,
       skipLibCheck: false,
     },
-    include: ["positive.ts", "negative.ts", "generated_v2/src/**/*.ts"],
+    include: [
+      "positive.ts",
+      "negative.ts",
+      "documented_examples.ts",
+      "generated_v2/src/**/*.ts",
+      "generated_foreign/src/**/*.ts",
+    ],
   }, null, 2)}\n`,
 );
 command("tsc", ["--project", resolve(STAGE, "tsconfig.json")]);

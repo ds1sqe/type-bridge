@@ -1,6 +1,6 @@
 """Unit tests for escaping special characters in multi-value attributes."""
 
-from type_bridge import Card, Entity, Flag, Key, Relation, Role, String, TypeFlags
+from tests.utils.handwritten import Card, Entity, Flag, Key, Relation, Role, String, TypeFlags
 
 
 def test_multivalue_string_with_quotes():

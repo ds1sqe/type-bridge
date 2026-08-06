@@ -4,9 +4,11 @@ from typing import Any, get_origin, get_type_hints
 
 from pydantic import Field
 
-from type_bridge.attribute import Attribute, AttributeFlags
-from type_bridge.models.role import Role
-from type_bridge.models.utils import ModelAttrInfo, extract_metadata
+from type_bridge.attribute.base import _QueryAttribute as Attribute
+from type_bridge.attribute.flags import _QueryAttributeFlags as AttributeFlags
+from type_bridge.models.role import _QueryRole as Role
+from type_bridge.models.utils import _QueryModelAttrInfo as ModelAttrInfo
+from type_bridge.models.utils import extract_metadata
 
 
 class SchemaScanner:
@@ -32,8 +34,8 @@ class SchemaScanner:
         # We want parents only.
 
         # Determine the base class to stop at
-        from type_bridge.models.entity import Entity
-        from type_bridge.models.relation import Relation
+        from type_bridge.models.entity import _QueryEntity as Entity
+        from type_bridge.models.relation import _QueryRelation as Relation
 
         base_model_cls = Relation if is_relation else Entity
 
@@ -206,3 +208,7 @@ class SchemaScanner:
                         role.__set_name__(self.cls, key)
                     roles[key] = role
         return roles
+
+
+_QuerySchemaScanner = SchemaScanner
+del SchemaScanner

@@ -128,7 +128,7 @@ pub enum OrmError {
 
     /// Schema management error.
     #[error("Schema error: {0}")]
-    Schema(#[from] crate::schema::SchemaError),
+    Schema(#[from] crate::_schema::SchemaError),
 
     /// Serde JSON error.
     #[error("Serialization error: {0}")]

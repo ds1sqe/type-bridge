@@ -24,15 +24,15 @@ import {
   TYPEDB_HTTP_PORT,
   TYPEDB_PASSWORD,
   TYPEDB_USERNAME,
-} from "../common/index.ts";
+} from "../common/index.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const packageRoot = path.resolve(__dirname, "../../..");
+const packageRoot = process.cwd();
 const _require = createRequire(import.meta.url);
-const pkg = _require(packageRoot) as typeof import("../../../typescript/index.ts");
+const pkg = _require(packageRoot) as typeof import("../../../typescript/public.js");
 const queryV2 = _require(
   path.join(packageRoot, "dist/query-v2.js"),
-) as typeof import("../../../typescript/query-v2.ts");
+) as typeof import("../../../typescript/query-v2.js");
 
 const DECLARED_B64 =
   "eyJkZWNsYXJlZF9pZGVudGl0eSI6eyJhbGdvcml0aG0iOiJzaGEyNTYiLCJjYW5vbmljYWxpemF0aW9u" +

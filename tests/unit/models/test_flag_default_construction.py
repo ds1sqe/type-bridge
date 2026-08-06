@@ -8,7 +8,7 @@ a field value on a constructed instance.
 import pytest
 from pydantic import ValidationError
 
-from type_bridge import (
+from tests.utils.handwritten import (
     Card,
     Doc,
     Entity,

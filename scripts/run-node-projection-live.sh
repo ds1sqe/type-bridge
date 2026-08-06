@@ -72,4 +72,4 @@ TYPE_BRIDGE_NODE_NATIVE_PATH="${native_artifacts[0]}" \
 TYPEDB_ADDRESS="127.0.0.1:$typedb_port" \
 TYPEDB_HTTP_PORT="$typedb_http_port" \
 TYPE_BRIDGE_NODE_INTG_DATABASE="type_bridge_projection_live_${$}" \
-node --test --test-concurrency=1 "$NODE_DIR/tests/projection-integration/generated-package-live.test.ts"
+npm --prefix "$NODE_DIR" run test:projection-integration

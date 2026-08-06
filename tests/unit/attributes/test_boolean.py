@@ -2,7 +2,7 @@
 
 import pytest
 
-from type_bridge import Boolean, Card, Entity, Flag, Key, String, TypeFlags
+from tests.utils.handwritten import Boolean, Card, Entity, Flag, Key, String, TypeFlags
 
 
 def test_boolean_creation():

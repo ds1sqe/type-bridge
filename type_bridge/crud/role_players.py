@@ -7,7 +7,8 @@ from type_bridge.crud.formatting import format_value
 from type_bridge.crud.types import hydrate_attributes, wrap_attribute_value
 
 if TYPE_CHECKING:
-    from type_bridge.models import Relation, TypeDBType
+    from type_bridge.models.base import _QueryTypeDBType as TypeDBType
+    from type_bridge.models.relation import _QueryRelation as Relation
 
 
 def build_role_player_match(var_name: str, entity: Any, entity_type_name: str) -> str:
@@ -75,7 +76,7 @@ def resolve_entity_class_from_label(
     Returns:
         The matching Python entity class, or the first allowed class as fallback
     """
-    from type_bridge.models.registry import ModelRegistry
+    from type_bridge.models.registry import _QueryModelRegistry as ModelRegistry
 
     return ModelRegistry.resolve(type_label, allowed_entity_classes)
 
@@ -148,7 +149,7 @@ def _set_iid(instance: Any, iid: str | None) -> None:
 
 
 def _is_relation_class(model_class: type[Any]) -> bool:
-    from type_bridge.models import Relation
+    from type_bridge.models.relation import _QueryRelation as Relation
 
     return issubclass(model_class, Relation)
 

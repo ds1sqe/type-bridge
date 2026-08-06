@@ -20,7 +20,7 @@ Pure-Rust TypeQL AST, schema parser, query compiler, validation engine, and valu
 ```rust
 use type_bridge_core_lib::query_parser::parse_typeql_query;
 use type_bridge_core_lib::compiler::QueryCompiler;
-use type_bridge_core_lib::schema::TypeSchema;
+use type_bridge_core_lib::_schema::TypeSchema;
 use type_bridge_core_lib::validation::ValidationEngine;
 
 // Parse a TypeQL query into AST clauses

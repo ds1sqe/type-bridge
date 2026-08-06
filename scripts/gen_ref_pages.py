@@ -14,6 +14,22 @@ EXCLUDE_PARTS = {
     "templates",
 }
 
+# Reference only intentional 2.1 public barrels. Private retained query/archive
+# implementation files remain importable by those barrels but are not an
+# application authoring surface and must not reappear merely because they exist
+# in the wheel.
+PUBLIC_MODULES = {
+    "type_bridge",
+    "type_bridge.crud",
+    "type_bridge.expressions",
+    "type_bridge.migration",
+    "type_bridge.proxy",
+    "type_bridge.query",
+    "type_bridge.session",
+    "type_bridge.typed",
+    "type_bridge.typedb_driver",
+}
+
 for path in sorted(src.rglob("*.py")):
     if any(part in EXCLUDE_PARTS for part in path.parts):
         continue
@@ -34,6 +50,8 @@ for path in sorted(src.rglob("*.py")):
         continue
 
     identifier = ".".join(parts)
+    if identifier not in PUBLIC_MODULES:
+        continue
 
     nav[parts] = doc_path.as_posix()
 

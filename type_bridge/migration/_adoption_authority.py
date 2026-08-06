@@ -1,4 +1,4 @@
-"""Cross-platform retained authority for legacy adoption conversion.
+"""Cross-platform retained authority for archive adoption conversion.
 
 Released V1 migration discovery keeps its ambient :class:`~pathlib.Path`
 behavior. Only the V2 converter opts into this private wrapper around the

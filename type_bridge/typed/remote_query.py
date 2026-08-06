@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import overload
 
-from type_bridge.models.base import TypeDBType
+from type_bridge.models.base import _QueryTypeDBType as TypeDBType
 from type_bridge.typed._remote_terminal import (
     _RemoteRuntime,
     execute_remote_count,

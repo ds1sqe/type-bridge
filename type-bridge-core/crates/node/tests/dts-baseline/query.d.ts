@@ -1,5 +1,8 @@
 import type { AggregateInput, AttributeValue, DynamicComparisonOp, DynamicExpr, DynamicQuerySpec, DynamicSort, DynamicSortDir } from "./index.js";
-import type { AttributeClass } from "./model.js";
+/** Minimal field label consumed by the separately retained V1 group-by facade. */
+export interface QueryGroupField {
+    readonly attrName: string;
+}
 /** Raised when a Rust aggregate/group-by result does not match the documented shape. */
 export declare class TypedQueryError extends Error {
     constructor(message: string);
@@ -94,7 +97,7 @@ export declare class TypedQuery<T, Row> {
     exists(): boolean;
     /** Reduce matching rows to one normalized result object keyed by aggregate result keys. */
     aggregate(...aggregates: AggregateSpec[]): Record<string, unknown>;
-    groupBy(...attrs: AttributeClass[]): TypedGroupByQuery<Row>;
+    groupBy(...attrs: QueryGroupField[]): TypedGroupByQuery<Row>;
 }
 /**
  * Grouped-aggregate query produced by `TypedQuery.groupBy(...)`. `aggregate(...)`
@@ -103,7 +106,7 @@ export declare class TypedQuery<T, Row> {
  */
 export declare class TypedGroupByQuery<Row> {
     #private;
-    constructor(manager: DynamicManagerLike<Row>, exprs: DynamicExpr[], groupAttrs: AttributeClass[]);
+    constructor(manager: DynamicManagerLike<Row>, exprs: DynamicExpr[], groupAttrs: QueryGroupField[]);
     aggregate(...aggregates: AggregateSpec[]): Record<string, unknown>[];
 }
 export {};

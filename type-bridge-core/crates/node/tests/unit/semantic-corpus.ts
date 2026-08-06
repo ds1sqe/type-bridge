@@ -27,15 +27,15 @@ const results = JSON.parse(
   fixture_id: string;
   expected: Readonly<Record<string, unknown>>;
 }>;
-const live = JSON.parse(
+const generatedProjection = JSON.parse(
   fs.readFileSync(
     path.join(
       repositoryRoot,
-      "tests/integration/parity/fixtures/typed-query/contract.json",
+      "tests/contracts/typed_query/generated-operation-projection-v1.json",
     ),
     "utf8",
   ),
-) as Readonly<{ semantic_corpus_projection: Readonly<Record<string, unknown>> }>;
+) as Readonly<Record<string, unknown>>;
 
 const errors = new Map(
   corpus.cases
@@ -54,7 +54,7 @@ export function corpusError(caseId: string): readonly [string, string] {
 
 export function assertLiveProjectionMatchesManifest(): void {
   const expected = results.expected;
-  assert.deepEqual(live.semantic_corpus_projection, {
+  assert.deepEqual(generatedProjection, {
     source_fixture: results.fixture_id,
     distinct_roots: expected.distinct_roots,
     page_by_person_offset_0_limit_1: expected.page_by_person_offset_0_limit_1,

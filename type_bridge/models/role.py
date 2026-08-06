@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, TypeVar, overload
+from typing import TYPE_CHECKING, Any, Self, TypeVar, overload
 
 from pydantic import GetCoreSchemaHandler
 from pydantic_core import CoreSchema
 
-from type_bridge.attribute.flags import Card
+from type_bridge.attribute.flags import _QueryCard as Card
 from type_bridge.validation import validate_type_name as validate_reserved_word
 
 if TYPE_CHECKING:
-    from type_bridge.fields.role import RoleRef
-    from type_bridge.models.base import TypeDBType
+    from type_bridge.fields.role import _QueryRoleRef as RoleRef
+    from type_bridge.models.base import _QueryTypeDBType as TypeDBType
 
 T_RelationOwner = TypeVar("T_RelationOwner", bound="TypeDBType")
 
@@ -215,7 +215,12 @@ class Role[T: "TypeDBType"]:
         When accessed from an instance, returns the entity playing the role.
         """
         if obj is None:
-            from type_bridge.fields.role import RoleRef, _mark_typed_query_role_reference
+            from type_bridge.fields.role import (
+                _mark_typed_query_role_reference,
+            )
+            from type_bridge.fields.role import (
+                _QueryRoleRef as RoleRef,
+            )
 
             return _mark_typed_query_role_reference(
                 RoleRef(
@@ -285,7 +290,7 @@ class Role[T: "TypeDBType"]:
         abstract: bool = False,
         ordered: bool = False,
         distinct: bool = False,
-    ) -> Role[T]:
+    ) -> Self:
         """Define a role playable by multiple entity types.
 
         Args:
@@ -387,3 +392,7 @@ class Role[T: "TypeDBType"]:
                 return value
 
         return core_schema.no_info_plain_validator_function(validate_role_player)
+
+
+_QueryRole = Role
+del Role

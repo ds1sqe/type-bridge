@@ -1,5 +1,7 @@
 """Pytest fixtures for integration tests."""
 
+import os
+
 import pytest
 
 from tests.utils.typedb_lifecycle import (
@@ -10,6 +12,17 @@ from tests.utils.typedb_lifecycle import (
     stop_typedb_container,
 )
 from type_bridge import Credentials, Database, TypeDB, create_driver_options
+
+
+def _database(database: str) -> Database:
+    tls_root_ca = os.getenv("TYPEDB_TLS_ROOT_CA")
+    return Database(
+        address=TEST_DB_ADDRESS,
+        database=database,
+        http_port=TEST_DB_HTTP_PORT,
+        tls=True if tls_root_ca is not None else None,
+        tls_root_ca=tls_root_ca,
+    )
 
 
 @pytest.fixture(scope="session")
@@ -65,11 +78,7 @@ def test_database(docker_typedb):
     Yields:
         Database name (str)
     """
-    database = Database(
-        address=TEST_DB_ADDRESS,
-        database=TEST_DB_NAME,
-        http_port=TEST_DB_HTTP_PORT,
-    )
+    database = _database(TEST_DB_NAME)
     try:
         database.connect()
 
@@ -97,9 +106,7 @@ def db(test_database):
     Yields:
         Database instance
     """
-    database = Database(
-        address=TEST_DB_ADDRESS, database=test_database, http_port=TEST_DB_HTTP_PORT
-    )
+    database = _database(test_database)
     database.connect()
     yield database
     database.close()
@@ -120,9 +127,7 @@ def clean_db(docker_typedb, test_database):
     Yields:
         Database instance with clean state
     """
-    database = Database(
-        address=TEST_DB_ADDRESS, database=test_database, http_port=TEST_DB_HTTP_PORT
-    )
+    database = _database(test_database)
     try:
         database.connect()
         if database.database_exists():
@@ -131,60 +136,3 @@ def clean_db(docker_typedb, test_database):
         yield database
     finally:
         database.close()
-
-
-@pytest.fixture(scope="function")
-def db_with_schema(clean_db):
-    """Provide a database with a basic schema already defined.
-
-    This fixture is useful for tests that need a schema but don't test schema creation.
-
-    Args:
-        clean_db: Clean database fixture
-
-    Yields:
-        Database instance with basic schema
-    """
-    from type_bridge import (
-        Entity,
-        Flag,
-        Integer,
-        Key,
-        Relation,
-        Role,
-        SchemaManager,
-        String,
-        TypeFlags,
-    )
-
-    # Define basic test schema
-    class Name(String):
-        pass
-
-    class Age(Integer):
-        pass
-
-    class Person(Entity):
-        flags = TypeFlags(name="person")
-        name: Name = Flag(Key)
-        age: Age | None
-
-    class Company(Entity):
-        flags = TypeFlags(name="company")
-        name: Name = Flag(Key)
-
-    class Position(String):
-        pass
-
-    class Employment(Relation):
-        flags = TypeFlags(name="employment")
-        employee: Role[Person] = Role("employee", Person)
-        employer: Role[Company] = Role("employer", Company)
-        position: Position
-
-    # Create schema
-    schema_manager = SchemaManager(clean_db)
-    schema_manager.register(Person, Company, Employment)
-    schema_manager.sync_schema(force=True)
-
-    yield clean_db

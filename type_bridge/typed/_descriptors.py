@@ -9,19 +9,25 @@ from __future__ import annotations
 
 from typing import Protocol, overload
 
-from type_bridge.attribute.base import Attribute
-from type_bridge.attribute.date import Date
-from type_bridge.attribute.datetime import DateTime
-from type_bridge.attribute.datetimetz import DateTimeTZ
+from type_bridge.attribute.base import _QueryAttribute as Attribute
+from type_bridge.attribute.date import _QueryDate as Date
+from type_bridge.attribute.datetime import _QueryDateTime as DateTime
+from type_bridge.attribute.datetimetz import _QueryDateTimeTZ as DateTimeTZ
 from type_bridge.attribute.numeric import NumericAttribute
-from type_bridge.attribute.string import String
+from type_bridge.attribute.string import _QueryString as String
 from type_bridge.fields.base import (
-    FieldRef,
-    NumericFieldRef,
-    OrderedFieldRef,
-    StringFieldRef,
+    _QueryFieldRef as FieldRef,
 )
-from type_bridge.models.base import TypeDBType
+from type_bridge.fields.base import (
+    _QueryNumericFieldRef as NumericFieldRef,
+)
+from type_bridge.fields.base import (
+    _QueryOrderedFieldRef as OrderedFieldRef,
+)
+from type_bridge.fields.base import (
+    _QueryStringFieldRef as StringFieldRef,
+)
+from type_bridge.models.base import _QueryTypeDBType as TypeDBType
 
 
 class GeneratedFieldDescriptor[

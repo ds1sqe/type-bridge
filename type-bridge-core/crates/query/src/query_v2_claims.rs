@@ -572,6 +572,19 @@ fn validate_compatibility_pattern(
             validate_field_reference(left, hydration, targets, schema)?;
             validate_field_reference(right, hydration, targets, schema)
         }
+        QueryPatternV2::FieldPresence { field, .. } => {
+            validate_field_reference(field, hydration, targets, schema)
+        }
+        QueryPatternV2::BindingIid { binding, .. } => {
+            if targets.contains_key(binding) {
+                Ok(())
+            } else {
+                Err(claim_failure(
+                    "query_plan_v2_iid_binding_claim",
+                    "a compatibility IID predicate lacks a native binding target",
+                ))
+            }
+        }
         QueryPatternV2::RoleEdge {
             include_relation_subtypes,
             player,

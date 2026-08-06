@@ -4,17 +4,23 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use type_bridge_contract::id::{TypeId, TypeKind};
-use type_bridge_contract::projection::{ModelProjection, RuntimeProjection};
-use type_bridge_contract::value::{Cardinality, ValueTypeTag};
+use type_bridge_contract::projection::{ModelProjection, ProjectedAnnotation, RuntimeProjection};
+use type_bridge_contract::schema::SchemaAnnotationValue;
+use type_bridge_contract::temporal::{
+    CanonicalDate, CanonicalDateTime, CanonicalDateTimeTz, CanonicalDuration,
+};
+use type_bridge_contract::value::{
+    CanonicalDouble, CanonicalString, CanonicalValue, Cardinality, DecimalValue, ValueTypeTag,
+};
 
-use crate::attribute::ValueType;
-use crate::descriptor::{
+use crate::_attribute::ValueType;
+use crate::_descriptor::{
     EntityDescriptor, OwnedAttributeDescriptor, RelationDescriptor, RoleDescriptor, TypeDescriptor,
 };
-use crate::dynamic::DynamicAttributeMap;
-use crate::entity::Annotation;
+use crate::_dynamic::DynamicAttributeMap;
+use crate::_entity::Annotation;
+use crate::_registry::DescriptorRegistry;
 use crate::error::{OrmError, Result};
-use crate::registry::DescriptorRegistry;
 use crate::value::AttributeValue;
 
 /// One package-scoped trusted projection and its provider-facing descriptors.
@@ -136,6 +142,177 @@ impl InstalledRuntimeProjection {
             TypeDescriptor::Relation(descriptor) => &descriptor.owned_attributes,
         };
         decode_role_player_attributes(id, descriptors, values)
+    }
+
+    /// Validate one generated attribute scalar against its effective value annotations.
+    pub fn validate_attribute_value(&self, id: &TypeId, value: &AttributeValue) -> Result<()> {
+        let model = self.projection.models().get(id).ok_or_else(|| {
+            OrmError::DescriptorNotFound(format!(
+                "{}:{}",
+                kind_name(id.kind()),
+                id.label().as_str()
+            ))
+        })?;
+        if id.kind() != TypeKind::Attribute {
+            return Err(descriptor_error(
+                id,
+                "generated scalar validation requires an attribute type",
+            ));
+        }
+        let annotations = model.declaration().value_annotations();
+        if !annotations
+            .values()
+            .any(|annotation| is_value_constraint(annotation.value()))
+        {
+            return Ok(());
+        }
+        let canonical = canonical_attribute_value(value)
+            .map_err(|code| projected_value_error(id, "value", code))?;
+        validate_projected_annotations(id, "value", &canonical, annotations.values())
+    }
+
+    /// Validate one generated owned-field scalar against attribute and ownership constraints.
+    pub fn validate_field_value(
+        &self,
+        id: &TypeId,
+        target_name: &str,
+        value: &AttributeValue,
+    ) -> Result<()> {
+        let model = self.projection.models().get(id).ok_or_else(|| {
+            OrmError::DescriptorNotFound(format!(
+                "{}:{}",
+                kind_name(id.kind()),
+                id.label().as_str()
+            ))
+        })?;
+        let field = model
+            .query_tokens()
+            .fields()
+            .values()
+            .find(|field| field.target_name().as_str() == target_name)
+            .ok_or_else(|| {
+                descriptor_error(id, "generated value references an unknown projected field")
+            })?;
+        let attribute_id =
+            TypeId::new(TypeKind::Attribute, field.id().attribute().label().as_str())
+                .map_err(contract_error)?;
+        self.validate_attribute_value(&attribute_id, value)?;
+        if !field
+            .annotations()
+            .values()
+            .any(|annotation| is_value_constraint(annotation.value()))
+        {
+            return Ok(());
+        }
+        let canonical = canonical_attribute_value(value)
+            .map_err(|code| projected_value_error(id, target_name, code))?;
+        validate_projected_annotations(id, target_name, &canonical, field.annotations().values())
+    }
+}
+
+const fn is_value_constraint(value: &SchemaAnnotationValue) -> bool {
+    matches!(
+        value,
+        SchemaAnnotationValue::Regex(_)
+            | SchemaAnnotationValue::Range(_)
+            | SchemaAnnotationValue::Values(_)
+    )
+}
+
+fn validate_projected_annotations<'a>(
+    id: &TypeId,
+    path: &str,
+    value: &CanonicalValue,
+    annotations: impl IntoIterator<Item = &'a ProjectedAnnotation>,
+) -> Result<()> {
+    for annotation in annotations {
+        match annotation.value() {
+            SchemaAnnotationValue::Regex(pattern) => {
+                let CanonicalValue::String(text) = value else {
+                    return Err(projected_value_error(id, path, "wrong_scalar_domain"));
+                };
+                let expression = regex::Regex::new(pattern.as_str())
+                    .map_err(|_| projected_value_error(id, path, "invalid_regex_pattern"))?;
+                if !expression.is_match(text.as_str()) {
+                    return Err(projected_value_error(id, path, "regex_violation"));
+                }
+            }
+            SchemaAnnotationValue::Range(range) => {
+                if let Some(lower) = range.lower() {
+                    let ordering = value
+                        .semantic_cmp_same_domain(lower)
+                        .ok_or_else(|| projected_value_error(id, path, "wrong_scalar_domain"))?;
+                    if ordering == std::cmp::Ordering::Less {
+                        return Err(projected_value_error(id, path, "range_violation"));
+                    }
+                }
+                if let Some(upper) = range.upper() {
+                    let ordering = value
+                        .semantic_cmp_same_domain(upper)
+                        .ok_or_else(|| projected_value_error(id, path, "wrong_scalar_domain"))?;
+                    if ordering == std::cmp::Ordering::Greater {
+                        return Err(projected_value_error(id, path, "range_violation"));
+                    }
+                }
+            }
+            SchemaAnnotationValue::Values(allowed) => {
+                let accepted = allowed.iter().any(|candidate| {
+                    value.semantic_cmp_same_domain(candidate) == Some(std::cmp::Ordering::Equal)
+                        || value == candidate
+                });
+                if !accepted {
+                    return Err(projected_value_error(id, path, "values_violation"));
+                }
+            }
+            SchemaAnnotationValue::Presence
+            | SchemaAnnotationValue::Cardinality(_)
+            | SchemaAnnotationValue::Doc(_)
+            | SchemaAnnotationValue::Meta(_) => {}
+        }
+    }
+    Ok(())
+}
+
+fn canonical_attribute_value(
+    value: &AttributeValue,
+) -> std::result::Result<CanonicalValue, &'static str> {
+    match value {
+        AttributeValue::String(value) => CanonicalString::new(value.clone())
+            .map(CanonicalValue::String)
+            .map_err(|_| "wrong_scalar_domain"),
+        AttributeValue::Long(value) => Ok(CanonicalValue::Long(*value)),
+        AttributeValue::Double(value) => CanonicalDouble::new(*value)
+            .map(CanonicalValue::Double)
+            .map_err(|_| "wrong_scalar_domain"),
+        AttributeValue::Boolean(value) => Ok(CanonicalValue::Boolean(*value)),
+        AttributeValue::Date(value) => value
+            .parse::<CanonicalDate>()
+            .map(CanonicalValue::Date)
+            .map_err(|_| "wrong_scalar_domain"),
+        AttributeValue::DateTime(value) => value
+            .parse::<CanonicalDateTime>()
+            .map(CanonicalValue::DateTime)
+            .map_err(|_| "wrong_scalar_domain"),
+        AttributeValue::DateTimeTZ(value) => value
+            .strip_suffix("+00:00")
+            .map_or_else(|| value.clone(), |local| format!("{local}Z"))
+            .parse::<CanonicalDateTimeTz>()
+            .map(CanonicalValue::DateTimeTz)
+            .map_err(|_| "wrong_scalar_domain"),
+        AttributeValue::Decimal(value) => DecimalValue::new(value)
+            .map(CanonicalValue::Decimal)
+            .map_err(|_| "wrong_scalar_domain"),
+        AttributeValue::Duration(value) => value
+            .parse::<CanonicalDuration>()
+            .map(CanonicalValue::Duration)
+            .map_err(|_| "wrong_scalar_domain"),
+    }
+}
+
+fn projected_value_error(id: &TypeId, path: &str, code: &str) -> OrmError {
+    OrmError::DescriptorValidation {
+        type_name: id.label().as_str().to_owned(),
+        message: format!("{code} at {path}"),
     }
 }
 

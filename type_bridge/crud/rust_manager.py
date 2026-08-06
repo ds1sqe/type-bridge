@@ -18,10 +18,11 @@ from type_bridge._rust_runtime import (
     rust_value_type,
 )
 from type_bridge.crud.hooks import CrudEvent, HookRunner
-from type_bridge.models import Entity, Relation
+from type_bridge.models.entity import _QueryEntity as Entity
+from type_bridge.models.relation import _QueryRelation as Relation
 
 if TYPE_CHECKING:
-    from type_bridge.models.base import TypeDBType
+    from type_bridge.models.base import _QueryTypeDBType as TypeDBType
     from type_bridge.session import Connection
 
 
@@ -291,7 +292,7 @@ class RustTypeDBManager[T: "TypeDBType"]:
 
     def _hydrate_entity(self, row: dict[str, Any]) -> T:
         from type_bridge.crud.role_players import resolve_entity_class_from_label
-        from type_bridge.models.registry import ModelRegistry
+        from type_bridge.models.registry import _QueryModelRegistry as ModelRegistry
 
         row = dict(row)
         iid = row.pop("_iid", None)
@@ -447,8 +448,12 @@ class RustTypeDBManager[T: "TypeDBType"]:
         _execute_write_query(self._connection, query)
 
 
+_QueryRustTypeDBManager = RustTypeDBManager
+del RustTypeDBManager
+
+
 class _RustQueryManager[T: "TypeDBType"](Protocol):
-    """Structural manager surface consumed by legacy query objects."""
+    """Structural manager surface consumed by retained V1 query objects."""
 
     @property
     def model_class(self) -> type[T]: ...
@@ -941,7 +946,7 @@ def _relation_filter_expressions(
 ) -> list[Any]:
     from type_bridge.crud.role_lookup import parse_role_lookup_filters
     from type_bridge.expressions import IidExpr
-    from type_bridge.models import Relation
+    from type_bridge.models.relation import _QueryRelation as Relation
 
     expressions: list[Any] = []
     relation_filters: dict[str, Any] = {}

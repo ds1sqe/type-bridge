@@ -127,7 +127,7 @@ fn relation_authority_returns_exact_relation_identity_and_descriptor() {
 }
 
 fn assert_model_error(
-    result: crate::Result<(TypeId, type_bridge_orm::RelationDescriptor)>,
+    result: crate::Result<(TypeId, type_bridge_orm::_descriptor::RelationDescriptor)>,
     phase: ModelValidationPhase,
     code: &str,
 ) {

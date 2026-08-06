@@ -58,14 +58,67 @@ REQUIRED_RUNTIME_MEMBERS = frozenset(
         "dist/index.js",
         "dist/native.d.ts",
         "dist/native.js",
-        "dist/typed/index.d.ts",
-        "dist/typed/index.js",
+        "dist/owned-bytes.d.ts",
+        "dist/owned-bytes.js",
+        "dist/public.d.ts",
+        "dist/public.js",
+        "dist/query-v2-internals.d.ts",
+        "dist/query-v2-internals.js",
+        "dist/query-v2.d.ts",
+        "dist/query-v2.js",
+        "dist/query.d.ts",
+        "dist/query.js",
+        "dist/runtime-handles.d.ts",
+        "dist/runtime-handles.js",
+        "dist/runtime-projection.d.ts",
+        "dist/runtime-projection.js",
         "package.json",
         README,
         THIRD_PARTY_NOTICE,
     }
 )
-FORBIDDEN_RUNTIME_PREFIXES = ("dist/typescript/",)
+FORBIDDEN_RUNTIME_PREFIXES = (
+    "dist/generator/",
+    "dist/typed/",
+    "dist/typescript/",
+)
+FORBIDDEN_RUNTIME_MEMBERS = frozenset(
+    {
+        "dist/attribute.d.ts",
+        "dist/attribute.js",
+        "dist/codec.d.ts",
+        "dist/codec.js",
+        "dist/flags.d.ts",
+        "dist/flags.js",
+        "dist/iid.d.ts",
+        "dist/iid.js",
+        "dist/manager.d.ts",
+        "dist/manager.js",
+        "dist/model.d.ts",
+        "dist/model.js",
+        "dist/parser.d.ts",
+        "dist/parser.js",
+    }
+)
+EXPECTED_MAIN = "dist/public.js"
+EXPECTED_TYPES = "dist/public.d.ts"
+EXPECTED_EXPORTS = {
+    ".": {
+        "types": "./dist/public.d.ts",
+        "require": "./dist/public.js",
+        "default": "./dist/public.js",
+    },
+    "./query-v2": {
+        "types": "./dist/query-v2.d.ts",
+        "require": "./dist/query-v2.js",
+        "default": "./dist/query-v2.js",
+    },
+    "./runtime-projection": {
+        "types": "./dist/runtime-projection.d.ts",
+        "require": "./dist/runtime-projection.js",
+        "default": "./dist/runtime-projection.js",
+    },
+}
 
 
 def read_json_file(path: Path, *, label: str) -> dict[str, Any]:
@@ -179,7 +232,8 @@ def validate_runtime_inventory(artifact: Path, regular_files: frozenset[str]) ->
     stale_runtime = sorted(
         name
         for name in regular_files
-        if any(name.startswith(prefix) for prefix in FORBIDDEN_RUNTIME_PREFIXES)
+        if name in FORBIDDEN_RUNTIME_MEMBERS
+        or any(name.startswith(prefix) for prefix in FORBIDDEN_RUNTIME_PREFIXES)
     )
     if stale_runtime:
         raise ValidationError(
@@ -274,6 +328,16 @@ def validate_package_contract(package: dict[str, Any], *, label: str) -> None:
             f"{label} files contract disagrees: "
             f"actual={raw_files!r}, expected={sorted(EXPECTED_PACKAGE_FILES)!r}"
         )
+    for field, expected in (
+        ("main", EXPECTED_MAIN),
+        ("types", EXPECTED_TYPES),
+        ("exports", EXPECTED_EXPORTS),
+    ):
+        actual = package.get(field)
+        if actual != expected:
+            raise ValidationError(
+                f"{label} {field} contract disagrees: actual={actual!r}, expected={expected!r}"
+            )
 
 
 def read_repository_member(repository_package: Path, name: str) -> bytes:

@@ -9,9 +9,9 @@ from pydantic_core import core_schema
 from type_bridge.validation import validate_type_name as validate_reserved_word
 
 if TYPE_CHECKING:
-    from type_bridge.attribute.flags import TypeNameCase
+    from type_bridge.attribute.flags import _QueryTypeNameCase as TypeNameCase
     from type_bridge.expressions import AggregateExpr, ComparisonExpr, Expression
-    from type_bridge.models.base import TypeDBType
+    from type_bridge.models.base import _QueryTypeDBType as TypeDBType
 
 # TypeDB built-in type names that cannot be used for attributes
 TYPEDB_BUILTIN_TYPES = {"thing", "entity", "relation", "attribute"}
@@ -107,8 +107,12 @@ class Attribute(ABC):
 
         # Import here to avoid circular dependency
         from type_bridge.attribute.flags import (
-            AttributeFlags,
-            TypeNameCase,
+            _QueryAttributeFlags as AttributeFlags,
+        )
+        from type_bridge.attribute.flags import (
+            _QueryTypeNameCase as TypeNameCase,
+        )
+        from type_bridge.attribute.flags import (
             format_type_name,
         )
 
@@ -173,7 +177,7 @@ class Attribute(ABC):
             Age(20) == 20       # False (not equal to raw value!)
             Age(20).value == 20 # True (access raw value explicitly)
         """
-        if isinstance(other, Attribute):
+        if isinstance(other, _QueryAttribute):
             # Compare two attribute instances: both type and value must match
             return type(self) is type(other) and self._value == other._value
         # Do not compare with non-Attribute objects (strict type safety)
@@ -221,7 +225,7 @@ class Attribute(ABC):
             Set of model classes that define this attribute as a field.
             Does not require a database connection (static discovery).
         """
-        from type_bridge.models.registry import ModelRegistry
+        from type_bridge.models.registry import _QueryModelRegistry as ModelRegistry
 
         return ModelRegistry.get_attribute_owners(cls)
 
@@ -315,7 +319,7 @@ class Attribute(ABC):
     # ========================================================================
 
     @classmethod
-    def gt(cls, value: "Attribute") -> "ComparisonExpr":
+    def gt(cls, value: Self) -> "ComparisonExpr":
         """Create greater-than comparison expression.
 
         Args:
@@ -332,7 +336,7 @@ class Attribute(ABC):
         return ComparisonExpr(attr_type=cls, operator=">", value=value)
 
     @classmethod
-    def lt(cls, value: "Attribute") -> "ComparisonExpr":
+    def lt(cls, value: Self) -> "ComparisonExpr":
         """Create less-than comparison expression.
 
         Args:
@@ -349,7 +353,7 @@ class Attribute(ABC):
         return ComparisonExpr(attr_type=cls, operator="<", value=value)
 
     @classmethod
-    def gte(cls, value: "Attribute") -> "ComparisonExpr":
+    def gte(cls, value: Self) -> "ComparisonExpr":
         """Create greater-than-or-equal comparison expression.
 
         Args:
@@ -366,7 +370,7 @@ class Attribute(ABC):
         return ComparisonExpr(attr_type=cls, operator=">=", value=value)
 
     @classmethod
-    def lte(cls, value: "Attribute") -> "ComparisonExpr":
+    def lte(cls, value: Self) -> "ComparisonExpr":
         """Create less-than-or-equal comparison expression.
 
         Args:
@@ -383,7 +387,7 @@ class Attribute(ABC):
         return ComparisonExpr(attr_type=cls, operator="<=", value=value)
 
     @classmethod
-    def eq(cls, value: "Attribute") -> "ComparisonExpr":
+    def eq(cls, value: Self) -> "ComparisonExpr":
         """Create equality comparison expression.
 
         Args:
@@ -400,7 +404,7 @@ class Attribute(ABC):
         return ComparisonExpr(attr_type=cls, operator="==", value=value)
 
     @classmethod
-    def neq(cls, value: "Attribute") -> "ComparisonExpr":
+    def neq(cls, value: Self) -> "ComparisonExpr":
         """Create not-equal comparison expression.
 
         Args:
@@ -678,3 +682,7 @@ class Attribute(ABC):
             return AttributeExistsExpr(cls, present=not value)
 
         raise ValueError(f"Unsupported lookup operator '{lookup}' for {cls.__name__}")
+
+
+_QueryAttribute = Attribute
+del Attribute

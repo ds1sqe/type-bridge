@@ -4,11 +4,9 @@ use std::env;
 use std::process;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use type_bridge_orm::*;
+use type_bridge_orm::Database;
 
 use super::typedb::{connect_options_from_env, ensure_database_exists};
-
-type_bridge_orm::include_schema!("tests/test_schema.tql");
 
 static NEXT_LABEL_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -54,26 +52,6 @@ pub async fn setup_db() -> Database {
 pub fn server_supports_v2_conformance(db: &Database) -> bool {
     db.server_version()
         .is_some_and(|version| version.major > 3 || (version.major == 3 && version.minor >= 12))
-}
-
-pub async fn sync_person_schema(db: &Database) {
-    let mut schema = SchemaManager::new(db);
-    schema.register_entity::<Person>();
-    schema
-        .sync_schema(true, false)
-        .await
-        .expect("person schema sync failed");
-}
-
-pub async fn sync_full_schema(db: &Database) {
-    let mut schema = SchemaManager::new(db);
-    schema.register_entity::<Person>();
-    schema.register_entity::<Company>();
-    schema.register_relation::<Employment>();
-    schema
-        .sync_schema(true, false)
-        .await
-        .expect("schema sync failed");
 }
 
 pub fn unique_label(prefix: &str) -> String {

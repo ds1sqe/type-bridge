@@ -8,9 +8,10 @@ use std::sync::Arc;
 
 use type_bridge_contract::query_remote::RemoteCapabilities;
 use type_bridge_contract::query_remote_v2::RemoteLimitsV2;
+use type_bridge_orm::_registry::DescriptorRegistry;
 use type_bridge_orm::query_v2_prepared::QueryAuthority;
 use type_bridge_orm::{
-    DescriptorRegistry, InstalledRuntimeProjection, RemoteModelQueryV2Error, ValidatedMatchRequest,
+    InstalledRuntimeProjection, RemoteModelQueryV2Error, ValidatedMatchRequest,
     ValidatedMatchResult, prepare_remote_model_query_v2,
 };
 
@@ -269,7 +270,7 @@ mod tests {
 
     use type_bridge_contract::codec::to_canonical_json;
     use type_bridge_contract::diagnostic::{
-        Diagnostic, DiagnosticCategory, DiagnosticCode, DiagnosticPathSegment,
+        Diagnostic, DiagnosticCategory, DiagnosticCode, DiagnosticPath, DiagnosticPathSegment,
     };
     use type_bridge_contract::fingerprint::SemanticProfileId;
     use type_bridge_contract::migration_assertion::BindingId;
@@ -277,8 +278,8 @@ mod tests {
     use type_bridge_contract::query_plan::query_plan_v2_capability_vocabulary;
     use type_bridge_contract::query_remote::RemoteExecutorBinding;
     use type_bridge_contract::query_remote_v2::{
-        HydrationGraphV2, RemoteOutcomeV2, RemoteQueryRequestV2, RemoteQueryResponseV2,
-        RemoteResultKindV2, query_remote_v2_required_capabilities,
+        HydrationGraphV2, RemoteOutcomeV2, RemoteQueryFailureV2, RemoteQueryRequestV2,
+        RemoteQueryResponseV2, RemoteResultKindV2, query_remote_v2_required_capabilities,
     };
     use type_bridge_contract::schema::{DocumentId, encode_declared_schema};
     use type_bridge_orm::OrmError;
@@ -298,6 +299,7 @@ mod tests {
     impl sealed::Sealed for TestSchema {}
     impl Schema for TestSchema {}
 
+    #[derive(Debug)]
     struct Person;
     impl sealed::Sealed for Person {}
     impl Model for Person {
@@ -326,6 +328,7 @@ mod tests {
         }
     }
 
+    #[derive(Clone)]
     struct PersonCreate;
     impl sealed::Sealed for PersonCreate {}
     impl IntoEncodedCreate for PersonCreate {
@@ -410,6 +413,7 @@ mod tests {
         advertisement: Vec<u8>,
         capabilities: Arc<Mutex<usize>>,
         exchanges: Arc<Mutex<Vec<Vec<u8>>>>,
+        failure: Option<Diagnostic>,
         signer: RemoteReplySigningKey,
     }
 
@@ -430,6 +434,20 @@ mod tests {
                 request
                     .validate_advertisement(&self.advertisement_contract)
                     .map_err(remote_diagnostic)?;
+                if let Some(diagnostic) = &self.failure {
+                    return RemoteQueryFailureV2::bound(
+                        request.nonce(),
+                        &request.fingerprint().map_err(remote_diagnostic)?,
+                        diagnostic,
+                    )
+                    .and_then(|failure| {
+                        failure.encode_signed(
+                            &self.advertisement_contract.fingerprint()?,
+                            &self.signer,
+                        )
+                    })
+                    .map_err(remote_diagnostic);
+                }
                 let plan = request.plan().map_err(remote_diagnostic)?;
                 let root = BindingId::new(0).map_err(remote_diagnostic)?;
                 let outcome = match request.result_kind() {
@@ -495,6 +513,7 @@ mod tests {
             advertisement,
             capabilities: Arc::clone(&capability_calls),
             exchanges: Arc::clone(&exchanges),
+            failure: None,
             signer,
         };
         let options = RemoteConnectionOptions::new(
@@ -544,5 +563,103 @@ mod tests {
                 .unwrap()
                 .contains("\"format\":\"typebridge.query-remote-request/v2\"")
         );
+    }
+
+    #[tokio::test]
+    async fn generated_remote_query_preserves_complete_authenticated_structured_diagnostic() {
+        let signer = RemoteReplySigningKey::from_secret_bytes([0x42; 32]);
+        let mut capabilities = query_plan_v2_capability_vocabulary();
+        for capability in query_remote_v2_required_capabilities(true) {
+            capabilities.insert(capability);
+        }
+        let advertisement_contract = RemoteCapabilities::new(
+            capabilities,
+            RemoteExecutorBinding::new("rust-generated-acceptance", "epoch-00000000002").unwrap(),
+            signer.public_key(),
+        );
+        let advertisement = advertisement_contract.encode().unwrap();
+        let capability_calls = Arc::new(Mutex::new(0));
+        let exchanges = Arc::new(Mutex::new(Vec::new()));
+        let diagnostic = Diagnostic::new(
+            DiagnosticCategory::InvalidContract,
+            DiagnosticCode::new("remote_application_failure").unwrap(),
+            "the remote application rejected this query",
+        )
+        .with_path(DiagnosticPath::from_segments([
+            DiagnosticPathSegment::Field("plan".into()),
+            DiagnosticPathSegment::Index(0),
+            DiagnosticPathSegment::Identifier("person".into()),
+        ]))
+        .with_detail("attempt", 7_i64)
+        .with_detail("expected", vec!["person".to_owned(), "employee".to_owned()])
+        .with_detail("retryable", false)
+        .with_detail("subject", "person");
+        let transport = Transport {
+            advertisement_contract,
+            advertisement,
+            capabilities: Arc::clone(&capability_calls),
+            exchanges: Arc::clone(&exchanges),
+            failure: Some(diagnostic),
+            signer,
+        };
+        let options = RemoteConnectionOptions::new(
+            "rust-generated-acceptance",
+            "typedb-3.12.1/v1",
+            RemoteQueryLimits::new(10, 1 << 20, 10, 100, 100, 100),
+            transport,
+        );
+        let remote = RemoteDatabase::connect(options)
+            .await
+            .unwrap()
+            .with_schema(package())
+            .unwrap();
+        let mut session = remote.query().unwrap();
+        let person = session.exact::<Person>().unwrap();
+        let error = session
+            .query(person)
+            .unwrap()
+            .one()
+            .await
+            .expect_err("generated query must return the authenticated application failure");
+
+        assert_eq!(error.category(), crate::ErrorCategory::Remote);
+        assert_eq!(error.code(), Some("remote_application_failure"));
+        assert_eq!(
+            error.message(),
+            "the remote application rejected this query"
+        );
+        assert_eq!(
+            error.path(),
+            Some(&["plan".to_owned(), "[0]".to_owned(), "person".to_owned()][..])
+        );
+        assert_eq!(
+            error.diagnostic_path(),
+            Some(
+                &[
+                    crate::ErrorPathSegment::Field("plan".into()),
+                    crate::ErrorPathSegment::Index(0),
+                    crate::ErrorPathSegment::Identifier("person".into()),
+                ][..]
+            )
+        );
+        let details = error.details().expect("authenticated diagnostic details");
+        assert_eq!(details.get("attempt"), Some(&crate::ErrorDetail::Long(7)));
+        assert_eq!(
+            details.get("expected"),
+            Some(&crate::ErrorDetail::TextList(vec![
+                "person".to_owned(),
+                "employee".to_owned(),
+            ]))
+        );
+        assert_eq!(
+            details.get("retryable"),
+            Some(&crate::ErrorDetail::Boolean(false))
+        );
+        assert_eq!(
+            details.get("subject"),
+            Some(&crate::ErrorDetail::Text("person".to_owned()))
+        );
+        assert_eq!(*capability_calls.lock().unwrap(), 1);
+        assert_eq!(exchanges.lock().unwrap().len(), 1);
     }
 }

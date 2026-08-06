@@ -274,12 +274,17 @@ fn render_model_shell(
     for token in model.query_tokens().roles().values() {
         let role = identity_literal!(token.role());
         let players = logical_player_union(projection, token.accepted_players(), "")?;
+        let subtype_roots = logical_player_union(
+            projection,
+            &compatible_subtype_roots(projection, token.accepted_players())?,
+            "",
+        )?;
         if let Some(documentation) = documentation_annotation(token.annotations()) {
             render_indented_jsdoc(output, "  ", documentation);
         }
         let _ = writeln!(
             output,
-            "  readonly {}: RoleToken<{id}, {role}, {players}>;",
+            "  readonly {}: RoleToken<{id}, {role}, {players}, {subtype_roots}>;",
             token.target_name().as_str()
         );
     }
@@ -373,6 +378,11 @@ fn render_model_link(
     for token in model.query_tokens().roles().values() {
         let role = identity_literal!(token.role());
         let players = logical_player_union(projection, token.accepted_players(), "")?;
+        let subtype_roots = logical_player_union(
+            projection,
+            &compatible_subtype_roots(projection, token.accepted_players())?,
+            "",
+        )?;
         let accepted = token
             .accepted_players()
             .iter()
@@ -382,7 +392,7 @@ fn render_model_link(
         let metadata = canonical_text!(token);
         let _ = writeln!(
             output,
-            "    {}: defineRoleToken<{id}, {role}, {players}>({{",
+            "    {}: defineRoleToken<{id}, {role}, {players}, {subtype_roots}>({{",
             token.target_name().as_str()
         );
         let _ = writeln!(output, "      owner: {id},");
@@ -763,6 +773,22 @@ fn logical_player_union(
         })
         .collect::<Result<Vec<_>, _>>()
         .map(|values| values.join(" | "))
+}
+
+fn compatible_subtype_roots(
+    projection: &RuntimeProjection,
+    accepted_players: &BTreeSet<TypeId>,
+) -> Result<BTreeSet<TypeId>, Diagnostic> {
+    let mut roots = BTreeSet::new();
+    for player in accepted_players {
+        let projected = projection
+            .models()
+            .get(player)
+            .ok_or_else(|| facet_error("role token references an absent player model"))?;
+        roots.insert(player.clone());
+        roots.extend(projected.complete_read().nominal_upcasts().iter().cloned());
+    }
+    Ok(roots)
 }
 
 fn model_use_literal(value: &ProjectedModelUse) -> Result<String, Diagnostic> {

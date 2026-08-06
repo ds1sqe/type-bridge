@@ -22,7 +22,8 @@ def test_live_ci_matrix_covers_every_ordinary_integration_group() -> None:
         if directory.is_dir()
         and not directory.name.startswith("__")
         and directory.name not in dedicated
+        and any(directory.glob("test_*.py"))
     }
 
     assert configured == ordinary
-    assert {"session", "generator", "validation"} <= configured
+    assert {"queries", "schema", "expressions", "session"} == configured

@@ -199,8 +199,9 @@ fn generated_rust_crate_compiles_rejects_invalid_types_and_runs() {
         "negative failure omitted the owner-branded role token:\n{stderr}"
     );
     assert!(
-        stderr.contains("expected `Binding<AppSchema, Person, _>`")
-            && stderr.contains("found `Binding<AppSchema, Event>`"),
+        stderr.contains("RolePlayerBinding")
+            && stderr.contains("NetworkLinkDestinationPlayer")
+            && stderr.contains("Event"),
         "negative failure omitted the generated reachability endpoint proof:\n{stderr}"
     );
     assert!(
@@ -219,6 +220,64 @@ fn generated_rust_crate_compiles_rejects_invalid_types_and_runs() {
         stderr.contains("cannot move out of `read` because it is borrowed"),
         "negative failure omitted the active-read close boundary:\n{stderr}"
     );
+}
+
+#[test]
+fn generated_role_bindings_admit_only_overlapping_subtype_domains() {
+    let stage = Stage::new();
+    let generated = stage.path().join("generated");
+    write_package(&emit(), &generated);
+
+    let cases = [
+        (
+            "role-rejects-exact-robot",
+            r#"use generated::{AppSchema, Event, EventType, Robot};
+use type_bridge::Database;
+fn check(db: &Database<AppSchema>) {
+    let mut session = db.query().unwrap();
+    let event = session.exact::<Event>().unwrap();
+    let robot = session.exact::<Robot>().unwrap();
+    let _ = event.role(EventType::subject).connects(robot);
+}
+fn main() {}"#,
+        ),
+        (
+            "role-rejects-disjoint-robot-subtypes",
+            r#"use generated::{AppSchema, Event, EventType, Robot};
+use type_bridge::Database;
+fn check(db: &Database<AppSchema>) {
+    let mut session = db.query().unwrap();
+    let event = session.exact::<Event>().unwrap();
+    let robots = session.subtypes::<Robot>().unwrap();
+    let _ = event.role(EventType::subject).connects(robots);
+}
+fn main() {}"#,
+        ),
+    ];
+
+    for (name, source) in cases {
+        let consumer = stage.path().join(name);
+        write_consumer_with_features(&consumer, name, source, &[]);
+        let output = cargo(
+            &[
+                "check",
+                "--offline",
+                "--manifest-path",
+                consumer.join("Cargo.toml").to_str().unwrap(),
+            ],
+            &stage.path().join(format!("{name}-target")),
+        );
+        assert!(!output.status.success(), "{name} unexpectedly compiled");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("EventSubjectPlayer")
+                && stderr.contains("RolePlayerBinding")
+                && stderr.contains("Robot")
+                && !stderr.contains("unresolved import")
+                && !stderr.contains("cannot find"),
+            "{name}: {stderr}"
+        );
+    }
 }
 
 #[test]
@@ -616,7 +675,7 @@ plays:
         (
             "query-role-rejects-non-player",
             "use generated::{AppSchema, Contract, ContractType, Person}; use type_bridge::Database; fn f(db: &Database<AppSchema>) { let mut session = db.query().unwrap(); let contract = session.exact::<Contract>().unwrap(); let person = session.exact::<Person>().unwrap(); let _ = contract.role(ContractType::contractor).connects(person); } fn main() {}",
-            "mismatched types",
+            "RolePlayerBinding",
         ),
         (
             "query-equality-rejects-wrong-domain",

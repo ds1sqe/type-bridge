@@ -467,6 +467,20 @@ pub enum TypedMatchPredicate {
         /// Right field-binding ordinal.
         right: u16,
     },
+    /// Require an owner-qualified field to be present or absent.
+    FieldPresence {
+        /// Field-binding ordinal.
+        field: u16,
+        /// `true` requires at least one owned value; `false` requires none.
+        present: bool,
+    },
+    /// Match one thing binding by its canonical provider IID.
+    BindingIid {
+        /// Thing-binding ordinal.
+        binding: u16,
+        /// Canonical TypeDB thing IID.
+        iid: String,
+    },
     /// Require one relation binding to link one player through a role.
     RoleEdge {
         /// Deterministic role-edge ordinal.

@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use crate::common::dynamic_crud::*;
 use crate::common::typedb::connect_options_from_env;
+use crate::internal::*;
 use tokio::sync::Notify;
 use type_bridge_core_lib::ast::{
     TypedFetchRows, TypedHydrateThings, TypedPageRematch, TypedRootScan,

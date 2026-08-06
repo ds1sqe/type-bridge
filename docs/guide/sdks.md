@@ -6,15 +6,15 @@ application boundary, not on different database semantics.
 
 | Surface | Model style | Execution | Best fit |
 | --- | --- | --- | --- |
-| [Python](../getting-started/quickstart.md) | Declarative Pydantic classes or generated models | Embedded native runtime | Python services, scripts, data applications |
-| [TypeScript / Node](typescript.md) | Branded classes or generated models | Embedded N-API runtime | Node services with compile-time model safety |
+| [Python](../getting-started/quickstart.md) | Generated model/value classes | Embedded native runtime | Python services, scripts, data applications |
+| [TypeScript / Node](typescript.md) | Generated branded model/value classes | Embedded N-API runtime | Node services with compile-time model safety |
 | [Rust](rust.md) | Generated schema crate | Native async client | Rust services that bind models to a canonical schema |
 | [Server](server-container.md) | Canonical request and schema contracts | Remote one-exchange execution | Centralized execution with caller-owned transport |
 
 ## Shared behavior
 
-- Entity, relation, attribute, role, inheritance, and cardinality descriptors
-  are validated by Rust.
+- Split-YAML entity, relation, attribute, role, inheritance, and cardinality
+  facts are validated by Rust before generation.
 - CRUD, hydration, query compilation, and transactions use the shared ORM.
 - Immutable typed queries preserve owner-aware fields and selected model types.
 - Schema fingerprints and runtime projections bind generated code to its
@@ -22,7 +22,7 @@ application boundary, not on different database semantics.
 
 ## Deliberate language differences
 
-The facades preserve native language conventions. Python uses Pydantic and
+The generated projections preserve native language conventions. Python uses
 keyword-only constructors; TypeScript uses branded value classes and `bigint`;
 Rust uses generated create/model types and async operations. These are typed
 boundary differences, not alternate query or migration implementations.

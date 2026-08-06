@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "type-bridge"
-version = "2.0.1"
+version = "2.1.0"
 description = "Typed Python, TypeScript, and Rust application tooling for TypeDB"
 readme = "README.md"
 requires-python = ">=3.12,<3.15"
@@ -30,7 +30,7 @@ dependencies = [
     "jinja2>=3.1.0",
     "typer>=0.15.0",
     # The facade and native semantic engine are one release unit.
-    "type-bridge-core==2.0.1",
+    "type-bridge-core==2.1.0",
     "typing-extensions>=4.12",
 ]
 
@@ -55,8 +55,8 @@ dev = [
     # server. The first native driver line supporting CPython 3.14 is band 9,
     # so that interpreter has a dedicated native-constructor smoke; direct
     # connections from that lane require a 3.12 server. The ORM itself uses
-    # the embedded Rust runtime and continues to serve TypeDB 3.8 through 3.12
-    # on every supported interpreter.
+    # the embedded Rust runtime and serves TypeDB 3.11 and 3.12 on every
+    # supported interpreter.
     "typedb-driver~=3.11.5; python_version < '3.14'",
     "typedb-driver==3.12.1; python_version >= '3.14'",
     "pytest>=9.0.1",
@@ -80,7 +80,7 @@ docs = [
     "mkdocs-section-index>=0.3",
 ]
 typedb-driver = [
-    "typedb-driver>=3.8,<3.13; python_version < '3.14'",
+    "typedb-driver>=3.11,<3.13; python_version < '3.14'",
     "typedb-driver==3.12.1; python_version >= '3.14'",
 ]
 
@@ -115,6 +115,9 @@ mypy_path = ["typings"]
 line-length = 100
 target-version = "py312"
 
+[tool.ruff.format]
+exclude = ["type-bridge-core/crates/schema-codegen/src/python/query.pyi"]
+
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP"]
 ignore = [
@@ -144,7 +147,6 @@ branch = true
 omit = [
     "type_bridge/__main__.py",
     "type_bridge/migration/__main__.py",
-    "type_bridge/generator/__main__.py",
 ]
 
 [tool.coverage.report]

@@ -6,6 +6,7 @@ use std::sync::Arc;
 #[allow(unused_imports)]
 use crate::error::{Error, Result};
 use crate::schema::{Schema, SchemaPackage, Unbound};
+use type_bridge_orm::_registry::DescriptorRegistry;
 
 /// Connection options for TypeDB servers.
 #[derive(Clone, PartialEq, Eq)]
@@ -103,13 +104,13 @@ impl From<(&str, &str)> for ConnectionOptions {
 pub struct Database<S: Schema = Unbound> {
     inner: type_bridge_orm::Database,
     installed_schema: Option<Arc<type_bridge_orm::InstalledRuntimeProjection>>,
-    match_registry: Option<Arc<type_bridge_orm::DescriptorRegistry>>,
+    match_registry: Option<Arc<DescriptorRegistry>>,
     marker: std::marker::PhantomData<fn() -> S>,
 }
 
 fn build_match_registry(
     installed: &type_bridge_orm::InstalledRuntimeProjection,
-) -> Result<Arc<type_bridge_orm::DescriptorRegistry>> {
+) -> Result<Arc<DescriptorRegistry>> {
     installed
         .match_registry()
         .map(Arc::new)
@@ -250,7 +251,7 @@ impl<S: Schema> Database<S> {
 
     /// Return the match descriptor registry if schema-bound (crate-internal).
     #[allow(dead_code)]
-    pub(crate) fn match_registry(&self) -> Option<&Arc<type_bridge_orm::DescriptorRegistry>> {
+    pub(crate) fn match_registry(&self) -> Option<&Arc<DescriptorRegistry>> {
         self.match_registry.as_ref()
     }
 }

@@ -2,6 +2,30 @@
 
 All notable changes to TypeBridge will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+
+- **Generated-only application bindings (#189)** - Split YAML plus
+  `type-bridge schema generate` is now the sole active schema/model authoring
+  path. Generated Python, TypeScript/Node, and Rust packages retain the
+  supported CRUD, transaction, hook, query, reducer, local/remote, hydration,
+  and diagnostic outcomes previously exercised through handwritten models.
+  Python keeps the concise generated single-type manager API, including
+  `Person.manager(db).put(...)` and lookup-suffixed `filter(...)` terminals.
+- **TypeDB 3.11/3.12 support window** - Native packages now contain only bands
+  8 and 9. Active TypeDB 3.8/3.10 support, provider sources, warning APIs,
+  build features, matrices, and release inputs are removed; retired versions
+  fail before data work.
+- **Authoring cutover with recovery retained** - Handwritten Python/Node/Rust
+  schema declarations, direct TOML generator routing, programmatic TypeQL
+  model generation, and root Python/JSON migration authoring are removed.
+  Read-only TOML conversion and archived migration loading, checksum
+  verification, ledger import, snapshots, adoption, and recovery remain.
+- **2.1.0 artifact identity** - Python, npm, Cargo, generated Rust templates,
+  documentation, and release validation now share the 2.1.0 identity. Release
+  timing remains readiness-driven; no release date is declared here.
+
 ## [2.0.1] - 2026-08-03
 
 ### New Features
@@ -130,7 +154,7 @@ All notable changes to TypeBridge will be documented in this file.
   raised later by application-owned Node `warning` listeners retain ordinary
   Node process semantics.
   The removal schedule names a single release, documented exactly in
-  [V2 Deprecations](docs/guide/v2-deprecations.md#scheduled-for-removal-in-210).
+  [V2 Deprecations](docs/guide/v2-deprecations.md#removed-in-21).
   Every scheduled removal lands in the 2.1.0 minor release as a deliberate,
   exactly-enumerated exception to ordinary major-version scheduling:
   active TypeDB 3.8/3.10 provider and driver support ends (the wheel then

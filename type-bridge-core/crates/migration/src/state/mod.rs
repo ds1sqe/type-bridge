@@ -10,7 +10,7 @@
 //!
 //! [`schema`] is the public, canonical description of the TypeDB types owned by
 //! the default store. Bootstrap and language bindings both consume that same
-//! [`SchemaInfo`][type_bridge_orm::schema::SchemaInfo].
+//! [`SchemaInfo`][type_bridge_orm::_schema::SchemaInfo].
 
 pub mod memory;
 pub mod schema;

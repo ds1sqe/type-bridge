@@ -11,7 +11,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
-use type_bridge_core_lib::parser::{
+use type_bridge_core_lib::_parser::{
     SourceRegionKind, blank_source_extents, parse_typeql, scan_source_regions,
 };
 use typeql::common::identifier::Identifier;

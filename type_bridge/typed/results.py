@@ -21,9 +21,9 @@ from type_bridge_core import (
 
 from type_bridge._rust_runtime import rust_value_type
 from type_bridge.crud.types import is_multi_value_attribute
-from type_bridge.models.base import TypeDBType
-from type_bridge.models.entity import Entity
-from type_bridge.models.relation import Relation
+from type_bridge.models.base import _QueryTypeDBType as TypeDBType
+from type_bridge.models.entity import _QueryEntity as Entity
+from type_bridge.models.relation import _QueryRelation as Relation
 from type_bridge.typed.page import Page
 
 

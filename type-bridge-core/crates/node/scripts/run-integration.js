@@ -7,8 +7,9 @@
  *      freshly built artifact and skip the build step.
  *   2. Otherwise, run `npm run build:native` to produce a fresh artifact.
  *      If that fails, hard-fail — do not fall through to the stale tmp/ binary.
- *   3. Run `node --test` with Node's built-in type-stripping over all
- *      .test.ts files under tests/integration/.
+ *   3. Compile integration sources to JavaScript with the documented Node 18+
+ *      TypeScript toolchain.
+ *   4. Run `node --test` over the compiled JavaScript files.
  *
  * Environment variables (all optional with defaults):
  *   TYPE_BRIDGE_NODE_NATIVE_PATH  — path to a pre-built .node artifact
@@ -25,6 +26,7 @@ const fs = require("fs");
 const path = require("path");
 
 const ROOT = path.resolve(__dirname, "..");
+const OUTPUT_ROOT = path.resolve(ROOT, "../../../tmp/node-integration");
 
 // Step 1: Resolve the NAPI artifact.
 const nativePath = process.env.TYPE_BRIDGE_NODE_NATIVE_PATH;
@@ -52,24 +54,40 @@ if (nativePath) {
   }
 }
 
-// Step 3: Run node --test over all .test.ts files.
-// Collect files explicitly so the runner receives individual paths — Node
-// --test does not perform shell glob expansion on all platforms.
-// Collect matching files synchronously via fs.readdirSync recursion.
-function* walkTs(dir) {
+// Step 3: compile before execution. Node 18/20 cannot parse TypeScript-only
+// syntax, and the supported runtime matrix must not depend on type stripping.
+fs.rmSync(OUTPUT_ROOT, { recursive: true, force: true });
+const compile = spawnSync("npm", ["run", "typecheck:integration"], {
+  cwd: ROOT,
+  stdio: "inherit",
+  shell: true,
+});
+if (compile.status !== 0) {
+  process.exit(compile.status ?? 1);
+}
+fs.copyFileSync(
+  path.join(ROOT, "tests", "integration", "package.json"),
+  path.join(OUTPUT_ROOT, "package.json"),
+);
+
+// Step 4: collect compiled tests explicitly; node --test does not expand globs
+// consistently across supported platforms.
+function* walkJs(dir) {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
-      yield* walkTs(full);
-    } else if (entry.name.endsWith(".test.ts") && !full.includes(`${path.sep}integration${path.sep}typed${path.sep}`)) {
+      yield* walkJs(full);
+    } else if (entry.name.endsWith(".test.js")) {
       yield full;
     }
   }
 }
 
-const testFiles = Array.from(walkTs(path.join(ROOT, "tests", "integration")));
+const testFiles = Array.from(
+  walkJs(path.join(OUTPUT_ROOT, "tests", "integration")),
+);
 if (testFiles.length === 0) {
-  console.error("[test:integration] No .test.ts files found under tests/integration/");
+  console.error("[test:integration] No compiled .test.js files found");
   process.exit(1);
 }
 
@@ -93,22 +111,4 @@ const result = spawnSync(
   },
 );
 
-if ((result.status ?? 1) !== 0) {
-  process.exit(result.status ?? 1);
-}
-
-const typedResult = spawnSync("npm", ["run", "test:typed-integration"], {
-  cwd: ROOT,
-  stdio: "inherit",
-  shell: true,
-  env: {
-    ...process.env,
-    TYPEDB_ADDRESS: process.env.TYPEDB_ADDRESS ?? "localhost:1730",
-    TYPE_BRIDGE_NODE_INTG_DATABASE:
-      process.env.TYPE_BRIDGE_NODE_INTG_DATABASE ?? "type_bridge_test",
-    TYPEDB_USERNAME: process.env.TYPEDB_USERNAME ?? "admin",
-    TYPEDB_PASSWORD: process.env.TYPEDB_PASSWORD ?? "password",
-  },
-});
-
-process.exit(typedResult.status ?? 1);
+process.exit(result.status ?? 1);

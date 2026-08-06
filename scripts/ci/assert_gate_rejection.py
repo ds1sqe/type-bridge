@@ -32,25 +32,6 @@ CLASS_MARKERS = {
 FORBIDDEN = ["band 7", "band 8", "0.0.0"]
 
 
-def warning_failure(caught: list[warnings.WarningMessage], expected: str) -> str | None:
-    """Return a failure description when the live warning projection drifts."""
-    from type_bridge import TypeDBServerDeprecationWarning
-
-    notices = [warning for warning in caught if warning.category is TypeDBServerDeprecationWarning]
-    expected_count = 1 if expected == "legacy" else 0
-    if len(notices) != expected_count:
-        return (
-            f"expected {expected_count} TypeDB server deprecation warning(s), "
-            f"observed {len(notices)}"
-        )
-    if notices:
-        message = str(notices[0].message)
-        for forbidden in FORBIDDEN:
-            if forbidden in message:
-                return f"deprecation warning exposes forbidden token {forbidden!r}"
-    return None
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--address", required=True, help="TypeDB gRPC address, e.g. localhost:1729")
@@ -78,12 +59,6 @@ def main() -> int:
         default=8000,
         help="HTTP version-probe port to pass into Database",
     )
-    parser.add_argument(
-        "--expect-warning",
-        choices=["legacy", "none"],
-        default="none",
-        help="Expected TypeDBServerDeprecationWarning projection for this live cell",
-    )
     args = parser.parse_args()
     expect = args.expect or args.expect_class
     if expect is None:
@@ -99,17 +74,13 @@ def main() -> int:
         http_port=args.http_port,
     )
     try:
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
             if args.probe == "driver":
                 _ = db.driver
             else:
                 db.connect()
     except type_bridge_core.VersionError as exc:
-        warning_error = warning_failure(caught, args.expect_warning)
-        if warning_error is not None:
-            print(f"FAIL: {warning_error}")
-            return 1
         if expect == "ok":
             print(f"FAIL: {args.probe} rejected unexpectedly: {exc}")
             return 1
@@ -129,11 +100,6 @@ def main() -> int:
         print(f"OK: version-gate rejection with the {expect!r} error class")
         return 0
 
-    warning_error = warning_failure(caught, args.expect_warning)
-    if warning_error is not None:
-        db.close()
-        print(f"FAIL: {warning_error}")
-        return 1
     db.close()
     if expect == "ok":
         print(f"OK: {args.probe} succeeded")

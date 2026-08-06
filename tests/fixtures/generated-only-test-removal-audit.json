@@ -1,0 +1,363 @@
+{
+  "format": "typebridge.generated-only-test-removal-audit/v1",
+  "baseline": "origin/master at the approved #189 generated-only cutover",
+  "operation_removal_map": "tests/fixtures/handwritten-operation-removal-map.json",
+  "operation_inventory_paths": 98,
+  "operation_removed_paths": 92,
+  "additional_removed_paths": 158,
+  "total_removed_test_and_support_paths": 250,
+  "families": [
+    {
+      "id": "node_handwritten_generator",
+      "disposition": "generated_successor",
+      "reason": "The removed Node TypeQL parser and handwritten generator were authoring paths. Split-YAML now feeds the shared Rust projection engine and the TypeScript emitter.",
+      "evidence": [
+        {
+          "path": "type-bridge-core/crates/schema-codegen/tests/typescript_acceptance/check.mjs",
+          "needles": ["emit_typescript_acceptance", "runtime_check.mjs"]
+        },
+        {
+          "path": "type-bridge-core/crates/schema-codegen/tests/cross_binding.rs",
+          "needles": ["PythonEmitter", "RustEmitter", "TypeScriptEmitter"]
+        }
+      ],
+      "removed_paths": [
+        "type-bridge-core/crates/node/tests/parity/generator-descriptor-dump.cjs",
+        "type-bridge-core/crates/node/tests/parity/typed-reader.ts",
+        "type-bridge-core/crates/node/tests/typed-integration/connect-http-port.test.ts",
+        "type-bridge-core/crates/node/tests/typed-integration/database-lifecycle.test.ts",
+        "type-bridge-core/crates/node/tests/typed-integration/generator-render.test.ts",
+        "type-bridge-core/crates/node/tests/typed-integration/model-layer.test.ts",
+        "type-bridge-core/crates/node/tests/typed-integration/parser.test.ts",
+        "type-bridge-core/crates/node/tests/unit/generator-naming.test.ts",
+        "type-bridge-core/crates/node/tests/unit/released-generator-input.test.ts"
+      ]
+    },
+    {
+      "id": "node_handwritten_model_query_runtime",
+      "disposition": "generated_and_retained_query_successors",
+      "reason": "Model declaration and descriptor construction moved to generated tokens. Generated TypeScript acceptance owns nominal typing, CRUD, direct/remote query, hydration, and diagnostics; low-level Query V2 remains independently tested.",
+      "evidence": [
+        {
+          "path": "type-bridge-core/crates/schema-codegen/tests/typescript_acceptance/positive.ts",
+          "needles": ["Person.manager(database)", "RemoteQuerySession", "personManager.filter"]
+        },
+        {
+          "path": "type-bridge-core/crates/schema-codegen/tests/typescript_acceptance/runtime_check.mjs",
+          "needles": ["const generatedRemoteSession = new RemoteQuerySession(", "remote_application_failure", "assert.equal(generatedRemoteExchanges, 1)"]
+        },
+        {
+          "path": "type-bridge-core/crates/node/tests/unit/query-v2-authoring.test.ts",
+          "needles": ["QueryPlanBuilder", "public declaration and output boundaries use stable binding diagnostics"]
+        }
+      ],
+      "removed_paths": [
+        "type-bridge-core/crates/node/tests/native-match-runtime.test.cjs",
+        "type-bridge-core/crates/node/tests/unit/model-compatibility.typecheck.ts",
+        "type-bridge-core/crates/node/tests/unit/owner-aware-references.test.ts",
+        "type-bridge-core/crates/node/tests/unit/owner-aware-references.typecheck.ts",
+        "type-bridge-core/crates/node/tests/unit/typed-codec.test.ts",
+        "type-bridge-core/crates/node/tests/unit/typed-inheritance.test.ts",
+        "type-bridge-core/crates/node/tests/unit/typed-inheritance.typecheck.ts",
+        "type-bridge-core/crates/node/tests/unit/typed-layer.test.ts",
+        "type-bridge-core/crates/node/tests/unit/typed-layer.typecheck.ts",
+        "type-bridge-core/crates/node/tests/unit/typed-multivalue.test.ts",
+        "type-bridge-core/crates/node/tests/unit/typed-multivalue.typecheck.ts",
+        "type-bridge-core/crates/node/tests/unit/typed-query-v2.test.ts",
+        "type-bridge-core/crates/node/tests/unit/typed-query-v2.typecheck.ts",
+        "type-bridge-core/crates/node/tests/unit/typed-query.typecheck.ts",
+        "type-bridge-core/crates/node/tests/unit/typed-relation-subtype.test.ts",
+        "type-bridge-core/crates/node/tests/unit/typed-remote-query.test.ts",
+        "type-bridge-core/crates/node/tests/unit/typed-serialization.test.ts",
+        "type-bridge-core/crates/node/tests/unit/typed-serialization.typecheck.ts"
+      ]
+    },
+    {
+      "id": "node_retired_2_0_artifact_contracts",
+      "disposition": "cutover_artifact_replacement",
+      "reason": "The deleted package consumers and declaration baselines asserted the removed 2.0 handwritten surface. The 2.1 package is instead checked as a generated-only artifact with an exact public declaration baseline.",
+      "evidence": [
+        {
+          "path": "type-bridge-core/crates/node/tests/dts-parity.cjs",
+          "needles": ["generated-only Node package boundary", "tests/dts-baseline/"]
+        },
+        {
+          "path": "type-bridge-core/crates/node/tests/packed-package-smoke.cjs",
+          "needles": ["dist/public.js", "packageJson.exports"]
+        },
+        {
+          "path": "tests/contracts/typed_query/typescript/documented_examples.ts",
+          "needles": ["from \"./generated_v2/src/index.js\"", "const session = new QuerySession(db)"]
+        }
+      ],
+      "removed_paths": [
+        "type-bridge-core/crates/node/tests/compat/legacy-package/README.md",
+        "type-bridge-core/crates/node/tests/compat/legacy-package/consumer.ts",
+        "type-bridge-core/crates/node/tests/compat/legacy-package/package.json",
+        "type-bridge-core/crates/node/tests/compat/legacy-package/run.cjs",
+        "type-bridge-core/crates/node/tests/compat/legacy-package/runtime-probe.cjs",
+        "type-bridge-core/crates/node/tests/compat/legacy-package/tsconfig.json",
+        "type-bridge-core/crates/node/tests/compat/legacy-package/typed-consumer.ts",
+        "type-bridge-core/crates/node/tests/compat/typed-query-contract/README.md",
+        "type-bridge-core/crates/node/tests/compat/typed-query-contract/documented-examples.typecheck.ts",
+        "type-bridge-core/crates/node/tests/compat/typed-query-contract/models.ts",
+        "type-bridge-core/crates/node/tests/compat/typed-query-contract/negative.typecheck.ts",
+        "type-bridge-core/crates/node/tests/compat/typed-query-contract/positive.typecheck.ts",
+        "type-bridge-core/crates/node/tests/compat/typed-query-contract/tsconfig.json",
+        "type-bridge-core/crates/node/tests/dts-baseline/attribute.d.ts",
+        "type-bridge-core/crates/node/tests/dts-baseline/codec.d.ts",
+        "type-bridge-core/crates/node/tests/dts-baseline/flags.d.ts",
+        "type-bridge-core/crates/node/tests/dts-baseline/iid.d.ts",
+        "type-bridge-core/crates/node/tests/dts-baseline/manager.d.ts",
+        "type-bridge-core/crates/node/tests/dts-baseline/model.d.ts",
+        "type-bridge-core/crates/node/tests/dts-baseline/parser.d.ts"
+      ]
+    },
+    {
+      "id": "old_cross_language_parity",
+      "disposition": "generated_successor",
+      "reason": "The former parity harness compared Python and Node handwritten descriptors and serialization. The successor starts from one Split-YAML schema and verifies generated Python, Node, and Rust operations and package isolation.",
+      "evidence": [
+        {
+          "path": "tests/fixtures/generated-only-operation-parity-inventory.json",
+          "needles": ["split_yaml_clean_generation_and_package_isolation", "remote_rows_terminals_and_identical_materialization"]
+        },
+        {
+          "path": "type-bridge-core/crates/schema-codegen/tests/cross_binding.rs",
+          "needles": ["PythonEmitter", "RustEmitter", "TypeScriptEmitter"]
+        },
+        {
+          "path": "type-bridge-core/crates/node/tests/projection-integration/generated-package-live.test.ts",
+          "needles": ["RemoteQuerySession", "Person.manager(database)"]
+        }
+      ],
+      "removed_paths": [
+        "tests/integration/parity/__init__.py",
+        "tests/integration/parity/canonical.py",
+        "tests/integration/parity/conftest.py",
+        "tests/integration/parity/cross_language.py",
+        "tests/integration/parity/descriptor_snapshots.py",
+        "tests/integration/parity/fixtures/README.md",
+        "tests/integration/parity/fixtures/descriptors.json",
+        "tests/integration/parity/fixtures/expected-canonical.json",
+        "tests/integration/parity/fixtures/metadata.json",
+        "tests/integration/parity/fixtures/schema.tql",
+        "tests/integration/parity/fixtures/typed-query/contract.json",
+        "tests/integration/parity/fixtures/typed-query/data.tql",
+        "tests/integration/parity/fixtures/typed-query/schema.tql",
+        "tests/integration/parity/fixtures/write-data.json",
+        "tests/integration/parity/models.py",
+        "tests/integration/parity/node_descriptor_snapshot.cjs",
+        "tests/integration/parity/node_parity_descriptors.cjs",
+        "tests/integration/parity/node_reader.cjs",
+        "tests/integration/parity/node_typed_query_reader.cjs",
+        "tests/integration/parity/node_v2_authoring_reader.cjs",
+        "tests/integration/parity/test_generator_cross_language.py",
+        "tests/integration/parity/test_relates_only_define_parity.py",
+        "tests/integration/parity/typed_query_models.py"
+      ]
+    },
+    {
+      "id": "python_retired_2_0_artifact_contracts",
+      "disposition": "cutover_artifact_replacement",
+      "reason": "The old consumers required handwritten model exports or the released programmatic generator. Candidate wheels are now installed with a freshly generated package and tested without source-checkout leakage.",
+      "evidence": [
+        {
+          "path": "tests/unit/compat/test_generated_python_artifact_runner.py",
+          "needles": ["test_wheel_inventory_requires_generated_runtime_and_native_extension", "test_generated_runtime_consumer_has_no_handwritten_imports"]
+        },
+        {
+          "path": "tests/compat/generated_python/runtime.py",
+          "needles": ["generated package runtime acceptance", "removed handwritten root export"]
+        }
+      ],
+      "removed_paths": [
+        "tests/compat/legacy_python/README.md",
+        "tests/compat/legacy_python/__init__.py",
+        "tests/compat/legacy_python/probe.py",
+        "tests/compat/typed_python/README.md",
+        "tests/compat/typed_python/generated_owner_models.py",
+        "tests/compat/typed_python/live.py",
+        "tests/compat/typed_python/negative.py",
+        "tests/compat/typed_python/positive.py",
+        "tests/compat/typed_python/runtime.py",
+        "tests/unit/compat/test_released_generator_input.py"
+      ]
+    },
+    {
+      "id": "python_handwritten_static_and_notice",
+      "disposition": "removed_authoring_contract",
+      "reason": "These tests asserted handwritten declaration typing or deprecation notices for APIs that are absent in 2.1. Generated-package negative typing remains exact, and the cutover intentionally adds no warning layer.",
+      "evidence": [
+        {
+          "path": "tests/unit/compat/test_generated_only_python_root.py",
+          "needles": ["test_python_root_has_no_handwritten_authoring_exports", "test_handwritten_authoring_package_barrels_are_empty"]
+        },
+        {
+          "path": "type-bridge-core/crates/schema-codegen/tests/acceptance/negative.py",
+          "needles": ["missing_event_subject:reportCallIssue", "wrong_query_value:reportArgumentType"]
+        }
+      ],
+      "removed_paths": [
+        "tests/unit/session/test_deprecation_notices.py",
+        "tests/unit/session/typecheck_deprecation_notice.py",
+        "tests/unit/type-check-except/test_basic.py",
+        "tests/unit/type-check-except/test_cardinality.py",
+        "tests/unit/type-check-except/test_list_default.py",
+        "tests/unit/type-check-except/test_multi_role_players_invalid.py",
+        "tests/unit/type-check-except/test_pydantic.py",
+        "tests/unit/type-check-except/test_update_api.py"
+      ]
+    },
+    {
+      "id": "python_migration_authoring",
+      "disposition": "canonical_migration_and_archive_successors",
+      "reason": "The removed tests created new Python/JSON root migrations or treated them as active authority. Canonical V2 migration tests remain, while historical state, checksums, metadata, and one-way adoption are tested read-only.",
+      "evidence": [
+        {
+          "path": "tests/unit/migration/test_state_reader.py",
+          "needles": ["app_label\": \"archive\"", "test_state_manager_exposes_reads_only"]
+        },
+        {
+          "path": "type-bridge-core/crates/schema-migration/tests/legacy_bridge.rs",
+          "needles": ["build_legacy_frontier_bridge", "bridge_builds_round_trips_and_binds_the_frontier"]
+        },
+        {
+          "path": "type-bridge-core/crates/schema-migration/tests/history.rs",
+          "needles": ["MigrationHistoryGraph", "history"]
+        }
+      ],
+      "removed_paths": [
+        "tests/integration/migration/__init__.py",
+        "tests/integration/migration/test_author_offline.py",
+        "tests/integration/migration/test_autogenerate.py",
+        "tests/integration/migration/test_backfill.py",
+        "tests/integration/migration/test_cli.py",
+        "tests/integration/migration/test_external_state.py",
+        "tests/integration/migration/test_remove_relation.py",
+        "tests/integration/migration/test_run_python_user_scenario.py",
+        "tests/integration/migration/test_snapshot_bindings.py",
+        "tests/integration/migration/test_state.py",
+        "tests/integration/migration/test_typed_toml_smoke.py",
+        "tests/unit/migration/test_author_offline.py",
+        "tests/unit/migration/test_deprecation.py",
+        "tests/unit/migration/test_generate_cli.py",
+        "tests/unit/migration/test_ir_dump.py",
+        "tests/unit/migration/test_legacy_writer_fence_facades.py",
+        "tests/unit/migration/test_planner.py",
+        "tests/unit/migration/test_registry.py",
+        "tests/unit/migration/test_remove_relation.py",
+        "tests/unit/migration/test_schema_diff_rust.py",
+        "tests/unit/migration/test_snapshot_bindings.py",
+        "tests/unit/migration/test_validation.py"
+      ]
+    },
+    {
+      "id": "python_programmatic_generator",
+      "disposition": "generated_successor",
+      "reason": "Programmatic TypeQL-to-model generation and direct TOML generator routing were removed. Workspace Split-YAML generation now exercises all three emitters, exact negative typing, runtime validation, and clean package import.",
+      "evidence": [
+        {
+          "path": "type-bridge-core/crates/schema-codegen/tests/acceptance/check.py",
+          "needles": ["emit_python_acceptance", "runtime_check.py"]
+        },
+        {
+          "path": "type-bridge-core/crates/schema-codegen/tests/cross_binding.rs",
+          "needles": ["PythonEmitter", "RustEmitter", "TypeScriptEmitter"]
+        },
+        {
+          "path": "scripts/ci/validate_generated_examples.sh",
+          "needles": ["schema generate", "Generated-only examples import a removed handwritten authoring API"]
+        }
+      ],
+      "removed_paths": [
+        "tests/integration/generator/__init__.py",
+        "tests/integration/generator/fixtures/bookstore.tql",
+        "tests/integration/generator/fixtures/role_cardinality.tql",
+        "tests/integration/generator/fixtures/social_media.tql",
+        "tests/integration/generator/fixtures/type_theoretic.tql",
+        "tests/integration/generator/test_bindgen_owner_aware_typing.py",
+        "tests/integration/generator/test_bindgen_surface_parity.py",
+        "tests/integration/generator/test_generate_and_import.py",
+        "tests/integration/generator/test_generator_use_pipeline.py",
+        "tests/unit/generator/__init__.py",
+        "tests/unit/generator/test_annotations.py",
+        "tests/unit/generator/test_api_dto.py",
+        "tests/unit/generator/test_functions.py",
+        "tests/unit/generator/test_generator.py",
+        "tests/unit/generator/test_naming.py",
+        "tests/unit/generator/test_parser.py",
+        "tests/unit/generator/test_range_generation.py",
+        "tests/unit/generator/test_registry.py",
+        "tests/unit/generator/test_rust_schema.py",
+        "tests/unit/generator/test_toml_diagnostics.py",
+        "tests/unit/generator/test_toml_roundtrip.py",
+        "tests/unit/generator/test_toml_transpiler.py"
+      ]
+    },
+    {
+      "id": "python_schema_authoring",
+      "disposition": "split_yaml_schema_successor",
+      "reason": "The removed tests synchronized or diffed schema from handwritten Python classes. Split-YAML resolution, projection, provider constraints, and retained read-only TOML conversion now own those semantics.",
+      "evidence": [
+        {
+          "path": "type-bridge-core/crates/schema/tests/resolution.rs",
+          "needles": ["resolves_inherited_value_owns_and_profile_cardinality", "cardinality"]
+        },
+        {
+          "path": "type-bridge-core/crates/schema/tests/projection.rs",
+          "needles": ["decode_runtime_projection_verified", "ProjectionConfig"]
+        },
+        {
+          "path": "tests/unit/compat/test_read_only_toml_conversion.py",
+          "needles": ["read-only TOML converter", "toml_to_typeql"]
+        }
+      ],
+      "removed_paths": [
+        "tests/integration/schema/test_annotation_sync.py",
+        "tests/integration/schema/test_attributes.py",
+        "tests/integration/schema/test_cardinality.py",
+        "tests/integration/schema/test_conflict.py",
+        "tests/integration/schema/test_constraint_enforcement.py",
+        "tests/integration/schema/test_creation.py",
+        "tests/integration/schema/test_diff.py",
+        "tests/integration/schema/test_inheritance.py",
+        "tests/integration/schema/test_migration.py",
+        "tests/integration/schema/test_plays_cardinality_enforcement.py",
+        "tests/integration/schema/test_relations.py",
+        "tests/integration/schema/test_role_player_diff.py",
+        "tests/integration/schema/test_types.py",
+        "tests/integration/validation/test_reserved_words_integration.py",
+        "tests/unit/core/test_schema_sync_markers.py",
+        "tests/unit/schema/test_annotation_generation.py",
+        "tests/unit/schema/test_breaking.py",
+        "tests/unit/schema/test_doc_meta_annotations.py",
+        "tests/unit/schema/test_role_changes.py",
+        "tests/unit/validation/test_duplicate_attributes.py",
+        "tests/unit/validation/test_reserved_words.py"
+      ]
+    },
+    {
+      "id": "rust_handwritten_derive_schema",
+      "disposition": "generated_successor",
+      "reason": "Rust derive and include-schema macros were handwritten schema-authoring paths. External generated crates now prove construction, nominal bounds, CRUD/query behavior, and absence of those authoring APIs.",
+      "evidence": [
+        {
+          "path": "type-bridge-core/crates/schema-codegen/tests/rust_acceptance.rs",
+          "needles": ["generated_rust_crate_compiles_rejects_invalid_types_and_runs", "generated_external_manager_contract_compiles_exact_matrix"]
+        },
+        {
+          "path": "type-bridge-core/crates/orm/tests/generated_only_public_surface.rs",
+          "needles": ["handwritten_rust_authoring_paths_are_not_external_consumer_apis", "handwritten_typeql_codegen_binary_is_not_packaged"]
+        }
+      ],
+      "removed_paths": [
+        "type-bridge-core/crates/orm/tests/derive_tests.rs",
+        "type-bridge-core/crates/orm/tests/include_schema_tests.rs",
+        "type-bridge-core/crates/orm/tests/integration/rust_binding/mod.rs",
+        "type-bridge-core/crates/orm/tests/integration/rust_binding/schema.rs",
+        "type-bridge-core/crates/orm/tests/test_schema.tql"
+      ]
+    }
+  ]
+}

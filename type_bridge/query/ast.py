@@ -177,7 +177,7 @@ class IidPattern(Pattern):
 
 @dataclass
 class RawPattern(Pattern):
-    """A raw string pattern (legacy support)."""
+    """A raw string pattern (retained V1 support)."""
 
     content: str
 
@@ -191,7 +191,7 @@ class Statement(QueryNode, ABC):
 
 @dataclass
 class RawStatement(Statement):
-    """A raw string statement (legacy support)."""
+    """A raw string statement (retained V1 support)."""
 
     content: str
 

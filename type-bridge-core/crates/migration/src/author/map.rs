@@ -26,11 +26,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use type_bridge_orm::schema::diff::{AttributeTypeChanges, RelationChanges, SchemaDiff};
-use type_bridge_orm::schema::generator::{
+use type_bridge_orm::_schema::diff::{AttributeTypeChanges, RelationChanges, SchemaDiff};
+use type_bridge_orm::_schema::generator::{
     attribute_constraint_definition, card_annotation, topological_sort,
 };
-use type_bridge_orm::schema::info::{
+use type_bridge_orm::_schema::info::{
     EntitySchemaEntry, OwnedAttributeEntry, RelationSchemaEntry, SchemaInfo,
 };
 
@@ -1051,11 +1051,12 @@ fn run_schema_typeql(forward: String) -> OperationSpec {
 mod tests {
     use std::collections::BTreeMap;
 
-    use type_bridge_orm::schema::info::{
+    use type_bridge_orm::_entity::Annotation;
+    use type_bridge_orm::_schema::info::{
         AttributeSchemaEntry, EntitySchemaEntry, OwnedAttributeEntry, RelationSchemaEntry,
         RoleEntry,
     };
-    use type_bridge_orm::{Annotation, ValueType};
+    use type_bridge_orm::ValueType;
 
     use super::*;
 
