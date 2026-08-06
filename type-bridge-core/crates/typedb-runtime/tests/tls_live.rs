@@ -122,7 +122,10 @@ fn unique_database(prefix: &str) -> String {
     format!("{prefix}_{}_{}", std::process::id(), suffix)
 }
 
-const LIVE_TLS_STAGE_TIMEOUT: Duration = Duration::from_secs(10);
+// Hosted runners can take slightly more than ten seconds to receive TypeDB's
+// close acknowledgement under a fully concurrent matrix. Keep every live
+// stage bounded while leaving enough headroom to distinguish load from a hang.
+const LIVE_TLS_STAGE_TIMEOUT: Duration = Duration::from_secs(30);
 
 async fn await_live_tls_stage<T>(stage: &'static str, future: impl Future<Output = T>) -> T {
     tokio::time::timeout(LIVE_TLS_STAGE_TIMEOUT, future)
