@@ -7,7 +7,8 @@ import os
 import threading
 import warnings
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, overload
+from enum import Enum
+from typing import TYPE_CHECKING, Any, cast, overload
 
 import type_bridge.typedb_driver as typedb_driver
 import type_bridge.version as version
@@ -688,12 +689,12 @@ class Database:
         return exists
 
     @overload
-    def transaction(self, transaction_type: TransactionType) -> TransactionContext: ...
+    def transaction(self, transaction_type: Enum) -> TransactionContext: ...
 
     @overload
     def transaction(self, transaction_type: str = "read") -> TransactionContext: ...
 
-    def transaction(self, transaction_type: TransactionType | str = "read") -> TransactionContext:
+    def transaction(self, transaction_type: Enum | str = "read") -> TransactionContext:
         """Create a transaction context.
 
         Args:
@@ -711,7 +712,7 @@ class Database:
         if isinstance(transaction_type, str):
             tx_type = tx_type_map.get(transaction_type, TransactionType.READ)
         else:
-            tx_type = transaction_type
+            tx_type = cast(TransactionType, transaction_type)
 
         logger.debug(
             f"Creating {_tx_type_name(tx_type)} transaction for database: {self.database_name}"

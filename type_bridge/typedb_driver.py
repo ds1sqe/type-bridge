@@ -32,7 +32,14 @@ _MISSING_DRIVER_MESSAGE = (
 )
 
 if TYPE_CHECKING:
-    from typedb.driver import Credentials, DriverOptions, TransactionType, TypeDB
+    from typedb.driver import Credentials, DriverOptions, TypeDB
+
+    class TransactionType(Enum):
+        """Stable static surface for the optional driver's transaction enum."""
+
+        READ = "read"
+        WRITE = "write"
+        SCHEMA = "schema"
 else:
     try:
         from typedb.driver import Credentials, DriverOptions, TransactionType, TypeDB
