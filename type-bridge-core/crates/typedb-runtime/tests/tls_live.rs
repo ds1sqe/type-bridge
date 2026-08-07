@@ -11,9 +11,10 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use type_bridge_typedb_runtime::{
-    RuntimeAnswerCancellation, RuntimeAnswerControl, RuntimeAnswerLimits, SecureConnectOptions,
-    TlsMode, TxType, TypeDBRuntime, database_exists_secure, delete_database_secure,
-    embedded_driver_versions, ensure_database_exists_secure,
+    RuntimeAnswerCancellation, RuntimeAnswerControl, RuntimeAnswerLimits, RuntimeError,
+    SecureConnectError, SecureConnectOptions, SecureResult, TlsMode, TxType, TypeDBRuntime,
+    database_exists_secure, delete_database_secure, embedded_driver_versions,
+    ensure_database_exists_secure,
 };
 
 #[derive(Clone, Debug)]
@@ -126,6 +127,9 @@ fn unique_database(prefix: &str) -> String {
 // close acknowledgement under a fully concurrent matrix. Keep every live
 // stage bounded while leaving enough headroom to distinguish load from a hang.
 const LIVE_TLS_STAGE_TIMEOUT: Duration = Duration::from_secs(30);
+const FORCE_CLOSE_RELEASE_TIMEOUT: Duration = Duration::from_secs(5);
+const FORCE_CLOSE_RELEASE_RETRY_INTERVAL: Duration = Duration::from_millis(25);
+const DATABASE_IN_USE_DIAGNOSTIC: &str = "Cannot delete database since it is in use";
 
 async fn await_live_tls_stage<T>(stage: &'static str, future: impl Future<Output = T>) -> T {
     tokio::time::timeout(LIVE_TLS_STAGE_TIMEOUT, future)
@@ -136,6 +140,92 @@ async fn await_live_tls_stage<T>(stage: &'static str, future: impl Future<Output
                 LIVE_TLS_STAGE_TIMEOUT.as_secs()
             )
         })
+}
+
+fn database_release_is_pending_after_force_close(error: &SecureConnectError) -> bool {
+    matches!(
+        error,
+        SecureConnectError::Runtime(RuntimeError::Connection(message))
+            if message.contains("[DBD2]")
+                && message.contains(DATABASE_IN_USE_DIAGNOSTIC)
+                && message.contains("[SRV13]")
+    )
+}
+
+async fn delete_owned_database_after_force_close(
+    context: &LiveTlsContext,
+    database: &str,
+) -> SecureResult<()> {
+    let deadline = tokio::time::Instant::now() + FORCE_CLOSE_RELEASE_TIMEOUT;
+    loop {
+        let result = tokio::time::timeout_at(
+            deadline,
+            delete_database_secure(
+                &context.address,
+                database,
+                &context.username,
+                &context.password,
+                context.custom_root_options(),
+            ),
+        )
+        .await
+        .map_err(|_| {
+            SecureConnectError::Runtime(RuntimeError::Connection(format!(
+                "Database delete did not complete within {} seconds after force-close",
+                FORCE_CLOSE_RELEASE_TIMEOUT.as_secs()
+            )))
+        })?;
+        match result {
+            Err(error) if database_release_is_pending_after_force_close(&error) => {
+                // The official driver acknowledges local shutdown dispatch,
+                // not the server's observation of the closed transport. This
+                // fixture owns the unique database, so only the exact
+                // DBD2/in-use/SRV13 diagnostic is safe to classify as release
+                // propagation.
+                // This poll is not evidence for issue #196's upstream-removal
+                // gate, which still requires release without a downstream
+                // retry.
+                let retry_at = (tokio::time::Instant::now() + FORCE_CLOSE_RELEASE_RETRY_INTERVAL)
+                    .min(deadline);
+                tokio::time::sleep_until(retry_at).await;
+            }
+            result => return result,
+        }
+    }
+}
+
+#[test]
+fn force_close_release_retry_classification_is_narrow() {
+    let pending = SecureConnectError::Runtime(RuntimeError::Connection(
+        "Database delete failed: [DBD2] Cannot delete database since it is in use. Caused: [SRV13]"
+            .to_owned(),
+    ));
+    let wrong_diagnostic = SecureConnectError::Runtime(RuntimeError::Connection(
+        "Database delete failed: [DBD2] permission denied. Caused: [SRV13]".to_owned(),
+    ));
+    let wrong_variant = SecureConnectError::Runtime(RuntimeError::Transaction(
+        "[DBD2] Cannot delete database since it is in use. [SRV13]".to_owned(),
+    ));
+    let missing_server_code = SecureConnectError::Runtime(RuntimeError::Connection(
+        "[DBD2] Cannot delete database since it is in use.".to_owned(),
+    ));
+    let missing_database_code = SecureConnectError::Runtime(RuntimeError::Connection(
+        "Cannot delete database since it is in use. [SRV13]".to_owned(),
+    ));
+
+    assert!(database_release_is_pending_after_force_close(&pending));
+    assert!(!database_release_is_pending_after_force_close(
+        &wrong_diagnostic
+    ));
+    assert!(!database_release_is_pending_after_force_close(
+        &wrong_variant
+    ));
+    assert!(!database_release_is_pending_after_force_close(
+        &missing_server_code
+    ));
+    assert!(!database_release_is_pending_after_force_close(
+        &missing_database_code
+    ));
 }
 
 fn assert_expected_topology(runtime: &TypeDBRuntime, context: &LiveTlsContext) {
@@ -418,13 +508,7 @@ async fn custom_root_raw_stop_requires_force_close_before_delete_live() {
 
     await_live_tls_stage(
         "raw-stop/delete-after-force-close",
-        delete_database_secure(
-            &context.address,
-            &database,
-            &context.username,
-            &context.password,
-            context.custom_root_options(),
-        ),
+        delete_owned_database_after_force_close(&context, &database),
     )
     .await
     .expect("a fresh TLS connection deletes the database after force-close");
