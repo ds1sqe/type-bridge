@@ -16,38 +16,52 @@ use crate::schema_source::SchemaSource;
 
 /// Input for a structured (AST-based) query.
 pub struct QueryInput {
+    /// Database override, or `None` to use the pipeline default.
     pub database: Option<String>,
+    /// Provider transaction mode requested by the caller.
     pub transaction_type: String,
+    /// Structured query clauses to validate and execute.
     pub clauses: Vec<Clause>,
+    /// Transport and application metadata exposed to interceptors.
     pub metadata: HashMap<String, serde_json::Value>,
 }
 
 /// Input for a validation-only request.
 pub struct ValidateInput {
+    /// Structured query clauses to validate without execution.
     pub clauses: Vec<Clause>,
 }
 
 /// Output from a successful pipeline execution.
 #[derive(Debug)]
 pub struct QueryOutput {
+    /// Provider result encoded as JSON.
     pub results: serde_json::Value,
+    /// Unique identifier assigned to the request.
     pub request_id: String,
+    /// Whole-pipeline execution duration in milliseconds.
     pub execution_time_ms: u64,
+    /// Interceptor names applied to the request, in request order.
     pub interceptors_applied: Vec<String>,
 }
 
 /// Output from a validation-only request.
 #[derive(Debug)]
 pub struct ValidateOutput {
+    /// Whether every supplied clause passed static validation.
     pub is_valid: bool,
+    /// Deterministically ordered validation findings.
     pub errors: Vec<ValidationErrorDetail>,
 }
 
 /// A single validation error.
 #[derive(Debug)]
 pub struct ValidationErrorDetail {
+    /// Stable machine-readable validation code.
     pub code: String,
+    /// Human-readable validation explanation.
     pub message: String,
+    /// Logical location of the invalid query element.
     pub path: String,
 }
 
@@ -63,6 +77,9 @@ fn log_query_execution(database: &str, transaction_type: &str, typeql: &str) {
 /// Use [`PipelineBuilder`] to construct an instance.
 ///
 /// # Example
+///
+/// This example is ignored because it relies on application-defined executor
+/// and schema-source implementations.
 ///
 /// ```rust,ignore
 /// use type_bridge_server::{PipelineBuilder, QueryInput};
@@ -277,6 +294,9 @@ impl QueryPipeline {
 /// Builder for constructing a [`QueryPipeline`].
 ///
 /// # Example
+///
+/// This example is ignored because it relies on application-defined executor,
+/// schema-source, and interceptor implementations.
 ///
 /// ```rust,ignore
 /// use type_bridge_server::PipelineBuilder;

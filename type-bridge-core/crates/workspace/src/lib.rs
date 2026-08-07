@@ -1,13 +1,13 @@
 //! Validated, programmatic TypeBridge workspace configuration.
 //!
-//! This unpublished orchestration boundary deliberately stops before YAML
-//! parsing, schema loading, history, persistence, provider/network I/O, secret
-//! resolution, or compiled-runtime construction. The one bounded filesystem
-//! observation is explicit custom TLS trust material: callers inject a local
-//! source service that canonicalizes and proves the configured CA file before
+//! This public orchestration boundary deliberately stops before schema loading,
+//! history, persistence, provider/network I/O, secret resolution, or
+//! compiled-runtime construction. Its bounded filesystem observations are the
+//! explicitly supplied workspace YAML and custom TLS trust material: callers
+//! inject local source services that canonicalize and prove those inputs before
 //! an inert, fully validated [`TypeBridgeConfig`] is returned.
 
-#![warn(missing_docs)]
+#![deny(missing_docs)]
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
@@ -26,7 +26,9 @@ use type_bridge_contract::reserved::TYPEBRIDGE_JOURNAL_DATABASE_SUFFIX;
 use type_bridge_contract::schema::SourceSpan;
 use type_bridge_contract::semantic_profile::SemanticProfile;
 use type_bridge_schema::{SchemaSourceKind, SchemaSourceService};
-use type_bridge_schema_migration::MigrationSafetyPolicy;
+use type_bridge_schema_migration::{MigrationSafetyPolicy, validate_portable_direct_child};
+use unicode_casefold::UnicodeCaseFold as _;
+use unicode_normalization::UnicodeNormalization as _;
 
 mod authority;
 mod bundle;
@@ -53,8 +55,11 @@ pub use workspace_yaml::{
     ConfigOrigin, LocatedConfigSpec, TYPEBRIDGE_WORKSPACE_V1_FORMAT, TypeBridgeConfigSpec,
 };
 
-/// The exact server-semantic profile accepted by the first V2 workspace.
+/// The preferred server-semantic profile for newly authored V2 workspaces.
 pub const TYPEBRIDGE_WORKSPACE_SEMANTIC_PROFILE_ID: &str = "typedb-3.12.1/v1";
+/// Frozen server-semantic profiles accepted for workspace generation.
+pub const TYPEBRIDGE_WORKSPACE_SEMANTIC_PROFILE_IDS: &[&str] =
+    &["typedb-3.11.5/v1", TYPEBRIDGE_WORKSPACE_SEMANTIC_PROFILE_ID];
 
 const MAX_SYMBOLIC_ID_BYTES: usize = 255;
 const MAX_EXTENSION_VERSION_BYTES: usize = 64;
@@ -73,6 +78,8 @@ pub enum WorkspaceConfigErrorCode {
     PathNotConfined,
     /// The schema-set path was not a lowercase YAML path.
     InvalidSchemaSetPath,
+    /// The schema-authority output was not a lowercase JSON path.
+    InvalidSchemaAuthorityOutputPath,
     /// The migration path did not identify a direct V2 history directory.
     InvalidMigrationV2Directory,
     /// A required builder field was absent.
@@ -568,6 +575,48 @@ impl OutputDirectory {
     }
 }
 
+/// A confined portable file path for the generated server schema authority.
+///
+/// The path remains relative to the workspace root. Generation must resolve
+/// its parent through [`WorkspaceOutputDirectory::open_beneath`] and publish
+/// its final component through [`WorkspaceOutputDirectory::write_atomic`] so
+/// no symbolic-link component can redirect the artifact.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct SchemaAuthorityOutputPath(PathBuf);
+
+impl SchemaAuthorityOutputPath {
+    /// Validate a portable workspace-relative lowercase `.json` artifact path.
+    pub fn new(path: impl Into<PathBuf>) -> Result<Self, WorkspaceConfigError> {
+        let path = confined_relative_path(path, "schema_authority_output")?;
+        if path.components().any(|component| {
+            let Component::Normal(name) = component else {
+                return true;
+            };
+            validate_portable_direct_child(name).is_err()
+        }) {
+            return Err(WorkspaceConfigError::new(
+                WorkspaceConfigErrorCode::PathNotConfined,
+                "schema-authority output path is not portable",
+            )
+            .with_detail("schema_authority_output"));
+        }
+        if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
+            return Err(WorkspaceConfigError::new(
+                WorkspaceConfigErrorCode::InvalidSchemaAuthorityOutputPath,
+                "schema-authority output path must end in lowercase .json",
+            )
+            .with_detail("schema_authority_output"));
+        }
+        Ok(Self(path))
+    }
+
+    /// Return the canonical workspace-relative output path.
+    #[must_use]
+    pub fn as_path(&self) -> &Path {
+        &self.0
+    }
+}
+
 const fn output_field_name(target: BindingTarget) -> &'static str {
     match target {
         BindingTarget::Python => "output.python",
@@ -576,8 +625,31 @@ const fn output_field_name(target: BindingTarget) -> &'static str {
     }
 }
 
+pub(crate) fn portable_path_collision_key(path: &Path) -> Option<Vec<String>> {
+    path.components()
+        .map(|component| match component {
+            Component::Prefix(prefix) => prefix
+                .as_os_str()
+                .to_str()
+                .map(|value| format!("prefix:{}", value.case_fold().nfc().collect::<String>())),
+            Component::RootDir => Some("root:".to_owned()),
+            Component::CurDir => Some("cur:".to_owned()),
+            Component::ParentDir => Some("parent:".to_owned()),
+            Component::Normal(value) => value
+                .to_str()
+                .map(|value| value.case_fold().nfc().collect::<String>()),
+        })
+        .collect()
+}
+
 pub(crate) fn workspace_paths_overlap(left: &Path, right: &Path) -> bool {
-    left == right || left.starts_with(right) || right.starts_with(left)
+    let (Some(left_key), Some(right_key)) = (
+        portable_path_collision_key(left),
+        portable_path_collision_key(right),
+    ) else {
+        return left == right || left.starts_with(right) || right.starts_with(left);
+    };
+    left_key.starts_with(&right_key) || right_key.starts_with(&left_key)
 }
 
 fn valid_namespaced_id(value: &str) -> bool {
@@ -953,6 +1025,7 @@ pub struct TypeBridgeConfig {
     migration_v2_directory: MigrationV2Directory,
     outputs: BTreeMap<BindingTarget, OutputDirectory>,
     required_capabilities: CapabilitySet,
+    schema_authority_output: Option<SchemaAuthorityOutputPath>,
     schema_set: SchemaSetPath,
     secret_references: BTreeMap<SecretSlot, SecretReference>,
     semantic_profile: SemanticProfileId,
@@ -1055,6 +1128,12 @@ impl TypeBridgeConfig {
         &self.outputs
     }
 
+    /// Return the configured generated server-authority artifact path.
+    #[must_use]
+    pub const fn schema_authority_output(&self) -> Option<&SchemaAuthorityOutputPath> {
+        self.schema_authority_output.as_ref()
+    }
+
     /// Return retained symbolic references without resolving secret values.
     #[must_use]
     pub const fn secret_references(&self) -> &BTreeMap<SecretSlot, SecretReference> {
@@ -1083,6 +1162,7 @@ pub struct TypeBridgeConfigBuilder {
     migration_v2_directory: Option<MigrationV2Directory>,
     outputs: Vec<(BindingTarget, OutputDirectory)>,
     required_capabilities: CapabilitySet,
+    schema_authority_output: Option<SchemaAuthorityOutputPath>,
     schema_set: Option<SchemaSetPath>,
     secrets: Vec<(SecretSlot, SecretReference)>,
     semantic_profile: Option<SemanticProfileId>,
@@ -1101,6 +1181,7 @@ impl TypeBridgeConfigBuilder {
             migration_v2_directory: None,
             outputs: Vec::new(),
             required_capabilities: CapabilitySet::new(),
+            schema_authority_output: None,
             schema_set: None,
             secrets: Vec::new(),
             semantic_profile: None,
@@ -1221,6 +1302,18 @@ impl TypeBridgeConfigBuilder {
         self
     }
 
+    /// Select the generated server schema-authority artifact path.
+    #[must_use]
+    pub fn schema_authority_output(mut self, output: SchemaAuthorityOutputPath) -> Self {
+        Self::mark_duplicate(
+            &mut self.schema_authority_output,
+            output,
+            "schema_authority_output",
+            &mut self.duplicate_required_fields,
+        );
+        self
+    }
+
     /// Add one named deployment environment.
     #[must_use]
     pub fn environment(
@@ -1274,13 +1367,14 @@ impl TypeBridgeConfigBuilder {
         let semantic_profile = required(self.semantic_profile, "semantic_profile")?;
         let migration_v2_directory =
             required(self.migration_v2_directory, "migration_v2_directory")?;
+        let schema_authority_output = self.schema_authority_output;
 
-        if semantic_profile.as_str() != TYPEBRIDGE_WORKSPACE_SEMANTIC_PROFILE_ID
+        if !TYPEBRIDGE_WORKSPACE_SEMANTIC_PROFILE_IDS.contains(&semantic_profile.as_str())
             || SemanticProfile::resolve(&semantic_profile).is_err()
         {
             return Err(WorkspaceConfigError::new(
                 WorkspaceConfigErrorCode::UnsupportedSemanticProfile,
-                "workspace requires the exact frozen TypeDB 3.12.1 semantic profile",
+                "workspace requires a frozen TypeDB 3.11.5 or 3.12.1 semantic profile",
             )
             .with_detail(semantic_profile.as_str()));
         }
@@ -1329,6 +1423,9 @@ impl TypeBridgeConfigBuilder {
         ];
         for (target, directory) in &outputs {
             workspace_paths.push((output_field_name(*target), directory.as_path()));
+        }
+        if let Some(output) = &schema_authority_output {
+            workspace_paths.push(("artifact.schema_authority", output.as_path()));
         }
         for left_index in 0..workspace_paths.len() {
             for right_index in (left_index + 1)..workspace_paths.len() {
@@ -1408,6 +1505,25 @@ impl TypeBridgeConfigBuilder {
             }
         }
 
+        if let Some(output) = &schema_authority_output {
+            let mut output_absolute = self.workspace_root.as_path().to_path_buf();
+            output_absolute.extend(output.as_path().components());
+            for (name, environment) in &environments {
+                if let WorkspaceTransportPolicy::CustomRootCa(root_ca) =
+                    environment.transport_policy()
+                    && workspace_paths_overlap(&output_absolute, root_ca.as_path())
+                {
+                    return Err(WorkspaceConfigError::new(
+                        WorkspaceConfigErrorCode::OverlappingWorkspacePath,
+                        "schema-authority output cannot overlap custom trust material",
+                    )
+                    .with_detail(format!(
+                        "artifact.schema_authority,environment.{name}.tls_root_ca"
+                    )));
+                }
+            }
+        }
+
         let mut secret_references = BTreeMap::new();
         for (slot, reference) in self.secrets {
             if secret_references.insert(slot, reference).is_some() {
@@ -1468,6 +1584,7 @@ impl TypeBridgeConfigBuilder {
             migration_v2_directory,
             outputs,
             required_capabilities: self.required_capabilities,
+            schema_authority_output,
             schema_set,
             secret_references,
             semantic_profile,

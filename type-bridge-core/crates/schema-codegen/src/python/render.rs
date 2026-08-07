@@ -11,7 +11,9 @@ use type_bridge_contract::projection::{
 };
 use type_bridge_contract::value::ValueTypeTag;
 
-use crate::{GeneratedPackage, documentation_annotation, invalid, model_documentation};
+use crate::{
+    EmbeddedAuthority, GeneratedPackage, documentation_annotation, invalid, model_documentation,
+};
 
 const PUBLIC_RUNTIME_NAMES: &[&str] = &[
     "CrudEvent",
@@ -74,6 +76,7 @@ macro_rules! canonical_text {
 
 pub(super) fn render(
     projection: &RuntimeProjection,
+    authority: &EmbeddedAuthority,
     runtime_source: &[u8],
     runtime_stub: &[u8],
     query_source: &[u8],
@@ -82,6 +85,10 @@ pub(super) fn render(
 ) -> Result<GeneratedPackage, Diagnostic> {
     validate_projection(projection)?;
     GeneratedPackage::try_new([
+        (
+            "_authority.py".to_owned(),
+            finish(render_authority(authority)?),
+        ),
         (
             "__init__.py".to_owned(),
             finish(render_init(projection, false)),
@@ -105,6 +112,13 @@ pub(super) fn render(
         ("_schema.py".to_owned(), finish(render_schema(projection)?)),
         ("py.typed".to_owned(), py_typed.to_vec()),
     ])
+}
+
+fn render_authority(authority: &EmbeddedAuthority) -> Result<String, Diagnostic> {
+    Ok(format!(
+        "from __future__ import annotations\n\nfrom typing import Final as _Final\n\nSCHEMA_AUTHORITY_BYTES: _Final[bytes] = {}.encode(\"utf-8\")\n",
+        python_string(&authority.canonical_envelope_json)?,
+    ))
 }
 
 fn finish(mut source: String) -> Vec<u8> {

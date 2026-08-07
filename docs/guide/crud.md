@@ -23,8 +23,8 @@ package.
 | `insert_many(values)` | Insert one homogeneous batch atomically. |
 | `put(value)` | Idempotently match/insert by the declared key. |
 | `put_many(values)` | Put one homogeneous batch atomically. |
-| `update(value)` | Replace the exact IID-bearing Python model. |
-| `delete(value_or_iid)` | Delete the exact generated model by IID. |
+| `update(value)` | Update by attached IID, or resolve a detached Python model by its projected key. |
+| `delete(value_or_iid)` | Delete by IID, or resolve a detached Python model by its projected key. |
 | `get_by_iid(iid)` | Return one hydrated model or `None`. |
 | `filter(**lookups)` | Return a new immutable filtered manager. |
 | `all()` / `first()` | Materialize all or the first match. |
@@ -44,8 +44,11 @@ manager.delete(ada)
 assert manager.get_by_iid(ada.iid) is None
 ```
 
-`update` and `delete` require an attached canonical TypeDB IID. `put` requires
-the generated model's projected key contract.
+For Python, `update` and model-valued `delete` use an attached canonical TypeDB
+IID when present. A detached model is resolved by its projected key; if no row
+has that key, the operation is a no-op and the model remains detached. Passing
+an IID string to `delete` keeps exact-IID behavior. `put` requires the generated
+model's projected key contract.
 
 ## Filters
 

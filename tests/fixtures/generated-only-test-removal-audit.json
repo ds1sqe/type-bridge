@@ -13,8 +13,8 @@
       "reason": "The removed Node TypeQL parser and handwritten generator were authoring paths. Split-YAML now feeds the shared Rust projection engine and the TypeScript emitter.",
       "evidence": [
         {
-          "path": "type-bridge-core/crates/schema-codegen/tests/typescript_acceptance/check.mjs",
-          "needles": ["emit_typescript_acceptance", "runtime_check.mjs"]
+          "path": "scripts/ci/prepare_generated_live_fixture.sh",
+          "needles": ["type-bridge-cli", "schema generate", "generated_foreign"]
         },
         {
           "path": "type-bridge-core/crates/schema-codegen/tests/cross_binding.rs",
@@ -258,8 +258,8 @@
       "reason": "Programmatic TypeQL-to-model generation and direct TOML generator routing were removed. Workspace Split-YAML generation now exercises all three emitters, exact negative typing, runtime validation, and clean package import.",
       "evidence": [
         {
-          "path": "type-bridge-core/crates/schema-codegen/tests/acceptance/check.py",
-          "needles": ["emit_python_acceptance", "runtime_check.py"]
+          "path": "scripts/ci/prepare_generated_live_fixture.sh",
+          "needles": ["type-bridge-cli", "schema generate", "generated_variant"]
         },
         {
           "path": "type-bridge-core/crates/schema-codegen/tests/cross_binding.rs",

@@ -4,8 +4,9 @@ use type_bridge_contract::diagnostic::Diagnostic;
 use type_bridge_contract::projection::{
     BindingTarget, CodeResourceDigest, ProjectionConfig, ProjectionHandler, RuntimeProjection,
 };
+use type_bridge_schema::VerifiedSchemaAuthority;
 
-use crate::{GeneratedPackage, invalid};
+use crate::{GeneratedPackage, embedded_authority, invalid};
 
 const RUNTIME_SOURCE: &[u8] = include_bytes!("runtime.py");
 const RUNTIME_STUB: &[u8] = include_bytes!("runtime.pyi");
@@ -49,8 +50,12 @@ impl PythonEmitter {
         Ok(resources)
     }
 
-    /// Emit exactly ten deterministic files without filesystem mutation.
-    pub fn emit(&self, projection: &RuntimeProjection) -> Result<GeneratedPackage, Diagnostic> {
+    /// Emit one deterministic package bound to exact verified schema authority.
+    pub fn emit(
+        &self,
+        projection: &RuntimeProjection,
+        authority: &VerifiedSchemaAuthority,
+    ) -> Result<GeneratedPackage, Diagnostic> {
         let handlers = self.generator_handlers();
         let resources = self.code_resources()?;
         if projection.target() != BindingTarget::Python
@@ -63,8 +68,10 @@ impl PythonEmitter {
                 "projection target, handler, or resource evidence does not match this emitter",
             ));
         }
+        let authority = embedded_authority(projection, authority)?;
         render::render(
             projection,
+            &authority,
             RUNTIME_SOURCE,
             RUNTIME_STUB,
             QUERY_SOURCE,

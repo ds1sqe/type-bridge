@@ -1,5 +1,7 @@
 //! Verified offline schema migration contracts and provider lowering policy.
 
+#![deny(missing_docs)]
+
 mod apply_plan;
 mod coordinator;
 mod directory;

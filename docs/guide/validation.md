@@ -36,10 +36,12 @@ or generated package cannot be composed into the query.
 
 ## Runtime validation
 
-Runtime projection installation verifies canonical declared-schema and
-projection fingerprints. Managers and query sessions then accept only the exact
-classes installed for that package. A class with matching-looking attributes is
-not a generated model and is rejected.
+Runtime projection installation verifies the embedded compiled schema authority
+and projection fingerprints. Managers and query sessions then accept only the
+exact classes installed for that package. A class with matching-looking
+attributes is not a generated model and is rejected. Python and TypeScript
+remote sessions derive authority from this installation and never accept a
+schema-authority file.
 
 Value constructors enforce scalar domains and collection bounds. Native
 lowering revalidates exact attribute wrappers, role players, IIDs, query

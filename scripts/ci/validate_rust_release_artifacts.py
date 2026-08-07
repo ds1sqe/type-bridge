@@ -17,6 +17,18 @@ from collections.abc import Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+try:
+    from cargo_release_inventory import load_inventory as load_cargo_release_inventory
+except ModuleNotFoundError:
+    from scripts.ci.cargo_release_inventory import (
+        load_inventory as load_cargo_release_inventory,
+    )
+
+try:
+    from cargo_release_candidate import CandidateError, validate_candidate_bundle
+except ModuleNotFoundError:
+    from scripts.ci.cargo_release_candidate import CandidateError, validate_candidate_bundle
+
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -38,23 +50,9 @@ CANONICAL_LICENSE_DIGESTS = {
     APACHE_2_LICENSE: "a6cba85bc92e0cff7a450b1d873c0eaa2e9fc96bf472df0247a26bec77bf3ff9",
     MPL_2_LICENSE: "3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04",
 }
-FIRST_PARTY_PACKAGES = (
-    "type-bridge-contract",
-    "type-bridge-core-lib",
-    "type-bridge-schema",
-    "type-bridge-query",
-    "type-bridge-schema-migration",
-    "type-bridge-toml-transpiler",
-    "type-bridge-schema-compat",
-    "type-bridge-schema-codegen",
-    "type-bridge-orm-derive",
-    "type-bridge-typedb-runtime",
-    "type-bridge-orm",
-    "type-bridge-migration",
-    "type-bridge-schema-migration-typedb",
-    "type-bridge-workspace",
-    "type-bridge-cli",
-    "type-bridge",
+CARGO_RELEASE_INVENTORY = load_cargo_release_inventory()
+FIRST_PARTY_PACKAGES = tuple(
+    package.name for package in CARGO_RELEASE_INVENTORY.first_party_packages
 )
 VENDORED_PACKAGES = {
     "type-bridge-typedb-protocol-b8": ("3.11.0", MPL_2_LICENSE),
@@ -63,6 +61,10 @@ VENDORED_PACKAGES = {
 VENDORED_SOURCE_MANIFESTS = {
     "type-bridge-typedb-protocol-b8": Path("type-bridge-core/vendor/typedb-protocol-b8/Cargo.toml"),
     "type-bridge-typedb-driver-b8": Path("type-bridge-core/vendor/typedb-driver-b8/Cargo.toml"),
+}
+PUBLIC_SOURCE_READMES = {
+    package.name: Path("type-bridge-core") / Path(package.manifest).parent / "README.md"
+    for package in CARGO_RELEASE_INVENTORY.public_packages
 }
 MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
 MAX_ARCHIVE_FILES = 20_000
@@ -224,6 +226,28 @@ def read_source_manifest(path: Path, *, label: str) -> bytes:
     return body
 
 
+def read_source_readme(path: Path, *, label: str) -> bytes:
+    """Read one bounded regular package README without following a symlink."""
+    try:
+        file_stat = path.lstat()
+    except OSError as error:
+        raise ValidationError(f"Could not inspect {label} {path}: {error}") from error
+    if stat.S_ISLNK(file_stat.st_mode) or not stat.S_ISREG(file_stat.st_mode):
+        raise ValidationError(f"{label} is linked or non-regular: {path}")
+    if file_stat.st_size < 0 or file_stat.st_size > MAX_ARCHIVE_MEMBER_BYTES:
+        raise ValidationError(
+            f"{label} exceeds the README byte budget: "
+            f"size={file_stat.st_size}, maximum={MAX_ARCHIVE_MEMBER_BYTES}"
+        )
+    try:
+        body = path.read_bytes()
+    except OSError as error:
+        raise ValidationError(f"Could not read {label} {path}: {error}") from error
+    if len(body) != file_stat.st_size:
+        raise ValidationError(f"{label} changed while it was read: {path}")
+    return body
+
+
 def expected_normalized_vendor_manifest(
     source_manifest: dict[str, Any],
     *,
@@ -336,9 +360,10 @@ def validate_archive(
     name: str,
     version: str,
     license_id: str,
+    source_readme_path: Path,
     source_manifest_path: Path | None = None,
 ) -> dict[str, str | int]:
-    """Validate one exact package identity and its canonical root LICENSE."""
+    """Validate one package identity, README, and canonical root LICENSE."""
     archive = read_archive(path)
     root = f"{name}-{version}"
     label = f"Rust release archive {name}@{version}"
@@ -364,6 +389,20 @@ def validate_archive(
             f"{label} license-file must reference the packaged root LICENSE: "
             f"actual={package.get('license-file')!r}"
         )
+    if package.get("readme") != "README.md":
+        raise ValidationError(
+            f"{label} readme metadata must reference the packaged root README.md: "
+            f"actual={package.get('readme')!r}"
+        )
+    packaged_readme = files.get("README.md")
+    if packaged_readme is None:
+        raise ValidationError(f"{label} has no declared root README.md")
+    source_readme = read_source_readme(
+        source_readme_path,
+        label=f"repository README for {name}",
+    )
+    if packaged_readme != source_readme:
+        raise ValidationError(f"{label} README.md drifted from its repository source")
     if source_manifest_path is not None:
         validate_vendored_manifest_payload(
             files,
@@ -428,6 +467,7 @@ def validate_release_artifacts(
                 name=name,
                 version=version,
                 license_id=license_id,
+                source_readme_path=repository_root / PUBLIC_SOURCE_READMES[name],
                 source_manifest_path=(
                     repository_root / VENDORED_SOURCE_MANIFESTS[name]
                     if name in VENDORED_SOURCE_MANIFESTS
@@ -442,23 +482,61 @@ def validate_release_artifacts(
     }
 
 
+def validate_release_candidate(
+    candidate_bundle: Path,
+    *,
+    expected_release_version: str,
+    repository_root: Path = REPOSITORY_ROOT,
+    expected_manifest_sha256: str | None = None,
+) -> dict[str, Any]:
+    """Validate the manifest-bound archive set accepted for publication."""
+    try:
+        candidate = validate_candidate_bundle(
+            candidate_bundle,
+            expected_release_version=expected_release_version,
+            expected_manifest_sha256=expected_manifest_sha256,
+        )
+    except CandidateError as error:
+        raise ValidationError(f"Cargo candidate bundle is invalid: {error}") from error
+    report = validate_release_artifacts(
+        candidate.root,
+        expected_release_version=expected_release_version,
+        repository_root=repository_root,
+    )
+    report["candidate_manifest_sha256"] = candidate.manifest_sha256
+    return report
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the Rust release-artifact validator CLI."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--artifacts-dir", type=Path, required=True)
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--artifacts-dir", type=Path)
+    source.add_argument("--candidate-bundle", type=Path)
     parser.add_argument("--expected-release-version", required=True)
     parser.add_argument("--repository-root", type=Path, default=REPOSITORY_ROOT)
+    parser.add_argument("--expected-manifest-sha256")
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Validate and print the exact Rust release archive report."""
     args = build_parser().parse_args(argv)
-    report = validate_release_artifacts(
-        args.artifacts_dir,
-        expected_release_version=args.expected_release_version,
-        repository_root=args.repository_root.resolve(),
-    )
+    if args.candidate_bundle is not None:
+        report = validate_release_candidate(
+            args.candidate_bundle,
+            expected_release_version=args.expected_release_version,
+            repository_root=args.repository_root.resolve(),
+            expected_manifest_sha256=args.expected_manifest_sha256,
+        )
+    else:
+        if args.expected_manifest_sha256 is not None:
+            raise ValidationError("--expected-manifest-sha256 requires --candidate-bundle")
+        report = validate_release_artifacts(
+            args.artifacts_dir,
+            expected_release_version=args.expected_release_version,
+            repository_root=args.repository_root.resolve(),
+        )
     print(json.dumps(report, indent=2, sort_keys=True))
     return 0
 

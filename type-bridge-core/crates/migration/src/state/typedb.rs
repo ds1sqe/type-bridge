@@ -1,9 +1,9 @@
 //! TypeDB-backed [`MigrationStateStore`] implementation.
 //!
 //! [`TypeDbStateStore`] persists the established migration projection and run
-//! log over the ORM [`Database`][type_bridge_orm::Database] seam. Its per-type
+//! log over the ORM [`Database`] seam. Its per-type
 //! bootstrap definitions are rendered from the canonical migration-state
-//! [`SchemaInfo`][type_bridge_orm::_schema::SchemaInfo], and its row queries use
+//! [`SchemaInfo`], and its row queries use
 //! the same semantic label constants. Existing labels, value types, keys, and
 //! storage behavior remain unchanged.
 //!

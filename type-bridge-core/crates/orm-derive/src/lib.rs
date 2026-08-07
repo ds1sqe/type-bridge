@@ -1,5 +1,7 @@
 //! Generated-query derives for the TypeBridge Rust client.
 
+#![deny(missing_docs)]
+
 use proc_macro::TokenStream;
 
 mod selected_row;

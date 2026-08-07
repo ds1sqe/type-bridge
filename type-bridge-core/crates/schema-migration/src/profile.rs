@@ -15,6 +15,9 @@ use type_bridge_contract::schema::{
     AnnotationFact, AnnotationKindId, AnnotationSubjectId, SchemaAnnotationValue, SchemaFact,
     SchemaOperation, SchemaOperationKind,
 };
+use type_bridge_contract::schema_delta::{
+    SCHEMA_TRANSITION_CAPABILITY_IDS, schema_transition_capability_vocabulary,
+};
 use type_bridge_contract::schema_lowering::{
     SCHEMA_LOWERING_PROFILE_CANONICALIZATION, SCHEMA_LOWERING_PROFILE_FINGERPRINT_DOMAIN,
     SchemaLoweringProfileBinding, SchemaLoweringProfileFingerprint, SchemaLoweringProfileId,
@@ -25,44 +28,42 @@ const PROVIDER: &str = "typedb";
 const PROVIDER_VERSION: &str = "3.12.1";
 const SEMANTIC_PROFILE: &str = "typedb-3.12.1/v1";
 
-const CAP_TRANSACTION_ATOMIC: &str = "schema.transaction.atomic";
-const CAP_DEFINE: &str = "schema.transition.define";
-const CAP_UNDEFINE: &str = "schema.transition.undefine";
-const CAP_REDEFINE_SUB: &str = "schema.transition.redefine.sub";
-const CAP_REDEFINE_VALUE: &str = "schema.transition.redefine.value";
-const CAP_REDEFINE_RELATES_SPECIALIZATION: &str =
-    "schema.transition.redefine.relates.specialization";
-const CAP_REDEFINE_ANNOTATION: &str = "schema.transition.redefine.annotation";
-const CAP_REDEFINE_FUNCTION: &str = "schema.transition.redefine.function";
-const CAP_REPLACE_SUB_ANNOTATION: &str = "schema.transition.replace.sub.annotation";
-
-const REQUIRED_CAPABILITY_IDS: [&str; 9] = [
-    CAP_TRANSACTION_ATOMIC,
-    CAP_DEFINE,
-    CAP_UNDEFINE,
-    CAP_REDEFINE_SUB,
-    CAP_REDEFINE_VALUE,
-    CAP_REDEFINE_RELATES_SPECIALIZATION,
-    CAP_REDEFINE_ANNOTATION,
-    CAP_REDEFINE_FUNCTION,
-    CAP_REPLACE_SUB_ANNOTATION,
-];
+const CAP_TRANSACTION_ATOMIC: &str = SCHEMA_TRANSITION_CAPABILITY_IDS[0];
+const CAP_DEFINE: &str = SCHEMA_TRANSITION_CAPABILITY_IDS[1];
+const CAP_UNDEFINE: &str = SCHEMA_TRANSITION_CAPABILITY_IDS[2];
+const CAP_REDEFINE_SUB: &str = SCHEMA_TRANSITION_CAPABILITY_IDS[3];
+const CAP_REDEFINE_VALUE: &str = SCHEMA_TRANSITION_CAPABILITY_IDS[4];
+const CAP_REDEFINE_RELATES_SPECIALIZATION: &str = SCHEMA_TRANSITION_CAPABILITY_IDS[5];
+const CAP_REDEFINE_ANNOTATION: &str = SCHEMA_TRANSITION_CAPABILITY_IDS[6];
+const CAP_REDEFINE_FUNCTION: &str = SCHEMA_TRANSITION_CAPABILITY_IDS[7];
+const CAP_REPLACE_SUB_ANNOTATION: &str = SCHEMA_TRANSITION_CAPABILITY_IDS[8];
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
+/// Schema fact category addressed by a lowering rule.
 pub enum FactKind {
+    /// Type declaration fact.
     Type,
+    /// Direct subtype fact.
     Sub,
+    /// Attribute value-type fact.
     Value,
+    /// Attribute ownership fact.
     Owns,
+    /// Relation role declaration fact.
     Relates,
+    /// Relation role specialization fact.
     RelatesSpecialization,
+    /// Role-playing fact.
     Plays,
+    /// Function declaration fact.
     Function,
+    /// Struct declaration fact.
     Struct,
 }
 
 impl FactKind {
+    /// Closed set of fact kinds in stable registry order.
     pub const ALL: [Self; 9] = [
         Self::Type,
         Self::Sub,
@@ -78,30 +79,45 @@ impl FactKind {
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
+/// Operation applied to one schema fact.
 pub enum FactTransition {
+    /// Introduce a fact.
     Define,
+    /// Remove a fact.
     Undefine,
+    /// Replace a fact in place.
     Redefine,
 }
 
 impl FactTransition {
+    /// Closed set of fact transitions in stable registry order.
     pub const ALL: [Self; 3] = [Self::Define, Self::Undefine, Self::Redefine];
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
+/// Schema subject category to which an annotation is attached.
 pub enum AnnotationSubjectKind {
+    /// Type declaration subject.
     Type,
+    /// Direct subtype subject.
     Sub,
+    /// Attribute value-type subject.
     Value,
+    /// Attribute ownership subject.
     Owns,
+    /// Relation role subject.
     Relates,
+    /// Role-playing subject.
     Plays,
+    /// Function declaration subject.
     Function,
+    /// Struct declaration subject.
     Struct,
 }
 
 impl AnnotationSubjectKind {
+    /// Closed set of annotation subjects in stable registry order.
     pub const ALL: [Self; 8] = [
         Self::Type,
         Self::Sub,
@@ -116,20 +132,32 @@ impl AnnotationSubjectKind {
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
+/// Annotation category covered by the lowering profile.
 pub enum AnnotationKind {
+    /// Abstract-type annotation.
     Abstract,
+    /// Independent-attribute annotation.
     Independent,
+    /// Key annotation.
     Key,
+    /// Unique annotation.
     Unique,
+    /// Cardinality annotation.
     Card,
+    /// Regular-expression constraint.
     Regex,
+    /// Ordered range constraint.
     Range,
+    /// Enumerated-values constraint.
     Values,
+    /// Documentation annotation.
     Doc,
+    /// Keyed metadata annotation.
     Meta,
 }
 
 impl AnnotationKind {
+    /// Closed set of annotation kinds in stable registry order.
     pub const ALL: [Self; 10] = [
         Self::Abstract,
         Self::Independent,
@@ -146,77 +174,126 @@ impl AnnotationKind {
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
+/// Change applied to an annotation.
 pub enum AnnotationTransition {
+    /// Attach an annotation that was absent.
     Add,
+    /// Replace an annotation value.
     Change,
+    /// Remove an annotation.
     Remove,
 }
 
 impl AnnotationTransition {
+    /// Closed set of annotation transitions in stable registry order.
     pub const ALL: [Self; 3] = [Self::Add, Self::Change, Self::Remove];
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
+/// Provider operation used to lower a semantic transition.
 pub enum LoweringMechanism {
+    /// Lower to a TypeQL `define` statement.
     Define,
+    /// Lower to a TypeQL `undefine` statement.
     Undefine,
+    /// Lower to a TypeQL `redefine` statement.
     Redefine,
+    /// Lower to an atomic `undefine` followed by `define`.
     AtomicUndefineDefine,
+    /// The provider cannot faithfully lower the transition.
     Unsupported,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+/// Complete lowering and safety decision for one transition.
 pub struct TransitionRule {
+    /// Provider operation used for lowering.
     pub mechanism: LoweringMechanism,
+    /// Required operator-safety classification.
     pub safety: SafetyClass,
+    /// Capabilities required from the execution provider.
     pub required_capabilities: CapabilitySet,
+    /// Whether metadata removal must address one exact metadata key.
     pub keyed_meta: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+/// Registry row for one fact transition.
 pub struct FactTransitionRule {
+    /// Fact category matched by the row.
     pub fact: FactKind,
+    /// Transition matched by the row.
     pub transition: FactTransition,
+    /// Lowering decision for the matched pair.
     pub rule: TransitionRule,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+/// Registry row for one annotation transition.
 pub struct AnnotationTransitionRule {
+    /// Subject category matched by the row.
     pub subject: AnnotationSubjectKind,
+    /// Annotation category matched by the row.
     pub annotation: AnnotationKind,
+    /// Transition matched by the row.
     pub transition: AnnotationTransition,
+    /// Lowering decision for the matched tuple.
     pub rule: TransitionRule,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
+/// Semantic safety scenario classified independently of provider syntax.
 pub enum SafetyScenario {
+    /// An explicit annotation equals the provider's implicit default.
     ExplicitDefaultEquivalent,
+    /// Documentation or metadata changes without stored-data impact.
     DocMetaTransition,
+    /// Add an optional ownership, role, or playing interface.
     AddOptionalInterface,
+    /// Add an interface with a required minimum cardinality.
     AddRequiredCardinality,
+    /// Add a key or uniqueness constraint.
     AddKeyOrUnique,
+    /// Expand an allowed cardinality interval.
     WidenCardinality,
+    /// Contract an allowed cardinality interval.
     NarrowCardinality,
+    /// Remove a cardinality annotation equal to the provider default.
     RemoveCardinalityToEqualDefault,
+    /// Remove a cardinality annotation whose provider default is narrower.
     RemoveCardinalityToNarrowerDefault,
+    /// Remove a cardinality annotation whose provider default is wider.
     RemoveCardinalityToWiderDefault,
+    /// Add or tighten a stored-value constraint.
     AddOrTightenValueConstraint,
+    /// Remove a stored-value constraint.
     RemoveValueConstraint,
+    /// Mark a type abstract.
     AddAbstract,
+    /// Make an abstract type concrete.
     RemoveAbstract,
+    /// Mark an attribute type independent.
     AddIndependent,
+    /// Remove independent attribute status.
     RemoveIndependent,
+    /// Change a direct supertype.
     ChangeSub,
+    /// Change a relation role specialization.
     ChangeRelatesSpecialization,
+    /// Change an attribute value type.
     ChangeValueType,
+    /// Remove a schema fact.
     RemoveFact,
+    /// Replace a function definition.
     RedefineFunction,
+    /// Request a transition unsupported by the provider profile.
     UnsupportedProviderTransition,
 }
 
 impl SafetyScenario {
+    /// Closed set of safety scenarios in stable registry order.
     pub const ALL: [Self; 22] = [
         Self::ExplicitDefaultEquivalent,
         Self::DocMetaTransition,
@@ -245,34 +322,53 @@ impl SafetyScenario {
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
+/// Additional evidence required before a migration can proceed safely.
 pub enum EvidenceRequirement {
+    /// No evidence beyond the verified schema delta is required.
     None,
+    /// Existing stored data must be proven valid under the target schema.
     ExistingDataSatisfiesTarget,
+    /// Existing instances require a data backfill.
     Backfill,
+    /// Values require an explicit conversion supplied by the operator.
     ExplicitConversion,
+    /// The operator must approve the classified risk.
     OperatorApproval,
+    /// The execution provider must first gain support for the transition.
     ProviderSupport,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+/// Safety classification and evidence policy for one semantic scenario.
 pub struct SafetyScenarioRule {
+    /// Scenario classified by the row.
     pub scenario: SafetyScenario,
+    /// Safety class assigned to the scenario.
     pub safety: SafetyClass,
+    /// Evidence required before execution.
     pub evidence: EvidenceRequirement,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
+/// Interface category with a provider-defined default cardinality.
 pub enum InterfaceKind {
+    /// Attribute ownership interface.
     Owns,
+    /// Relation role interface.
     Relates,
+    /// Role-playing interface.
     Plays,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+/// Provider default cardinality for one interface category.
 pub struct InterfaceDefault {
+    /// Interface category governed by this default.
     pub interface: InterfaceKind,
+    /// Inclusive minimum cardinality.
     pub min: u64,
+    /// Inclusive maximum cardinality, or unbounded when absent.
     pub max: Option<u64>,
 }
 
@@ -296,25 +392,42 @@ const TYPEDB_3_12_1_INTERFACE_DEFAULTS: [InterfaceDefault; 3] = [
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
+/// Measured provider behavior that supports the frozen lowering profile.
 pub enum EvidenceFlag {
+    /// `redefine` statements address exactly one schema subject.
     RedefineQueriesAreSingleton,
+    /// A rejected `redefine` leaves the schema unchanged.
     RejectedRedefinePreservesSchema,
+    /// Schema transactions commit atomically.
     SchemaTransactionsAreAtomic,
+    /// Role specialization preserves data that remains valid.
     RelatesSpecializationPreservesValidData,
+    /// Direct redefinition of a subtype annotation is rejected.
     SubAnnotationDirectRedefineRejected,
+    /// Atomic replacement of a subtype annotation is supported.
     SubAnnotationAtomicReplacementSupported,
+    /// Metadata removal addresses one exact metadata key.
     MetaRemovalIsKeyed,
+    /// Function redefinition alone can leave stored metadata stale.
     FunctionRedefineLeavesStoredMetadataStale,
+    /// Atomic function replacement updates its bound metadata.
     FunctionAtomicReplacementUpdatesMetadata,
+    /// Struct transitions are not supported by this profile.
     StructTransitionsUnsupported,
+    /// Removing independence deletes attributes without an owner.
     IndependentRemovalDeletesOwnerlessAttributes,
+    /// Guarded schema changes reject incompatible stored data.
     GuardedChangesRejectInvalidData,
+    /// Removing an owns cardinality restores the `0..1` default.
     OwnsCardRemovalRestoresZeroToOneDefault,
+    /// Removing a relates cardinality restores the `0..1` default.
     RelatesCardRemovalRestoresZeroToOneDefault,
+    /// Removing a plays cardinality restores the `0..*` default.
     PlaysCardRemovalRestoresZeroToUnboundedDefault,
 }
 
 impl EvidenceFlag {
+    /// Closed set of provider evidence flags in stable registry order.
     pub const ALL: [Self; 15] = [
         Self::RedefineQueriesAreSingleton,
         Self::RejectedRedefinePreservesSchema,
@@ -335,23 +448,38 @@ impl EvidenceFlag {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+/// Frozen, fingerprinted registry for lowering schema deltas to one provider.
 pub struct SchemaLoweringProfile {
+    /// Stable profile identifier.
     pub id: SchemaLoweringProfileId,
+    /// Domain used to fingerprint canonical profile bytes.
     pub fingerprint_domain: FingerprintDomain,
+    /// Canonicalization identity used for profile bytes.
     pub canonicalization: CanonicalizationVersion,
+    /// Schema semantic profile accepted by this lowering profile.
     pub semantic_profile: SemanticProfileId,
+    /// Provider family name.
     pub provider: String,
+    /// Exact measured provider version.
     pub provider_version: String,
+    /// Whether schema statements execute transactionally.
     pub transactional_schema_queries: bool,
+    /// Capabilities required to execute every supported rule.
     pub required_capabilities: CapabilitySet,
+    /// Provider defaults for schema interfaces.
     pub interface_defaults: Vec<InterfaceDefault>,
+    /// Closed fact-transition rule table.
     pub fact_rules: Vec<FactTransitionRule>,
+    /// Closed annotation-transition rule table.
     pub annotation_rules: Vec<AnnotationTransitionRule>,
+    /// Closed semantic safety rule table.
     pub safety_rules: Vec<SafetyScenarioRule>,
+    /// Measured provider evidence bound by the profile.
     pub evidence: Vec<EvidenceFlag>,
 }
 
 impl SchemaLoweringProfile {
+    /// Return the rule for an exact fact transition, when registered.
     pub fn fact_rule(&self, fact: FactKind, transition: FactTransition) -> Option<&TransitionRule> {
         self.fact_rules
             .iter()
@@ -359,6 +487,7 @@ impl SchemaLoweringProfile {
             .map(|row| &row.rule)
     }
 
+    /// Return the rule for an exact annotation transition, when registered.
     pub fn annotation_rule(
         &self,
         subject: AnnotationSubjectKind,
@@ -375,6 +504,7 @@ impl SchemaLoweringProfile {
             .map(|row| &row.rule)
     }
 
+    /// Return the safety rule for an exact semantic scenario.
     pub fn safety_rule(&self, scenario: SafetyScenario) -> Option<&SafetyScenarioRule> {
         self.safety_rules
             .iter()
@@ -678,6 +808,7 @@ fn redefine(safety: SafetyClass, capability: &str, keyed_meta: bool) -> Transiti
     )
 }
 
+/// Resolve the compiled lowering rule for a schema fact transition.
 pub fn fact_transition_rule(fact: FactKind, transition: FactTransition) -> TransitionRule {
     use FactKind as F;
     use FactTransition as T;
@@ -729,6 +860,7 @@ fn annotation_is_supported(subject: AnnotationSubjectKind, annotation: Annotatio
     }
 }
 
+/// Resolve the compiled lowering rule for an annotation transition.
 pub fn annotation_transition_rule(
     subject: AnnotationSubjectKind,
     annotation: AnnotationKind,
@@ -876,7 +1008,7 @@ fn build_profile() -> SchemaLoweringProfile {
         provider: PROVIDER.to_owned(),
         provider_version: PROVIDER_VERSION.to_owned(),
         transactional_schema_queries: true,
-        required_capabilities: capabilities(&REQUIRED_CAPABILITY_IDS),
+        required_capabilities: schema_transition_capability_vocabulary(),
         interface_defaults: TYPEDB_3_12_1_INTERFACE_DEFAULTS.to_vec(),
         fact_rules,
         annotation_rules,
@@ -885,16 +1017,19 @@ fn build_profile() -> SchemaLoweringProfile {
     }
 }
 
+/// Return the immutable TypeDB 3.12.1 lowering profile.
 pub fn typedb_3_12_1_profile() -> &'static SchemaLoweringProfile {
     static PROFILE: OnceLock<SchemaLoweringProfile> = OnceLock::new();
     PROFILE.get_or_init(build_profile)
 }
 
+/// Encode the compiled lowering profile as canonical JSON bytes.
 pub fn canonical_profile_bytes() -> Vec<u8> {
     to_canonical_json(typedb_3_12_1_profile())
         .expect("the trusted schema-lowering profile has canonical bytes")
 }
 
+/// Compute the canonical fingerprint of the compiled lowering profile.
 pub fn profile_fingerprint() -> SchemaLoweringProfileFingerprint {
     SchemaLoweringProfileFingerprint::compute(&canonical_profile_bytes())
 }

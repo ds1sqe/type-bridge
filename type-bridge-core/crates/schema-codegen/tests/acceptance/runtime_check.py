@@ -5,9 +5,7 @@ import struct
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
-from pathlib import Path
 
-import generated_v2
 import generated_v2._query as generated_query_module
 from generated_v2 import (
     PLAYING_FACTS,
@@ -46,7 +44,7 @@ from generated_v2 import (
     aggregate,
 )
 from generated_variant import Person as VariantPerson
-from type_bridge_core import QueryV2Authority, QueryV2Error
+from type_bridge_core import QueryV2Error
 
 from type_bridge.query import QueryBuilder
 from type_bridge.session import Database
@@ -532,15 +530,7 @@ async def generated_failure_exchange(request: bytes) -> bytes:
     )
 
 
-declared_schema = (
-    Path(generated_v2.__file__).resolve().parent.parent / "declared-schema.json"
-).read_bytes()
 generated_remote_session = RemoteQuerySession(
-    QueryV2Authority(
-        declared_schema,
-        "python-generated-acceptance",
-        "typedb-3.12.1/v1",
-    ),
     generated_advertisement,
     generated_failure_exchange,
     RemoteQueryLimits(
@@ -573,10 +563,6 @@ except QueryV2Error as error:
 else:
     raise AssertionError("generated remote query accepted an authenticated application failure")
 assert generated_remote_exchanges == 1
-
-
-class FakeAuthority:
-    pass
 
 
 class FakeRow:
@@ -628,7 +614,6 @@ async def fake_exchange(request: bytes) -> bytes:
 
 
 remote_names = (
-    "QueryV2Authority",
     "query_v2_remote_model_context",
     "query_v2_prepare_remote_model_rows",
     "query_v2_prepare_remote_model_page",
@@ -642,7 +627,6 @@ saved_page_materializer = generated_query_module.Query.materialize_page
 saved_reduction_materializer = generated_query_module.Query.materialize_reduction
 reduce_calls: list[tuple[object, ...]] = []
 try:
-    generated_query_module.QueryV2Authority = FakeAuthority
     generated_query_module.query_v2_remote_model_context = lambda *arguments: object()
     generated_query_module.query_v2_prepare_remote_model_rows = lambda *arguments: FakePending()
     generated_query_module.query_v2_prepare_remote_model_page = lambda *arguments: FakePending()
@@ -667,7 +651,6 @@ try:
         else tuple(range(1, term_count + 1))
     )
     remote_session = RemoteQuerySession(
-        FakeAuthority(),
         b"generated-advertisement",
         fake_exchange,
         RemoteQueryLimits(

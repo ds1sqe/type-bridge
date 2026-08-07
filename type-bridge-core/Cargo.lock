@@ -3239,6 +3239,7 @@ dependencies = [
  "type-bridge-contract",
  "type-bridge-core-lib",
  "type-bridge-orm",
+ "type-bridge-schema",
 ]
 
 [[package]]
@@ -3383,8 +3384,7 @@ dependencies = [
  "type-bridge-orm",
  "type-bridge-query",
  "type-bridge-schema",
- "type-bridge-schema-migration-typedb",
- "type-bridge-server",
+ "type-bridge-schema-compat",
  "type-bridge-typedb-runtime",
  "uuid",
 ]
@@ -3458,10 +3458,13 @@ dependencies = [
  "cap-std",
  "serde",
  "serde_json",
+ "sha2",
  "type-bridge-contract",
  "type-bridge-schema",
  "type-bridge-schema-compat",
  "type-bridge-schema-migration",
+ "unicode-casefold",
+ "unicode-normalization",
 ]
 
 [[package]]

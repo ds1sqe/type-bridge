@@ -115,9 +115,7 @@ CORE_SDIST_TRANSFORMED_FIRST_PARTY_MANIFESTS = frozenset(
 )
 CORE_SDIST_README_TRANSFORMS = frozenset(
     {
-        "crates/core/Cargo.toml",
         "crates/python/Cargo.toml",
-        "crates/schema-compat/Cargo.toml",
     }
 )
 CORE_SDIST_TRANSFORMED_MANIFESTS = (

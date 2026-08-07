@@ -2,6 +2,14 @@
 
 Pure-Rust TypeQL AST, schema parser, query compiler, validation engine, and value coercer for **type-bridge**.
 
+This is a supporting engine crate. Most applications should consume generated
+models through [`type-bridge`](https://crates.io/crates/type-bridge) instead.
+
+```toml
+[dependencies]
+type-bridge-core-lib = "2.1.0"
+```
+
 ## Modules
 
 | Module | Purpose |
@@ -50,6 +58,15 @@ assert!(result.is_valid);
 cargo test -p type-bridge-core-lib
 ```
 
+## Compatibility
+
+This crate is released in lockstep with TypeBridge 2.1.0 and requires Rust
+1.88+. Database-facing TypeBridge 2.1 components support TypeDB
+3.11.x–3.12.x, with 3.12.1 as the V2 semantic baseline.
+
+[API documentation](https://docs.rs/type-bridge-core-lib/2.1.0) ·
+[Repository](https://github.com/ds1sqe/type-bridge)
+
 ## License
 
-MIT
+[MIT](https://github.com/ds1sqe/type-bridge/blob/master/LICENSE)

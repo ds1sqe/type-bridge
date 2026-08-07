@@ -43,10 +43,16 @@ fragments. Configure the generated package output in the workspace, then run:
 
 ```bash
 type-bridge --manifest typebridge.yaml schema check
+type-bridge --manifest typebridge.yaml schema generate
 type-bridge --manifest typebridge.yaml migration make --name initial
 type-bridge --manifest typebridge.yaml migration apply --environment development
-type-bridge --manifest typebridge.yaml schema generate
 ```
+
+One generation snapshot writes every configured Python, TypeScript, and Rust
+package plus `artifacts.schema-authority.output`. Generated packages embed that
+verified authority for direct and remote queries; they never read the server
+artifact. A generic server mounts the same generated, source-free artifact
+instead of compiling YAML or accepting a user-maintained JSON schema.
 
 The generated Python package owns the concise single-type manager:
 
@@ -126,6 +132,7 @@ for generation, direct execution, transactions, and remote queries.
 - [Read and write generated models](https://ds1sqe.github.io/type-bridge/guide/data/)
 - [Manage schemas and migrations](https://ds1sqe.github.io/type-bridge/guide/schema-workflows/)
 - [Run the query server](https://ds1sqe.github.io/type-bridge/guide/server-container/)
+- [Browse the Cargo package index](https://ds1sqe.github.io/type-bridge/guide/cargo-packages/)
 - [Compatibility and removals](https://ds1sqe.github.io/type-bridge/guide/v2-deprecations/)
 
 ## Development

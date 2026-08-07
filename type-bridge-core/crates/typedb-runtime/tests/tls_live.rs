@@ -313,7 +313,7 @@ async fn custom_root_http_discovery_and_grpc_lifecycle_live() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn custom_root_raw_stop_requires_connection_close_before_delete_live() {
+async fn custom_root_raw_stop_requires_force_close_before_delete_live() {
     let Some(context) = live_tls_context() else {
         eprintln!(
             "skipping live TLS raw-stop cleanup test: set TYPEDB_TLS_ADDRESS, \
@@ -401,18 +401,19 @@ async fn custom_root_raw_stop_requires_connection_close_before_delete_live() {
     .expect("bounded TLS query delivers its first row");
     assert_eq!(stats.processed_items, 1);
     assert!(stats.stopped_early);
-    await_live_tls_stage("raw-stop/close-read", read.close())
-        .await
-        .expect("raw-stop transaction close is dispatched over TLS");
-    drop(read);
     // A raw `Stop` deliberately leaves a resumable driver stream. TypeDB
     // 3.12.1 does not acknowledge transaction close, so this low-level test
     // must not claim that close alone proves server-side release (issue #196).
-    // The runtime owns this connection, making explicit force-close the safe
-    // cleanup boundary before a fresh connection attempts deletion.
+    // Make the shared driver terminal first. RuntimeTransaction::close then
+    // observes that shutdown has started and drops the driver transaction
+    // locally instead of waiting forever for that absent acknowledgement.
     runtime
         .force_close()
         .expect("raw-stop TLS runtime connection force-closes");
+    await_live_tls_stage("raw-stop/close-after-force-close", read.close())
+        .await
+        .expect("raw-stop transaction releases locally after force-close");
+    drop(read);
     drop(runtime);
 
     await_live_tls_stage(

@@ -8,9 +8,9 @@ use type_bridge_contract::migration::MigrationAppLabel;
 use type_bridge_contract::projection::BindingTarget;
 use type_bridge_workspace::{
     ExtensionRegistryService, ExtensionRequirement, MigrationV2Directory, OutputDirectory,
-    SchemaSetPath, SecretReference, SecretReferenceService, SecretSlot, TypeBridgeConfig,
-    TypeBridgeConfigBuilder, TypeBridgeConfigServices, WorkspaceConfigErrorCode, WorkspaceRoot,
-    WorkspaceServiceError, WorkspaceSourceService,
+    SchemaAuthorityOutputPath, SchemaSetPath, SecretReference, SecretReferenceService, SecretSlot,
+    TypeBridgeConfig, TypeBridgeConfigBuilder, TypeBridgeConfigServices, WorkspaceConfigErrorCode,
+    WorkspaceRoot, WorkspaceServiceError, WorkspaceSourceService,
 };
 
 struct CanonicalSource {
@@ -175,6 +175,9 @@ fn typed_builder_retains_exact_policy_and_uses_injected_services() {
             BindingTarget::Rust,
             OutputDirectory::new("generated/rust").unwrap(),
         )
+        .schema_authority_output(
+            SchemaAuthorityOutputPath::new("generated/schema-authority.json").unwrap(),
+        )
         .secret(SecretSlot::new("typedb.credential").unwrap(), secret)
         .require_extension(extension)
         .build(&services(&source, &secrets, &extensions))
@@ -200,6 +203,10 @@ fn typed_builder_retains_exact_policy_and_uses_injected_services() {
     );
     assert_eq!(config.semantic_profile().as_str(), "typedb-3.12.1/v1");
     assert_eq!(config.outputs().len(), 3);
+    assert_eq!(
+        config.schema_authority_output().unwrap().as_path(),
+        Path::new("generated/schema-authority.json")
+    );
     assert_eq!(config.required_capabilities().len(), 2);
     assert_eq!(
         config
@@ -211,6 +218,102 @@ fn typed_builder_retains_exact_policy_and_uses_injected_services() {
         "TYPEDB_CREDENTIAL"
     );
     assert_eq!(config.extensions().len(), 1);
+}
+
+#[test]
+fn root_level_schema_set_can_emit_a_non_schema_json_authority() {
+    let source = CanonicalSource::new();
+    let secrets = AcceptSecrets::new();
+    let extensions = AcceptExtensions::new();
+    let config = builder_with_paths("schema.yaml", "migrations/v2")
+        .schema_authority_output(
+            SchemaAuthorityOutputPath::new("generated/schema-authority.json").unwrap(),
+        )
+        .build(&services(&source, &secrets, &extensions))
+        .expect("a lowercase JSON authority cannot enter schema YAML discovery");
+
+    assert_eq!(config.schema_set().as_path(), Path::new("schema.yaml"));
+    assert_eq!(
+        config.schema_authority_output().unwrap().as_path(),
+        Path::new("generated/schema-authority.json")
+    );
+}
+
+#[test]
+fn schema_authority_requires_a_lowercase_json_path() {
+    for path in [
+        "generated/authority.yaml",
+        "generated/authority.JSON",
+        "authority",
+    ] {
+        let error = SchemaAuthorityOutputPath::new(path).unwrap_err();
+        assert_eq!(
+            error.code(),
+            WorkspaceConfigErrorCode::InvalidSchemaAuthorityOutputPath
+        );
+        assert_eq!(error.detail(), Some("schema_authority_output"));
+    }
+}
+
+#[test]
+fn workspace_owned_paths_reject_portable_case_aliases() {
+    let source = CanonicalSource::new();
+    let secrets = AcceptSecrets::new();
+    let extensions = AcceptExtensions::new();
+    let service_set = services(&source, &secrets, &extensions);
+
+    let error = base_builder()
+        .output(
+            BindingTarget::Python,
+            OutputDirectory::new("generated/python").unwrap(),
+        )
+        .schema_authority_output(
+            SchemaAuthorityOutputPath::new("GENERATED/PYTHON/schema-authority.json").unwrap(),
+        )
+        .build(&service_set)
+        .unwrap_err();
+    assert_eq!(
+        error.code(),
+        WorkspaceConfigErrorCode::OverlappingWorkspacePath
+    );
+    assert_eq!(
+        error.detail(),
+        Some("output.python,artifact.schema_authority")
+    );
+
+    let error = base_builder()
+        .output(
+            BindingTarget::Python,
+            OutputDirectory::new("generated/models").unwrap(),
+        )
+        .output(
+            BindingTarget::TypeScript,
+            OutputDirectory::new("GENERATED/MODELS").unwrap(),
+        )
+        .build(&service_set)
+        .unwrap_err();
+    assert_eq!(
+        error.code(),
+        WorkspaceConfigErrorCode::OverlappingWorkspacePath
+    );
+    assert_eq!(error.detail(), Some("output.python,output.typescript"));
+
+    let error = base_builder()
+        .output(
+            BindingTarget::Python,
+            OutputDirectory::new("generated/caf\u{e9}").unwrap(),
+        )
+        .output(
+            BindingTarget::TypeScript,
+            OutputDirectory::new("generated/cafe\u{301}").unwrap(),
+        )
+        .build(&service_set)
+        .unwrap_err();
+    assert_eq!(
+        error.code(),
+        WorkspaceConfigErrorCode::OverlappingWorkspacePath
+    );
+    assert_eq!(error.detail(), Some("output.python,output.typescript"));
 }
 
 #[test]
@@ -282,6 +385,27 @@ fn schema_migration_and_output_paths_are_portable_and_confined() {
             .as_path(),
         Path::new("migrations/v2")
     );
+
+    for path in [
+        "../generated/schema-authority.json",
+        "/generated/schema-authority.json",
+        "generated\\schema-authority.json",
+        "generated/con.json",
+        "generated/schema?.json",
+        "generated/schema-authority.json.",
+    ] {
+        assert_eq!(
+            SchemaAuthorityOutputPath::new(path).unwrap_err().code(),
+            WorkspaceConfigErrorCode::PathNotConfined,
+            "nonportable schema-authority output {path:?} was accepted"
+        );
+    }
+    assert_eq!(
+        SchemaAuthorityOutputPath::new("generated/schema-authority.json")
+            .unwrap()
+            .as_path(),
+        Path::new("generated/schema-authority.json")
+    );
 }
 
 #[test]
@@ -345,7 +469,7 @@ fn capability_requirements_are_additive_and_deterministic() {
 }
 
 #[test]
-fn exact_semantic_profile_and_all_required_fields_fail_closed() {
+fn frozen_semantic_profiles_and_all_required_fields_fail_closed() {
     let source = CanonicalSource::new();
     let secrets = AcceptSecrets::new();
     let extensions = AcceptExtensions::new();
@@ -355,11 +479,21 @@ fn exact_semantic_profile_and_all_required_fields_fail_closed() {
     assert_eq!(error.code(), WorkspaceConfigErrorCode::MissingRequiredField);
     assert_eq!(error.detail(), Some("schema_set"));
 
-    let error = TypeBridgeConfig::builder(root())
+    let band8 = TypeBridgeConfig::builder(root())
         .schema_set(SchemaSetPath::new("schema/schema.yaml").unwrap())
         .app_label(MigrationAppLabel::new("example").unwrap())
         .exclusive_managed_scope(ManagedScopeId::new("example-schema").unwrap())
         .semantic_profile(SemanticProfileId::new("typedb-3.11.5/v1").unwrap())
+        .migration_v2_directory(MigrationV2Directory::new("migrations/v2").unwrap())
+        .build(&services(&source, &secrets, &extensions))
+        .expect("the retained TypeDB 3.11 semantic profile is supported for generation");
+    assert_eq!(band8.semantic_profile().as_str(), "typedb-3.11.5/v1");
+
+    let error = TypeBridgeConfig::builder(root())
+        .schema_set(SchemaSetPath::new("schema/schema.yaml").unwrap())
+        .app_label(MigrationAppLabel::new("example").unwrap())
+        .exclusive_managed_scope(ManagedScopeId::new("example-schema").unwrap())
+        .semantic_profile(SemanticProfileId::new("typedb-3.10.0/v1").unwrap())
         .migration_v2_directory(MigrationV2Directory::new("migrations/v2").unwrap())
         .build(&services(&source, &secrets, &extensions))
         .unwrap_err();
@@ -421,6 +555,17 @@ fn duplicate_targets_secrets_extensions_and_singletons_are_rejected() {
         error.code(),
         WorkspaceConfigErrorCode::DuplicateRequiredField
     );
+
+    let error = base_builder()
+        .schema_authority_output(SchemaAuthorityOutputPath::new("generated/one.json").unwrap())
+        .schema_authority_output(SchemaAuthorityOutputPath::new("generated/two.json").unwrap())
+        .build(&service_set)
+        .unwrap_err();
+    assert_eq!(
+        error.code(),
+        WorkspaceConfigErrorCode::DuplicateRequiredField
+    );
+    assert_eq!(error.detail(), Some("schema_authority_output"));
 }
 
 #[test]
@@ -501,6 +646,51 @@ fn workspace_owned_paths_reject_equality_and_name_both_fields() {
         WorkspaceConfigErrorCode::OverlappingWorkspacePath
     );
     assert_eq!(error.detail(), Some("output.python,output.typescript"));
+
+    let config = base_builder()
+        .schema_authority_output(
+            SchemaAuthorityOutputPath::new("schema/schema-authority.json").unwrap(),
+        )
+        .build(&service_set)
+        .expect("JSON authority beside schema YAML cannot enter schema discovery");
+    assert_eq!(
+        config.schema_authority_output().unwrap().as_path(),
+        Path::new("schema/schema-authority.json")
+    );
+
+    let error = base_builder()
+        .schema_authority_output(
+            SchemaAuthorityOutputPath::new("migrations/v2/schema-authority.json").unwrap(),
+        )
+        .build(&service_set)
+        .unwrap_err();
+    assert_eq!(
+        error.code(),
+        WorkspaceConfigErrorCode::OverlappingWorkspacePath
+    );
+    assert_eq!(
+        error.detail(),
+        Some("migration_v2_directory,artifact.schema_authority")
+    );
+
+    let error = base_builder()
+        .output(
+            BindingTarget::Python,
+            OutputDirectory::new("generated/python").unwrap(),
+        )
+        .schema_authority_output(
+            SchemaAuthorityOutputPath::new("generated/python/schema-authority.json").unwrap(),
+        )
+        .build(&service_set)
+        .unwrap_err();
+    assert_eq!(
+        error.code(),
+        WorkspaceConfigErrorCode::OverlappingWorkspacePath
+    );
+    assert_eq!(
+        error.detail(),
+        Some("output.python,artifact.schema_authority")
+    );
 }
 
 #[test]

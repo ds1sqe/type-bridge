@@ -28,6 +28,10 @@ bindings:
   python:
     output: app_models
 
+artifacts:
+  schema-authority:
+    output: generated/schema-authority.json
+
 environments:
   development:
     database: quickstart
@@ -82,14 +86,18 @@ plays:
 
 ```bash
 type-bridge --manifest typebridge.yaml schema check
+type-bridge --manifest typebridge.yaml schema generate
 type-bridge --manifest typebridge.yaml migration make --name initial
 type-bridge --manifest typebridge.yaml migration apply --environment development
-type-bridge --manifest typebridge.yaml schema generate
 ```
 
 `schema check` is offline. Migration application is the explicit database
-change; generation never mutates TypeDB. Commit the workspace and migration
-history, and regenerate bindings after an accepted schema change.
+change; generation never mutates TypeDB. One generation snapshot writes the
+Python package and `generated/schema-authority.json`. The package embeds the
+same verified authority, so application imports and remote sessions never read
+that file; it is the source-free artifact mounted by a generic server. Commit
+the workspace and migration history, and regenerate all outputs after an
+accepted schema change.
 
 ## 3. Put and filter one type
 

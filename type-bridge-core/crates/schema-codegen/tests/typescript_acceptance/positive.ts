@@ -41,7 +41,6 @@ import {
   RemoteQuerySession,
 } from "./generated_v2/src/index.js";
 import type { RustDatabase } from "@type-bridge/node";
-import type { QueryV2Authority } from "@type-bridge/node/query-v2";
 
 const identifier = Identifier.create("person-1");
 const score = Score.create(3n);
@@ -180,7 +179,6 @@ const tupleFieldGroupedAggregate: readonly (
 )[] = personQuery
   .groupBy(personVar, boolField, scoreField)
   .aggregate([aggregate.count()] as const);
-declare const authority: QueryV2Authority;
 declare const advertisement: Uint8Array;
 declare const exchange: RemoteQueryExchange;
 const remoteLimits: RemoteQueryLimits = {
@@ -192,7 +190,6 @@ const remoteLimits: RemoteQueryLimits = {
   maxRolePlayers: 1_000n,
 };
 const remoteSession = new RemoteQuerySession(
-  authority,
   advertisement,
   exchange,
   remoteLimits,

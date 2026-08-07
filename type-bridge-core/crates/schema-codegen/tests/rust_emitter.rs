@@ -6,33 +6,39 @@ use type_bridge_contract::schema::DocumentId;
 use type_bridge_schema::{SchemaDocumentSet, normalize_documents, project, resolve};
 use type_bridge_schema_codegen::RustEmitter;
 
+mod support;
+
 fn projected(
     source: &str,
     resources: &[CodeResourceDigest],
-) -> type_bridge_contract::projection::RuntimeProjection {
+) -> (
+    type_bridge_contract::projection::RuntimeProjection,
+    type_bridge_schema::VerifiedSchemaAuthority,
+) {
     let documents =
         SchemaDocumentSet::parse([(DocumentId::new("rust-emitter.yaml").unwrap(), source)])
             .unwrap();
     let declared = normalize_documents(&documents).unwrap();
     let profile = SemanticProfileId::new("typedb-3.12.1/v1").unwrap();
     let resolved = resolve(&declared, &profile).unwrap();
-    project(
+    let projection = project(
         &resolved,
         BindingTarget::Rust,
         &ProjectionConfig::rust(),
         &RustEmitter::new().generator_handlers(),
         resources,
     )
-    .unwrap()
+    .unwrap();
+    (projection, support::authority(source))
 }
 
 #[test]
 fn emits_exact_deterministic_single_dependency_crate() {
     let emitter = RustEmitter::new();
     let resources = emitter.code_resources().unwrap();
-    let projection = projected(include_str!("acceptance/schema.yaml"), &resources);
-    let first = emitter.emit(&projection).unwrap();
-    let second = emitter.emit(&projection).unwrap();
+    let (projection, authority) = projected(include_str!("acceptance/schema.yaml"), &resources);
+    let first = emitter.emit(&projection, &authority).unwrap();
+    let second = emitter.emit(&projection, &authority).unwrap();
     assert_eq!(first, second);
     assert_eq!(
         first
@@ -115,6 +121,12 @@ fn emits_exact_deterministic_single_dependency_crate() {
     let manifest = String::from_utf8(first.get("Cargo.toml").unwrap().to_vec()).unwrap();
     assert!(manifest.contains("[dependencies]"));
     assert!(manifest.contains("type-bridge = { version = \"=2.1.0\", default-features = false }"));
+    let schema = String::from_utf8(first.get("src/schema.rs").unwrap().to_vec()).unwrap();
+    assert!(schema.contains("pub(crate) const SCHEMA_AUTHORITY_JSON"));
+    assert!(schema.contains("typebridge.schema-authority/v1"));
+    assert!(schema.contains("pub(crate) const DECLARED_SCHEMA_JSON"));
+    assert!(schema.contains("pub(crate) const MANAGED_SCOPE_ID"));
+    assert!(schema.contains("pub(crate) const SEMANTIC_PROFILE_ID"));
     assert!(manifest.contains("doctest = false"));
     assert!(manifest.contains("rust-version = \"1.88\""));
 }
@@ -123,7 +135,7 @@ fn emits_exact_deterministic_single_dependency_crate() {
 fn emits_safely_line_prefixed_type_and_direct_sub_documentation() {
     let emitter = RustEmitter::new();
     let resources = emitter.code_resources().unwrap();
-    let projection = projected(
+    let (projection, authority) = projected(
         r#"format: typebridge.schema/v2
 entities:
   actor: {}
@@ -143,7 +155,7 @@ entities:
 "#,
         &resources,
     );
-    let package = emitter.emit(&projection).unwrap();
+    let package = emitter.emit(&projection, &authority).unwrap();
     let read = std::str::from_utf8(package.get("src/read.rs").unwrap()).unwrap();
     let reference = std::str::from_utf8(package.get("src/reference.rs").unwrap()).unwrap();
     let manifest = std::str::from_utf8(package.get("Cargo.toml").unwrap()).unwrap();
@@ -159,9 +171,40 @@ entities:
 }
 
 #[test]
+fn emits_common_value_getter_for_abstract_attribute_family() {
+    let emitter = RustEmitter::new();
+    let resources = emitter.code_resources().unwrap();
+    let (projection, authority) = projected(
+        r#"format: typebridge.schema/v2
+attributes:
+  identifier:
+    abstract: true
+    value: string
+  employee-id:
+    sub: identifier
+"#,
+        &resources,
+    );
+
+    let package = emitter.emit(&projection, &authority).unwrap();
+    let read = std::str::from_utf8(package.get("src/read.rs").unwrap()).unwrap();
+    let declaration = std::str::from_utf8(package.get("src/declaration.rs").unwrap()).unwrap();
+
+    assert!(read.contains("pub enum IdentifierFamily"));
+    assert!(read.contains("EmployeeId(EmployeeId)"));
+    assert!(read.contains("pub fn value(&self) -> &String"));
+    assert!(read.contains("Self::EmployeeId(__tb_inner) => __tb_inner.value()"));
+    assert!(!read.contains("impl MaterializeModel for IdentifierFamily"));
+    assert!(!read.contains("pub fn iid(&self)"));
+    assert!(!declaration.contains("impl ModelFamily for IdentifierFamily"));
+}
+
+#[test]
 fn rejects_projection_without_exact_resource_evidence() {
-    let projection = projected(include_str!("acceptance/schema.yaml"), &[]);
-    let error = RustEmitter::new().emit(&projection).unwrap_err();
+    let (projection, authority) = projected(include_str!("acceptance/schema.yaml"), &[]);
+    let error = RustEmitter::new()
+        .emit(&projection, &authority)
+        .unwrap_err();
     assert!(error.to_string().contains("rust_emitter_evidence_mismatch"));
 }
 
@@ -169,11 +212,11 @@ fn rejects_projection_without_exact_resource_evidence() {
 fn rejects_schema_name_colliding_with_runtime_export() {
     let emitter = RustEmitter::new();
     let resources = emitter.code_resources().unwrap();
-    let projection = projected(
+    let (projection, authority) = projected(
         "format: typebridge.schema/v2\nentities:\n  cardinality: {}\n",
         &resources,
     );
-    let error = emitter.emit(&projection).unwrap_err();
+    let error = emitter.emit(&projection, &authority).unwrap_err();
     assert!(error.to_string().contains("rust_emitter_name_collision"));
     assert!(error.to_string().contains("Cardinality"));
 }
@@ -182,11 +225,11 @@ fn rejects_schema_name_colliding_with_runtime_export() {
 fn rejects_schema_name_colliding_with_injected_schema_export() {
     let emitter = RustEmitter::new();
     let resources = emitter.code_resources().unwrap();
-    let projection = projected(
+    let (projection, authority) = projected(
         "format: typebridge.schema/v2\nentities:\n  app_schema: {}\n",
         &resources,
     );
-    let error = emitter.emit(&projection).unwrap_err();
+    let error = emitter.emit(&projection, &authority).unwrap_err();
     assert!(error.to_string().contains("rust_emitter_name_collision"));
     assert!(error.to_string().contains("AppSchema"));
 }

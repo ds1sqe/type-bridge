@@ -8,6 +8,9 @@ license-file.workspace = true
 repository.workspace = true
 authors.workspace = true
 publish = ["crates-io"]
+readme = "README.md"
+documentation = "https://docs.rs/type-bridge-schema-migration/2.1.0"
+rust-version = "1.88"
 
 [dependencies]
 cap-fs-ext = "4.0"

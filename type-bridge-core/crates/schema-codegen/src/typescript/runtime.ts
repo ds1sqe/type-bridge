@@ -1,4 +1,5 @@
 import {
+  installGeneratedSchemaAuthority,
   installRuntimeProjection,
   type InstalledRuntimeProjection,
   type NativeProjectedManager,
@@ -276,6 +277,7 @@ const runtimeModels = new Map<string, RuntimeModelEntry>();
 const fieldTokenStates = new WeakMap<object, FieldTokenDefinition<string, string>>();
 const roleTokenStates = new WeakMap<object, RoleTokenDefinition<string, string>>();
 let installedProjection: InstalledRuntimeProjection | null = null;
+let installedQueryAuthority: QueryV2Authority | null = null;
 
 interface StructFieldDefinition {
   readonly name: string;
@@ -550,6 +552,7 @@ export function __installRuntimeProjectionPackage(
   semanticFingerprintJson: string,
   projectionFingerprintJson: string,
   tokens: readonly object[],
+  schemaAuthorityJson: string,
 ): void {
   if (installedProjection !== null) {
     throw new TypeError("generated runtime projection is already installed");
@@ -561,7 +564,11 @@ export function __installRuntimeProjectionPackage(
     }
     return entry;
   });
-  installedProjection = installRuntimeProjection({
+  const authority = installGeneratedSchemaAuthority({
+    schemaAuthorityJson,
+    semanticFingerprintJson,
+  });
+  const projection = installRuntimeProjection({
     projectionJson,
     semanticFingerprintJson,
     projectionFingerprintJson,
@@ -572,6 +579,8 @@ export function __installRuntimeProjectionPackage(
       reference: typeof token.reference === "function",
     })),
   });
+  installedProjection = projection;
+  installedQueryAuthority = authority;
 }
 
 function projectedManager<Complete>(
@@ -1207,6 +1216,13 @@ function requireProjection(): InstalledRuntimeProjection {
     throw new TypeError("generated runtime projection is not installed");
   }
   return installedProjection;
+}
+
+function requireQueryAuthority(): QueryV2Authority {
+  if (installedQueryAuthority === null) {
+    throw new TypeError("generated schema authority is not installed");
+  }
+  return installedQueryAuthority;
 }
 
 function exactModelToken(token: object): RuntimeModelEntry {
@@ -2171,13 +2187,17 @@ export class RemoteQuerySession {
   readonly reachable: QuerySession["reachable"];
 
   constructor(
-    authority: QueryV2Authority,
     advertisement: Uint8Array,
     exchange: RemoteQueryExchange,
     limits: RemoteQueryLimits,
   ) {
     const projection = requireProjection();
-    this.#remote = projection.remote(authority, advertisement, exchange, limits);
+    this.#remote = projection.remote(
+      requireQueryAuthority(),
+      advertisement,
+      exchange,
+      limits,
+    );
     const Constructor = QuerySession as unknown as new (
       token: typeof REMOTE_QUERY_SESSION,
     ) => QuerySession;

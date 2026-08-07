@@ -178,6 +178,9 @@ impl<A: TypeBridgeAttribute> FieldRef<A> {
 ///
 /// # Example
 ///
+/// This is ignored because `Employment` and `Age` are generated from the
+/// consumer's schema and therefore do not exist inside this crate's doctests.
+///
 /// ```ignore
 /// Employment::fields().employee.attr::<Age>("age").gte(Age(30))
 /// ```
@@ -302,6 +305,9 @@ impl<A: TypeBridgeAttribute> RolePlayerFieldRef<A> {
 /// Provides access to role player attributes for building filter expressions.
 ///
 /// # Example
+///
+/// This is ignored because `Employment` and `Age` are generated from the
+/// consumer's schema and therefore do not exist inside this crate's doctests.
 ///
 /// ```ignore
 /// // Access a role player's attribute:

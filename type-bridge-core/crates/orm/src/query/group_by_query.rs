@@ -18,6 +18,9 @@ use crate::session::backend::{QueryResult, TxType};
 ///
 /// # Example
 ///
+/// This example is ignored because executing it requires a live TypeDB
+/// service and generated `Person` fields supplied by a consumer package.
+///
 /// ```ignore
 /// let results = manager.query()
 ///     .filter(Person::fields().age.gte(Age(18)))

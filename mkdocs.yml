@@ -95,6 +95,7 @@ nav:
     - guide/index.md
     - SDKs:
       - Choose an SDK: guide/sdks.md
+      - Cargo Package Index: guide/cargo-packages.md
       - TypeScript / Node: guide/typescript.md
       - Rust: guide/rust.md
     - Model TypeDB Data:

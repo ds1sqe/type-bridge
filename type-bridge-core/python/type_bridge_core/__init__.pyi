@@ -436,6 +436,10 @@ class PendingQueryV2Remote:
         ...
 
 def query_v2_authority(declared_schema: bytes, scope: str, profile: str) -> QueryV2Authority: ...
+def query_v2_authority_from_schema_authority(
+    schema_authority: bytes,
+    semantic_fingerprint: bytes,
+) -> QueryV2Authority: ...
 def query_v2_query_only_authority(
     database: PyRustDatabase,
     declared_schema: bytes,

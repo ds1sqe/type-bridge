@@ -42,7 +42,7 @@ use type_bridge_orm::session::backend::{MAX_QUERY_V2_SCHEMA_FENCE_DURATION, Quer
 use type_bridge_orm::session::database::Database;
 use type_bridge_query::MigrationAssertionValidationContext;
 use type_bridge_schema::{ManagedDeltaContext, ResolvedSchema};
-use type_bridge_schema_migration_typedb::{LiveQueryControlPresence, rebuild_live_query_authority};
+use type_bridge_schema_compat::{LiveQueryControlPresence, rebuild_live_query_authority};
 
 use crate::interceptor::{RequestContext, V2PolicyOutcome, V2PolicyRequest};
 use crate::pipeline::QueryPipeline;
@@ -386,9 +386,17 @@ impl V2QueryState {
                 "the executor cannot prove the exact TypeDB semantic profile",
             )
         })?;
-        let observed_profile = type_bridge_contract::fingerprint::SemanticProfileId::new(format!(
-            "typedb-{server_version}/v1"
-        ))?;
+        let observed_profile = type_bridge_contract::fingerprint::SemanticProfileId::new(
+            type_bridge_core_lib::version::semantic_profile_id(&server_version).ok_or_else(
+                || {
+                    diagnostic(
+                        DiagnosticCategory::Integrity,
+                        "query_remote_server_profile_unsupported",
+                        "the executor TypeDB version has no supported semantic profile",
+                    )
+                },
+            )?,
+        )?;
         if &observed_profile != self.delta_context.semantic_profile() {
             return Err(diagnostic(
                 DiagnosticCategory::Integrity,
@@ -1595,6 +1603,7 @@ mod tests {
         fallback_schema: String,
         metrics: Arc<BackendMetrics>,
         observations: Mutex<VecDeque<String>>,
+        server_version: type_bridge_core_lib::version::Version,
     }
 
     impl CountingBackend {
@@ -1611,7 +1620,16 @@ mod tests {
                         .map(str::to_owned)
                         .collect::<VecDeque<_>>(),
                 ),
+                server_version: type_bridge_core_lib::version::Version::new(3, 12, 1),
             }
+        }
+
+        fn with_server_version(
+            mut self,
+            server_version: type_bridge_core_lib::version::Version,
+        ) -> Self {
+            self.server_version = server_version;
+            self
         }
     }
 
@@ -1648,7 +1666,7 @@ mod tests {
         }
 
         fn server_version(&self) -> Option<type_bridge_core_lib::version::Version> {
-            Some(type_bridge_core_lib::version::Version::new(3, 12, 1))
+            Some(self.server_version)
         }
 
         fn schema_text(&self, _database: &str) -> BoxFuture<'_, Result<String, OrmError>> {
@@ -2074,6 +2092,29 @@ mod tests {
             request_fingerprint,
             router,
         }
+    }
+
+    #[test]
+    fn supported_non_baseline_patch_uses_the_frozen_authority_profile() {
+        let authority = authority_fixture(false);
+        let metrics = Arc::new(BackendMetrics::default());
+        let backend = CountingBackend::new([], metrics)
+            .with_server_version(type_bridge_core_lib::version::Version::new(3, 12, 99));
+        let database = Database::with_backend(Box::new(backend), "server-v2-profile-patch");
+        let state = V2QueryState::new_query_only(
+            CapabilitySet::new(),
+            QueryV2AnswerLimits::default(),
+            database,
+            authority.declared,
+            authority.delta_context,
+            authority.managed,
+            authority.resolved,
+        )
+        .expect("V2 state");
+
+        state
+            .verify_database_profile()
+            .expect("supported patch uses the frozen minor-line profile");
     }
 
     async fn post_query(router: &Router, body: Vec<u8>) -> Vec<u8> {

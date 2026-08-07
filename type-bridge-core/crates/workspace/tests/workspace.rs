@@ -15,10 +15,10 @@ use type_bridge_schema::{
 };
 use type_bridge_workspace::{
     ConfigOrigin, ExtensionRegistryService, ExtensionRequirement, MigrationV2Directory,
-    SchemaSetPath, SecretReference, SecretReferenceService, TypeBridgeConfig,
-    TypeBridgeConfigServices, TypeBridgeConfigSpec, TypeBridgeWorkspace, TypeBridgeWorkspaceError,
-    TypeBridgeWorkspaceServices, WorkspaceConfigErrorCode, WorkspaceDirectoryAuthority,
-    WorkspaceRoot, WorkspaceServiceError,
+    SchemaAuthorityOutputPath, SchemaSetPath, SecretReference, SecretReferenceService,
+    TypeBridgeConfig, TypeBridgeConfigServices, TypeBridgeConfigSpec, TypeBridgeWorkspace,
+    TypeBridgeWorkspaceError, TypeBridgeWorkspaceServices, WorkspaceConfigErrorCode,
+    WorkspaceDirectoryAuthority, WorkspaceRoot, WorkspaceServiceError,
 };
 
 static NEXT_TEMP_DIRECTORY: AtomicU64 = AtomicU64::new(0);
@@ -433,6 +433,63 @@ fn generated_output_names_are_portable_direct_children() {
 
 #[cfg(unix)]
 #[test]
+fn configured_schema_authority_output_rejects_symlinked_parent_authority() {
+    use std::os::unix::fs::symlink;
+
+    let directory = TempDirectory::new();
+    directory.schema("format: typebridge.schema/v2\nentities: {person: {}}\n");
+    fs::create_dir_all(directory.0.join("redirected")).unwrap();
+    symlink("redirected", directory.0.join("generated")).unwrap();
+
+    let authority = WorkspaceDirectoryAuthority::open(directory.root()).unwrap();
+    let secrets = AcceptSecrets(AtomicUsize::new(0));
+    let extensions = ExtensionPolicy {
+        calls: AtomicUsize::new(0),
+        reject: false,
+    };
+    let available = capabilities();
+    let config = TypeBridgeConfig::builder(directory.root())
+        .schema_set(SchemaSetPath::new("schema/schema.yaml").unwrap())
+        .app_label(MigrationAppLabel::new("example").unwrap())
+        .exclusive_managed_scope(ManagedScopeId::new("example-schema").unwrap())
+        .semantic_profile(SemanticProfileId::new("typedb-3.12.1/v1").unwrap())
+        .migration_v2_directory(MigrationV2Directory::new("migrations/v2").unwrap())
+        .schema_authority_output(
+            SchemaAuthorityOutputPath::new("generated/schema-authority.json").unwrap(),
+        )
+        .require_capability(CapabilityId::new("schema.doc-meta").unwrap())
+        .build(&TypeBridgeConfigServices::new(
+            &authority,
+            &secrets,
+            &extensions,
+        ))
+        .unwrap();
+    let workspace = TypeBridgeWorkspace::from_config(
+        config,
+        &TypeBridgeWorkspaceServices::new(&authority, &secrets, &extensions, &available),
+    )
+    .unwrap();
+    let configured = workspace.config().schema_authority_output().unwrap();
+    assert_eq!(
+        configured.as_path(),
+        Path::new("generated/schema-authority.json")
+    );
+
+    let output_root = workspace.output_root().unwrap();
+    let error = output_root
+        .open_beneath(configured.as_path().parent().unwrap())
+        .expect_err("a symbolic-link parent must not redirect generated authority");
+    assert!(error.contains("real directory, not a link"));
+    assert!(
+        fs::read_dir(directory.0.join("redirected"))
+            .unwrap()
+            .next()
+            .is_none()
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn retained_root_owns_schema_capture_after_ambient_root_replacement() {
     let directory = TempDirectory::new();
     directory.schema("format: typebridge.schema/v2\nentities: {person: {}}\n");
@@ -654,5 +711,36 @@ fn located_manifest_cannot_overlap_schema_history_or_output_authority() {
         WorkspaceConfigErrorCode::OverlappingWorkspacePath
     );
     assert_eq!(error.detail(), Some("workspace_manifest,schema_set"));
+    assert_eq!(source.captures.load(Ordering::Relaxed), 0);
+
+    let manifest = format!(
+        "{}artifacts:\n  schema-authority:\n    output: typebridge.yaml/schema-authority.json\n",
+        workspace_yaml()
+    );
+    let located = TypeBridgeConfigSpec::parse_yaml(
+        manifest,
+        ConfigOrigin::new(
+            directory.root(),
+            "generated/typebridge.yaml",
+            "artifact manifest overlap fixture",
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let error = located
+        .resolve(&TypeBridgeConfigServices::new(
+            &source,
+            &secrets,
+            &extensions,
+        ))
+        .unwrap_err();
+    assert_eq!(
+        error.code(),
+        WorkspaceConfigErrorCode::OverlappingWorkspacePath
+    );
+    assert_eq!(
+        error.detail(),
+        Some("workspace_manifest,artifact.schema_authority")
+    );
     assert_eq!(source.captures.load(Ordering::Relaxed), 0);
 }

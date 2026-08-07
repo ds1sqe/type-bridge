@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 
 # Release builds override only the identity arguments below. Both base images
-# and the Rust toolchain are immutable inputs to the 2.0.0 image.
+# and the Rust toolchain are immutable inputs to each server release image.
 ARG RUST_BUILDER_IMAGE=rust:1.94.1-bookworm@sha256:6ae102bdbf528294bc79ad6e1fae682f6f7c2a6e6621506ba959f9685b308a55
 ARG RUNTIME_IMAGE=debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818
 
@@ -16,7 +16,8 @@ COPY Cargo.toml Cargo.lock LICENSE ./
 COPY crates crates
 COPY vendor vendor
 
-RUN cargo build --locked --release -p type-bridge-server --features v2-query \
+RUN cargo build --locked --release -p type-bridge-server --no-default-features \
+    --features band8,band9,v2-query \
     && strip target/release/type-bridge-server
 
 FROM ${RUNTIME_IMAGE} AS runtime

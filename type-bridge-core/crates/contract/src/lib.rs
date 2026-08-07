@@ -1,10 +1,10 @@
 //! Versioned, binding-neutral contract primitives for TypeBridge.
 //!
-//! This unpublished, release-lockstep crate sits at the bottom of the workspace
-//! dependency graph. It deliberately contains no parser, query, migration,
-//! provider, or binding dependencies.
+//! This public, release-lockstep supporting crate sits at the bottom of the
+//! workspace dependency graph. It deliberately contains no parser, query,
+//! migration, provider, or binding dependencies.
 
-#![warn(missing_docs)]
+#![deny(missing_docs)]
 
 /// Open capability identifiers and deterministic sets.
 pub mod capability;

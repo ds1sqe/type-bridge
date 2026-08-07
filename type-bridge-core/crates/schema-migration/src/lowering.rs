@@ -210,8 +210,11 @@ impl SchemaLoweringBinding {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TypeQlVerb {
+    /// Introduce schema definitions.
     Define,
+    /// Remove schema definitions.
     Undefine,
+    /// Replace schema definitions in place.
     Redefine,
 }
 
@@ -255,8 +258,11 @@ impl TypeQlStatement {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StatementOperationKind {
+    /// The source delta operation defines a fact.
     Define,
+    /// The source delta operation replaces a fact.
     Redefine,
+    /// The source delta operation removes a fact.
     Undefine,
 }
 
@@ -283,30 +289,37 @@ pub struct StatementUnit {
 }
 
 impl StatementUnit {
+    /// Return the zero-based index of the source delta operation.
     pub const fn operation_index(&self) -> usize {
         self.operation_index
     }
 
+    /// Return the formal operation represented by this unit.
     pub const fn operation_kind(&self) -> StatementOperationKind {
         self.operation_kind
     }
 
+    /// Return the classified safety level for the operation.
     pub const fn safety(&self) -> SafetyClass {
         self.safety
     }
 
+    /// Return whether every statement must execute atomically.
     pub const fn atomic(&self) -> bool {
         self.atomic
     }
 
+    /// Return the canonical schema fact identities affected by the unit.
     pub fn affected_ids(&self) -> &[SchemaFactId] {
         &self.affected_ids
     }
 
+    /// Return the provider capabilities required to execute the unit.
     pub const fn required_capabilities(&self) -> &CapabilitySet {
         &self.required_capabilities
     }
 
+    /// Return the deterministic TypeQL statements in execution order.
     pub fn statements(&self) -> &[TypeQlStatement] {
         &self.statements
     }
@@ -322,18 +335,22 @@ pub struct SchemaLoweringPlan {
 }
 
 impl SchemaLoweringPlan {
+    /// Return the exact formal delta retained by the plan.
     pub const fn delta(&self) -> &SchemaDelta {
         &self.delta
     }
 
+    /// Return the lowering-profile identity used to build the plan.
     pub const fn profile_id(&self) -> &SchemaLoweringProfileId {
         &self.profile_id
     }
 
+    /// Return the lowering-profile content fingerprint used to build the plan.
     pub const fn profile_fingerprint(&self) -> &SchemaLoweringProfileFingerprint {
         &self.profile_fingerprint
     }
 
+    /// Return operation units in source-delta order.
     pub fn units(&self) -> &[StatementUnit] {
         &self.units
     }

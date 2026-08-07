@@ -13,14 +13,16 @@ type-bridge --manifest typebridge.yaml schema check
 The command resolves the schema-set, validates the selected semantic profile,
 and prints diagnostics without contacting TypeDB.
 
-## Generate declared TypeQL and bindings
+## Generate bindings and deployment authority
 
 ```bash
 type-bridge --manifest typebridge.yaml schema generate
 ```
 
-Generation renders every configured target from the same normalized schema and
-fingerprint. It does not mutate a database. See [generation](generator.md).
+Generation captures the workspace once, renders every configured Python,
+TypeScript, and Rust target, embeds the same compiled authority in each package,
+and writes `artifacts.schema-authority.output` for a generic server. It does not
+mutate a database. See [generation](generator.md).
 
 ## Plan and apply schema changes
 
@@ -38,8 +40,10 @@ follow the workspace policy and require explicit approval when configured.
 
 Workspace V1 uses `schema.ownership: exclusive` and a bounded `managed-scope`.
 The migration ledger, immutable migration files, declared-schema fingerprint,
-and generated projection must agree. Generated model classes are not scanned to
-reconstruct schema and cannot register new types at runtime.
+generated projections, and compiled schema-authority artifact must agree.
+Generated model classes are not scanned to reconstruct schema and cannot
+register new types at runtime. Canonical JSON is an internal generated codec,
+not an authored schema input.
 
 ## Existing systems
 

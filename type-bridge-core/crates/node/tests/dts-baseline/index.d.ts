@@ -158,6 +158,7 @@ export interface PendingQueryV2Remote {
 }
 interface NativeQueryV2Runtime {
     queryV2Authority(declaredSchema: Uint8Array, scope: string, profile: string): NativeQueryV2Authority;
+    queryV2AuthorityFromSchemaAuthority(schemaAuthorityJson: string, semanticFingerprintJson: string): NativeQueryV2Authority;
     queryV2QueryOnlyAuthority(database: NativeRustDatabase, declaredSchema: Uint8Array, scope: string, profile: string): NativeQueryV2Authority;
     queryV2ExecuteLocal(database: NativeRustDatabase, authority: NativeQueryV2Authority, plan: Uint8Array, invocationJson: string, deadlineMs?: bigint | null): Promise<string>;
     queryV2RemoteCapabilities(advertisement: Uint8Array): string[];

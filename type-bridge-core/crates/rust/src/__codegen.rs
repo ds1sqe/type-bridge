@@ -15,6 +15,7 @@ pub struct ValidationPath {
 }
 
 impl ValidationPath {
+    /// Construct an empty validation path at the generated value root.
     #[must_use]
     pub fn root() -> Self {
         Self {
@@ -22,6 +23,7 @@ impl ValidationPath {
         }
     }
 
+    /// Return a path with one generated field segment appended.
     #[must_use]
     pub fn join(&self, segment: impl Into<String>) -> Self {
         let mut s = self.segments.clone();
@@ -29,6 +31,7 @@ impl ValidationPath {
         Self { segments: s }
     }
 
+    /// Return a path with an index appended to its final segment.
     #[must_use]
     pub fn join_index(&self, index: usize) -> Self {
         let mut s = self.segments.clone();
@@ -40,6 +43,7 @@ impl ValidationPath {
         Self { segments: s }
     }
 
+    /// Render the path using the canonical dotted-field notation.
     #[must_use]
     pub fn path(&self) -> String {
         self.segments.join(".")
@@ -54,6 +58,7 @@ pub struct ValidationError {
 }
 
 impl ValidationError {
+    /// Construct a failure for a canonical validation path and stable code.
     #[must_use]
     pub fn new(path: impl Into<String>, code: impl Into<String>) -> Self {
         Self {
@@ -62,11 +67,13 @@ impl ValidationError {
         }
     }
 
+    /// Return the canonical field path that failed validation.
     #[must_use]
     pub fn field(&self) -> &str {
         &self.path
     }
 
+    /// Return the stable language-neutral validation code.
     #[must_use]
     pub fn code(&self) -> &str {
         &self.code
@@ -93,16 +100,19 @@ pub struct Cardinality {
 }
 
 impl Cardinality {
+    /// Construct an inclusive cardinality interval.
     #[must_use]
     pub const fn new(min: u64, max: Option<u64>) -> Self {
         Self { min, max }
     }
 
+    /// Return the inclusive minimum number of values.
     #[must_use]
     pub const fn min(self) -> u64 {
         self.min
     }
 
+    /// Return the inclusive maximum, or `None` when unbounded.
     #[must_use]
     pub const fn max(self) -> Option<u64> {
         self.max
@@ -114,16 +124,19 @@ impl Cardinality {
 pub struct Required<T>(T);
 
 impl<T> Required<T> {
+    /// Wrap a value required by the resolved schema.
     #[must_use]
     pub const fn new(value: T) -> Self {
         Self(value)
     }
 
+    /// Borrow the required value.
     #[must_use]
     pub const fn get(&self) -> &T {
         &self.0
     }
 
+    /// Borrow the required value.
     #[must_use]
     pub const fn value(&self) -> &T {
         &self.0
@@ -142,11 +155,13 @@ impl<T> core::ops::Deref for Required<T> {
 pub struct Optional<T>(Option<T>);
 
 impl<T> Optional<T> {
+    /// Wrap an optional value from the resolved schema.
     #[must_use]
     pub const fn new(value: Option<T>) -> Self {
         Self(value)
     }
 
+    /// Borrow the optional value without consuming the wrapper.
     #[must_use]
     pub const fn as_ref(&self) -> Option<&T> {
         self.0.as_ref()
@@ -161,6 +176,12 @@ pub struct Sequence<T> {
 }
 
 impl<T> Sequence<T> {
+    /// Validate and wrap a sequence against its resolved cardinality.
+    ///
+    /// # Errors
+    ///
+    /// Returns a stable validation error when the length cannot be represented
+    /// or falls outside `cardinality`.
     pub fn try_new(
         values: Vec<T>,
         cardinality: Cardinality,
@@ -177,11 +198,13 @@ impl<T> Sequence<T> {
         })
     }
 
+    /// Borrow the validated values in schema order.
     #[must_use]
     pub fn as_slice(&self) -> &[T] {
         &self.values
     }
 
+    /// Return the cardinality against which this sequence was validated.
     #[must_use]
     pub const fn cardinality(&self) -> Cardinality {
         self.cardinality
@@ -191,7 +214,9 @@ impl<T> Sequence<T> {
 /// A binary sum used to preserve exact heterogeneous model forms.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Either<L, R> {
+    /// The left accepted model form.
     Left(L),
+    /// The right accepted model form.
     Right(R),
 }
 
@@ -211,6 +236,11 @@ pub enum Never {}
 pub struct CanonicalDouble(u64);
 
 impl CanonicalDouble {
+    /// Validate and wrap a finite IEEE 754 double.
+    ///
+    /// # Errors
+    ///
+    /// Returns `noncanonical_double` for NaN or either infinity.
     pub fn try_new(value: f64) -> Result<Self, ValidationError> {
         if value.is_nan() || value.is_infinite() {
             return Err(ValidationError::new("", "noncanonical_double"));
@@ -218,6 +248,11 @@ impl CanonicalDouble {
         Ok(Self(value.to_bits()))
     }
 
+    /// Validate and wrap the bits of a finite IEEE 754 double.
+    ///
+    /// # Errors
+    ///
+    /// Returns `noncanonical_double` when `bits` encodes NaN or infinity.
     pub fn try_from_bits(bits: u64) -> Result<Self, ValidationError> {
         let val = f64::from_bits(bits);
         if val.is_nan() || val.is_infinite() {
@@ -226,11 +261,13 @@ impl CanonicalDouble {
         Ok(Self(bits))
     }
 
+    /// Return the wrapped floating-point value.
     #[must_use]
     pub fn get(self) -> f64 {
         f64::from_bits(self.0)
     }
 
+    /// Return the canonical IEEE 754 bit representation.
     #[must_use]
     pub const fn to_bits(self) -> u64 {
         self.0
@@ -238,11 +275,18 @@ impl CanonicalDouble {
 }
 
 macro_rules! canonical_scalar {
-    ($name:ident, $code:expr, $parse_expr:expr) => {
+    ($name:ident, $doc:literal, $code:expr, $parse_expr:expr) => {
+        #[doc = $doc]
         #[derive(Clone, Debug, Eq, PartialEq, Hash)]
         pub struct $name(String);
 
         impl $name {
+            /// Validate and wrap a canonical scalar spelling.
+            ///
+            /// # Errors
+            ///
+            /// Returns a stable validation error when the value exceeds the
+            /// shared string ceiling or is not canonical for this domain.
             pub fn try_new(value: impl Into<String>) -> Result<Self, ValidationError> {
                 let s = value.into();
                 if type_bridge_contract::value::CanonicalString::new(&s).is_err() {
@@ -255,6 +299,7 @@ macro_rules! canonical_scalar {
                 Ok(Self(s))
             }
 
+            /// Return the canonical scalar spelling.
             #[must_use]
             pub fn as_str(&self) -> &str {
                 &self.0
@@ -263,45 +308,70 @@ macro_rules! canonical_scalar {
     };
 }
 
-canonical_scalar!(Decimal, "noncanonical_decimal", |s| {
-    if let Some(dec) = type_bridge_contract::decimal::parse_decimal(s) {
-        dec.canonical_string() == s
-    } else {
-        false
+canonical_scalar!(
+    Decimal,
+    "A decimal value in the shared canonical lexical form.",
+    "noncanonical_decimal",
+    |s| {
+        if let Some(dec) = type_bridge_contract::decimal::parse_decimal(s) {
+            dec.canonical_string() == s
+        } else {
+            false
+        }
     }
-});
+);
 
-canonical_scalar!(Date, "noncanonical_date", |s| {
-    if let Ok(d) = s.parse::<type_bridge_contract::temporal::CanonicalDate>() {
-        d.to_string() == s
-    } else {
-        false
+canonical_scalar!(
+    Date,
+    "A calendar date in the shared canonical lexical form.",
+    "noncanonical_date",
+    |s| {
+        if let Ok(d) = s.parse::<type_bridge_contract::temporal::CanonicalDate>() {
+            d.to_string() == s
+        } else {
+            false
+        }
     }
-});
+);
 
-canonical_scalar!(DateTime, "noncanonical_datetime", |s| {
-    if let Ok(dt) = s.parse::<type_bridge_contract::temporal::CanonicalDateTime>() {
-        dt.to_string() == s
-    } else {
-        false
+canonical_scalar!(
+    DateTime,
+    "A timezone-free date-time in the shared canonical lexical form.",
+    "noncanonical_datetime",
+    |s| {
+        if let Ok(dt) = s.parse::<type_bridge_contract::temporal::CanonicalDateTime>() {
+            dt.to_string() == s
+        } else {
+            false
+        }
     }
-});
+);
 
-canonical_scalar!(DateTimeTz, "noncanonical_datetime_tz", |s| {
-    if let Ok(dtz) = s.parse::<type_bridge_contract::temporal::CanonicalDateTimeTz>() {
-        dtz.to_string() == s
-    } else {
-        false
+canonical_scalar!(
+    DateTimeTz,
+    "A timezone-aware date-time in the shared canonical lexical form.",
+    "noncanonical_datetime_tz",
+    |s| {
+        if let Ok(dtz) = s.parse::<type_bridge_contract::temporal::CanonicalDateTimeTz>() {
+            dtz.to_string() == s
+        } else {
+            false
+        }
     }
-});
+);
 
-canonical_scalar!(Duration, "noncanonical_duration", |s| {
-    if let Ok(dur) = s.parse::<type_bridge_contract::temporal::CanonicalDuration>() {
-        dur.to_string() == s
-    } else {
-        false
+canonical_scalar!(
+    Duration,
+    "A duration in the shared canonical lexical form.",
+    "noncanonical_duration",
+    |s| {
+        if let Ok(dur) = s.parse::<type_bridge_contract::temporal::CanonicalDuration>() {
+            dur.to_string() == s
+        } else {
+            false
+        }
     }
-});
+);
 
 /// An opaque capability token required for model materialization.
 #[doc(hidden)]
@@ -451,18 +521,23 @@ impl<T: QueryValued> QueryValued for &T {
 /// Target thing category: Entity or Relation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ThingKind {
+    /// A generated entity type.
     Entity,
+    /// A generated relation type.
     Relation,
 }
 
 /// A sealed generated schema model associated with its schema marker `S`.
 pub trait Model: sealed::Sealed {
+    /// The generated schema that owns this model.
     type Schema: Schema;
+    /// Canonical JSON identity for the projected schema type.
     const TYPE_ID_JSON: &'static str;
 }
 
 /// An entity or relation schema model.
 pub trait ThingModel: Model {
+    /// Return whether this generated model represents an entity or relation.
     fn thing_kind() -> ThingKind;
 }
 
@@ -474,7 +549,9 @@ pub trait RelationModel: ThingModel {}
 
 /// A complete materialized generated model with a mandatory canonical IID.
 pub trait CompleteModel: ThingModel + MaterializeModel {
+    /// The generated payload accepted when creating this model.
     type Create: IntoEncodedCreate + Clone;
+    /// Return the canonical IID of the materialized thing.
     fn iid(&self) -> &str;
 }
 
@@ -520,6 +597,7 @@ impl OrderedValued for Duration {}
 
 /// A nonrecursive generated reference model. Key-based references may not have an IID initially.
 pub trait ReferenceModel: ThingModel {
+    /// Return the canonical IID when this reference is IID-backed.
     fn iid(&self) -> Option<&str>;
 }
 
@@ -652,6 +730,11 @@ impl EncodedScalar {
     }
 }
 
+/// Validate a string against the shared canonical string ceiling.
+///
+/// # Errors
+///
+/// Returns `string_limit_exceeded` at `path` when the value is too large.
 pub fn validate_canonical_string(
     value: &str,
     path: &ValidationPath,
@@ -662,6 +745,7 @@ pub fn validate_canonical_string(
     Ok(())
 }
 
+/// Prefix a nested validation failure with its generated parent path.
 pub fn prefix_validation_path(
     err: ValidationError,
     parent_path: &ValidationPath,
@@ -1066,14 +1150,19 @@ pub trait MaterializeModel: Model + Sized {
 
 /// A closed subtype family enum representing a concrete descendant closure for a root `Root`.
 pub trait ModelFamily: sealed::Sealed {
+    /// The generated root model whose concrete descendants form this family.
     type Root: ThingModel;
+    /// The generated schema that owns the family.
     type Schema: Schema;
+    /// Return the canonical IID of the materialized family member.
     fn iid(&self) -> &str;
 }
 
 /// A sealed generated struct value associated with its schema marker `S`.
 pub trait StructValue: sealed::Sealed {
+    /// The generated schema that owns this struct value.
     type Schema: Schema;
+    /// Canonical JSON identity for the projected schema struct.
     const STRUCT_ID_JSON: &'static str;
 }
 
@@ -1113,6 +1202,7 @@ pub struct TypeToken<Owner: Model> {
 }
 
 impl<Owner: Model> TypeToken<Owner> {
+    /// Construct a token from canonical type identity and metadata JSON.
     #[must_use]
     pub const fn new(type_id_json: &'static str, metadata_json: &'static str) -> Self {
         Self {
@@ -1122,11 +1212,13 @@ impl<Owner: Model> TypeToken<Owner> {
         }
     }
 
+    /// Return the token's canonical type identity JSON.
     #[must_use]
     pub const fn type_id_json(self) -> &'static str {
         self.type_id_json
     }
 
+    /// Return the token's canonical metadata JSON.
     #[must_use]
     pub const fn metadata_json(self) -> &'static str {
         self.metadata_json
@@ -1142,6 +1234,7 @@ pub struct FieldToken<Owner: Model, Value> {
 }
 
 impl<Owner: Model, Value> FieldToken<Owner, Value> {
+    /// Construct a token from canonical owns-edge identity and metadata JSON.
     #[must_use]
     pub const fn new(owns_id_json: &'static str, metadata_json: &'static str) -> Self {
         Self {
@@ -1151,11 +1244,13 @@ impl<Owner: Model, Value> FieldToken<Owner, Value> {
         }
     }
 
+    /// Return the token's canonical owns-edge identity JSON.
     #[must_use]
     pub const fn owns_id_json(self) -> &'static str {
         self.owns_id_json
     }
 
+    /// Return the token's canonical metadata JSON.
     #[must_use]
     pub const fn metadata_json(self) -> &'static str {
         self.metadata_json
@@ -1171,6 +1266,7 @@ pub struct RoleToken<Owner: Model, Players> {
 }
 
 impl<Owner: Model, Players> RoleToken<Owner, Players> {
+    /// Construct a token from canonical role identity and metadata JSON.
     #[must_use]
     pub const fn new(role_id_json: &'static str, metadata_json: &'static str) -> Self {
         Self {
@@ -1180,11 +1276,13 @@ impl<Owner: Model, Players> RoleToken<Owner, Players> {
         }
     }
 
+    /// Return the token's canonical role identity JSON.
     #[must_use]
     pub const fn role_id_json(self) -> &'static str {
         self.role_id_json
     }
 
+    /// Return the token's canonical metadata JSON.
     #[must_use]
     pub const fn metadata_json(self) -> &'static str {
         self.metadata_json
@@ -1201,6 +1299,7 @@ pub struct PlaysToken<Player: Model, Owner: Model, Players> {
 }
 
 impl<Player: Model, Owner: Model, Players> PlaysToken<Player, Owner, Players> {
+    /// Construct a token from canonical playing identity and metadata JSON.
     #[must_use]
     pub const fn new(plays_id_json: &'static str, metadata_json: &'static str) -> Self {
         Self {
@@ -1210,11 +1309,13 @@ impl<Player: Model, Owner: Model, Players> PlaysToken<Player, Owner, Players> {
         }
     }
 
+    /// Return the token's canonical playing identity JSON.
     #[must_use]
     pub const fn plays_id_json(self) -> &'static str {
         self.plays_id_json
     }
 
+    /// Return the token's canonical metadata JSON.
     #[must_use]
     pub const fn metadata_json(self) -> &'static str {
         self.metadata_json
@@ -1230,6 +1331,7 @@ pub struct FunctionToken<S: Schema, Arguments, Output> {
 }
 
 impl<S: Schema, Arguments, Output> FunctionToken<S, Arguments, Output> {
+    /// Construct a token from a function identifier and canonical metadata JSON.
     #[must_use]
     pub const fn new(function_id: &'static str, metadata_json: &'static str) -> Self {
         Self {
@@ -1239,11 +1341,13 @@ impl<S: Schema, Arguments, Output> FunctionToken<S, Arguments, Output> {
         }
     }
 
+    /// Return the schema function identifier.
     #[must_use]
     pub const fn function_id(self) -> &'static str {
         self.function_id
     }
 
+    /// Return the token's canonical metadata JSON.
     #[must_use]
     pub const fn metadata_json(self) -> &'static str {
         self.metadata_json
@@ -1265,7 +1369,7 @@ mod tests {
             .split_once("macro_rules! canonical_scalar")
             .expect("canonical scalar macro remains present");
         let (macro_body, _) = macro_and_invocations
-            .split_once("canonical_scalar!(Decimal")
+            .split_once("canonical_scalar!(\n    Decimal")
             .expect("canonical scalar invocations remain present");
         assert!(macro_body.contains("#[derive(Clone, Debug, Eq, PartialEq, Hash)]"));
         assert!(!macro_body.contains("Ord"));

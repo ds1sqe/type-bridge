@@ -1,0 +1,9 @@
+format: typebridge.schema/v2
+
+attributes:
+  smoke-name: { value: string }
+
+entities:
+  smoke-person:
+    owns:
+      smoke-name: {}

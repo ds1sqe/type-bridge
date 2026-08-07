@@ -741,20 +741,30 @@ def test_rejects_cargo_source_overrides(tmp_path: Path, config: str) -> None:
 def test_release_workflow_binds_the_driver_cutoff_before_cargo_publication() -> None:
     workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
     validation_command = "python scripts/ci/validate_latest_typedb_driver_pin.py"
+    candidate_build_command = "python scripts/ci/cargo_release_candidate.py build"
+    candidate_preflight_command = "python scripts/ci/publish_cargo_release_candidate.py preflight"
+    candidate_publish_command = "python scripts/ci/publish_cargo_release_candidate.py publish"
     committed_option = "--committed-cutoff"
     validation = workflow.index(validation_command)
     committed = workflow.index(committed_option, validation)
     preflight = workflow.index("  channel-preflight:")
     cargo_publish = workflow.index("  publish-crates:")
+    exact_publish = workflow.index(candidate_publish_command, cargo_publish)
 
     assert workflow.count(validation_command) == 1
-    assert validation < committed < preflight < cargo_publish
+    assert workflow.count(candidate_build_command) == 1
+    assert workflow.count(candidate_preflight_command) == 1
+    assert workflow.count(candidate_publish_command) == 1
+    assert validation < committed < preflight < cargo_publish < exact_publish
     assert "  preflight-publication:" not in workflow
     assert "--cutoff-state" not in workflow
-    assert "release_crates_graph" in workflow
+    assert "release_crates_graph" not in workflow
     assert "cargo publish" not in workflow
     assert (
         "needs: [validate-release-identity, accept-python-artifacts, "
         "accept-node-package, accept-live-artifact-parity, accept-server-oci]"
     ) in workflow[preflight:]
-    assert "needs: [channel-preflight, recovery-preflight]" in workflow[cargo_publish:]
+    assert (
+        "needs: [release-tag-preflight, publish-node-npm, validate-release-identity]"
+        in workflow[cargo_publish:]
+    )

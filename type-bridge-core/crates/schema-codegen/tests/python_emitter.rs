@@ -22,6 +22,11 @@ use type_bridge_contract::value::{Cardinality, ValueTypeTag};
 use type_bridge_schema::{SchemaDocumentSet, normalize_documents, project, resolve};
 use type_bridge_schema_codegen::PythonEmitter;
 
+mod support;
+
+const COMPOUND_AUTHORITY_SOURCE: &str =
+    "format: typebridge.schema/v2\nentities:\n  compound-fixture: {}\n";
+
 fn multiplicity(min: u64, max: Option<u64>) -> ProjectedMultiplicity {
     ProjectedMultiplicity::from_cardinality(Cardinality::new(min, max).unwrap())
 }
@@ -39,7 +44,10 @@ fn direct_sub(subtype: &TypeId, supertype: &TypeId) -> DirectSubProjection {
 fn projected(
     source: &str,
     resources: &[CodeResourceDigest],
-) -> type_bridge_contract::projection::RuntimeProjection {
+) -> (
+    type_bridge_contract::projection::RuntimeProjection,
+    type_bridge_schema::VerifiedSchemaAuthority,
+) {
     let documents =
         SchemaDocumentSet::parse([(DocumentId::new("python-emitter.yaml").unwrap(), source)])
             .unwrap();
@@ -49,17 +57,21 @@ fn projected(
         &SemanticProfileId::new("typedb-3.12.1/v1").unwrap(),
     )
     .unwrap();
-    project(
+    let projection = project(
         &resolved,
         BindingTarget::Python,
         &ProjectionConfig::python(),
         &PythonEmitter::new().generator_handlers(),
         resources,
     )
-    .unwrap()
+    .unwrap();
+    (projection, support::authority(source))
 }
 
-fn compound_projection(resources: &[CodeResourceDigest]) -> RuntimeProjection {
+fn compound_projection(
+    resources: &[CodeResourceDigest],
+    semantic_fingerprint: SemanticSchemaFingerprint,
+) -> RuntimeProjection {
     let emitter = PythonEmitter::new();
     let identifier = TypeId::new(TypeKind::Attribute, "identifier").unwrap();
     let person = TypeId::new(TypeKind::Entity, "person").unwrap();
@@ -393,11 +405,7 @@ fn compound_projection(resources: &[CodeResourceDigest]) -> RuntimeProjection {
     RuntimeProjection::try_new(
         BindingTarget::Python,
         ProjectionConfig::python(),
-        SemanticSchemaFingerprint::compute(
-            SemanticProfileId::new("typedb-3.12.1/v1").unwrap(),
-            b"compound projection",
-        )
-        .unwrap(),
+        semantic_fingerprint,
         &emitter.generator_handlers(),
         resources,
         models,
@@ -430,17 +438,22 @@ fn rebuild(
 }
 
 #[test]
-fn emits_exact_deterministic_ten_file_compound_package() {
+fn emits_exact_deterministic_eleven_file_compound_package() {
     let emitter = PythonEmitter::new();
-    let projection = compound_projection(&emitter.code_resources().unwrap());
-    let first = emitter.emit(&projection).unwrap();
-    let second = emitter.emit(&projection).unwrap();
+    let authority = support::authority(COMPOUND_AUTHORITY_SOURCE);
+    let projection = compound_projection(
+        &emitter.code_resources().unwrap(),
+        authority.resolved_schema().semantic_fingerprint().clone(),
+    );
+    let first = emitter.emit(&projection, &authority).unwrap();
+    let second = emitter.emit(&projection, &authority).unwrap();
     assert_eq!(first, second);
     assert_eq!(
         first.files().keys().map(String::as_str).collect::<Vec<_>>(),
         vec![
             "__init__.py",
             "__init__.pyi",
+            "_authority.py",
             "_models.py",
             "_models.pyi",
             "_query.py",
@@ -476,13 +489,19 @@ fn emits_exact_deterministic_ten_file_compound_package() {
     assert!(schema.contains("SEMANTIC_SCHEMA_FINGERPRINT_JSON"));
     assert!(schema.contains("PROJECTION_FINGERPRINT_JSON"));
     assert!(schema.contains("PLAYING_FACTS = _MappingProxyType({"));
+    let authority_source = std::str::from_utf8(first.get("_authority.py").unwrap()).unwrap();
+    assert!(authority_source.contains("typebridge.schema-authority/v1"));
+    assert!(authority_source.contains("SCHEMA_AUTHORITY_BYTES"));
+    assert!(!authority_source.contains("DECLARED_SCHEMA_BYTES"));
+    assert!(!authority_source.contains("MANAGED_SCOPE_ID"));
+    assert!(!authority_source.contains("SEMANTIC_PROFILE_ID"));
 }
 
 #[test]
 fn emits_safely_escaped_type_and_direct_sub_documentation() {
     let emitter = PythonEmitter::new();
     let resources = emitter.code_resources().unwrap();
-    let projection = projected(
+    let (projection, authority) = projected(
         r#"format: typebridge.schema/v2
 entities:
   actor: {}
@@ -498,7 +517,7 @@ entities:
 "#,
         &resources,
     );
-    let package = emitter.emit(&projection).unwrap();
+    let package = emitter.emit(&projection, &authority).unwrap();
     let source = std::str::from_utf8(package.get("_models.py").unwrap()).unwrap();
     let stub = std::str::from_utf8(package.get("_models.pyi").unwrap()).unwrap();
     let documentation = "\"Type \\\"doc\\\".\\nclosing */ kept\\n\\nDirect subtype of `actor`:\\nEdge 'doc' \\\\ path\\ncloses */ safely\"";
@@ -522,9 +541,17 @@ fn rejects_mutated_resource_evidence() {
         .unwrap(),
     );
     resources.sort_by(|left, right| left.id().cmp(right.id()));
-    let projection = compound_projection(&resources);
+    let authority = support::authority(COMPOUND_AUTHORITY_SOURCE);
+    let projection = compound_projection(
+        &resources,
+        authority.resolved_schema().semantic_fingerprint().clone(),
+    );
     assert_eq!(
-        emitter.emit(&projection).unwrap_err().code().as_str(),
+        emitter
+            .emit(&projection, &authority)
+            .unwrap_err()
+            .code()
+            .as_str(),
         "python_emitter_evidence_mismatch"
     );
 }
@@ -533,7 +560,11 @@ fn rejects_mutated_resource_evidence() {
 fn rejects_public_name_collisions_and_missing_parents() {
     let emitter = PythonEmitter::new();
     let resources = emitter.code_resources().unwrap();
-    let projection = compound_projection(&resources);
+    let authority = support::authority(COMPOUND_AUTHORITY_SOURCE);
+    let projection = compound_projection(
+        &resources,
+        authority.resolved_schema().semantic_fingerprint().clone(),
+    );
     let employment_id = TypeId::new(TypeKind::Relation, "employment").unwrap();
     let employment = &projection.models()[&employment_id];
     let collision = ModelProjection::new(
@@ -551,7 +582,7 @@ fn rejects_public_name_collisions_and_missing_parents() {
     let collision_projection = rebuild(&projection, models, &resources);
     assert_eq!(
         emitter
-            .emit(&collision_projection)
+            .emit(&collision_projection, &authority)
             .unwrap_err()
             .code()
             .as_str(),

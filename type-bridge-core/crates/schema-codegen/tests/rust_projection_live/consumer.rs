@@ -1895,14 +1895,12 @@ async fn generated_relation_query_and_remote_lifecycle() {
     }
 
     let remote_url = env::var("TYPE_BRIDGE_REMOTE_URL").expect("F4 remote server URL");
-    let semantic_profile = env::var("TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE")
-        .unwrap_or_else(|_| "typedb-3.12.1/v1".to_owned());
-    let remote: RemoteDatabase<AppSchema> = RemoteDatabase::connect(RemoteConnectionOptions::new(
-        "rust-projection-live",
-        semantic_profile,
+    let remote: RemoteDatabase<AppSchema> = RemoteDatabase::connect(
+        RemoteConnectionOptions::generated(
         RemoteQueryLimits::new(100, 8 << 20, 1000, 1000, 1000, 1000).deadline_ms(30_000),
         HttpTransport::new(remote_url),
-    ))
+        ),
+    )
     .await
     .expect("F4 remote database connects")
     .with_schema(SCHEMA)

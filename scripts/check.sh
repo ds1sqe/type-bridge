@@ -42,6 +42,12 @@ run_rust() {
     run_step "cargo check --all-targets" \
         cargo check --manifest-path type-bridge-core/Cargo.toml --all-targets
 
+    run_step "first-party public Cargo docs" \
+        python scripts/ci/validate_cargo_rustdoc.py
+
+    run_step "first-party public Cargo docs on MSRV 1.88" \
+        python scripts/ci/validate_cargo_rustdoc.py --toolchain 1.88.0
+
     run_step "cargo test --all-targets" \
         cargo test --manifest-path type-bridge-core/Cargo.toml --all-targets
 

@@ -11,6 +11,8 @@
 //! surface ships both as the standalone `type-bridge` executable and
 //! in-process inside the Python wheel via [`run_cli`].
 
+#![deny(missing_docs)]
+
 use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::fs;
@@ -62,7 +64,7 @@ enum SchemaCommand {
     Check,
     /// Generate the configured binding projections from the canonical schema.
     Generate,
-    /// Export canonical declared-schema bytes for V2 executors.
+    /// Export canonical declared-schema bytes for low-level V2 tooling.
     ExportDeclared {
         /// Workspace-relative destination for the canonical JSON artifact.
         #[arg(long, default_value = "declared-schema.json")]
@@ -378,24 +380,39 @@ fn sanitize_migration_execution_outcome(
 /// The resolved workspace schema is projected per configured target with
 /// each shipped emitter's handler and code-resource evidence — the same
 /// path the codegen acceptance fixtures pin — and emitted
-/// deterministically. Files land under the confined output directories
-/// through same-directory temporary files renamed into place; files not
-/// produced by the emitter are never touched or deleted.
+/// deterministically. The complete generation is prepared beneath the
+/// retained workspace authority and committed as one rollback-verified batch,
+/// with schema authority last; files not produced by an emitter are never
+/// touched or deleted.
 fn run_schema_generate(workspace: &TypeBridgeWorkspace) -> Result<(), String> {
     use type_bridge_contract::projection::{BindingTarget, ProjectionConfig};
-    use type_bridge_schema::project;
+    use type_bridge_schema::{build_schema_authority, encode_schema_authority, project};
     use type_bridge_schema_codegen::{PythonEmitter, RustEmitter, TypeScriptEmitter};
 
     let outputs = workspace.config().outputs();
-    if outputs.is_empty() {
+    let authority_output = workspace.config().schema_authority_output();
+    if outputs.is_empty() && authority_output.is_none() {
         return Err(
-            "no binding outputs configured; add bindings.<target>.output to the manifest".into(),
+            "no generated outputs configured; add bindings.<target>.output or \
+             artifacts.schema-authority.output to the manifest"
+                .into(),
         );
     }
 
     let resolved = workspace.resolved_schema();
+    let authority = build_schema_authority(
+        workspace.declared_schema(),
+        workspace.required_capabilities(),
+        workspace.delta_context(),
+    )
+    .map_err(display)?;
+    let authority_bytes = encode_schema_authority(&authority);
 
-    for (target, directory) in outputs {
+    // Finish every pure projection before mutating any output. A target-level
+    // generation failure therefore cannot publish an earlier language from a
+    // different semantic attempt.
+    let mut packages = Vec::with_capacity(outputs.len());
+    for (&target, directory) in outputs {
         let package = match target {
             BindingTarget::Python => {
                 let emitter = PythonEmitter::new();
@@ -407,7 +424,7 @@ fn run_schema_generate(workspace: &TypeBridgeWorkspace) -> Result<(), String> {
                     &emitter.code_resources().map_err(display)?,
                 )
                 .map_err(display)?;
-                emitter.emit(&projection)
+                emitter.emit(&projection, &authority)
             }
             BindingTarget::TypeScript => {
                 let emitter = TypeScriptEmitter::new();
@@ -419,7 +436,7 @@ fn run_schema_generate(workspace: &TypeBridgeWorkspace) -> Result<(), String> {
                     &emitter.code_resources().map_err(display)?,
                 )
                 .map_err(display)?;
-                emitter.emit(&projection)
+                emitter.emit(&projection, &authority)
             }
             BindingTarget::Rust => {
                 let emitter = RustEmitter::new();
@@ -431,41 +448,72 @@ fn run_schema_generate(workspace: &TypeBridgeWorkspace) -> Result<(), String> {
                     &emitter.code_resources().map_err(display)?,
                 )
                 .map_err(display)?;
-                emitter.emit_with_declared_schema(&projection, workspace.declared_schema())
+                emitter.emit(&projection, &authority)
             }
         }
         .map_err(display)?;
+        packages.push((target, directory, package));
+    }
 
-        let workspace_root = workspace.output_root()?;
-        let root = workspace_root.open_beneath(directory.as_path())?;
+    // Build one workspace-relative batch without touching the filesystem. The
+    // workspace authority prevalidates every destination and prepares every
+    // flushed same-directory temporary before it publishes in this order. The
+    // final server authority is deliberately appended last.
+    let workspace_root = workspace.output_root()?;
+    let mut generated_files = Vec::new();
+    let mut generated_packages = Vec::with_capacity(packages.len());
+    for (target, directory, package) in &packages {
+        let display_root = workspace_root.display_path().join(directory.as_path());
+        let file_count = package.files().len();
         for (path, bytes) in package.files() {
             let relative = std::path::Path::new(path);
             validate_generated_relative_path(relative)?;
-            let parent = root.open_beneath(
-                relative
-                    .parent()
-                    .unwrap_or_else(|| std::path::Path::new("")),
-            )?;
-            let file_name = relative
-                .file_name()
-                .ok_or_else(|| format!("generated path {path:?} has no file name"))?;
-            parent.write_atomic(file_name, bytes)?;
+            generated_files.push((directory.as_path().join(relative), bytes.as_slice()));
         }
+        generated_packages.push((*target, display_root, file_count));
+    }
+    let prepared_authority = authority_output
+        .map(|output| {
+            let path = output.as_path();
+            let _file_name = path
+                .file_name()
+                .ok_or_else(|| "schema-authority output has no file name".to_owned())?;
+            Ok::<_, String>(path.to_path_buf())
+        })
+        .transpose()?;
+
+    if let Some(relative) = &prepared_authority {
+        generated_files.push((relative.clone(), authority_bytes.as_slice()));
+    }
+    workspace_root.write_atomic_batch(
+        generated_files
+            .iter()
+            .map(|(path, bytes)| (path.as_path(), *bytes)),
+    )?;
+
+    for (target, display_root, file_count) in generated_packages {
         println!(
             "generated {} file(s) for {} into {}",
-            package.files().len(),
+            file_count,
             match target {
                 BindingTarget::Python => "python",
                 BindingTarget::TypeScript => "typescript",
                 BindingTarget::Rust => "rust",
             },
-            root.display_path().display(),
+            display_root.display(),
+        );
+    }
+    if let Some(relative) = prepared_authority {
+        println!(
+            "generated schema authority at {}\n  authority identity: {}",
+            workspace_root.display_path().join(relative).display(),
+            authority.authority_fingerprint().digest().to_hex(),
         );
     }
     Ok(())
 }
 
-/// Export the same canonical declared bytes consumed by the V2 server.
+/// Export canonical declared bytes for explicitly low-level V2 tooling.
 fn run_schema_export_declared(
     workspace: &TypeBridgeWorkspace,
     output: &Path,

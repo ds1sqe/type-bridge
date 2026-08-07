@@ -1,5 +1,7 @@
 //! Offline proof that optional rustls termination preserves V1 response bytes.
 
+mod support;
+
 use std::time::Duration;
 
 use axum::body::Body;
@@ -8,8 +10,9 @@ use axum::routing::get;
 use axum::{Json, Router};
 use http_body_util::BodyExt;
 use tower::ServiceExt;
-use type_bridge_server::test_helpers::{MockExecutor, make_pipeline};
 use type_bridge_server::transport::http::create_router;
+
+use support::{MockExecutor, make_pipeline};
 
 #[tokio::test]
 async fn inbound_tls_serves_the_exact_plaintext_v1_health_body() {

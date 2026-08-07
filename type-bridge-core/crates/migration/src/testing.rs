@@ -16,6 +16,9 @@
 //!
 //! # Usage
 //!
+//! This example is ignored because the testing module is crate-private and
+//! cannot be compiled as an external rustdoc consumer.
+//!
 //! ```ignore
 //! use crate::testing::{MockEvent, MockMigrationBackend};
 //! use type_bridge_orm::{Database, TxType};

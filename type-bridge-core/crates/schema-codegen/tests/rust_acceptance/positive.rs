@@ -205,9 +205,7 @@ impl type_bridge::RemoteQueryTransport for RemoteTransport {
 }
 
 async fn remote_generated_outputs_compile() -> type_bridge::Result<()> {
-    let options = type_bridge::RemoteConnectionOptions::new(
-        "application-scope",
-        "typedb-3.12.1/v1",
+    let options = type_bridge::RemoteConnectionOptions::generated(
         type_bridge::RemoteQueryLimits::new(100, 1 << 20, 100, 1000, 1000, 1000),
         RemoteTransport,
     );

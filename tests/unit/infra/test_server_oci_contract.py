@@ -26,7 +26,8 @@ def test_server_image_build_and_runtime_are_immutable_and_least_privilege() -> N
         "debian:bookworm-slim@"
         "sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818"
     ) in source
-    assert "cargo build --locked --release -p type-bridge-server --features v2-query" in source
+    assert "cargo build --locked --release -p type-bridge-server --no-default-features" in source
+    assert "--features band8,band9,v2-query" in source
     assert "USER 10001:10001" in source
     assert 'ENTRYPOINT ["/usr/local/bin/type-bridge-server"]' in source
     assert 'CMD ["--config", "/etc/type-bridge/server.toml"]' in source
@@ -125,6 +126,15 @@ def test_release_builds_accepts_and_publishes_only_exact_oci_bytes() -> None:
     assert workflow.count("actions/attest-sbom@") == 2
     assert "Refusing to overwrite conflicting immutable OCI tag." in workflow
     assert "Refusing to move conflicting OCI alias during recovery." in workflow
+    assert (
+        "SERVER_OCI_MINOR_ALIAS: ${{ github.event_name == 'workflow_dispatch' && "
+        "inputs.release_channel == 'recovery' && '2.0' || '2.1' }}"
+    ) in workflow
+    assert 'for alias in "$SERVER_OCI_MINOR_ALIAS" 2 latest; do' in workflow
+    assert '"aliases": [os.environ["SERVER_OCI_MINOR_ALIAS"], "2", "latest"],' in workflow
+    assert "release.yml@refs/tags/v2[.]1[.]0$'" in workflow
+    assert "release.yml@refs/tags/v2[.]0[.]0$'" not in workflow
+    assert "for alias in 2.0 2 latest; do" not in workflow
     assert "|not found|" not in workflow
     assert "Stable OCI index conflicts with accepted platforms" in workflow
     assert "recovery-promotion.json" in workflow

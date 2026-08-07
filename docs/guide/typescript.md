@@ -12,12 +12,16 @@ type-bridge --manifest typebridge.yaml schema check
 type-bridge --manifest typebridge.yaml schema generate
 ```
 
-Configure the target in `typebridge.yaml`:
+Configure the target and generic-server artifact in `typebridge.yaml`:
 
 ```yaml
 bindings:
   typescript:
     output: generated/typescript
+
+artifacts:
+  schema-authority:
+    output: generated/schema-authority.json
 ```
 
 Compile the generated package with its emitted TypeScript configuration. Do not
@@ -149,11 +153,40 @@ transactions after their final query terminal.
 
 ## Remote queries
 
-The generated package exports `RemoteQuerySession`. Supply a Query V2 authority,
-exact server advertisement, one-exchange callback, and resource limits. Query
-composition performs no I/O; `one`, `first`, bounded `rows`, `pageBy`, `countBy`,
-or `existsBy` performs one exchange and hydrates the same generated classes as
-direct execution.
+The generated package exports `RemoteQuerySession` and privately embeds its
+verified Query V2 authority. Supply the exact server advertisement, a
+caller-owned one-exchange callback, and resource limits—never an authority file
+or `QueryV2Authority`:
+
+```ts
+import {
+  Person,
+  RemoteQuerySession,
+} from "./generated/typescript/dist/index.js";
+
+const remote = new RemoteQuerySession(
+  advertisementBytes,
+  exchange,
+  {
+    maxItems: 100n,
+    maxBytes: 8_388_608n,
+    maxCollectionMembers: 1_000n,
+    maxGraphNodes: 1_000n,
+    maxAttributeValues: 1_000n,
+    maxRolePlayers: 1_000n,
+    deadlineMs: 30_000n,
+  },
+);
+const person = remote.exact(Person);
+const rows = await remote.query(person).rows({ limit: 50n });
+```
+
+`advertisementBytes` must come from the intended server over authenticated TLS
+or be pinned out of band. `exchange` performs one authenticated request and
+returns the exact response bytes; TypeBridge does not choose an HTTP client,
+credential policy, or retry policy. Query composition performs no I/O; `one`,
+`first`, bounded `rows`, `pageBy`, `countBy`, or `existsBy` performs one
+exchange and hydrates the same generated classes as direct execution.
 
 Remote reductions/grouping fail before exchange with
 `query_remote_v2_native_only_operation`. Generated remote mutation APIs are not

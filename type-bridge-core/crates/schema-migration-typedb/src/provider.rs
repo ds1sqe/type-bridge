@@ -14,7 +14,9 @@ use type_bridge_contract::limits::StructuralLimits;
 use type_bridge_contract::migration::CONDITIONAL_RESOLUTION_CAPABILITY;
 use type_bridge_contract::migration_assertion_capability_vocabulary;
 use type_bridge_contract::schema::{DocumentId, ManagedSchemaState};
-use type_bridge_contract::schema_delta::SCHEMA_REDEFINE_CAPABILITY;
+use type_bridge_contract::schema_delta::{
+    SCHEMA_REDEFINE_CAPABILITY, schema_transition_capability_vocabulary,
+};
 use type_bridge_orm::migration_assertion::{
     MigrationAssertionExecutionContext, MigrationAssertionExecutionError,
     execute_migration_assertion,
@@ -27,7 +29,6 @@ use type_bridge_schema::BUILTIN_SCHEMA_CAPABILITY_IDS;
 use type_bridge_schema_migration::{
     ExecutionFuture, GroupCommitCertainty, GroupCommitFailure, GroupCommitFuture,
     MigrationExecutionProvider, MigrationLease, PreparedMigrationGroup, StatementUnit,
-    typedb_3_12_1_profile,
 };
 
 use crate::observation::{
@@ -272,7 +273,7 @@ fn group_commit_certainty(error: &ClassifiedCommitError) -> GroupCommitCertainty
 
 /// Compose the exact execution capability vocabulary for TypeDB 3.12.1.
 pub fn execution_capability_vocabulary() -> Result<CapabilitySet, Diagnostic> {
-    let mut capabilities = typedb_3_12_1_profile().required_capabilities.clone();
+    let mut capabilities = schema_transition_capability_vocabulary();
     for capability in BUILTIN_SCHEMA_CAPABILITY_IDS {
         capabilities.insert(CapabilityId::new(*capability)?);
     }
@@ -379,10 +380,12 @@ fn failure(category: DiagnosticCategory, code: &'static str, message: &'static s
 #[cfg(test)]
 mod tests {
     use super::*;
+    use type_bridge_schema_migration::typedb_3_12_1_profile;
 
     #[test]
     fn execution_capability_vocabulary_is_a_closed_superset() {
         let capabilities = execution_capability_vocabulary().expect("capability vocabulary");
+        let authority_capabilities = type_bridge_schema::schema_authority_capability_vocabulary();
         for capability in typedb_3_12_1_profile().required_capabilities.iter() {
             assert!(capabilities.contains(capability));
         }
@@ -426,6 +429,9 @@ mod tests {
         let actual: std::collections::BTreeSet<String> =
             capabilities.iter().map(ToString::to_string).collect();
         assert_eq!(actual, expected);
+        capabilities
+            .ensure_supported_by(&authority_capabilities)
+            .expect("schema authority consumers understand every workspace execution requirement");
     }
 
     #[test]

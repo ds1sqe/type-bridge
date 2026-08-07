@@ -4,6 +4,7 @@
 //! and owner-branded schema/model primitives.
 
 #![forbid(unsafe_code)]
+#![deny(missing_docs)]
 
 extern crate self as type_bridge;
 

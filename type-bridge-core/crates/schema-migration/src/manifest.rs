@@ -205,14 +205,17 @@ pub struct VerifiedSchemaMigrationManifest {
 }
 
 impl VerifiedSchemaMigrationManifest {
+    /// Return the closed migration manifest format identifier.
     pub const fn format(&self) -> &MigrationFormat {
         &self.format
     }
 
+    /// Return the content-derived migration identity.
     pub const fn id(&self) -> &MigrationId {
         &self.id
     }
 
+    /// Return canonical parent migration identities.
     pub fn parents(&self) -> &[MigrationId] {
         &self.parents
     }
@@ -232,38 +235,47 @@ impl VerifiedSchemaMigrationManifest {
         !self.legacy_parents.is_empty()
     }
 
+    /// Return the verified migration steps in execution order.
     pub fn steps(&self) -> &[MigrationStep] {
         &self.steps
     }
 
+    /// Return the managed-scope binding verified during replay.
     pub const fn managed_scope(&self) -> &ManagedScopeBinding {
         &self.managed_scope
     }
 
+    /// Return the semantic-profile binding verified during replay.
     pub const fn semantic_profile(&self) -> &SemanticProfileBinding {
         &self.semantic_profile
     }
 
+    /// Return the provider lowering-profile binding verified during replay.
     pub const fn lowering_profile(&self) -> &SchemaLoweringProfileBinding {
         &self.lowering_profile
     }
 
+    /// Return the capabilities required to execute every step.
     pub const fn required_capabilities(&self) -> &CapabilitySet {
         &self.required_capabilities
     }
 
+    /// Return the highest safety class in the migration plan.
     pub const fn safety(&self) -> SafetyClass {
         self.safety
     }
 
+    /// Return whether the verified migration has a complete inverse plan.
     pub const fn reversible(&self) -> bool {
         self.reversible
     }
 
+    /// Return the canonical execution-plan fingerprint.
     pub const fn plan_fingerprint(&self) -> &MigrationPlanFingerprint {
         &self.plan_fingerprint
     }
 
+    /// Return the exact managed schema state expected before execution.
     pub const fn source_state(&self) -> &ManagedSchemaState {
         &self.source_state
     }
@@ -276,10 +288,12 @@ impl VerifiedSchemaMigrationManifest {
         &self.source_schema
     }
 
+    /// Return the exact managed schema state expected after execution.
     pub const fn target_state(&self) -> &ManagedSchemaState {
         &self.target_state
     }
 
+    /// Return the replay-authoritative declared target schema.
     pub const fn target_schema(&self) -> &DeclaredSchema {
         &self.target_schema
     }

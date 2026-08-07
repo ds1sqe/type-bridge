@@ -21,6 +21,7 @@ from urllib import error as urllib_error
 from urllib import request as urllib_request
 
 try:
+    from cargo_release_inventory import load_inventory as load_cargo_release_inventory
     from python_release_contract import (
         ContractError as PythonReleaseContractError,
     )
@@ -30,6 +31,9 @@ try:
         validate_root_python_manifest_lockstep,
     )
 except ModuleNotFoundError:
+    from scripts.ci.cargo_release_inventory import (
+        load_inventory as load_cargo_release_inventory,
+    )
     from scripts.ci.python_release_contract import (
         ContractError as PythonReleaseContractError,
     )
@@ -59,42 +63,23 @@ SEMVER_PATTERN = re.compile(
     r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
 )
 
-PUBLISHED_CRATES = (
-    "type-bridge-contract",
-    "type-bridge-core-lib",
-    "type-bridge-schema",
-    "type-bridge-query",
-    "type-bridge-schema-migration",
-    "type-bridge-toml-transpiler",
-    "type-bridge-schema-compat",
-    "type-bridge-schema-codegen",
-    "type-bridge-orm-derive",
-    "type-bridge-typedb-protocol-b8",
-    "type-bridge-typedb-driver-b8",
-    "type-bridge-typedb-runtime",
-    "type-bridge-orm",
-    "type-bridge-migration",
-    "type-bridge-schema-migration-typedb",
-    "type-bridge-workspace",
-    "type-bridge-cli",
-    "type-bridge",
-)
+CARGO_RELEASE_INVENTORY = load_cargo_release_inventory()
+PUBLISHED_CRATES = tuple(package.name for package in CARGO_RELEASE_INVENTORY.public_packages)
 UNPUBLISHED_V2_CRATES: tuple[str, ...] = ()
 KNOWN_PUBLICATION_BLOCKER_EDGES: frozenset[tuple[str, str]] = frozenset()
 IMMUTABLE_BASELINE_CRATES: tuple[str, ...] = ()
-PREEXISTING_CRATES = (
-    "type-bridge-typedb-protocol-b8",
-    "type-bridge-typedb-driver-b8",
-)
+PREEXISTING_CRATES = tuple(package.name for package in CARGO_RELEASE_INVENTORY.immutable_packages)
 NEW_COMPATIBILITY_CRATES: tuple[str, ...] = ()
 PACKAGED_RELEASE_CRATES = PUBLISHED_CRATES
 PACKAGING_PATCH_CRATES = PUBLISHED_CRATES
 EXPECTED_NEW_CRATES = tuple(crate for crate in PUBLISHED_CRATES if crate not in PREEXISTING_CRATES)
 RELEASE_CRATES_GRAPH = PurePosixPath("scripts/ci/release_crates_graph.sh")
+CARGO_CANDIDATE_BUILDER = PurePosixPath("scripts/ci/cargo_release_candidate.py")
+CARGO_CANDIDATE_PUBLISHER = PurePosixPath("scripts/ci/publish_cargo_release_candidate.py")
 TYPEDB_RUNTIME_PACKAGE = "type-bridge-typedb-runtime"
 TYPEDB_BAND8_DEPENDENCY = "type-bridge-typedb-driver-b8"
 TYPEDB_BAND9_DEPENDENCY = "typedb-driver"
-TARGET_RELEASE_VERSION = "2.1.0"
+TARGET_RELEASE_VERSION = CARGO_RELEASE_INVENTORY.release_version
 ARTIFACT_CONTRACT_CARGO_INCLUSIVE = "cargo-inclusive"
 ARTIFACT_CONTRACT_PYTHON_NPM_ONLY = "python-npm-only"
 ARTIFACT_CONTRACT_SOURCE_GIT_SERVER_OCI = "source-git-server-oci"
@@ -110,12 +95,10 @@ RELEASE_CHANNEL_IDENTITIES = {
     RELEASE_CHANNEL_CANDIDATE: (TARGET_RELEASE_VERSION, TARGET_RELEASE_VERSION),
     RELEASE_CHANNEL_STABLE: (TARGET_RELEASE_VERSION, TARGET_RELEASE_VERSION),
 }
-UNPUBLISHED_BINDING_CRATES = (
-    "type-bridge-core",
-    "type-bridge-node",
+UNPUBLISHED_BINDING_CRATES = tuple(
+    package.name for package in CARGO_RELEASE_INVENTORY.private_packages
 )
 PYTHON_NPM_UNPUBLISHED_CRATES = UNPUBLISHED_V2_CRATES + UNPUBLISHED_BINDING_CRATES
-PYTHON_NPM_UNPUBLISHED_CRATES += ("type-bridge-server",)
 TYPEDB_RUNTIME_BAND8_PIN_PATTERN = re.compile(
     r'^pub const PINNED_DRIVER_VERSION: &str = "([^"]+)";$',
     re.MULTILINE,
@@ -1481,20 +1464,20 @@ def cargo_workspace_packages(workspace_manifest: Path) -> tuple[CargoPackage, ..
 
 
 def _workflow_release_graph_source(workflow: Path) -> str:
-    """Return the graph script bound to the ordinary release workflow."""
+    """Return the exact-candidate publisher bound to the ordinary workflow."""
     if not workflow.is_file() or workflow.is_symlink():
         raise ValidationError(f"Release workflow is missing or non-regular: {workflow}")
     source = workflow.read_text(encoding="utf-8")
-    for mode in ("--preflight", "--publish"):
-        command = f"bash ../{RELEASE_CRATES_GRAPH.as_posix()} {mode}"
+    for mode in ("preflight", "publish"):
+        command = f"python {CARGO_CANDIDATE_PUBLISHER.as_posix()} {mode}"
         if source.count(command) != 1:
             raise ValidationError(
-                f"Release workflow must invoke the Cargo graph exactly once with {mode}"
+                f"Release workflow must invoke the exact Cargo candidate exactly once with {mode}"
             )
-    graph = workflow.resolve().parents[2] / RELEASE_CRATES_GRAPH
-    if not graph.is_file() or graph.is_symlink():
-        raise ValidationError(f"Cargo release graph is missing or non-regular: {graph}")
-    return graph.read_text(encoding="utf-8")
+    publisher = workflow.resolve().parents[2] / CARGO_CANDIDATE_PUBLISHER
+    if not publisher.is_file() or publisher.is_symlink():
+        raise ValidationError(f"Cargo candidate publisher is missing or non-regular: {publisher}")
+    return publisher.read_text(encoding="utf-8")
 
 
 def _bash_crate_array(source: str, name: str) -> tuple[str, ...]:
@@ -1513,43 +1496,59 @@ def _bash_crate_array(source: str, name: str) -> tuple[str, ...]:
 def workflow_publish_sequence(workflow: Path) -> tuple[str, ...]:
     """Return the authoritative ordered crate publication sequence."""
     source = _workflow_release_graph_source(workflow)
-    loop = 'for crate in "${publish_crates[@]}"; do\n    bash "$helper" "$crate"'
-    if source.count(loop) != 1:
-        raise ValidationError("Cargo release graph publish loop is malformed")
-    return _bash_crate_array(source, "publish_crates")
+    markers = (
+        "for candidate in bundle.packages:",
+        "if candidate.package.immutable:",
+        "upload_exact_request(",
+        "settle_registry_state(",
+    )
+    if any(source.count(marker) < 1 for marker in markers):
+        raise ValidationError("exact Cargo candidate publication loop is malformed")
+    if "cargo publish" in source or "cargo package" in source:
+        raise ValidationError("exact Cargo candidate publisher must not invoke Cargo packaging")
+    return EXPECTED_NEW_CRATES
 
 
 def workflow_preflight_sequences(workflow: Path) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """Return the local-patch and full-package sequences from release preflight."""
-    source = _workflow_release_graph_source(workflow)
-    package_loop = (
-        'for crate in "${release_crates[@]}"; do\n'
-        '  "${cargo_command[@]}" package \\\n'
-        '    --locked --allow-dirty --all-features -p "$crate" "${patches[@]}"'
+    """Return the patch-free staged candidate package sequence."""
+    _workflow_release_graph_source(workflow)
+    workflow_source = workflow.read_text(encoding="utf-8")
+    build_marker = f"python {CARGO_CANDIDATE_BUILDER.as_posix()} build"
+    if workflow_source.count(build_marker) != 1:
+        raise ValidationError("release workflow must build one exact Cargo candidate")
+    builder = workflow.resolve().parents[2] / CARGO_CANDIDATE_BUILDER
+    if not builder.is_file() or builder.is_symlink():
+        raise ValidationError(f"Cargo candidate builder is missing or non-regular: {builder}")
+    source = builder.read_text(encoding="utf-8")
+    required = (
+        '"vendor", "--locked", "--versioned-dirs"',
+        '"package",',
+        "for package in inventory.public_packages:",
+        "stage_archive(",
+        "_validate_packaged_lock(",
     )
-    if source.count(package_loop) != 1:
-        raise ValidationError("Cargo release graph package-preflight loop is malformed")
-    patches = tuple(re.findall(r"patch\.crates-io\.([A-Za-z0-9_-]+)\.path=", source))
-    return patches, _bash_crate_array(source, "release_crates")
+    if any(source.count(marker) < 1 for marker in required):
+        raise ValidationError("Cargo candidate staged package loop is malformed")
+    if "patch.crates-io" in source:
+        raise ValidationError("Cargo candidate builder contains a crates.io patch override")
+    return (), PACKAGED_RELEASE_CRATES
 
 
 def workflow_registry_preflight_sequences(
     workflow: Path,
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """Return checksum-only and expected-new crates.io key preflights."""
-    source = _workflow_release_graph_source(workflow)
-    preexisting_loop = 'for crate in "${preexisting_crates[@]}"; do\n  bash "$helper" --verify-preexisting "$crate"'
-    candidate_loop = (
-        'for crate in "${publish_crates[@]}"; do\n  bash "$helper" --preflight "$crate"'
-    )
-    if source.count(preexisting_loop) != 1 or source.count(candidate_loop) != 1:
-        raise ValidationError("Cargo release graph crates.io preflight loops are malformed")
-    if not source.index(preexisting_loop) < source.index(candidate_loop):
-        raise ValidationError("Cargo release graph crates.io preflight loops are reordered")
-    return (
-        _bash_crate_array(source, "preexisting_crates"),
-        _bash_crate_array(source, "publish_crates"),
-    )
+    """Return immutable inputs and candidate keys bound by the exact flight."""
+    _workflow_release_graph_source(workflow)
+    source = workflow.read_text(encoding="utf-8")
+    preflight = f"python {CARGO_CANDIDATE_PUBLISHER.as_posix()} preflight"
+    upload = "uses: actions/upload-artifact@"
+    download = "uses: actions/download-artifact@"
+    bundle = "cargo-release-candidate"
+    if source.count(preflight) != 1:
+        raise ValidationError("Cargo candidate registry preflight is malformed")
+    if source.count(upload) < 1 or source.count(download) < 1 or source.count(bundle) < 8:
+        raise ValidationError("Cargo candidate artifact handoff is incomplete")
+    return PREEXISTING_CRATES, EXPECTED_NEW_CRATES
 
 
 def validate_native_notice_workflow(workflow: Path) -> None:
@@ -1559,7 +1558,8 @@ def validate_native_notice_workflow(workflow: Path) -> None:
     source = workflow.read_text(encoding="utf-8")
     install_marker = f"tool: cargo-about@{NATIVE_NOTICE_CARGO_ABOUT_VERSION}"
     check_marker = "python scripts/ci/generate_native_dependency_notice.py --check"
-    cargo_graph_marker = "bash ../scripts/ci/release_crates_graph.sh --preflight"
+    rustdoc_marker = "python scripts/ci/validate_cargo_rustdoc.py"
+    cargo_graph_marker = f"python {CARGO_CANDIDATE_BUILDER.as_posix()} build"
     rust_artifact_marker = "python scripts/ci/validate_rust_release_artifacts.py"
     identity_marker = "python scripts/ci/validate_release_identity.py"
     if source.count(install_marker) != 1:
@@ -1571,6 +1571,8 @@ def validate_native_notice_workflow(workflow: Path) -> None:
         raise ValidationError(
             "Release workflow must run exactly one native dependency-notice freshness gate"
         )
+    if source.count(rustdoc_marker) != 1:
+        raise ValidationError("Release workflow must run exactly one public Cargo rustdoc gate")
     if source.count(cargo_graph_marker) != 1:
         raise ValidationError("Release workflow must package the Cargo graph exactly once")
     if source.count(rust_artifact_marker) != 1:
@@ -1580,13 +1582,14 @@ def validate_native_notice_workflow(workflow: Path) -> None:
     if (
         not source.index(install_marker)
         < source.index(check_marker)
+        < source.index(rustdoc_marker)
         < source.index(cargo_graph_marker)
         < source.index(rust_artifact_marker)
         < source.index(identity_marker)
     ):
         raise ValidationError(
-            "Release workflow must check notices, package the Cargo graph, and validate exact "
-            "archives before release identity validation"
+            "Release workflow must check notices and rustdoc, package the Cargo graph, and "
+            "validate exact archives before release identity validation"
         )
     if f"toolchain: {NATIVE_NOTICE_RUST_TOOLCHAIN}" not in source[: source.index(check_marker)]:
         raise ValidationError(
@@ -1608,6 +1611,9 @@ def validate_python_npm_only_workflow(workflow: Path) -> None:
         "patch.crates-io": "crates.io package patch",
         "publish-crates": "Cargo publication job or dependency",
         "publish_crate_idempotently.sh": "Cargo publication helper",
+        "cargo_release_candidate.py": "Cargo release candidate builder",
+        "publish_cargo_release_candidate.py": "exact Cargo publication helper",
+        "cargo-release-candidate": "exact Cargo candidate artifact",
         "rust-crates": "Rust crate artifact upload",
         "target/package": "Cargo archive directory",
         "type-bridge-typedb-driver-b8": "owner-gated band-8 registry path",
@@ -1647,6 +1653,152 @@ def validate_source_git_server_oci_workflow(workflow: Path) -> None:
     if missing:
         raise ValidationError(
             f"Source/Git plus server-OCI workflow is incomplete: {sorted(missing)!r}"
+        )
+
+
+def _release_workflow_job(source: str, name: str) -> str:
+    """Return one active top-level release job from workflow source."""
+    jobs_marker = "\njobs:\n"
+    if source.count(jobs_marker) != 1:
+        raise ValidationError("Release workflow jobs mapping is malformed")
+    jobs = source.split(jobs_marker, maxsplit=1)[1]
+    header = re.search(rf"^  {re.escape(name)}:\n", jobs, re.MULTILINE)
+    if header is None:
+        raise ValidationError(f"Release workflow is missing job {name!r}")
+    next_header = re.search(r"^  [a-z][a-z0-9-]*:\n", jobs[header.end() :], re.MULTILINE)
+    end = header.end() + next_header.start() if next_header is not None else len(jobs)
+    return jobs[header.start() : end]
+
+
+def _release_workflow_step(job: str, name: str) -> str:
+    """Return one active named step from a top-level release job."""
+    marker = f"      - name: {name}\n"
+    if job.count(marker) != 1:
+        raise ValidationError(f"Release workflow step {name!r} is missing or duplicated")
+    start = job.index(marker)
+    next_step = re.search(r"^      - name: .+$", job[start + len(marker) :], re.MULTILINE)
+    end = start + len(marker) + next_step.start() if next_step is not None else len(job)
+    return job[start:end]
+
+
+def validate_server_oci_release_channels(workflow: Path) -> None:
+    """Bind tag preflight, publishers, OCI aliases, and signatures to exact channels."""
+    if not workflow.is_file() or workflow.is_symlink():
+        raise ValidationError(f"Release workflow is missing or non-regular: {workflow}")
+    source = workflow.read_text(encoding="utf-8")
+    preamble = source.split("\njobs:\n", maxsplit=1)[0]
+    alias_selector = (
+        "  SERVER_OCI_MINOR_ALIAS: ${{ github.event_name == 'workflow_dispatch' && "
+        "inputs.release_channel == 'recovery' && '2.0' || '2.1' }}"
+    )
+    if preamble.count(alias_selector) != 1:
+        raise ValidationError("Release workflow has no exact OCI minor-alias selector")
+
+    tag_preflight = _release_workflow_job(source, "release-tag-preflight")
+    freeze_tag = _release_workflow_step(tag_preflight, "Freeze exact annotated tag object")
+    tag_requirements = {
+        "needs: [channel-preflight, recovery-preflight]": "both channel preflights",
+        "needs.channel-preflight.result == 'success'": "stable channel acceptance",
+        "needs.recovery-preflight.result == 'success'": "recovery acceptance",
+        "inputs.recovery_mode == 'publish'": "explicit recovery publication mode",
+        "outputs:\n      tag_object: ${{ steps.freeze-tag.outputs.tag_object }}": (
+            "frozen tag-object job output"
+        ),
+    }
+    malformed = [label for marker, label in tag_requirements.items() if marker not in tag_preflight]
+    freeze_requirements = {
+        'test "$(jq -r \'.object.type\' <<<"$tag_ref_json")" = tag': ("annotated-tag requirement"),
+        'if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then': ("recovery tag-object branch"),
+        '"a4cec6478ad4e764f039e51eabcbb68d45efd45a"': "exact v2.0.0 tag object",
+        'test "$(jq -r \'.object.type\' <<<"$tag_json")" = commit': ("tag target kind"),
+        'test "$(jq -r \'.object.sha\' <<<"$tag_json")" = "$RELEASE_REVISION"': (
+            "tag target revision"
+        ),
+        'printf \'tag_object=%s\\n\' "$tag_object" >> "$GITHUB_OUTPUT"': (
+            "frozen tag-object output"
+        ),
+    }
+    malformed.extend(
+        label for marker, label in freeze_requirements.items() if freeze_tag.count(marker) != 1
+    )
+
+    mutating_jobs = (
+        "publish-crates",
+        "publish-server-oci",
+        "publish-node-npm",
+        "publish-core-pypi",
+        "publish-python-pypi",
+        "github-release",
+    )
+    for name in mutating_jobs:
+        job = _release_workflow_job(source, name)
+        needs_match = re.search(r"^    needs: .+$", job, re.MULTILINE)
+        needs = needs_match.group(0) if needs_match is not None else ""
+        if "release-tag-preflight" not in needs:
+            malformed.append(f"{name} frozen-tag dependency")
+        if "needs.release-tag-preflight.result == 'success'" not in job:
+            malformed.append(f"{name} frozen-tag success guard")
+        step_name = (
+            "Revalidate frozen release tag"
+            if name == "publish-crates"
+            else "Revalidate immutable release tag"
+        )
+        step = _release_workflow_step(job, step_name)
+        for marker, label in {
+            "EXPECTED_RELEASE_TAG_OBJECT: "
+            "${{ needs.release-tag-preflight.outputs.tag_object }}": "expected tag object",
+            'test "$tag_object" = "$EXPECTED_RELEASE_TAG_OBJECT"': "tag-object equality",
+            'test "$(jq -r \'.object.sha\' <<<"$tag_json")" = "$RELEASE_REVISION"': (
+                "tag target revision"
+            ),
+        }.items():
+            if step.count(marker) != 1:
+                malformed.append(f"{name} {label}")
+
+    crates = _release_workflow_job(source, "publish-crates")
+    crates_needs_match = re.search(r"^    needs: .+$", crates, re.MULTILINE)
+    crates_needs = crates_needs_match.group(0) if crates_needs_match is not None else ""
+    if "publish-node-npm" not in crates_needs:
+        malformed.append("npm-first Cargo publication dependency")
+    if "needs.publish-node-npm.result == 'success'" not in crates:
+        malformed.append("npm-first Cargo publication guard")
+
+    server = _release_workflow_job(source, "publish-server-oci")
+    alias_step = _release_workflow_step(server, "Create exact stable manifest and aliases")
+    metadata_step = _release_workflow_step(server, "Record immutable OCI release identity")
+    signature_step = _release_workflow_step(
+        server, "Sign exact platform and multi-platform digests"
+    )
+    scoped_requirements = (
+        (alias_step, 'for alias in "$SERVER_OCI_MINOR_ALIAS" 2 latest; do', "alias loop"),
+        (
+            metadata_step,
+            '"aliases": [os.environ["SERVER_OCI_MINOR_ALIAS"], "2", "latest"],',
+            "release metadata aliases",
+        ),
+        (metadata_step, 'alias_markdown = ", ".join(', "release-note aliases"),
+        (
+            signature_step,
+            "release.yml@refs/heads/master$' || "
+            "'^https://github.com/ds1sqe/type-bridge/.github/workflows/"
+            "release.yml@refs/tags/v2[.]1[.]0$'",
+            "closed recovery/stable Cosign identities",
+        ),
+    )
+    malformed.extend(
+        label for block, marker, label in scoped_requirements if block.count(marker) != 1
+    )
+    stale_stable_markers = (
+        "for alias in 2.0 2 latest; do",
+        '"aliases": ["2.0", "2", "latest"],',
+        "release.yml@refs/tags/v2[.]0[.]0$",
+    )
+    if any(marker in server for marker in stale_stable_markers):
+        malformed.append("stale v2.0 stable OCI identity")
+    if malformed:
+        raise ValidationError(
+            "Release workflow has malformed release/OCI channel identities: "
+            f"{sorted(set(malformed))!r}"
         )
 
 
@@ -2339,6 +2491,7 @@ def validate_release_identity(
             f"missing={missing!r}, unexpected={unexpected!r}"
         )
     validate_native_notice_workflow(release_workflow.resolve())
+    validate_server_oci_release_channels(release_workflow.resolve())
     if artifact_contract == ARTIFACT_CONTRACT_CARGO_INCLUSIVE:
         actual_publish_sequence = workflow_publish_sequence(release_workflow.resolve())
         if actual_publish_sequence != EXPECTED_NEW_CRATES:
@@ -2349,10 +2502,10 @@ def validate_release_identity(
         preflight_patches, preflight_packages = workflow_preflight_sequences(
             release_workflow.resolve()
         )
-        if preflight_patches != PACKAGING_PATCH_CRATES:
+        if preflight_patches:
             raise ValidationError(
-                "Cargo preflight patch sequence is incomplete or reordered: "
-                f"actual={preflight_patches!r}, expected={PACKAGING_PATCH_CRATES!r}"
+                "Cargo candidate preflight must not use crates.io patches: "
+                f"actual={preflight_patches!r}"
             )
         if preflight_packages != PACKAGED_RELEASE_CRATES:
             raise ValidationError(
@@ -2494,6 +2647,14 @@ def validate_release_identity(
         },
         "python_version": python_version,
         "release_channel": release_channel,
+        "server_oci_recovery_aliases": ["2.0", "2", "latest"],
+        "server_oci_recovery_signing_identity": (
+            "https://github.com/ds1sqe/type-bridge/.github/workflows/release.yml@refs/heads/master"
+        ),
+        "server_oci_stable_aliases": ["2.1", "2", "latest"],
+        "server_oci_stable_signing_identity": (
+            "https://github.com/ds1sqe/type-bridge/.github/workflows/release.yml@refs/tags/v2.1.0"
+        ),
         "version": version,
     }
     if artifact_contract == ARTIFACT_CONTRACT_CARGO_INCLUSIVE:

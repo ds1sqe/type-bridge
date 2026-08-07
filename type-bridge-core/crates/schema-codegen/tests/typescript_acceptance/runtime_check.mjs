@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
-import { readFileSync } from "node:fs";
-import { QueryV2Authority, QueryV2Error } from "@type-bridge/node";
+import { QueryV2Error } from "@type-bridge/node";
 import { installRuntimeProjection } from "@type-bridge/node/runtime-projection";
 
 import {
@@ -201,7 +200,7 @@ assert.throws(() => installRuntimeProjection({
 }), /registration|facet/i);
 assert.throws(() => new QuerySession({}), /registered RustDatabase|RustTransactionContext/i);
 assert.throws(
-  () => new RemoteQuerySession({}, new Uint8Array(), async () => new Uint8Array(), {
+  () => new RemoteQuerySession({}, async () => new Uint8Array(), {
     maxItems: 1n,
     maxBytes: 1n,
     maxCollectionMembers: 1n,
@@ -209,7 +208,7 @@ assert.throws(
     maxAttributeValues: 1n,
     maxRolePlayers: 1n,
   }),
-  /QueryV2Authority/i,
+  /Uint8Array|advertisement/i,
 );
 
 const remoteCapabilities = [
@@ -323,11 +322,6 @@ function remoteSignedReply(payload, advertisement) {
 const generatedAdvertisement = remoteAdvertisement();
 let generatedRemoteExchanges = 0;
 const generatedRemoteSession = new RemoteQuerySession(
-  new QueryV2Authority(
-    readFileSync(new URL("./declared-schema.json", import.meta.url)),
-    "node-generated-acceptance",
-    "typedb-3.12.1/v1",
-  ),
   generatedAdvertisement,
   async (request) => {
     generatedRemoteExchanges += 1;

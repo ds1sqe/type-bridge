@@ -72,21 +72,19 @@ impl std::fmt::Display for ValueType {
     }
 }
 
-/// Trait for TypeDB attribute types.
+/// Internal contract implemented by generated TypeDB attribute types.
 ///
-/// Each attribute type in TypeDB (e.g., `name`, `age`, `email`) is represented
-/// by a Rust type implementing this trait. The `define_attribute!` macro
-/// provides a convenient way to define attribute types.
+/// Application code receives these implementations from generated bindings;
+/// handwritten model authoring is not a package-root API.
 ///
 /// # Example
 ///
 /// ```
-/// use type_bridge_orm::define_attribute;
+/// use type_bridge_orm::_attribute::TypeBridgeAttribute;
 ///
-/// define_attribute!(Name, "name", "string");
-/// define_attribute!(Age, "age", "long");
-/// define_attribute!(Score, "score", "double");
-/// define_attribute!(Active, "active", "boolean");
+/// fn generated_attribute_label<A: TypeBridgeAttribute>() -> &'static str {
+///     A::ATTR_NAME
+/// }
 /// ```
 pub trait TypeBridgeAttribute: Clone + Send + Sync + 'static {
     /// The TypeDB attribute type name (e.g. `"name"`, `"age"`, `"email"`).
@@ -106,9 +104,11 @@ pub trait TypeBridgeAttribute: Clone + Send + Sync + 'static {
     fn from_value(value: &AttributeValue) -> Option<Self>;
 }
 
-/// Define a TypeDB attribute type with a single line.
+/// Expand one generated TypeDB attribute declaration.
 ///
-/// Generates a newtype struct implementing [`TypeBridgeAttribute`].
+/// This hidden macro is an implementation seam for generated/internal models,
+/// not a handwritten application-model API. It generates a newtype struct
+/// implementing [`TypeBridgeAttribute`].
 ///
 /// # Supported value types
 ///
@@ -125,10 +125,10 @@ pub trait TypeBridgeAttribute: Clone + Send + Sync + 'static {
 /// # Examples
 ///
 /// ```
-/// use type_bridge_orm::define_attribute;
+/// use type_bridge_orm::_define_attribute;
 ///
-/// define_attribute!(Name, "name", "string");
-/// define_attribute!(Age, "age", "long");
+/// _define_attribute!(Name, "name", "string");
+/// _define_attribute!(Age, "age", "long");
 ///
 /// let name = Name("Alice".to_string());
 /// let age = Age(30);

@@ -1,6 +1,7 @@
 //! Reusable typed query plans: the first public V2 read vocabulary.
 //!
-//! A [`QueryPlan`] extends the minimal migration-assertion primitives into a
+//! A [`QueryPlan`](crate::query_plan::QueryPlan) extends the minimal
+//! migration-assertion primitives into a
 //! reusable, invocation-free read program: dense typed bindings, declared
 //! typed inputs, one closed pattern conjunction, and an ordered pipeline of
 //! V1-parity stages (`select`, `require`, `distinct`, `sort`, `offset`,

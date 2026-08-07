@@ -67,8 +67,18 @@ def test_workspace_contains_only_the_active_namespaced_vendor_band() -> None:
 def test_single_feature_ci_compiles_each_retained_band() -> None:
     include = _ci_jobs()["band-feature-check"]["strategy"]["matrix"]["include"]
     assert include == [
-        {"band": "band8", "features": "band8,axum-transport"},
-        {"band": "band9", "features": "band9,axum-transport"},
+        {
+            "band": "band8",
+            "features": "band8,v2-query",
+            "required_driver": "type-bridge-typedb-driver-b8 v3.11.5",
+            "forbidden_driver": "typedb-driver v3.12.1",
+        },
+        {
+            "band": "band9",
+            "features": "band9,v2-query",
+            "required_driver": "typedb-driver v3.12.1",
+            "forbidden_driver": "type-bridge-typedb-driver-b8 v3.11.5",
+        },
     ]
 
 

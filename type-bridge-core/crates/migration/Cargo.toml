@@ -8,6 +8,9 @@ license-file.workspace = true
 repository.workspace = true
 authors.workspace = true
 publish = ["crates-io"]
+readme = "README.md"
+documentation = "https://docs.rs/type-bridge-migration/2.1.0"
+rust-version = "1.88"
 # The CLI bin is declared explicitly below; src/bin/display.rs is a module of
 # that bin, not its own target. Disable bin auto-discovery so it is not built
 # as a second binary.

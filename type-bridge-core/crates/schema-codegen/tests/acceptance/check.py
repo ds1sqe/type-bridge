@@ -97,6 +97,13 @@ def main() -> None:
         for forbidden in ("# type: ignore", "cast(", "# pyright:"):
             if forbidden in source:
                 raise AssertionError(f"{fixture.name} contains forbidden typing escape {forbidden}")
+    for fixture in (HERE / "positive.py", HERE / "runtime_check.py", DOCUMENTED_EXAMPLES):
+        source = fixture.read_text()
+        for forbidden in ("QueryV2Authority", "declared-schema.json", ".read_bytes()"):
+            if forbidden in source:
+                raise AssertionError(
+                    f"{fixture.name} bypasses generated embedded authority with {forbidden}"
+                )
 
     shutil.rmtree(STAGE, ignore_errors=True)
     STAGE.mkdir(parents=True)
@@ -105,6 +112,7 @@ def main() -> None:
         "negative.py",
         "runtime_check.py",
         "fingerprint_check.py",
+        "authority_rejection_check.py",
         "pyrightconfig.json",
     ):
         shutil.copy2(HERE / fixture, STAGE / fixture)
@@ -126,7 +134,6 @@ def main() -> None:
             "--",
             str(HERE / "schema.yaml"),
             str(STAGE / "generated_v2"),
-            str(STAGE / "declared-schema.json"),
         ]
     )
 
@@ -159,6 +166,7 @@ def main() -> None:
         ]
     )
     command([sys.executable, str(STAGE / "fingerprint_check.py")])
+    command([sys.executable, str(STAGE / "authority_rejection_check.py")])
 
     positive = pyright(STAGE / "positive.py", expected_exit=0)
     if positive["summary"]["errorCount"] != 0:

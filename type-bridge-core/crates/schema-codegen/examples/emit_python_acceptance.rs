@@ -2,20 +2,24 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 
+use type_bridge_contract::capability::{CapabilityId, CapabilitySet};
 use type_bridge_contract::fingerprint::SemanticProfileId;
+use type_bridge_contract::managed_scope::ManagedScopeId;
 use type_bridge_contract::projection::{BindingTarget, ProjectionConfig};
-use type_bridge_contract::schema::{DocumentId, encode_declared_schema};
-use type_bridge_schema::{SchemaDocumentSet, normalize_documents, project, resolve};
+use type_bridge_contract::schema::DocumentId;
+use type_bridge_schema::{
+    BUILTIN_SCHEMA_CAPABILITY_IDS, ManagedDeltaContext, SchemaDocumentSet, build_schema_authority,
+    normalize_documents, project, resolve,
+};
 use type_bridge_schema_codegen::PythonEmitter;
 
 fn main() {
     let mut arguments = env::args_os().skip(1);
     let schema_path = PathBuf::from(arguments.next().expect("schema path is required"));
     let output_path = PathBuf::from(arguments.next().expect("output path is required"));
-    let declared_output_path = arguments.next().map(PathBuf::from);
     assert!(
         arguments.next().is_none(),
-        "only schema, output, and optional declared-schema paths are accepted"
+        "only schema and output paths are accepted"
     );
 
     let source = fs::read_to_string(&schema_path).expect("acceptance schema is readable");
@@ -40,20 +44,23 @@ fn main() {
         &resources,
     )
     .expect("acceptance schema projects");
-    let package = emitter.emit(&projection).expect("Python package emits");
+    let available: CapabilitySet = BUILTIN_SCHEMA_CAPABILITY_IDS
+        .iter()
+        .map(|id| CapabilityId::new(*id).expect("built-in capability ID"))
+        .collect();
+    let context = ManagedDeltaContext::new(
+        ManagedScopeId::new("python-generated-acceptance").expect("acceptance scope"),
+        profile,
+        available,
+    );
+    let authority = build_schema_authority(&declared, declared.required_capabilities(), &context)
+        .expect("acceptance authority builds");
+    let package = emitter
+        .emit(&projection, &authority)
+        .expect("Python package emits");
 
     fs::create_dir_all(&output_path).expect("output directory is created");
     for (relative, bytes) in package.files() {
         fs::write(output_path.join(relative), bytes).expect("generated file is written");
-    }
-    if let Some(declared_output_path) = declared_output_path {
-        if let Some(parent) = declared_output_path.parent() {
-            fs::create_dir_all(parent).expect("declared-schema parent directory is created");
-        }
-        fs::write(
-            declared_output_path,
-            encode_declared_schema(&declared).expect("declared schema encodes canonically"),
-        )
-        .expect("declared schema is written");
     }
 }

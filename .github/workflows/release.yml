@@ -38,6 +38,7 @@ env:
   RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_channel == 'recovery' && 'v2.0.0' || 'v2.1.0' }}
   RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.release_channel == 'recovery' && '2.0.0' || '2.1.0' }}
   PYTHON_RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.release_channel == 'recovery' && '2.0.0' || '2.1.0' }}
+  SERVER_OCI_MINOR_ALIAS: ${{ github.event_name == 'workflow_dispatch' && inputs.release_channel == 'recovery' && '2.0' || '2.1' }}
   RELEASE_CHANNEL: ${{ github.event_name == 'workflow_dispatch' && inputs.release_channel || 'stable' }}
   RELEASE_REVISION: ${{ github.event_name == 'workflow_dispatch' && inputs.release_channel == 'recovery' && 'aacf4d16486a3a3bae47c3b10c1d526c587dd7a7' || github.sha }}
   RELEASE_ARTIFACT_RUN_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.release_channel == 'recovery' && inputs.recovery_run_id || github.run_id }}
@@ -114,6 +115,9 @@ jobs:
     name: Validate release identity
     needs: test
     runs-on: ubuntu-latest
+    outputs:
+      cargo_candidate_artifact_digest: ${{ steps.upload-cargo-candidate.outputs.artifact-digest }}
+      cargo_candidate_manifest_sha256: ${{ steps.cargo-candidate.outputs.manifest_sha256 }}
     steps:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -136,23 +140,48 @@ jobs:
       - name: Verify locked native dependency notice
         run: python scripts/ci/generate_native_dependency_notice.py --check
 
+      - name: Validate first-party public Cargo docs
+        run: python scripts/ci/validate_cargo_rustdoc.py
+
       # These namespaced 3.12.0 keys are historical 1.5.x compatibility
       # artifacts, never current graph inputs.
       - name: Verify historical band-9 registry compatibility keys
         run: python scripts/ci/validate_historical_band9_registry.py
 
-      - name: Package and preflight the complete crates.io graph
-        working-directory: type-bridge-core
-        env:
-          PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
-        run: bash ../scripts/ci/release_crates_graph.sh --preflight
+      - name: Build the exact Cargo release candidate
+        id: cargo-candidate
+        run: |
+          set -euo pipefail
+          candidate="type-bridge-core/target/cargo-release-candidate"
+          python scripts/ci/cargo_release_candidate.py build \
+            --output "$candidate" \
+            --core-workspace type-bridge-core
+          manifest_sha256="$(sha256sum "$candidate/cargo-release-candidate.json" | cut -d' ' -f1)"
+          test "${#manifest_sha256}" -eq 64
+          printf 'manifest_sha256=%s\n' "$manifest_sha256" >> "$GITHUB_OUTPUT"
 
       - name: Validate exact packaged Rust release graph
         run: >-
           python scripts/ci/validate_rust_release_artifacts.py
-          --artifacts-dir type-bridge-core/target/package
+          --candidate-bundle type-bridge-core/target/cargo-release-candidate
           --expected-release-version "$RELEASE_VERSION"
+          --expected-manifest-sha256 "${{ steps.cargo-candidate.outputs.manifest_sha256 }}"
           --repository-root .
+
+      - name: Accept exact packaged Cargo external consumers
+        run: >-
+          python scripts/ci/validate_cargo_external_consumers.py
+          --candidate-bundle type-bridge-core/target/cargo-release-candidate
+          --expected-release-version "$RELEASE_VERSION"
+          --expected-manifest-sha256 "${{ steps.cargo-candidate.outputs.manifest_sha256 }}"
+          --toolchain 1.94.1
+
+      - name: Preflight exact crates.io keys without upload
+        run: >-
+          python scripts/ci/publish_cargo_release_candidate.py preflight
+          --bundle type-bridge-core/target/cargo-release-candidate
+          --expected-release-version "$RELEASE_VERSION"
+          --expected-manifest-sha256 "${{ steps.cargo-candidate.outputs.manifest_sha256 }}"
 
       # Bind Python, npm, Cargo, and OCI artifacts to one release identity.
       - name: Validate identity and retained TypeDB package provenance
@@ -176,6 +205,15 @@ jobs:
           python scripts/ci/validate_latest_typedb_driver_pin.py \
             --committed-cutoff
 
+      - name: Upload accepted Cargo release candidate
+        id: upload-cargo-candidate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: cargo-release-candidate
+          path: type-bridge-core/target/cargo-release-candidate/
+          if-no-files-found: error
+          retention-days: 7
+
   # One non-mutating channel gate must pass after every public candidate has
   # been accepted. Credential checks apply only to the stable tag path.
   channel-preflight:
@@ -191,6 +229,27 @@ jobs:
         with:
           node-version: "20"
           registry-url: https://registry.npmjs.org
+
+      # crates.io has no non-mutating endpoint that proves a granular token
+      # may publish every candidate crate. Fail closed on the credential's
+      # local shape before npm performs the first irreversible registry write.
+      - name: Validate Cargo publication credential shape
+        if: github.event_name == 'push' && github.ref == 'refs/tags/v2.1.0'
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          python - <<'PY'
+          import os
+          import sys
+
+          token = os.environ.get("CARGO_REGISTRY_TOKEN")
+          if not token or token != token.strip():
+              print(
+                  "CARGO_REGISTRY_TOKEN is required and must not have surrounding whitespace.",
+                  file=sys.stderr,
+              )
+              raise SystemExit(1)
+          PY
 
       # npm exposes no package-scoped, non-mutating command that proves a
       # granular token can publish. Authenticate here, then make npm's exact
@@ -212,30 +271,139 @@ jobs:
           )"
           test -n "$authenticated_user"
 
+  # Freeze one annotated-tag object before the first registry mutation. Every
+  # publisher rechecks this object immediately before writing so a deleted or
+  # replaced tag cannot turn an accepted candidate into a different release.
+  release-tag-preflight:
+    name: Freeze immutable release tag
+    if: >-
+      always() &&
+      !cancelled() &&
+      (
+        (
+          github.event_name == 'push' &&
+          github.ref == 'refs/tags/v2.1.0' &&
+          needs.channel-preflight.result == 'success'
+        ) ||
+        (
+          github.event_name == 'workflow_dispatch' &&
+          github.ref == 'refs/heads/master' &&
+          inputs.release_channel == 'recovery' &&
+          inputs.recovery_mode == 'publish' &&
+          inputs.recovery_run_id == '30612912483' &&
+          needs.recovery-preflight.result == 'success'
+        )
+      )
+    needs: [channel-preflight, recovery-preflight]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      tag_object: ${{ steps.freeze-tag.outputs.tag_object }}
+    steps:
+      - name: Freeze exact annotated tag object
+        id: freeze-tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag_ref_json="$(
+            gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}"
+          )"
+          test "$(jq -r '.object.type' <<<"$tag_ref_json")" = tag
+          tag_object="$(jq -r '.object.sha' <<<"$tag_ref_json")"
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+            test "$tag_object" = \
+              "a4cec6478ad4e764f039e51eabcbb68d45efd45a"
+          fi
+          tag_json="$(
+            gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_object}"
+          )"
+          test "$(jq -r '.object.type' <<<"$tag_json")" = commit
+          test "$(jq -r '.object.sha' <<<"$tag_json")" = "$RELEASE_REVISION"
+          printf 'tag_object=%s\n' "$tag_object" >> "$GITHUB_OUTPUT"
+
   # Publish the complete Rust graph only from the accepted stable tag. The
   # helper proves both registry authorities expose the exact local checksum
   # before an existing immutable version can be treated as success.
   publish-crates:
     name: Publish Rust crates to crates.io
-    if: github.event_name == 'push' && github.ref == 'refs/tags/v2.1.0'
-    needs: channel-preflight
+    if: >-
+      always() &&
+      !cancelled() &&
+      github.event_name == 'push' &&
+      github.ref == 'refs/tags/v2.1.0' &&
+      needs.release-tag-preflight.result == 'success' &&
+      needs.validate-release-identity.result == 'success' &&
+      needs.publish-node-npm.result == 'success'
+    needs: [release-tag-preflight, publish-node-npm, validate-release-identity]
     runs-on: ubuntu-latest
     environment: release
+    permissions:
+      actions: read
+      contents: read
     steps:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - name: Download accepted Cargo release candidate
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          toolchain: 1.94.1
+          name: cargo-release-candidate
+          path: tmp/cargo-release-candidate
+
+      - name: Verify Cargo candidate artifact and manifest digests
+        env:
+          EXPECTED_ARTIFACT_DIGEST: ${{ needs.validate-release-identity.outputs.cargo_candidate_artifact_digest }}
+          EXPECTED_MANIFEST_SHA256: ${{ needs.validate-release-identity.outputs.cargo_candidate_manifest_sha256 }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          artifacts_json="$(
+            gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/artifacts?per_page=100"
+          )"
+          count="$(
+            jq '[.artifacts[] | select(.name == "cargo-release-candidate" and .expired == false)] | length' \
+              <<<"$artifacts_json"
+          )"
+          test "$count" = 1
+          service_digest="$(
+            jq -r '.artifacts[] | select(.name == "cargo-release-candidate" and .expired == false) | .digest' \
+              <<<"$artifacts_json"
+          )"
+          test "$service_digest" = "sha256:${EXPECTED_ARTIFACT_DIGEST}"
+          python scripts/ci/cargo_release_candidate.py validate \
+            --bundle tmp/cargo-release-candidate \
+            --expected-release-version "$RELEASE_VERSION" \
+            --expected-manifest-sha256 "$EXPECTED_MANIFEST_SHA256"
+
+      - name: Revalidate frozen release tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EXPECTED_RELEASE_TAG_OBJECT: ${{ needs.release-tag-preflight.outputs.tag_object }}
+        run: |
+          set -euo pipefail
+          tag_ref_json="$(
+            gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}"
+          )"
+          test "$(jq -r '.object.type' <<<"$tag_ref_json")" = tag
+          tag_object="$(jq -r '.object.sha' <<<"$tag_ref_json")"
+          test "$tag_object" = "$EXPECTED_RELEASE_TAG_OBJECT"
+          tag_json="$(
+            gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_object}"
+          )"
+          test "$(jq -r '.object.type' <<<"$tag_json")" = commit
+          test "$(jq -r '.object.sha' <<<"$tag_json")" = "$RELEASE_REVISION"
 
       - name: Publish accepted crates in dependency order
-        working-directory: type-bridge-core
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-          PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
-        run: bash ../scripts/ci/release_crates_graph.sh --publish
+          EXPECTED_MANIFEST_SHA256: ${{ needs.validate-release-identity.outputs.cargo_candidate_manifest_sha256 }}
+        run: >-
+          python scripts/ci/publish_cargo_release_candidate.py publish
+          --bundle tmp/cargo-release-candidate
+          --expected-release-version "$RELEASE_VERSION"
+          --expected-manifest-sha256 "$EXPECTED_MANIFEST_SHA256"
 
   # Build type-bridge-core wheels for all platforms
   build-core-wheels:
@@ -605,6 +773,9 @@ jobs:
             'bindings:' \
             '  python:' \
             '    output: generated/python' \
+            'artifacts:' \
+            '  schema-authority:' \
+            '    output: generated/schema-authority.json' \
             > "$workspace/typebridge.yaml"
           "$cli_venv/bin/type-bridge" \
             --manifest="$workspace/typebridge.yaml" --version > /dev/null
@@ -625,12 +796,10 @@ jobs:
             cd "$workspace"
             "$cli_venv/bin/type-bridge" schema check
             "$cli_venv/bin/type-bridge" schema generate
-            "$cli_venv/bin/type-bridge" schema export-declared \
-              --output generated/declared-schema.json
             "$cli_venv/bin/type-bridge" migration make --name init
           )
           test -f "$workspace/migrations/v2/0001_init.tbmigration.json"
-          test -s "$workspace/generated/declared-schema.json"
+          test -s "$workspace/generated/schema-authority.json"
           test -n "$(ls "$workspace/generated/python")"
 
   # Build every native target that the public loader advertises. The pack job
@@ -889,7 +1058,8 @@ jobs:
       - name: Build exact V2 smoke server
         run: >-
           cargo build --manifest-path type-bridge-core/Cargo.toml
-          --release -p type-bridge-server --features v2-query
+          --release -p type-bridge-server --no-default-features
+          --features band9,v2-query
           --example v2_smoke_server
 
       - name: Upload immutable V2 smoke server
@@ -1084,13 +1254,24 @@ jobs:
           TYPEDB_ADDRESS: localhost:1729
           TYPEDB_HTTP_PORT: "8000"
           TYPE_BRIDGE_SERVER_STARTUP_TIMEOUT_SECONDS: "180"
-        run: >-
-          timeout --foreground 15m
-          cargo test --manifest-path type-bridge-core/Cargo.toml --locked
-          -p type-bridge-server --features v2-query
-          --test v2_query_integration_tests
-          production_binary_serves_v1_health_and_v2_query
-          -- --ignored --exact --nocapture
+        run: |
+          set -euo pipefail
+          test_name=production_binary_serves_v1_health_and_v2_query
+          selection="$(
+            cargo test --manifest-path type-bridge-core/Cargo.toml --locked \
+              -p type-bridge-server --no-default-features \
+              --features band9,v2-query \
+              --test v2_query_integration_tests "$test_name" \
+              -- --ignored --exact --list
+          )"
+          printf '%s\n' "$selection"
+          test "$(grep -Fxc "$test_name: test" <<<"$selection")" -eq 1
+          timeout --foreground 15m \
+            cargo test --manifest-path type-bridge-core/Cargo.toml --locked \
+              -p type-bridge-server --no-default-features \
+              --features band9,v2-query \
+              --test v2_query_integration_tests "$test_name" \
+              -- --ignored --exact --nocapture
 
       - name: Run external generated Rust application through the exact image
         if: matrix.architecture == 'amd64'
@@ -1279,10 +1460,10 @@ jobs:
           node_stage="$GITHUB_WORKSPACE/tmp/release-live-artifacts/generated-node"
           for required in \
             "$python_stage/generated_v2/__init__.py" \
-            "$python_stage/declared-schema.json" \
+            "$python_stage/schema-authority.json" \
             "$node_stage/generated_v2/dist/index.js" \
             "$node_stage/generated_foreign/dist/index.js" \
-            "$node_stage/declared-schema.json" \
+            "$node_stage/schema-authority.json" \
             "$node_stage/harness/tests/projection-integration/generated-package-live.test.js" \
             "$node_stage/harness/package.json"; do
             if [[ ! -f "$required" || -L "$required" ]]; then
@@ -1557,6 +1738,7 @@ jobs:
           github.event_name == 'push' &&
           github.ref == 'refs/tags/v2.1.0' &&
           needs.channel-preflight.result == 'success' &&
+          needs.release-tag-preflight.result == 'success' &&
           needs.accept-server-oci.result == 'success' &&
           needs.publish-node-npm.result == 'success'
         ) ||
@@ -1567,10 +1749,11 @@ jobs:
           inputs.recovery_mode == 'publish' &&
           inputs.recovery_run_id == '30612912483' &&
           needs.recovery-preflight.result == 'success' &&
+          needs.release-tag-preflight.result == 'success' &&
           needs.publish-node-npm.result == 'success'
         )
       )
-    needs: [channel-preflight, recovery-preflight, accept-server-oci, publish-node-npm]
+    needs: [channel-preflight, recovery-preflight, release-tag-preflight, accept-server-oci, publish-node-npm]
     runs-on: ubuntu-latest
     environment: release
     permissions:
@@ -1652,6 +1835,7 @@ jobs:
       - name: Revalidate immutable release tag
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EXPECTED_RELEASE_TAG_OBJECT: ${{ needs.release-tag-preflight.outputs.tag_object }}
         run: |
           set -euo pipefail
           tag_ref_json="$(
@@ -1659,8 +1843,7 @@ jobs:
           )"
           test "$(jq -r '.object.type' <<<"$tag_ref_json")" = tag
           tag_object="$(jq -r '.object.sha' <<<"$tag_ref_json")"
-          test "$tag_object" = \
-            "a4cec6478ad4e764f039e51eabcbb68d45efd45a"
+          test "$tag_object" = "$EXPECTED_RELEASE_TAG_OBJECT"
           tag_json="$(
             gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_object}"
           )"
@@ -1775,7 +1958,7 @@ jobs:
               )
           PY
           digest="sha256:$(sha256sum "$stable_raw" | cut -d' ' -f1)"
-          for alias in 2.0 2 latest; do
+          for alias in "$SERVER_OCI_MINOR_ALIAS" 2 latest; do
             alias_raw="$RUNNER_TEMP/alias-${alias}.json"
             alias_error="$RUNNER_TEMP/alias-${alias}.err"
             if skopeo inspect --raw "docker://${image}:${alias}" \
@@ -1811,7 +1994,7 @@ jobs:
 
       - name: Sign exact platform and multi-platform digests
         env:
-          COSIGN_CERTIFICATE_IDENTITY_REGEXP: ${{ github.event_name == 'workflow_dispatch' && '^https://github.com/ds1sqe/type-bridge/.github/workflows/release.yml@refs/heads/master$' || '^https://github.com/ds1sqe/type-bridge/.github/workflows/release.yml@refs/tags/v2[.]0[.]0$' }}
+          COSIGN_CERTIFICATE_IDENTITY_REGEXP: ${{ github.event_name == 'workflow_dispatch' && '^https://github.com/ds1sqe/type-bridge/.github/workflows/release.yml@refs/heads/master$' || '^https://github.com/ds1sqe/type-bridge/.github/workflows/release.yml@refs/tags/v2[.]1[.]0$' }}
         run: |
           cosign sign --yes \
             "${SERVER_OCI_IMAGE}@${SERVER_OCI_AMD64_DIGEST}" \
@@ -2016,7 +2199,7 @@ jobs:
               },
               "revision": os.environ["RELEASE_REVISION"],
               "tag": os.environ["RELEASE_TAG"],
-              "aliases": ["2.0", "2", "latest"],
+              "aliases": [os.environ["SERVER_OCI_MINOR_ALIAS"], "2", "latest"],
               "attestations": {
                   name: url for name, url in attestation_urls.items() if url
               },
@@ -2024,12 +2207,13 @@ jobs:
           output = Path("tmp/server-oci-release/server-oci-release.json")
           output.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
           markdown = Path("tmp/server-oci-release/server-oci-release.md")
+          alias_markdown = ", ".join(f"`{alias}`" for alias in payload["aliases"])
           markdown.write_text(
               "## TypeBridge server OCI\n\n"
               f"`{payload['image']}@{payload['digest']}`\n\n"
               f"- linux/amd64: `{payload['platform_digests']['linux/amd64']}`\n"
               f"- linux/arm64: `{payload['platform_digests']['linux/arm64']}`\n"
-              "- aliases: `2.0`, `2`, `latest`\n"
+              f"- aliases: {alias_markdown}\n"
           )
           PY
 
@@ -2051,7 +2235,8 @@ jobs:
         (
           github.event_name == 'push' &&
           github.ref == 'refs/tags/v2.1.0' &&
-          needs.channel-preflight.result == 'success'
+          needs.channel-preflight.result == 'success' &&
+          needs.release-tag-preflight.result == 'success'
         ) ||
         (
           github.event_name == 'workflow_dispatch' &&
@@ -2059,10 +2244,11 @@ jobs:
           inputs.release_channel == 'recovery' &&
           inputs.recovery_mode == 'publish' &&
           inputs.recovery_run_id == '30612912483' &&
-          needs.recovery-preflight.result == 'success'
+          needs.recovery-preflight.result == 'success' &&
+          needs.release-tag-preflight.result == 'success'
         )
       )
-    needs: [channel-preflight, recovery-preflight]
+    needs: [channel-preflight, recovery-preflight, release-tag-preflight]
     runs-on: ubuntu-latest
     environment: release
     permissions:
@@ -2134,6 +2320,7 @@ jobs:
       - name: Revalidate immutable release tag
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EXPECTED_RELEASE_TAG_OBJECT: ${{ needs.release-tag-preflight.outputs.tag_object }}
         run: |
           set -euo pipefail
           tag_ref_json="$(
@@ -2141,6 +2328,7 @@ jobs:
           )"
           test "$(jq -r '.object.type' <<<"$tag_ref_json")" = tag
           tag_object="$(jq -r '.object.sha' <<<"$tag_ref_json")"
+          test "$tag_object" = "$EXPECTED_RELEASE_TAG_OBJECT"
           tag_json="$(
             gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_object}"
           )"
@@ -2190,6 +2378,7 @@ jobs:
         (
           github.event_name == 'push' &&
           github.ref == 'refs/tags/v2.1.0' &&
+          needs.release-tag-preflight.result == 'success' &&
           needs.build-core-wheels.result == 'success' &&
           needs.build-core-sdist.result == 'success' &&
           needs.publish-server-oci.result == 'success'
@@ -2201,10 +2390,11 @@ jobs:
           inputs.recovery_mode == 'publish' &&
           inputs.recovery_run_id == '30612912483' &&
           needs.recovery-preflight.result == 'success' &&
+          needs.release-tag-preflight.result == 'success' &&
           needs.publish-server-oci.result == 'success'
         )
       )
-    needs: [build-core-wheels, build-core-sdist, recovery-preflight, publish-server-oci]
+    needs: [build-core-wheels, build-core-sdist, recovery-preflight, release-tag-preflight, publish-server-oci]
     runs-on: ubuntu-latest
     environment: release
     permissions:
@@ -2283,6 +2473,7 @@ jobs:
       - name: Revalidate immutable release tag
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EXPECTED_RELEASE_TAG_OBJECT: ${{ needs.release-tag-preflight.outputs.tag_object }}
         run: |
           set -euo pipefail
           tag_ref_json="$(
@@ -2290,6 +2481,7 @@ jobs:
           )"
           test "$(jq -r '.object.type' <<<"$tag_ref_json")" = tag
           tag_object="$(jq -r '.object.sha' <<<"$tag_ref_json")"
+          test "$tag_object" = "$EXPECTED_RELEASE_TAG_OBJECT"
           tag_json="$(
             gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_object}"
           )"
@@ -2322,6 +2514,7 @@ jobs:
         (
           github.event_name == 'push' &&
           github.ref == 'refs/tags/v2.1.0' &&
+          needs.release-tag-preflight.result == 'success' &&
           needs.build-python.result == 'success' &&
           needs.publish-core-pypi.result == 'success'
         ) ||
@@ -2332,10 +2525,11 @@ jobs:
           inputs.recovery_mode == 'publish' &&
           inputs.recovery_run_id == '30612912483' &&
           needs.recovery-preflight.result == 'success' &&
+          needs.release-tag-preflight.result == 'success' &&
           needs.publish-core-pypi.result == 'success'
         )
       )
-    needs: [build-python, recovery-preflight, publish-core-pypi]
+    needs: [build-python, recovery-preflight, release-tag-preflight, publish-core-pypi]
     runs-on: ubuntu-latest
     environment: release
     permissions:
@@ -2397,6 +2591,7 @@ jobs:
       - name: Revalidate immutable release tag
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EXPECTED_RELEASE_TAG_OBJECT: ${{ needs.release-tag-preflight.outputs.tag_object }}
         run: |
           set -euo pipefail
           tag_ref_json="$(
@@ -2404,6 +2599,7 @@ jobs:
           )"
           test "$(jq -r '.object.type' <<<"$tag_ref_json")" = tag
           tag_object="$(jq -r '.object.sha' <<<"$tag_ref_json")"
+          test "$tag_object" = "$EXPECTED_RELEASE_TAG_OBJECT"
           tag_json="$(
             gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_object}"
           )"
@@ -2436,6 +2632,7 @@ jobs:
         (
           github.event_name == 'push' &&
           github.ref == 'refs/tags/v2.1.0' &&
+          needs.release-tag-preflight.result == 'success' &&
           needs.publish-server-oci.result == 'success' &&
           needs.publish-node-npm.result == 'success' &&
           needs.publish-core-pypi.result == 'success' &&
@@ -2449,13 +2646,14 @@ jobs:
           inputs.recovery_mode == 'publish' &&
           inputs.recovery_run_id == '30612912483' &&
           needs.recovery-preflight.result == 'success' &&
+          needs.release-tag-preflight.result == 'success' &&
           needs.publish-server-oci.result == 'success' &&
           needs.publish-node-npm.result == 'success' &&
           needs.publish-core-pypi.result == 'success' &&
           needs.publish-python-pypi.result == 'success'
         )
       )
-    needs: [recovery-preflight, publish-server-oci, publish-node-npm, publish-core-pypi, publish-python-pypi, publish-crates]
+    needs: [recovery-preflight, release-tag-preflight, publish-server-oci, publish-node-npm, publish-core-pypi, publish-python-pypi, publish-crates]
     runs-on: ubuntu-latest
     permissions:
       actions: read
@@ -2540,6 +2738,7 @@ jobs:
       - name: Revalidate immutable release tag
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EXPECTED_RELEASE_TAG_OBJECT: ${{ needs.release-tag-preflight.outputs.tag_object }}
         run: |
           set -euo pipefail
           tag_ref_json="$(
@@ -2547,6 +2746,7 @@ jobs:
           )"
           test "$(jq -r '.object.type' <<<"$tag_ref_json")" = tag
           tag_object="$(jq -r '.object.sha' <<<"$tag_ref_json")"
+          test "$tag_object" = "$EXPECTED_RELEASE_TAG_OBJECT"
           tag_json="$(
             gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_object}"
           )"

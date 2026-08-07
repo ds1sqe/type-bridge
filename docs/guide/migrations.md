@@ -19,6 +19,14 @@ migrations:
   app-label: application
   destructive: require-approval
 
+bindings:
+  python:
+    output: generated/python/app_models
+
+artifacts:
+  schema-authority:
+    output: generated/schema-authority.json
+
 environments:
   development:
     database: application
@@ -37,11 +45,11 @@ one named environment and enforce its `migrate` policy.
 
 ```bash
 type-bridge --manifest typebridge.yaml schema check
+type-bridge --manifest typebridge.yaml schema generate
 type-bridge --manifest typebridge.yaml migration make --name add-person
 type-bridge --manifest typebridge.yaml migration plan
 type-bridge --manifest typebridge.yaml migration apply --environment development
 type-bridge --manifest typebridge.yaml migration verify --environment development
-type-bridge --manifest typebridge.yaml schema generate
 ```
 
 Review the committed migration and preview before applying. When the workspace
@@ -55,7 +63,9 @@ type-bridge --manifest typebridge.yaml migration apply \
 ```
 
 Generation is deliberately separate from migration application and never
-contacts TypeDB.
+contacts TypeDB. It emits every configured binding and the generic-server
+schema-authority artifact from one captured workspace; neither generated output
+is migration or authoring authority.
 
 ## State authority
 

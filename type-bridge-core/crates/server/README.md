@@ -20,17 +20,20 @@ executes against TypeDB, then runs response interceptors.
 ### As a standalone server
 
 ```bash
-cargo run -p type-bridge-server -- --config config.toml
+cargo install type-bridge-server --version 2.1.0 --locked
+type-bridge-server --config config.toml
 ```
 
-The complete configuration below enables the additive V2 routes and therefore
-requires:
-
-```bash
-cargo run -p type-bridge-server --features v2-query -- --config config.toml
-```
+The default standalone build includes both provider bands and the public
+`v2-query` feature. The complete configuration below uses `[v2].enabled` to add
+the V2 routes; retained V1 routes remain available in either state.
 
 ### As a library
+
+```toml
+[dependencies]
+type-bridge-server = "2.1.0"
+```
 
 ```rust,ignore
 use type_bridge_server::pipeline::PipelineBuilder;
@@ -72,6 +75,41 @@ let output = pipeline.execute_query(input).await?;
 | Schema source | `SchemaSource` | `FileSchemaSource`, `InMemorySchemaSource` |
 | Transport | N/A | Axum HTTP (feature: `axum-transport`) |
 
+## Generate V2 authority
+
+The server is a generic executor, not a schema compiler. Author only Split YAML
+and its `typebridge.yaml` workspace, then configure generation:
+
+```yaml
+bindings:
+  python:
+    output: generated/python/app_models
+  typescript:
+    output: generated/typescript
+  rust:
+    output: generated/rust
+
+artifacts:
+  schema-authority:
+    output: generated/schema-authority.json
+```
+
+```bash
+type-bridge --manifest typebridge.yaml schema check
+type-bridge --manifest typebridge.yaml schema generate
+```
+
+One captured workspace produces all configured packages and the server
+artifact. Python and TypeScript packages embed the authority for their normal
+`RemoteQuerySession`; they never read the standalone artifact or construct a
+low-level `QueryV2Authority`. Mount `generated/schema-authority.json` for this
+generic server.
+
+The artifact uses the versioned `typebridge.schema-authority/v1` canonical JSON
+codec. JSON is bounded, deterministic, source-free deployment evidence—not a
+user-maintained schema input. Never edit it or generate it independently from
+the packages.
+
 ## Configuration
 
 The server reads a TOML config file:
@@ -97,7 +135,8 @@ tls = true
 tls-root-ca = "certs/root.pem" # optional; omit for native trust roots
 
 [schema]
-source_file = "schema.tql"    # optional: path to TypeQL schema
+# Optional retained V1 validation source; not V2 schema authority.
+source_file = "schema.tql"
 
 [interceptors]
 enabled = ["audit-log"]
@@ -110,12 +149,10 @@ file_path = "/var/log/audit.jsonl"
 level = "info"        # default
 format = "json"       # default; "text" is also supported
 
-# Additive prepared V2 routes; requires --features v2-query.
+# Additive prepared V2 routes; the default build includes v2-query.
 [v2]
 enabled = true
-declared_schema_file = "declared-schema.json"
-scope = "production"
-profile = "typedb-3.12.1/v1"
+schema_authority_file = "schema-authority.json"
 authority_mode = "managed" # default; or the explicit "query_only"
 ```
 
@@ -127,19 +164,21 @@ TypeDB client or binding its listener. The configuration itself must be a
 regular-file target no larger than 1 MiB; special targets and oversized input
 are rejected before parsing.
 
-The V2 surface fails startup unless `declared_schema_file` is canonical, the
-profile exactly matches the connected server, and the selected live authority
-is valid. `managed` requires the complete V2 migration-control schema and its
-free singleton for `scope`. `query_only` requires both V2 and legacy migration
-controls to be absent. It is not an automatic fallback.
+The V2 surface fails startup unless `schema_authority_file` is canonical and
+constructor-verified, its embedded semantic profile matches the connected
+server, and the selected live authority is valid. `managed` requires the
+complete V2 migration-control schema and its free singleton for the embedded
+scope. `query_only` requires both V2 and legacy migration controls to be absent.
+It is not an automatic fallback. Scope and profile are intentionally absent
+from server configuration because the generated artifact already binds them.
 
-A relative `declared_schema_file` is resolved against the configuration-file
+A relative `schema_authority_file` is resolved against the configuration-file
 directory. Every path component and the final target must be free of symbolic
-links; the target must be a non-empty regular file no larger than 16 MiB. The
-configuration loader reads and compares the file twice, retains the verified
-bytes as an immutable snapshot, and does not reopen it while serving requests.
-After replacing the file, reload the complete configuration; changing the
-public path field on a loaded value is rejected.
+links; the target must be a non-empty regular file within the canonical
+schema-authority size ceiling. The configuration loader reads and compares the
+file twice, retains the verified bytes as an immutable snapshot, and does not
+reopen it while serving requests. After replacing the file, reload the complete
+configuration; changing the public path field on a loaded value is rejected.
 
 Prepared query execution captures the exact schema export under a bounded
 TypeDB schema-exclusion fence. On TypeDB 3.12.1 that fence uses a `WRITE`
@@ -273,10 +312,13 @@ impl QueryExecutor for MyBackend {
 | Feature | Default | Effect |
 |---------|---------|--------|
 | `typedb` | yes | Enables `TypeDBClient` through the shared TypeDB runtime |
-| `axum-transport` | yes | Enables HTTP server with Axum |
-| `v2-query` | no | Adds `/v2/capabilities` and `/v2/query`; implies `axum-transport` |
+| `band8` | yes | Enables the TypeDB 3.11 provider band |
+| `band9` | yes | Enables the TypeDB 3.12 provider band |
+| `axum-transport` | yes, through `v2-query` | Enables HTTP server with Axum |
+| `v2-query` | yes | Adds `/v2/capabilities` and `/v2/query`; implies `axum-transport` |
 
-Build as bare library (no transport, no TypeDB):
+The standalone binary requires `typedb` and `v2-query`; the default feature set
+satisfies both. Build as a bare library (no transport, no TypeDB) with:
 
 ```bash
 cargo check -p type-bridge-server --no-default-features
@@ -291,3 +333,10 @@ cargo test -p type-bridge-server
 # MC/DC coverage (requires nightly + cargo-llvm-cov)
 ./scripts/coverage.sh mcdc --open
 ```
+
+The crate is released in lockstep with TypeBridge 2.1.0, requires Rust 1.88+,
+and supports the retained TypeDB 3.11.x and 3.12.x provider bands.
+
+[Repository](https://github.com/ds1sqe/type-bridge) ·
+[API documentation](https://docs.rs/type-bridge-server/2.1.0) ·
+[MIT license](https://github.com/ds1sqe/type-bridge/blob/master/LICENSE)

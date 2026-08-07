@@ -11,7 +11,6 @@ import {
   connectIntegration,
   defineSchema,
   INTG_DATABASE,
-  QueryV2Authority,
   TYPEDB_ADDRESS,
   TYPEDB_HTTP_PORT,
   TYPEDB_PASSWORD,
@@ -25,15 +24,10 @@ const ROOT = resolve(CORE, "..");
 const ACCEPTANCE = resolve(CORE, "crates/schema-codegen/tests/acceptance");
 const TYPEDB_VERSION = process.env.TYPEDB_VERSION ?? "3.12.1";
 const IS_TYPEDB_3_11 = TYPEDB_VERSION.startsWith("3.11.");
-const ACCEPTANCE_SCHEMA = resolve(
-  ACCEPTANCE,
-  IS_TYPEDB_3_11 ? "schema-3.11.5.yaml" : "schema.yaml",
-);
 const PROVIDER_SCHEMA = resolve(
   ACCEPTANCE,
   IS_TYPEDB_3_11 ? "provider-3.11.5.tql" : "provider-3.12.1.tql",
 );
-const REMOTE_SCOPE = "generated-projection-live";
 const REMOTE_PROFILE = IS_TYPEDB_3_11 ? "typedb-3.11.5/v1" : "typedb-3.12.1/v1";
 
 function run(command: string, args: readonly string[], cwd: string): void {
@@ -107,37 +101,10 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
   try {
     if (ownsStage) {
       run(
-        "cargo",
+        resolve(ROOT, "scripts/ci/prepare_generated_live_fixture.sh"),
         [
-          "run",
-          "--quiet",
-          "--manifest-path",
-          resolve(CORE, "Cargo.toml"),
-          "-p",
-          "type-bridge-schema-codegen",
-          "--example",
-          "emit_typescript_acceptance",
-          "--",
-          ACCEPTANCE_SCHEMA,
-          generatedDirectory,
-          resolve(stage, "declared-schema.json"),
-        ],
-        ROOT,
-      );
-      run(
-        "cargo",
-        [
-          "run",
-          "--quiet",
-          "--manifest-path",
-          resolve(CORE, "Cargo.toml"),
-          "-p",
-          "type-bridge-schema-codegen",
-          "--example",
-          "emit_typescript_acceptance",
-          "--",
-          ACCEPTANCE_SCHEMA,
-          foreignDirectory,
+          "node",
+          stage,
         ],
         ROOT,
       );
@@ -993,7 +960,7 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
       [insertedPerson.iid],
     );
 
-    const declared = await readFile(resolve(stage, "declared-schema.json"));
+    const authority = await readFile(resolve(stage, "schema-authority.json"));
     const port = await freePort();
     const suppliedServer = process.env.TYPE_BRIDGE_V2_SMOKE_SERVER;
     const server = spawn(
@@ -1019,9 +986,7 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
           SMOKE_TYPEDB_PASSWORD: TYPEDB_PASSWORD,
           SMOKE_TYPEDB_HTTP_PORT: String(TYPEDB_HTTP_PORT),
           SMOKE_DATABASE: INTG_DATABASE,
-          SMOKE_DECLARED_B64: declared.toString("base64"),
-          SMOKE_SCOPE: REMOTE_SCOPE,
-          SMOKE_PROFILE: REMOTE_PROFILE,
+          SMOKE_AUTHORITY_B64: authority.toString("base64"),
           SMOKE_PORT: String(port),
         },
         stdio: "ignore",
@@ -1046,7 +1011,6 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
 
       // docs: remote-query-node:start
       const remoteSession = new RemoteQuerySession(
-        new QueryV2Authority(declared, REMOTE_SCOPE, REMOTE_PROFILE),
         advertisement,
         exchange,
         {

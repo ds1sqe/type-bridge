@@ -32,17 +32,16 @@ separate compatibility boundaries.
 
 ## Rust publication boundary
 
-The nine V2 implementation crates are workspace-internal: `contract`,
-`schema`, `query`, `schema-migration`, `schema-migration-typedb`,
-`schema-codegen`, `schema-compat`, `workspace`, and `cli`. Their first-party
-versions track the repository release identity (currently `2.1.0`). The
-public Rust SDK closure is published to crates.io in dependency order;
-`type-bridge-core` and `type-bridge-node` remain native binding crates for the
-Python and Node products, respectively, and are not crates.io identities.
+The 17 first-party Rust crates are published to crates.io in dependency order
+and share the repository release identity (currently `2.1.0`). Supporting
+engine crates remain available for integrators, while most Rust applications
+should depend on the `type-bridge` SDK. `type-bridge-server` is distributed as
+both a Cargo crate and an OCI image. `type-bridge-core` and `type-bridge-node`
+remain private native binding crates for the Python and Node products.
 
-The release-identity gate requires every public SDK dependency to be present
-on crates.io before it can publish the root crate. It leaves native binding and
-OCI server products on their own distribution surfaces.
+The release-identity gate requires every public dependency to be present on
+crates.io before it publishes each downstream crate in the lockstep graph.
+Native Python and Node bindings retain their own distribution surfaces.
 
 ## Building
 

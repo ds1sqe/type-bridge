@@ -23,6 +23,9 @@ fn meta_map(pairs: &[(&'static str, &'static str)]) -> BTreeMap<String, String> 
 ///
 /// # Example
 ///
+/// This example is ignored because it requires a live TypeDB service and
+/// generated schema types supplied by the consuming package.
+///
 /// ```ignore
 /// let mut schema = SchemaManager::new(&db);
 /// schema.register_entity::<Person>();
@@ -173,6 +176,9 @@ impl<'db> SchemaManager<'db> {
     /// [`SchemaInfo`] that can be compared against the registered (desired) schema.
     ///
     /// # Example
+    ///
+    /// This example is ignored because schema introspection requires a live
+    /// TypeDB service and generated desired-schema registrations.
     ///
     /// ```ignore
     /// let schema = SchemaManager::new(&db);

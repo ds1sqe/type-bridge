@@ -16,7 +16,9 @@ use pyo3::ffi;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyByteArray, PyBytes, PyInt, PyString};
 use pythonize::pythonize;
-use type_bridge_contract::diagnostic::Diagnostic;
+use type_bridge_contract::codec::{from_canonical_json, to_canonical_json};
+use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
+use type_bridge_contract::fingerprint::Fingerprint;
 use type_bridge_contract::limits::{
     MAX_CANONICAL_BYTES, MAX_CANONICAL_STRING_BYTES, MAX_QUERY_INVOCATION_BYTES,
     MAX_REMOTE_ENVELOPE_BYTES,
@@ -25,11 +27,16 @@ use type_bridge_contract::query_remote::{
     RemoteLimits, checked_remote_deadline, checked_remote_limit, remote_deadline_limit,
     remote_limit_invalid,
 };
+use type_bridge_contract::schema::encode_declared_schema;
 use type_bridge_orm::query_v2_prepared::{
     PendingRemoteQuery, QueryAuthority, decode_remote_capabilities, execute_prepared_local,
     prepare_remote_query, query_v2_host_string_unicode_error,
 };
 use type_bridge_orm::session::backend::{BoundedAnswerLimits, QueryV2AnswerLimits};
+use type_bridge_schema::{
+    MAX_SCHEMA_AUTHORITY_BYTES, SchemaAuthorityError, SchemaAuthorityErrorCode,
+    decode_schema_authority, schema_authority_capability_vocabulary,
+};
 
 use crate::orm_runtime::{PyRustDatabase, provider_block_on};
 
@@ -69,6 +76,18 @@ const LOCAL_WORKER_FAILED: &str =
 // contract validator; mirror it at the FFI ownership boundary so Python and
 // Node never allocate beyond the value that validator can admit.
 const MAX_SEMANTIC_PROFILE_ID_BYTES: usize = 255;
+
+fn binding_diagnostic(
+    category: DiagnosticCategory,
+    code: &'static str,
+    message: &'static str,
+) -> Diagnostic {
+    Diagnostic::new(
+        category,
+        DiagnosticCode::new(code).expect("static Python binding diagnostic code"),
+        message,
+    )
+}
 
 fn contain_local_worker_panic<T>(worker: impl FnOnce() -> T) -> PyResult<T> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(worker))
@@ -251,6 +270,84 @@ fn build_query_v2_authority(
     })
 }
 
+fn schema_authority_diagnostic(error: &SchemaAuthorityError) -> Diagnostic {
+    if let Some(contract) = error.contract() {
+        return contract.clone();
+    }
+    let (category, code, message) = match error.code() {
+        SchemaAuthorityErrorCode::Contract => (
+            DiagnosticCategory::InvalidContract,
+            "generated_schema_authority_invalid",
+            "generated schema authority is not a valid canonical contract",
+        ),
+        SchemaAuthorityErrorCode::Schema => (
+            DiagnosticCategory::InvalidContract,
+            "generated_schema_authority_schema_invalid",
+            "generated schema authority cannot reconstruct its declared schema",
+        ),
+        SchemaAuthorityErrorCode::UnsupportedVersion => (
+            DiagnosticCategory::InvalidContract,
+            "generated_schema_authority_unsupported_version",
+            "generated schema authority uses an unsupported version",
+        ),
+        SchemaAuthorityErrorCode::UnsupportedCapability => (
+            DiagnosticCategory::UnsupportedCapability,
+            "generated_schema_authority_unsupported_capability",
+            "generated schema authority requires an unsupported capability",
+        ),
+        SchemaAuthorityErrorCode::ResourceLimit => (
+            DiagnosticCategory::ResourceLimit,
+            "generated_schema_authority_resource_limit",
+            "generated schema authority exceeds a structural limit",
+        ),
+        SchemaAuthorityErrorCode::IntegrityMismatch => (
+            DiagnosticCategory::Integrity,
+            "generated_schema_authority_integrity_mismatch",
+            "generated schema authority contains stale or mismatched evidence",
+        ),
+    };
+    binding_diagnostic(category, code, message)
+}
+
+fn build_query_v2_authority_from_schema_authority(
+    schema_authority: &[u8],
+    semantic_fingerprint: &[u8],
+) -> Result<PyQueryV2Authority, Diagnostic> {
+    let verified =
+        decode_schema_authority(schema_authority, &schema_authority_capability_vocabulary())
+            .map_err(|error| schema_authority_diagnostic(&error))?;
+    let expected: Fingerprint = from_canonical_json(semantic_fingerprint)?;
+    if &expected
+        != verified
+            .resolved_schema()
+            .semantic_fingerprint()
+            .as_fingerprint()
+    {
+        return Err(binding_diagnostic(
+            DiagnosticCategory::Integrity,
+            "generated_schema_authority_semantic_mismatch",
+            "generated schema authority does not belong to the installed runtime projection",
+        ));
+    }
+    if to_canonical_json(verified.resolved_schema().semantic_fingerprint())? != semantic_fingerprint
+    {
+        return Err(binding_diagnostic(
+            DiagnosticCategory::InvalidContract,
+            "generated_schema_authority_semantic_noncanonical",
+            "generated semantic fingerprint is not canonical",
+        ));
+    }
+    let declared = encode_declared_schema(verified.declared_schema())?;
+    let authority = QueryAuthority::from_declared_bytes(
+        &declared,
+        verified.managed_scope().id().as_str(),
+        verified.semantic_profile().id().as_str(),
+    )?;
+    Ok(PyQueryV2Authority {
+        authority: Arc::new(authority),
+    })
+}
+
 fn build_query_v2_query_only_authority(
     py: Python<'_>,
     database: &PyRustDatabase,
@@ -289,6 +386,23 @@ pub fn query_v2_authority(
     profile: &Bound<'_, PyAny>,
 ) -> PyResult<PyQueryV2Authority> {
     build_query_v2_authority(py, declared_schema, scope, profile)
+}
+
+/// Verify one generated package's complete schema-authority envelope.
+#[pyfunction]
+pub fn query_v2_authority_from_schema_authority(
+    py: Python<'_>,
+    schema_authority: &Bound<'_, PyAny>,
+    semantic_fingerprint: &Bound<'_, PyAny>,
+) -> PyResult<PyQueryV2Authority> {
+    let schema_authority = PythonBytes::extract(schema_authority, "schema_authority")?
+        .bounded_snapshot(MAX_SCHEMA_AUTHORITY_BYTES.saturating_add(1));
+    let semantic_fingerprint = PythonBytes::extract(semantic_fingerprint, "semantic_fingerprint")?
+        .bounded_snapshot(MAX_CANONICAL_BYTES.saturating_add(1));
+    py.allow_threads(move || {
+        build_query_v2_authority_from_schema_authority(&schema_authority, &semantic_fingerprint)
+    })
+    .map_err(|diagnostic| value_error(&diagnostic))
 }
 
 /// Build a local-only authority for a database with no migration controls.
@@ -450,6 +564,10 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyQueryV2Authority>()?;
     m.add_class::<PyPendingQueryV2Remote>()?;
     m.add_function(wrap_pyfunction!(query_v2_authority, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        query_v2_authority_from_schema_authority,
+        m
+    )?)?;
     m.add_function(wrap_pyfunction!(query_v2_query_only_authority, m)?)?;
     m.add_function(wrap_pyfunction!(query_v2_execute_local, m)?)?;
     m.add_function(wrap_pyfunction!(query_v2_remote_capabilities, m)?)?;
@@ -466,9 +584,11 @@ mod tests {
 
     use super::{
         LOCAL_WORKER_FAILED, MAX_SEMANTIC_PROFILE_ID_BYTES, PyQueryV2Authority, PythonBytes,
-        PythonString, QueryV2Error, contain_local_worker_panic, python_limit, value_error,
+        PythonString, QueryV2Error, build_query_v2_authority_from_schema_authority,
+        contain_local_worker_panic, python_limit, value_error,
     };
-    use type_bridge_contract::codec::FormatVersion;
+    use type_bridge_contract::capability::{CapabilityId, CapabilitySet};
+    use type_bridge_contract::codec::{FormatVersion, to_canonical_json};
     use type_bridge_contract::diagnostic::{
         Diagnostic, DiagnosticCategory, DiagnosticCode, DiagnosticPathSegment,
     };
@@ -483,6 +603,75 @@ mod tests {
         encode_declared_schema,
     };
     use type_bridge_orm::query_v2_builder::QueryPlanBuilder;
+    use type_bridge_schema::{
+        BUILTIN_SCHEMA_CAPABILITY_IDS, ManagedDeltaContext, SchemaDocumentSet,
+        build_schema_authority, encode_schema_authority, normalize_documents,
+    };
+
+    fn generated_authority_fixture(source: &str) -> (Vec<u8>, Vec<u8>) {
+        let documents = SchemaDocumentSet::parse([(
+            DocumentId::new("python-generated-authority").expect("document"),
+            source,
+        )])
+        .expect("schema parses");
+        let declared = normalize_documents(&documents).expect("schema normalizes");
+        let available: CapabilitySet = BUILTIN_SCHEMA_CAPABILITY_IDS
+            .iter()
+            .map(|id| CapabilityId::new(*id).expect("capability"))
+            .collect();
+        let context = ManagedDeltaContext::new(
+            ManagedScopeId::new("python-generated-authority").expect("scope"),
+            SemanticProfileId::new("typedb-3.12.1/v1").expect("profile"),
+            available,
+        );
+        let authority =
+            build_schema_authority(&declared, declared.required_capabilities(), &context)
+                .expect("authority builds");
+        let semantic =
+            to_canonical_json(authority.resolved_schema().semantic_fingerprint()).unwrap();
+        (encode_schema_authority(&authority), semantic)
+    }
+
+    #[test]
+    fn generated_authority_constructor_verifies_envelope_and_projection_binding() {
+        let (authority, semantic) =
+            generated_authority_fixture("format: typebridge.schema/v2\nentities:\n  person: {}\n");
+        let installed = build_query_v2_authority_from_schema_authority(&authority, &semantic)
+            .expect("verified generated authority installs");
+        QueryPlanBuilder::new(installed.authority())
+            .binding("person")
+            .expect("verified authority drives the shared builder");
+
+        let (_, foreign_semantic) =
+            generated_authority_fixture("format: typebridge.schema/v2\nentities:\n  robot: {}\n");
+        assert_eq!(
+            build_query_v2_authority_from_schema_authority(&authority, &foreign_semantic)
+                .err()
+                .expect("foreign projection fingerprint must fail")
+                .code()
+                .as_str(),
+            "generated_schema_authority_semantic_mismatch",
+        );
+        assert_eq!(
+            build_query_v2_authority_from_schema_authority(b"{", &semantic)
+                .err()
+                .expect("malformed envelope must fail")
+                .code()
+                .as_str(),
+            "malformed_canonical_json",
+        );
+        assert_eq!(
+            build_query_v2_authority_from_schema_authority(
+                &vec![b' '; type_bridge_schema::MAX_SCHEMA_AUTHORITY_BYTES + 1],
+                &semantic,
+            )
+            .err()
+            .expect("oversized envelope must fail")
+            .code()
+            .as_str(),
+            "canonical_json_too_large",
+        );
+    }
 
     #[test]
     fn structured_query_error_preserves_typed_path_and_detail_values() {

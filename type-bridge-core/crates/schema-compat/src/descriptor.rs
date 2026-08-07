@@ -582,6 +582,11 @@ pub fn released_typeql_to_declared_lossless_projection(
         .map(crate::function_references::TypeqlDeclaredSchema::into_declared)
 }
 
+/// Losslessly project released TypeQL while retaining static function-body references.
+///
+/// This is the reference-preserving form of
+/// [`released_typeql_to_declared_lossless_projection`]. It rejects constructs
+/// outside the portable fact graph instead of silently omitting them.
 pub fn released_typeql_to_declared_lossless_projection_with_references(
     document: DocumentId,
     source: &str,

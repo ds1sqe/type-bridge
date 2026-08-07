@@ -6,33 +6,39 @@ use type_bridge_contract::schema::DocumentId;
 use type_bridge_schema::{SchemaDocumentSet, normalize_documents, project, resolve};
 use type_bridge_schema_codegen::TypeScriptEmitter;
 
+mod support;
+
 fn projected(
     source: &str,
     resources: &[CodeResourceDigest],
-) -> type_bridge_contract::projection::RuntimeProjection {
+) -> (
+    type_bridge_contract::projection::RuntimeProjection,
+    type_bridge_schema::VerifiedSchemaAuthority,
+) {
     let documents =
         SchemaDocumentSet::parse([(DocumentId::new("typescript-emitter.yaml").unwrap(), source)])
             .unwrap();
     let declared = normalize_documents(&documents).unwrap();
     let profile = SemanticProfileId::new("typedb-3.12.1/v1").unwrap();
     let resolved = resolve(&declared, &profile).unwrap();
-    project(
+    let projection = project(
         &resolved,
         BindingTarget::TypeScript,
         &ProjectionConfig::typescript(),
         &TypeScriptEmitter::new().generator_handlers(),
         resources,
     )
-    .unwrap()
+    .unwrap();
+    (projection, support::authority(source))
 }
 
 #[test]
 fn emits_exact_deterministic_es_module_package() {
     let emitter = TypeScriptEmitter::new();
     let resources = emitter.code_resources().unwrap();
-    let projection = projected(include_str!("acceptance/schema.yaml"), &resources);
-    let first = emitter.emit(&projection).unwrap();
-    let second = emitter.emit(&projection).unwrap();
+    let (projection, authority) = projected(include_str!("acceptance/schema.yaml"), &resources);
+    let first = emitter.emit(&projection, &authority).unwrap();
+    let second = emitter.emit(&projection, &authority).unwrap();
     assert_eq!(first, second);
     assert_eq!(
         first
@@ -42,6 +48,7 @@ fn emits_exact_deterministic_es_module_package() {
             .collect::<BTreeSet<_>>(),
         BTreeSet::from([
             "package.json",
+            "src/authority.ts",
             "src/functions.ts",
             "src/index.ts",
             "src/models.ts",
@@ -67,6 +74,13 @@ fn emits_exact_deterministic_es_module_package() {
     let index = String::from_utf8(first.get("src/index.ts").unwrap().to_vec()).unwrap();
     assert!(index.contains("__installRuntimeProjectionPackage"));
     assert!(index.contains("RUNTIME_PROJECTION_JSON"));
+    assert!(!index.contains("export * from \"./authority.js\""));
+    let authority_source =
+        String::from_utf8(first.get("src/authority.ts").unwrap().to_vec()).unwrap();
+    assert!(authority_source.contains("typebridge.schema-authority/v1"));
+    assert!(!authority_source.contains("DECLARED_SCHEMA_JSON"));
+    assert!(!authority_source.contains("MANAGED_SCOPE_ID"));
+    assert!(!authority_source.contains("SEMANTIC_PROFILE_ID"));
     let schema = String::from_utf8(first.get("src/schema.ts").unwrap().to_vec()).unwrap();
     assert!(schema.contains("export const playsPersonMembershipMember"));
     assert!(schema.contains("export const playsRobotMembershipMember"));
@@ -88,7 +102,7 @@ fn emits_exact_deterministic_es_module_package() {
 fn emits_safely_escaped_type_and_direct_sub_documentation() {
     let emitter = TypeScriptEmitter::new();
     let resources = emitter.code_resources().unwrap();
-    let projection = projected(
+    let (projection, authority) = projected(
         r#"format: typebridge.schema/v2
 entities:
   actor: {}
@@ -104,7 +118,7 @@ entities:
 "#,
         &resources,
     );
-    let package = emitter.emit(&projection).unwrap();
+    let package = emitter.emit(&projection, &authority).unwrap();
     let models = std::str::from_utf8(package.get("src/models.ts").unwrap()).unwrap();
     let documentation = "/**\n * Type \"doc\".\n * closing *\\/ kept\n * \n * Direct subtype of `actor`:\n * Edge 'doc' \\ path\n * closes *\\/ safely\n */\n";
 
@@ -119,8 +133,10 @@ entities:
 
 #[test]
 fn rejects_projection_without_exact_resource_evidence() {
-    let projection = projected(include_str!("acceptance/schema.yaml"), &[]);
-    let error = TypeScriptEmitter::new().emit(&projection).unwrap_err();
+    let (projection, authority) = projected(include_str!("acceptance/schema.yaml"), &[]);
+    let error = TypeScriptEmitter::new()
+        .emit(&projection, &authority)
+        .unwrap_err();
     assert!(
         error
             .to_string()
@@ -132,11 +148,11 @@ fn rejects_projection_without_exact_resource_evidence() {
 fn rejects_schema_name_colliding_with_runtime_export() {
     let emitter = TypeScriptEmitter::new();
     let resources = emitter.code_resources().unwrap();
-    let projection = projected(
+    let (projection, authority) = projected(
         "format: typebridge.schema/v2\nentities:\n  cardinality: {}\n",
         &resources,
     );
-    let error = emitter.emit(&projection).unwrap_err();
+    let error = emitter.emit(&projection, &authority).unwrap_err();
     assert!(
         error
             .to_string()

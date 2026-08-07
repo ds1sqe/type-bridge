@@ -1,11 +1,11 @@
 //! TypeDB-backed fenced execution storage for V2 schema migrations.
 //!
-//! This unpublished leaf crate is the only layer that knows both the
-//! provider-neutral migration execution contracts and the TypeDB ORM. It does
-//! not extend or import the archival V1 migration state store.
+//! This public leaf crate is the only layer that knows both the provider-neutral
+//! migration execution contracts and the TypeDB ORM. It does not extend or
+//! import the archival V1 migration state store.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
+#![deny(missing_docs)]
 
 mod control_schema;
 mod legacy_import;

@@ -24,6 +24,7 @@ from type_bridge_core import (
     RemoteModelQueryContext,
     ValidatedMatchResultHandle,
     ValidatedMatchRowHandle,
+    query_v2_authority_from_schema_authority,
     query_v2_prepare_remote_model_count,
     query_v2_prepare_remote_model_exists,
     query_v2_prepare_remote_model_page,
@@ -33,11 +34,14 @@ from type_bridge_core import (
     query_v2_prepare_remote_model_rows,
     query_v2_remote_model_context,
 )
+from type_bridge_core import (
+    QueryV2Authority as _QueryV2Authority,
+)
 
 from type_bridge._rust_runtime import rust_database_for, rust_transaction_for
-from type_bridge.query_v2 import QueryV2Authority
 from type_bridge.session import Database, TransactionContext
 
+from ._authority import SCHEMA_AUTHORITY_BYTES
 from ._runtime import (
     AttributeBase,
     EntityBase,
@@ -47,6 +51,7 @@ from ._runtime import (
     RoleToken,
     attribute_model_for_query_label,
 )
+from ._schema import SEMANTIC_SCHEMA_FINGERPRINT_JSON
 
 
 def _model_label(model: type[ModelBase]) -> str:
@@ -67,6 +72,10 @@ def _exact_projection(model: type[ModelBase]) -> PyRuntimeProjection:
 
 
 _package_projection: PyRuntimeProjection | None = None
+_package_query_authority: _QueryV2Authority = query_v2_authority_from_schema_authority(
+    SCHEMA_AUTHORITY_BYTES,
+    SEMANTIC_SCHEMA_FINGERPRINT_JSON.encode("utf-8"),
+)
 
 
 def install_projection(projection: PyRuntimeProjection) -> None:
@@ -80,6 +89,10 @@ def _installed_projection() -> PyRuntimeProjection:
     if _package_projection is None:
         raise RuntimeError("generated package runtime projection is not installed")
     return _package_projection
+
+
+def _installed_query_authority() -> _QueryV2Authority:
+    return _package_query_authority
 
 
 def _attribute_model(label: str) -> type[AttributeBase]:
@@ -1523,13 +1536,10 @@ class RemoteQuerySession(_Frozen):
 
     def __init__(
         self,
-        authority: object,
         advertisement: object,
         exchange: object,
         limits: object,
     ) -> None:
-        if not isinstance(authority, QueryV2Authority):
-            raise TypeError("generated RemoteQuerySession requires a QueryV2Authority")
         if type(advertisement) is not bytes:
             raise TypeError("generated remote advertisement must be exact bytes")
         if not _is_exchange(exchange):
@@ -1537,7 +1547,7 @@ class RemoteQuerySession(_Frozen):
         if type(limits) is not RemoteQueryLimits:
             raise TypeError("generated remote limits must be RemoteQueryLimits")
         context = query_v2_remote_model_context(
-            authority,
+            _installed_query_authority(),
             advertisement,
             limits.max_items,
             limits.max_bytes,

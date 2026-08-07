@@ -18,6 +18,9 @@ use crate::session::backend::{QueryResult, TxType};
 ///
 /// # Example
 ///
+/// This example is ignored because executing it requires a live TypeDB
+/// service and a generated entity manager supplied by a consumer package.
+///
 /// ```ignore
 /// let adults = manager.query()
 ///     .filter(Expr::gte("age", AttributeValue::Long(18)))

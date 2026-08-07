@@ -468,7 +468,7 @@
       "node": [
         {
           "path": "type-bridge-core/crates/node/tests/projection-integration/generated-package-live.test.ts",
-          "anchors": ["emit_typescript_acceptance", "node_modules/@type-bridge", "dist/index.js"]
+          "anchors": ["prepare_generated_live_fixture.sh", "node_modules/@type-bridge", "dist/index.js"]
         }
       ],
       "rust": [

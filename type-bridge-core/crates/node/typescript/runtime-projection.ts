@@ -1,15 +1,16 @@
-import type {
-  NativeRustDatabase,
-  NativeRustTransactionContext,
+import {
   QueryV2Authority,
-  RustDatabase,
-  RustTransactionContext,
+  type NativeRustDatabase,
+  type NativeRustTransactionContext,
+  type RustDatabase,
+  type RustTransactionContext,
 } from "./index.js";
 import { loadNative } from "./native.js";
 import {
   queryV2AuthorityHandle,
   queryV2NativeCall,
   queryV2NativePromise,
+  registerQueryV2AuthorityHandle,
 } from "./query-v2-internals.js";
 import {
   isRegisteredRustConnection,
@@ -54,6 +55,11 @@ export interface RuntimeProjectionInstall {
   readonly semanticFingerprintJson: string;
   readonly projectionFingerprintJson: string;
   readonly bindings: readonly RuntimeProjectionBinding[];
+}
+
+export interface GeneratedSchemaAuthorityInstall {
+  readonly schemaAuthorityJson: string;
+  readonly semanticFingerprintJson: string;
 }
 
 /** Explicit immutable budgets bound into every generated remote query. */
@@ -553,4 +559,22 @@ export function installRuntimeProjection(input: RuntimeProjectionInstall): Insta
     input.projectionFingerprintJson,
     JSON.stringify(input.bindings),
   ));
+}
+
+/** @internal Verify an embedded authority before a generated package installs. */
+export function installGeneratedSchemaAuthority(
+  input: GeneratedSchemaAuthorityInstall,
+): QueryV2Authority {
+  const authority = Object.create(QueryV2Authority.prototype) as QueryV2Authority;
+  registerQueryV2AuthorityHandle(
+    authority,
+    queryV2NativeCall(() =>
+      loadNative().queryV2AuthorityFromSchemaAuthority(
+        input.schemaAuthorityJson,
+        input.semanticFingerprintJson,
+      )
+    ),
+  );
+  Object.freeze(authority);
+  return authority;
 }

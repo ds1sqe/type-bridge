@@ -10,12 +10,16 @@ From this directory:
 
 ```bash
 type-bridge --manifest typebridge.yaml schema check
+type-bridge --manifest typebridge.yaml schema generate
 type-bridge --manifest typebridge.yaml migration make --name initial
 type-bridge --manifest typebridge.yaml migration apply --environment development
-type-bridge --manifest typebridge.yaml schema generate
 ```
 
-The manifest emits Python, TypeScript, and Rust packages below `generated/`.
+The manifest emits Python, TypeScript, and Rust packages plus
+`generated/schema-authority.json` from one captured workspace. Generated
+packages privately embed the same verified authority; the standalone JSON file
+is only the source-free generic-server deployment artifact and is never edited
+as schema input.
 For the Python examples, expose the generated package and run any journey:
 
 ```bash
@@ -42,7 +46,7 @@ come from `app_models`, the generated package. Connection primitives come from
   constraints, abstract types, inheritance, optional and multivalue ownership,
   relations, role cardinality, and `plays` facts.
 - [`typebridge.yaml`](typebridge.yaml) is the sole active schema, migration, and
-  binding configuration.
+  generation configuration, including the generic-server authority output.
 - `schema check` reports reserved labels, invalid cardinality, ownership, and
   role-player errors before generation.
 

@@ -21,6 +21,10 @@ bindings:
   rust:
     output: generated/rust
 
+artifacts:
+  schema-authority:
+    output: generated/schema-authority.json
+
 environments:
   development:
     database: typebridge-examples
