@@ -13,12 +13,14 @@ use type_bridge_schema::{
     SchemaSourceCapture, SchemaSourceObservation, SchemaSourceService, SchemaSourceServiceError,
     SystemSchemaSourceService,
 };
+#[cfg(unix)]
+use type_bridge_workspace::SchemaAuthorityOutputPath;
 use type_bridge_workspace::{
     ConfigOrigin, ExtensionRegistryService, ExtensionRequirement, MigrationV2Directory,
-    SchemaAuthorityOutputPath, SchemaSetPath, SecretReference, SecretReferenceService,
-    TypeBridgeConfig, TypeBridgeConfigServices, TypeBridgeConfigSpec, TypeBridgeWorkspace,
-    TypeBridgeWorkspaceError, TypeBridgeWorkspaceServices, WorkspaceConfigErrorCode,
-    WorkspaceDirectoryAuthority, WorkspaceRoot, WorkspaceServiceError,
+    SchemaSetPath, SecretReference, SecretReferenceService, TypeBridgeConfig,
+    TypeBridgeConfigServices, TypeBridgeConfigSpec, TypeBridgeWorkspace, TypeBridgeWorkspaceError,
+    TypeBridgeWorkspaceServices, WorkspaceConfigErrorCode, WorkspaceDirectoryAuthority,
+    WorkspaceRoot, WorkspaceServiceError,
 };
 
 static NEXT_TEMP_DIRECTORY: AtomicU64 = AtomicU64::new(0);
