@@ -10,8 +10,9 @@ and your application have passed the generated-package gates below.
 
 ## Before changing the dependency
 
-1. Upgrade the target TypeDB server to 3.11 or 3.12. TypeDB 3.12.1 is the exact
-   conformance baseline.
+1. Upgrade application-query targets to TypeDB 3.11 or 3.12. A target on which
+   TypeBridge will apply, verify, or adopt V2 migrations must be exactly
+   TypeDB 3.12.1, the migration and conformance baseline.
 2. Express the desired schema as a `typebridge.yaml` workspace plus
    `typebridge.schema-set/v1` and `typebridge.schema/v2` documents.
 3. Generate clean Python, TypeScript/Node, and/or Rust packages.
@@ -97,7 +98,7 @@ Continue only with canonical migration commands:
 
 ```bash
 type-bridge --manifest typebridge.yaml migration make --name next-change
-type-bridge --manifest typebridge.yaml migration plan --environment production
+type-bridge --manifest typebridge.yaml migration plan
 type-bridge --manifest typebridge.yaml migration apply --environment production
 type-bridge --manifest typebridge.yaml migration verify --environment production
 ```
@@ -147,8 +148,9 @@ retry over plaintext.
   former 2.0.x application.
 - No application imports `type_bridge.models`, handwritten Node descriptors,
   or Rust ORM derive/schema-authoring APIs.
-- TypeDB 3.11 and/or 3.12 live tests pass; older versions fail before data
-  work.
+- Generated application operations pass on TypeDB 3.11 and/or 3.12; connected
+  migration apply/verify/adopt pass on exactly 3.12.1 and reject other versions
+  before database mutation.
 - Archived migration adoption and a subsequent canonical V2 migration replay
   from empty.
 - Wheel, npm package, generated Rust crate, CLI, and server candidates contain

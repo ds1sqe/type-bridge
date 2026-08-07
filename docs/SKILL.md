@@ -245,14 +245,13 @@ change TypeDB.
 Use this lifecycle:
 
 1. Validate the schema set and workspace offline.
-2. Generate every configured language package and the server authority artifact
-   from that checked snapshot.
+2. Generate every configured language package from that checked snapshot.
 3. Create a named migration.
 4. Review its TypeQL, plan, and destructive classifications.
 5. Apply only in an environment whose policy permits migration.
 6. Verify the resulting database and journal state.
-7. Commit Split-YAML, `typebridge.yaml`, migrations, generated packages, and the
-   server artifact together when the repository tracks generated outputs.
+7. Commit Split-YAML, `typebridge.yaml`, migrations, and generated packages
+   together when the repository tracks generated outputs.
 
 Treat `schema check`, migration planning, and generation as read-only with
 respect to TypeDB. Only the explicit connected migration commands mutate the
@@ -260,8 +259,12 @@ managed schema. Split-YAML is the sole active authoring authority; historical
 TOML is a read-only conversion input.
 
 Configure every projection target in `typebridge.yaml`, then generate them from
-the same checked workspace. Configure the generic server artifact alongside the
-bindings:
+the same checked workspace. No standalone JSON is required for generated
+managers or package-owned query sessions.
+
+If deploying the generic server, configure its authority artifact alongside the
+bindings and commit it with the other generated outputs when the repository
+tracks them:
 
 ```yaml
 artifacts:
@@ -275,8 +278,9 @@ type-bridge --manifest typebridge.yaml schema generate
 ```
 
 One generation snapshot embeds compiled authority into every configured
-package and writes the byte-equivalent server artifact. Its canonical JSON is
-an internal, source-free deployment codec, not a user-maintained schema input.
+package and, when configured, writes the byte-equivalent server artifact. Its
+canonical JSON is an internal, source-free deployment codec, not a
+user-maintained schema input.
 
 ## Rust and server boundaries
 

@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.7
+# syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
 
 # Release builds override only the identity arguments below. Both base images
 # and the Rust toolchain are immutable inputs to each server release image.
@@ -38,9 +38,13 @@ LABEL org.opencontainers.image.title="TypeBridge Server" \
       org.opencontainers.image.licenses="MIT" \
       io.type-bridge.release-identity="${RELEASE_IDENTITY}"
 
+# SOURCE_DATE_EPOCH cannot normalize the password-aging value written by
+# useradd, so pin the locked service account's last-change field explicitly.
 RUN groupadd --gid 10001 typebridge \
     && useradd --uid 10001 --gid 10001 --no-create-home \
       --home-dir /nonexistent --shell /usr/sbin/nologin typebridge \
+    && chage --lastday 0 typebridge \
+    && rm -f /etc/shadow- \
     && install -d -m 0755 /etc/type-bridge /usr/share/licenses/type-bridge
 
 COPY --from=builder \

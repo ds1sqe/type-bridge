@@ -172,8 +172,8 @@ Authenticated structured failures instead use the protocol hard ceiling, so a
 zero or otherwise tiny success budget can still return the bound diagnostic
 explaining why no success could fit.
 
-The constructor above creates managed/offline authority and is the authority
-accepted by remote preparation. For local execution against a database with no
+The low-level `QueryV2Authority` constructor creates managed/offline authority
+for prepared remote execution. For local execution against a database with no
 migration controls, bind a separate local-only handle:
 
 ```ts

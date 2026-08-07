@@ -13,7 +13,19 @@ type-bridge-toml-transpiler = "2.1.0"
 ```
 
 ```rust
+let toml_source = r#"
+[attributes.name]
+value = "string"
+
+[entities.person]
+owns = ["name"]
+"#;
+
 let typeql = type_bridge_toml_transpiler::toml_to_typeql(toml_source)?;
+assert_eq!(
+    typeql,
+    "define\nattribute name, value string;\nentity person, owns name;\n",
+);
 # Ok::<(), type_bridge_toml_transpiler::TranspileError>(())
 ```
 

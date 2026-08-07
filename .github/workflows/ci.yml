@@ -230,6 +230,7 @@ jobs:
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
         with:
+          image: docker.io/tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
           platforms: arm64
 
       - name: Set up Python
@@ -781,9 +782,21 @@ jobs:
           TYPE_BRIDGE_RUST_PROJECTION_INTG_DATABASE: type_bridge_rust_projection_live
           TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE: ${{ matrix.semantic-profile }}
         run: >-
-          cargo test --manifest-path type-bridge-core/Cargo.toml
+          bash scripts/ci/run_exact_ignored_rust_test.sh
+          generated_rust_projection_round_trips_exact_live_models
+          --manifest-path type-bridge-core/Cargo.toml
           -p type-bridge-schema-codegen --test rust_projection_live
-          -- --ignored --nocapture
+
+      - name: Prove unsupported migration apply creates no databases
+        if: matrix.typedb-server == 'typedb/typedb:3.11.5'
+        env:
+          TYPEDB_ADDRESS: localhost:1729
+          TYPEDB_HTTP_PORT: "8000"
+        run: >-
+          bash scripts/ci/run_exact_ignored_rust_test.sh
+          unsupported_server_apply_creates_neither_database_live
+          --manifest-path type-bridge-core/Cargo.toml
+          -p type-bridge-cli --test e2e_workspace_live
 
       - name: Run CLI empty-workspace replay lifecycle
         if: matrix.typedb-server == 'typedb/typedb:3.12.1'
@@ -791,10 +804,21 @@ jobs:
           TYPEDB_ADDRESS: localhost:1729
           TYPEDB_HTTP_PORT: "8000"
         run: >-
-          cargo test --manifest-path type-bridge-core/Cargo.toml
-          -p type-bridge-cli --test e2e_workspace_live
+          bash scripts/ci/run_exact_ignored_rust_test.sh
           empty_workspace_to_replayed_history_live
-          -- --ignored --exact --nocapture
+          --manifest-path type-bridge-core/Cargo.toml
+          -p type-bridge-cli --test e2e_workspace_live
+
+      - name: Apply and verify the unchanged documented initial constraints
+        if: matrix.typedb-server == 'typedb/typedb:3.12.1'
+        env:
+          TYPEDB_ADDRESS: localhost:1729
+          TYPEDB_HTTP_PORT: "8000"
+        run: >-
+          bash scripts/ci/run_exact_ignored_rust_test.sh
+          documented_examples_initial_constraints_apply_and_verify_live
+          --manifest-path type-bridge-core/Cargo.toml
+          -p type-bridge-cli --test e2e_workspace_live
 
       - name: Prove verify does not create databases
         if: matrix.typedb-server == 'typedb/typedb:3.12.1'
@@ -802,10 +826,10 @@ jobs:
           TYPEDB_ADDRESS: localhost:1729
           TYPEDB_HTTP_PORT: "8000"
         run: >-
-          cargo test --manifest-path type-bridge-core/Cargo.toml
-          -p type-bridge-cli --test e2e_workspace_live
+          bash scripts/ci/run_exact_ignored_rust_test.sh
           verify_never_creates_databases_live
-          -- --ignored --exact --nocapture
+          --manifest-path type-bridge-core/Cargo.toml
+          -p type-bridge-cli --test e2e_workspace_live
 
       - name: Run legacy adoption and evolution lifecycle
         if: matrix.typedb-server == 'typedb/typedb:3.12.1'
@@ -813,10 +837,10 @@ jobs:
           TYPEDB_ADDRESS: localhost:1729
           TYPEDB_HTTP_PORT: "8000"
         run: >-
-          cargo test --manifest-path type-bridge-core/Cargo.toml
-          -p type-bridge-cli --test e2e_workspace_live
+          bash scripts/ci/run_exact_ignored_rust_test.sh
           adopt_legacy_history_then_evolve_live
-          -- --ignored --exact --nocapture
+          --manifest-path type-bridge-core/Cargo.toml
+          -p type-bridge-cli --test e2e_workspace_live
 
       - name: Run shipped Python converter to native adoption lifecycle
         if: matrix.typedb-server == 'typedb/typedb:3.12.1'
@@ -825,10 +849,10 @@ jobs:
           TYPEDB_HTTP_PORT: "8000"
           TYPE_BRIDGE_TEST_PYTHON: ${{ github.workspace }}/.venv/bin/python
         run: >-
-          cargo test --manifest-path type-bridge-core/Cargo.toml
-          -p type-bridge-cli --test e2e_workspace_live
+          bash scripts/ci/run_exact_ignored_rust_test.sh
           shipped_python_converter_to_native_adoption_live
-          -- --ignored --exact --nocapture
+          --manifest-path type-bridge-core/Cargo.toml
+          -p type-bridge-cli --test e2e_workspace_live
 
   # Required, bounded TLS proof over one server per supported protocol band.
   # This intentionally runs only typedb-runtime's focused live target: the
@@ -974,10 +998,10 @@ jobs:
         run: |
           export TYPEDB_ADDRESS="$TYPEDB_TLS_ADDRESS"
           export TYPEDB_HTTP_PORT="$TYPEDB_TLS_HTTP_PORT"
-          cargo test --locked --manifest-path type-bridge-core/Cargo.toml \
-            -p type-bridge-schema-codegen --test rust_projection_live \
+          bash scripts/ci/run_exact_ignored_rust_test.sh \
             generated_rust_projection_round_trips_exact_live_models \
-            -- --ignored --exact --nocapture
+            --locked --manifest-path type-bridge-core/Cargo.toml \
+            -p type-bridge-schema-codegen --test rust_projection_live
 
       - name: Show TLS stack logs on failure
         if: failure()

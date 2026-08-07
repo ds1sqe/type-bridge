@@ -28,16 +28,12 @@ bindings:
   python:
     output: app_models
 
-artifacts:
-  schema-authority:
-    output: generated/schema-authority.json
-
 environments:
   development:
     database: quickstart
     uri: localhost:1729
     tls: 'false'
-    migrate: 'false'
+    migrate: 'true'
     credential:
       username: env:TYPEDB_USERNAME
       password: env:TYPEDB_PASSWORD
@@ -92,12 +88,13 @@ type-bridge --manifest typebridge.yaml migration apply --environment development
 ```
 
 `schema check` is offline. Migration application is the explicit database
-change; generation never mutates TypeDB. One generation snapshot writes the
-Python package and `generated/schema-authority.json`. The package embeds the
-same verified authority, so application imports and remote sessions never read
-that file; it is the source-free artifact mounted by a generic server. Commit
-the workspace and migration history, and regenerate all outputs after an
-accepted schema change.
+change; generation never mutates TypeDB. The generated Python package privately
+embeds the verified authority used by its managers and query sessions, so this
+ordinary application path does not configure, generate, or read an external
+JSON authority. Commit the workspace and migration history, and regenerate all
+outputs after an accepted schema change. Set `TYPEDB_USERNAME` and
+`TYPEDB_PASSWORD` for the named TypeDB environment before running the connected
+apply command.
 
 ## 3. Put and filter one type
 

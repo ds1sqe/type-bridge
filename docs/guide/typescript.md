@@ -12,20 +12,19 @@ type-bridge --manifest typebridge.yaml schema check
 type-bridge --manifest typebridge.yaml schema generate
 ```
 
-Configure the target and generic-server artifact in `typebridge.yaml`:
+Configure the generated target in `typebridge.yaml`:
 
 ```yaml
 bindings:
   typescript:
     output: generated/typescript
-
-artifacts:
-  schema-authority:
-    output: generated/schema-authority.json
 ```
 
 Compile the generated package with its emitted TypeScript configuration. Do not
-edit its sources or construct models with `@type-bridge/node` factories.
+edit its sources or construct models with `@type-bridge/node` factories. The
+package privately embeds the verified authority used by its managers and query
+sessions; an ordinary Node application does not configure or read an external
+JSON authority.
 
 ## Connect
 

@@ -69,9 +69,9 @@ pub use resolve::{
 };
 pub use safety_condition::{
     DerivedSafetyConditions, RequiredSafetyCondition, SAFETY_CONDITION_CANONICALIZATION,
-    SAFETY_CONDITION_FINGERPRINT_DOMAIN, SafetyCondition, SafetyConditionId, SafetyConditionUnlock,
-    SafetyDerivationProfile, ScalarSafetySubject, UnresolvableSafetyReason,
-    derive_safety_conditions,
+    SAFETY_CONDITION_FINGERPRINT_DOMAIN, SafetyCondition, SafetyConditionDomainIndex,
+    SafetyConditionId, SafetyConditionUnlock, SafetyDerivationProfile, ScalarSafetySubject,
+    UnresolvableSafetyReason, derive_safety_conditions, derive_safety_conditions_with_domain_index,
 };
 pub use schema_set::{
     SCHEMA_DISCOVERY_V1, SCHEMA_SET_V1_FORMAT, SchemaDiscoveryVersion, SchemaSetManifest,

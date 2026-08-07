@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -6,24 +7,28 @@ use type_bridge_contract::capability::CapabilityId;
 use type_bridge_contract::capability::CapabilitySet;
 use type_bridge_contract::codec::FormatVersion;
 use type_bridge_contract::fingerprint::SemanticProfileId;
-use type_bridge_contract::id::{TypeId, TypeKind};
+use type_bridge_contract::id::{AttributeId, TypeId, TypeKind};
 use type_bridge_contract::managed_scope::ManagedScopeId;
 use type_bridge_contract::migration::{
     MigrationAppLabel, MigrationId, MigrationName, MigrationStepId, SchemaDeltaStep,
 };
 use type_bridge_contract::migration_assertion::migration_assertion_capability_vocabulary;
 use type_bridge_contract::schema::{
-    AnnotationFact, AnnotationFactId, AnnotationKindId, AnnotationSubjectId, DeclaredSchema,
-    DocumentId, SchemaAnnotationValue, SchemaFact, SourceSpan, SourcedSchemaFact, SubFact,
-    SubFactId, TypeFact,
+    AnnotationFact, AnnotationFactId, AnnotationKindId, AnnotationSubjectId, CanonicalValueRange,
+    CanonicalValueSet, DeclaredSchema, DocumentId, OwnsFact, OwnsFactId, RegexPattern,
+    SchemaAnnotationValue, SchemaFact, SourceSpan, SourcedSchemaFact, SubFact, SubFactId, TypeFact,
+    ValueFact, ValueFactId,
 };
+use type_bridge_contract::value::{CanonicalValue, Cardinality, ValueTypeTag};
 use type_bridge_schema::{
     BUILTIN_SCHEMA_CAPABILITY_IDS, ManagedDeltaContext, SafetyClass, diff_managed, inverse_delta,
 };
+use type_bridge_schema_migration::MigrationApplyTarget;
 use type_bridge_schema_migration::{
     MigrationDirectory, MigrationGenerationOutcome, MigrationGenerationRequest,
-    MigrationHistoryGraph, SchemaMigrationDraft, VerifiedSchemaMigrationManifest,
-    build_verified_manifest, discover_verified_migration_chain, generate_next_migration,
+    MigrationHistoryGraph, MigrationSafetyPolicy, SchemaLoweringBinding, SchemaMigrationDraft,
+    VerifiedSchemaMigrationManifest, build_verified_manifest, build_verified_migration_apply_plan,
+    decode_verified_manifest, discover_verified_migration_chain, generate_next_migration,
     render_migration_preview, try_acquire_migration_authoring_lock, typedb_3_12_1_profile,
     write_generated_migration_under_lock,
 };
@@ -73,6 +78,152 @@ fn abstract_fact(label: &str) -> SchemaFact {
         )
         .expect("fixture abstract annotation"),
     )
+}
+
+fn initial_constrained_schema() -> DeclaredSchema {
+    let actor = entity_id("actor");
+    let person = entity_id("person");
+    let key_id = AttributeId::new("key-id").expect("fixture attribute");
+    let unique_id = AttributeId::new("unique-id").expect("fixture attribute");
+    let required_name = AttributeId::new("required-name").expect("fixture attribute");
+    let score = AttributeId::new("score").expect("fixture attribute");
+    let status = AttributeId::new("status").expect("fixture attribute");
+    let code = AttributeId::new("code").expect("fixture attribute");
+    let key_owns = OwnsFactId::new(person.clone(), key_id.clone()).expect("fixture owns");
+    let unique_owns = OwnsFactId::new(person.clone(), unique_id.clone()).expect("fixture owns");
+    let required_owns =
+        OwnsFactId::new(person.clone(), required_name.clone()).expect("fixture owns");
+    let mut facts = vec![
+        SchemaFact::Type(TypeFact::new(actor.clone()).expect("fixture actor")),
+        SchemaFact::Type(TypeFact::new(person.clone()).expect("fixture person")),
+        SchemaFact::Sub(SubFact::new(
+            SubFactId::new(person, actor.clone()).expect("fixture sub identity"),
+        )),
+        SchemaFact::Owns(OwnsFact::new(key_owns.clone())),
+        SchemaFact::Owns(OwnsFact::new(unique_owns.clone())),
+        SchemaFact::Owns(OwnsFact::new(required_owns.clone())),
+        abstract_fact(actor.label().as_str()),
+        SchemaFact::Annotation(
+            AnnotationFact::new(
+                AnnotationFactId::new(AnnotationSubjectId::Owns(key_owns), AnnotationKindId::Key),
+                SchemaAnnotationValue::Presence,
+            )
+            .expect("fixture key annotation"),
+        ),
+        SchemaFact::Annotation(
+            AnnotationFact::new(
+                AnnotationFactId::new(
+                    AnnotationSubjectId::Owns(unique_owns),
+                    AnnotationKindId::Unique,
+                ),
+                SchemaAnnotationValue::Presence,
+            )
+            .expect("fixture unique annotation"),
+        ),
+        SchemaFact::Annotation(
+            AnnotationFact::new(
+                AnnotationFactId::new(
+                    AnnotationSubjectId::Owns(required_owns),
+                    AnnotationKindId::Card,
+                ),
+                SchemaAnnotationValue::Cardinality(
+                    Cardinality::new(1, Some(1)).expect("fixture cardinality"),
+                ),
+            )
+            .expect("fixture card annotation"),
+        ),
+        SchemaFact::Annotation(
+            AnnotationFact::new(
+                AnnotationFactId::new(
+                    AnnotationSubjectId::Value(ValueFactId::new(score.clone())),
+                    AnnotationKindId::Range,
+                ),
+                SchemaAnnotationValue::Range(
+                    CanonicalValueRange::new(
+                        Some(CanonicalValue::Long(0)),
+                        Some(CanonicalValue::Long(100)),
+                    )
+                    .expect("fixture range"),
+                ),
+            )
+            .expect("fixture range annotation"),
+        ),
+        SchemaFact::Annotation(
+            AnnotationFact::new(
+                AnnotationFactId::new(
+                    AnnotationSubjectId::Value(ValueFactId::new(status.clone())),
+                    AnnotationKindId::Values,
+                ),
+                SchemaAnnotationValue::Values(
+                    CanonicalValueSet::new([CanonicalValue::Long(1), CanonicalValue::Long(2)])
+                        .expect("fixture values"),
+                ),
+            )
+            .expect("fixture values annotation"),
+        ),
+        SchemaFact::Annotation(
+            AnnotationFact::new(
+                AnnotationFactId::new(
+                    AnnotationSubjectId::Value(ValueFactId::new(code.clone())),
+                    AnnotationKindId::Regex,
+                ),
+                SchemaAnnotationValue::Regex(RegexPattern::new("^[A-Z]+$").expect("fixture regex")),
+            )
+            .expect("fixture regex annotation"),
+        ),
+    ];
+    for (attribute, value_type) in [
+        (key_id, ValueTypeTag::String),
+        (unique_id, ValueTypeTag::String),
+        (required_name, ValueTypeTag::String),
+        (score, ValueTypeTag::Long),
+        (status, ValueTypeTag::Long),
+        (code, ValueTypeTag::String),
+    ] {
+        facts.push(SchemaFact::Type(
+            TypeFact::new(
+                TypeId::new(TypeKind::Attribute, attribute.label().as_str())
+                    .expect("fixture attribute type"),
+            )
+            .expect("fixture attribute type fact"),
+        ));
+        facts.push(SchemaFact::Value(ValueFact::new(
+            ValueFactId::new(attribute),
+            value_type,
+        )));
+    }
+    declared_facts(facts)
+}
+
+fn single_key_schema(with_key: bool) -> DeclaredSchema {
+    let person = entity_id("person");
+    let identifier = AttributeId::new("identifier").expect("fixture attribute");
+    let owns = OwnsFactId::new(person.clone(), identifier.clone()).expect("fixture owns");
+    let mut facts = vec![
+        SchemaFact::Type(TypeFact::new(person).expect("fixture person")),
+        SchemaFact::Type(
+            TypeFact::new(
+                TypeId::new(TypeKind::Attribute, identifier.label().as_str())
+                    .expect("fixture attribute type"),
+            )
+            .expect("fixture attribute type fact"),
+        ),
+        SchemaFact::Value(ValueFact::new(
+            ValueFactId::new(identifier),
+            ValueTypeTag::String,
+        )),
+        SchemaFact::Owns(OwnsFact::new(owns.clone())),
+    ];
+    if with_key {
+        facts.push(SchemaFact::Annotation(
+            AnnotationFact::new(
+                AnnotationFactId::new(AnnotationSubjectId::Owns(owns), AnnotationKindId::Key),
+                SchemaAnnotationValue::Presence,
+            )
+            .expect("fixture key annotation"),
+        ));
+    }
+    declared_facts(facts)
 }
 
 fn declared_facts(facts: Vec<SchemaFact>) -> DeclaredSchema {
@@ -233,6 +384,136 @@ fn genesis_generation_is_deterministic_and_round_trips_through_discovery() {
     // The committed head now equals the desired schema.
     let again = generate_next_migration(&discovered, &request).expect("regenerate");
     assert!(matches!(again, MigrationGenerationOutcome::UpToDate));
+}
+
+#[test]
+fn genesis_constraints_on_new_types_are_proven_data_free() {
+    let genesis = declared_facts(Vec::new());
+    let desired = initial_constrained_schema();
+    let context = context();
+    let next = generated(
+        &empty_graph(),
+        &request("constrained_init", &genesis, &desired, &context),
+    );
+
+    assert_eq!(next.manifest().safety(), SafetyClass::Conditional);
+    assert_eq!(
+        next.manifest().steps().len(),
+        1,
+        "the empty source needs no assertion or backfill step",
+    );
+    let preview = render_migration_preview(next.manifest(), &context)
+        .expect("condition-free initial constraints lower");
+    for constraint in [
+        "@abstract",
+        "@key",
+        "@unique",
+        "@card",
+        "@range",
+        "@values",
+        "@regex",
+    ] {
+        assert!(
+            preview.contains(constraint),
+            "preview lacks {constraint}: {preview}"
+        );
+    }
+
+    let decoded = decode_verified_manifest(next.canonical_bytes(), (&genesis, &context))
+        .expect("canonical constrained genesis decodes");
+    assert_eq!(decoded, *next.manifest());
+    let directory = TempDirectory::new();
+    publish_generated_migration(directory.path(), &next, &preview)
+        .expect("publish constrained genesis");
+    let discovered = discover_verified_migration_chain(directory.path(), &genesis, &context)
+        .expect("discover constrained genesis");
+    assert_eq!(discovered.manifests().count(), 1);
+
+    let lowering = SchemaLoweringBinding::current(context.available_capabilities().clone())
+        .expect("lowering binding");
+    let plan = build_verified_migration_apply_plan(
+        &discovered,
+        &BTreeSet::new(),
+        &MigrationApplyTarget::DefaultHead,
+        &context,
+        &lowering,
+        &MigrationSafetyPolicy::default_policy(),
+        &[],
+    )
+    .expect("condition-free constrained genesis builds an apply plan");
+    let migration = &plan.migrations()[0];
+    assert_eq!(migration.transaction_groups().len(), 1);
+    assert_eq!(migration.transaction_groups()[0].assertion_count(), 0);
+    let lowering = migration.steps()[0]
+        .lowering()
+        .expect("the only generated step is a schema delta");
+    assert_eq!(
+        lowering
+            .units()
+            .iter()
+            .filter(|unit| unit.safety() == SafetyClass::BackfillRequired)
+            .count(),
+        3,
+        "key, unique, and required cardinality retain raw unit safety",
+    );
+}
+
+#[test]
+fn constraints_on_an_existing_anchor_keep_the_backfill_gate_closed() {
+    let genesis = declared_facts(Vec::new());
+    let base = single_key_schema(false);
+    let desired = single_key_schema(true);
+    let context = context();
+    let first = committed_manifest("0001_base", Vec::new(), &genesis, &base, &context);
+    let graph = MigrationHistoryGraph::from_verified([first]).expect("base history");
+
+    let error = generate_next_migration(
+        &graph,
+        &request("add_existing_key", &genesis, &desired, &context),
+    )
+    .expect_err("an existing owner domain still requires backfill");
+    assert_eq!(
+        error.code().as_str(),
+        "migration_manifest_unresolved_safety"
+    );
+}
+
+#[test]
+fn condition_free_proof_does_not_cross_schema_step_transaction_boundaries() {
+    let genesis = declared_facts(Vec::new());
+    let base = single_key_schema(false);
+    let constrained = single_key_schema(true);
+    let context = context();
+    let create = diff_managed(&genesis, &base, &context).expect("create delta");
+    let create_reverse = inverse_delta(&create).expect("create reverse");
+    let constrain = diff_managed(&base, &constrained, &context).expect("constraint delta");
+    let constrain_reverse = inverse_delta(&constrain).expect("constraint reverse");
+    let draft = SchemaMigrationDraft::new(
+        migration_id("0001_split_constraint"),
+        Vec::new(),
+        vec![
+            SchemaDeltaStep::new(
+                MigrationStepId::new("create-schema").expect("step id"),
+                create,
+                Some(create_reverse),
+            )
+            .expect("create step"),
+            SchemaDeltaStep::new(
+                MigrationStepId::new("add-key").expect("step id"),
+                constrain,
+                Some(constrain_reverse),
+            )
+            .expect("constraint step"),
+        ],
+    )
+    .expect("split draft");
+
+    let error = build_verified_manifest(draft, (&genesis, &context))
+        .expect_err("proof from the first transaction must not discharge the second");
+    assert_eq!(
+        error.code().as_str(),
+        "migration_manifest_unresolved_safety"
+    );
 }
 
 #[test]

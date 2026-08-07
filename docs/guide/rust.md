@@ -41,17 +41,12 @@ crate's exact `type-bridge` requirement from one immutable source revision.
 
 ## Generate the schema crate
 
-Declare the Rust output and generic-server artifact in the
-[Split-YAML workspace](split-yaml-v1.md):
+Declare the Rust output in the [Split-YAML workspace](split-yaml-v1.md):
 
 ```yaml
 bindings:
   rust:
     output: generated/rust
-
-artifacts:
-  schema-authority:
-    output: generated/schema-authority.json
 ```
 
 Then validate and generate all configured projections:
@@ -64,9 +59,9 @@ type-bridge --manifest typebridge.yaml schema generate
 The Rust output is an ordinary application-owned crate. It contains the model
 and create types, type/field/role tokens, schema fingerprints, canonical
 compiled authority, and the owner-branded `SCHEMA` package used at connection
-time. The separate authority output is for a generic server; the Rust package
-does not read it. Regenerate every output whenever the canonical Split-YAML
-schema changes; do not hand-edit generated code or JSON.
+time. Its managers and query sessions need no external JSON authority.
+Regenerate the crate whenever the canonical Split-YAML schema changes; do not
+hand-edit generated code.
 
 ## Apply the schema
 

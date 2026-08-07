@@ -9,7 +9,8 @@ semantic engine.
 Requirements:
 
 - CPython 3.12–3.14
-- TypeDB 3.11–3.12 for database operations
+- TypeDB 3.11–3.12 for generated CRUD/query operations; exactly 3.12.1 for
+  connected V2 migration apply/verify/adopt
 
 ```bash
 pip install type-bridge

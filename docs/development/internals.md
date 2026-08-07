@@ -7,9 +7,9 @@ Split-YAML workspace
   -> strict Rust schema resolution
   -> one `schema generate` workspace snapshot
   -> compiled schema authority + canonical fingerprints
-  -> generated Python / TypeScript / Rust projections with embedded authority
-  -> generated source-free generic-server authority artifact
-  -> projection registration and exact generated values
+       -> generated Python / TypeScript / Rust projections with embedded authority
+       -> optional configured source-free generic-server authority artifact
+  -> package projection registration and exact generated values
   -> Rust ORM/query/migration/provider execution
   -> typed hydrated results
 ```
@@ -20,9 +20,9 @@ projection of canonical workspace bytes.
 ## Authority and evidence
 
 `typebridge.yaml` selects a closed schema-set root, compatibility profile,
-migration directory, binding outputs, `artifacts.schema-authority.output`, and
-environments. Resolution produces canonical compiled authority. Each generated
-package embeds:
+migration directory, binding outputs, optional
+`artifacts.schema-authority.output`, and environments. Resolution produces
+canonical compiled authority. Each generated package embeds:
 
 - the versioned authority envelope, declared schema, and projection descriptor
   bytes;
@@ -37,9 +37,9 @@ package import. Registration rejects forged classes, structural lookalikes,
 changed fingerprints, duplicate/conflicting installations, and unbounded input.
 Rust binds the same evidence through its generated `SchemaPackage`.
 
-The same generation snapshot writes a byte-equivalent
-`typebridge.schema-authority/v1` artifact for the generic server. Canonical JSON
-is only its bounded language-neutral codec: it is never parsed as authored
+When configured for a generic-server deployment, the same generation snapshot
+writes a byte-equivalent `typebridge.schema-authority/v1` artifact. Canonical
+JSON is only its bounded language-neutral codec: it is never parsed as authored
 schema or maintained independently. The server reconstructs all authority
 through Rust constructors, then compares it with a schema-fenced live TypeDB
 view. Generated Python and TypeScript remote sessions instead reconstruct their

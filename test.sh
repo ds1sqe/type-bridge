@@ -332,11 +332,11 @@ if [[ "$integration" == 1 ]]; then
     run_step "type-bridge-server V1 + V2 live smoke" \
         timeout --foreground 10m \
         env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
-        cargo test --manifest-path type-bridge-core/Cargo.toml \
-            -p type-bridge-server --features v2-query \
-            --test v2_query_integration_tests \
+        bash scripts/ci/run_exact_ignored_rust_test.sh \
             production_binary_serves_v1_health_and_v2_query \
-            -- --ignored --exact --nocapture
+            --manifest-path type-bridge-core/Cargo.toml \
+            -p type-bridge-server --features v2-query \
+            --test v2_query_integration_tests
 
     printf "${BOLD}━━━ Generated Rust projection (integration) ━━━${RESET}\n\n"
     run_step "generated Rust application parity" \
@@ -344,14 +344,15 @@ if [[ "$integration" == 1 ]]; then
         env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
             TYPE_BRIDGE_RUST_PROJECTION_INTG_DATABASE="type_bridge_rust_projection_live_${$}" \
             ACCEPTANCE_TARGET_DIR="$ROOT/type-bridge-core/target/tmp_projection_live_target" \
-        cargo test --manifest-path type-bridge-core/Cargo.toml \
-            -p type-bridge-schema-codegen --test rust_projection_live \
+        bash scripts/ci/run_exact_ignored_rust_test.sh \
             generated_rust_projection_round_trips_exact_live_models \
-            -- --ignored --exact --nocapture
+            --manifest-path type-bridge-core/Cargo.toml \
+            -p type-bridge-schema-codegen --test rust_projection_live
 
     printf "${BOLD}━━━ CLI workspace lifecycle (integration) ━━━${RESET}\n\n"
     for cli_live_test in \
         empty_workspace_to_replayed_history_live \
+        documented_examples_initial_constraints_apply_and_verify_live \
         verify_never_creates_databases_live \
         adopt_legacy_history_then_evolve_live \
         shipped_python_converter_to_native_adoption_live; do
@@ -359,9 +360,9 @@ if [[ "$integration" == 1 ]]; then
             timeout --foreground 10m \
             env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
                 TYPE_BRIDGE_TEST_PYTHON="$ROOT/.venv/bin/python" \
-            cargo test --manifest-path type-bridge-core/Cargo.toml \
-                -p type-bridge-cli --test e2e_workspace_live \
-                "$cli_live_test" -- --ignored --exact --nocapture
+            bash scripts/ci/run_exact_ignored_rust_test.sh "$cli_live_test" \
+                --manifest-path type-bridge-core/Cargo.toml \
+                -p type-bridge-cli --test e2e_workspace_live
     done
 
     printf "${BOLD}━━━ Python (integration) ━━━${RESET}\n\n"
@@ -432,10 +433,10 @@ run_tls_transport_steps() {
                 TYPE_BRIDGE_RUST_PROJECTION_TLS=1 \
                 TYPE_BRIDGE_RUST_PROJECTION_INTG_DATABASE="type_bridge_rust_projection_tls_${$}" \
                 ACCEPTANCE_TARGET_DIR="$ROOT/type-bridge-core/target/tmp_projection_live_target" \
-            cargo test --manifest-path type-bridge-core/Cargo.toml \
-                -p type-bridge-schema-codegen --test rust_projection_live \
+            bash scripts/ci/run_exact_ignored_rust_test.sh \
                 generated_rust_projection_round_trips_exact_live_models \
-                -- --ignored --exact --nocapture
+                --manifest-path type-bridge-core/Cargo.toml \
+                -p type-bridge-schema-codegen --test rust_projection_live
     else
         printf "${CYAN}External TLS runtime proof is custom-root only; native-root and exact-topology assertions require the isolated 3.12.1 lane.${RESET}\n\n"
         run_step "TLS runtime HTTP + gRPC lifecycle (external custom-root)" \
@@ -453,9 +454,10 @@ run_tls_transport_steps() {
         env TYPEDB_TLS_ADDRESS="$tls_address" \
             TYPEDB_TLS_HTTP_PORT="$tls_http_port" \
             TYPEDB_TLS_ROOT_CA="$tls_root_ca" \
-        cargo test --manifest-path type-bridge-core/Cargo.toml \
-            -p type-bridge-cli --test e2e_workspace_live \
-            tls_workspace_apply_and_verify_live -- --ignored --exact --nocapture
+        bash scripts/ci/run_exact_ignored_rust_test.sh \
+            tls_workspace_apply_and_verify_live \
+            --manifest-path type-bridge-core/Cargo.toml \
+            -p type-bridge-cli --test e2e_workspace_live
 
     run_step "TLS Python local query + HTTPS remote envelope" \
         timeout --foreground 10m \

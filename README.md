@@ -49,10 +49,12 @@ type-bridge --manifest typebridge.yaml migration apply --environment development
 ```
 
 One generation snapshot writes every configured Python, TypeScript, and Rust
-package plus `artifacts.schema-authority.output`. Generated packages embed that
-verified authority for direct and remote queries; they never read the server
-artifact. A generic server mounts the same generated, source-free artifact
-instead of compiling YAML or accepting a user-maintained JSON schema.
+package. Generated packages privately embed the verified authority used by
+their managers and direct or remote queries, so ordinary applications never
+configure or read an external authority JSON. A workspace deploying the optional
+generic server can additionally configure `artifacts.schema-authority.output`;
+the server mounts that generated, source-free artifact instead of compiling
+YAML or accepting a user-maintained JSON schema.
 
 The generated Python package owns the concise single-type manager:
 

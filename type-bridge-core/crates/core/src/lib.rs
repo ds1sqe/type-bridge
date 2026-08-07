@@ -17,6 +17,10 @@
 
 #![deny(missing_docs)]
 
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+pub mod readme_doctests {}
+
 /// Frozen direct-TypeQL renderer retained behind compatibility tooling.
 #[doc(hidden)]
 #[path = "bindgen.rs"]

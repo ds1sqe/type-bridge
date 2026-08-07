@@ -6,20 +6,23 @@ is used as schema authority.
 
 ## Generate the bindings
 
-From this directory:
+From the repository root:
 
 ```bash
-type-bridge --manifest typebridge.yaml schema check
-type-bridge --manifest typebridge.yaml schema generate
-type-bridge --manifest typebridge.yaml migration make --name initial
-type-bridge --manifest typebridge.yaml migration apply --environment development
+type-bridge --manifest examples/typebridge.yaml schema check
+type-bridge --manifest examples/typebridge.yaml schema generate
+type-bridge --manifest examples/typebridge.yaml migration make --name initial
+type-bridge --manifest examples/typebridge.yaml migration apply --environment development
 ```
 
-The manifest emits Python, TypeScript, and Rust packages plus
-`generated/schema-authority.json` from one captured workspace. Generated
-packages privately embed the same verified authority; the standalone JSON file
-is only the source-free generic-server deployment artifact and is never edited
-as schema input.
+Set `TYPEDB_USERNAME` and `TYPEDB_PASSWORD` for the local TypeDB server before
+the connected `migration apply` command. The preceding check, generation, and
+migration authoring commands remain offline.
+
+The manifest emits Python, TypeScript, and Rust packages from one captured
+workspace. Each package privately embeds the same verified authority, so its
+generated managers and query sessions need no standalone JSON file.
+
 For the Python examples, expose the generated package and run any journey:
 
 ```bash
@@ -46,7 +49,7 @@ come from `app_models`, the generated package. Connection primitives come from
   constraints, abstract types, inheritance, optional and multivalue ownership,
   relations, role cardinality, and `plays` facts.
 - [`typebridge.yaml`](typebridge.yaml) is the sole active schema, migration, and
-  generation configuration, including the generic-server authority output.
+  generation configuration for these application examples.
 - `schema check` reports reserved labels, invalid cardinality, ownership, and
   role-player errors before generation.
 

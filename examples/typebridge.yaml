@@ -21,16 +21,12 @@ bindings:
   rust:
     output: generated/rust
 
-artifacts:
-  schema-authority:
-    output: generated/schema-authority.json
-
 environments:
   development:
     database: typebridge-examples
     uri: localhost:1729
     tls: 'false'
-    migrate: 'false'
+    migrate: 'true'
     credential:
       username: env:TYPEDB_USERNAME
       password: env:TYPEDB_PASSWORD

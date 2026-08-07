@@ -326,6 +326,6 @@ cargo run --manifest-path type-bridge-core/Cargo.toml \
 ```
 
 `schema check` is read-only and offline. `schema generate` writes every
-configured binding plus the server authority artifact without contacting
-TypeDB. Migration authoring and connected migration commands remain separate
-explicit operations.
+configured binding plus the configured server authority artifact without
+contacting TypeDB. Migration authoring and connected migration commands remain
+separate explicit operations.

@@ -11,9 +11,7 @@ use std::collections::BTreeSet;
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory};
 use type_bridge_contract::migration::{MigrationId, MigrationManifestDigest, MigrationStepId};
 use type_bridge_contract::schema::{DeclaredSchema, ManagedSchemaState, SchemaDelta};
-use type_bridge_schema::{
-    ManagedDeltaContext, SafetyClass, SafetyDerivationProfile, apply_delta, classify_delta_safety,
-};
+use type_bridge_schema::{ManagedDeltaContext, SafetyClass, SafetyDerivationProfile, apply_delta};
 
 use crate::apply_plan::{MigrationApplyPlanError, coherent_frontier_state, contract_failure};
 use crate::history::MigrationHistoryGraph;
@@ -286,11 +284,9 @@ pub fn build_verified_migration_rollback_plan(
                 )
                 .into());
             }
-            let report = classify_delta_safety(reverse);
-            rollback_safety = rollback_safety.max(report.classification());
-
             let coverage =
                 verify_assertion_coverage(&[], reverse, step_target, &restored, &safety_profile)?;
+            rollback_safety = rollback_safety.max(coverage.effective_safety());
             let source_catalog = SchemaFactCatalog::new(step_target.facts().cloned())?;
             let target_catalog = SchemaFactCatalog::new(restored.facts().cloned())?;
             steps.push((
@@ -298,7 +294,7 @@ pub fn build_verified_migration_rollback_plan(
                 reverse.clone(),
                 source_catalog,
                 target_catalog,
-                coverage.conditional_operation_indices().to_vec(),
+                coverage.discharged_operation_indices().to_vec(),
             ));
         }
 

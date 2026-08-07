@@ -378,7 +378,7 @@ pub(crate) fn lower_schema_delta_with_verified_assertions(
     source_facts: &SchemaFactCatalog,
     target_facts: &SchemaFactCatalog,
     binding: &SchemaLoweringBinding,
-    conditional_operation_indices: &[usize],
+    discharged_operation_indices: &[usize],
     destructive_approved: bool,
 ) -> Result<SchemaLoweringPlan, SchemaLoweringDiagnostic> {
     if !source_facts.matches_selection(delta.source().selection())
@@ -389,16 +389,16 @@ pub(crate) fn lower_schema_delta_with_verified_assertions(
             "source or target fact catalog does not match the delta managed selection",
         ));
     }
-    if conditional_operation_indices
+    if discharged_operation_indices
         .windows(2)
         .any(|pair| pair[0] >= pair[1])
-        || conditional_operation_indices
+        || discharged_operation_indices
             .last()
             .is_some_and(|index| *index >= delta.operations().len())
     {
         return Err(SchemaLoweringDiagnostic::new(
             CODE_CONTEXT_MISMATCH,
-            "verified conditional operation indices are not canonical for this delta",
+            "verified discharged operation indices are not canonical for this delta",
         ));
     }
     let units = delta
@@ -412,7 +412,7 @@ pub(crate) fn lower_schema_delta_with_verified_assertions(
                 source_facts,
                 target_facts,
                 binding,
-                conditional_operation_indices.binary_search(&index).is_ok(),
+                discharged_operation_indices.binary_search(&index).is_ok(),
                 destructive_approved,
             )
         })
@@ -431,7 +431,7 @@ fn lower_operation(
     source_facts: &SchemaFactCatalog,
     target_facts: &SchemaFactCatalog,
     binding: &SchemaLoweringBinding,
-    conditional_resolved: bool,
+    verifier_resolved: bool,
     destructive_approved: bool,
 ) -> Result<StatementUnit, SchemaLoweringDiagnostic> {
     let classification = classify_operation_transition(operation).map_err(|error| {
@@ -455,7 +455,7 @@ fn lower_operation(
     gate_safety(
         operation_index,
         classification.safety,
-        conditional_resolved,
+        verifier_resolved,
         destructive_approved,
     )?;
     let statements = render_operation(operation_index, operation, source_facts, target_facts)?;
@@ -473,13 +473,18 @@ fn lower_operation(
 fn gate_safety(
     operation_index: usize,
     safety: SafetyClass,
-    conditional_resolved: bool,
+    verifier_resolved: bool,
     destructive_approved: bool,
 ) -> Result<(), SchemaLoweringDiagnostic> {
-    if conditional_resolved && safety != SafetyClass::Conditional {
+    if verifier_resolved
+        && !matches!(
+            safety,
+            SafetyClass::Conditional | SafetyClass::BackfillRequired
+        )
+    {
         return Err(SchemaLoweringDiagnostic::new(
             CODE_INVALID_TRANSITION,
-            "assertion coverage targets a non-conditional schema operation",
+            "verifier resolution targets an operation outside the resolvable safety classes",
         )
         .at_operation(operation_index)
         .with_safety(safety));
@@ -488,11 +493,12 @@ fn gate_safety(
         SafetyClass::FormalOnly | SafetyClass::SchemaMetadata | SafetyClass::Additive => {
             return Ok(());
         }
-        SafetyClass::Conditional if conditional_resolved => return Ok(()),
+        SafetyClass::Conditional if verifier_resolved => return Ok(()),
         SafetyClass::Conditional => (
             CODE_REQUIRES_ASSERTION,
             "schema transition requires an explicit data assertion",
         ),
+        SafetyClass::BackfillRequired if verifier_resolved => return Ok(()),
         SafetyClass::BackfillRequired => (
             CODE_REQUIRES_BACKFILL,
             "schema transition requires an explicit backfill plan",
@@ -1551,5 +1557,54 @@ mod tests {
         assert!(gate_safety(0, SafetyClass::BackfillRequired, false, true).is_err());
         assert!(gate_safety(0, SafetyClass::Unsupported, false, true).is_err());
         assert!(gate_safety(0, SafetyClass::Conditional, false, true).is_err());
+    }
+
+    #[test]
+    fn backfill_gate_requires_verifier_discharge_and_retains_raw_unit_safety() {
+        let person = type_id(TypeKind::Entity, "person");
+        let owns = OwnsFactId::new(person, attribute_id("name")).unwrap();
+        let owns_fact = SchemaFact::Owns(OwnsFact::new(owns.clone()));
+        let target = SchemaFactCatalog::new([owns_fact]).unwrap();
+        let key = annotation(
+            AnnotationSubjectId::Owns(owns),
+            AnnotationKindId::Key,
+            SchemaAnnotationValue::Presence,
+        );
+        let operation = SchemaOperation::define(vec![key]).unwrap();
+
+        let unverified = lower_operation(
+            0,
+            &operation,
+            &SchemaFactCatalog::empty(),
+            &target,
+            &full_binding(),
+            false,
+            false,
+        )
+        .expect_err("an unverified backfill operation must stay closed");
+        assert_eq!(unverified.code(), CODE_REQUIRES_BACKFILL);
+
+        let verified = lower_operation(
+            0,
+            &operation,
+            &SchemaFactCatalog::empty(),
+            &target,
+            &full_binding(),
+            true,
+            false,
+        )
+        .expect("exact verifier discharge admits the operation");
+        assert_eq!(verified.safety(), SafetyClass::BackfillRequired);
+
+        for safety in [
+            SafetyClass::FormalOnly,
+            SafetyClass::SchemaMetadata,
+            SafetyClass::Additive,
+            SafetyClass::Destructive,
+            SafetyClass::Opaque,
+            SafetyClass::Unsupported,
+        ] {
+            assert!(gate_safety(0, safety, true, false).is_err());
+        }
     }
 }

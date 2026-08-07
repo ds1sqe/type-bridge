@@ -62,7 +62,9 @@ use crate::observation::{
     ManagedObservationAuthority, observe_managed_state_from_export_with_authority,
     rebuild_live_managed_state_with_authority,
 };
-use crate::provider::{TypeDbMigrationProvider, execution_capability_vocabulary};
+use crate::provider::{
+    TypeDbExecutionBinding, TypeDbMigrationProvider, execution_capability_vocabulary,
+};
 use crate::store::{TypeDbMigrationStore, VerifiedMigrationCatalog, require_active_managed_fence};
 
 /// Result of one directory apply pass.
@@ -116,7 +118,11 @@ impl From<MigrationApplyPlanError> for MigrationDirectoryApplyError {
 }
 
 /// Apply orchestrator bound to one managed/journal database pair.
+///
+/// The runner creates one process-local [`TypeDbExecutionBinding`] at
+/// construction and reuses it for every store and provider it composes.
 pub struct TypeDbMigrationRunner {
+    execution_binding: TypeDbExecutionBinding,
     managed_database: Arc<Database>,
     journal_database: Arc<Database>,
     genesis_source: DeclaredSchema,
@@ -1298,7 +1304,8 @@ impl TypeDbMigrationRunner {
     /// `genesis_source` is the schema every parentless manifest verifies
     /// against — the empty declared schema unless the scope was adopted with
     /// pre-managed content. Pair-name derivation, capability coherence, and
-    /// server-version gates are enforced by the store, planner, and provider
+    /// server-version gates are enforced before connected execution. One local
+    /// execution binding is created here and reused by every store and provider
     /// this runner composes.
     pub fn new(
         managed_database: Arc<Database>,
@@ -1308,7 +1315,13 @@ impl TypeDbMigrationRunner {
         lowering_binding: SchemaLoweringBinding,
         policy: MigrationSafetyPolicy,
     ) -> Self {
+        let execution_binding = TypeDbExecutionBinding::new_unchecked(
+            Arc::clone(&managed_database),
+            Arc::clone(&journal_database),
+            context.clone(),
+        );
         Self {
+            execution_binding,
             managed_database,
             journal_database,
             genesis_source,
@@ -1316,6 +1329,10 @@ impl TypeDbMigrationRunner {
             lowering_binding,
             policy,
         }
+    }
+
+    fn require_supported_execution_binding(&self) -> Result<(), Diagnostic> {
+        self.execution_binding.require_supported()
     }
 
     /// Discover and replay-verify the canonical chain in one directory.
@@ -1374,18 +1391,14 @@ impl TypeDbMigrationRunner {
         holder: &LeaseHolderId,
         approvals: &[MigrationApplyApproval],
     ) -> Result<MigrationDirectoryApplyOutcome, MigrationDirectoryApplyError> {
+        self.require_supported_execution_binding()?;
         let graph = self.discover_in(directory)?;
         let adopted_authority = self.verify_adopted_extension_state(directory).await?;
         require_adoption_authority_pair(&graph, adopted_authority.is_some())?;
         let observation_authority =
             ManagedObservationAuthority::from_adopted(adopted_authority.as_ref());
         let catalog = VerifiedMigrationCatalog::new(graph.manifests().map(|(_, m)| m))?;
-        let store = TypeDbMigrationStore::new(
-            Arc::clone(&self.managed_database),
-            Arc::clone(&self.journal_database),
-            self.context.scope_id().clone(),
-            catalog,
-        )?;
+        let store = TypeDbMigrationStore::new(&self.execution_binding, catalog)?;
         store.ensure_control_schema().await?;
 
         let basis = self.load_applied_basis(&store, holder).await?;
@@ -1445,7 +1458,7 @@ impl TypeDbMigrationRunner {
             LegacyExecutionBinding::Absent => store.bind_plan(&plan)?,
         };
         let provider = TypeDbMigrationProvider::new_with_legacy_binding(
-            Arc::clone(&self.managed_database),
+            &self.execution_binding,
             legacy_binding.clone(),
             self.context.scope_id().as_str().to_owned(),
             observation_authority.clone(),
@@ -1490,18 +1503,14 @@ impl TypeDbMigrationRunner {
         directory: &MigrationDirectory,
         desired: Option<&DeclaredSchema>,
     ) -> Result<MigrationVerifyReport, MigrationDirectoryApplyError> {
+        self.require_supported_execution_binding()?;
         let graph = self.discover_in(directory)?;
         let adopted_authority = self.verify_adopted_extension_state(directory).await?;
         require_adoption_authority_pair(&graph, adopted_authority.is_some())?;
         let observation_authority =
             ManagedObservationAuthority::from_adopted(adopted_authority.as_ref());
         let catalog = VerifiedMigrationCatalog::new(graph.manifests().map(|(_, m)| m))?;
-        let store = TypeDbMigrationStore::new(
-            Arc::clone(&self.managed_database),
-            Arc::clone(&self.journal_database),
-            self.context.scope_id().clone(),
-            catalog,
-        )?;
+        let store = TypeDbMigrationStore::new(&self.execution_binding, catalog)?;
         let scope = ExecutionScope::new(self.context.scope_id().clone());
         let basis: BTreeSet<MigrationId> = store
             .load_applied_read_only(&scope)
@@ -1590,6 +1599,7 @@ impl TypeDbMigrationRunner {
         canonical_directory: &MigrationDirectory,
         holder: &LeaseHolderId,
     ) -> Result<MigrationDirectoryApplyOutcome, MigrationDirectoryApplyError> {
+        self.require_supported_execution_binding()?;
         let legacy_history = load_adoption_history(legacy_directory).map_err(|error| {
             legacy_import_failure(
                 "migration_legacy_import_load_failed",
@@ -1626,6 +1636,7 @@ impl TypeDbMigrationRunner {
         canonical_directory: &MigrationDirectory,
         holder: &LeaseHolderId,
     ) -> Result<MigrationDirectoryApplyOutcome, MigrationDirectoryApplyError> {
+        self.require_supported_execution_binding()?;
         let reconstructed_authority = Arc::new(parse_adopted_genesis_authority(
             DocumentId::new("typebridge-legacy-reconstructed-head.typeql")?,
             reconstructed.schema_typeql(),
@@ -1759,7 +1770,7 @@ impl TypeDbMigrationRunner {
         if let Some(target_schema) = preflight_plan.target_schema() {
             reconstructed_authority.ensure_released_extension_subjects_survive(target_schema)?;
         }
-        TypeDbMigrationProvider::new(Arc::clone(&self.managed_database))?;
+        TypeDbMigrationProvider::new(&self.execution_binding)?;
         legacy_history
             .require_unchanged_head(reconstructed)
             .map_err(|error| {
@@ -1771,12 +1782,7 @@ impl TypeDbMigrationRunner {
             })?;
 
         let catalog = VerifiedMigrationCatalog::new(graph.manifests().map(|(_, m)| m))?;
-        let store = TypeDbMigrationStore::new(
-            Arc::clone(&self.managed_database),
-            Arc::clone(&self.journal_database),
-            self.context.scope_id().clone(),
-            catalog,
-        )?;
+        let store = TypeDbMigrationStore::new(&self.execution_binding, catalog)?;
         store.ensure_control_schema().await?;
         let basis = self.load_applied_basis(&store, holder).await?;
         let active_binding = LegacyExecutionBinding::from_applied_graph(
@@ -1837,7 +1843,7 @@ impl TypeDbMigrationRunner {
         }
         let store = store.bind_legacy_import_plan(&plan)?;
         let provider = TypeDbMigrationProvider::new_with_observation_authority(
-            Arc::clone(&self.managed_database),
+            &self.execution_binding,
             observation_authority,
         )?;
         let guarded_store = LegacyCheckpointStore::new(
@@ -1887,18 +1893,14 @@ impl TypeDbMigrationRunner {
         holder: &LeaseHolderId,
         approvals: &[MigrationApplyApproval],
     ) -> Result<MigrationDirectoryRollbackOutcome, MigrationDirectoryApplyError> {
+        self.require_supported_execution_binding()?;
         let graph = self.discover_in(directory)?;
         let adopted_authority = self.verify_adopted_extension_state(directory).await?;
         require_adoption_authority_pair(&graph, adopted_authority.is_some())?;
         let observation_authority =
             ManagedObservationAuthority::from_adopted(adopted_authority.as_ref());
         let catalog = VerifiedMigrationCatalog::new(graph.manifests().map(|(_, m)| m))?;
-        let store = TypeDbMigrationStore::new(
-            Arc::clone(&self.managed_database),
-            Arc::clone(&self.journal_database),
-            self.context.scope_id().clone(),
-            catalog,
-        )?;
+        let store = TypeDbMigrationStore::new(&self.execution_binding, catalog)?;
         store.ensure_control_schema().await?;
 
         let basis = self.load_applied_basis(&store, holder).await?;
@@ -1959,7 +1961,7 @@ impl TypeDbMigrationRunner {
             LegacyExecutionBinding::Absent => store.bind_rollback_plan(&plan)?,
         };
         let provider = TypeDbMigrationProvider::new_with_legacy_binding(
-            Arc::clone(&self.managed_database),
+            &self.execution_binding,
             legacy_binding.clone(),
             self.context.scope_id().as_str().to_owned(),
             observation_authority.clone(),
@@ -2783,13 +2785,290 @@ fn open_canonical_directory(path: &Path) -> Result<MigrationDirectory, Diagnosti
 #[cfg(test)]
 mod tests {
     use std::collections::VecDeque;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
+    use type_bridge_contract::codec::FormatVersion;
+    use type_bridge_contract::fingerprint::SemanticProfileId;
+    use type_bridge_contract::managed_scope::ManagedScopeId;
+    use type_bridge_orm::DatabaseConnectionAuthority;
     use type_bridge_orm::session::backend::{
         BoxFuture, DriverBackend, QueryResult, TransactionOps, TxType,
     };
 
     use super::*;
+
+    struct NoIoRunnerBackend {
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl DriverBackend for NoIoRunnerBackend {
+        fn open_transaction(
+            &self,
+            _database: &str,
+            _tx_type: TxType,
+        ) -> BoxFuture<'_, Result<Box<dyn TransactionOps>, OrmError>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Err(OrmError::Connection("unexpected backend I/O".to_owned())) })
+        }
+
+        fn is_open(&self) -> bool {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            true
+        }
+
+        fn close_connection(&self) -> Result<(), OrmError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Err(OrmError::Connection("unexpected backend I/O".to_owned()))
+        }
+
+        fn database_exists(&self, _database: &str) -> BoxFuture<'_, Result<bool, OrmError>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Err(OrmError::Connection("unexpected backend I/O".to_owned())) })
+        }
+
+        fn create_database(&self, _database: &str) -> BoxFuture<'_, Result<(), OrmError>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Err(OrmError::Connection("unexpected backend I/O".to_owned())) })
+        }
+
+        fn delete_database(&self, _database: &str) -> BoxFuture<'_, Result<(), OrmError>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Err(OrmError::Connection("unexpected backend I/O".to_owned())) })
+        }
+
+        fn schema_text(&self, _database: &str) -> BoxFuture<'_, Result<String, OrmError>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Err(OrmError::Connection("unexpected backend I/O".to_owned())) })
+        }
+    }
+
+    struct GateTempDirectory(PathBuf);
+
+    impl GateTempDirectory {
+        fn new() -> Self {
+            static NEXT: AtomicUsize = AtomicUsize::new(0);
+            let unique = NEXT.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "typebridge-runner-binding-gate-{}-{unique}",
+                std::process::id()
+            ));
+            fs::create_dir(&path).expect("create runner gate fixture directory");
+            Self(path)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for GateTempDirectory {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn empty_declared_schema() -> DeclaredSchema {
+        DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), std::iter::empty())
+            .expect("empty declared schema")
+    }
+
+    fn no_io_runner_with_pair(
+        profile: &str,
+        journal_name: &str,
+        shared_authority: bool,
+    ) -> (TypeDbMigrationRunner, Arc<AtomicUsize>) {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let managed_authority = DatabaseConnectionAuthority::isolated();
+        let journal_authority = if shared_authority {
+            managed_authority.clone()
+        } else {
+            DatabaseConnectionAuthority::isolated()
+        };
+        let managed = Arc::new(Database::with_backend_authority(
+            Box::new(NoIoRunnerBackend {
+                calls: Arc::clone(&calls),
+            }),
+            "managed",
+            managed_authority,
+        ));
+        let journal = Arc::new(Database::with_backend_authority(
+            Box::new(NoIoRunnerBackend {
+                calls: Arc::clone(&calls),
+            }),
+            journal_name,
+            journal_authority,
+        ));
+        let capabilities = execution_capability_vocabulary().expect("execution capabilities");
+        let context = ManagedDeltaContext::new(
+            ManagedScopeId::new("runner-binding-gate").expect("managed scope"),
+            SemanticProfileId::new(profile).expect("semantic profile"),
+            capabilities.clone(),
+        );
+        let lowering =
+            SchemaLoweringBinding::current(capabilities).expect("schema lowering binding");
+        (
+            TypeDbMigrationRunner::new(
+                managed,
+                journal,
+                empty_declared_schema(),
+                context,
+                lowering,
+                MigrationSafetyPolicy::default_policy(),
+            ),
+            calls,
+        )
+    }
+
+    fn no_io_runner(profile: &str) -> (TypeDbMigrationRunner, Arc<AtomicUsize>) {
+        no_io_runner_with_pair(profile, "managed__tbv2_journal", true)
+    }
+
+    fn assert_apply_diagnostic_code(error: MigrationDirectoryApplyError, expected: &str) {
+        let MigrationDirectoryApplyError::Diagnostic(error) = error else {
+            panic!("expected diagnostic {expected}, got plan error");
+        };
+        assert_eq!(error.code().as_str(), expected);
+    }
+
+    async fn assert_every_connected_runner_path_rejects_without_database_io(
+        runner: &TypeDbMigrationRunner,
+        calls: &AtomicUsize,
+        expected: &str,
+    ) {
+        let temp = GateTempDirectory::new();
+        let directory =
+            MigrationDirectory::open_ambient(temp.path()).expect("open fixture directory");
+        let holder = LeaseHolderId::new("runner-binding-gate").expect("lease holder");
+        let target = MigrationApplyTarget::DefaultHead;
+        let removals = BTreeSet::new();
+        let missing_legacy = temp.path().join("missing-legacy");
+
+        let error = runner
+            .apply_in(&directory, &target, &holder, &[])
+            .await
+            .expect_err("apply-in must reject the execution binding");
+        assert_apply_diagnostic_code(error, expected);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+        let error = runner
+            .apply(temp.path(), &target, &holder, &[])
+            .await
+            .expect_err("path apply must reject the execution binding");
+        assert_apply_diagnostic_code(error, expected);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+        let error = runner
+            .verify_in(&directory, None)
+            .await
+            .expect_err("verify-in must reject the execution binding");
+        assert_apply_diagnostic_code(error, expected);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+        let error = runner
+            .verify(temp.path(), None)
+            .await
+            .expect_err("path verify must reject the execution binding");
+        assert_apply_diagnostic_code(error, expected);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+        let error = runner
+            .import_legacy_frontier_in(&missing_legacy, &directory, &holder)
+            .await
+            .expect_err("legacy import-in must reject the binding before archive loading");
+        assert_apply_diagnostic_code(error, expected);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+        let error = runner
+            .import_legacy_frontier(&missing_legacy, temp.path(), &holder)
+            .await
+            .expect_err("path legacy import must reject the binding before archive loading");
+        assert_apply_diagnostic_code(error, expected);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+        let error = runner
+            .rollback_in(&directory, &removals, &holder, &[])
+            .await
+            .expect_err("rollback-in must reject the execution binding");
+        assert_apply_diagnostic_code(error, expected);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+        let error = runner
+            .rollback(temp.path(), &removals, &holder, &[])
+            .await
+            .expect_err("path rollback must reject the execution binding");
+        assert_apply_diagnostic_code(error, expected);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn every_connected_runner_path_preserves_binding_gate_order_without_database_io() {
+        let (profile_runner, profile_calls) =
+            no_io_runner_with_pair("typedb-3.11.5/v1", "wrong-journal", false);
+        assert_every_connected_runner_path_rejects_without_database_io(
+            &profile_runner,
+            &profile_calls,
+            "migration_typedb_semantic_profile_unsupported",
+        )
+        .await;
+
+        let (pair_runner, pair_calls) =
+            no_io_runner_with_pair("typedb-3.12.1/v1", "managed__tbv2_journal", false);
+        assert_every_connected_runner_path_rejects_without_database_io(
+            &pair_runner,
+            &pair_calls,
+            "migration_typedb_database_authority_mismatch",
+        )
+        .await;
+
+        let (server_runner, server_calls) = no_io_runner("typedb-3.12.1/v1");
+        assert_every_connected_runner_path_rejects_without_database_io(
+            &server_runner,
+            &server_calls,
+            "migration_typedb_server_version_unknown",
+        )
+        .await;
+    }
+
+    #[test]
+    fn runner_binding_checks_server_only_after_exact_profile_without_database_io() {
+        let (runner, calls) = no_io_runner("typedb-3.12.1/v1");
+        let error = runner
+            .require_supported_execution_binding()
+            .expect_err("missing negotiated server identity must reject");
+        assert_eq!(
+            error.code().as_str(),
+            "migration_typedb_server_version_unknown"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn runner_binding_rejects_every_pair_identity_mismatch_without_database_io() {
+        for (journal_name, shared_authority, expected) in [
+            (
+                "managed__tbv2_journal",
+                false,
+                "migration_typedb_database_authority_mismatch",
+            ),
+            ("managed", true, "migration_typedb_database_pair_alias"),
+            (
+                "other__tbv2_journal",
+                true,
+                "migration_typedb_journal_database_name_mismatch",
+            ),
+        ] {
+            let (runner, calls) =
+                no_io_runner_with_pair("typedb-3.12.1/v1", journal_name, shared_authority);
+            let error = runner
+                .require_supported_execution_binding()
+                .expect_err("invalid pair identity must reject inside the execution gate");
+            assert_eq!(error.code().as_str(), expected);
+            assert_eq!(calls.load(Ordering::SeqCst), 0);
+        }
+    }
 
     fn adopted_authority(source: &str) -> AdoptedGenesisAuthority {
         parse_adopted_genesis_authority(

@@ -23,6 +23,11 @@ RECOVERY_PAYLOAD_VALIDATOR = REPO_ROOT / "scripts/ci/validate_release_recovery_p
 RECOVERY_MANIFEST = REPO_ROOT / ".github/release/v2.0.0-recovery.json"
 RECOVERY_MANIFEST_SHA256 = "f8d5b2d04ad01a45694aecdd171846443bfd511a9363ab771e5f182c6bd17d2d"
 STABLE_PUBLICATION_GUARD = "if: github.event_name == 'push' && github.ref == 'refs/tags/v2.1.0'"
+QEMU_ACTION = "docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130"
+QEMU_BINFMT_IMAGE = (
+    "docker.io/tonistiigi/binfmt@"
+    "sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0"
+)
 RECOVERY_MUTATING_JOBS = (
     "publish-server-oci",
     "publish-node-npm",
@@ -106,6 +111,18 @@ def test_core_artifact_builders_pin_the_validated_maturin_contract() -> None:
         suffix.split("\n      - name:", maxsplit=1)[0] for suffix in release.split(action)[1:]
     ]
     assert all(version in step and rust_toolchain in step for step in release_steps)
+
+
+def test_qemu_actions_pin_the_exact_binfmt_runtime() -> None:
+    """Cross-platform build and acceptance jobs must not inherit a mutable image."""
+    for workflow_path in (CI_WORKFLOW, RELEASE_WORKFLOW):
+        workflow = workflow_path.read_text(encoding="utf-8")
+        assert workflow.count(QEMU_ACTION) == 1
+        qemu_step = workflow.split(QEMU_ACTION, maxsplit=1)[1].split("\n      - name:", maxsplit=1)[
+            0
+        ]
+        assert f"image: {QEMU_BINFMT_IMAGE}" in qemu_step
+        assert "tonistiigi/binfmt:latest" not in workflow
 
 
 def test_core_metadata_advertises_only_the_supported_python_implementation() -> None:
@@ -1241,13 +1258,16 @@ def test_live_cli_workspace_state_machine_is_required_locally_and_in_ci() -> Non
     test_script = (REPO_ROOT / "test.sh").read_text(encoding="utf-8")
     tests = (
         "empty_workspace_to_replayed_history_live",
+        "documented_examples_initial_constraints_apply_and_verify_live",
         "verify_never_creates_databases_live",
         "adopt_legacy_history_then_evolve_live",
         "shipped_python_converter_to_native_adoption_live",
     )
     rust_integration = job_block(ci, "rust-integration")
     for test in tests:
-        assert f"          {test}\n          -- --ignored --exact --nocapture" in rust_integration
+        assert f"          {test}\n          --manifest-path" in rust_integration
+    assert rust_integration.count("scripts/ci/run_exact_ignored_rust_test.sh") == len(tests) + 2
+    assert "unsupported_server_apply_creates_neither_database_live" in rust_integration
 
     loop = re.search(
         r"for cli_live_test in \\\n(?P<tests>.*?); do\n(?P<body>.*?)\n    done",
@@ -1257,7 +1277,7 @@ def test_live_cli_workspace_state_machine_is_required_locally_and_in_ci() -> Non
     assert loop is not None
     selected_tests = set(re.findall(r"^        ([a-z0-9_]+)(?: \\)?$", loop["tests"], re.MULTILINE))
     assert selected_tests == set(tests)
-    assert '"$cli_live_test" -- --ignored --exact --nocapture' in loop["body"]
+    assert 'run_exact_ignored_rust_test.sh "$cli_live_test"' in loop["body"]
     assert 'TYPE_BRIDGE_TEST_PYTHON="$ROOT/.venv/bin/python"' in loop["body"]
     assert "timeout-minutes: 30" in rust_integration
     assert "uv sync --no-dev" in rust_integration

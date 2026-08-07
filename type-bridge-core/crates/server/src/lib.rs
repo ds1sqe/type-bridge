@@ -47,6 +47,10 @@
 //! - **[`SchemaSource`](schema_source::SchemaSource)** — implement to load
 //!   TypeQL schemas from custom sources.
 
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+pub mod readme_doctests {}
+
 /// Standalone server configuration and bounded material loading.
 pub mod config;
 /// Errors returned by the query pipeline and transports.

@@ -14,11 +14,9 @@ Integrators should start with the released-syntax parsers and shadow-report
 types in the [crate API](https://docs.rs/type-bridge-schema-compat/2.1.0). Treat
 a matching shadow report only as evidence for the explicitly shared domain.
 
-This crate is released in lockstep with TypeBridge 2.1.0, requires Rust 1.88+,
-and evaluates schemas against the TypeDB 3.12.1 V2 semantic baseline. The wider
-runtime supports TypeDB 3.11.x–3.12.x.
-
-## Shadow policy
+This crate has no optional features. It is released in lockstep with TypeBridge
+2.1.0, requires Rust 1.88+, and evaluates schemas against the TypeDB 3.12.1 V2
+semantic baseline. The wider runtime supports TypeDB 3.11.x–3.12.x.
 
 ## Corpus completion criterion
 

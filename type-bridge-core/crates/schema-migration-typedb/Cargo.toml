@@ -26,6 +26,7 @@ type-bridge-schema-migration = { path = "../schema-migration", version = "2.1.0"
 
 [dev-dependencies]
 tokio = { version = "1.48", features = ["macros", "rt-multi-thread", "time"] }
+type-bridge-core-lib = { path = "../core", version = "2.1.0" }
 
 [lints]
 workspace = true

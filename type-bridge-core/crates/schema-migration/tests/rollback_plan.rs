@@ -7,15 +7,18 @@ use common::{CoordinatorProvider, CoordinatorStore, block_on};
 use type_bridge_contract::capability::{CapabilityId, CapabilitySet};
 use type_bridge_contract::codec::FormatVersion;
 use type_bridge_contract::fingerprint::SemanticProfileId;
-use type_bridge_contract::id::{TypeId, TypeKind};
+use type_bridge_contract::id::{AttributeId, TypeId, TypeKind};
 use type_bridge_contract::managed_scope::ManagedScopeId;
 use type_bridge_contract::migration::{
     MigrationAppLabel, MigrationId, MigrationName, MigrationStepId, SchemaDeltaStep,
 };
 use type_bridge_contract::migration_assertion::migration_assertion_capability_vocabulary;
 use type_bridge_contract::schema::{
-    DeclaredSchema, DocumentId, SchemaFact, SourceSpan, SourcedSchemaFact, TypeFact,
+    AnnotationFact, AnnotationFactId, AnnotationKindId, AnnotationSubjectId, DeclaredSchema,
+    DocumentId, OwnsFact, OwnsFactId, SchemaAnnotationValue, SchemaFact, SourceSpan,
+    SourcedSchemaFact, TypeFact, ValueFact, ValueFactId,
 };
+use type_bridge_contract::value::ValueTypeTag;
 use type_bridge_schema::{
     BUILTIN_SCHEMA_CAPABILITY_IDS, ManagedDeltaContext, SafetyClass, diff_managed, inverse_delta,
 };
@@ -45,14 +48,18 @@ fn type_fact(label: &str) -> SchemaFact {
 }
 
 fn declared(labels: &[&str]) -> DeclaredSchema {
-    let sourced = labels
-        .iter()
+    declared_facts(labels.iter().map(|label| type_fact(label)).collect())
+}
+
+fn declared_facts(facts: Vec<SchemaFact>) -> DeclaredSchema {
+    let sourced = facts
+        .into_iter()
         .enumerate()
-        .map(|(index, label)| {
+        .map(|(index, fact)| {
             let offset = u64::try_from(index).expect("fixture offset");
             let line = u32::try_from(index + 1).expect("fixture line");
             SourcedSchemaFact::new(
-                type_fact(label),
+                fact,
                 SourceSpan::new(
                     DocumentId::new("rollback-fixture").expect("fixture document"),
                     offset,
@@ -68,6 +75,34 @@ fn declared(labels: &[&str]) -> DeclaredSchema {
         .collect::<Vec<_>>();
     DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced)
         .expect("fixture schema")
+}
+
+fn constrained_person() -> DeclaredSchema {
+    let person = TypeId::new(TypeKind::Entity, "person").expect("fixture person");
+    let identifier = AttributeId::new("identifier").expect("fixture attribute");
+    let owns = OwnsFactId::new(person.clone(), identifier.clone()).expect("fixture owns");
+    declared_facts(vec![
+        SchemaFact::Type(TypeFact::new(person).expect("fixture person fact")),
+        SchemaFact::Type(
+            TypeFact::new(
+                TypeId::new(TypeKind::Attribute, identifier.label().as_str())
+                    .expect("fixture attribute type"),
+            )
+            .expect("fixture attribute type fact"),
+        ),
+        SchemaFact::Value(ValueFact::new(
+            ValueFactId::new(identifier),
+            ValueTypeTag::String,
+        )),
+        SchemaFact::Owns(OwnsFact::new(owns.clone())),
+        SchemaFact::Annotation(
+            AnnotationFact::new(
+                AnnotationFactId::new(AnnotationSubjectId::Owns(owns), AnnotationKindId::Key),
+                SchemaAnnotationValue::Presence,
+            )
+            .expect("fixture key annotation"),
+        ),
+    ])
 }
 
 fn capabilities() -> CapabilitySet {
@@ -151,6 +186,48 @@ fn two_step_chain() -> Chain {
 
 fn applied_both(chain: &Chain) -> BTreeSet<MigrationId> {
     BTreeSet::from([chain.first.id().clone(), chain.second.id().clone()])
+}
+
+#[test]
+fn rollback_recreates_a_removed_constrained_domain_without_backfill_approval() {
+    let constrained = constrained_person();
+    let empty = declared(&[]);
+    let context = context();
+    let removed = manifest(
+        "0001_remove_constrained",
+        Vec::new(),
+        &constrained,
+        &empty,
+        &context,
+        true,
+    );
+    assert!(removed.reversible());
+    let graph = MigrationHistoryGraph::from_verified([removed.clone()]).expect("history");
+    let lowering =
+        SchemaLoweringBinding::current(context.available_capabilities().clone()).expect("lowering");
+    let plan = build_verified_migration_rollback_plan(
+        &graph,
+        &BTreeSet::from([removed.id().clone()]),
+        &BTreeSet::from([removed.id().clone()]),
+        &context,
+        &lowering,
+        &MigrationSafetyPolicy::default_policy(),
+        &[],
+    )
+    .expect("an empty reverse source domain needs no backfill approval");
+
+    let rollback = &plan.rollbacks()[0];
+    assert_eq!(rollback.rollback_safety(), SafetyClass::Conditional);
+    assert_eq!(
+        rollback.steps()[0]
+            .lowering()
+            .units()
+            .iter()
+            .filter(|unit| unit.safety() == SafetyClass::BackfillRequired)
+            .count(),
+        1,
+        "the key unit retains its raw profile classification",
+    );
 }
 
 #[test]

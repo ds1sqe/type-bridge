@@ -6,6 +6,10 @@
 
 #![deny(missing_docs)]
 
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+pub mod readme_doctests {}
+
 mod emit;
 mod model;
 mod validate;

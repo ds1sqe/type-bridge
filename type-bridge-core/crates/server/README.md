@@ -7,7 +7,7 @@ Transport-agnostic query pipeline for TypeDB with composable interceptors.
 `type-bridge-server` is both a library crate and a standalone binary that
 provides a structured query pipeline for TypeDB:
 
-```
+```text
 validate → intercept → compile → execute → intercept
 ```
 
@@ -35,6 +35,9 @@ the V2 routes; retained V1 routes remain available in either state.
 type-bridge-server = "2.1.0"
 ```
 
+This sketch is ignored because the executor, interceptor, input, and schema
+values are application-defined extension points.
+
 ```rust,ignore
 use type_bridge_server::pipeline::PipelineBuilder;
 use type_bridge_server::schema_source::InMemorySchemaSource;
@@ -50,7 +53,7 @@ let output = pipeline.execute_query(input).await?;
 
 ## Architecture
 
-```
+```text
                     +-----------+
                     | Transport |   (Axum HTTP, or custom)
                     +-----+-----+
@@ -252,9 +255,11 @@ one-shot request handle that created the request.
 
 ## Custom interceptors
 
-Implement the `Interceptor` trait to add cross-cutting concerns:
+Implement the `Interceptor` trait to add cross-cutting concerns. Because the
+released trait names the shared AST, an application implementing it must also
+declare `type-bridge-core-lib = "2.1.0"` directly:
 
-```rust,ignore
+```rust
 use type_bridge_server::interceptor::{Interceptor, InterceptError, RequestContext};
 use type_bridge_core_lib::ast::Clause;
 use std::pin::Pin;
@@ -282,9 +287,11 @@ Register via `PipelineBuilder::with_interceptor()`.
 
 ## Custom executors
 
-Implement `QueryExecutor` for non-TypeDB backends or mocking:
+Implement `QueryExecutor` for non-TypeDB backends or mocking. The example uses
+`serde_json`, so the application must also declare `serde_json = "1"`
+directly:
 
-```rust,ignore
+```rust
 use type_bridge_server::executor::QueryExecutor;
 use type_bridge_server::error::PipelineError;
 use std::pin::Pin;

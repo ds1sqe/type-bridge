@@ -365,3 +365,24 @@ def test_ignored_first_party_rust_examples_state_the_accepted_reason() -> None:
                     unexplained.append(f"{relative}:{index + 1}")
 
     assert unexplained == []
+
+
+def test_runnable_readme_rust_examples_are_part_of_the_doctest_surface() -> None:
+    """Every compilable crates.io README example must run in the crate doctest lane."""
+    inventory = inventory_module.load_inventory()
+    runnable_fence = re.compile(r"^```rust$")
+    ignored_fence = re.compile(r"^```rust,ignore$")
+
+    for package in inventory.first_party_packages:
+        package_root = CORE / Path(package.manifest).parent
+        readme = (package_root / "README.md").read_text(encoding="utf-8")
+        lines = readme.splitlines()
+        for index, line in enumerate(lines):
+            if ignored_fence.fullmatch(line) is None:
+                continue
+            explanation = " ".join(lines[max(0, index - 5) : index]).casefold()
+            assert "ignored because" in explanation, package.name
+        if not any(runnable_fence.fullmatch(line) for line in lines):
+            continue
+        crate_root = (package_root / "src/lib.rs").read_text(encoding="utf-8")
+        assert '#[doc = include_str!("../README.md")]' in crate_root, package.name

@@ -29,16 +29,12 @@ bindings:
     output: generated/typescript
   rust:
     output: generated/rust
-
-artifacts:
-  schema-authority:
-    output: generated/schema-authority.json
 ```
 
 Output paths are confined relative to the workspace and may not overlap the
-schema, migration directory, custom trust material, or each other. The
-`artifacts.schema-authority.output` spelling selects the generated deployment
-artifact for a generic TypeBridge server; it is not another schema source.
+schema, migration directory, custom trust material, or each other. Ordinary
+applications need only generated bindings; no standalone authority JSON is
+required.
 
 ## Generate
 
@@ -51,7 +47,8 @@ type-bridge --manifest typebridge.yaml schema generate
 or apply a migration. Use the explicit [migration workflow](migrations.md) for
 database changes. One `schema generate` invocation captures the workspace once,
 builds one verified authority, embeds it in every configured package, and
-writes the byte-equivalent server artifact last.
+writes a byte-equivalent generic-server artifact last when that optional output
+is configured.
 
 ## Generated package contract
 
@@ -78,7 +75,16 @@ transport, and resource limits; they do not read an authority file or construct
 
 ## Server authority artifact
 
-`generated/schema-authority.json` uses the versioned
+Configure a standalone authority artifact only when deploying the generic
+TypeBridge server:
+
+```yaml
+artifacts:
+  schema-authority:
+    output: generated/schema-authority.json
+```
+
+When configured, `generated/schema-authority.json` uses the versioned
 `typebridge.schema-authority/v1` canonical JSON codec. JSON is an internal,
 bounded, deterministic, language-neutral encoding that lets the generic server
 reconstruct and verify declared facts, required capabilities, managed scope,

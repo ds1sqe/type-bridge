@@ -1095,6 +1095,8 @@ jobs:
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
         with:
           version: v0.34.1
+          driver-opts: |
+            image=moby/buildkit@sha256:2f5adac4ecd194d9f8c10b7b5d7bceb5186853db1b26e5abd3a657af0b7e26ec
 
       - name: Build immutable platform OCI layout
         env:
@@ -1102,7 +1104,12 @@ jobs:
           SERVER_OCI_ARCH: ${{ matrix.architecture }}
         run: |
           set -euo pipefail
-          created="$(git show --no-patch --format=%cI "$GITHUB_SHA")"
+          source_date_epoch="$(git show --no-patch --format=%ct "$GITHUB_SHA")"
+          [[ "$source_date_epoch" =~ ^[0-9]+$ ]]
+          created="$(
+            date --utc --date="@${source_date_epoch}" '+%Y-%m-%dT%H:%M:%SZ'
+          )"
+          export SOURCE_DATE_EPOCH="$source_date_epoch"
           release_identity="${RELEASE_TAG}@${GITHUB_SHA}"
           output="$RUNNER_TEMP/server-oci-${SERVER_OCI_ARCH}"
           mkdir -p "$output"
@@ -1117,6 +1124,7 @@ jobs:
             --build-arg "SOURCE_REVISION=${GITHUB_SHA}" \
             --build-arg "RELEASE_VERSION=${RELEASE_VERSION}" \
             --build-arg "CREATED=${created}" \
+            --build-arg "SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}" \
             --build-arg "RELEASE_IDENTITY=${release_identity}" \
             --output \
               "type=oci,dest=${archive},oci-mediatypes=false,rewrite-timestamp=true" \
@@ -1160,18 +1168,23 @@ jobs:
             platform: linux/arm64
     services:
       typedb:
-        image: typedb/typedb:3.12.1
+        # Registry index resolves to amd64 config
+        # sha256:f683eed7f07c2c519caa795afbc1cd4df4f83c6422ad2cc07406f28f7537423a.
+        image: typedb/typedb:3.12.1@sha256:4224951114b044d52e2fe48108be26ae2734726041dae8d63453ecd407fe2422
         ports:
           - 1729:1729
           - 8000:8000
     steps:
       - name: Checkout exact release source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Set up QEMU for arm64 runtime proof
         if: matrix.architecture == 'arm64'
         uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
         with:
+          image: docker.io/tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
           platforms: arm64
 
       - name: Install Rust toolchain
@@ -1191,8 +1204,6 @@ jobs:
           SERVER_OCI_PLATFORM: ${{ matrix.platform }}
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends skopeo
           archive="$(
             find "tmp/server-oci-layout-${SERVER_OCI_ARCH}" \
               -maxdepth 1 -type f -name '*.oci.tar' -print
@@ -1204,8 +1215,42 @@ jobs:
             sha256sum --check layout.sha256
           )
           image="type-bridge-server:accepted-${GITHUB_SHA}-${SERVER_OCI_ARCH}"
-          skopeo copy --preserve-digests \
-            "oci-archive:${archive}" "docker-daemon:${image}"
+          conversion_dir="$RUNNER_TEMP/server-oci-conversion-${SERVER_OCI_ARCH}"
+          mkdir -p "$conversion_dir"
+          docker_archive="$conversion_dir/server.docker.tar"
+          python scripts/ci/run_pinned_skopeo.py \
+            --write-directory "$conversion_dir" -- \
+            copy --preserve-digests \
+            "oci-archive:${archive}" "docker-archive:${docker_archive}"
+          docker load --input "$docker_archive" > "$conversion_dir/docker-load.txt"
+          expected_config="$(
+            python -c \
+              'import json,sys; print(json.load(open(sys.argv[1]))["config_digest"])' \
+              "tmp/server-oci-layout-${SERVER_OCI_ARCH}/layout-report.json"
+          )"
+          docker tag "$expected_config" "$image"
+          actual_config="$(docker image inspect --format '{{.Id}}' "$image")"
+          test "$actual_config" = "$expected_config"
+          actual_rootfs="$(
+            docker image inspect --format '{{json .RootFS.Layers}}' "$image"
+          )"
+          python - \
+            "tmp/server-oci-layout-${SERVER_OCI_ARCH}/layout-report.json" \
+            "$actual_rootfs" <<'PY'
+          import json
+          import sys
+
+          report_path, actual_json = sys.argv[1:]
+          expected = json.load(open(report_path, encoding="utf-8"))["rootfs_diff_ids"]
+          actual = json.loads(actual_json)
+          if actual != expected:
+              raise SystemExit(
+                  "Socketless Docker import changed accepted rootfs identity: "
+                  f"actual={actual!r}, expected={expected!r}"
+              )
+          PY
+          rm -f "$docker_archive" "$conversion_dir/docker-load.txt"
+          rmdir "$conversion_dir"
           docker inspect "$image" >/dev/null
           printf 'TYPE_BRIDGE_SERVER_IMAGE=%s\n' "$image" >> "$GITHUB_ENV"
           printf 'TYPE_BRIDGE_SERVER_PLATFORM=%s\n' \
@@ -1254,24 +1299,14 @@ jobs:
           TYPEDB_ADDRESS: localhost:1729
           TYPEDB_HTTP_PORT: "8000"
           TYPE_BRIDGE_SERVER_STARTUP_TIMEOUT_SECONDS: "180"
-        run: |
-          set -euo pipefail
-          test_name=production_binary_serves_v1_health_and_v2_query
-          selection="$(
-            cargo test --manifest-path type-bridge-core/Cargo.toml --locked \
-              -p type-bridge-server --no-default-features \
-              --features band9,v2-query \
-              --test v2_query_integration_tests "$test_name" \
-              -- --ignored --exact --list
-          )"
-          printf '%s\n' "$selection"
-          test "$(grep -Fxc "$test_name: test" <<<"$selection")" -eq 1
-          timeout --foreground 15m \
-            cargo test --manifest-path type-bridge-core/Cargo.toml --locked \
-              -p type-bridge-server --no-default-features \
-              --features band9,v2-query \
-              --test v2_query_integration_tests "$test_name" \
-              -- --ignored --exact --nocapture
+        run: >-
+          timeout --foreground 15m
+          bash scripts/ci/run_exact_ignored_rust_test.sh
+          production_binary_serves_v1_health_and_v2_query
+          --manifest-path type-bridge-core/Cargo.toml --locked
+          -p type-bridge-server --no-default-features
+          --features band9,v2-query
+          --test v2_query_integration_tests
 
       - name: Run external generated Rust application through the exact image
         if: matrix.architecture == 'amd64'
@@ -1282,10 +1317,10 @@ jobs:
           ACCEPTANCE_TARGET_DIR: ${{ runner.temp }}/release-rust-projection-target
         run: >-
           timeout --foreground 15m
-          cargo test --manifest-path type-bridge-core/Cargo.toml --locked
-          -p type-bridge-schema-codegen --test rust_projection_live
+          bash scripts/ci/run_exact_ignored_rust_test.sh
           generated_rust_projection_round_trips_exact_live_models
-          -- --ignored --exact --nocapture
+          --manifest-path type-bridge-core/Cargo.toml --locked
+          -p type-bridge-schema-codegen --test rust_projection_live
 
       - name: Report runtime packages and image size
         run: |
@@ -1363,7 +1398,9 @@ jobs:
     runs-on: ubuntu-latest
     services:
       typedb:
-        image: typedb/typedb:3.12.1
+        # Registry index resolves to amd64 config
+        # sha256:f683eed7f07c2c519caa795afbc1cd4df4f83c6422ad2cc07406f28f7537423a.
+        image: typedb/typedb:3.12.1@sha256:4224951114b044d52e2fe48108be26ae2734726041dae8d63453ecd407fe2422
         ports:
           - 1729:1729
           - 8000:8000
@@ -1814,16 +1851,25 @@ jobs:
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
         with:
           version: v0.34.1
+          driver-opts: |
+            image=moby/buildkit@sha256:2f5adac4ecd194d9f8c10b7b5d7bceb5186853db1b26e5abd3a657af0b7e26ec
 
       - name: Install pinned Cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
         with:
           cosign-release: v3.0.6
 
-      - name: Install Skopeo
+      - name: Select and verify pinned Skopeo runtime
         run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends skopeo
+          set -euo pipefail
+          runner=scripts/ci/run_pinned_skopeo.py
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+            runner=tmp/recovery-controls/scripts/ci/run_pinned_skopeo.py
+          fi
+          test -f "$runner"
+          test ! -L "$runner"
+          python "$runner" -- --version
+          printf 'TYPE_BRIDGE_SKOPEO_RUNNER=%s\n' "$runner" >> "$GITHUB_ENV"
 
       - name: Authenticate GHCR
         uses: docker/login-action@e92390c5fb421da1463c202d546fed0ec5c39f20 # v3
@@ -1874,7 +1920,8 @@ jobs:
             )"
             raw="$RUNNER_TEMP/${architecture}-remote-manifest.json"
             error="$RUNNER_TEMP/${architecture}-remote-manifest.err"
-            if skopeo inspect --raw \
+            if python "$TYPE_BRIDGE_SKOPEO_RUNNER" --registry-auth -- \
+              inspect --raw \
               "docker://${image}:${version}-${architecture}" \
               > "$raw" 2> "$error"; then
               actual="sha256:$(sha256sum "$raw" | cut -d' ' -f1)"
@@ -1893,10 +1940,12 @@ jobs:
                 cat "$error" >&2
                 exit 1
               fi
-              skopeo copy --preserve-digests \
+              python "$TYPE_BRIDGE_SKOPEO_RUNNER" --registry-auth -- \
+                copy --preserve-digests \
                 "oci-archive:${archive}" \
                 "docker://${image}:${version}-${architecture}"
-              skopeo inspect --raw \
+              python "$TYPE_BRIDGE_SKOPEO_RUNNER" --registry-auth -- \
+                inspect --raw \
                 "docker://${image}:${version}-${architecture}" > "$raw"
             fi
             actual="sha256:$(sha256sum "$raw" | cut -d' ' -f1)"
@@ -1912,7 +1961,8 @@ jobs:
           version="$RELEASE_VERSION"
           stable_raw="$RUNNER_TEMP/stable-manifest.json"
           stable_error="$RUNNER_TEMP/stable-manifest.err"
-          if skopeo inspect --raw "docker://${image}:${version}" \
+          if python "$TYPE_BRIDGE_SKOPEO_RUNNER" --registry-auth -- \
+            inspect --raw "docker://${image}:${version}" \
             > "$stable_raw" 2> "$stable_error"; then
             echo "${version} already exists; validating before reuse."
           else
@@ -1926,7 +1976,8 @@ jobs:
               --tag "${image}:${version}" \
               "${image}@${SERVER_OCI_AMD64_DIGEST}" \
               "${image}@${SERVER_OCI_ARM64_DIGEST}"
-            skopeo inspect --raw "docker://${image}:${version}" > "$stable_raw"
+            python "$TYPE_BRIDGE_SKOPEO_RUNNER" --registry-auth -- \
+              inspect --raw "docker://${image}:${version}" > "$stable_raw"
           fi
           python - "$stable_raw" \
             "$SERVER_OCI_AMD64_DIGEST" "$SERVER_OCI_ARM64_DIGEST" <<'PY'
@@ -1961,7 +2012,8 @@ jobs:
           for alias in "$SERVER_OCI_MINOR_ALIAS" 2 latest; do
             alias_raw="$RUNNER_TEMP/alias-${alias}.json"
             alias_error="$RUNNER_TEMP/alias-${alias}.err"
-            if skopeo inspect --raw "docker://${image}:${alias}" \
+            if python "$TYPE_BRIDGE_SKOPEO_RUNNER" --registry-auth -- \
+              inspect --raw "docker://${image}:${alias}" \
               > "$alias_raw" 2> "$alias_error"; then
               alias_digest="sha256:$(sha256sum "$alias_raw" | cut -d' ' -f1)"
               if [[ "$alias_digest" != "$digest" ]]; then
@@ -1974,7 +2026,8 @@ jobs:
                 fi
                 docker buildx imagetools create \
                   --tag "${image}:${alias}" "${image}@${digest}"
-                skopeo inspect --raw "docker://${image}:${alias}" > "$alias_raw"
+                python "$TYPE_BRIDGE_SKOPEO_RUNNER" --registry-auth -- \
+                  inspect --raw "docker://${image}:${alias}" > "$alias_raw"
               fi
             else
               if ! grep -Eiq \
@@ -1985,7 +2038,8 @@ jobs:
               fi
               docker buildx imagetools create \
                 --tag "${image}:${alias}" "${image}@${digest}"
-              skopeo inspect --raw "docker://${image}:${alias}" > "$alias_raw"
+              python "$TYPE_BRIDGE_SKOPEO_RUNNER" --registry-auth -- \
+                inspect --raw "docker://${image}:${alias}" > "$alias_raw"
             fi
             test "sha256:$(sha256sum "$alias_raw" | cut -d' ' -f1)" = "$digest"
           done

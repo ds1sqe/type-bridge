@@ -1,7 +1,9 @@
 //! Provider-neutral fenced migration journal and recovery contracts.
 
+use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use type_bridge_contract::managed_scope::{ManagedScopeId, SemanticProfileFingerprint};
@@ -105,21 +107,78 @@ impl LeaseHolderId {
 }
 
 /// Store-issued authority to mutate one migration scope.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct MigrationLease {
     scope: ExecutionScope,
     holder: LeaseHolderId,
     fence: ExecutionFence,
+    local_binding: Option<ExecutionBindingToken>,
+}
+
+/// Opaque, process-local identity shared by one provider/store execution pair.
+///
+/// The token is deliberately absent from canonical and persisted migration
+/// records. Provider-neutral stores continue to issue unbound leases through
+/// [`MigrationLease::new`]; provider adapters that require local composition
+/// integrity can mint a token and use [`MigrationLease::new_bound`].
+#[doc(hidden)]
+#[derive(Clone)]
+pub struct ExecutionBindingToken(Arc<()>);
+
+impl ExecutionBindingToken {
+    /// Mint one fresh, unforgeable process-local identity.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn fresh() -> Self {
+        Self(Arc::new(()))
+    }
+
+    fn matches(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl fmt::Debug for ExecutionBindingToken {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ExecutionBindingToken([OPAQUE])")
+    }
 }
 
 impl MigrationLease {
-    /// Construct the lease returned by a store after atomic acquisition.
+    /// Construct an unbound lease returned by a provider-neutral store.
     pub const fn new(scope: ExecutionScope, holder: LeaseHolderId, fence: ExecutionFence) -> Self {
         Self {
             scope,
             holder,
             fence,
+            local_binding: None,
         }
+    }
+
+    /// Construct a lease carrying one process-local provider/store binding.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn new_bound(
+        scope: ExecutionScope,
+        holder: LeaseHolderId,
+        fence: ExecutionFence,
+        local_binding: ExecutionBindingToken,
+    ) -> Self {
+        Self {
+            scope,
+            holder,
+            fence,
+            local_binding: Some(local_binding),
+        }
+    }
+
+    /// Return whether this lease carries the exact supplied local binding.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn is_bound_to(&self, expected: &ExecutionBindingToken) -> bool {
+        self.local_binding
+            .as_ref()
+            .is_some_and(|actual| actual.matches(expected))
     }
 
     /// Return the leased scope.
@@ -137,6 +196,21 @@ impl MigrationLease {
         self.fence
     }
 }
+
+impl PartialEq for MigrationLease {
+    fn eq(&self, other: &Self) -> bool {
+        self.scope == other.scope
+            && self.holder == other.holder
+            && self.fence == other.fence
+            && match (&self.local_binding, &other.local_binding) {
+                (None, None) => true,
+                (Some(left), Some(right)) => left.matches(right),
+                (None, Some(_)) | (Some(_), None) => false,
+            }
+    }
+}
+
+impl Eq for MigrationLease {}
 
 /// Commit certainty owned by the migration journal layer.
 ///
@@ -1885,6 +1959,29 @@ mod tests {
             source_semantics: plan.source_semantics().clone(),
             target_semantics: plan.target_semantics().clone(),
         }
+    }
+
+    #[test]
+    fn bound_lease_equality_includes_process_local_binding_identity() {
+        let scope = scope();
+        let holder = LeaseHolderId::new("owner").expect("holder");
+        let fence = ExecutionFence::new(1).expect("fence");
+        let token = ExecutionBindingToken::fresh();
+        let same = MigrationLease::new_bound(scope.clone(), holder.clone(), fence, token.clone());
+        let clone = same.clone();
+        let foreign = MigrationLease::new_bound(
+            scope.clone(),
+            holder.clone(),
+            fence,
+            ExecutionBindingToken::fresh(),
+        );
+        let unbound = MigrationLease::new(scope.clone(), holder.clone(), fence);
+        let same_unbound = MigrationLease::new(scope, holder, fence);
+
+        assert_eq!(same, clone);
+        assert_ne!(same, foreign);
+        assert_ne!(same, unbound);
+        assert_eq!(unbound, same_unbound);
     }
 
     #[test]
