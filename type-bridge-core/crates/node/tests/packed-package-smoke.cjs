@@ -14,40 +14,9 @@ function argument(name) {
   return index === -1 ? undefined : process.argv[index + 1];
 }
 
-const artifactDirectory = argument("--artifact-directory");
-assert.ok(artifactDirectory, "--artifact-directory is required");
-const artifacts = fs
-  .readdirSync(artifactDirectory)
-  .filter((name) => name.endsWith(".tgz"))
-  .sort();
-assert.deepEqual(artifacts.length, 1, "exactly one packed artifact is required");
-const artifact = path.resolve(artifactDirectory, artifacts[0]);
-const npmExecPath = process.env.npm_execpath;
-assert.ok(npmExecPath, "npm_execpath is required; invoke this smoke through npm run");
-
-const stage = fs.mkdtempSync(path.join(os.tmpdir(), "type-bridge-node-packed-"));
-try {
-  const install = spawnSync(
-    process.execPath,
-    [
-      npmExecPath,
-      "install",
-      "--ignore-scripts",
-      "--no-audit",
-      "--no-fund",
-      "--no-package-lock",
-      "--no-save",
-      "--prefix",
-      stage,
-      artifact,
-    ],
-    { encoding: "utf8", shell: false },
-  );
-  assert.ifError(install.error);
-  assert.equal(install.status, 0, install.stderr || install.stdout);
-
+function verifyInstalledPackage(installedRoot) {
+  const stage = path.dirname(path.dirname(path.dirname(installedRoot)));
   const requirePackage = createRequire(path.join(stage, "consumer.cjs"));
-  const installedRoot = path.join(stage, "node_modules", "@type-bridge", "node");
   const resolvedRoot = fs.realpathSync(requirePackage.resolve("@type-bridge/node"));
   assert.ok(
     resolvedRoot.startsWith(`${fs.realpathSync(installedRoot)}${path.sep}`),
@@ -110,6 +79,65 @@ try {
   ]) {
     assert.equal(Object.hasOwn(native, name), false, `${name} must be absent natively`);
   }
-} finally {
-  fs.rmSync(stage, { recursive: true, force: true });
+}
+
+function verifyPackedArtifact(artifactDirectory) {
+  const artifacts = fs
+    .readdirSync(artifactDirectory)
+    .filter((name) => name.endsWith(".tgz"))
+    .sort();
+  assert.deepEqual(artifacts.length, 1, "exactly one packed artifact is required");
+  const artifact = path.resolve(artifactDirectory, artifacts[0]);
+  const npmExecPath = process.env.npm_execpath;
+  assert.ok(npmExecPath, "npm_execpath is required; invoke this smoke through npm run");
+
+  const stage = fs.mkdtempSync(path.join(os.tmpdir(), "type-bridge-node-packed-"));
+  try {
+    const install = spawnSync(
+      process.execPath,
+      [
+        npmExecPath,
+        "install",
+        "--ignore-scripts",
+        "--no-audit",
+        "--no-fund",
+        "--no-package-lock",
+        "--no-save",
+        "--prefix",
+        stage,
+        artifact,
+      ],
+      { encoding: "utf8", shell: false },
+    );
+    assert.ifError(install.error);
+    assert.equal(install.status, 0, install.stderr || install.stdout);
+
+    // Native modules remain locked for the lifetime of their Node process on
+    // Windows. Load and inspect the installed package in a child so the DLL is
+    // unloaded before this parent removes the isolated installation.
+    const installedRoot = path.join(stage, "node_modules", "@type-bridge", "node");
+    const verify = spawnSync(
+      process.execPath,
+      [__filename, "--installed-root", installedRoot],
+      { encoding: "utf8", shell: false },
+    );
+    assert.ifError(verify.error);
+    assert.equal(verify.status, 0, verify.stderr || verify.stdout);
+  } finally {
+    fs.rmSync(stage, {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 100,
+    });
+  }
+}
+
+const installedRoot = argument("--installed-root");
+if (installedRoot === undefined) {
+  const artifactDirectory = argument("--artifact-directory");
+  assert.ok(artifactDirectory, "--artifact-directory is required");
+  verifyPackedArtifact(artifactDirectory);
+} else {
+  verifyInstalledPackage(path.resolve(installedRoot));
 }

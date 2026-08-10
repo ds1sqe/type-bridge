@@ -1461,6 +1461,7 @@ def test_low_level_query_smokes_use_compiled_server_authority() -> None:
 
 def test_npm_publication_uses_the_accepted_tarball() -> None:
     workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+    ci_windows = job_block(CI_WORKFLOW.read_text(encoding="utf-8"), "node-packed-windows")
     build = job_block(workflow, "build-node-native")
     pack = job_block(workflow, "pack-node-package")
     acceptance = job_block(workflow, "accept-node-package")
@@ -1482,11 +1483,24 @@ def test_npm_publication_uses_the_accepted_tarball() -> None:
     assert ".sort()[0]" not in package_smoke
     assert "const npmExecPath = process.env.npm_execpath;" in packed_package_smoke
     assert "npm_execpath is required; invoke this smoke through npm run" in (packed_package_smoke)
-    assert "spawnSync(\n    process.execPath," in packed_package_smoke
-    assert 'npmExecPath,\n      "install",' in packed_package_smoke
+    assert packed_package_smoke.count("spawnSync(") == 2
+    assert 'npmExecPath,\n        "install",' in packed_package_smoke
+    assert '[__filename, "--installed-root", installedRoot]' in packed_package_smoke
     assert 'spawnSync("npm"' not in packed_package_smoke
     assert "shell: false" in packed_package_smoke
     assert "assert.ifError(install.error);" in packed_package_smoke
+    assert "assert.ifError(verify.error);" in packed_package_smoke
+    assert "maxRetries: 5" in packed_package_smoke
+    assert "retryDelay: 100" in packed_package_smoke
+    assert "runs-on: windows-latest" in ci_windows
+    assert "npm run build" in ci_windows
+    assert "npm pack --ignore-scripts --pack-destination tmp/packed-node" in ci_windows
+    assert "npm run smoke:packed-package -- --artifact-directory tmp/packed-node" in ci_windows
+    assert (
+        ci_windows.index("npm run build")
+        < ci_windows.index("npm pack --ignore-scripts")
+        < ci_windows.index("npm run smoke:packed-package")
+    )
 
     native_legs = re.findall(
         r"^          - target: (.+)\n"
