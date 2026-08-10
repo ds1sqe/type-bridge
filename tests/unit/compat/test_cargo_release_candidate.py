@@ -5,7 +5,9 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 import struct
+import subprocess
 import tarfile
 from pathlib import Path, PurePosixPath
 
@@ -302,3 +304,67 @@ def test_candidate_builder_is_patch_free_and_keeps_cargo_verification() -> None:
     assert "patch.crates-io" not in source
     assert "--no-verify" not in source
     assert "registry_checksum" in source
+
+
+def test_cargo_metadata_isolates_archive_from_ancestor_workspace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "Cargo.toml").write_text(
+        "[workspace]\n"
+        "members = []\n"
+        'resolver = "3"\n\n'
+        "[workspace.package]\n"
+        'authors = ["ancestor workspace"]\n'
+        'description = "must not affect packaged metadata"\n\n'
+        "[workspace.lints.rust]\n"
+        'unsafe_code = "forbid"\n'
+    )
+    temporary_root = workspace / "target"
+    directory_source = temporary_root / "directory-source"
+    directory_source.mkdir(parents=True)
+    monkeypatch.setattr(candidate.tempfile, "tempdir", str(temporary_root))
+
+    item = package("first-party", classification="public-first-party", order=1)
+    archive = crate_bytes(item.name)
+    staged_root, files = candidate.stage_archive(
+        directory_source,
+        package=item,
+        archive=archive,
+    )
+    original = {
+        path.relative_to(staged_root): path.read_bytes()
+        for path in staged_root.rglob("*")
+        if path.is_file()
+    }
+    config = temporary_root / "cargo-config.toml"
+    config.write_text("")
+
+    metadata = candidate._cargo_metadata_package(  # noqa: SLF001
+        archive,
+        package=item,
+        cargo=("cargo", "+1.94.1"),
+        config=config,
+        environment=os.environ,
+        runner=subprocess.run,
+    )
+
+    manifest = candidate._parse_toml(  # noqa: SLF001
+        files[PurePosixPath("Cargo.toml")],
+        label=f"{item.name} Cargo.toml",
+    )
+    assert candidate.publish_metadata_from_cargo(
+        metadata,
+        manifest=manifest,
+        files=files,
+    ) == candidate.publish_metadata_from_manifest(manifest, files)
+    assert original == {
+        path.relative_to(staged_root): path.read_bytes()
+        for path in staged_root.rglob("*")
+        if path.is_file()
+    }
+    assert not any(
+        path.name.startswith("type-bridge-cargo-metadata-") for path in temporary_root.iterdir()
+    )
