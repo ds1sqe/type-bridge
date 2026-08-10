@@ -1266,8 +1266,10 @@ def test_live_cli_workspace_state_machine_is_required_locally_and_in_ci() -> Non
     rust_integration = job_block(ci, "rust-integration")
     for test in tests:
         assert f"          {test}\n          --manifest-path" in rust_integration
-    assert rust_integration.count("scripts/ci/run_exact_ignored_rust_test.sh") == len(tests) + 2
+    assert rust_integration.count("scripts/ci/run_exact_ignored_rust_test.sh") == len(tests) + 4
     assert "unsupported_server_apply_creates_neither_database_live" in rust_integration
+    assert "runner_rolls_back_the_applied_head_and_reapplies_on_3_12_1" in rust_integration
+    assert "control_schema_and_fenced_lease_round_trip_on_3_12_1" in rust_integration
 
     loop = re.search(
         r"for cli_live_test in \\\n(?P<tests>.*?); do\n(?P<body>.*?)\n    done",

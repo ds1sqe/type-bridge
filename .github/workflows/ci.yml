@@ -903,6 +903,30 @@ jobs:
           --manifest-path type-bridge-core/Cargo.toml
           -p type-bridge-cli --test e2e_workspace_live
 
+      - name: Run connected migration rollback and reapply lifecycle
+        if: matrix.typedb-server == 'typedb/typedb:3.12.1'
+        env:
+          TYPEDB_ADDRESS: localhost:1729
+          TYPEDB_HTTP_PORT: "8000"
+          TYPE_BRIDGE_SCHEMA_MIGRATION_TYPEDB_DATABASE: type_bridge_ci_rollback
+        run: >-
+          bash scripts/ci/run_exact_ignored_rust_test.sh
+          runner_rolls_back_the_applied_head_and_reapplies_on_3_12_1
+          --manifest-path type-bridge-core/Cargo.toml --locked
+          -p type-bridge-schema-migration-typedb --test live_runner
+
+      - name: Run interrupted-plan fenced recovery lifecycle
+        if: matrix.typedb-server == 'typedb/typedb:3.12.1'
+        env:
+          TYPEDB_ADDRESS: localhost:1729
+          TYPEDB_HTTP_PORT: "8000"
+          TYPE_BRIDGE_SCHEMA_MIGRATION_TYPEDB_DATABASE: type_bridge_ci_recovery
+        run: >-
+          bash scripts/ci/run_exact_ignored_rust_test.sh
+          control_schema_and_fenced_lease_round_trip_on_3_12_1
+          --manifest-path type-bridge-core/Cargo.toml --locked
+          -p type-bridge-schema-migration-typedb --test live_store
+
   # Required, bounded TLS proof over one server per supported protocol band.
   # This intentionally runs only typedb-runtime's focused live target: the
   # broader plaintext, binding, CLI, and remote-envelope suites have separate
