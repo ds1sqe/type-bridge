@@ -1,5 +1,7 @@
 //! Schema-aware validation for typed query foundations.
 
+#![deny(missing_docs)]
+
 mod engine;
 mod query_v2_claims;
 mod query_validation;

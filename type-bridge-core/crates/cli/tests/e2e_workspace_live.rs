@@ -288,17 +288,6 @@ async fn empty_workspace_to_replayed_history_live() {
     }
     let primary = format!("tb_e2e_smoke_{}", std::process::id());
     let replay = format!("{primary}_replay");
-    for database in [&primary, &replay] {
-        type_bridge_orm::session::real_driver::ensure_database_exists(
-            &address,
-            database,
-            &username,
-            &password,
-            connect_options(&http_port),
-        )
-        .await
-        .expect("database exists");
-    }
 
     let workspace = tempfile::tempdir().expect("workspace directory");
     let root = workspace.path();
@@ -484,6 +473,242 @@ async fn empty_workspace_to_replayed_history_live() {
     }
     database.delete_database().await.expect("primary cleanup");
     replayed.delete_database().await.expect("replay cleanup");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires an isolated TypeDB 3.12.1 server"]
+async fn documented_examples_initial_constraints_apply_and_verify_live() {
+    let address = std::env::var("TYPEDB_ADDRESS").unwrap_or_else(|_| "localhost:1730".into());
+    let http_port = std::env::var("TYPEDB_HTTP_PORT").unwrap_or_else(|_| "8000".into());
+    let username = std::env::var("TYPEDB_USERNAME").unwrap_or_else(|_| "admin".into());
+    let password = std::env::var("TYPEDB_PASSWORD").unwrap_or_else(|_| "password".into());
+    // SAFETY: ignored live test process, set before any CLI child spawns.
+    unsafe {
+        std::env::set_var("TYPEDB_USERNAME", &username);
+        std::env::set_var("TYPEDB_PASSWORD", &password);
+    }
+
+    let database_name = format!("tb_e2e_documented_examples_{}", std::process::id());
+    let journal_name =
+        type_bridge_schema_migration_typedb::derived_journal_database_name(&database_name);
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../examples");
+    let workspace = tempfile::tempdir().expect("workspace directory");
+    let root = workspace.path();
+    fs::create_dir(root.join("schema")).expect("schema directory");
+    for relative in [
+        "typebridge.yaml",
+        "schema/schema.yaml",
+        "schema/application.yaml",
+    ] {
+        fs::copy(source.join(relative), root.join(relative))
+            .unwrap_or_else(|error| panic!("copy documented {relative}: {error}"));
+        assert_eq!(
+            fs::read(source.join(relative)).expect("source example reads"),
+            fs::read(root.join(relative)).expect("copied example reads"),
+            "documented {relative} changed while staging live acceptance",
+        );
+    }
+
+    // Preserve the copied public manifest byte-for-byte. The derived live
+    // overlay changes only the endpoint and unique database required for an
+    // isolated test; schema, migration, and binding authority remain exact.
+    let documented_manifest =
+        fs::read_to_string(root.join("typebridge.yaml")).expect("documented manifest reads");
+    let documented_environment = "    database: typebridge-examples\n    uri: localhost:1729\n";
+    assert_eq!(
+        documented_manifest.matches(documented_environment).count(),
+        1,
+        "documented environment contract drifted",
+    );
+    let live_manifest = documented_manifest.replacen(
+        documented_environment,
+        &format!(
+            "    database: {database_name}\n    uri: {address}\n    http-port: '{http_port}'\n"
+        ),
+        1,
+    );
+    fs::write(root.join("typebridge-live.yaml"), live_manifest)
+        .expect("live manifest overlay writes");
+
+    let run_example = |arguments: &[&str]| {
+        let mut cli_arguments = vec!["--manifest", "typebridge-live.yaml"];
+        cli_arguments.extend_from_slice(arguments);
+        run_cli(root, &cli_arguments)
+    };
+    for (step, arguments) in [
+        ("documented schema check", &["schema", "check"][..]),
+        ("documented schema generate", &["schema", "generate"][..]),
+        (
+            "documented migration make",
+            &["migration", "make", "--name", "initial"][..],
+        ),
+    ] {
+        assert_success(&run_example(arguments), step);
+    }
+    let plan = run_example(&["migration", "plan"]);
+    assert_success(&plan, "documented migration plan");
+    assert!(
+        String::from_utf8_lossy(&plan.stdout).contains("examples/0001_initial"),
+        "documented migration plan omitted its initial migration: {}",
+        String::from_utf8_lossy(&plan.stdout),
+    );
+
+    assert_success(
+        &run_example(&["migration", "apply", "--environment", "development"]),
+        "documented initial-constraint apply",
+    );
+    assert_success(
+        &run_example(&["migration", "apply", "--environment", "development"]),
+        "documented initial-constraint reapply",
+    );
+    assert_success(
+        &run_example(&["migration", "verify", "--environment", "development"]),
+        "documented initial-constraint verify",
+    );
+
+    for relative in [
+        "typebridge.yaml",
+        "schema/schema.yaml",
+        "schema/application.yaml",
+    ] {
+        assert_eq!(
+            fs::read(source.join(relative)).expect("source example reads"),
+            fs::read(root.join(relative)).expect("copied example reads"),
+            "live acceptance mutated documented {relative}",
+        );
+    }
+
+    let managed = Database::connect_with_options(
+        &address,
+        &database_name,
+        &username,
+        &password,
+        connect_options(&http_port),
+    )
+    .await
+    .expect("documented managed database connects");
+    assert!(
+        managed
+            .database_exists()
+            .await
+            .expect("managed database exists"),
+        "documented apply did not create the managed database",
+    );
+    let journal = Database::connect_with_options(
+        &address,
+        &journal_name,
+        &username,
+        &password,
+        connect_options(&http_port),
+    )
+    .await
+    .expect("documented journal database connects");
+    assert!(
+        journal
+            .database_exists()
+            .await
+            .expect("journal database exists"),
+        "documented apply did not create its journal database",
+    );
+    journal.delete_database().await.expect("journal cleanup");
+    managed.delete_database().await.expect("managed cleanup");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires an isolated TypeDB 3.11.5 server"]
+async fn unsupported_server_apply_creates_neither_database_live() {
+    let address = std::env::var("TYPEDB_ADDRESS").unwrap_or_else(|_| "localhost:1730".into());
+    let http_port = std::env::var("TYPEDB_HTTP_PORT").unwrap_or_else(|_| "8000".into());
+    let username = std::env::var("TYPEDB_USERNAME").unwrap_or_else(|_| "admin".into());
+    let password = std::env::var("TYPEDB_PASSWORD").unwrap_or_else(|_| "password".into());
+    // SAFETY: ignored live test process, set before any CLI child spawns.
+    unsafe {
+        std::env::set_var("TYPEDB_USERNAME", &username);
+        std::env::set_var("TYPEDB_PASSWORD", &password);
+    }
+    let managed_name = format!("tb_e2e_unsupported_apply_{}", std::process::id());
+    let journal_name =
+        type_bridge_schema_migration_typedb::derived_journal_database_name(&managed_name);
+
+    let workspace = tempfile::tempdir().expect("workspace directory");
+    let root = workspace.path();
+    fs::create_dir_all(root.join("schema/fragments")).expect("schema directory");
+    fs::create_dir_all(root.join("migrations/v2")).expect("migration directory");
+    write_manifest(root, &address, &http_port, &[("live", &managed_name)]);
+    fs::write(
+        root.join("schema/schema.yaml"),
+        "format: typebridge.schema-set/v1\nsources: [fragments/*.yaml]\n",
+    )
+    .expect("schema set writes");
+    fs::write(
+        root.join("schema/fragments/model.yaml"),
+        "format: typebridge.schema/v2\nentities: {person: {}}\n",
+    )
+    .expect("schema writes");
+    assert_success(
+        &run_cli(root, &["migration", "make", "--name", "init"]),
+        "unsupported-server migration make",
+    );
+
+    let output = run_cli(root, &["migration", "apply", "--environment", "live"]);
+    assert!(
+        !output.status.success(),
+        "3.11.5 migration apply must reject"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("migration_typedb_server_version_unsupported"),
+        "unsupported apply must retain the exact gate diagnostic; stderr: {stderr}"
+    );
+
+    let managed = Database::connect_with_options(
+        &address,
+        &managed_name,
+        &username,
+        &password,
+        connect_options(&http_port),
+    )
+    .await
+    .expect("managed existence probe connects");
+    let journal = Database::connect_with_options(
+        &address,
+        &journal_name,
+        &username,
+        &password,
+        connect_options(&http_port),
+    )
+    .await
+    .expect("journal existence probe connects");
+    let managed_exists = managed
+        .database_exists()
+        .await
+        .expect("managed existence probe");
+    let journal_exists = journal
+        .database_exists()
+        .await
+        .expect("journal existence probe");
+
+    // Clean a regressed run before asserting so a local server remains reusable.
+    if journal_exists {
+        journal
+            .delete_database()
+            .await
+            .expect("regressed journal cleanup");
+    }
+    if managed_exists {
+        managed
+            .delete_database()
+            .await
+            .expect("regressed managed cleanup");
+    }
+    assert!(
+        !managed_exists,
+        "unsupported apply created the managed database"
+    );
+    assert!(
+        !journal_exists,
+        "unsupported apply created the journal database"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

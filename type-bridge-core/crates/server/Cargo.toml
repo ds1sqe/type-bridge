@@ -7,7 +7,10 @@ license.workspace = true
 license-file.workspace = true
 repository.workspace = true
 authors.workspace = true
-publish = false
+publish = ["crates-io"]
+readme = "README.md"
+documentation = "https://docs.rs/type-bridge-server/2.1.0"
+rust-version = "1.88"
 
 [lib]
 name = "type_bridge_server"
@@ -16,13 +19,21 @@ path = "src/lib.rs"
 [[bin]]
 name = "type-bridge-server"
 path = "src/main.rs"
-required-features = ["typedb", "axum-transport"]
+required-features = ["typedb", "v2-query"]
 
 [features]
-default = ["band8", "band9", "axum-transport"]
+default = ["band8", "band9", "v2-query"]
 typedb = ["dep:type-bridge-typedb-runtime"]
-band8 = ["typedb", "type-bridge-typedb-runtime/band8"]
-band9 = ["typedb", "type-bridge-typedb-runtime/band9"]
+band8 = [
+    "typedb",
+    "type-bridge-typedb-runtime/band8",
+    "type-bridge-orm?/band8",
+]
+band9 = [
+    "typedb",
+    "type-bridge-typedb-runtime/band9",
+    "type-bridge-orm?/band9",
+]
 axum-transport = [
     "dep:axum",
     "dep:tower-http",
@@ -34,18 +45,17 @@ v2-query = [
     "dep:type-bridge-query",
     "dep:type-bridge-orm",
     "dep:type-bridge-schema",
-    "dep:type-bridge-schema-migration-typedb",
+    "dep:type-bridge-schema-compat",
 ]
-test-helpers = []
 
 [dependencies]
 type-bridge-core-lib = { path = "../core", version = "2.1.0" }
 type-bridge-typedb-runtime = { path = "../typedb-runtime", version = "2.1.0", default-features = false, optional = true }
 type-bridge-contract = { path = "../contract", version = "2.1.0", optional = true }
 type-bridge-query = { path = "../query", version = "2.1.0", optional = true }
-type-bridge-orm = { path = "../orm", version = "2.1.0", optional = true }
+type-bridge-orm = { path = "../orm", version = "2.1.0", default-features = false, optional = true }
 type-bridge-schema = { path = "../schema", version = "2.1.0", optional = true }
-type-bridge-schema-migration-typedb = { path = "../schema-migration-typedb", version = "2.1.0", optional = true }
+type-bridge-schema-compat = { path = "../schema-compat", version = "2.1.0", optional = true }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -70,10 +80,25 @@ rustix = { version = "1", features = ["fs"] }
 
 [[example]]
 name = "v2_smoke_server"
+required-features = ["typedb", "v2-query"]
+
+[[test]]
+name = "http_integration_tests"
+required-features = ["axum-transport"]
+
+[[test]]
+name = "runtime_config_documentation"
 required-features = ["v2-query"]
 
+[[test]]
+name = "tls_transport_tests"
+required-features = ["axum-transport"]
+
+[[test]]
+name = "v2_query_integration_tests"
+required-features = ["typedb", "v2-query"]
+
 [dev-dependencies]
-type-bridge-server = { path = ".", version = "2.1.0", features = ["test-helpers", "axum-transport", "v2-query"] }
 tempfile = "3"
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }

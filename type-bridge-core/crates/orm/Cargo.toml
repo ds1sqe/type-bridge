@@ -9,6 +9,8 @@ license-file.workspace = true
 repository.workspace = true
 authors.workspace = true
 publish = ["crates-io"]
+readme = "README.md"
+documentation = "https://docs.rs/type-bridge-orm/2.1.0"
 
 [lib]
 name = "type_bridge_orm"

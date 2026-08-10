@@ -1,21 +1,31 @@
 #[derive(Debug, thiserror::Error)]
+/// Errors surfaced by configuration, validation, execution, and interception.
 pub enum PipelineError {
+    /// Server configuration could not be loaded or validated.
     #[error("Configuration error: {0}")]
     Config(String),
+    /// The configured TypeDB endpoint could not be reached.
     #[error("TypeDB connection error: {0}")]
     Connection(String),
+    /// The connected TypeDB server version is outside the supported matrix.
     #[error("Unsupported version: {0}")]
     UnsupportedVersion(#[from] type_bridge_core_lib::version::VersionError),
+    /// Provider execution rejected or failed the query.
     #[error("Query execution error: {0}")]
     QueryExecution(String),
+    /// Static query validation failed.
     #[error("Validation error: {0}")]
     Validation(String),
+    /// Query text or wire input could not be parsed.
     #[error("Parse error: {0}")]
     Parse(String),
+    /// The configured schema could not be loaded or decoded.
     #[error("Schema error: {0}")]
     Schema(String),
+    /// An interceptor rejected or failed the request.
     #[error("Interceptor error: {0}")]
     Interceptor(String),
+    /// An unexpected internal invariant failed.
     #[error("Internal error: {0}")]
     Internal(String),
 }

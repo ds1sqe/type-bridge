@@ -1,11 +1,20 @@
 //! TypeDB-backed fenced execution storage for V2 schema migrations.
 //!
-//! This unpublished leaf crate is the only layer that knows both the
-//! provider-neutral migration execution contracts and the TypeDB ORM. It does
-//! not extend or import the archival V1 migration state store.
+//! This public leaf crate is the only layer that knows both the provider-neutral
+//! migration execution contracts and the TypeDB ORM. It does not extend or
+//! import the archival V1 migration state store.
+//!
+//! Most embedders should use [`TypeDbMigrationRunner`]. Lower-level composition
+//! must construct one [`TypeDbExecutionBinding`] and reuse it for both
+//! [`TypeDbMigrationStore`] and [`TypeDbMigrationProvider`]; leases from an
+//! independent or unbound execution binding fail before TypeDB I/O.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
+#![deny(missing_docs)]
+
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+pub mod readme_doctests {}
 
 mod control_schema;
 mod legacy_import;
@@ -28,7 +37,10 @@ pub use observation::{
     partition_typeql_export, rebuild_live_managed_state, rebuild_live_query_authority,
     rebuild_live_query_authority_state,
 };
-pub use provider::{TypeDbMigrationProvider, execution_capability_vocabulary};
+pub use provider::{
+    TypeDbExecutionBinding, TypeDbMigrationProvider, execution_capability_vocabulary,
+    require_supported_migration_execution_binding, require_supported_migration_server,
+};
 pub use runner::{
     MigrationDirectoryApplyError, MigrationDirectoryApplyOutcome,
     MigrationDirectoryRollbackOutcome, TypeDbMigrationRunner,

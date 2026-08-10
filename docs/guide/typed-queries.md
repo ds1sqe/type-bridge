@@ -43,43 +43,42 @@ The generated facade is the usual application API. The separately retained
 an application needs the low-level Query V2 vocabulary without model classes.
 Rust owns its identities, validation, canonical bytes, and capabilities.
 
-The equivalent Node authoring uses the same operation names and order:
+The equivalent Node authoring uses the same operation names and order. Keep the
+low-level authority outside this builder function so the plan vocabulary cannot
+silently replace the generated package's authority:
 
 ```typescript
-import { readFileSync } from "node:fs";
 import {
-  AuthoredQueryInvocation,
-  AuthoredQueryPlan,
   QueryPlanBuilder,
-  QueryV2Authority,
+  type AuthoredQueryInvocation,
+  type QueryV2Authority,
 } from "@type-bridge/node/query-v2";
 
-const declaredSchemaBytes = readFileSync("declared-schema.json");
-const authority = new QueryV2Authority(
-  declaredSchemaBytes,
-  "binding-smoke",
-  "typedb-3.12.1/v1",
-);
-const builder = new QueryPlanBuilder(authority);
-const person = builder.binding("person");
-const name = builder.binding("name");
-const wanted = builder.input("wanted_name", "string", false);
-builder.match([
-  builder.isa(person, "entity", "smoke-person", true),
-  builder.has(person, name, "smoke-name"),
-  builder.value(
-    "equal",
-    builder.bindingOperand(name),
-    builder.inputOperand(wanted),
-  ),
-]);
-const plan: AuthoredQueryPlan = builder.finalizeRows([person, name]);
-const invocation: AuthoredQueryInvocation = plan.rows([["Alice"]]);
+function authorInvocation(authority: QueryV2Authority): AuthoredQueryInvocation {
+  const builder = new QueryPlanBuilder(authority);
+  const person = builder.binding("person");
+  const name = builder.binding("name");
+  const wanted = builder.input("wanted_name", "string", false);
+  builder.match([
+    builder.isa(person, "entity", "smoke-person", true),
+    builder.has(person, name, "smoke-name"),
+    builder.value(
+      "equal",
+      builder.bindingOperand(name),
+      builder.inputOperand(wanted),
+    ),
+  ]);
+  return builder.finalizeRows([person, name]).rows([["Alice"]]);
+}
 ```
 
 Builder transitions perform no provider or network I/O. Finalization is
 terminal, and a rejected transition leaves the builder at its preceding valid
-state.
+state. Explicit construction of `QueryV2Authority` remains a low-level API for
+integrators that already own canonical declared-schema bytes and their trust
+policy. `schema export-declared` is retained only as a debug/compatibility tool;
+generated sessions do not call it, read its JSON, or use it as an authoring
+input.
 
 ## Connectivity and explicit cross joins
 
@@ -200,11 +199,37 @@ values plus typed reducer tuples.
 
 ## Remote queries
 
-The generated package also exports `RemoteQuerySession`. The caller supplies a
-validated Query V2 authority, exact advertisement bytes, a one-exchange
-transport callback, and resource limits. Composition remains local; one terminal
-performs one exchange and materializes through the same package projection as
-direct execution.
+The generated package also exports `RemoteQuerySession`. It reconstructs Query
+V2 authority from private, verified package evidence. The caller supplies exact
+advertisement bytes, a one-exchange transport callback, and resource limits—no
+authority file or low-level `QueryV2Authority` argument:
+
+```python
+from app_models import Person, RemoteQueryLimits, RemoteQuerySession
+
+remote = RemoteQuerySession(
+    advertisement_bytes,
+    exchange,
+    RemoteQueryLimits(
+        max_items=100,
+        max_bytes=8_388_608,
+        max_collection_members=1_000,
+        max_graph_nodes=1_000,
+        max_attribute_values=1_000,
+        max_role_players=1_000,
+        deadline_ms=30_000,
+    ),
+)
+person = remote.exact(Person)
+rows = await remote.query(person).rows(limit=50)
+```
+
+TypeScript uses the equivalent
+`new RemoteQuerySession(advertisementBytes, exchange, limits)` constructor.
+Authenticate the advertisement for the intended server or pin it out of band;
+the caller owns transport, credentials, and retry policy. Composition remains
+local; one terminal performs one exchange and materializes through the same
+package projection as direct execution.
 
 Supported remote terminals are `one`, `first`, bounded `rows`, `page_by`,
 `count_by`, and `exists_by`, including exact/subtype hydration, predicates,

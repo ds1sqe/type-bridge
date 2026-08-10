@@ -46,6 +46,7 @@ impl AuditWriter {
     }
 }
 
+/// Interceptor that writes one structured JSON audit record per outcome.
 pub struct AuditLogInterceptor {
     writer: Arc<Mutex<AuditWriter>>,
 }
@@ -67,6 +68,7 @@ struct V2AuditEntry {
 }
 
 impl AuditLogInterceptor {
+    /// Build an audit interceptor from a validated destination configuration.
     pub fn new(config: &AuditLogConfig) -> Result<Self, String> {
         let writer = match config.output.as_str() {
             "stdout" => AuditWriter::Stdout,

@@ -234,6 +234,10 @@ interface NativeQueryV2Runtime {
     scope: string,
     profile: string,
   ): NativeQueryV2Authority;
+  queryV2AuthorityFromSchemaAuthority(
+    schemaAuthorityJson: string,
+    semanticFingerprintJson: string,
+  ): NativeQueryV2Authority;
   queryV2QueryOnlyAuthority(
     database: NativeRustDatabase,
     declaredSchema: Uint8Array,

@@ -4,6 +4,8 @@
 //! can share version gating, gRPC fallback, database lifecycle, transactions,
 //! and JSON conversion without depending on each other.
 
+#![deny(missing_docs)]
+
 #[cfg(not(any(feature = "band8", feature = "band9")))]
 compile_error!(
     "type-bridge-typedb-runtime requires at least one band feature; enable `band8` and/or `band9` (both are default)"
@@ -1111,7 +1113,7 @@ impl Drop for DriverHandle {
     }
 }
 
-/// Real TypeDB backend wrapping a band-tagged [`DriverHandle`].
+/// Real TypeDB backend wrapping an internal band-tagged driver handle.
 pub struct TypeDBRuntime {
     driver: Arc<DriverHandle>,
     /// The server version the connect gate detected, when it could.

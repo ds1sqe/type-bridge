@@ -194,6 +194,10 @@ authorization for database recreation and data loss.
 Treat query construction as local and synchronous. Direct terminals perform
 provider work. A remote terminal performs exactly one caller-owned exchange;
 the client owns transport, authentication, retry policy, and capability trust.
+Generated Python and TypeScript `RemoteQuerySession` constructors derive
+authority from private package evidence. Supply advertisement bytes, the
+one-exchange callback, and limits; never read an authority file or construct a
+low-level `QueryV2Authority` for this normal path.
 
 ## TypeScript and Node workflow
 
@@ -241,13 +245,13 @@ change TypeDB.
 Use this lifecycle:
 
 1. Validate the schema set and workspace offline.
-2. Review resolved schema diagnostics and generated TypeQL.
+2. Generate every configured language package from that checked snapshot.
 3. Create a named migration.
-4. Review the migration plan and destructive classifications.
+4. Review its TypeQL, plan, and destructive classifications.
 5. Apply only in an environment whose policy permits migration.
-6. Generate every configured language projection.
-7. Commit the schema authority, migration, and generated projections together
-   when the repository's generation policy tracks them.
+6. Verify the resulting database and journal state.
+7. Commit Split-YAML, `typebridge.yaml`, migrations, and generated packages
+   together when the repository tracks generated outputs.
 
 Treat `schema check`, migration planning, and generation as read-only with
 respect to TypeDB. Only the explicit connected migration commands mutate the
@@ -255,12 +259,28 @@ managed schema. Split-YAML is the sole active authoring authority; historical
 TOML is a read-only conversion input.
 
 Configure every projection target in `typebridge.yaml`, then generate them from
-the same checked workspace:
+the same checked workspace. No standalone JSON is required for generated
+managers or package-owned query sessions.
+
+If deploying the generic server, configure its authority artifact alongside the
+bindings and commit it with the other generated outputs when the repository
+tracks them:
+
+```yaml
+artifacts:
+  schema-authority:
+    output: generated/schema-authority.json
+```
 
 ```bash
 type-bridge --manifest typebridge.yaml schema check
 type-bridge --manifest typebridge.yaml schema generate
 ```
+
+One generation snapshot embeds compiled authority into every configured
+package and, when configured, writes the byte-equivalent server artifact. Its
+canonical JSON is an internal, source-free deployment codec, not a
+user-maintained schema input.
 
 ## Rust and server boundaries
 
@@ -275,10 +295,12 @@ fields across direct and remote execution. In a caller-owned
 `RemoteQueryTransport`, wrap transport failures with `Error::remote` and a
 stable lowercase snake-case code.
 
-Use the server container only with the configuration, TLS, declared-schema
-authority, resource limits, and immutable digest described in
-`guide/server-container.md`. The client owns remote transport, authentication,
-retry, and capability-advertisement trust.
+Use the server container only with the configuration, TLS, generated
+`schema_authority_file`, explicit `authority_mode`, resource limits, and
+immutable digest described in `guide/server-container.md`. Scope and semantic
+profile come from the verified artifact rather than duplicate server settings.
+The client owns remote transport, authentication, retry, and
+capability-advertisement trust.
 
 ## Diagnose failures by boundary
 
@@ -292,7 +314,7 @@ retry, and capability-advertisement trust.
 | Node integer rejected | Use `bigint`, not JavaScript `number` |
 | Generated model mismatch | Regenerate from the canonical schema and compare schema identity/fingerprint |
 | Typed-query owner/session error | Recreate fields, roles, and variables from the same model owner and session |
-| Remote reply rejected | Check declared schema, scope, profile, capabilities, executor epoch, signature, deadline, and size limits |
+| Remote reply rejected | Check embedded schema authority, capabilities, executor epoch, signature, deadline, and size limits |
 | Closed-handle failure | Do not reuse a closed database or transaction; inspect lease ownership |
 
 Read `development/typedb.md` before changing compatibility or provider

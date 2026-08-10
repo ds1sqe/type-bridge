@@ -15,6 +15,8 @@ difference from the 3.12 fixture.
 | --- | --- |
 | TypeDB servers | 3.11.x–3.12.x |
 | Verified tags | 3.11.5, 3.12.1 |
+| Generated CRUD/query acceptance | 3.11.5 and 3.12.1 |
+| Connected V2 migration execution | exactly 3.12.1 |
 | Protocol providers | band 8 and band 9 |
 | V2 conformance baseline | 3.12.1 |
 | CPython | 3.12–3.14 |
@@ -23,6 +25,14 @@ difference from the 3.12 fixture.
 
 Versions outside the window fail before TypeBridge opens an application data
 transaction.
+
+The wider window applies to generated application operations and query
+execution. `migration apply`, `migration verify`, and `migration adopt` have a
+narrower authority contract: both the workspace semantic profile and the
+negotiated server must be exactly 3.12.1. They reject before database creation
+or migration state work otherwise. Offline `schema check`, `schema generate`,
+`migration make`, and `migration plan` remain available for either supported
+semantic profile.
 
 ### Protocol providers
 

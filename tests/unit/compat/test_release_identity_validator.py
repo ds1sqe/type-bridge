@@ -114,15 +114,17 @@ def copy_workspace_manifests(tmp_path: Path) -> Path:
     return target_root / "Cargo.toml"
 
 
-def copy_release_graph_authorities(tmp_path: Path) -> tuple[Path, Path]:
-    """Copy the ordinary workflow and the Cargo graph it authorizes."""
+def copy_release_graph_authorities(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """Copy the ordinary workflow and exact Cargo candidate authorities."""
     workflow = tmp_path / ".github/workflows/release.yml"
-    graph = tmp_path / "scripts/ci/release_crates_graph.sh"
+    builder = tmp_path / "scripts/ci/cargo_release_candidate.py"
+    publisher = tmp_path / "scripts/ci/publish_cargo_release_candidate.py"
     workflow.parent.mkdir(parents=True)
-    graph.parent.mkdir(parents=True)
+    builder.parent.mkdir(parents=True)
     shutil.copyfile(ROOT / ".github/workflows/release.yml", workflow)
-    shutil.copyfile(ROOT / "scripts/ci/release_crates_graph.sh", graph)
-    return workflow, graph
+    shutil.copyfile(ROOT / "scripts/ci/cargo_release_candidate.py", builder)
+    shutil.copyfile(ROOT / "scripts/ci/publish_cargo_release_candidate.py", publisher)
+    return workflow, builder, publisher
 
 
 def replace_lock_package_text(
@@ -168,6 +170,10 @@ def test_repository_cargo_inclusive_stable_identity_is_complete() -> None:
     assert report["python_core_requirement"] == "type-bridge-core==2.1.0"
     assert report["python_package_version"] == "2.1.0"
     assert report["node_package_lock_version"] == "2.1.0"
+    assert report["server_oci_stable_aliases"] == ["2.1", "2", "latest"]
+    assert report["server_oci_recovery_aliases"] == ["2.0", "2", "latest"]
+    assert report["server_oci_stable_signing_identity"].endswith("release.yml@refs/tags/v2.1.0")
+    assert report["server_oci_recovery_signing_identity"].endswith("release.yml@refs/heads/master")
     assert set(report["cargo_licenses"].values()) == {
         "MIT",
         "Apache-2.0",
@@ -225,7 +231,6 @@ def test_repository_cargo_graph_is_complete_and_ordered() -> None:
     assert report["unpublished_crates"] == [
         "type-bridge-core",
         "type-bridge-node",
-        "type-bridge-server",
     ]
     dependency_order = report["cargo_manifest_dependency_order"]
     assert isinstance(dependency_order, dict)
@@ -330,45 +335,39 @@ def test_repository_workflow_uses_the_cargo_inclusive_contract() -> None:
 
 
 def test_release_workflow_must_bind_the_centralized_cargo_graph(tmp_path: Path) -> None:
-    workflow, _ = copy_release_graph_authorities(tmp_path)
+    workflow, _, _ = copy_release_graph_authorities(tmp_path)
     workflow.write_text(
         workflow.read_text().replace(
-            "bash ../scripts/ci/release_crates_graph.sh --publish",
+            "python scripts/ci/publish_cargo_release_candidate.py publish",
             "echo cargo publish omitted",
             1,
         )
     )
 
-    with pytest.raises(validator.ValidationError, match="exactly once with --publish"):
+    with pytest.raises(validator.ValidationError, match="exactly once with publish"):
         validator.workflow_publish_sequence(workflow)
 
 
 def test_centralized_cargo_publish_order_cannot_drift(tmp_path: Path) -> None:
-    workflow, graph = copy_release_graph_authorities(tmp_path)
-    source = graph.read_text()
-    first = "publish_crates=(\n  type-bridge-contract\n  type-bridge-core-lib\n"
-    assert source.count(first) == 1
-    graph.write_text(
-        source.replace(
-            first,
-            "publish_crates=(\n  type-bridge-core-lib\n  type-bridge-contract\n",
-            1,
-        )
-    )
+    workflow, _, publisher = copy_release_graph_authorities(tmp_path)
+    source = publisher.read_text()
+    marker = "for candidate in bundle.packages:"
+    assert source.count(marker) == 1
+    publisher.write_text(source.replace(marker, "for candidate in reversed(bundle.packages):", 1))
 
-    with pytest.raises(validator.ValidationError, match="incomplete or reordered"):
+    with pytest.raises(validator.ValidationError, match="publication loop is malformed"):
         validate(release_workflow=workflow)
 
 
 def test_centralized_cargo_preflight_loop_cannot_be_bypassed(tmp_path: Path) -> None:
-    workflow, graph = copy_release_graph_authorities(tmp_path)
-    source = graph.read_text()
-    marker = 'bash "$helper" --preflight "$crate"'
+    workflow, builder, _ = copy_release_graph_authorities(tmp_path)
+    source = builder.read_text()
+    marker = "for package in inventory.public_packages:"
     assert source.count(marker) == 1
-    graph.write_text(source.replace(marker, 'echo "preflight omitted for $crate"', 1))
+    builder.write_text(source.replace(marker, "for package in ():", 1))
 
-    with pytest.raises(validator.ValidationError, match="preflight loops are malformed"):
-        validator.workflow_registry_preflight_sequences(workflow)
+    with pytest.raises(validator.ValidationError, match="staged package loop is malformed"):
+        validator.workflow_preflight_sequences(workflow)
 
 
 @pytest.mark.parametrize(
@@ -385,7 +384,12 @@ def test_centralized_cargo_preflight_loop_cannot_be_bypassed(tmp_path: Path) -> 
             "freshness gate",
         ),
         (
-            "bash ../scripts/ci/release_crates_graph.sh --preflight",
+            "python scripts/ci/validate_cargo_rustdoc.py",
+            "echo public Cargo rustdoc gate omitted",
+            "Cargo rustdoc gate",
+        ),
+        (
+            "python scripts/ci/cargo_release_candidate.py build",
             "echo Cargo graph packaging omitted",
             "package the Cargo graph",
         ),
@@ -409,6 +413,97 @@ def test_release_workflow_requires_ordered_native_artifact_gates(
 
     with pytest.raises(validator.ValidationError, match=message):
         validator.validate_native_notice_workflow(workflow)
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        (
+            "inputs.release_channel == 'recovery' && '2.0' || '2.1' }}",
+            "inputs.release_channel == 'recovery' && '2.0' || '2.0' }}",
+        ),
+        (
+            'for alias in "$SERVER_OCI_MINOR_ALIAS" 2 latest; do',
+            "for alias in 2.0 2 latest; do",
+        ),
+        (
+            "release.yml@refs/tags/v2[.]1[.]0$'",
+            "release.yml@refs/tags/v2[.]0[.]0$'",
+        ),
+        (
+            '"aliases": [os.environ["SERVER_OCI_MINOR_ALIAS"], "2", "latest"],',
+            '"aliases": ["2.0", "2", "latest"],',
+        ),
+    ],
+)
+def test_server_oci_channel_identity_drift_hard_fails(
+    tmp_path: Path,
+    old: str,
+    new: str,
+) -> None:
+    workflow = tmp_path / "release.yml"
+    source = (ROOT / ".github/workflows/release.yml").read_text()
+    assert source.count(old) == 1
+    workflow.write_text(source.replace(old, new, 1))
+
+    with pytest.raises(
+        validator.ValidationError,
+        match="release/OCI channel identities|OCI minor-alias selector",
+    ):
+        validator.validate_server_oci_release_channels(workflow)
+
+
+def test_release_tag_freeze_and_publisher_rechecks_cannot_be_bypassed(tmp_path: Path) -> None:
+    workflow = tmp_path / "release.yml"
+    source = (ROOT / ".github/workflows/release.yml").read_text()
+    node = validator._release_workflow_job(source, "publish-node-npm")
+    check = '          test "$tag_object" = "$EXPECTED_RELEASE_TAG_OBJECT"\n'
+    assert node.count(check) == 1
+    workflow.write_text(source.replace(node, node.replace(check, "", 1), 1))
+
+    with pytest.raises(validator.ValidationError, match="publish-node-npm tag-object equality"):
+        validator.validate_server_oci_release_channels(workflow)
+
+
+def test_recovery_cosign_identity_cannot_be_broadened(tmp_path: Path) -> None:
+    workflow = tmp_path / "release.yml"
+    source = (ROOT / ".github/workflows/release.yml").read_text()
+    exact = "release.yml@refs/heads/master$"
+    assert source.count(exact) == 1
+    workflow.write_text(source.replace(exact, "release.yml@refs/heads/.*$", 1))
+
+    with pytest.raises(validator.ValidationError, match="Cosign identities"):
+        validator.validate_server_oci_release_channels(workflow)
+
+
+def test_cargo_publication_must_follow_the_first_npm_mutation(tmp_path: Path) -> None:
+    workflow = tmp_path / "release.yml"
+    source = (ROOT / ".github/workflows/release.yml").read_text()
+    crates = validator._release_workflow_job(source, "publish-crates")
+    guarded = "    needs: [release-tag-preflight, publish-node-npm, validate-release-identity]\n"
+    assert guarded in crates
+    workflow.write_text(
+        source.replace(
+            crates,
+            crates.replace(guarded, "    needs: release-tag-preflight\n", 1),
+            1,
+        )
+    )
+
+    with pytest.raises(validator.ValidationError, match="npm-first Cargo publication"):
+        validator.validate_server_oci_release_channels(workflow)
+
+
+def test_publisher_without_needs_is_reported_as_validation_failure(tmp_path: Path) -> None:
+    workflow = tmp_path / "release.yml"
+    source = (ROOT / ".github/workflows/release.yml").read_text()
+    crates = validator._release_workflow_job(source, "publish-crates")
+    needs = "    needs: [release-tag-preflight, publish-node-npm, validate-release-identity]\n"
+    assert crates.count(needs) == 1
+    workflow.write_text(source.replace(crates, crates.replace(needs, "", 1), 1))
+
+    with pytest.raises(validator.ValidationError, match="frozen-tag dependency"):
+        validator.validate_server_oci_release_channels(workflow)
 
 
 def test_v2_crate_cannot_be_marked_unpublished(tmp_path: Path) -> None:
@@ -1587,6 +1682,9 @@ def test_vendor_provenance_current_driver_prose_tracks_resolved_pin(tmp_path: Pa
         "patch.crates-io.type-bridge-core-lib.path=crates/core",
         "needs: publish-crates",
         "publish_crate_idempotently.sh",
+        "cargo_release_candidate.py",
+        "publish_cargo_release_candidate.py",
+        "cargo-release-candidate",
         "publish-crates:",
         "name: rust-crates",
         "path: type-bridge-core/target/package",

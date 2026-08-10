@@ -11,6 +11,8 @@ use type_bridge_contract::schema::DocumentId;
 use type_bridge_schema::{SchemaDocumentSet, normalize_documents, project, resolve};
 use type_bridge_schema_codegen::{GeneratedPackage, RustEmitter};
 
+mod support;
+
 const POSITIVE: &str = include_str!("rust_acceptance/positive.rs");
 const NEGATIVE: &str = include_str!("rust_acceptance/negative.rs");
 static STAGE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -77,12 +79,9 @@ fn project_from_source(source: &str) -> RuntimeProjection {
 }
 
 fn emit_from_source(source: &str) -> GeneratedPackage {
-    let documents =
-        SchemaDocumentSet::parse([(DocumentId::new("rust-acceptance.yaml").unwrap(), source)])
-            .unwrap();
-    let declared = normalize_documents(&documents).unwrap();
+    let authority = support::authority(source);
     RustEmitter::new()
-        .emit_with_declared_schema(&project_from_source(source), &declared)
+        .emit(&project_from_source(source), &authority)
         .unwrap()
 }
 
@@ -307,6 +306,47 @@ fn generated_subtype_association_compiles_as_ordinary_dependency() {
         output.status.success(),
         "ordinary consumer failed: {}",
         String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn abstract_attribute_family_compiles_and_runs_as_a_value_enum() {
+    let stage = Stage::new();
+    let generated = stage.path().join("generated");
+    let consumer = stage.path().join("attribute-family-consumer");
+    let package = emit_from_source(include_str!(
+        "../../../../docs/fixtures/split-yaml-v1/schema/fixture.yaml"
+    ));
+    write_package(&package, &generated);
+    write_consumer_with_features(
+        &consumer,
+        "attribute-family-consumer",
+        r#"use generated::{EmployeeId, IdentifierFamily};
+
+fn main() {
+    let employee_id = EmployeeId::new("ADA-1").unwrap();
+    let identifier = IdentifierFamily::EmployeeId(employee_id);
+    assert_eq!(identifier.value(), "ADA-1");
+    assert_eq!(identifier.as_employee_id().unwrap().value(), "ADA-1");
+}
+"#,
+        &[],
+    );
+    let output = cargo(
+        &[
+            "run",
+            "--offline",
+            "--quiet",
+            "--manifest-path",
+            consumer.join("Cargo.toml").to_str().unwrap(),
+        ],
+        &stage.path().join("attribute-family-consumer-target"),
+    );
+    assert!(
+        output.status.success(),
+        "attribute family consumer failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
     );
 }
 
@@ -1767,10 +1807,10 @@ fn abstract_model_does_not_implement_complete_model() {
 
 #[test]
 fn rust_emitter_name_collision_detected_for_colliding_derived_names() {
-    let documents = SchemaDocumentSet::parse([(
-        DocumentId::new("rust-collision.yaml").unwrap(),
-        "format: typebridge.schema/v2\nentities:\n  person:\n    abstract: true\n  employee:\n    sub: person\n  person_family: {}\n",
-    )]).unwrap();
+    let source = "format: typebridge.schema/v2\nentities:\n  person:\n    abstract: true\n  employee:\n    sub: person\n  person_family: {}\n";
+    let documents =
+        SchemaDocumentSet::parse([(DocumentId::new("rust-collision.yaml").unwrap(), source)])
+            .unwrap();
     let declared = normalize_documents(&documents).unwrap();
     let resolved = resolve(
         &declared,
@@ -1787,7 +1827,9 @@ fn rust_emitter_name_collision_detected_for_colliding_derived_names() {
         &resources,
     )
     .unwrap();
-    let err = emitter.emit(&projection).unwrap_err();
+    let err = emitter
+        .emit(&projection, &support::authority(source))
+        .unwrap_err();
     assert_eq!(err.code().as_str(), "rust_emitter_name_collision");
 }
 
@@ -1972,7 +2014,9 @@ entities:
     assert_eq!(token.id(), &effective);
     assert_eq!(token.declaring_id(), &declaring);
 
-    let pkg = RustEmitter::new().emit(&projection).unwrap();
+    let pkg = RustEmitter::new()
+        .emit(&projection, &support::authority(schema_yaml))
+        .unwrap();
     let tokens_rs = std::str::from_utf8(pkg.files().get("src/tokens.rs").unwrap()).unwrap();
     let inherited_token_line = tokens_rs
         .lines()
@@ -2460,7 +2504,9 @@ entities:
 
     for (label, source, identities) in fixtures {
         let projection = project_from_source(source);
-        let error = RustEmitter::new().emit(&projection).unwrap_err();
+        let error = RustEmitter::new()
+            .emit(&projection, &support::authority(source))
+            .unwrap_err();
         assert_eq!(error.code().as_str(), "rust_emitter_name_collision");
         for identity in identities {
             assert!(
@@ -2475,11 +2521,9 @@ entities:
 
 #[test]
 fn rust_acceptance_review_06b_dispatch_helper_collision_is_diagnostic() {
-    let documents = SchemaDocumentSet::parse([(
-        DocumentId::new("helper.yaml").unwrap(),
-        "format: typebridge.schema/v2\nattributes:\n  __tb-dispatch-subtype: { value: string }\nentities:\n  person:\n    owns:\n      __tb-dispatch-subtype: { card: 1 }\n",
-    )])
-    .unwrap();
+    let source = "format: typebridge.schema/v2\nattributes:\n  __tb-dispatch-subtype: { value: string }\nentities:\n  person:\n    owns:\n      __tb-dispatch-subtype: { card: 1 }\n";
+    let documents =
+        SchemaDocumentSet::parse([(DocumentId::new("helper.yaml").unwrap(), source)]).unwrap();
     let resolved = resolve(
         &normalize_documents(&documents).unwrap(),
         &SemanticProfileId::new("typedb-3.12.1/v1").unwrap(),
@@ -2494,7 +2538,9 @@ fn rust_acceptance_review_06b_dispatch_helper_collision_is_diagnostic() {
         &emitter.code_resources().unwrap(),
     )
     .unwrap();
-    let error = emitter.emit(&projection).unwrap_err();
+    let error = emitter
+        .emit(&projection, &support::authority(source))
+        .unwrap_err();
     assert_eq!(error.code().as_str(), "rust_emitter_name_collision");
     assert!(
         error
@@ -2730,7 +2776,9 @@ plays:
     let token = &projection.models()[&keyed_child].query_tokens().fields()[&effective];
     assert_eq!(token.declaring_id(), &declaring);
 
-    let pkg = RustEmitter::new().emit(&projection).unwrap();
+    let pkg = RustEmitter::new()
+        .emit(&projection, &support::authority(schema_yaml))
+        .unwrap();
     let reference_rs = std::str::from_utf8(pkg.files().get("src/reference.rs").unwrap()).unwrap();
     let read_rs = std::str::from_utf8(pkg.files().get("src/read.rs").unwrap()).unwrap();
     let create_rs = std::str::from_utf8(pkg.files().get("src/create.rs").unwrap()).unwrap();

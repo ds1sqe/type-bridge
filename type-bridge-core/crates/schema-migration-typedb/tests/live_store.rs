@@ -25,8 +25,9 @@ use type_bridge_schema_migration::{
     build_verified_migration_apply_plan, typedb_3_12_1_profile,
 };
 use type_bridge_schema_migration_typedb::{
-    JOURNAL_CONTROL_SCHEMA_TYPEQL, TypeDbMigrationStore, VerifiedMigrationCatalog,
-    derived_journal_database_name, partition_typeql_export, require_active_managed_fence,
+    JOURNAL_CONTROL_SCHEMA_TYPEQL, TypeDbExecutionBinding, TypeDbMigrationStore,
+    VerifiedMigrationCatalog, derived_journal_database_name, partition_typeql_export,
+    require_active_managed_fence,
 };
 
 fn connection() -> (String, String, String, String, ConnectOptions) {
@@ -112,9 +113,9 @@ fn declared(labels: &[&str]) -> DeclaredSchema {
         .expect("declared schema")
 }
 
-fn context() -> ManagedDeltaContext {
+fn context_for_scope(scope: ManagedScopeId) -> ManagedDeltaContext {
     ManagedDeltaContext::new(
-        ManagedScopeId::new("journal-live-scope").expect("scope"),
+        scope,
         SemanticProfileId::new("typedb-3.12.1/v1").expect("profile"),
         typedb_3_12_1_profile().required_capabilities.clone(),
     )
@@ -176,12 +177,16 @@ async fn foreign_journal_schema_rejects_without_mutating_either_database() {
     let journal_before = journal.schema_text().await.expect("journal export before");
     let managed_before = managed.schema_text().await.expect("managed export before");
     let scope = ManagedScopeId::new("foreign-journal-scope").unwrap();
+    let binding = TypeDbExecutionBinding::new(
+        Arc::clone(&managed),
+        Arc::clone(&journal),
+        context_for_scope(scope),
+    )
+    .expect("bind exact managed/journal pair and context");
     let catalog =
         VerifiedMigrationCatalog::new(std::iter::empty::<&VerifiedSchemaMigrationManifest>())
             .unwrap();
-    let store =
-        TypeDbMigrationStore::new(Arc::clone(&managed), Arc::clone(&journal), scope, catalog)
-            .unwrap();
+    let store = TypeDbMigrationStore::new(&binding, catalog).unwrap();
 
     let error = store
         .ensure_control_schema()
@@ -215,15 +220,11 @@ async fn different_provider_authority_rejects_before_mutating_either_database() 
     let managed_before = managed.schema_text().await.unwrap();
     let journal_before = journal.schema_text().await.unwrap();
     let scope = ManagedScopeId::new("different-provider-authority-scope").unwrap();
-    let catalog =
-        VerifiedMigrationCatalog::new(std::iter::empty::<&VerifiedSchemaMigrationManifest>())
-            .unwrap();
 
-    let result = TypeDbMigrationStore::new(
+    let result = TypeDbExecutionBinding::new(
         Arc::clone(&managed),
         journal_through_other_authority,
-        scope,
-        catalog,
+        context_for_scope(scope),
     );
     let Err(error) = result else {
         panic!("different endpoint authorities must reject at construction");
@@ -255,19 +256,20 @@ async fn missing_and_wrong_journal_owner_reject_unchanged_before_managed_fence()
     let journal_schema = journal.schema_text().await.unwrap();
     let managed_before = managed.schema_text().await.unwrap();
     let scope = ManagedScopeId::new("journal-owner-scope").unwrap();
+    let binding = TypeDbExecutionBinding::new(
+        Arc::clone(&managed),
+        Arc::clone(&journal),
+        context_for_scope(scope),
+    )
+    .expect("bind exact managed/journal pair and context");
     let catalog =
         VerifiedMigrationCatalog::new(std::iter::empty::<&VerifiedSchemaMigrationManifest>())
             .unwrap();
-    let missing = TypeDbMigrationStore::new(
-        Arc::clone(&managed),
-        Arc::clone(&journal),
-        scope.clone(),
-        catalog,
-    )
-    .unwrap()
-    .ensure_control_schema()
-    .await
-    .expect_err("an exact schema without the immutable owner must reject");
+    let missing = TypeDbMigrationStore::new(&binding, catalog)
+        .unwrap()
+        .ensure_control_schema()
+        .await
+        .expect_err("an exact schema without the immutable owner must reject");
     assert_eq!(
         missing.code().as_str(),
         "migration_typedb_journal_owner_mismatch"
@@ -292,12 +294,11 @@ async fn missing_and_wrong_journal_owner_reject_unchanged_before_managed_fence()
     let catalog =
         VerifiedMigrationCatalog::new(std::iter::empty::<&VerifiedSchemaMigrationManifest>())
             .unwrap();
-    let wrong =
-        TypeDbMigrationStore::new(Arc::clone(&managed), Arc::clone(&journal), scope, catalog)
-            .unwrap()
-            .ensure_control_schema()
-            .await
-            .expect_err("a foreign immutable owner must reject");
+    let wrong = TypeDbMigrationStore::new(&binding, catalog)
+        .unwrap()
+        .ensure_control_schema()
+        .await
+        .expect_err("a foreign immutable owner must reject");
     assert_eq!(
         wrong.code().as_str(),
         "migration_typedb_journal_owner_mismatch"
@@ -312,16 +313,16 @@ async fn concurrent_bootstrap_is_singleton_and_read_only_verify_never_bootstraps
     let (managed, journal) = databases().await;
     let scope_id = ManagedScopeId::new("concurrent-journal-scope").unwrap();
     let scope = ExecutionScope::new(scope_id.clone());
+    let binding = TypeDbExecutionBinding::new(
+        Arc::clone(&managed),
+        Arc::clone(&journal),
+        context_for_scope(scope_id),
+    )
+    .expect("bind exact managed/journal pair and context");
     let catalog_a =
         VerifiedMigrationCatalog::new(std::iter::empty::<&VerifiedSchemaMigrationManifest>())
             .unwrap();
-    let store_a = TypeDbMigrationStore::new(
-        Arc::clone(&managed),
-        Arc::clone(&journal),
-        scope_id.clone(),
-        catalog_a,
-    )
-    .unwrap();
+    let store_a = TypeDbMigrationStore::new(&binding, catalog_a).unwrap();
     let journal_before = journal.schema_text().await.unwrap();
     let managed_before = managed.schema_text().await.unwrap();
     let verify_error = store_a
@@ -340,13 +341,7 @@ async fn concurrent_bootstrap_is_singleton_and_read_only_verify_never_bootstraps
     let catalog_b =
         VerifiedMigrationCatalog::new(std::iter::empty::<&VerifiedSchemaMigrationManifest>())
             .unwrap();
-    let store_b = TypeDbMigrationStore::new(
-        Arc::clone(&managed),
-        Arc::clone(&journal),
-        scope_id.clone(),
-        catalog_b,
-    )
-    .unwrap();
+    let store_b = TypeDbMigrationStore::new(&binding, catalog_b).unwrap();
     let (first, second) = tokio::join!(
         store_a.ensure_control_schema(),
         store_b.ensure_control_schema()
@@ -374,13 +369,7 @@ async fn concurrent_bootstrap_is_singleton_and_read_only_verify_never_bootstraps
     let catalog_resume =
         VerifiedMigrationCatalog::new(std::iter::empty::<&VerifiedSchemaMigrationManifest>())
             .unwrap();
-    let resumed = TypeDbMigrationStore::new(
-        Arc::clone(&managed),
-        Arc::clone(&journal),
-        scope_id,
-        catalog_resume,
-    )
-    .unwrap();
+    let resumed = TypeDbMigrationStore::new(&binding, catalog_resume).unwrap();
     resumed
         .ensure_control_schema()
         .await
@@ -399,16 +388,18 @@ async fn concurrent_bootstrap_is_singleton_and_read_only_verify_never_bootstraps
 async fn control_schema_and_fenced_lease_round_trip_on_3_12_1() {
     let (managed_database, journal_database) = databases().await;
     let scope_id = ManagedScopeId::new("journal-live-scope").expect("managed scope id");
+    let context = context_for_scope(scope_id.clone());
+    let binding = TypeDbExecutionBinding::new(
+        Arc::clone(&managed_database),
+        Arc::clone(&journal_database),
+        context.clone(),
+    )
+    .expect("bind exact managed/journal pair and context");
     let catalog =
         VerifiedMigrationCatalog::new(std::iter::empty::<&VerifiedSchemaMigrationManifest>())
             .expect("empty verified catalog");
-    let store = TypeDbMigrationStore::new(
-        Arc::clone(&managed_database),
-        Arc::clone(&journal_database),
-        scope_id.clone(),
-        catalog,
-    )
-    .expect("bind exact managed/journal pair");
+    let store =
+        TypeDbMigrationStore::new(&binding, catalog).expect("bind exact managed/journal pair");
     store
         .ensure_control_schema()
         .await
@@ -475,7 +466,6 @@ async fn control_schema_and_fenced_lease_round_trip_on_3_12_1() {
 
     let base = declared(&["person"]);
     let target = declared(&["person", "company"]);
-    let context = context();
     let migration = verified_manifest(&base, &target, &context);
     let graph =
         MigrationHistoryGraph::from_verified([migration.clone()]).expect("verified history");
@@ -494,15 +484,10 @@ async fn control_schema_and_fenced_lease_round_trip_on_3_12_1() {
     assert_eq!(plan.migrations().len(), 1);
 
     let catalog = VerifiedMigrationCatalog::new([&migration]).expect("catalog");
-    let journal = TypeDbMigrationStore::new(
-        Arc::clone(&managed_database),
-        Arc::clone(&journal_database),
-        context.scope_id().clone(),
-        catalog,
-    )
-    .expect("bind exact managed/journal pair")
-    .bind_plan(&plan)
-    .expect("bind exact plan");
+    let journal = TypeDbMigrationStore::new(&binding, catalog)
+        .expect("bind exact managed/journal pair")
+        .bind_plan(&plan)
+        .expect("bind exact plan");
     let journal_scope =
         ExecutionScope::new(ManagedScopeId::new("journal-live-scope").expect("journal scope"));
     let executor_a = LeaseHolderId::new("journal-executor-a").expect("executor A");
@@ -671,15 +656,10 @@ async fn control_schema_and_fenced_lease_round_trip_on_3_12_1() {
 
     let reopened_catalog =
         VerifiedMigrationCatalog::new([&migration, &second]).expect("reopened catalog");
-    let reopened = TypeDbMigrationStore::new(
-        Arc::clone(&managed_database),
-        Arc::clone(&journal_database),
-        context.scope_id().clone(),
-        reopened_catalog,
-    )
-    .expect("rebind exact managed/journal pair")
-    .bind_plan(&follow_on_plan)
-    .expect("bind follow-on plan after store restart");
+    let reopened = TypeDbMigrationStore::new(&binding, reopened_catalog)
+        .expect("rebind exact managed/journal pair")
+        .bind_plan(&follow_on_plan)
+        .expect("bind follow-on plan after store restart");
     let executor_c = LeaseHolderId::new("journal-executor-c").expect("executor C");
     let lease_three = reopened
         .acquire(&journal_scope, &executor_c)

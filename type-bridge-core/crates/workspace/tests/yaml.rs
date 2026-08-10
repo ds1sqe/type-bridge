@@ -8,9 +8,10 @@ use type_bridge_contract::migration::MigrationAppLabel;
 use type_bridge_contract::projection::BindingTarget;
 use type_bridge_workspace::{
     ConfigOrigin, ExtensionRegistryService, ExtensionRequirement, MigrationV2Directory,
-    OutputDirectory, SchemaSetPath, SecretReference, SecretReferenceService, SecretSlot,
-    TypeBridgeConfig, TypeBridgeConfigServices, TypeBridgeConfigSpec, WorkspaceConfigErrorCode,
-    WorkspaceRoot, WorkspaceServiceError, WorkspaceSourceService,
+    OutputDirectory, SchemaAuthorityOutputPath, SchemaSetPath, SecretReference,
+    SecretReferenceService, SecretSlot, TypeBridgeConfig, TypeBridgeConfigServices,
+    TypeBridgeConfigSpec, WorkspaceConfigErrorCode, WorkspaceRoot, WorkspaceServiceError,
+    WorkspaceSourceService,
 };
 
 const WORKSPACE_YAML: &str = r#"# retained workspace comment
@@ -40,6 +41,9 @@ secrets:
 extensions:
   example.documentation:
     version: v1
+artifacts:
+  schema-authority:
+    output: ../generated/schema-authority.json
 "#;
 
 struct CanonicalSource(Cell<usize>);
@@ -122,6 +126,9 @@ fn programmatic(
             BindingTarget::Rust,
             OutputDirectory::new("generated/rust").unwrap(),
         )
+        .schema_authority_output(
+            SchemaAuthorityOutputPath::new("generated/schema-authority.json").unwrap(),
+        )
         .secret(
             SecretSlot::new("typedb.credential").unwrap(),
             SecretReference::environment("TYPEDB_CREDENTIAL").unwrap(),
@@ -201,6 +208,10 @@ fn manifest_relative_paths_are_normalized_but_cannot_escape_workspace_root() {
         config.migration_v2_directory().as_path().to_str(),
         Some("migrations/v2")
     );
+    assert_eq!(
+        config.schema_authority_output().unwrap().as_path().to_str(),
+        Some("generated/schema-authority.json")
+    );
 
     let escaping = WORKSPACE_YAML.replace("../schema/schema.yaml", "../../schema/schema.yaml");
     let error = TypeBridgeConfigSpec::parse_yaml(escaping, origin())
@@ -211,6 +222,126 @@ fn manifest_relative_paths_are_normalized_but_cannot_escape_workspace_root() {
     assert_eq!(error.detail(), Some("schema.root"));
     assert_eq!(error.origin(), Some("virtual workspace config"));
     assert_eq!(error.source_span().unwrap().line(), 4);
+}
+
+#[test]
+fn optional_artifact_block_is_strict_and_source_aware() {
+    let without_artifact = WORKSPACE_YAML.replace(
+        "artifacts:\n  schema-authority:\n    output: ../generated/schema-authority.json\n",
+        "",
+    );
+    let source = CanonicalSource(Cell::new(0));
+    let secrets = AcceptSecrets(Cell::new(0));
+    let extensions = AcceptExtensions(Cell::new(0));
+    let config = TypeBridgeConfigSpec::parse_yaml(without_artifact, origin())
+        .unwrap()
+        .resolve(&services(&source, &secrets, &extensions))
+        .unwrap();
+    assert!(config.schema_authority_output().is_none());
+
+    let unknown_artifact = WORKSPACE_YAML.replace(
+        "artifacts:\n",
+        "artifacts:\n  generated-lock:\n    output: ../generated/workspace.lock\n",
+    );
+    let error = TypeBridgeConfigSpec::parse_yaml(unknown_artifact, origin()).unwrap_err();
+    assert_eq!(error.code(), WorkspaceConfigErrorCode::UnknownWorkspaceKey);
+    assert_eq!(error.detail(), Some("artifacts.generated-lock"));
+    assert!(error.source_span().is_some());
+
+    let unknown_field = WORKSPACE_YAML.replace(
+        "    output: ../generated/schema-authority.json",
+        "    output: ../generated/schema-authority.json\n    format: json",
+    );
+    let error = TypeBridgeConfigSpec::parse_yaml(unknown_field, origin()).unwrap_err();
+    assert_eq!(error.code(), WorkspaceConfigErrorCode::UnknownWorkspaceKey);
+    assert_eq!(error.detail(), Some("artifacts.schema-authority.format"));
+    assert!(error.source_span().is_some());
+
+    let missing_output = WORKSPACE_YAML.replace(
+        "  schema-authority:\n    output: ../generated/schema-authority.json",
+        "  schema-authority: {}",
+    );
+    let error = TypeBridgeConfigSpec::parse_yaml(missing_output, origin()).unwrap_err();
+    assert_eq!(
+        error.code(),
+        WorkspaceConfigErrorCode::MissingWorkspaceField
+    );
+    assert_eq!(error.detail(), Some("artifacts.schema-authority.output"));
+    assert!(error.source_span().is_some());
+
+    let wrong_shape = WORKSPACE_YAML.replace(
+        "  schema-authority:\n    output: ../generated/schema-authority.json",
+        "  schema-authority: []",
+    );
+    let error = TypeBridgeConfigSpec::parse_yaml(wrong_shape, origin()).unwrap_err();
+    assert_eq!(
+        error.code(),
+        WorkspaceConfigErrorCode::InvalidWorkspaceValue
+    );
+    assert_eq!(error.detail(), Some("artifacts.schema-authority"));
+    assert!(error.source_span().is_some());
+}
+
+#[test]
+fn artifact_output_is_confined_portable_and_disjoint_after_manifest_resolution() {
+    let source = CanonicalSource(Cell::new(0));
+    let secrets = AcceptSecrets(Cell::new(0));
+    let extensions = AcceptExtensions(Cell::new(0));
+    let service_set = services(&source, &secrets, &extensions);
+
+    let escaping = WORKSPACE_YAML.replace(
+        "../generated/schema-authority.json",
+        "../../schema-authority.json",
+    );
+    let error = TypeBridgeConfigSpec::parse_yaml(escaping, origin())
+        .unwrap()
+        .resolve(&service_set)
+        .unwrap_err();
+    assert_eq!(error.code(), WorkspaceConfigErrorCode::PathNotConfined);
+    assert_eq!(error.detail(), Some("artifacts.schema-authority.output"));
+    assert!(error.source_span().is_some());
+
+    let nonportable = WORKSPACE_YAML.replace(
+        "../generated/schema-authority.json",
+        "../generated/con.json",
+    );
+    let error = TypeBridgeConfigSpec::parse_yaml(nonportable, origin())
+        .unwrap()
+        .resolve(&service_set)
+        .unwrap_err();
+    assert_eq!(error.code(), WorkspaceConfigErrorCode::PathNotConfined);
+    assert_eq!(error.detail(), Some("schema_authority_output"));
+    assert!(error.source_span().is_some());
+
+    let adjacent_json = WORKSPACE_YAML.replace(
+        "../generated/schema-authority.json",
+        "../schema/schema-authority.json",
+    );
+    let config = TypeBridgeConfigSpec::parse_yaml(adjacent_json, origin())
+        .unwrap()
+        .resolve(&service_set)
+        .expect("JSON authority beside schema YAML cannot enter schema discovery");
+    assert_eq!(
+        config.schema_authority_output().unwrap().as_path(),
+        Path::new("schema/schema-authority.json")
+    );
+
+    for overlapping in [
+        "../migrations/v2/schema-authority.json",
+        "../generated/python/schema-authority.json",
+    ] {
+        let manifest = WORKSPACE_YAML.replace("../generated/schema-authority.json", overlapping);
+        let error = TypeBridgeConfigSpec::parse_yaml(manifest, origin())
+            .unwrap()
+            .resolve(&service_set)
+            .unwrap_err();
+        assert_eq!(
+            error.code(),
+            WorkspaceConfigErrorCode::OverlappingWorkspacePath,
+            "overlapping artifact {overlapping:?} was accepted"
+        );
+        assert!(error.source_span().is_some());
+    }
 }
 
 #[test]

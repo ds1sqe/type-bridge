@@ -5,9 +5,11 @@ TypeBridge 2.1 has one active authoring path and one semantic engine:
 ```text
 Split-YAML workspace
   -> strict Rust schema resolution
-  -> canonical declared schema + fingerprints
-  -> generated Python / TypeScript / Rust projections
-  -> projection registration and exact generated values
+  -> one `schema generate` workspace snapshot
+  -> compiled schema authority + canonical fingerprints
+       -> generated Python / TypeScript / Rust projections with embedded authority
+       -> optional configured source-free generic-server authority artifact
+  -> package projection registration and exact generated values
   -> Rust ORM/query/migration/provider execution
   -> typed hydrated results
 ```
@@ -18,10 +20,13 @@ projection of canonical workspace bytes.
 ## Authority and evidence
 
 `typebridge.yaml` selects a closed schema-set root, compatibility profile,
-migration directory, binding outputs, and environments. Resolution produces
-canonical declared-schema evidence. Each generated package embeds:
+migration directory, binding outputs, optional
+`artifacts.schema-authority.output`, and environments. Resolution produces
+canonical compiled authority. Each generated package embeds:
 
-- the declared schema and projection descriptor bytes;
+- the versioned authority envelope, declared schema, and projection descriptor
+  bytes;
+- exact required capabilities, managed scope, and semantic profile;
 - schema, projection, target, and package fingerprints;
 - exact entity, relation, attribute, reference, field-token, and role-token
   identities;
@@ -31,6 +36,14 @@ Python and Node register those immutable bytes and exact emitted identities at
 package import. Registration rejects forged classes, structural lookalikes,
 changed fingerprints, duplicate/conflicting installations, and unbounded input.
 Rust binds the same evidence through its generated `SchemaPackage`.
+
+When configured for a generic-server deployment, the same generation snapshot
+writes a byte-equivalent `typebridge.schema-authority/v1` artifact. Canonical
+JSON is only its bounded language-neutral codec: it is never parsed as authored
+schema or maintained independently. The server reconstructs all authority
+through Rust constructors, then compares it with a schema-fenced live TypeDB
+view. Generated Python and TypeScript remote sessions instead reconstruct their
+authority from private package evidence and accept no authority-file argument.
 
 Generated integration uses a projection-owned nominal contract. It does not
 route values through the retained V1 `TypeDBType` nominal boundary, and that

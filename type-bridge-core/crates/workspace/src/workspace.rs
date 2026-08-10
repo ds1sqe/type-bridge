@@ -24,7 +24,7 @@ use type_bridge_schema::{
 
 use crate::{
     ExtensionRegistryService, LocatedConfigSpec, SecretReferenceService,
-    TYPEBRIDGE_WORKSPACE_SEMANTIC_PROFILE_ID, TypeBridgeConfig, TypeBridgeConfigServices,
+    TYPEBRIDGE_WORKSPACE_SEMANTIC_PROFILE_IDS, TypeBridgeConfig, TypeBridgeConfigServices,
     WorkspaceConfigError, WorkspaceConfigErrorCode, WorkspaceDirectoryAuthority,
     WorkspaceOutputDirectory, WorkspaceRoot, WorkspaceSourceService, WorkspaceTransportPolicy,
     authority::retain_canonical_root,
@@ -540,7 +540,7 @@ fn validate_config_before_capture(
     config: &TypeBridgeConfig,
     services: &TypeBridgeWorkspaceServices<'_>,
 ) -> Result<(), TypeBridgeWorkspaceError> {
-    if config.semantic_profile().as_str() != TYPEBRIDGE_WORKSPACE_SEMANTIC_PROFILE_ID {
+    if !TYPEBRIDGE_WORKSPACE_SEMANTIC_PROFILE_IDS.contains(&config.semantic_profile().as_str()) {
         return Err(WorkspaceConfigError::new(
             WorkspaceConfigErrorCode::UnsupportedSemanticProfile,
             "workspace config semantic profile changed after validation",

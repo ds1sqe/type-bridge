@@ -5,6 +5,8 @@
 //! runtime-projection execution; handwritten model traits, derives, registries,
 //! descriptors, managers, and schema authoring are not package-root APIs.
 
+#![deny(missing_docs)]
+
 #[doc(hidden)]
 #[path = "attribute.rs"]
 pub mod _attribute;

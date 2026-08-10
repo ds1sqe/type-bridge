@@ -43,7 +43,8 @@ pub struct PythonRenderRequest<'a> {
 ///
 /// # Errors
 ///
-/// [`MigrationError::UnsupportedChange`] when the operation list contains a
+/// [`MigrationError::UnsupportedChange`](crate::error::MigrationError::UnsupportedChange)
+/// when the operation list contains a
 /// variant that has no faithful `.py` authoring form (`DefineSchema`,
 /// TypeQL-only `CopyAttribute`, `RenameAttribute`).
 pub fn render_migration_python(request: &PythonRenderRequest<'_>) -> crate::Result<String> {

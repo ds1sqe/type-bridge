@@ -20,7 +20,7 @@ change declared schema meaning.
 
 ## Frozen contract
 
-The following 23 decisions define this version. A later format may add syntax,
+The following 24 decisions define this version. A later format may add syntax,
 but these wires never parse a future key and ignore it.
 
 | # | Surface | V1/V2 contract |
@@ -33,7 +33,7 @@ but these wires never parse a future key and ignore it.
 | 6 | Fact-local extensions | Rejected and deferred to a later document format. |
 | 7 | Schema extensions | Dot-namespaced capability ID with requirement-only `{required}`; no payload or data. |
 | 8 | Structs | Flat, ordered fields with built-in value types; no nesting or user-defined field types. |
-| 9 | Semantic profile | Exactly `typedb-3.12.1/v1`. |
+| 9 | Semantic profile | Exactly `typedb-3.11.5/v1` or `typedb-3.12.1/v1`. |
 | 10 | Migration directory | A workspace path ending directly in `v2`, such as `migrations/v2`. |
 | 11 | Schema lockfile key | Unsupported. Workspace V1 owns its fixed lock internally. |
 | 12 | TypeDB version range | Unsupported. The exact semantic profile is authoritative. |
@@ -48,6 +48,7 @@ but these wires never parse a future key and ignore it.
 | 21 | Environment HTTP port | Optional canonical `u16` in `http-port`. |
 | 22 | Top-level secrets | Namespaced `{env: VARIABLE}` slots, retained for explicit consumers. |
 | 23 | Workspace extensions | Exact `{version}` handler requirements; no data payload. |
+| 24 | Server authority output | Optional exact `artifacts.schema-authority.output`; one confined portable generated file whose path ends in lowercase `.json`. |
 
 Workspace V1 additionally has the implemented `tls` and `tls-root-ca` keys.
 They extend transport policy without changing any decision above.
@@ -60,6 +61,7 @@ schema/schema.yaml                     schema-set source discovery
 schema/**/*.yaml                       portable schema fragments
 migrations/v2/*.tbmigration.json       immutable transition authority
 migrations/v2/*.typeql                 generated review rendering
+generated/schema-authority.json        generated source-free server authority
 environment variables                  deployment credentials
 database ledger                        applied transition state
 ```
@@ -67,6 +69,20 @@ database ledger                        applied transition state
 Paths in `typebridge.yaml` are relative to that manifest. Patterns in the
 schema-set are relative to the schema-set manifest. Fragments cannot include
 other fragments.
+
+The server artifact is configured only through this exact shape:
+
+```yaml
+artifacts:
+  schema-authority:
+    output: generated/schema-authority.json
+```
+
+Its path is confined and cannot overlap schema sources, migrations, binding
+outputs, or custom trust material. `schema generate` produces it from the same
+captured workspace as every binding. The canonical JSON bytes are compiled
+deployment evidence, not a file users maintain or feed back into schema
+resolution.
 
 ## Schema-set manifest
 
@@ -124,7 +140,7 @@ In a sibling mapping, every fact needs a mapping body. For example,
 empty expanded bodies have the same declared meaning.
 
 Annotations are typed keys on the exact fact they modify. YAML omits the
-TypeQL `@` sigil. The supported keys for `typedb-3.12.1/v1` are:
+TypeQL `@` sigil. The supported keys for both accepted semantic profiles are:
 
 | Subject | Keys |
 | --- | --- |
@@ -309,5 +325,7 @@ cargo run --manifest-path type-bridge-core/Cargo.toml \
   --manifest docs/fixtures/split-yaml-v1/typebridge.yaml schema check
 ```
 
-`schema check` is read-only and offline. `schema generate`, `migration make`,
-and connected migration commands remain separate explicit operations.
+`schema check` is read-only and offline. `schema generate` writes every
+configured binding plus the configured server authority artifact without
+contacting TypeDB. Migration authoring and connected migration commands remain
+separate explicit operations.

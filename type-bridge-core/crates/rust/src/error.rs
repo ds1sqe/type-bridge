@@ -133,10 +133,15 @@ pub enum Error {
     /// Generated-model evidence did not match the installed schema projection.
     #[error("Model validation failed during {phase:?}: {message}")]
     ModelValidation {
+        /// Validation stage at which the evidence failed.
         phase: ModelValidationPhase,
+        /// Stable language-neutral failure code.
         code: String,
+        /// Canonical path to the rejected value or model evidence.
         path: Vec<String>,
+        /// Human-readable failure summary.
         message: String,
+        /// Optional underlying error that caused the validation failure.
         #[source]
         source: Option<Box<dyn StdError + Send + Sync + 'static>>,
     },
@@ -145,12 +150,19 @@ pub enum Error {
     /// client-owned categories, codes, and paths.
     #[error("{category} error [{code}]: {message}")]
     Classified {
+        /// Stable public error category.
         category: ErrorCategory,
+        /// Model-validation phase when applicable to this failure.
         phase: Option<ModelValidationPhase>,
+        /// Stable language-neutral failure code.
         code: String,
+        /// Canonical flattened path to the rejected contract member.
         path: Vec<String>,
+        /// Typed engine or remote diagnostic metadata, when supplied.
         diagnostic: Option<Box<ErrorDiagnostic>>,
+        /// Human-readable failure summary.
         message: String,
+        /// Optional underlying error that caused the classified failure.
         #[source]
         source: Option<Box<dyn StdError + Send + Sync + 'static>>,
     },
@@ -158,7 +170,9 @@ pub enum Error {
     /// Schema verification or installation failed.
     #[error("Schema verification failed: {message}")]
     SchemaVerification {
+        /// Human-readable schema verification failure summary.
         message: String,
+        /// Optional underlying schema decoding or installation error.
         #[source]
         source: Option<Box<dyn StdError + Send + Sync + 'static>>,
     },
@@ -166,7 +180,9 @@ pub enum Error {
     /// Connection to the database failed.
     #[error("Connection error: {message}")]
     Connection {
+        /// Human-readable connection failure summary.
         message: String,
+        /// Optional underlying transport or provider error.
         #[source]
         source: Option<Box<dyn StdError + Send + Sync + 'static>>,
     },
@@ -174,7 +190,9 @@ pub enum Error {
     /// Database query or operation failed.
     #[error("Query execution error: {message}")]
     QueryExecution {
+        /// Human-readable query execution failure summary.
         message: String,
+        /// Optional underlying provider or remote execution error.
         #[source]
         source: Option<Box<dyn StdError + Send + Sync + 'static>>,
     },
@@ -182,7 +200,9 @@ pub enum Error {
     /// Database transaction failed.
     #[error("Transaction error: {message}")]
     Transaction {
+        /// Human-readable transaction failure summary.
         message: String,
+        /// Optional underlying provider transaction error.
         #[source]
         source: Option<Box<dyn StdError + Send + Sync + 'static>>,
     },
@@ -190,7 +210,9 @@ pub enum Error {
     /// Requested schema element or database entity was not found.
     #[error("Entity not found: {message}")]
     NotFound {
+        /// Human-readable description of the missing resource.
         message: String,
+        /// Optional underlying lookup error.
         #[source]
         source: Option<Box<dyn StdError + Send + Sync + 'static>>,
     },
@@ -198,7 +220,9 @@ pub enum Error {
     /// Underlying database error.
     #[error("Database error: {message}")]
     Database {
+        /// Human-readable database failure summary.
         message: String,
+        /// Optional underlying database driver error.
         #[source]
         source: Option<Box<dyn StdError + Send + Sync + 'static>>,
     },
@@ -206,7 +230,9 @@ pub enum Error {
     /// Client request or execution error.
     #[error("Client error: {message}")]
     Other {
+        /// Human-readable client failure summary.
         message: String,
+        /// Optional underlying error outside the narrower variants.
         #[source]
         source: Option<Box<dyn StdError + Send + Sync + 'static>>,
     },

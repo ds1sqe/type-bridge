@@ -48,6 +48,7 @@ release_crates=(
   type-bridge-orm
   type-bridge-migration
   type-bridge-schema-migration-typedb
+  type-bridge-server
   type-bridge-workspace
   type-bridge-cli
   type-bridge
@@ -66,6 +67,7 @@ publish_crates=(
   type-bridge-orm
   type-bridge-migration
   type-bridge-schema-migration-typedb
+  type-bridge-server
   type-bridge-workspace
   type-bridge-cli
   type-bridge
@@ -100,6 +102,7 @@ patches=(
   --config 'patch.crates-io.type-bridge-orm.path="crates/orm"'
   --config 'patch.crates-io.type-bridge-migration.path="crates/migration"'
   --config 'patch.crates-io.type-bridge-schema-migration-typedb.path="crates/schema-migration-typedb"'
+  --config 'patch.crates-io.type-bridge-server.path="crates/server"'
   --config 'patch.crates-io.type-bridge-workspace.path="crates/workspace"'
   --config 'patch.crates-io.type-bridge-cli.path="crates/cli"'
   --config 'patch.crates-io.type-bridge.path="crates/rust"'

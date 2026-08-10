@@ -134,47 +134,46 @@ The `./query-v2` subpath exposes `QueryPlanBuilder`,
 to the shared Rust builder through opaque native handles; Node never assembles
 mutable plan JSON or owns a second validator. Generated query packages also
 provide `RemoteQuerySession`, whose composition is synchronous and whose
-awaited terminal performs exactly one caller-owned exchange.
-
-The package root retains the lower-level prepared-plan execution boundary for
-canonical plan bytes:
+awaited terminal performs exactly one caller-owned exchange. Its verified
+authority is embedded in the generated package:
 
 ```ts
-import {
-  QueryV2Authority,
-  queryV2PrepareRemote,
-} from "@type-bridge/node";
+import { Person, RemoteQuerySession } from "./generated/app-models/index.js";
 
-const authority = new QueryV2Authority(declaredSchemaBytes, scope, profile);
-const pending = queryV2PrepareRemote(
-  authority,
-  planBytes,
-  JSON.stringify({ operation: "rows", rows: [] }),
-  capabilityAdvertisementBytes,
+const remote = new RemoteQuerySession(
+  advertisementBytes,
+  exchange,
   {
-    maxItems: 1_000n,
+    maxItems: 100n,
     maxBytes: 8_388_608n,
-    maxCollectionMembers: 10_000n,
+    maxCollectionMembers: 1_000n,
+    maxGraphNodes: 1_000n,
+    maxAttributeValues: 1_000n,
+    maxRolePlayers: 1_000n,
     deadlineMs: 30_000n,
   },
 );
-
-const response = await fetch(executorUrl, {
-  method: "POST",
-  body: pending.requestBytes(),
-});
-const outcomeJson = await pending.decodeReply(
-  new Uint8Array(await response.arrayBuffer()),
-);
+const person = remote.exact(Person);
+const rows = await remote.query(person).rows({ limit: 50n });
 ```
+
+Normal generated sessions accept advertisement bytes, a caller-owned exchange,
+and limits. They never read a schema-authority file or accept a low-level
+`QueryV2Authority` argument.
+
+The package root retains a lower-level prepared-plan execution boundary for
+integrators that already own independently verified authority. It is not part
+of the generated-model workflow and does not replace `schema generate`; see
+[Low-level Query V2 plans](https://github.com/ds1sqe/type-bridge/blob/master/docs/guide/typed-queries.md#low-level-query-v2-plans)
+for its separation rules.
 
 `maxBytes` limits the complete signed wire size of a successful typed response.
 Authenticated structured failures instead use the protocol hard ceiling, so a
 zero or otherwise tiny success budget can still return the bound diagnostic
 explaining why no success could fit.
 
-The constructor above creates managed/offline authority and is the authority
-accepted by remote preparation. For local execution against a database with no
+The low-level `QueryV2Authority` constructor creates managed/offline authority
+for prepared remote execution. For local execution against a database with no
 migration controls, bind a separate local-only handle:
 
 ```ts
@@ -185,9 +184,9 @@ import {
 
 const localAuthority = QueryV2Authority.queryOnly(
   database,
-  declaredSchemaBytes,
-  scope,
-  profile,
+  trustedDeclaredSchemaBytes,
+  managedScope,
+  semanticProfile,
 );
 const outcomeJson = await queryV2ExecuteLocal(
   database,
@@ -201,6 +200,10 @@ const outcomeJson = await queryV2ExecuteLocal(
 legacy migration controls to be absent, and is rejected by
 `queryV2PrepareRemote`. Managed local execution instead requires the exact V2
 migration-control singleton to be free.
+
+Low-level callers must obtain `trustedDeclaredSchemaBytes` through an explicit
+trust boundary. Canonical JSON is an internal codec, not a user-maintained
+schema source; generated applications use the embedded authority instead.
 
 Each pending request accepts exactly one reply. A second `decodeReply` call is
 rejected before parsing the supplied bytes, including when the first reply was

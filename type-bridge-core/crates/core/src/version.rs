@@ -9,30 +9,34 @@
 //!
 //! | Item | Role |
 //! |------|------|
-//! | [`MIN_SUPPORTED`] | Floor of the support window (`3.11.0`) |
-//! | [`MAX_SUPPORTED_LINE`] | Ceiling of the support window as `(major, minor)` (`3.12`) |
-//! | [`window_contains`] | Range predicate combining both bounds |
-//! | [`band`] | Band a driver natively speaks (data; measured against live servers) |
-//! | [`server_accepted_bands`] | Bands a server accepts connections from (data; measured) |
-//! | [`negotiate_server_band`] | Pick the embedded band to connect a server with |
-//! | [`check_supported`] | Installed-driver gate: window + driver band ∈ server's accepted set |
-//! | [`check_server_supported`] | Embedded-runtime gate: window + accepted ∩ embedded ≠ ∅ |
-//! | [`server_version`] | Released Boolean adapter for the HTTP version probe |
-//! | [`server_version_plaintext`] | Explicit plaintext HTTP version probe |
-//! | [`server_version_native_roots`] | HTTPS version probe using native trust roots |
-//! | [`server_version_custom_root_ca`] | HTTPS version probe using one custom CA bundle |
-//! | [`VersionError`] | Typed error for all failure modes |
+//! | [`MIN_SUPPORTED`](crate::version::MIN_SUPPORTED) | Floor of the support window (`3.11.0`) |
+//! | [`MAX_SUPPORTED_LINE`](crate::version::MAX_SUPPORTED_LINE) | Ceiling of the support window as `(major, minor)` (`3.12`) |
+//! | [`window_contains`](crate::version::window_contains) | Range predicate combining both bounds |
+//! | [`semantic_profile_id`](crate::version::semantic_profile_id) | Map any supported patch release to its frozen schema semantic profile |
+//! | [`band`](crate::version::band) | Band a driver natively speaks (data; measured against live servers) |
+//! | [`server_accepted_bands`](crate::version::server_accepted_bands) | Bands a server accepts connections from (data; measured) |
+//! | [`negotiate_server_band`](crate::version::negotiate_server_band) | Pick the embedded band to connect a server with |
+//! | [`check_supported`](crate::version::check_supported) | Installed-driver gate: window + driver band ∈ server's accepted set |
+//! | [`check_server_supported`](crate::version::check_server_supported) | Embedded-runtime gate: window + accepted ∩ embedded ≠ ∅ |
+//! | [`server_version`](crate::version::server_version) | Released Boolean adapter for the HTTP version probe |
+//! | [`server_version_plaintext`](crate::version::server_version_plaintext) | Explicit plaintext HTTP version probe |
+//! | [`server_version_native_roots`](crate::version::server_version_native_roots) | HTTPS version probe using native trust roots |
+//! | [`server_version_custom_root_ca`](crate::version::server_version_custom_root_ca) | HTTPS version probe using one custom CA bundle |
+//! | [`VersionError`](crate::version::VersionError) | Typed error for all failure modes |
 //!
 //! ## Two gates, two questions
 //!
-//! [`check_supported`] answers *"is the **installed** single-band Python driver
+//! [`check_supported`](crate::version::check_supported) answers *"is the
+//! **installed** single-band Python driver
 //! protocol-compatible with this server?"* — it tests whether the server accepts
-//! the one driver band the user has installed ([`server_accepted_bands`]).
+//! the one driver band the user has installed
+//! ([`server_accepted_bands`](crate::version::server_accepted_bands)).
 //!
-//! [`check_server_supported`] answers *"does **this build** of type-bridge embed a
-//! driver that can serve this server?"* — the embedded runtime can carry several
-//! bands at once (the default build embeds them all), so it tests whether the
-//! server's accepted band set intersects the embedded set.
+//! [`check_server_supported`](crate::version::check_server_supported) answers
+//! *"does **this build** of type-bridge embed a driver that can serve this
+//! server?"* — the embedded runtime can carry several bands at once (the
+//! default build embeds them all), so it tests whether the server's accepted
+//! band set intersects the embedded set.
 
 use std::ffi::OsString;
 use std::fmt;
@@ -152,6 +156,12 @@ pub const MIN_SUPPORTED: Version = Version::new(3, 11, 0);
 /// The first version on the **next** minor (`3.13.0`) is out of window.
 pub const MAX_SUPPORTED_LINE: (u32, u32) = (3, 12);
 
+/// Frozen schema semantic profile for every supported TypeDB 3.11 patch.
+pub const TYPEDB_3_11_SEMANTIC_PROFILE_ID: &str = "typedb-3.11.5/v1";
+
+/// Frozen schema semantic profile for every supported TypeDB 3.12 patch.
+pub const TYPEDB_3_12_SEMANTIC_PROFILE_ID: &str = "typedb-3.12.1/v1";
+
 // ---------------------------------------------------------------------------
 // Window predicate
 // ---------------------------------------------------------------------------
@@ -163,6 +173,24 @@ pub const MAX_SUPPORTED_LINE: (u32, u32) = (3, 12);
 /// - `(v.major, v.minor) <= MAX_SUPPORTED_LINE` (i.e. at most `3.12.x`).
 pub fn window_contains(v: &Version) -> bool {
     *v >= MIN_SUPPORTED && (v.major, v.minor) <= MAX_SUPPORTED_LINE
+}
+
+/// Map a supported TypeDB patch release to its frozen schema semantic profile.
+///
+/// Semantic profiles describe one measured minor-line behavior contract, not
+/// the server's literal patch string. Returning `None` keeps unsupported major
+/// or minor lines outside the authority domain even if a caller forgot to run
+/// the connection gate first.
+#[must_use]
+pub fn semantic_profile_id(v: &Version) -> Option<&'static str> {
+    if !window_contains(v) {
+        return None;
+    }
+    match (v.major, v.minor) {
+        (3, 11) => Some(TYPEDB_3_11_SEMANTIC_PROFILE_ID),
+        (3, 12) => Some(TYPEDB_3_12_SEMANTIC_PROFILE_ID),
+        _ => None,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1638,6 +1666,32 @@ mod tests {
     #[test]
     fn window_rejects_2_9_0() {
         assert!(!window_contains(&Version::new(2, 9, 0)));
+    }
+
+    #[test]
+    fn every_supported_patch_maps_to_its_frozen_semantic_profile() {
+        for patch in [0, 1, 4, 5, 99] {
+            assert_eq!(
+                semantic_profile_id(&Version::new(3, 11, patch)),
+                Some(TYPEDB_3_11_SEMANTIC_PROFILE_ID)
+            );
+            assert_eq!(
+                semantic_profile_id(&Version::new(3, 12, patch)),
+                Some(TYPEDB_3_12_SEMANTIC_PROFILE_ID)
+            );
+        }
+    }
+
+    #[test]
+    fn unsupported_lines_have_no_semantic_profile() {
+        for version in [
+            Version::new(2, 12, 1),
+            Version::new(3, 10, 99),
+            Version::new(3, 13, 0),
+            Version::new(4, 11, 5),
+        ] {
+            assert_eq!(semantic_profile_id(&version), None);
+        }
     }
 
     // -- band ----------------------------------------------------------------

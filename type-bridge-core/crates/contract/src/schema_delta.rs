@@ -17,6 +17,31 @@ use crate::schema_fingerprint::{
 /// Transition capability required only when a patch uses provider-native redefinition.
 pub const SCHEMA_REDEFINE_CAPABILITY: &str = "schema.redefine";
 
+/// Closed capability IDs required by the retained schema-transition profile.
+pub const SCHEMA_TRANSITION_CAPABILITY_IDS: &[&str] = &[
+    "schema.transaction.atomic",
+    "schema.transition.define",
+    "schema.transition.undefine",
+    "schema.transition.redefine.sub",
+    "schema.transition.redefine.value",
+    "schema.transition.redefine.relates.specialization",
+    "schema.transition.redefine.annotation",
+    "schema.transition.redefine.function",
+    "schema.transition.replace.sub.annotation",
+];
+
+/// Return the closed capability vocabulary for schema-transition execution.
+#[must_use]
+pub fn schema_transition_capability_vocabulary() -> CapabilitySet {
+    SCHEMA_TRANSITION_CAPABILITY_IDS
+        .iter()
+        .map(|capability| {
+            CapabilityId::new(*capability)
+                .expect("static schema-transition capability ID is canonical")
+        })
+        .collect()
+}
+
 /// The format version of a canonical schema patch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(transparent)]

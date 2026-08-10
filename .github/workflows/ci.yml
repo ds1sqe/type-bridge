@@ -57,6 +57,10 @@ jobs:
         working-directory: type-bridge-core
         run: cargo check --all-targets
 
+      - name: Validate first-party public Cargo docs
+        if: runner.os == 'Linux'
+        run: python scripts/ci/validate_cargo_rustdoc.py
+
       - name: cargo test
         working-directory: type-bridge-core
         run: cargo test --all-targets
@@ -81,6 +85,10 @@ jobs:
         if: runner.os == 'Linux'
         run: rustup toolchain install 1.88.0 --profile minimal
 
+      - name: Validate first-party public Cargo docs on MSRV 1.88
+        if: runner.os == 'Linux'
+        run: python scripts/ci/validate_cargo_rustdoc.py --toolchain 1.88.0
+
       - name: Check generated Rust projection on MSRV 1.88
         if: runner.os == 'Linux'
         working-directory: type-bridge-core
@@ -93,8 +101,8 @@ jobs:
         working-directory: type-bridge-core
         run: cargo clippy --all-targets -- -D warnings
 
-  # I6 single-feature offline legs: verify neither single-band feature combination rots.
-  # These are compile-only checks (no live server, no tests) — cargo check only.
+  # I6 single-band V2 legs: verify neither supported driver selection pulls the other band.
+  # These are compile-only checks (no live server, no tests) plus an exact dependency proof.
   band-feature-check:
     name: Band feature check (${{ matrix.band }})
     runs-on: ubuntu-latest
@@ -103,9 +111,13 @@ jobs:
       matrix:
         include:
           - band: band8
-            features: band8,axum-transport
+            features: band8,v2-query
+            required_driver: type-bridge-typedb-driver-b8 v3.11.5
+            forbidden_driver: typedb-driver v3.12.1
           - band: band9
-            features: band9,axum-transport
+            features: band9,v2-query
+            required_driver: typedb-driver v3.12.1
+            forbidden_driver: type-bridge-typedb-driver-b8 v3.11.5
     steps:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -127,6 +139,25 @@ jobs:
       - name: cargo check (${{ matrix.band }})
         working-directory: type-bridge-core
         run: cargo check -p type-bridge-orm -p type-bridge-server --no-default-features --features ${{ matrix.features }}
+
+      - name: Verify isolated V2 driver graph (${{ matrix.band }})
+        working-directory: type-bridge-core
+        env:
+          REQUIRED_DRIVER: ${{ matrix.required_driver }}
+          FORBIDDEN_DRIVER: ${{ matrix.forbidden_driver }}
+          SERVER_FEATURES: ${{ matrix.features }}
+        run: |
+          set -euo pipefail
+          dependency_tree="$(
+            cargo tree -p type-bridge-server --no-default-features \
+              --features "$SERVER_FEATURES" -e normal --prefix none
+          )"
+          printf '%s\n' "$dependency_tree"
+          grep -Fq "$REQUIRED_DRIVER" <<<"$dependency_tree"
+          if grep -Fq "$FORBIDDEN_DRIVER" <<<"$dependency_tree"; then
+            echo "forbidden driver resolved: $FORBIDDEN_DRIVER" >&2
+            exit 1
+          fi
 
   # Rust code coverage (informational, does not block CI)
   rust-coverage:
@@ -199,6 +230,7 @@ jobs:
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
         with:
+          image: docker.io/tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
           platforms: arm64
 
       - name: Set up Python
@@ -724,13 +756,24 @@ jobs:
         env:
           TYPEDB_ADDRESS: localhost:1729
           TYPEDB_HTTP_PORT: "8000"
-        run: >-
-          timeout --foreground 10m
-          cargo test --manifest-path type-bridge-core/Cargo.toml
-          -p type-bridge-server --features v2-query
-          --test v2_query_integration_tests
-          production_binary_serves_v1_health_and_authenticated_v2_query
-          -- --ignored --exact --nocapture
+        run: |
+          set -euo pipefail
+          test_name=production_binary_serves_v1_health_and_v2_query
+          selection="$(
+            cargo test --manifest-path type-bridge-core/Cargo.toml \
+              -p type-bridge-server --no-default-features \
+              --features band9,v2-query \
+              --test v2_query_integration_tests "$test_name" \
+              -- --ignored --exact --list
+          )"
+          printf '%s\n' "$selection"
+          test "$(grep -Fxc "$test_name: test" <<<"$selection")" -eq 1
+          timeout --foreground 10m \
+            cargo test --manifest-path type-bridge-core/Cargo.toml \
+              -p type-bridge-server --no-default-features \
+              --features band9,v2-query \
+              --test v2_query_integration_tests "$test_name" \
+              -- --ignored --exact --nocapture
 
       - name: Run generated Rust projection live smoke
         env:
@@ -739,9 +782,21 @@ jobs:
           TYPE_BRIDGE_RUST_PROJECTION_INTG_DATABASE: type_bridge_rust_projection_live
           TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE: ${{ matrix.semantic-profile }}
         run: >-
-          cargo test --manifest-path type-bridge-core/Cargo.toml
+          bash scripts/ci/run_exact_ignored_rust_test.sh
+          generated_rust_projection_round_trips_exact_live_models
+          --manifest-path type-bridge-core/Cargo.toml
           -p type-bridge-schema-codegen --test rust_projection_live
-          -- --ignored --nocapture
+
+      - name: Prove unsupported migration apply creates no databases
+        if: matrix.typedb-server == 'typedb/typedb:3.11.5'
+        env:
+          TYPEDB_ADDRESS: localhost:1729
+          TYPEDB_HTTP_PORT: "8000"
+        run: >-
+          bash scripts/ci/run_exact_ignored_rust_test.sh
+          unsupported_server_apply_creates_neither_database_live
+          --manifest-path type-bridge-core/Cargo.toml
+          -p type-bridge-cli --test e2e_workspace_live
 
       - name: Run CLI empty-workspace replay lifecycle
         if: matrix.typedb-server == 'typedb/typedb:3.12.1'
@@ -749,10 +804,21 @@ jobs:
           TYPEDB_ADDRESS: localhost:1729
           TYPEDB_HTTP_PORT: "8000"
         run: >-
-          cargo test --manifest-path type-bridge-core/Cargo.toml
-          -p type-bridge-cli --test e2e_workspace_live
+          bash scripts/ci/run_exact_ignored_rust_test.sh
           empty_workspace_to_replayed_history_live
-          -- --ignored --exact --nocapture
+          --manifest-path type-bridge-core/Cargo.toml
+          -p type-bridge-cli --test e2e_workspace_live
+
+      - name: Apply and verify the unchanged documented initial constraints
+        if: matrix.typedb-server == 'typedb/typedb:3.12.1'
+        env:
+          TYPEDB_ADDRESS: localhost:1729
+          TYPEDB_HTTP_PORT: "8000"
+        run: >-
+          bash scripts/ci/run_exact_ignored_rust_test.sh
+          documented_examples_initial_constraints_apply_and_verify_live
+          --manifest-path type-bridge-core/Cargo.toml
+          -p type-bridge-cli --test e2e_workspace_live
 
       - name: Prove verify does not create databases
         if: matrix.typedb-server == 'typedb/typedb:3.12.1'
@@ -760,10 +826,10 @@ jobs:
           TYPEDB_ADDRESS: localhost:1729
           TYPEDB_HTTP_PORT: "8000"
         run: >-
-          cargo test --manifest-path type-bridge-core/Cargo.toml
-          -p type-bridge-cli --test e2e_workspace_live
+          bash scripts/ci/run_exact_ignored_rust_test.sh
           verify_never_creates_databases_live
-          -- --ignored --exact --nocapture
+          --manifest-path type-bridge-core/Cargo.toml
+          -p type-bridge-cli --test e2e_workspace_live
 
       - name: Run legacy adoption and evolution lifecycle
         if: matrix.typedb-server == 'typedb/typedb:3.12.1'
@@ -771,10 +837,10 @@ jobs:
           TYPEDB_ADDRESS: localhost:1729
           TYPEDB_HTTP_PORT: "8000"
         run: >-
-          cargo test --manifest-path type-bridge-core/Cargo.toml
-          -p type-bridge-cli --test e2e_workspace_live
+          bash scripts/ci/run_exact_ignored_rust_test.sh
           adopt_legacy_history_then_evolve_live
-          -- --ignored --exact --nocapture
+          --manifest-path type-bridge-core/Cargo.toml
+          -p type-bridge-cli --test e2e_workspace_live
 
       - name: Run shipped Python converter to native adoption lifecycle
         if: matrix.typedb-server == 'typedb/typedb:3.12.1'
@@ -783,10 +849,10 @@ jobs:
           TYPEDB_HTTP_PORT: "8000"
           TYPE_BRIDGE_TEST_PYTHON: ${{ github.workspace }}/.venv/bin/python
         run: >-
-          cargo test --manifest-path type-bridge-core/Cargo.toml
-          -p type-bridge-cli --test e2e_workspace_live
+          bash scripts/ci/run_exact_ignored_rust_test.sh
           shipped_python_converter_to_native_adoption_live
-          -- --ignored --exact --nocapture
+          --manifest-path type-bridge-core/Cargo.toml
+          -p type-bridge-cli --test e2e_workspace_live
 
   # Required, bounded TLS proof over one server per supported protocol band.
   # This intentionally runs only typedb-runtime's focused live target: the
@@ -932,10 +998,10 @@ jobs:
         run: |
           export TYPEDB_ADDRESS="$TYPEDB_TLS_ADDRESS"
           export TYPEDB_HTTP_PORT="$TYPEDB_TLS_HTTP_PORT"
-          cargo test --locked --manifest-path type-bridge-core/Cargo.toml \
-            -p type-bridge-schema-codegen --test rust_projection_live \
+          bash scripts/ci/run_exact_ignored_rust_test.sh \
             generated_rust_projection_round_trips_exact_live_models \
-            -- --ignored --exact --nocapture
+            --locked --manifest-path type-bridge-core/Cargo.toml \
+            -p type-bridge-schema-codegen --test rust_projection_live
 
       - name: Show TLS stack logs on failure
         if: failure()

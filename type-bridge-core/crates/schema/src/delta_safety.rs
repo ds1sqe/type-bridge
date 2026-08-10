@@ -13,17 +13,26 @@ use type_bridge_contract::schema::{
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SafetyClass {
+    /// Changes only the formal fact representation, without changing schema behavior.
     FormalOnly,
+    /// Changes documentation or other schema metadata only.
     SchemaMetadata,
+    /// Adds schema behavior without invalidating existing data.
     Additive,
+    /// Is safe only when separately derived conditions hold.
     Conditional,
+    /// Requires existing data to be populated before the schema change can complete.
     BackfillRequired,
+    /// Can remove or invalidate existing schema or data.
     Destructive,
+    /// Cannot be classified because its provider semantics are opaque.
     Opaque,
+    /// Has no supported lowering or execution path.
     Unsupported,
 }
 
 impl SafetyClass {
+    /// Every safety class in stable least-to-most restrictive order.
     pub const ALL: [Self; 8] = [
         Self::FormalOnly,
         Self::SchemaMetadata,

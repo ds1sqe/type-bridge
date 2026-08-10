@@ -173,6 +173,12 @@ def test_parser_requires_wheels_generated_stage_and_prepared_tools() -> None:
     assert "live_address" not in destinations
 
 
+def test_generated_stage_requires_compiled_authority_artifact() -> None:
+    source = (ROOT / "scripts/ci/run_generated_python_artifact.py").read_text(encoding="utf-8")
+    assert 'generated_root / "schema-authority.json"' in source
+    assert "declared-schema.json" not in source
+
+
 def test_generated_runtime_consumer_has_no_handwritten_imports() -> None:
     source = (ROOT / "tests/compat/generated_python/runtime.py").read_text(encoding="utf-8")
     for forbidden in (

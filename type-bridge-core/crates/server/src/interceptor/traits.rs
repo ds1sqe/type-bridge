@@ -12,12 +12,19 @@ use super::crud_info::CrudInfo;
 /// Metadata attached to each request flowing through the interceptor chain.
 #[derive(Clone)]
 pub struct RequestContext {
+    /// Unique request identifier shared by all pipeline stages.
     pub request_id: String,
+    /// Authenticated client identity, or a transport-defined placeholder.
     pub client_id: String,
+    /// Database selected for the request.
     pub database: String,
+    /// Requested provider transaction mode.
     pub transaction_type: String,
+    /// Transport and interceptor metadata carried with the request.
     pub metadata: HashMap<String, serde_json::Value>,
+    /// UTC time at which the context was constructed.
     pub timestamp: chrono::DateTime<chrono::Utc>,
+    /// CRUD analysis produced by the adapter, when available.
     pub crud_info: Option<CrudInfo>,
 }
 
@@ -110,12 +117,25 @@ impl<'a> V2PolicyOutcome<'a> {
 #[derive(Debug, thiserror::Error)]
 #[allow(dead_code)] // variants for future interceptors
 pub enum InterceptError {
+    /// An authorization policy rejected the request.
     #[error("Access denied: {reason}")]
-    AccessDenied { reason: String },
+    AccessDenied {
+        /// Stable human-readable rejection reason.
+        reason: String,
+    },
+    /// A rate policy rejected the request.
     #[error("Rate limited: {reason}")]
-    RateLimited { reason: String },
+    RateLimited {
+        /// Stable human-readable rejection reason.
+        reason: String,
+    },
+    /// An interceptor-specific validation policy rejected the request.
     #[error("Validation failed: {reason}")]
-    ValidationFailed { reason: String },
+    ValidationFailed {
+        /// Stable human-readable rejection reason.
+        reason: String,
+    },
+    /// An interceptor failed unexpectedly.
     #[error("Internal error: {0}")]
     Internal(String),
 }

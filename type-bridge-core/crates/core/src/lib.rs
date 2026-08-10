@@ -15,7 +15,11 @@
 //! | [`reserved_words`] | TypeQL reserved-word detection |
 //! | [`version`] | TypeDB compatibility window, protocol-band map, and version gate (SSOT) |
 
-#![warn(missing_docs)]
+#![deny(missing_docs)]
+
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+pub mod readme_doctests {}
 
 /// Frozen direct-TypeQL renderer retained behind compatibility tooling.
 #[doc(hidden)]

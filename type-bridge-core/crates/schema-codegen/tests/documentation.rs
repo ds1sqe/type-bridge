@@ -6,6 +6,8 @@ use type_bridge_contract::schema::DocumentId;
 use type_bridge_schema::{SchemaDocumentSet, normalize_documents, project, resolve};
 use type_bridge_schema_codegen::{PythonEmitter, RustEmitter, TypeScriptEmitter};
 
+mod support;
+
 const DOCUMENTED_SCHEMA: &str = r#"format: typebridge.schema/v2
 attributes:
   display-name: {value: string}
@@ -60,6 +62,7 @@ fn projected(
 
 #[test]
 fn every_annotatable_doc_subject_reaches_safe_cross_target_documentation() {
+    let authority = support::authority(DOCUMENTED_SCHEMA);
     let python_emitter = PythonEmitter::new();
     let python_resources = python_emitter.code_resources().unwrap();
     let python_projection = projected(
@@ -68,7 +71,7 @@ fn every_annotatable_doc_subject_reaches_safe_cross_target_documentation() {
         &python_emitter.generator_handlers(),
         &python_resources,
     );
-    let python = python_emitter.emit(&python_projection).unwrap();
+    let python = python_emitter.emit(&python_projection, &authority).unwrap();
     let python_models = std::str::from_utf8(python.get("_models.pyi").unwrap()).unwrap();
     let python_schema = std::str::from_utf8(python.get("_schema.py").unwrap()).unwrap();
     assert!(python_models.contains(
@@ -95,7 +98,9 @@ fn every_annotatable_doc_subject_reaches_safe_cross_target_documentation() {
         &typescript_emitter.generator_handlers(),
         &typescript_resources,
     );
-    let typescript = typescript_emitter.emit(&typescript_projection).unwrap();
+    let typescript = typescript_emitter
+        .emit(&typescript_projection, &authority)
+        .unwrap();
     let typescript_models = std::str::from_utf8(typescript.get("src/models.ts").unwrap()).unwrap();
     let typescript_schema = std::str::from_utf8(typescript.get("src/schema.ts").unwrap()).unwrap();
     let typescript_functions =
@@ -126,7 +131,7 @@ fn every_annotatable_doc_subject_reaches_safe_cross_target_documentation() {
         &rust_emitter.generator_handlers(),
         &rust_resources,
     );
-    let rust = rust_emitter.emit(&rust_projection).unwrap();
+    let rust = rust_emitter.emit(&rust_projection, &authority).unwrap();
     let rust_read = std::str::from_utf8(rust.get("src/read.rs").unwrap()).unwrap();
     let rust_tokens = std::str::from_utf8(rust.get("src/tokens.rs").unwrap()).unwrap();
     let rust_functions = std::str::from_utf8(rust.get("src/functions.rs").unwrap()).unwrap();

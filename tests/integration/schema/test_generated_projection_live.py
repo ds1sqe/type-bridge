@@ -24,7 +24,6 @@ from urllib import request as urllib_request
 import pytest
 
 from type_bridge import Database
-from type_bridge.query_v2 import QueryV2Authority
 
 pytestmark = pytest.mark.integration
 
@@ -112,7 +111,7 @@ def generated_package(
     clean_db: Database,
 ) -> Iterator[ModuleType]:
     """Import a generated package emitted now or supplied as immutable test evidence."""
-    acceptance_schema, _, semantic_profile = _acceptance_contract(clean_db)
+    _, _, semantic_profile = _acceptance_contract(clean_db)
     supplied_stage = os.environ.get("TYPE_BRIDGE_GENERATED_PYTHON_STAGE")
     if supplied_stage is None:
         stage = tmp_path / "generated-projection"
@@ -120,19 +119,9 @@ def generated_package(
         generation_environment["TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE"] = semantic_profile
         subprocess.run(
             [
-                "cargo",
-                "run",
-                "--quiet",
-                "--manifest-path",
-                str(CORE / "Cargo.toml"),
-                "-p",
-                "type-bridge-schema-codegen",
-                "--example",
-                "emit_python_acceptance",
-                "--",
-                str(acceptance_schema),
-                str(stage / "generated_v2"),
-                str(stage / "declared-schema.json"),
+                str(ROOT / "scripts/ci/prepare_generated_live_fixture.sh"),
+                "python",
+                str(stage),
             ],
             cwd=ROOT,
             env=generation_environment,
@@ -140,7 +129,10 @@ def generated_package(
         )
     else:
         stage = Path(supplied_stage).resolve()
-        for required in (stage / "generated_v2" / "__init__.py", stage / "declared-schema.json"):
+        for required in (
+            stage / "generated_v2" / "__init__.py",
+            stage / "schema-authority.json",
+        ):
             if not required.is_file() or required.is_symlink():
                 raise AssertionError(f"supplied generated Python fixture is incomplete: {required}")
     monkeypatch.syspath_prepend(str(stage))
@@ -1439,9 +1431,7 @@ def test_generated_projection_round_trips_live_models(
     generated_file = generated.__file__
     assert generated_file is not None
     generated_path = Path(generated_file).resolve()
-    declared = generated_path.parent.parent.joinpath("declared-schema.json").read_bytes()
-    remote_scope = "generated-python-live"
-    _, _, remote_profile = _acceptance_contract(clean_db)
+    authority = generated_path.parent.parent.joinpath("schema-authority.json").read_bytes()
     remote_port = _free_port()
     supplied_server = os.environ.get("TYPE_BRIDGE_V2_SMOKE_SERVER")
     if supplied_server is None:
@@ -1473,9 +1463,7 @@ def test_generated_projection_round_trips_live_models(
             "SMOKE_TYPEDB_PASSWORD": clean_db.password or "password",
             "SMOKE_TYPEDB_HTTP_PORT": str(clean_db.http_port),
             "SMOKE_DATABASE": clean_db.database_name,
-            "SMOKE_DECLARED_B64": base64.b64encode(declared).decode(),
-            "SMOKE_SCOPE": remote_scope,
-            "SMOKE_PROFILE": remote_profile,
+            "SMOKE_AUTHORITY_B64": base64.b64encode(authority).decode(),
             "SMOKE_PORT": str(remote_port),
         },
         stdout=subprocess.DEVNULL,
@@ -1507,7 +1495,6 @@ def test_generated_projection_round_trips_live_models(
             return await asyncio.to_thread(post)
 
         remote_session = generated.RemoteQuerySession(
-            QueryV2Authority(declared, remote_scope, remote_profile),
             advertisement,
             exchange,
             generated.RemoteQueryLimits(

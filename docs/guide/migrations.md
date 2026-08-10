@@ -19,6 +19,10 @@ migrations:
   app-label: application
   destructive: require-approval
 
+bindings:
+  python:
+    output: generated/python/app_models
+
 environments:
   development:
     database: application
@@ -31,17 +35,21 @@ environments:
 ```
 
 `migration make` and `migration plan` are offline. Connected commands resolve
-one named environment and enforce its `migrate` policy.
+one named environment and enforce its `migrate` policy. TypeDB-backed
+`migration apply`, `migration verify`, and `migration adopt` require both an
+exact `typedb-3.12.1/v1` workspace semantic profile and a negotiated TypeDB
+3.12.1 server. Generated applications and offline authoring retain the wider
+3.11–3.12 support window.
 
 ## Author and apply a change
 
 ```bash
 type-bridge --manifest typebridge.yaml schema check
+type-bridge --manifest typebridge.yaml schema generate
 type-bridge --manifest typebridge.yaml migration make --name add-person
 type-bridge --manifest typebridge.yaml migration plan
 type-bridge --manifest typebridge.yaml migration apply --environment development
 type-bridge --manifest typebridge.yaml migration verify --environment development
-type-bridge --manifest typebridge.yaml schema generate
 ```
 
 Review the committed migration and preview before applying. When the workspace
@@ -55,7 +63,11 @@ type-bridge --manifest typebridge.yaml migration apply \
 ```
 
 Generation is deliberately separate from migration application and never
-contacts TypeDB.
+contacts TypeDB. It emits every configured binding from one captured workspace,
+and each package privately embeds the verified authority needed by its managers
+and query sessions. Ordinary applications need no standalone authority JSON;
+generated packages remain projections rather than migration or authoring
+authority.
 
 ## State authority
 

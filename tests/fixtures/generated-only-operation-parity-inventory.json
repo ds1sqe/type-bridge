@@ -25,7 +25,8 @@
               "path": "tests/integration/schema/test_generated_projection_live.py",
               "anchors": [
                 "Import a generated package emitted now or supplied as immutable test evidence",
-                "emit_python_acceptance",
+                "prepare_generated_live_fixture.sh",
+                "schema-authority.json",
                 "importlib.import_module(\"generated_v2\")"
               ]
             }
@@ -38,7 +39,7 @@
               "mode": "live",
               "path": "type-bridge-core/crates/node/tests/projection-integration/generated-package-live.test.ts",
               "anchors": [
-                "emit_typescript_acceptance",
+                "prepare_generated_live_fixture.sh",
                 "tsconfig.json",
                 "dist/index.js"
               ]

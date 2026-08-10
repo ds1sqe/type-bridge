@@ -1,23 +1,25 @@
 /**
  * Cross-binding smoke: one publicly authored V2 plan, local and remote.
  *
- * The declared-schema bytes remain a canonical authority fixture. The plan
- * and invocation are authored at runtime through the public query-v2
- * subpath. Local execution runs through the native module against a fresh
- * isolated database; remote execution travels the versioned envelope over
- * HTTP (or verified HTTPS in the TLS lane) to the `v2_smoke_server` example
- * serving the same database, and both paths must return byte-identical typed
- * outcome JSON.
+ * The declared-schema bytes remain a canonical low-level client fixture. The
+ * server receives the matching authority generated from a Split YAML
+ * workspace. The plan and invocation are authored at runtime through the
+ * public query-v2 subpath. Local execution runs through the native module
+ * against a fresh isolated database; remote execution travels the versioned
+ * envelope over HTTP (or verified HTTPS in the TLS lane) to the
+ * `v2_smoke_server` example serving the same database, and both paths must
+ * return byte-identical typed outcome JSON.
  */
 
 import assert from "node:assert/strict";
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
+import { cp, mkdtemp, readFile, rm } from "node:fs/promises";
 import { createRequire } from "node:module";
 import net from "node:net";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { fileURLToPath } from "node:url";
 
 import {
   TYPEDB_ADDRESS,
@@ -26,8 +28,12 @@ import {
   TYPEDB_USERNAME,
 } from "../common/index.js";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const packageRoot = process.cwd();
+const coreDirectory = path.resolve(packageRoot, "../..");
+const authorityWorkspace = path.resolve(
+  coreDirectory,
+  "../tests/fixtures/query-v2-binding-smoke",
+);
 const _require = createRequire(import.meta.url);
 const pkg = _require(packageRoot) as typeof import("../../../typescript/public.js");
 const queryV2 = _require(
@@ -102,6 +108,59 @@ async function waitForPort(
     await new Promise((resolve) => setTimeout(resolve, 200));
   }
   throw new Error("smoke server never became reachable");
+}
+
+async function serverAuthority(declared: Buffer): Promise<Buffer> {
+  const temporary = await mkdtemp(
+    path.join(tmpdir(), "type-bridge-v2-binding-authority-"),
+  );
+  const workspace = path.join(temporary, "workspace");
+  try {
+    await cp(authorityWorkspace, workspace, { recursive: true });
+    const generated = spawnSync(
+      "cargo",
+      [
+        "run",
+        "--quiet",
+        "--locked",
+        "-p",
+        "type-bridge-cli",
+        "--bin",
+        "type-bridge",
+        "--",
+        "--manifest",
+        path.join(workspace, "typebridge.yaml"),
+        "schema",
+        "generate",
+      ],
+      { cwd: coreDirectory, stdio: "inherit" },
+    );
+    if (generated.error !== undefined) throw generated.error;
+    if (generated.status !== 0) {
+      throw new Error(
+        `schema generation exited with status ${generated.status ?? "unknown"}`,
+      );
+    }
+    const authority = await readFile(
+      path.join(workspace, "generated/schema-authority.json"),
+    );
+    const content = (JSON.parse(authority.toString("utf8")) as {
+      content: {
+        declared_schema: unknown;
+        managed_scope: { id: string };
+        semantic_profile: { id: string };
+      };
+    }).content;
+    assert.equal(content.managed_scope.id, SCOPE);
+    assert.equal(content.semantic_profile.id, PROFILE);
+    assert.deepEqual(
+      content.declared_schema,
+      JSON.parse(declared.toString("utf8")),
+    );
+    return authority;
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
 }
 
 function authorPlan(authority: InstanceType<typeof queryV2.QueryV2Authority>) {
@@ -252,6 +311,7 @@ test("prepared plan executes locally and remotely", { skip: smokeSkip }, async (
     assert.ok(local.includes('"ada"'), local);
     assert.ok(local.includes('"bob"'), local);
 
+    const serverAuthorityBytes = await serverAuthority(declared);
     const port = await freePort();
     const server = spawn(
       "cargo",
@@ -266,7 +326,7 @@ test("prepared plan executes locally and remotely", { skip: smokeSkip }, async (
         "v2_smoke_server",
       ],
       {
-        cwd: path.resolve(packageRoot, "../.."),
+        cwd: coreDirectory,
         env: {
           ...process.env,
           SMOKE_TYPEDB_ADDRESS: address,
@@ -274,9 +334,7 @@ test("prepared plan executes locally and remotely", { skip: smokeSkip }, async (
           SMOKE_TYPEDB_PASSWORD: TYPEDB_PASSWORD,
           SMOKE_TYPEDB_HTTP_PORT: String(httpPort),
           SMOKE_DATABASE: database,
-          SMOKE_DECLARED_B64: DECLARED_B64,
-          SMOKE_SCOPE: SCOPE,
-          SMOKE_PROFILE: PROFILE,
+          SMOKE_AUTHORITY_B64: serverAuthorityBytes.toString("base64"),
           SMOKE_PORT: String(port),
           ...serverTlsEnvironment,
         },

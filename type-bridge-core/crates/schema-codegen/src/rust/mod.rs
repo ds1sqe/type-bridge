@@ -4,9 +4,9 @@ use type_bridge_contract::diagnostic::Diagnostic;
 use type_bridge_contract::projection::{
     BindingTarget, CodeResourceDigest, ProjectionConfig, ProjectionHandler, RuntimeProjection,
 };
-use type_bridge_contract::schema::{DeclaredSchema, encode_declared_schema};
+use type_bridge_schema::VerifiedSchemaAuthority;
 
-use crate::{GeneratedPackage, invalid};
+use crate::{GeneratedPackage, embedded_authority, invalid};
 
 const CARGO_TOML: &[u8] = include_bytes!("package.toml");
 const RUNTIME_SOURCE: &[u8] = include_bytes!("runtime.rs");
@@ -41,29 +41,11 @@ impl RustEmitter {
         Ok(resources)
     }
 
-    /// Emit exactly eleven deterministic crate files without filesystem mutation.
-    pub fn emit(&self, projection: &RuntimeProjection) -> Result<GeneratedPackage, Diagnostic> {
-        let handlers = self.generator_handlers();
-        let resources = self.code_resources()?;
-        if projection.target() != BindingTarget::Rust
-            || projection.config() != &ProjectionConfig::rust()
-            || projection.generator_handlers() != handlers
-            || projection.code_resources() != resources
-        {
-            return Err(invalid(
-                "rust_emitter_evidence_mismatch",
-                "projection target, config, handler, or resource evidence does not match this emitter",
-            ));
-        }
-        render::render(projection, CARGO_TOML, RUNTIME_SOURCE, None)
-    }
-
-    /// Emit a Rust package carrying the canonical declared schema required by
-    /// the authenticated remote model-query authority.
-    pub fn emit_with_declared_schema(
+    /// Emit one deterministic crate bound to exact verified schema authority.
+    pub fn emit(
         &self,
         projection: &RuntimeProjection,
-        declared: &DeclaredSchema,
+        authority: &VerifiedSchemaAuthority,
     ) -> Result<GeneratedPackage, Diagnostic> {
         let handlers = self.generator_handlers();
         let resources = self.code_resources()?;
@@ -77,7 +59,7 @@ impl RustEmitter {
                 "projection target, config, handler, or resource evidence does not match this emitter",
             ));
         }
-        let declared = encode_declared_schema(declared)?;
-        render::render(projection, CARGO_TOML, RUNTIME_SOURCE, Some(&declared))
+        let authority = embedded_authority(projection, authority)?;
+        render::render(projection, &authority, CARGO_TOML, RUNTIME_SOURCE)
     }
 }

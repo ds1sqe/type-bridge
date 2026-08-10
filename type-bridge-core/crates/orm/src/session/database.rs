@@ -8,6 +8,9 @@
 //!
 //! To share a `Database` across async tasks, wrap it in `Arc`:
 //!
+//! This example is ignored because it requires a live TypeDB service and a
+//! generated `Person` binding supplied by the consuming schema.
+//!
 //! ```ignore
 //! let db = Arc::new(Database::connect("localhost:1729", "mydb", "admin", "password").await?);
 //! let db2 = Arc::clone(&db);

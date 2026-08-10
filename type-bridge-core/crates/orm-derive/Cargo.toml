@@ -8,6 +8,9 @@ license-file.workspace = true
 repository.workspace = true
 authors.workspace = true
 publish = ["crates-io"]
+readme = "README.md"
+documentation = "https://docs.rs/type-bridge-orm-derive/2.1.0"
+rust-version = "1.88"
 
 [lib]
 proc-macro = true

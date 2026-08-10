@@ -39,6 +39,11 @@ def canonical_license(license_id: str) -> bytes:
     return paths[license_id].read_bytes()
 
 
+def synthetic_readme(name: str) -> bytes:
+    """Return the repository-exact README body for one synthetic package."""
+    return f"# {name}\n\nSynthetic package landing documentation.\n".encode()
+
+
 def crate_bytes(
     name: str,
     version: str,
@@ -48,10 +53,13 @@ def crate_bytes(
     manifest_version: str | None = None,
     manifest_license: str | None = None,
     manifest_license_file: str = "LICENSE",
+    manifest_readme: str = "README.md",
     manifest_body: bytes | None = None,
     manifest_orig: bytes | None = None,
     license_path: str = "LICENSE",
     license_body: bytes | None = None,
+    readme_path: str | None = "README.md",
+    readme_body: bytes | None = None,
     extra_files: dict[str, bytes] | None = None,
     symlink: tuple[str, str] | None = None,
 ) -> bytes:
@@ -65,6 +73,7 @@ def crate_bytes(
             f'version = "{manifest_version or version}"\n'
             f'license = "{manifest_license or license_id}"\n'
             f'license-file = "{manifest_license_file}"\n'
+            f'readme = "{manifest_readme}"\n'
         ).encode()
     )
     files = {
@@ -73,6 +82,8 @@ def crate_bytes(
         "src/lib.rs": b"pub fn packaged() {}\n",
         **(extra_files or {}),
     }
+    if readme_path is not None:
+        files[readme_path] = synthetic_readme(name) if readme_body is None else readme_body
     if manifest_orig is not None:
         files["Cargo.toml.orig"] = manifest_orig
     stream = io.BytesIO()
@@ -103,6 +114,7 @@ version = "{version}"
 edition = "2024"
 license = "{license_id}"
 license-file = "LICENSE"
+readme = "README.md"
 description = "Synthetic compatibility package"
 
 [features]
@@ -129,6 +141,7 @@ version = "{version}"
 edition = "2024"
 license = "{license_id}"
 license-file = "LICENSE"
+readme = "README.md"
 description = "Synthetic compatibility package"
 build = false
 autolib = false
@@ -177,6 +190,9 @@ def write_release_set(directory: Path, release_version: str = "9.8.7") -> Path:
             )
         else:
             archive = crate_bytes(name, version, license_id)
+        readme_path = repository_root / validator.PUBLIC_SOURCE_READMES[name]
+        readme_path.parent.mkdir(parents=True, exist_ok=True)
+        readme_path.write_bytes(synthetic_readme(name))
         (directory / f"{name}-{version}.crate").write_bytes(archive)
     return repository_root
 
@@ -205,7 +221,7 @@ def test_complete_rust_release_archive_set_is_accepted(tmp_path: Path) -> None:
     )
 
     assert report["status"] == "ok"
-    assert len(report["artifacts"]) == 18
+    assert len(report["artifacts"]) == 19
     assert {entry["license"] for entry in report["artifacts"]} == {
         "MIT",
         "Apache-2.0",
@@ -233,7 +249,7 @@ def test_expected_rust_archive_identity_set_is_closed() -> None:
     assert expected["type-bridge-workspace"] == ("2.0.0", "MIT")
     assert expected["type-bridge-cli"] == ("2.0.0", "MIT")
     assert expected["type-bridge"] == ("2.0.0", "MIT")
-    assert "type-bridge-server" not in expected
+    assert expected["type-bridge-server"] == ("2.0.0", "MIT")
     assert expected["type-bridge-typedb-protocol-b8"] == ("3.11.0", "MPL-2.0")
     assert expected["type-bridge-typedb-driver-b8"] == ("3.11.5", "Apache-2.0")
 
@@ -284,6 +300,37 @@ def test_packaged_manifest_identity_must_match_archive_key(tmp_path: Path) -> No
     ],
 )
 def test_packaged_license_metadata_placement_and_body_are_closed(
+    tmp_path: Path,
+    overrides: dict[str, object],
+    message: str,
+) -> None:
+    artifacts = tmp_path / "package"
+    repository_root = write_release_set(artifacts)
+    replace_archive(
+        artifacts,
+        "9.8.7",
+        "type-bridge-core-lib",
+        **overrides,
+    )
+
+    with pytest.raises(validator.ValidationError, match=message):
+        validator.validate_release_artifacts(
+            artifacts,
+            expected_release_version="9.8.7",
+            repository_root=repository_root,
+        )
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"manifest_readme": "OTHER.md"}, "root README.md"),
+        ({"readme_path": None}, "no declared root README.md"),
+        ({"readme_path": "docs/README.md"}, "no declared root README.md"),
+        ({"readme_body": b"stale package landing page\n"}, "drifted from its repository source"),
+    ],
+)
+def test_packaged_readme_metadata_placement_and_body_are_closed(
     tmp_path: Path,
     overrides: dict[str, object],
     message: str,

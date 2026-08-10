@@ -32,7 +32,9 @@ bindings:
 ```
 
 Output paths are confined relative to the workspace and may not overlap the
-schema, migration directory, or each other.
+schema, migration directory, custom trust material, or each other. Ordinary
+applications need only generated bindings; no standalone authority JSON is
+required.
 
 ## Generate
 
@@ -43,7 +45,10 @@ type-bridge --manifest typebridge.yaml schema generate
 
 `schema check` and `schema generate` are offline. They do not connect to TypeDB
 or apply a migration. Use the explicit [migration workflow](migrations.md) for
-database changes.
+database changes. One `schema generate` invocation captures the workspace once,
+builds one verified authority, embeds it in every configured package, and
+writes a byte-equivalent generic-server artifact last when that optional output
+is configured.
 
 ## Generated package contract
 
@@ -53,13 +58,45 @@ Every target contains:
 - field and role tokens tied to their declaring model;
 - concise single-type CRUD managers;
 - immutable direct and remote query facades;
-- canonical runtime-projection and schema fingerprints;
+- embedded compiled schema authority plus canonical runtime-projection and
+  schema fingerprints;
 - target-language declarations suitable for Pyright, TypeScript, or Rust.
 
 Python and TypeScript packages install their embedded projection into the native
 runtime during import. Installation verifies exact generated classes and
 fingerprints. Rust generated crates bind the equivalent `SchemaPackage` through
 the public SDK.
+
+Generated Python and TypeScript `RemoteQuerySession` constructors derive Query
+V2 authority from those private package bytes. Normal applications supply only
+authenticated capability-advertisement bytes, a caller-owned one-exchange
+transport, and resource limits; they do not read an authority file or construct
+`QueryV2Authority`.
+
+## Server authority artifact
+
+Configure a standalone authority artifact only when deploying the generic
+TypeBridge server:
+
+```yaml
+artifacts:
+  schema-authority:
+    output: generated/schema-authority.json
+```
+
+When configured, `generated/schema-authority.json` uses the versioned
+`typebridge.schema-authority/v1` canonical JSON codec. JSON is an internal,
+bounded, deterministic, language-neutral encoding that lets the generic server
+reconstruct and verify declared facts, required capabilities, managed scope,
+semantic profile, and fingerprints without application source code. It is not
+a user-maintained schema format: never edit it, use it as Split-YAML input, or
+generate it independently from the language packages. Regenerate every output
+from `typebridge.yaml` after a schema change.
+
+The generic server cannot import an arbitrary generated application package and
+does not compile raw Split-YAML at startup. Mount this generated artifact
+read-only and reference it with `[v2].schema_authority_file`; the server
+independently compares it with the schema-fenced live TypeDB state.
 
 Generated code is deterministic for the same workspace inputs and toolchain
 version. Do not edit, subclass, or reconstruct it. Change Split-YAML, review the

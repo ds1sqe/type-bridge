@@ -588,11 +588,14 @@ def test_cutoff_state_is_closed_to_the_first_graph_crate(tmp_path: Path) -> None
     assert f"restricted to the {CUTOFF_WITNESS} graph witness" in result.stderr
 
 
-def test_cargo_inclusive_release_workflow_invokes_the_cargo_helper() -> None:
+def test_cargo_inclusive_release_workflow_uses_the_exact_candidate_publisher() -> None:
     workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
 
     assert "--artifact-contract cargo-inclusive" in workflow
-    assert RELEASE_GRAPH.name in workflow
+    assert "cargo_release_candidate.py build" in workflow
+    assert "publish_cargo_release_candidate.py preflight" in workflow
+    assert "publish_cargo_release_candidate.py publish" in workflow
+    assert RELEASE_GRAPH.name not in workflow
     assert "--cutoff-state" not in workflow
     assert "publish-crates:" in workflow
 
@@ -644,6 +647,7 @@ printf '%s\\n' "$1" >> "$INVOCATION_LOG"
         "type-bridge-orm",
         "type-bridge-migration",
         "type-bridge-schema-migration-typedb",
+        "type-bridge-server",
         "type-bridge-workspace",
         "type-bridge-cli",
         "type-bridge",

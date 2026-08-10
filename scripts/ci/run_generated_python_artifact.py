@@ -417,7 +417,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         for required in (
             generated_root / "generated_v2/__init__.py",
             generated_root / "generated_variant/__init__.py",
-            generated_root / "declared-schema.json",
+            generated_root / "schema-authority.json",
         ):
             if not required.is_file():
                 raise RunnerError(f"Generated fixture is incomplete: {required}")

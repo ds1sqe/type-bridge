@@ -6,6 +6,10 @@ The TypeBridge container product is the V2-capable standalone query server:
 ghcr.io/ds1sqe/type-bridge-server:2.1.0
 ```
 
+The image contains retained V1 routes and the public `v2-query` capability.
+`[v2].enabled` adds or hides V2 routes at runtime; it never replaces the V1
+pipeline.
+
 The generated Rust SDK is source code, and `typedb/typedb:3.12.1` is an
 upstream integration dependency. Neither is republished as another
 TypeBridge image.
@@ -65,13 +69,46 @@ docker run --rm \
 ```
 
 Paths in a mounted config resolve from the config directory. Mount TLS
-certificates, custom roots, declared-schema bytes, and optional TypeQL schema
-files explicitly; they are not embedded in the generic image.
+certificates, custom roots, the generated schema-authority artifact, and
+optional TypeQL schema files explicitly; they are not embedded in the generic
+image.
+
+## Generate server authority
+
+Split YAML and `typebridge.yaml` remain the only schema/model authoring path.
+Configure the source-free server artifact beside the language bindings:
+
+```yaml
+bindings:
+  python:
+    output: generated/python/app_models
+  typescript:
+    output: generated/typescript
+  rust:
+    output: generated/rust
+
+artifacts:
+  schema-authority:
+    output: generated/schema-authority.json
+```
+
+Then capture all outputs together:
+
+```bash
+type-bridge --manifest typebridge.yaml schema check
+type-bridge --manifest typebridge.yaml schema generate
+```
+
+The artifact's `typebridge.schema-authority/v1` canonical JSON is an internal,
+bounded deployment codec. It binds the declared schema, required capabilities,
+managed scope, semantic profile, and recomputed fingerprints so a generic
+server can verify intent without importing an application package or compiling
+raw YAML. Do not edit it or maintain JSON as a second schema; regenerate it with
+every binding package.
 
 ## Enable V2
 
-A V2 production configuration must bind the live TypeDB authority to the
-canonical declared schema:
+A V2 production configuration binds live TypeDB to that generated authority:
 
 ```toml
 [server]
@@ -91,16 +128,15 @@ format = "json"
 
 [v2]
 enabled = true
-declared_schema_file = "/run/type-bridge/declared-schema.json"
-scope = "app-production"
-profile = "typedb-3.12.1/v1"
+schema_authority_file = "/run/type-bridge/schema-authority.json"
 authority_mode = "managed"
 ```
 
 Supply `TYPEDB_USERNAME` and `TYPEDB_PASSWORD` at runtime. `managed`
-authority requires the complete migration-control partition and singleton;
-use `query_only` only for a database with neither canonical nor archived migration
-controls.
+authority requires the artifact's exact migration-control partition and free
+singleton. Use `query_only` only for a database with neither canonical nor
+archived migration controls. Scope and semantic profile come from the verified
+artifact and are intentionally not repeated in server configuration.
 
 ## Health and version identity
 

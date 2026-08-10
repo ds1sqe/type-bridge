@@ -9,9 +9,13 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::projection::{BindingTarget, ProjectionConfig};
-use type_bridge_contract::schema::{DocumentId, encode_declared_schema};
-use type_bridge_schema::{SchemaDocumentSet, normalize_documents, project, resolve};
+use type_bridge_contract::schema::DocumentId;
+use type_bridge_schema::{
+    SchemaDocumentSet, encode_schema_authority, normalize_documents, project, resolve,
+};
 use type_bridge_schema_codegen::RustEmitter;
+
+mod support;
 
 const SCHEMA: &str = include_str!("acceptance/schema.yaml");
 const SCHEMA_3_11: &str = include_str!("acceptance/schema-3.11.5.yaml");
@@ -216,6 +220,9 @@ fn generated_rust_projection_round_trips_exact_live_models() {
     let declared = normalize_documents(&documents).expect("acceptance schema normalizes");
     let profile = SemanticProfileId::new(&profile_name).expect("semantic profile is valid");
     let resolved = resolve(&declared, &profile).expect("acceptance schema resolves");
+    let authority =
+        support::authority_for_declared(&declared, "rust-projection-live", &profile_name);
+    let authority_bytes = encode_schema_authority(&authority);
     let emitter = RustEmitter::new();
     let handlers = emitter.generator_handlers();
     let resources = emitter.code_resources().expect("emitter resources hash");
@@ -228,7 +235,7 @@ fn generated_rust_projection_round_trips_exact_live_models() {
     )
     .expect("acceptance schema projects to Rust");
     let package = emitter
-        .emit_with_declared_schema(&projection, &declared)
+        .emit(&projection, &authority)
         .expect("Rust package emits");
 
     let stage = Stage::new();
@@ -405,8 +412,6 @@ tokio = {{ version = "1", features = ["macros", "rt-multi-thread"] }}
         .try_clone()
         .expect("V2 server log handle is cloned");
     let core_dir = crates_dir.parent().expect("crates has a core parent");
-    let declared_bytes =
-        encode_declared_schema(&declared).expect("declared schema encodes canonically");
     let image = env::var("TYPE_BRIDGE_SERVER_IMAGE").ok();
     let container_name = image
         .as_ref()
@@ -417,8 +422,8 @@ tokio = {{ version = "1", features = ["macros", "rt-multi-thread"] }}
             Ok("1"),
             "exact production-image generated parity currently uses the plain isolated lane"
         );
-        let declared_path = stage.path().join("declared-schema.json");
-        fs::write(&declared_path, &declared_bytes).expect("declared schema is staged");
+        let authority_path = stage.path().join("schema-authority.json");
+        fs::write(&authority_path, &authority_bytes).expect("schema authority is staged");
         let config_path = stage.path().join("server.toml");
         let address = env::var("TYPEDB_ADDRESS").expect("TYPEDB_ADDRESS is configured");
         let username = env::var("TYPEDB_USERNAME").unwrap_or_else(|_| "admin".to_owned());
@@ -433,19 +438,17 @@ tokio = {{ version = "1", features = ["macros", "rt-multi-thread"] }}
                  [typedb]\naddress = {}\ndatabase = {}\nusername = {}\npassword = {}\n\
                  http_port = {http_port}\ntls = false\n\
                  [logging]\nlevel = \"info\"\nformat = \"text\"\n\
-                 [v2]\nenabled = true\ndeclared_schema_file = {}\n\
-                 scope = \"rust-projection-live\"\nprofile = {}\n\
+                 [v2]\nenabled = true\nschema_authority_file = {}\n\
                  authority_mode = \"query_only\"\n",
                 toml_string(&address),
                 toml_string(&database),
                 toml_string(&username),
                 toml_string(&password),
                 toml_string(
-                    declared_path
+                    authority_path
                         .to_str()
-                        .expect("declared-schema path is UTF-8")
+                        .expect("schema-authority path is UTF-8")
                 ),
-                toml_string(&profile_name),
             ),
         )
         .expect("production server config is staged");
@@ -515,9 +518,7 @@ tokio = {{ version = "1", features = ["macros", "rt-multi-thread"] }}
                 env::var("TYPE_BRIDGE_RUST_PROJECTION_INTG_DATABASE")
                     .expect("live database name is configured"),
             )
-            .env("SMOKE_DECLARED_B64", base64(&declared_bytes))
-            .env("SMOKE_SCOPE", "rust-projection-live")
-            .env("SMOKE_PROFILE", &profile_name)
+            .env("SMOKE_AUTHORITY_B64", base64(&authority_bytes))
             .env("SMOKE_PORT", server_port.to_string());
         if env::var("TYPE_BRIDGE_RUST_PROJECTION_TLS").as_deref() == Ok("1") {
             command.env("SMOKE_TYPEDB_TLS", "true").env(

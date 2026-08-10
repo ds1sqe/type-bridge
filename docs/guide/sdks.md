@@ -17,8 +17,10 @@ application boundary, not on different database semantics.
   facts are validated by Rust before generation.
 - CRUD, hydration, query compilation, and transactions use the shared ORM.
 - Immutable typed queries preserve owner-aware fields and selected model types.
-- Schema fingerprints and runtime projections bind generated code to its
-  declared authority.
+- Compiled schema authority, schema fingerprints, and runtime projections are
+  embedded in each generated package and bind its direct and remote queries.
+- The separate generated schema-authority artifact exists only for a generic
+  server and is never an SDK schema input.
 
 ## Deliberate language differences
 

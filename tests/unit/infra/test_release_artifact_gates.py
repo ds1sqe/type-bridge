@@ -23,17 +23,26 @@ RECOVERY_PAYLOAD_VALIDATOR = REPO_ROOT / "scripts/ci/validate_release_recovery_p
 RECOVERY_MANIFEST = REPO_ROOT / ".github/release/v2.0.0-recovery.json"
 RECOVERY_MANIFEST_SHA256 = "f8d5b2d04ad01a45694aecdd171846443bfd511a9363ab771e5f182c6bd17d2d"
 STABLE_PUBLICATION_GUARD = "if: github.event_name == 'push' && github.ref == 'refs/tags/v2.1.0'"
-MUTATING_RELEASE_JOBS = (
+QEMU_ACTION = "docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130"
+QEMU_BINFMT_IMAGE = (
+    "docker.io/tonistiigi/binfmt@"
+    "sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0"
+)
+RECOVERY_MUTATING_JOBS = (
     "publish-server-oci",
     "publish-node-npm",
     "publish-core-pypi",
     "publish-python-pypi",
     "github-release",
 )
+MUTATING_RELEASE_JOBS = ("publish-crates", *RECOVERY_MUTATING_JOBS)
 CARGO_PUBLICATION_MARKERS = (
     "publish-crates:",
     "CARGO_REGISTRY_TOKEN",
     "release_crates_graph",
+    "cargo_release_candidate.py",
+    "publish_cargo_release_candidate.py",
+    "cargo-release-candidate",
     '"${cargo_command[@]}" package',
     "patch.crates-io",
     "--verify-preexisting",
@@ -102,6 +111,18 @@ def test_core_artifact_builders_pin_the_validated_maturin_contract() -> None:
         suffix.split("\n      - name:", maxsplit=1)[0] for suffix in release.split(action)[1:]
     ]
     assert all(version in step and rust_toolchain in step for step in release_steps)
+
+
+def test_qemu_actions_pin_the_exact_binfmt_runtime() -> None:
+    """Cross-platform build and acceptance jobs must not inherit a mutable image."""
+    for workflow_path in (CI_WORKFLOW, RELEASE_WORKFLOW):
+        workflow = workflow_path.read_text(encoding="utf-8")
+        assert workflow.count(QEMU_ACTION) == 1
+        qemu_step = workflow.split(QEMU_ACTION, maxsplit=1)[1].split("\n      - name:", maxsplit=1)[
+            0
+        ]
+        assert f"image: {QEMU_BINFMT_IMAGE}" in qemu_step
+        assert "tonistiigi/binfmt:latest" not in workflow
 
 
 def test_core_metadata_advertises_only_the_supported_python_implementation() -> None:
@@ -175,7 +196,7 @@ def needs_line(block: str) -> str:
 
 def assert_stable_only_release_mutations(workflow: str) -> None:
     """Require every publication to use the exact tag or pinned recovery path."""
-    for name in MUTATING_RELEASE_JOBS:
+    for name in RECOVERY_MUTATING_JOBS:
         block = job_block(workflow, name)
         assert block.count("    if: >-\n") == 1
         assert "      always() &&\n      !cancelled() &&\n" in block
@@ -189,7 +210,23 @@ def assert_stable_only_release_mutations(workflow: str) -> None:
         assert "needs.recovery-preflight.result == 'success'" in block
         assert "inputs.release_channel == 'candidate'" not in block
 
+    cargo = job_block(workflow, "publish-crates")
+    assert cargo.count("    if: >-\n") == 1
+    assert "      always() &&\n      !cancelled() &&\n" in cargo
+    assert "github.event_name == 'push'" in cargo
+    assert "github.ref == 'refs/tags/v2.1.0'" in cargo
+    assert "github.event_name == 'workflow_dispatch'" not in cargo
+    assert "needs.release-tag-preflight.result == 'success'" in cargo
+    assert "needs.publish-node-npm.result == 'success'" in cargo
+
+    for name in MUTATING_RELEASE_JOBS:
+        block = job_block(workflow, name)
+        assert "release-tag-preflight" in needs_line(block)
+        assert "EXPECTED_RELEASE_TAG_OBJECT" in block
+        assert 'test "$tag_object" = "$EXPECTED_RELEASE_TAG_OBJECT"' in block
+
     publication_markers = {
+        "publish_cargo_release_candidate.py publish": "publish-crates",
         "npm publish": "publish-node-npm",
         "pypa/gh-action-pypi-publish": (
             "publish-core-pypi",
@@ -399,14 +436,20 @@ def test_python_publication_depends_on_exact_artifact_acceptance() -> None:
     assert "type-bridge-migration" not in acceptance
     assert '--manifest="$workspace/typebridge.yaml" --version' in acceptance
     assert '--manifest "$workspace/typebridge.yaml" -V' in acceptance
-    assert '"$cli_venv/bin/type-bridge" schema export-declared' in acceptance
-    assert 'test -s "$workspace/generated/declared-schema.json"' in acceptance
+    assert "artifacts:" in acceptance
+    assert "schema-authority:" in acceptance
+    assert "output: generated/schema-authority.json" in acceptance
+    assert 'test -s "$workspace/generated/schema-authority.json"' in acceptance
+    assert '"$cli_venv/bin/type-bridge" schema export-declared' not in acceptance
+    assert "declared-schema.json" not in acceptance
 
     generated_runner = (REPO_ROOT / "scripts/ci/run_generated_python_artifact.py").read_text(
         encoding="utf-8"
     )
     assert '"pythonVersion": python_version' in generated_runner
     assert '"pythonVersion": "3.13"' not in generated_runner
+    assert 'generated_root / "schema-authority.json"' in generated_runner
+    assert "declared-schema.json" not in generated_runner
     assert "uv build" not in acceptance
     assert "actions/upload-artifact" not in acceptance
 
@@ -604,6 +647,10 @@ def test_release_channels_have_fixed_non_attacker_controlled_identities() -> Non
         "inputs.release_channel == 'recovery' && '2.0.0' || '2.1.0' }}"
     ) in preamble
     assert (
+        "SERVER_OCI_MINOR_ALIAS: ${{ github.event_name == 'workflow_dispatch' && "
+        "inputs.release_channel == 'recovery' && '2.0' || '2.1' }}"
+    ) in preamble
+    assert (
         "RELEASE_CHANNEL: ${{ github.event_name == 'workflow_dispatch' "
         "&& inputs.release_channel || 'stable' }}"
     ) in preamble
@@ -621,7 +668,7 @@ def test_release_channels_have_fixed_non_attacker_controlled_identities() -> Non
     assert workflow.count("\n  RELEASE_VERSION:") == 1
     assert workflow.count("PYTHON_RELEASE_VERSION:") == 1
     assert workflow.count("RELEASE_CHANNEL:") == 1
-    assert preamble.count("inputs.release_channel") == 6
+    assert preamble.count("inputs.release_channel") == 7
     assert "GITHUB_REF_NAME" not in workflow
     assert "github.ref_name" not in workflow
     assert "RELEASE_TAG#v" not in workflow
@@ -686,7 +733,7 @@ def test_recovery_preflight_is_pinned_to_the_failed_exact_tag_run() -> None:
 def test_recovery_publishers_reuse_only_source_run_artifacts() -> None:
     workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
 
-    for job in MUTATING_RELEASE_JOBS:
+    for job in RECOVERY_MUTATING_JOBS:
         publish = job_block(workflow, job)
         assert "ref: ${{ env.RELEASE_REVISION }}" in publish
         assert "persist-credentials: false" in publish
@@ -702,6 +749,8 @@ def test_recovery_publishers_reuse_only_source_run_artifacts() -> None:
         assert 'gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_object}"' in publish
         assert 'test "$(jq -r \'.object.type\' <<<"$tag_json")" = commit' in publish
         assert 'test "$(jq -r \'.object.sha\' <<<"$tag_json")" = "$RELEASE_REVISION"' in publish
+        assert "EXPECTED_RELEASE_TAG_OBJECT" in publish
+        assert 'test "$tag_object" = "$EXPECTED_RELEASE_TAG_OBJECT"' in publish
         assert "actions: read" in publish
         assert "github.event_name == 'workflow_dispatch'" in publish
         assert "github.ref == 'refs/heads/master'" in publish
@@ -714,12 +763,20 @@ def test_recovery_publishers_reuse_only_source_run_artifacts() -> None:
     recovery = job_block(workflow, "recovery-preflight")
     assert "a4cec6478ad4e764f039e51eabcbb68d45efd45a" in recovery
 
+    frozen = job_block(workflow, "release-tag-preflight")
+    assert needs_line(frozen) == "    needs: [channel-preflight, recovery-preflight]"
+    assert "tag_object: ${{ steps.freeze-tag.outputs.tag_object }}" in frozen
+    assert "a4cec6478ad4e764f039e51eabcbb68d45efd45a" in frozen
+    assert "inputs.recovery_mode == 'publish'" in frozen
+
     node = job_block(workflow, "publish-node-npm")
     server = job_block(workflow, "publish-server-oci")
     core = job_block(workflow, "publish-core-pypi")
     root = job_block(workflow, "publish-python-pypi")
     release = job_block(workflow, "github-release")
-    assert needs_line(node) == "    needs: [channel-preflight, recovery-preflight]"
+    assert needs_line(node) == (
+        "    needs: [channel-preflight, recovery-preflight, release-tag-preflight]"
+    )
     assert "publish-node-npm" in needs_line(server)
     assert "publish-server-oci" in needs_line(core)
     assert "publish-core-pypi" in needs_line(root)
@@ -786,7 +843,8 @@ def test_recovery_metadata_preserves_release_source_and_exact_tag() -> None:
 
     assert '"revision": os.environ["RELEASE_REVISION"]' in server
     assert "release.yml@refs/heads/master$" in server
-    assert "release.yml@refs/tags/v2[.]0[.]0$" in server
+    assert "release.yml@refs/tags/v2[.]1[.]0$" in server
+    assert "release.yml@refs/tags/v2[.]0[.]0$" not in server
     for name in (
         "Attest amd64 build provenance",
         "Attest arm64 build provenance",
@@ -814,7 +872,7 @@ def test_recovery_metadata_preserves_release_source_and_exact_tag() -> None:
     assert "name: release-recovery-evidence" in release
 
 
-@pytest.mark.parametrize("job", MUTATING_RELEASE_JOBS)
+@pytest.mark.parametrize("job", RECOVERY_MUTATING_JOBS)
 def test_candidate_guard_gate_rejects_an_unguarded_mutation_job(job: str) -> None:
     workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
     block = job_block(workflow, job)
@@ -822,6 +880,17 @@ def test_candidate_guard_gate_rejects_an_unguarded_mutation_job(job: str) -> Non
     assert guarded_term in block
     hostile_block = block.replace(guarded_term, "", 1)
     hostile_workflow = workflow.replace(block, hostile_block, 1)
+
+    with pytest.raises(AssertionError):
+        assert_stable_only_release_mutations(hostile_workflow)
+
+
+def test_cargo_publication_rejects_a_broadened_stable_tag_guard() -> None:
+    workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+    block = job_block(workflow, "publish-crates")
+    guarded = "      github.ref == 'refs/tags/v2.1.0' &&\n"
+    assert guarded in block
+    hostile_workflow = workflow.replace(block, block.replace(guarded, "", 1), 1)
 
     with pytest.raises(AssertionError):
         assert_stable_only_release_mutations(hostile_workflow)
@@ -877,22 +946,29 @@ def test_python_npm_publication_is_serial_after_global_candidate_gates() -> None
         "    needs: [validate-release-identity, accept-python-artifacts, "
         "accept-node-package, accept-live-artifact-parity, accept-server-oci]"
     )
-    assert needs_line(node_publish) == ("    needs: [channel-preflight, recovery-preflight]")
+    assert needs_line(node_publish) == (
+        "    needs: [channel-preflight, recovery-preflight, release-tag-preflight]"
+    )
     assert needs_line(job_block(workflow, "publish-server-oci")) == (
-        "    needs: [channel-preflight, recovery-preflight, accept-server-oci, publish-node-npm]"
+        "    needs: [channel-preflight, recovery-preflight, release-tag-preflight, "
+        "accept-server-oci, publish-node-npm]"
     )
     assert needs_line(core_publish) == (
-        "    needs: [build-core-wheels, build-core-sdist, recovery-preflight, publish-server-oci]"
+        "    needs: [build-core-wheels, build-core-sdist, recovery-preflight, "
+        "release-tag-preflight, publish-server-oci]"
     )
     assert needs_line(root_publish) == (
-        "    needs: [build-python, recovery-preflight, publish-core-pypi]"
+        "    needs: [build-python, recovery-preflight, release-tag-preflight, publish-core-pypi]"
     )
     assert needs_line(github_release) == (
-        "    needs: [recovery-preflight, publish-server-oci, publish-node-npm, "
-        "publish-core-pypi, publish-python-pypi, publish-crates]"
+        "    needs: [recovery-preflight, release-tag-preflight, publish-server-oci, "
+        "publish-node-npm, publish-core-pypi, publish-python-pypi, publish-crates]"
     )
-    assert needs_line(cargo_publish) == "    needs: channel-preflight"
-    assert f"    {STABLE_PUBLICATION_GUARD}" in cargo_publish
+    assert needs_line(cargo_publish) == (
+        "    needs: [release-tag-preflight, publish-node-npm, validate-release-identity]"
+    )
+    assert "github.ref == 'refs/tags/v2.1.0'" in cargo_publish
+    assert "needs.publish-node-npm.result == 'success'" in cargo_publish
     assert "CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}" in cargo_publish
     assert "NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}" in preflight
     assert "NPM_TOKEN is required for an atomic cross-registry release." in preflight
@@ -927,7 +1003,7 @@ def test_read_only_notices_and_driver_provenance_precede_publication() -> None:
     assert "Validate identity and retained TypeDB package provenance" in identity
     command = "python scripts/ci/validate_release_identity.py"
     rust_artifacts = "python scripts/ci/validate_rust_release_artifacts.py"
-    cargo_graph = "bash ../scripts/ci/release_crates_graph.sh --preflight"
+    cargo_graph = "python scripts/ci/cargo_release_candidate.py build"
     assert identity.count(command) == 1
     assert identity.count(rust_artifacts) == 1
     notice = "generate_native_dependency_notice.py --check"
@@ -944,7 +1020,8 @@ def test_read_only_notices_and_driver_provenance_precede_publication() -> None:
         < identity.index(rust_artifacts)
         < identity.index(command)
     )
-    assert "--artifacts-dir type-bridge-core/target/package" in identity
+    assert "--candidate-bundle type-bridge-core/target/cargo-release-candidate" in identity
+    assert "--expected-manifest-sha256" in identity
     assert '--expected-release-version "$RELEASE_VERSION"' in identity
     assert identity.index(command) < identity.index(official)
     assert "||" not in identity[identity.index(command) :]
@@ -975,6 +1052,23 @@ def test_npm_preflight_authenticates_without_an_owner_wide_acl_probe() -> None:
     server_publish = job_block(workflow, "publish-server-oci")
     assert "publish-server-oci" not in needs_line(node_publish)
     assert "publish-node-npm" in needs_line(server_publish)
+
+
+def test_stable_preflight_rejects_a_missing_or_untrimmed_cargo_token_before_npm() -> None:
+    workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+    preflight = job_block(workflow, "channel-preflight")
+
+    cargo_shape = preflight.index("Validate Cargo publication credential shape")
+    npm_auth = preflight.index("Authenticate npm publication credential")
+    assert cargo_shape < npm_auth
+    assert f"        {STABLE_PUBLICATION_GUARD}" in preflight[cargo_shape:npm_auth]
+    assert (
+        "CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}"
+        in preflight[cargo_shape:npm_auth]
+    )
+    assert "if not token or token != token.strip():" in preflight[cargo_shape:npm_auth]
+    assert "cargo owner" not in preflight
+    assert "CARGO_REGISTRY_TOKEN is required and must not have surrounding whitespace." in preflight
 
 
 def test_crates_helper_requires_identical_registry_bytes() -> None:
@@ -1164,13 +1258,16 @@ def test_live_cli_workspace_state_machine_is_required_locally_and_in_ci() -> Non
     test_script = (REPO_ROOT / "test.sh").read_text(encoding="utf-8")
     tests = (
         "empty_workspace_to_replayed_history_live",
+        "documented_examples_initial_constraints_apply_and_verify_live",
         "verify_never_creates_databases_live",
         "adopt_legacy_history_then_evolve_live",
         "shipped_python_converter_to_native_adoption_live",
     )
     rust_integration = job_block(ci, "rust-integration")
     for test in tests:
-        assert f"          {test}\n          -- --ignored --exact --nocapture" in rust_integration
+        assert f"          {test}\n          --manifest-path" in rust_integration
+    assert rust_integration.count("scripts/ci/run_exact_ignored_rust_test.sh") == len(tests) + 2
+    assert "unsupported_server_apply_creates_neither_database_live" in rust_integration
 
     loop = re.search(
         r"for cli_live_test in \\\n(?P<tests>.*?); do\n(?P<body>.*?)\n    done",
@@ -1180,7 +1277,7 @@ def test_live_cli_workspace_state_machine_is_required_locally_and_in_ci() -> Non
     assert loop is not None
     selected_tests = set(re.findall(r"^        ([a-z0-9_]+)(?: \\)?$", loop["tests"], re.MULTILINE))
     assert selected_tests == set(tests)
-    assert '"$cli_live_test" -- --ignored --exact --nocapture' in loop["body"]
+    assert 'run_exact_ignored_rust_test.sh "$cli_live_test"' in loop["body"]
     assert 'TYPE_BRIDGE_TEST_PYTHON="$ROOT/.venv/bin/python"' in loop["body"]
     assert "timeout-minutes: 30" in rust_integration
     assert "uv sync --no-dev" in rust_integration
@@ -1287,12 +1384,40 @@ def test_live_release_parity_consumes_exact_artifacts_before_every_publish() -> 
     assert "name: generated-python-live-fixture" in build_python
     assert 'prepare_generated_live_fixture.sh" node' in pack_node
     assert "name: generated-node-live-fixture" in pack_node
+    fixture_source = (REPO_ROOT / fixture_script).read_text(encoding="utf-8")
+    assert "format: typebridge.workspace/v1" in fixture_source
+    assert "format: typebridge.schema-set/v1" in fixture_source
+    assert "artifacts:" in fixture_source
+    assert "schema-authority:" in fixture_source
+    assert "-p type-bridge-cli --bin type-bridge" in fixture_source
+    assert "schema generate" in fixture_source
+    assert "type-bridge-schema-codegen" not in fixture_source
+    assert "emit_python_acceptance" not in fixture_source
+    assert "emit_typescript_acceptance" not in fixture_source
+    assert "declared-schema.json" not in fixture_source
+
+    python_live = (
+        REPO_ROOT / "tests/integration/schema/test_generated_projection_live.py"
+    ).read_text(encoding="utf-8")
+    node_live = (
+        REPO_ROOT
+        / "type-bridge-core/crates/node/tests/projection-integration/generated-package-live.test.ts"
+    ).read_text(encoding="utf-8")
+    for consumer in (python_live, node_live):
+        assert "schema-authority.json" in consumer
+        assert "SMOKE_AUTHORITY_B64" in consumer
+        assert "QueryV2Authority" not in consumer
+        assert "declared-schema.json" not in consumer
+        assert "SMOKE_DECLARED_B64" not in consumer
+        assert "SMOKE_SCOPE" not in consumer
+        assert "SMOKE_PROFILE" not in consumer
 
     assert needs_line(smoke_server) == "    needs: validate-release-identity"
     assert "toolchain: 1.94.1" in smoke_server
     assert (
         "cargo build --manifest-path type-bridge-core/Cargo.toml "
-        "--release -p type-bridge-server --features v2-query "
+        "--release -p type-bridge-server --no-default-features "
+        "--features band9,v2-query "
         "--example v2_smoke_server"
     ) in " ".join(smoke_server.split())
     assert "name: v2-smoke-server" in smoke_server
@@ -1304,8 +1429,34 @@ def test_live_release_parity_consumes_exact_artifacts_before_every_publish() -> 
     preflight = job_block(workflow, "channel-preflight")
     assert "accept-live-artifact-parity" in needs_line(preflight)
     assert needs_line(job_block(workflow, "publish-node-npm")) == (
-        "    needs: [channel-preflight, recovery-preflight]"
+        "    needs: [channel-preflight, recovery-preflight, release-tag-preflight]"
     )
+
+
+def test_low_level_query_smokes_use_compiled_server_authority() -> None:
+    fixture = REPO_ROOT / "tests/fixtures/query-v2-binding-smoke"
+    manifest = (fixture / "typebridge.yaml").read_text(encoding="utf-8")
+    schema_set = (fixture / "schema/schema.yaml").read_text(encoding="utf-8")
+    assert "format: typebridge.workspace/v1" in manifest
+    assert "managed-scope: binding-smoke" in manifest
+    assert "schema-authority:" in manifest
+    assert "output: generated/schema-authority.json" in manifest
+    assert "format: typebridge.schema-set/v1" in schema_set
+
+    consumers = (
+        REPO_ROOT / "tests/integration/queries/test_query_v2_binding_smoke.py",
+        REPO_ROOT / "type-bridge-core/crates/node/tests/integration/queries/query-v2-smoke.test.ts",
+    )
+    for path in consumers:
+        source = path.read_text(encoding="utf-8")
+        assert "QueryV2Authority" in source
+        assert "query-v2-binding-smoke" in source
+        assert "type-bridge-cli" in source
+        assert "schema-authority.json" in source
+        assert "SMOKE_AUTHORITY_B64" in source
+        assert "SMOKE_DECLARED_B64" not in source
+        assert "SMOKE_SCOPE" not in source
+        assert "SMOKE_PROFILE" not in source
 
 
 def test_npm_publication_uses_the_accepted_tarball() -> None:
@@ -1431,7 +1582,9 @@ def test_npm_publication_uses_the_accepted_tarball() -> None:
     assert "npm pack" not in acceptance
     assert "actions/upload-artifact" not in acceptance
 
-    assert needs_line(publish) == "    needs: [channel-preflight, recovery-preflight]"
+    assert needs_line(publish) == (
+        "    needs: [channel-preflight, recovery-preflight, release-tag-preflight]"
+    )
     assert "name: node-package" in publish
     assert publish.count("scripts/ci/validate_node_release_package.py") == 2
     assert "--repository-package type-bridge-core/crates/node/package.json" in publish
@@ -1452,7 +1605,7 @@ def test_npm_publication_uses_the_accepted_tarball() -> None:
     assert "npm-view-error.log" in publish
     assert "grep -Eq 'E404|404 Not Found'" in publish
     assert "lookup failed without an authoritative 404" in publish
-    assert 'npm publish "${packages[0]}" --access public' in publish
+    assert publish.count('npm publish "${packages[0]}" --access public') == 1
     assert "Detect npm token" not in publish
     assert "steps.npm_token.outputs.present" not in publish
     assert "skipping the npm registry publish" not in publish

@@ -3,7 +3,6 @@ from typing import Literal, overload
 
 from type_bridge_core import PyRuntimeProjection
 
-from type_bridge.query_v2 import QueryV2Authority
 from type_bridge.session import Database, TransactionContext
 
 from ._runtime import (
@@ -5009,7 +5008,6 @@ class RemoteGroupedQuery[GroupT]:
 class RemoteQuerySession:
     def __init__(
         self,
-        authority: QueryV2Authority,
         advertisement: bytes,
         exchange: Callable[[bytes], Awaitable[bytes]],
         limits: RemoteQueryLimits,

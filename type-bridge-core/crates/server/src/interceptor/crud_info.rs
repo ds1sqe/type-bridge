@@ -3,19 +3,28 @@ use type_bridge_core_lib::ast::{Clause, Constraint, Pattern, Statement};
 /// The kind of CRUD operation detected from query clauses.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CrudOperation {
+    /// Insert new data.
     Insert,
+    /// Read existing data.
     Read,
+    /// Update existing data.
     Update,
+    /// Delete existing data.
     Delete,
+    /// Insert or update data with TypeQL `put`.
     Put,
+    /// No supported CRUD operation was detected.
     Other,
 }
 
 /// The kind of TypeDB type referenced in the query.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypeKind {
+    /// An entity type.
     Entity,
+    /// A relation type.
     Relation,
+    /// An attribute type.
     Attribute,
 }
 
@@ -25,10 +34,15 @@ pub enum TypeKind {
 /// it targets, which attributes it touches, and optional IID lookups.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CrudInfo {
+    /// Detected top-level CRUD operation.
     pub operation: CrudOperation,
+    /// Primary schema type label, when one can be determined.
     pub type_name: Option<String>,
+    /// Primary schema type kind, when one can be determined.
     pub type_kind: Option<TypeKind>,
+    /// Attribute labels referenced by the operation.
     pub attribute_names: Vec<String>,
+    /// Exact instance identifier used by the operation, when present.
     pub iid: Option<String>,
 }
 

@@ -8,16 +8,22 @@ use crate::value::AttributeValue;
 /// The CRUD operation being performed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CrudOperation {
+    /// Create a new stored instance.
     Insert,
+    /// Replace the mutable state of an existing instance.
     Update,
+    /// Remove an existing instance.
     Delete,
+    /// Insert a new instance or replace the matching keyed instance.
     Put,
 }
 
 /// Whether the target is an entity or relation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TypeKind {
+    /// The hook target is an entity instance.
     Entity,
+    /// The hook target is a relation instance.
     Relation,
 }
 

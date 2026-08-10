@@ -13,20 +13,24 @@ type-bridge --manifest typebridge.yaml schema check
 The command resolves the schema-set, validates the selected semantic profile,
 and prints diagnostics without contacting TypeDB.
 
-## Generate declared TypeQL and bindings
+## Generate bindings
 
 ```bash
 type-bridge --manifest typebridge.yaml schema generate
 ```
 
-Generation renders every configured target from the same normalized schema and
-fingerprint. It does not mutate a database. See [generation](generator.md).
+Generation captures the workspace once, renders every configured Python,
+TypeScript, and Rust target, embeds the same compiled authority in each package,
+and optionally writes `artifacts.schema-authority.output` when deploying a
+generic server. Ordinary generated managers and query sessions need no
+standalone authority JSON. Generation does not mutate a database. See
+[generation](generator.md).
 
 ## Plan and apply schema changes
 
 ```bash
 type-bridge --manifest typebridge.yaml migration make --name add-person
-type-bridge --manifest typebridge.yaml migration plan --environment development
+type-bridge --manifest typebridge.yaml migration plan
 type-bridge --manifest typebridge.yaml migration apply --environment development
 type-bridge --manifest typebridge.yaml migration verify --environment development
 ```
@@ -38,8 +42,11 @@ follow the workspace policy and require explicit approval when configured.
 
 Workspace V1 uses `schema.ownership: exclusive` and a bounded `managed-scope`.
 The migration ledger, immutable migration files, declared-schema fingerprint,
-and generated projection must agree. Generated model classes are not scanned to
-reconstruct schema and cannot register new types at runtime.
+and generated projections must agree. A configured generic-server deployment
+artifact must agree with the same generation snapshot.
+Generated model classes are not scanned to reconstruct schema and cannot
+register new types at runtime. Canonical JSON is an internal generated codec,
+not an authored schema input.
 
 ## Existing systems
 

@@ -1125,7 +1125,7 @@ test("reducer error preserves the complete shared diagnostic", () => {
 
 test("documented Node low-level example typechecks and executes verbatim", () => {
   const snippet = documentedExample(
-    "The equivalent Node authoring uses the same operation names and order:",
+    "The equivalent Node authoring uses the same operation names and order.",
     "typescript",
   );
   const temporary = fs.mkdtempSync(
@@ -1178,13 +1178,21 @@ test("documented Node low-level example typechecks and executes verbatim", () =>
       readonly exports: Record<string, unknown>;
       readonly module: { exports: Record<string, unknown> };
       readonly require: (request: string) => unknown;
+      readonly declared: Buffer;
+      readonly scope: string;
+      readonly profile: string;
       docsResult?: {
-        readonly plan: { readonly format: string; readonly fingerprint: string };
-        readonly invocation: { readonly planFingerprint: string };
+        readonly invocation: {
+          readonly operation: string;
+          readonly planFingerprint: string;
+        };
       };
     } = {
       exports: {},
       module: { exports: {} },
+      declared,
+      scope: corpus.scope,
+      profile: corpus.profile,
       require(request: string): unknown {
         if (request === "node:fs") {
           return { readFileSync: () => declared };
@@ -1196,15 +1204,19 @@ test("documented Node low-level example typechecks and executes verbatim", () =>
       },
     };
     vm.runInNewContext(
-      `${transpiled.outputText}\nglobalThis.docsResult = { plan, invocation };\n`,
+      `${transpiled.outputText}
+const docsAuthority = new (require("@type-bridge/node/query-v2").QueryV2Authority)(
+  declared,
+  scope,
+  profile,
+);
+globalThis.docsResult = { invocation: authorInvocation(docsAuthority) };
+`,
       sandbox,
       { filename: examplePath },
     );
-    assert.equal(sandbox.docsResult?.plan.format, "typebridge.query-plan/v2");
-    assert.equal(
-      sandbox.docsResult?.invocation.planFingerprint,
-      sandbox.docsResult?.plan.fingerprint,
-    );
+    assert.equal(sandbox.docsResult?.invocation.operation, "rows");
+    assert.notEqual(sandbox.docsResult?.invocation.planFingerprint, "");
   } finally {
     fs.rmSync(temporary, { force: true, recursive: true });
   }

@@ -33,7 +33,7 @@ environments:
     database: quickstart
     uri: localhost:1729
     tls: 'false'
-    migrate: 'false'
+    migrate: 'true'
     credential:
       username: env:TYPEDB_USERNAME
       password: env:TYPEDB_PASSWORD
@@ -82,14 +82,19 @@ plays:
 
 ```bash
 type-bridge --manifest typebridge.yaml schema check
+type-bridge --manifest typebridge.yaml schema generate
 type-bridge --manifest typebridge.yaml migration make --name initial
 type-bridge --manifest typebridge.yaml migration apply --environment development
-type-bridge --manifest typebridge.yaml schema generate
 ```
 
 `schema check` is offline. Migration application is the explicit database
-change; generation never mutates TypeDB. Commit the workspace and migration
-history, and regenerate bindings after an accepted schema change.
+change; generation never mutates TypeDB. The generated Python package privately
+embeds the verified authority used by its managers and query sessions, so this
+ordinary application path does not configure, generate, or read an external
+JSON authority. Commit the workspace and migration history, and regenerate all
+outputs after an accepted schema change. Set `TYPEDB_USERNAME` and
+`TYPEDB_PASSWORD` for the named TypeDB environment before running the connected
+apply command.
 
 ## 3. Put and filter one type
 

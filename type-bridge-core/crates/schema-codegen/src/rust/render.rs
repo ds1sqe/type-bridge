@@ -10,9 +10,11 @@ use type_bridge_contract::projection::{
     RuntimeProjection,
 };
 use type_bridge_contract::schema::OwnsFactId;
-use type_bridge_contract::value::ValueTypeTag;
+use type_bridge_contract::value::{Cardinality, ValueTypeTag};
 
-use crate::{GeneratedPackage, documentation_annotation, invalid, model_documentation};
+use crate::{
+    EmbeddedAuthority, GeneratedPackage, documentation_annotation, invalid, model_documentation,
+};
 
 macro_rules! canonical_text {
     ($value:expr) => {{
@@ -73,7 +75,6 @@ const FIXED_PUBLIC_NAMES: &[&str] = &[
     "SEMANTIC_SCHEMA_FINGERPRINT_JSON",
     "PROJECTION_FINGERPRINT_JSON",
     "RUNTIME_PROJECTION_JSON",
-    "DECLARED_SCHEMA_JSON",
     "MODEL_SHELLS",
     "MODEL_LINK_COMPONENTS",
     "STRUCT_ORDER",
@@ -139,9 +140,9 @@ const FIXED_GENERATED_HELPERS: &[&str] = &[
 
 pub(super) fn render(
     projection: &RuntimeProjection,
+    authority: &EmbeddedAuthority,
     cargo_toml: &[u8],
     runtime: &[u8],
-    declared_schema: Option<&[u8]>,
 ) -> Result<GeneratedPackage, Diagnostic> {
     validate_projection(projection)?;
     GeneratedPackage::try_new([
@@ -178,7 +179,7 @@ pub(super) fn render(
         ),
         (
             "src/schema.rs".to_owned(),
-            render_schema(projection, declared_schema)?.into_bytes(),
+            render_schema(projection, authority)?.into_bytes(),
         ),
     ])
 }
@@ -271,8 +272,9 @@ fn render_declaration(projection: &RuntimeProjection) -> Result<String, Diagnost
         }
 
         let descendants = concrete_descendants(projection, id)?;
-        if descendants.len() >= 2
-            || (projected_model.declaration().is_abstract() && !descendants.is_empty())
+        if matches!(id.kind(), TypeKind::Entity | TypeKind::Relation)
+            && (descendants.len() >= 2
+                || (projected_model.declaration().is_abstract() && !descendants.is_empty()))
         {
             let family_name = format!("{name}Family");
             let _ = writeln!(
@@ -1090,6 +1092,7 @@ fn exact_common_family_members(families: &[Vec<(Member, FamilyMemberFact)>]) -> 
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum FamilyMemberToken {
+    AttributeValue,
     Field(OwnsFactId),
     Role(RoleId),
 }
@@ -1111,6 +1114,20 @@ fn family_member_fact(
     model: &ModelProjection,
     member: &Member,
 ) -> Result<FamilyMemberFact, Diagnostic> {
+    if model.id().kind() == TypeKind::Attribute && member.name == "value" {
+        let value_type = model
+            .declaration()
+            .value_type()
+            .ok_or_else(|| facet_error("attribute value member has no scalar domain"))?;
+        return Ok(FamilyMemberFact {
+            token: FamilyMemberToken::AttributeValue,
+            multiplicity: ProjectedMultiplicity::from_cardinality(Cardinality::new(
+                member.min, member.max,
+            )?),
+            shape: FamilyMemberShape::Field(ProjectedTypeRef::Scalar(value_type)),
+        });
+    }
+
     if member.is_role {
         let token = model
             .query_tokens()
@@ -1171,18 +1188,22 @@ fn render_families(projection: &RuntimeProjection) -> Result<String, Diagnostic>
         }
         output.push_str("}\n\n");
 
-        let _ = writeln!(
-            output,
-            "impl {family_name} {{\n  #[must_use]\n  pub fn iid(&self) -> &str {{\n    match self {{"
+        let is_thing_family = matches!(
+            root_model.id().kind(),
+            TypeKind::Entity | TypeKind::Relation
         );
-        for descendant in &descendants {
-            let variant_name = descendant.target_name().as_str();
-            let _ = writeln!(
-                output,
-                "      Self::{variant_name}(__tb_inner) => __tb_inner.iid(),"
-            );
+        let _ = writeln!(output, "impl {family_name} {{");
+        if is_thing_family {
+            output.push_str("  #[must_use]\n  pub fn iid(&self) -> &str {\n    match self {\n");
+            for descendant in &descendants {
+                let variant_name = descendant.target_name().as_str();
+                let _ = writeln!(
+                    output,
+                    "      Self::{variant_name}(__tb_inner) => __tb_inner.iid(),"
+                );
+            }
+            output.push_str("    }\n  }\n");
         }
-        output.push_str("    }\n  }\n");
         for member in common_family_members(projection, &descendants)? {
             let fn_name = &member.name;
             let ret_type = member.getter_type();
@@ -1211,18 +1232,20 @@ fn render_families(projection: &RuntimeProjection) -> Result<String, Diagnostic>
 
         output.push_str("}\n\n");
 
-        let _ = writeln!(
-            output,
-            "impl MaterializeModel for {family_name} {{\n  fn materialize(__tb_row: &HydratedRow, __tb_cap: &HydrationCapability) -> Result<Self, ValidationError> {{\n    match __tb_row.type_id_json() {{"
-        );
-        for descendant in &descendants {
-            let variant_name = descendant.target_name().as_str();
+        if is_thing_family {
             let _ = writeln!(
                 output,
-                "      {variant_name}::TYPE_ID_JSON => {variant_name}::materialize(__tb_row, __tb_cap).map(Self::{variant_name}),"
+                "impl MaterializeModel for {family_name} {{\n  fn materialize(__tb_row: &HydratedRow, __tb_cap: &HydrationCapability) -> Result<Self, ValidationError> {{\n    match __tb_row.type_id_json() {{"
             );
+            for descendant in &descendants {
+                let variant_name = descendant.target_name().as_str();
+                let _ = writeln!(
+                    output,
+                    "      {variant_name}::TYPE_ID_JSON => {variant_name}::materialize(__tb_row, __tb_cap).map(Self::{variant_name}),"
+                );
+            }
+            output.push_str("      _ => Err(ValidationError::new(\"type_id\", \"unknown_concrete_type\")),\n    }\n  }\n}\n\n");
         }
-        output.push_str("      _ => Err(ValidationError::new(\"type_id\", \"unknown_concrete_type\")),\n    }\n  }\n}\n\n");
     }
     Ok(output)
 }
@@ -1472,7 +1495,7 @@ fn render_functions(projection: &RuntimeProjection) -> Result<String, Diagnostic
 
 fn render_schema(
     projection: &RuntimeProjection,
-    declared_schema: Option<&[u8]>,
+    authority: &EmbeddedAuthority,
 ) -> Result<String, Diagnostic> {
     let mut output = String::from(header());
     output.push_str(
@@ -1487,19 +1510,15 @@ fn render_schema(
     )));
     output.push_str(";\npub const RUNTIME_PROJECTION_JSON: &str = ");
     output.push_str(&rust_literal(&canonical_text!(projection)));
-    if let Some(declared_schema) = declared_schema {
-        let declared_schema = std::str::from_utf8(declared_schema).map_err(|_| {
-            invalid(
-                "rust_emitter_non_utf8_declared_schema",
-                "canonical declared schema must be UTF-8",
-            )
-        })?;
-        output.push_str(";\npub const DECLARED_SCHEMA_JSON: &str = ");
-        output.push_str(&rust_literal(declared_schema));
-        output.push_str(";\n\npub const SCHEMA: type_bridge::schema::SchemaPackage<AppSchema> = type_bridge::schema::SchemaPackage::new_with_declared(\n  SEMANTIC_SCHEMA_FINGERPRINT_JSON,\n  PROJECTION_FINGERPRINT_JSON,\n  RUNTIME_PROJECTION_JSON,\n  DECLARED_SCHEMA_JSON,\n);\n\n");
-    } else {
-        output.push_str(";\n\npub const SCHEMA: type_bridge::schema::SchemaPackage<AppSchema> = type_bridge::schema::SchemaPackage::new(\n  SEMANTIC_SCHEMA_FINGERPRINT_JSON,\n  PROJECTION_FINGERPRINT_JSON,\n  RUNTIME_PROJECTION_JSON,\n);\n\n");
-    }
+    output.push_str(";\npub(crate) const SCHEMA_AUTHORITY_JSON: &str = ");
+    output.push_str(&rust_literal(&authority.canonical_envelope_json));
+    output.push_str(";\npub(crate) const DECLARED_SCHEMA_JSON: &str = ");
+    output.push_str(&rust_literal(&authority.declared_schema_json));
+    output.push_str(";\npub(crate) const MANAGED_SCOPE_ID: &str = ");
+    output.push_str(&rust_literal(&authority.managed_scope_id));
+    output.push_str(";\npub(crate) const SEMANTIC_PROFILE_ID: &str = ");
+    output.push_str(&rust_literal(&authority.semantic_profile_id));
+    output.push_str(";\n\npub const SCHEMA: type_bridge::schema::SchemaPackage<AppSchema> = type_bridge::schema::SchemaPackage::new_with_authority(\n  SEMANTIC_SCHEMA_FINGERPRINT_JSON,\n  PROJECTION_FINGERPRINT_JSON,\n  RUNTIME_PROJECTION_JSON,\n  SCHEMA_AUTHORITY_JSON,\n  DECLARED_SCHEMA_JSON,\n  MANAGED_SCOPE_ID,\n  SEMANTIC_PROFILE_ID,\n);\n\n");
 
     output.push_str("pub const MODEL_SHELLS: &[&str] = &[\n");
     for id in projection.emission().model_shells() {
@@ -2307,18 +2326,20 @@ fn validate_projection(projection: &RuntimeProjection) -> Result<(), Diagnostic>
                 &family_name,
                 format!("model family {id:?}"),
             )?;
-            reserve_rust_name(
-                &mut reservations,
-                &family_name,
-                "iid",
-                format!("family IID getter for {id:?}"),
-            )?;
-            reserve_rust_name(
-                &mut reservations,
-                &family_name,
-                "materialize",
-                format!("family materializer for {id:?}"),
-            )?;
+            if matches!(id.kind(), TypeKind::Entity | TypeKind::Relation) {
+                reserve_rust_name(
+                    &mut reservations,
+                    &family_name,
+                    "iid",
+                    format!("family IID getter for {id:?}"),
+                )?;
+                reserve_rust_name(
+                    &mut reservations,
+                    &family_name,
+                    "materialize",
+                    format!("family materializer for {id:?}"),
+                )?;
+            }
             for member in common_family_members(projection, &descendants)? {
                 reserve_rust_name(
                     &mut reservations,
@@ -2693,11 +2714,25 @@ mod tests {
     #[test]
     fn rust_acceptance_review_06b_fixed_names_cover_codegen_spi_and_prelude() {
         let mut exports = BTreeSet::new();
+        let mut pending_canonical_scalar = false;
         for source_line in include_str!("../../../rust/src/__codegen.rs").lines() {
+            let line = source_line.trim();
+            if pending_canonical_scalar {
+                if line.is_empty() {
+                    continue;
+                }
+                let name = line.trim_end_matches(',');
+                assert!(
+                    !name.is_empty(),
+                    "canonical_scalar! invocation is missing its exported name"
+                );
+                exports.insert(name.to_owned());
+                pending_canonical_scalar = false;
+                continue;
+            }
             if source_line != source_line.trim_start() {
                 continue;
             }
-            let line = source_line.trim();
             if let Some(names) = line
                 .strip_prefix("pub use ")
                 .and_then(|line| line.split_once('{').map(|(_, rest)| rest))
@@ -2722,11 +2757,17 @@ mod tests {
             }
             if let Some(rest) = line.strip_prefix("canonical_scalar!(") {
                 let name = rest.split(',').next().unwrap().trim();
-                if name != "$name" {
+                if name.is_empty() {
+                    pending_canonical_scalar = true;
+                } else if name != "$name" {
                     exports.insert(name.to_owned());
                 }
             }
         }
+        assert!(
+            !pending_canonical_scalar,
+            "canonical_scalar! invocation is missing its exported name"
+        );
         let fixed = FIXED_PUBLIC_NAMES.iter().copied().collect::<BTreeSet<_>>();
         let missing = exports
             .iter()

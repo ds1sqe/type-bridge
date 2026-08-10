@@ -1,4 +1,4 @@
-import type { NativeRustDatabase, NativeRustTransactionContext, QueryV2Authority, RustDatabase, RustTransactionContext } from "./index.js";
+import { QueryV2Authority, type NativeRustDatabase, type NativeRustTransactionContext, type RustDatabase, type RustTransactionContext } from "./index.js";
 import { loadNative } from "./native.js";
 type NativeModule = ReturnType<typeof loadNative>;
 type NativeRuntimeProjection = InstanceType<NativeModule["NodeRuntimeProjection"]>;
@@ -25,6 +25,10 @@ export interface RuntimeProjectionInstall {
     readonly semanticFingerprintJson: string;
     readonly projectionFingerprintJson: string;
     readonly bindings: readonly RuntimeProjectionBinding[];
+}
+export interface GeneratedSchemaAuthorityInstall {
+    readonly schemaAuthorityJson: string;
+    readonly semanticFingerprintJson: string;
 }
 /** Explicit immutable budgets bound into every generated remote query. */
 export interface RuntimeProjectionRemoteLimits {
@@ -109,4 +113,6 @@ export declare class InstalledRuntimeProjection {
 }
 /** Verify and install one generated package's exact projection evidence. */
 export declare function installRuntimeProjection(input: RuntimeProjectionInstall): InstalledRuntimeProjection;
+/** @internal Verify an embedded authority before a generated package installs. */
+export declare function installGeneratedSchemaAuthority(input: GeneratedSchemaAuthorityInstall): QueryV2Authority;
 export {};

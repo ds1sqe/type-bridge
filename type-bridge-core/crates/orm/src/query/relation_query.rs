@@ -18,6 +18,9 @@ use crate::session::backend::{QueryResult, TxType};
 ///
 /// # Example
 ///
+/// This example is ignored because executing it requires a live TypeDB
+/// service and a generated relation manager supplied by a consumer package.
+///
 /// ```ignore
 /// let recent = rel_manager.query()
 ///     .filter(Expr::gte("start-date", AttributeValue::Date("2024-01-01".into())))

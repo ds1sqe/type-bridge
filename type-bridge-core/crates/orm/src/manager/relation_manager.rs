@@ -24,6 +24,9 @@ use super::query_builder;
 ///
 /// # Example
 ///
+/// This example is ignored because it requires a live TypeDB service and a
+/// generated `Employment` relation from a consumer package.
+///
 /// ```ignore
 /// let manager = RelationManager::<Employment>::new(&db);
 /// manager.insert(&mut employment).await?;
@@ -200,6 +203,9 @@ impl<'db, R: TypeBridgeRelation> RelationManager<'db, R> {
     /// Create a chainable query builder for this relation type.
     ///
     /// # Example
+    ///
+    /// This example is ignored because it requires a live TypeDB service and
+    /// a generated relation type bound by the surrounding manager.
     ///
     /// ```ignore
     /// let recent = manager.query()

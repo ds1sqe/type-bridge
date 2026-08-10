@@ -65,6 +65,7 @@ impl IntoResponse for PipelineError {
 
 // --- Router ---
 
+/// Build the released V1 HTTP router around a shared query pipeline.
 pub fn create_router(pipeline: Arc<QueryPipeline>) -> Router {
     Router::new()
         .route("/query", post(handle_query))

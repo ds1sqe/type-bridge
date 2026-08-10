@@ -1,4 +1,5 @@
-//! Backfill count derivation for [`StepKind::Backfill`] steps.
+//! Backfill count derivation for
+//! [`StepKind::Backfill`](crate::plan::StepKind::Backfill) steps.
 //!
 //! TypeDB's `insert` answer is [`QueryResult::Ok`] — it carries no affected-row
 //! count.  This module derives matched/inserted/skipped counts via bracketing

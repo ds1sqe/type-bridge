@@ -9,6 +9,9 @@ use crate::error::PipelineError;
 ///
 /// # Example
 ///
+/// This example is ignored because the remote fetch function and its transport
+/// error mapping are intentionally supplied by the consuming application.
+///
 /// ```rust,ignore
 /// use type_bridge_server::{SchemaSource, PipelineError};
 /// use type_bridge_core_lib::_schema::TypeSchema;
@@ -34,6 +37,7 @@ pub struct FileSchemaSource {
 }
 
 impl FileSchemaSource {
+    /// Construct a source that reads TypeQL from `path` when loaded.
     pub fn new(path: impl Into<String>) -> Self {
         Self { path: path.into() }
     }
@@ -61,6 +65,7 @@ pub struct InMemorySchemaSource {
 }
 
 impl InMemorySchemaSource {
+    /// Construct a source from TypeQL already held in memory.
     pub fn new(typeql: impl Into<String>) -> Self {
         Self {
             typeql: typeql.into(),
