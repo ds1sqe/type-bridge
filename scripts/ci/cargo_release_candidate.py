@@ -839,30 +839,41 @@ def _validate_packaged_lock(
 
 
 def _cargo_metadata_package(
-    root: Path,
+    archive: bytes,
     *,
+    package: CargoInventoryPackage,
     cargo: tuple[str, ...],
     config: Path,
     environment: Mapping[str, str],
     runner: CommandRunner,
 ) -> Mapping[str, Any]:
-    result = _run(
-        (
-            *cargo,
-            "metadata",
-            "--format-version",
-            "1",
-            "--no-deps",
-            "--manifest-path",
-            str(root / "Cargo.toml"),
-            "--config",
-            str(config),
-        ),
-        cwd=root,
-        environment=environment,
-        runner=runner,
-        capture_output=True,
-    )
+    """Read archive metadata inside a synthetic one-package workspace."""
+    with tempfile.TemporaryDirectory(prefix="type-bridge-cargo-metadata-") as temporary:
+        workspace = Path(temporary)
+        root, _ = stage_archive(workspace, package=package, archive=archive)
+        # Cargo walks manifest ancestors for a workspace. Bound that discovery
+        # without changing the normalized package manifest or accepted archive.
+        (workspace / "Cargo.toml").write_text(
+            f'[workspace]\nmembers = [{json.dumps(root.name)}]\nresolver = "3"\n',
+            encoding="utf-8",
+        )
+        result = _run(
+            (
+                *cargo,
+                "metadata",
+                "--format-version",
+                "1",
+                "--no-deps",
+                "--manifest-path",
+                str(root / "Cargo.toml"),
+                "--config",
+                str(config),
+            ),
+            cwd=root,
+            environment=environment,
+            runner=runner,
+            capture_output=True,
+        )
     try:
         payload = json.loads(result.stdout)
     except (TypeError, json.JSONDecodeError) as error:
@@ -1012,7 +1023,8 @@ def build_candidate_bundle(
                     label=f"{package.name} Cargo.toml",
                 )
                 cargo_package = _cargo_metadata_package(
-                    staged_root,
+                    archive,
+                    package=package,
                     cargo=cargo,
                     config=config,
                     environment=environment,
