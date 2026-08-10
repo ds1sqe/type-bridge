@@ -22,12 +22,15 @@ const artifacts = fs
   .sort();
 assert.deepEqual(artifacts.length, 1, "exactly one packed artifact is required");
 const artifact = path.resolve(artifactDirectory, artifacts[0]);
+const npmExecPath = process.env.npm_execpath;
+assert.ok(npmExecPath, "npm_execpath is required; invoke this smoke through npm run");
 
 const stage = fs.mkdtempSync(path.join(os.tmpdir(), "type-bridge-node-packed-"));
 try {
   const install = spawnSync(
-    "npm",
+    process.execPath,
     [
+      npmExecPath,
       "install",
       "--ignore-scripts",
       "--no-audit",
@@ -38,8 +41,9 @@ try {
       stage,
       artifact,
     ],
-    { encoding: "utf8" },
+    { encoding: "utf8", shell: false },
   );
+  assert.ifError(install.error);
   assert.equal(install.status, 0, install.stderr || install.stdout);
 
   const requirePackage = createRequire(path.join(stage, "consumer.cjs"));

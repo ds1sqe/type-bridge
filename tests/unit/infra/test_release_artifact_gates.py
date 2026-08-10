@@ -1471,11 +1471,22 @@ def test_npm_publication_uses_the_accepted_tarball() -> None:
     package_smoke = (REPO_ROOT / "type-bridge-core/crates/node/tests/package-smoke.cjs").read_text(
         encoding="utf-8"
     )
+    packed_package_smoke = (
+        REPO_ROOT / "type-bridge-core/crates/node/tests/packed-package-smoke.cjs"
+    ).read_text(encoding="utf-8")
     assert package["scripts"]["clean:types"] == "node scripts/clean-types.js"
     assert package["scripts"]["build:types"] == ("npm run clean:types && tsc -p tsconfig.json")
+    assert package["scripts"]["smoke:packed-package"] == ("node tests/packed-package-smoke.cjs")
     assert 'require("../dist/native.js").loadNative()' in package_smoke
     assert "readdirSync" not in package_smoke
     assert ".sort()[0]" not in package_smoke
+    assert "const npmExecPath = process.env.npm_execpath;" in packed_package_smoke
+    assert "npm_execpath is required; invoke this smoke through npm run" in (packed_package_smoke)
+    assert "spawnSync(\n    process.execPath," in packed_package_smoke
+    assert 'npmExecPath,\n      "install",' in packed_package_smoke
+    assert 'spawnSync("npm"' not in packed_package_smoke
+    assert "shell: false" in packed_package_smoke
+    assert "assert.ifError(install.error);" in packed_package_smoke
 
     native_legs = re.findall(
         r"^          - target: (.+)\n"
