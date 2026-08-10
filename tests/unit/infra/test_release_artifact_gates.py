@@ -1468,8 +1468,14 @@ def test_npm_publication_uses_the_accepted_tarball() -> None:
     package = json.loads(
         (REPO_ROOT / "type-bridge-core/crates/node/package.json").read_text(encoding="utf-8")
     )
+    package_smoke = (REPO_ROOT / "type-bridge-core/crates/node/tests/package-smoke.cjs").read_text(
+        encoding="utf-8"
+    )
     assert package["scripts"]["clean:types"] == "node scripts/clean-types.js"
     assert package["scripts"]["build:types"] == ("npm run clean:types && tsc -p tsconfig.json")
+    assert 'require("../dist/native.js").loadNative()' in package_smoke
+    assert "readdirSync" not in package_smoke
+    assert ".sort()[0]" not in package_smoke
 
     native_legs = re.findall(
         r"^          - target: (.+)\n"

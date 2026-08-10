@@ -2,8 +2,6 @@
 
 const assert = require("node:assert/strict");
 const { execSync } = require("node:child_process");
-const fs = require("node:fs");
-const path = require("node:path");
 const packageJson = require("../package.json");
 const typeBridge = require("../");
 
@@ -79,14 +77,7 @@ for (const name of removedAuthoringNames) {
   );
 }
 
-const nativeArtifact = process.env.TYPE_BRIDGE_NODE_NATIVE_PATH ?? fs
-  .readdirSync(path.resolve(__dirname, ".."))
-  .filter((name) => name.endsWith(".node"))
-  .sort()[0];
-assert.ok(nativeArtifact, "package smoke requires a built native artifact");
-const native = require(path.isAbsolute(nativeArtifact)
-  ? nativeArtifact
-  : path.resolve(__dirname, "..", nativeArtifact));
+const native = require("../dist/native.js").loadNative();
 for (const name of [
   "NodeDescriptorRegistry",
   "NodeDynamicEntityManager",
