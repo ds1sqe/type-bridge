@@ -365,6 +365,24 @@ if [[ "$integration" == 1 ]]; then
                 -p type-bridge-cli --test e2e_workspace_live
     done
 
+    printf "${BOLD}━━━ Connected migration recovery (integration) ━━━${RESET}\n\n"
+    run_step "connected rollback and reapply lifecycle" \
+        timeout --foreground 10m \
+        env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
+            TYPE_BRIDGE_SCHEMA_MIGRATION_TYPEDB_DATABASE="type_bridge_local_rollback_${$}" \
+        bash scripts/ci/run_exact_ignored_rust_test.sh \
+            runner_rolls_back_the_applied_head_and_reapplies_on_3_12_1 \
+            --manifest-path type-bridge-core/Cargo.toml --locked \
+            -p type-bridge-schema-migration-typedb --test live_runner
+    run_step "interrupted-plan fenced recovery lifecycle" \
+        timeout --foreground 10m \
+        env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
+            TYPE_BRIDGE_SCHEMA_MIGRATION_TYPEDB_DATABASE="type_bridge_local_recovery_${$}" \
+        bash scripts/ci/run_exact_ignored_rust_test.sh \
+            control_schema_and_fenced_lease_round_trip_on_3_12_1 \
+            --manifest-path type-bridge-core/Cargo.toml --locked \
+            -p type-bridge-schema-migration-typedb --test live_store
+
     printf "${BOLD}━━━ Python (integration) ━━━${RESET}\n\n"
     run_step "pytest -m integration" \
         timeout --foreground 20m \

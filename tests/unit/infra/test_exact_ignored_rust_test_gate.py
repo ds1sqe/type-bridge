@@ -98,12 +98,21 @@ def test_ci_and_local_harness_route_cli_live_tests_through_the_gate() -> None:
         "shipped_python_converter_to_native_adoption_live",
     }
 
-    assert workflow.count(gate_call) == len(positive_tests) + 3
-    assert local.count(gate_call) == 5
+    migration_recovery_tests = {
+        "runner_rolls_back_the_applied_head_and_reapplies_on_3_12_1",
+        "control_schema_and_fenced_lease_round_trip_on_3_12_1",
+    }
+
+    assert workflow.count(gate_call) == len(positive_tests) + 5
+    assert local.count(gate_call) == 7
     assert "-- --ignored --exact --nocapture" not in local
-    for test_name in positive_tests | {"unsupported_server_apply_creates_neither_database_live"}:
+    for test_name in (
+        positive_tests
+        | migration_recovery_tests
+        | {"unsupported_server_apply_creates_neither_database_live"}
+    ):
         assert workflow.count(test_name) == 1
-    for test_name in positive_tests:
+    for test_name in positive_tests | migration_recovery_tests:
         assert local.count(test_name) == 1
 
 
@@ -149,10 +158,56 @@ def test_migration_live_lanes_are_bound_to_the_exact_server_leg() -> None:
         "Apply and verify the unchanged documented initial constraints": (
             "documented_examples_initial_constraints_apply_and_verify_live"
         ),
+        "Run connected migration rollback and reapply lifecycle": (
+            "runner_rolls_back_the_applied_head_and_reapplies_on_3_12_1"
+        ),
+        "Run interrupted-plan fenced recovery lifecycle": (
+            "control_schema_and_fenced_lease_round_trip_on_3_12_1"
+        ),
     }.items():
         step = steps[name]
         assert step["if"] == "matrix.typedb-server == 'typedb/typedb:3.12.1'"
         assert test_name in step["run"]
+
+    rollback = steps["Run connected migration rollback and reapply lifecycle"]
+    assert "--locked" in rollback["run"]
+    assert "--test live_runner" in rollback["run"]
+    assert rollback["env"]["TYPE_BRIDGE_SCHEMA_MIGRATION_TYPEDB_DATABASE"] == (
+        "type_bridge_ci_rollback"
+    )
+
+    recovery = steps["Run interrupted-plan fenced recovery lifecycle"]
+    assert "--locked" in recovery["run"]
+    assert "--test live_store" in recovery["run"]
+    assert recovery["env"]["TYPE_BRIDGE_SCHEMA_MIGRATION_TYPEDB_DATABASE"] == (
+        "type_bridge_ci_recovery"
+    )
+
+
+@pytest.mark.parametrize(
+    ("relative_path", "test_name"),
+    (
+        (
+            "type-bridge-core/crates/schema-migration-typedb/tests/live_runner.rs",
+            "runner_rolls_back_the_applied_head_and_reapplies_on_3_12_1",
+        ),
+        (
+            "type-bridge-core/crates/schema-migration-typedb/tests/live_store.rs",
+            "control_schema_and_fenced_lease_round_trip_on_3_12_1",
+        ),
+    ),
+)
+def test_reusable_migration_live_tests_delete_their_isolated_databases(
+    relative_path: str,
+    test_name: str,
+) -> None:
+    source = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
+    body = source.split(f"async fn {test_name}()", maxsplit=1)[1].split(
+        "\n#[tokio::test",
+        maxsplit=1,
+    )[0]
+
+    assert body.count(".delete_database()") == 2
 
 
 def test_fresh_replay_and_documented_constraint_probes_cannot_regress_to_offline_only() -> None:

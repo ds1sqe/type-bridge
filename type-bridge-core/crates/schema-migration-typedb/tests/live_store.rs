@@ -766,4 +766,13 @@ async fn control_schema_and_fenced_lease_round_trip_on_3_12_1() {
         .release(&lease_three)
         .await
         .expect("release restarted store lease");
+
+    managed_database
+        .delete_database()
+        .await
+        .expect("delete isolated managed database");
+    journal_database
+        .delete_database()
+        .await
+        .expect("delete isolated journal database");
 }
