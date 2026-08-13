@@ -1,7 +1,7 @@
 use type_bridge_contract::fingerprint::SemanticProfileId;
-use type_bridge_contract::id::TypeKind;
+use type_bridge_contract::id::{TypeId, TypeKind};
 use type_bridge_contract::projection::{BindingTarget, ProjectionConfig, ProjectionHandler};
-use type_bridge_contract::schema::DocumentId;
+use type_bridge_contract::schema::{AnnotationKindId, DocumentId};
 use type_bridge_orm::{_schema::SchemaInfo, InstalledRuntimeProjection};
 use type_bridge_schema::{SchemaDocumentSet, normalize_documents, project, resolve};
 
@@ -105,6 +105,28 @@ fn workforce_v3_fixture_projects_the_exact_ordered_provider_interfaces() {
     )
     .unwrap();
     let installed = InstalledRuntimeProjection::try_new(projection).unwrap();
+    let nickname_id = TypeId::new(TypeKind::Attribute, "nickname").unwrap();
+    let nickname_annotations = installed.projection().models()[&nickname_id]
+        .declaration()
+        .value_annotations();
+    assert!(
+        nickname_annotations
+            .keys()
+            .any(|id| id.kind() == &AnnotationKindId::Regex)
+    );
+    assert!(
+        nickname_annotations
+            .keys()
+            .any(|id| id.kind() == &AnnotationKindId::Values)
+    );
+    let constrained_id = TypeId::new(TypeKind::Attribute, "val_constrained").unwrap();
+    assert!(
+        installed.projection().models()[&constrained_id]
+            .declaration()
+            .value_annotations()
+            .keys()
+            .any(|id| id.kind() == &AnnotationKindId::Range)
+    );
     let descriptors = installed
         .projection()
         .models()

@@ -1330,11 +1330,14 @@
           "family": "scalar_domain",
           "rejected": true,
           "rejected_before_provider_io": true
-        },
+        }
+      ],
+      "provider_enforced_families": [
         {
           "family": "unique",
-          "rejected": true,
-          "rejected_before_provider_io": true
+          "projection_fact_retained": true,
+          "local_preflight": "not_applicable",
+          "provider_enforced": true
         }
       ],
       "representative_diagnostic": {

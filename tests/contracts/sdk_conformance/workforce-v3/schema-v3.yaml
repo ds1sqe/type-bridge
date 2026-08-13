@@ -1,7 +1,11 @@
 format: typebridge.schema/v2
 attributes:
   identifier: { value: string }
-  nickname: { value: string }
+  nickname:
+    value:
+      type: string
+      regex: '^[A-Z][a-z]+$'
+      values: [Ada, Dana]
   aliases: { value: string }
   score: { value: integer }
   val_double: { value: double }
@@ -11,7 +15,10 @@ attributes:
   val_datetime: { value: datetime }
   val_datetime_tz: { value: datetime-tz }
   val_duration: { value: duration }
-  val_constrained: { value: integer }
+  val_constrained:
+    value:
+      type: integer
+      range: { min: 0, max: 80 }
   party_name: { value: string }
   rank: { value: integer }
   manager_note: { value: string }

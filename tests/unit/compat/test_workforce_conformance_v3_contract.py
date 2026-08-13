@@ -331,6 +331,16 @@ def test_workforce_v3_fixture_is_ordered_without_mutating_the_preserved_v1_v2_fi
     )
     assert "ordered" not in preserved["entities"]["person"]["owns"]["aliases"]
     assert "ordered" not in preserved["relations"]["network-link"]["relates"]["participant"]
+    preserved["attributes"]["nickname"] = {
+        "value": {
+            "type": "string",
+            "regex": "^[A-Z][a-z]+$",
+            "values": ["Ada", "Dana"],
+        }
+    }
+    preserved["attributes"]["val_constrained"] = {
+        "value": {"type": "integer", "range": {"min": 0, "max": 80}}
+    }
     preserved["entities"]["person"]["owns"]["aliases"].update({"ordered": True, "distinct": True})
     preserved["relations"]["network-link"]["relates"]["participant"].update(
         {"ordered": True, "distinct": True}
@@ -341,14 +351,27 @@ def test_workforce_v3_fixture_is_ordered_without_mutating_the_preserved_v1_v2_fi
     preserved_provider = (
         ROOT / "type-bridge-core/crates/schema-codegen/tests/acceptance/provider-3.12.1.tql"
     ).read_text(encoding="utf-8")
-    expected_provider = preserved_provider.replace(
-        "    relates participant @card(0..3);",
-        "    relates participant[] @distinct @card(0..3);",
-        1,
-    ).replace(
-        "    owns aliases @unique @card(0..3),",
-        "    owns aliases[] @unique @distinct @card(0..3),",
-        1,
+    expected_provider = (
+        preserved_provider.replace(
+            "attribute nickname, value string;",
+            'attribute nickname, value string @regex("^[A-Z][a-z]+$") @values("Ada", "Dana");',
+            1,
+        )
+        .replace(
+            "attribute val_constrained, value integer;",
+            "attribute val_constrained, value integer @range(0..80);",
+            1,
+        )
+        .replace(
+            "    relates participant @card(0..3);",
+            "    relates participant[] @distinct @card(0..3);",
+            1,
+        )
+        .replace(
+            "    owns aliases @unique @card(0..3),",
+            "    owns aliases[] @unique @distinct @card(0..3),",
+            1,
+        )
     )
     assert provider == expected_provider
 
@@ -499,6 +522,7 @@ def test_workforce_v3_journey_freezes_21_complete_observation_shapes() -> None:
         "projected_constraint_validation": {
             "scalar_domains",
             "rejection_families",
+            "provider_enforced_families",
             "representative_diagnostic",
         },
         "projection_evidence_integrity": {
@@ -578,12 +602,19 @@ def test_workforce_v3_journey_freezes_21_complete_observation_shapes() -> None:
         "role_cardinality",
         "role_constructibility",
         "scalar_domain",
-        "unique",
     }
     assert all(
         item["rejected"] and item["rejected_before_provider_io"]
         for item in constraints["rejection_families"]
     )
+    assert constraints["provider_enforced_families"] == [
+        {
+            "family": "unique",
+            "projection_fact_retained": True,
+            "local_preflight": "not_applicable",
+            "provider_enforced": True,
+        }
+    ]
     assert constraints["representative_diagnostic"]["path"]
     assert constraints["representative_diagnostic"]["details"]
 

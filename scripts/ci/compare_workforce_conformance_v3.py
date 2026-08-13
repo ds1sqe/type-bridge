@@ -377,7 +377,12 @@ EXPECTED_OBSERVATION_FIELDS = {
         }
     ),
     "projected_constraint_validation": frozenset(
-        {"scalar_domains", "rejection_families", "representative_diagnostic"}
+        {
+            "scalar_domains",
+            "rejection_families",
+            "provider_enforced_families",
+            "representative_diagnostic",
+        }
     ),
     "projection_evidence_integrity": frozenset(
         {"rejected_mutations", "diagnostic", "rejected_before_provider_io"}

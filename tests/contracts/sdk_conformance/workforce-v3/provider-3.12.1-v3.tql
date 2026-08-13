@@ -1,6 +1,6 @@
 define
 attribute identifier, value string;
-attribute nickname, value string;
+attribute nickname, value string @regex("^[A-Z][a-z]+$") @values("Ada", "Dana");
 attribute aliases, value string;
 attribute score, value integer;
 attribute val_double, value double;
@@ -10,7 +10,7 @@ attribute val_date, value date;
 attribute val_datetime, value datetime;
 attribute val_datetime_tz, value datetime-tz;
 attribute val_duration, value duration;
-attribute val_constrained, value integer;
+attribute val_constrained, value integer @range(0..80);
 attribute party_name, value string;
 attribute rank, value integer;
 attribute manager_note, value string;
