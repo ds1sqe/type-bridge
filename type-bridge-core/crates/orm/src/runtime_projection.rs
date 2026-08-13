@@ -370,11 +370,7 @@ fn validate_canonical_annotations<'a>(
                         )
                     })?;
                     if ordering == std::cmp::Ordering::Less {
-                        return Err(invalid_input(
-                            "range_constraint_violation",
-                            "The canonical scalar is outside a projected range",
-                            path,
-                        ));
+                        return Err(range_violation(value, lower, "minimum", path));
                     }
                 }
                 if let Some(upper) = range.upper() {
@@ -386,11 +382,7 @@ fn validate_canonical_annotations<'a>(
                         )
                     })?;
                     if ordering == std::cmp::Ordering::Greater {
-                        return Err(invalid_input(
-                            "range_constraint_violation",
-                            "The canonical scalar is outside a projected range",
-                            path,
-                        ));
+                        return Err(range_violation(value, upper, "maximum", path));
                     }
                 }
             }
@@ -424,6 +416,33 @@ fn validate_canonical_annotations<'a>(
         }
     }
     Ok(())
+}
+
+fn range_violation(
+    value: &CanonicalValue,
+    bound: &CanonicalValue,
+    bound_name: &'static str,
+    path: Vec<SdkDiagnosticPathSegment>,
+) -> SdkExecutionDiagnostic {
+    let diagnostic = invalid_input(
+        "range_constraint_violation",
+        "The canonical scalar is outside a projected range",
+        path,
+    );
+    let (CanonicalValue::Long(actual), CanonicalValue::Long(bound)) = (value, bound) else {
+        return diagnostic;
+    };
+    diagnostic
+        .try_with_detail(
+            sdk_name("actual"),
+            SdkDiagnosticDetailValue::Signed(*actual),
+        )
+        .expect("the static range detail is unique")
+        .try_with_detail(
+            sdk_name(bound_name),
+            SdkDiagnosticDetailValue::Signed(*bound),
+        )
+        .expect("the static range details fit the contract")
 }
 
 fn invalid_input(

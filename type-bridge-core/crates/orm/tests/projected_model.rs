@@ -84,6 +84,33 @@ plays:
     collaboration: [participant]
 "#;
 
+const CONSTRAINT_SCHEMA: &str = r#"format: typebridge.schema/v2
+attributes:
+  identifier: { value: string }
+  nickname:
+    value:
+      type: string
+      regex: "^[A-Z][a-z]+$"
+      values: [Ada, Dana]
+  handle: { value: string }
+  robot-id: { value: integer }
+  val-constrained:
+    value:
+      type: integer
+      range: { min: 0, max: 80 }
+entities:
+  person:
+    owns:
+      identifier: { key: true }
+      nickname: { card: 1 }
+      handle: { unique: true, card: { min: 0, max: 2 } }
+      val-constrained: { card: 1, range: { min: 20, max: 80 } }
+  robot:
+    owns:
+      robot-id: { key: true }
+      val-constrained: { card: 1, range: { min: 0, max: 50 } }
+"#;
+
 fn installed(target: BindingTarget, source: &str) -> InstalledRuntimeProjection {
     let documents =
         SchemaDocumentSet::parse([(DocumentId::new("projected-model.yaml").unwrap(), source)])
@@ -172,6 +199,19 @@ fn string_value(
     .unwrap()
 }
 
+fn long_value(
+    installed: &InstalledRuntimeProjection,
+    attribute: &str,
+    value: i64,
+) -> ProjectedAttributeValue {
+    ProjectedAttributeValue::try_new(
+        installed,
+        type_id(TypeKind::Attribute, attribute),
+        CanonicalValue::Long(value),
+    )
+    .unwrap()
+}
+
 fn person_fields(
     installed: &InstalledRuntimeProjection,
 ) -> Vec<(OwnsFactId, Vec<ProjectedAttributeValue>)> {
@@ -221,6 +261,37 @@ fn assert_duplicate_details(
             .details()
             .get(&SdkDiagnosticName::new("duplicate_index").unwrap()),
         Some(&SdkDiagnosticDetailValue::Count(duplicate_index)),
+    );
+}
+
+fn assert_signed_range_details(
+    diagnostic: &type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic,
+    actual: i64,
+    bound_name: &str,
+    bound: i64,
+) {
+    assert_eq!(diagnostic.details().len(), 2);
+    assert_eq!(
+        diagnostic
+            .details()
+            .get(&SdkDiagnosticName::new("actual").unwrap()),
+        Some(&SdkDiagnosticDetailValue::Signed(actual)),
+    );
+    assert_eq!(
+        diagnostic
+            .details()
+            .get(&SdkDiagnosticName::new(bound_name).unwrap()),
+        Some(&SdkDiagnosticDetailValue::Signed(bound)),
+    );
+    let absent_bound = if bound_name == "minimum" {
+        "maximum"
+    } else {
+        "minimum"
+    };
+    assert!(
+        !diagnostic
+            .details()
+            .contains_key(&SdkDiagnosticName::new(absent_bound).unwrap())
     );
 }
 
@@ -350,6 +421,257 @@ fn canonical_scalars_and_create_fields_use_exact_semantic_tokens() {
         SdkDiagnosticCategory::InvalidInput,
         "field_not_creatable",
     );
+}
+
+#[test]
+fn scalar_constraints_keep_stable_annotation_order_and_exact_long_bound_details() {
+    let installed = installed(BindingTarget::Python, CONSTRAINT_SCHEMA);
+    let nickname = type_id(TypeKind::Attribute, "nickname");
+    let regex = ProjectedAttributeValue::try_new(
+        &installed,
+        nickname.clone(),
+        CanonicalValue::String(CanonicalString::new("ada").unwrap()),
+    )
+    .unwrap_err();
+    assert_code(
+        &regex,
+        SdkDiagnosticCategory::InvalidInput,
+        "regex_constraint_violation",
+    );
+    assert_eq!(
+        regex.path(),
+        [SdkDiagnosticPathSegment::Type(nickname.clone())],
+    );
+    assert!(regex.details().is_empty());
+
+    let values = ProjectedAttributeValue::try_new(
+        &installed,
+        nickname.clone(),
+        CanonicalValue::String(CanonicalString::new("Alan").unwrap()),
+    )
+    .unwrap_err();
+    assert_code(
+        &values,
+        SdkDiagnosticCategory::InvalidInput,
+        "values_constraint_violation",
+    );
+    assert_eq!(values.path(), [SdkDiagnosticPathSegment::Type(nickname)],);
+    assert!(values.details().is_empty());
+
+    let constrained = type_id(TypeKind::Attribute, "val-constrained");
+    let upper =
+        ProjectedAttributeValue::try_new(&installed, constrained.clone(), CanonicalValue::Long(81))
+            .unwrap_err();
+    assert_code(
+        &upper,
+        SdkDiagnosticCategory::InvalidInput,
+        "range_constraint_violation",
+    );
+    assert_eq!(upper.path(), [SdkDiagnosticPathSegment::Type(constrained)],);
+    assert_signed_range_details(&upper, 81, "maximum", 80);
+}
+
+#[test]
+fn owner_long_ranges_preserve_exact_create_and_hydration_diagnostics() {
+    let installed = installed(BindingTarget::Python, CONSTRAINT_SCHEMA);
+    let person = type_id(TypeKind::Entity, "person");
+    let robot = type_id(TypeKind::Entity, "robot");
+    let constrained_person = field(&person, "val-constrained");
+    let constrained_robot = field(&robot, "val-constrained");
+    let person_fields = |value| {
+        vec![
+            (
+                field(&person, "identifier"),
+                vec![string_value(&installed, "identifier", "data-ada")],
+            ),
+            (
+                field(&person, "nickname"),
+                vec![string_value(&installed, "nickname", "Ada")],
+            ),
+            (
+                constrained_person.clone(),
+                vec![long_value(&installed, "val-constrained", value)],
+            ),
+        ]
+    };
+    let robot_fields = |value| {
+        vec![
+            (
+                field(&robot, "robot-id"),
+                vec![long_value(&installed, "robot-id", -7)],
+            ),
+            (
+                constrained_robot.clone(),
+                vec![long_value(&installed, "val-constrained", value)],
+            ),
+        ]
+    };
+
+    let create_lower =
+        ProjectedCreate::try_new(&installed, person.clone(), person_fields(19), vec![])
+            .unwrap_err();
+    assert_code(
+        &create_lower,
+        SdkDiagnosticCategory::InvalidInput,
+        "range_constraint_violation",
+    );
+    assert_eq!(
+        create_lower.path(),
+        [
+            SdkDiagnosticPathSegment::Type(person.clone()),
+            SdkDiagnosticPathSegment::Field(constrained_person.clone()),
+        ],
+    );
+    assert_signed_range_details(&create_lower, 19, "minimum", 20);
+
+    let create_upper =
+        ProjectedCreate::try_new(&installed, robot.clone(), robot_fields(51), vec![]).unwrap_err();
+    assert_code(
+        &create_upper,
+        SdkDiagnosticCategory::InvalidInput,
+        "range_constraint_violation",
+    );
+    assert_eq!(
+        create_upper.path(),
+        [
+            SdkDiagnosticPathSegment::Type(robot.clone()),
+            SdkDiagnosticPathSegment::Field(constrained_robot.clone()),
+        ],
+    );
+    assert_signed_range_details(&create_upper, 51, "maximum", 50);
+
+    let hydration_lower = ProjectedThing::try_new(
+        &installed,
+        person.clone(),
+        "0x10".into(),
+        person_fields(19),
+        vec![],
+    )
+    .unwrap_err();
+    assert_code(
+        &hydration_lower,
+        SdkDiagnosticCategory::Integrity,
+        "range_constraint_violation",
+    );
+    assert_eq!(
+        hydration_lower.path(),
+        [
+            SdkDiagnosticPathSegment::Type(person),
+            SdkDiagnosticPathSegment::Field(constrained_person),
+        ],
+    );
+    assert_signed_range_details(&hydration_lower, 19, "minimum", 20);
+
+    let hydration_upper = ProjectedThing::try_new(
+        &installed,
+        robot.clone(),
+        "0x20".into(),
+        robot_fields(51),
+        vec![],
+    )
+    .unwrap_err();
+    assert_code(
+        &hydration_upper,
+        SdkDiagnosticCategory::Integrity,
+        "range_constraint_violation",
+    );
+    assert_eq!(
+        hydration_upper.path(),
+        [
+            SdkDiagnosticPathSegment::Type(robot),
+            SdkDiagnosticPathSegment::Field(constrained_robot),
+        ],
+    );
+    assert_signed_range_details(&hydration_upper, 51, "maximum", 50);
+}
+
+#[test]
+fn keys_and_unique_facts_keep_their_local_preflight_boundaries() {
+    let installed = installed(BindingTarget::Python, CONSTRAINT_SCHEMA);
+    let person = type_id(TypeKind::Entity, "person");
+    let identifier = field(&person, "identifier");
+    let handle = field(&person, "handle");
+    assert!(
+        installed.projection().models()[&person]
+            .query_tokens()
+            .fields()[&handle]
+            .is_unique(),
+        "the provider-enforced unique fact must remain in the installed projection",
+    );
+    let missing_key = ProjectedCreate::try_new(
+        &installed,
+        person.clone(),
+        vec![
+            (
+                field(&person, "nickname"),
+                vec![string_value(&installed, "nickname", "Ada")],
+            ),
+            (
+                field(&person, "val-constrained"),
+                vec![long_value(&installed, "val-constrained", 20)],
+            ),
+        ],
+        vec![],
+    )
+    .unwrap_err();
+    assert_code(
+        &missing_key,
+        SdkDiagnosticCategory::InvalidInput,
+        "missing_required_field",
+    );
+    assert_eq!(
+        missing_key.path(),
+        [
+            SdkDiagnosticPathSegment::Type(person.clone()),
+            SdkDiagnosticPathSegment::Field(identifier.clone()),
+        ],
+    );
+    assert_eq!(
+        missing_key
+            .details()
+            .get(&SdkDiagnosticName::new("actual_count").unwrap()),
+        Some(&SdkDiagnosticDetailValue::Count(0)),
+    );
+
+    let person_fields = |identifier_value: &str, nickname: &str, handles: Vec<&str>| {
+        vec![
+            (
+                identifier.clone(),
+                vec![string_value(&installed, "identifier", identifier_value)],
+            ),
+            (
+                field(&person, "nickname"),
+                vec![string_value(&installed, "nickname", nickname)],
+            ),
+            (
+                handle.clone(),
+                handles
+                    .into_iter()
+                    .map(|value| string_value(&installed, "handle", value))
+                    .collect(),
+            ),
+            (
+                field(&person, "val-constrained"),
+                vec![long_value(&installed, "val-constrained", 38)],
+            ),
+        ]
+    };
+    let first = ProjectedCreate::try_new(
+        &installed,
+        person.clone(),
+        person_fields("data-ada", "Ada", vec!["shared", "shared"]),
+        vec![],
+    )
+    .unwrap();
+    assert_eq!(first.fields()[&handle].len(), 2);
+    let second = ProjectedCreate::try_new(
+        &installed,
+        person.clone(),
+        person_fields("data-dana", "Dana", vec!["shared"]),
+        vec![],
+    )
+    .unwrap();
+    assert_eq!(second.fields()[&handle].len(), 1);
 }
 
 #[test]
