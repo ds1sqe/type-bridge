@@ -145,23 +145,27 @@ pub fn lower_classified_commit_error(error: ClassifiedCommitError) -> SdkExecuti
 #[doc(hidden)]
 #[must_use]
 pub fn lower_match_error(error: &MatchError) -> SdkExecutionDiagnostic {
-    let category = match error.category() {
-        MatchErrorCategory::InvalidPlan => SdkQueryDiagnosticCategory::InvalidPlan,
-        MatchErrorCategory::Cardinality => SdkQueryDiagnosticCategory::Cardinality,
-        MatchErrorCategory::UnsupportedCapability => {
-            SdkQueryDiagnosticCategory::UnsupportedCapability
-        }
-        MatchErrorCategory::StaleSchema => SdkQueryDiagnosticCategory::StaleSchema,
-        MatchErrorCategory::ResourceLimit => SdkQueryDiagnosticCategory::ResourceLimit,
-        MatchErrorCategory::Cancelled => SdkQueryDiagnosticCategory::Cancelled,
-        MatchErrorCategory::Provider => SdkQueryDiagnosticCategory::Provider,
-        MatchErrorCategory::ResultDecode => SdkQueryDiagnosticCategory::ResultDecode,
+    let mut diagnostic = if error.code().as_str() == "generated_token_package_mismatch" {
+        SdkExecutionDiagnostic::generated_token_package_mismatch()
+    } else {
+        let category = match error.category() {
+            MatchErrorCategory::InvalidPlan => SdkQueryDiagnosticCategory::InvalidPlan,
+            MatchErrorCategory::Cardinality => SdkQueryDiagnosticCategory::Cardinality,
+            MatchErrorCategory::UnsupportedCapability => {
+                SdkQueryDiagnosticCategory::UnsupportedCapability
+            }
+            MatchErrorCategory::StaleSchema => SdkQueryDiagnosticCategory::StaleSchema,
+            MatchErrorCategory::ResourceLimit => SdkQueryDiagnosticCategory::ResourceLimit,
+            MatchErrorCategory::Cancelled => SdkQueryDiagnosticCategory::Cancelled,
+            MatchErrorCategory::Provider => SdkQueryDiagnosticCategory::Provider,
+            MatchErrorCategory::ResultDecode => SdkQueryDiagnosticCategory::ResultDecode,
+        };
+        let code = SdkDiagnosticCode::new(error.code().as_str().to_owned()).unwrap_or_else(|_| {
+            SdkDiagnosticCode::new("invalid_query_diagnostic_code")
+                .expect("fallback typed query code is canonical")
+        });
+        SdkExecutionDiagnostic::query_failure(category, code)
     };
-    let code = SdkDiagnosticCode::new(error.code().as_str().to_owned()).unwrap_or_else(|_| {
-        SdkDiagnosticCode::new("invalid_query_diagnostic_code")
-            .expect("fallback typed query code is canonical")
-    });
-    let mut diagnostic = SdkExecutionDiagnostic::query_failure(category, code);
     for segment in error.path().segments() {
         let Some(segment) = lower_match_path(segment) else {
             return SdkExecutionDiagnostic::internal_failure();

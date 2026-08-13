@@ -63,6 +63,13 @@ fn handle_error(code: &'static str, message: impl Into<String>) -> OrmError {
     MatchError::new(MatchErrorCategory::InvalidPlan, code, message).into()
 }
 
+fn function_value_package_mismatch() -> OrmError {
+    handle_error(
+        "generated_token_package_mismatch",
+        "The generated token belongs to a different installed schema package",
+    )
+}
+
 #[derive(Debug)]
 struct SessionState {
     id: SessionId,
@@ -187,10 +194,7 @@ impl SessionHandle {
                 )
             })?;
         if value.semantic_fingerprint() != semantic {
-            return Err(handle_error(
-                "function_value_semantic_brand_mismatch",
-                "projected function value belongs to a different semantic schema",
-            ));
+            return Err(function_value_package_mismatch());
         }
         let target = self
             .0
@@ -198,10 +202,7 @@ impl SessionHandle {
             .projected_function_binding_target()
             .expect("function authority exposes its target");
         if value.binding_target() != target {
-            return Err(handle_error(
-                "function_value_target_brand_mismatch",
-                "projected function value belongs to a different generated binding target",
-            ));
+            return Err(function_value_package_mismatch());
         }
         let projection = self
             .0
@@ -209,10 +210,7 @@ impl SessionHandle {
             .projected_function_projection_fingerprint()
             .expect("function authority exposes its projection fingerprint");
         if value.projection_fingerprint() != projection {
-            return Err(handle_error(
-                "function_value_projection_brand_mismatch",
-                "projected function value belongs to a different generated projection",
-            ));
+            return Err(function_value_package_mismatch());
         }
         Ok(FunctionValueHandle(Arc::new(FunctionValueState {
             session: Arc::clone(&self.0),

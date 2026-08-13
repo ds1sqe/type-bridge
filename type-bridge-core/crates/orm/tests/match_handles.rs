@@ -11,6 +11,7 @@ use type_bridge_contract::projection::{
     BindingTarget, CodeResourceDigest, ProjectionConfig, ProjectionHandler,
 };
 use type_bridge_contract::schema::DocumentId;
+use type_bridge_contract::sdk_diagnostic::SdkDiagnosticCategory;
 use type_bridge_contract::value::{CanonicalString, CanonicalValue};
 use type_bridge_orm::session::backend::{
     BoxFuture, DriverBackend, GivenRowsSpec, QueryResult, TransactionOps, TxType,
@@ -220,6 +221,29 @@ fn assert_match_code<T: Debug>(result: type_bridge_orm::Result<T>, expected: &st
         Err(OrmError::Match(error)) => assert_eq!(error.code().as_str(), expected),
         other => panic!("expected match error {expected}, got {other:?}"),
     }
+}
+
+fn assert_function_value_package_mismatch<T: Debug>(result: type_bridge_orm::Result<T>) {
+    let Err(OrmError::Match(error)) = result else {
+        panic!("expected generated-token package mismatch");
+    };
+    assert_eq!(error.code().as_str(), "generated_token_package_mismatch");
+    assert_eq!(
+        error.message(),
+        "The generated token belongs to a different installed schema package",
+    );
+    let diagnostic = lower_match_error(&error);
+    assert_eq!(diagnostic.category(), SdkDiagnosticCategory::Integrity);
+    assert_eq!(
+        diagnostic.code().as_str(),
+        "generated_token_package_mismatch",
+    );
+    assert_eq!(
+        diagnostic.message().as_str(),
+        "The generated token belongs to a different installed schema package",
+    );
+    assert!(diagnostic.path().is_empty());
+    assert!(diagnostic.details().is_empty());
 }
 
 fn assert_send_sync<T: Send + Sync>() {}
@@ -557,18 +581,16 @@ fn projected_function_handles_enforce_signature_domain_and_immutable_reuse() {
     let changed_semantic = installed_function_projection_with_body(
         "match let $score = $minimum; return first $score;",
     );
-    assert_match_code(
+    assert_function_value_package_mismatch(
         session.function_value(&projected_long(&changed_semantic)),
-        "function_value_semantic_brand_mismatch",
     );
     let foreign_target = installed_function_projection_with_evidence(
         QUALIFYING_SCORE_BODY,
         BindingTarget::TypeScript,
         &[],
     );
-    assert_match_code(
+    assert_function_value_package_mismatch(
         session.function_value(&projected_long(&foreign_target)),
-        "function_value_target_brand_mismatch",
     );
     let resources =
         [
@@ -580,9 +602,8 @@ fn projected_function_handles_enforce_signature_domain_and_immutable_reuse() {
         BindingTarget::Python,
         &resources,
     );
-    assert_match_code(
+    assert_function_value_package_mismatch(
         session.function_value(&projected_long(&foreign_projection)),
-        "function_value_projection_brand_mismatch",
     );
 
     for binding in [&person, &person_subtypes, &employee] {
