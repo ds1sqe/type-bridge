@@ -2,6 +2,7 @@
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use type_bridge_contract::codec::to_canonical_json;
 use type_bridge_contract::id::{RoleId, TypeId, TypeKind, is_canonical_thing_iid};
@@ -35,7 +36,7 @@ struct ProjectionBrand {
     projection: BindingProjectionFingerprint,
 }
 
-#[derive(Clone, Eq, PartialEq)]
+#[derive(Eq, PartialEq)]
 struct ProjectedDatabaseOrigin(DatabaseExecutionIdentity);
 
 impl std::fmt::Debug for ProjectedDatabaseOrigin {
@@ -44,14 +45,16 @@ impl std::fmt::Debug for ProjectedDatabaseOrigin {
     }
 }
 
-/// Opaque database-origin proof carried across the generated Rust facade.
+/// Opaque database-origin proof retained behind one exact generated facade.
 ///
 /// Bindings cannot construct or inspect this value. Its debug form is
-/// permanently redacted; it exists only to preserve same-database reference
-/// fencing across complete-model hydration and later relation writes.
+/// permanently redacted and its private, non-serializable payload is shared so
+/// bindings can retain it cheaply without exposing an identity token. It
+/// exists only to preserve same-database reference fencing across complete or
+/// reference hydration and a later relation write.
 #[doc(hidden)]
 #[derive(Clone)]
-pub struct ProjectedReferenceOrigin(ProjectedDatabaseOrigin);
+pub struct ProjectedReferenceOrigin(Arc<ProjectedDatabaseOrigin>);
 
 impl std::fmt::Debug for ProjectedReferenceOrigin {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -330,7 +333,7 @@ impl ProjectedAttributeValue {
 #[derive(Clone, Debug)]
 pub struct ProjectedReference {
     brand: ProjectionBrand,
-    database_origin: Option<ProjectedDatabaseOrigin>,
+    database_origin: Option<ProjectedReferenceOrigin>,
     type_id: TypeId,
     iid: Option<String>,
     keys: BTreeMap<OwnsFactId, ProjectedAttributeValue>,
@@ -384,7 +387,7 @@ impl ProjectedReference {
         keys: Vec<(OwnsFactId, ProjectedAttributeValue)>,
         origin: Option<ProjectedReferenceOrigin>,
     ) -> Result<Self, SdkExecutionDiagnostic> {
-        Self::try_new_with_origin(installed, type_id, iid, keys, origin.map(|origin| origin.0))
+        Self::try_new_with_origin(installed, type_id, iid, keys, origin)
             .map_err(|diagnostic| diagnostic_for_origin(diagnostic, ValidationOrigin::Hydration))
     }
 
@@ -397,7 +400,7 @@ impl ProjectedReference {
         keys: Vec<(OwnsFactId, ProjectedAttributeValue)>,
         origin: Option<ProjectedReferenceOrigin>,
     ) -> Result<Self, SdkExecutionDiagnostic> {
-        Self::try_new_with_origin(installed, type_id, iid, keys, origin.map(|origin| origin.0))
+        Self::try_new_with_origin(installed, type_id, iid, keys, origin)
     }
 
     pub(crate) fn try_new_for_database(
@@ -412,7 +415,9 @@ impl ProjectedReference {
             type_id,
             iid,
             keys,
-            Some(ProjectedDatabaseOrigin(database_identity)),
+            Some(ProjectedReferenceOrigin(Arc::new(ProjectedDatabaseOrigin(
+                database_identity,
+            )))),
         )
     }
 
@@ -421,7 +426,7 @@ impl ProjectedReference {
         type_id: TypeId,
         iid: Option<String>,
         keys: Vec<(OwnsFactId, ProjectedAttributeValue)>,
-        database_origin: Option<ProjectedDatabaseOrigin>,
+        database_origin: Option<ProjectedReferenceOrigin>,
     ) -> Result<Self, SdkExecutionDiagnostic> {
         let model = require_projected_thing_model(installed, &type_id)?;
         if model.reference_read().target_name().is_none() {
@@ -560,14 +565,16 @@ impl ProjectedReference {
     }
 
     pub(crate) fn database_identity(&self) -> Option<&DatabaseExecutionIdentity> {
-        self.database_origin.as_ref().map(|origin| &origin.0)
+        self.database_origin
+            .as_ref()
+            .map(|origin| &origin.0.as_ref().0)
     }
 
     /// Clone the opaque hydrated database origin, when present.
     #[doc(hidden)]
     #[must_use]
     pub fn origin_carrier(&self) -> Option<ProjectedReferenceOrigin> {
-        self.database_origin.clone().map(ProjectedReferenceOrigin)
+        self.database_origin.clone()
     }
 
     /// Verify that this reference belongs to the supplied installed projection.
@@ -926,7 +933,7 @@ impl ProjectedCreate {
 #[derive(Clone, Debug)]
 pub struct ProjectedThing {
     brand: ProjectionBrand,
-    database_origin: Option<ProjectedDatabaseOrigin>,
+    database_origin: Option<ProjectedReferenceOrigin>,
     type_id: TypeId,
     iid: String,
     fields: BTreeMap<OwnsFactId, Vec<ProjectedAttributeValue>>,
@@ -969,14 +976,7 @@ impl ProjectedThing {
         roles: Vec<(RoleId, Vec<ProjectedRolePlayer>)>,
         origin: Option<ProjectedReferenceOrigin>,
     ) -> Result<Self, SdkExecutionDiagnostic> {
-        Self::try_new_with_origin(
-            installed,
-            type_id,
-            iid,
-            fields,
-            roles,
-            origin.map(|origin| origin.0),
-        )
+        Self::try_new_with_origin(installed, type_id, iid, fields, roles, origin)
     }
 
     /// Validate one provider-hydrated exact model identity and IID.
@@ -1003,7 +1003,9 @@ impl ProjectedThing {
             iid,
             fields,
             roles,
-            Some(ProjectedDatabaseOrigin(database_identity)),
+            Some(ProjectedReferenceOrigin(Arc::new(ProjectedDatabaseOrigin(
+                database_identity,
+            )))),
         )
     }
 
@@ -1013,7 +1015,7 @@ impl ProjectedThing {
         iid: String,
         fields: Vec<(OwnsFactId, Vec<ProjectedAttributeValue>)>,
         roles: Vec<(RoleId, Vec<ProjectedRolePlayer>)>,
-        database_origin: Option<ProjectedDatabaseOrigin>,
+        database_origin: Option<ProjectedReferenceOrigin>,
     ) -> Result<Self, SdkExecutionDiagnostic> {
         let model = validate_hydrated_thing_identity(installed, &type_id, &iid)?;
         let mut budget = ProjectedBudget::default();
@@ -1119,7 +1121,7 @@ impl ProjectedThing {
     #[doc(hidden)]
     #[must_use]
     pub fn origin_carrier(&self) -> Option<ProjectedReferenceOrigin> {
-        self.database_origin.clone().map(ProjectedReferenceOrigin)
+        self.database_origin.clone()
     }
 
     /// Return the semantic-schema brand carried by this thing.
@@ -1495,7 +1497,7 @@ fn validate_read_roles(
     type_id: &TypeId,
     model: &ModelProjection,
     mut supplied: BTreeMap<RoleId, Vec<ProjectedRolePlayer>>,
-    database_origin: Option<&ProjectedDatabaseOrigin>,
+    database_origin: Option<&ProjectedReferenceOrigin>,
     budget: &mut ProjectedBudget,
 ) -> Result<BTreeMap<RoleId, Vec<ProjectedRolePlayer>>, SdkExecutionDiagnostic> {
     let allowed = model
@@ -1590,12 +1592,12 @@ fn validate_read_roles(
 }
 
 fn validate_role_player_database_origin(
-    thing_origin: Option<&ProjectedDatabaseOrigin>,
-    player_origin: Option<&ProjectedDatabaseOrigin>,
+    thing_origin: Option<&ProjectedReferenceOrigin>,
+    player_origin: Option<&ProjectedReferenceOrigin>,
     path: Vec<SdkDiagnosticPathSegment>,
 ) -> Result<(), SdkExecutionDiagnostic> {
     match (thing_origin, player_origin) {
-        (Some(expected), Some(actual)) if expected == actual => Ok(()),
+        (Some(expected), Some(actual)) if expected.0 == actual.0 => Ok(()),
         (Some(_), None) => Err(integrity(
             "hydrated_role_player_database_origin_missing",
             "A database-bound hydrated role player is missing its opaque database origin",
@@ -2541,10 +2543,12 @@ plays:
     #[test]
     fn hydrated_database_origins_are_coherent_and_redacted() {
         let identity = DatabaseExecutionIdentity::isolated("projected-model-a");
-        let matching = ProjectedDatabaseOrigin(identity.clone());
-        let same = ProjectedDatabaseOrigin(identity);
-        let different =
-            ProjectedDatabaseOrigin(DatabaseExecutionIdentity::isolated("projected-model-a"));
+        let matching =
+            ProjectedReferenceOrigin(Arc::new(ProjectedDatabaseOrigin(identity.clone())));
+        let same = ProjectedReferenceOrigin(Arc::new(ProjectedDatabaseOrigin(identity)));
+        let different = ProjectedReferenceOrigin(Arc::new(ProjectedDatabaseOrigin(
+            DatabaseExecutionIdentity::isolated("projected-model-a"),
+        )));
 
         validate_role_player_database_origin(Some(&matching), Some(&same), Vec::new()).unwrap();
         validate_role_player_database_origin(None, None, Vec::new()).unwrap();
@@ -2575,7 +2579,7 @@ plays:
         );
         assert_eq!(
             format!("{matching:?}"),
-            "ProjectedDatabaseOrigin([REDACTED])"
+            "ProjectedReferenceOrigin([REDACTED])"
         );
     }
 
@@ -2676,15 +2680,59 @@ plays:
             identity.clone(),
         )
         .unwrap();
+        let retained_origin = bound_reference.origin_carrier().unwrap();
+        let cloned_origin = retained_origin.clone();
+        assert!(Arc::ptr_eq(&retained_origin.0, &cloned_origin.0));
+        assert_eq!(
+            format!("{retained_origin:?}"),
+            "ProjectedReferenceOrigin([REDACTED])"
+        );
+        assert!(!format!("{bound_reference:?}").contains("hydration-carrier"));
         let rebuilt_reference = ProjectedReference::try_new_for_hydration_with_origin_carrier(
             &installed,
             person.clone(),
             Some("0x1".into()),
             vec![],
-            bound_reference.origin_carrier(),
+            Some(cloned_origin),
         )
         .unwrap();
         assert_eq!(rebuilt_reference.database_identity(), Some(&identity));
+
+        let noncanonical = ProjectedReference::try_new_with_origin_carrier(
+            &installed,
+            person.clone(),
+            Some("not-an-iid".into()),
+            vec![],
+            Some(retained_origin.clone()),
+        )
+        .unwrap_err();
+        assert_eq!(noncanonical.category(), SdkDiagnosticCategory::InvalidInput);
+        assert_eq!(noncanonical.code().as_str(), "noncanonical_iid");
+
+        let identifier =
+            OwnsFactId::new(person.clone(), AttributeId::new("identifier").unwrap()).unwrap();
+        let identifier_value = ProjectedAttributeValue::try_new(
+            &installed,
+            TypeId::new(TypeKind::Attribute, "identifier").unwrap(),
+            CanonicalValue::String(CanonicalString::new("ada").unwrap()),
+        )
+        .unwrap();
+        let duplicate_key = ProjectedReference::try_new_with_origin_carrier(
+            &installed,
+            person.clone(),
+            Some("0x1".into()),
+            vec![
+                (identifier.clone(), identifier_value.clone()),
+                (identifier, identifier_value),
+            ],
+            Some(retained_origin),
+        )
+        .unwrap_err();
+        assert_eq!(
+            duplicate_key.category(),
+            SdkDiagnosticCategory::InvalidInput
+        );
+        assert_eq!(duplicate_key.code().as_str(), "duplicate_reference_key");
         let bound_player = ProjectedRolePlayer::try_new(&installed, rebuilt_reference).unwrap();
 
         let source = ProjectedThing::try_new_for_database(
@@ -2706,7 +2754,10 @@ plays:
         )
         .unwrap();
         assert_eq!(
-            rebuilt.database_origin.as_ref().map(|origin| &origin.0),
+            rebuilt
+                .database_origin
+                .as_ref()
+                .map(|origin| &origin.0.as_ref().0),
             Some(&identity)
         );
         assert_eq!(

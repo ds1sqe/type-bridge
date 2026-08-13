@@ -168,6 +168,42 @@ impl ProjectedQueryOrigin {
             database_identity: None,
         }
     }
+
+    /// Materialize an owned projected-value companion while retaining the
+    /// caller's exact validated request and result proofs.
+    ///
+    /// Binding runtimes use this seam once, while constructing a result proof,
+    /// when their existing result facade still owns and reads the non-cloneable
+    /// invocation proof. They cache the returned companion rather than
+    /// rematerializing it for each facade access. The value contains only
+    /// validated projected models and their opaque origins; it does not expose
+    /// or duplicate the invocation token.
+    #[doc(hidden)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the borrowed materializer keeps every invocation proof and budget explicit"
+    )]
+    pub fn materialize_borrowed_with_budget(
+        self,
+        installed: &InstalledRuntimeProjection,
+        registry: &DescriptorRegistry,
+        request: &ValidatedMatchRequest,
+        result: &ValidatedMatchResult,
+        limits: ProjectedQueryMaterializationLimits,
+        cancellation: &AnswerCancellation,
+        deadline: Option<QueryExecutionDeadline>,
+    ) -> Result<(ProjectedQueryValue, ProjectedQueryResourceMeasure), SdkExecutionDiagnostic> {
+        materialize_projected_query_value_with_budget(
+            installed,
+            registry,
+            self,
+            request,
+            result,
+            limits,
+            cancellation,
+            deadline,
+        )
+    }
 }
 
 /// One owned selected slot value.
@@ -463,21 +499,49 @@ pub fn materialize_projected_query_result_with_budget(
     cancellation: &AnswerCancellation,
     deadline: Option<QueryExecutionDeadline>,
 ) -> Result<ProjectedQueryResult, SdkExecutionDiagnostic> {
+    let shape_id = request.shape_id().clone();
+    let (value, measure) = materialize_projected_query_value_with_budget(
+        installed,
+        registry,
+        origin,
+        &request,
+        &result,
+        limits,
+        cancellation,
+        deadline,
+    )?;
+    Ok(ProjectedQueryResult {
+        request,
+        shape_id,
+        value,
+        measure,
+    })
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the materializer boundary keeps every invocation proof and budget explicit"
+)]
+fn materialize_projected_query_value_with_budget(
+    installed: &InstalledRuntimeProjection,
+    registry: &DescriptorRegistry,
+    origin: ProjectedQueryOrigin,
+    request: &ValidatedMatchRequest,
+    result: &ValidatedMatchResult,
+    limits: ProjectedQueryMaterializationLimits,
+    cancellation: &AnswerCancellation,
+    deadline: Option<QueryExecutionDeadline>,
+) -> Result<(ProjectedQueryValue, ProjectedQueryResourceMeasure), SdkExecutionDiagnostic> {
     check_materialization_budget(cancellation, deadline)?;
     let canonical = result
-        .for_request(&request)
+        .for_request(request)
         .map_err(|error| super::execution_diagnostic::lower_match_error(&error))?;
     check_materialization_budget(cancellation, deadline)?;
     let mut materializer =
         Materializer::new(installed, registry, origin, limits, cancellation, deadline);
-    let value = materializer.materialize_result(&request, canonical)?;
+    let value = materializer.materialize_result(request, canonical)?;
     materializer.checkpoint()?;
-    Ok(ProjectedQueryResult {
-        shape_id: request.shape_id().clone(),
-        request,
-        value,
-        measure: materializer.measure,
-    })
+    Ok((value, materializer.measure))
 }
 
 struct Materializer<'a> {
@@ -1242,6 +1306,7 @@ mod tests {
 
     use super::*;
     use crate::OrmError;
+    use crate::ProjectedCrudExecutor;
     use crate::match_request::result::{
         BoundConceptEvidence, ConceptId, HydratedRole, ProviderResultEvidence,
         ProviderSolutionEvidence, ReductionRow,
@@ -1251,7 +1316,8 @@ mod tests {
         BindingPair, ComparisonOp, MatchBinding, MatchPlan, MatchRequest, ReduceTerm, Reduction,
         RowCardinality, SessionHandle, ThingKind, validate_match_request,
     };
-    use crate::session::backend::{BoxFuture, DriverBackend, TransactionOps};
+    use crate::projected_model::ProjectedCreate;
+    use crate::session::backend::{BoxFuture, DriverBackend, QueryResult, TransactionOps};
 
     const SCHEMA: &str = r#"format: typebridge.schema/v2
 attributes:
@@ -1509,25 +1575,65 @@ plays:
     fn projected_query_invocation_gate_rejects_same_shape_other_token_before_materialization() {
         let (installed, registry) = fixture();
         let request_a = validate_match_request(&registry, one_rows_request(&registry)).unwrap();
-        let result = validate_provider_result(
-            &registry,
-            &request_a,
-            ProviderResultEvidence::rows(
-                request_a.request_token(),
-                request_a.shape_id().clone(),
-                Vec::new(),
-            ),
-        )
-        .unwrap();
+        let result_for_a = || {
+            validate_provider_result(
+                &registry,
+                &request_a,
+                ProviderResultEvidence::rows(
+                    request_a.request_token(),
+                    request_a.shape_id().clone(),
+                    Vec::new(),
+                ),
+            )
+            .unwrap()
+        };
         let request_b = validate_match_request(&registry, one_rows_request(&registry)).unwrap();
         assert_eq!(request_a.shape_id(), request_b.shape_id());
 
+        let wrong_borrowed_result = result_for_a();
+        let borrowed_error = ProjectedQueryOrigin::remote_unbound()
+            .materialize_borrowed_with_budget(
+                &installed,
+                &registry,
+                &request_b,
+                &wrong_borrowed_result,
+                ProjectedQueryMaterializationLimits::default(),
+                &AnswerCancellation::default(),
+                None,
+            )
+            .unwrap_err();
+        assert_eq!(borrowed_error.code().as_str(), "request_token_mismatch");
+        let borrowed_result = result_for_a();
+        let (borrowed, measure) = ProjectedQueryOrigin::remote_unbound()
+            .materialize_borrowed_with_budget(
+                &installed,
+                &registry,
+                &request_a,
+                &borrowed_result,
+                ProjectedQueryMaterializationLimits::default(),
+                &AnswerCancellation::default(),
+                None,
+            )
+            .unwrap();
+        assert!(matches!(borrowed, ProjectedQueryValue::Rows { rows } if rows.is_empty()));
+        assert_eq!(
+            (
+                measure.rows(),
+                measure.cells(),
+                measure.things(),
+                measure.bytes()
+            ),
+            (0, 0, 0, 0)
+        );
+        assert!(borrowed_result.for_request(&request_a).is_ok());
+
+        let consuming_result = result_for_a();
         let error = materialize_projected_query_result(
             &installed,
             &registry,
             ProjectedQueryOrigin::remote_unbound(),
             request_b,
-            result,
+            consuming_result,
             ProjectedQueryMaterializationLimits::default(),
         )
         .unwrap_err();
@@ -1984,6 +2090,61 @@ plays:
         }
     }
 
+    struct OriginBackend;
+
+    impl DriverBackend for OriginBackend {
+        fn open_transaction(
+            &self,
+            _database: &str,
+            _tx_type: TxType,
+        ) -> BoxFuture<'_, Result<Box<dyn TransactionOps>, OrmError>> {
+            Box::pin(async { Ok(Box::new(OriginTransaction) as Box<dyn TransactionOps>) })
+        }
+
+        fn is_open(&self) -> bool {
+            true
+        }
+    }
+
+    struct OriginTransaction;
+
+    impl TransactionOps for OriginTransaction {
+        fn query(&mut self, _typeql: &str) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
+            Box::pin(async { Err(OrmError::QueryExecution("unexpected query".into())) })
+        }
+
+        fn commit(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn rollback(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn close(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    #[tokio::test]
+    async fn borrowed_read_query_origin_matches_the_direct_database_origin() {
+        let database = Database::with_backend(Box::new(OriginBackend), "borrowed-origin");
+        let direct = ProjectedQueryOrigin::for_database(&database);
+        let read = database.transaction_context(TxType::Read).await.unwrap();
+        let borrowed = ProjectedQueryOrigin::for_transaction(&read).unwrap();
+        assert_eq!(borrowed.database_identity, direct.database_identity);
+        read.close().await.unwrap();
+
+        let write = database.transaction_context(TxType::Write).await.unwrap();
+        let diagnostic = ProjectedQueryOrigin::for_transaction(&write).unwrap_err();
+        assert_eq!(diagnostic.category(), SdkDiagnosticCategory::InvalidInput);
+        assert_eq!(
+            diagnostic.code().as_str(),
+            "query_borrowed_transaction_not_read"
+        );
+        write.close().await.unwrap();
+    }
+
     #[test]
     fn database_origin_binds_outer_thing_and_nested_role_reference_while_remote_is_unbound() {
         let (installed, registry) = fixture();
@@ -2077,6 +2238,26 @@ plays:
                 .origin_carrier()
                 .is_none()
         );
+        assert!(
+            remote_thing
+                .try_to_reference(&installed)
+                .unwrap()
+                .origin_carrier()
+                .is_none()
+        );
+        let remote_create = ProjectedCreate::try_new(
+            &installed,
+            remote_thing.type_id().clone(),
+            vec![],
+            vec![(
+                role.clone(),
+                vec![remote_thing.roles()[&role][0].reference().clone()],
+            )],
+        )
+        .unwrap();
+        ProjectedCrudExecutor::new(&installed)
+            .preflight_relation_create_for_database_with_compatibility(&database, &remote_create)
+            .expect("an explicitly remote/unbound player remains target-database resolvable");
         let measure = remote.resource_measure();
         assert_eq!(measure.attribute_values(), 1);
 

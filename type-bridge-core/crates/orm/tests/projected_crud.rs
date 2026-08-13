@@ -9,8 +9,9 @@ use type_bridge_contract::sdk_diagnostic::SdkDiagnosticCategory;
 use type_bridge_contract::value::{CanonicalString, CanonicalValue};
 use type_bridge_orm::session::backend::{BoxFuture, DriverBackend, QueryResult, TransactionOps};
 use type_bridge_orm::{
-    ClassifiedCommitError, CommitFailureCertainty, Database, InstalledRuntimeProjection, OrmError,
-    ProjectedAttributeValue, ProjectedCreate, ProjectedCrudExecutor, ProjectedReference, TxType,
+    ClassifiedCommitError, CommitFailureCertainty, Database, DatabaseConnectionAuthority,
+    InstalledRuntimeProjection, OrmError, ProjectedAttributeValue, ProjectedCreate,
+    ProjectedCrudExecutor, ProjectedReference, ProjectedThing, TxType,
 };
 use type_bridge_schema::{SchemaDocumentSet, normalize_documents, project, resolve};
 
@@ -372,6 +373,59 @@ fn membership_create_for_relation_player(
     .unwrap()
 }
 
+fn membership_create_with_reference(
+    installed: &InstalledRuntimeProjection,
+    reference: ProjectedReference,
+) -> ProjectedCreate {
+    ProjectedCreate::try_new(
+        installed,
+        type_id(TypeKind::Relation, "membership"),
+        vec![],
+        vec![(
+            RoleId::new("membership", "member").unwrap(),
+            vec![reference],
+        )],
+    )
+    .unwrap()
+}
+
+fn retained_complete_reference(
+    installed: &InstalledRuntimeProjection,
+    thing: &ProjectedThing,
+) -> ProjectedReference {
+    let visible = thing.try_to_reference(installed).unwrap();
+    ProjectedReference::try_new_with_origin_carrier(
+        installed,
+        visible.type_id().clone(),
+        visible.iid().map(str::to_owned),
+        visible
+            .keys()
+            .iter()
+            .map(|(field, value)| (field.clone(), value.clone()))
+            .collect(),
+        thing.origin_carrier(),
+    )
+    .unwrap()
+}
+
+fn retained_reference_facade(
+    installed: &InstalledRuntimeProjection,
+    visible: &ProjectedReference,
+) -> ProjectedReference {
+    ProjectedReference::try_new_with_origin_carrier(
+        installed,
+        visible.type_id().clone(),
+        visible.iid().map(str::to_owned),
+        visible
+            .keys()
+            .iter()
+            .map(|(field, value)| (field.clone(), value.clone()))
+            .collect(),
+        visible.origin_carrier(),
+    )
+    .unwrap()
+}
+
 fn insert_iid(iid: &str) -> RecordingResponse {
     RecordingResponse::Result(QueryResult::Documents(vec![
         serde_json::json!({"iid": iid}),
@@ -409,6 +463,13 @@ fn membership_with_relation_player_document(iid: &str) -> serde_json::Value {
         "_role_0_iid": "0x11",
         "_role_0_type": "event",
         "_role_0_attributes": {}
+    })
+}
+
+fn event_document(iid: &str) -> serde_json::Value {
+    serde_json::json!({
+        "_iid": iid,
+        "_type": "event"
     })
 }
 
@@ -775,6 +836,170 @@ async fn provider_origin_reference_is_rejected_for_another_database_before_io() 
     assert!(state.queries.is_empty());
     assert_eq!(state.commits, 0);
     assert_eq!(state.rollbacks, 0);
+}
+
+#[tokio::test]
+async fn retained_complete_entity_origin_accepts_same_database_and_fences_foreign_before_io() {
+    let installed = installed();
+    let person = type_id(TypeKind::Entity, "person");
+    let authority = DatabaseConnectionAuthority::isolated();
+    let (source_backend, source_state) = RecordingBackend::new(
+        vec![documents(vec![person_document("0x10")])],
+        CommitBehavior::Success,
+    );
+    let source_database =
+        Database::with_backend_authority(Box::new(source_backend), "shared", authority.clone());
+    let hydrated = ProjectedCrudExecutor::new(&installed)
+        .get_entity_by_iid(&source_database, &person, "0x10")
+        .await
+        .unwrap()
+        .unwrap();
+    let reference = retained_complete_reference(&installed, &hydrated);
+    assert_eq!(
+        format!("{:?}", reference.origin_carrier().unwrap()),
+        "ProjectedReferenceOrigin([REDACTED])"
+    );
+    let create = membership_create_with_reference(&installed, reference);
+
+    let (same_backend, same_state) = RecordingBackend::new(
+        vec![
+            insert_iid("0x20"),
+            documents(vec![membership_document("0x20")]),
+        ],
+        CommitBehavior::Success,
+    );
+    let same_database =
+        Database::with_backend_authority(Box::new(same_backend), "shared", authority);
+    let created = ProjectedCrudExecutor::new(&installed)
+        .insert_relation(&same_database, &create)
+        .await
+        .unwrap();
+    assert_eq!(created.iid(), "0x20");
+    {
+        let state = same_state.lock().unwrap();
+        assert_eq!(state.opens, [TxType::Write]);
+        assert_eq!(state.queries.len(), 2);
+        assert_eq!(state.commits, 1);
+        assert_eq!(state.rollbacks, 0);
+    }
+
+    let (foreign_backend, foreign_state) = RecordingBackend::new(vec![], CommitBehavior::Success);
+    let foreign_database = Database::with_backend(Box::new(foreign_backend), "shared");
+    let diagnostic = ProjectedCrudExecutor::new(&installed)
+        .insert_relation(&foreign_database, &create)
+        .await
+        .unwrap_err();
+    assert_eq!(diagnostic.category(), SdkDiagnosticCategory::InvalidInput);
+    assert_eq!(diagnostic.code().as_str(), "reference_database_mismatch");
+    let state = foreign_state.lock().unwrap();
+    assert!(state.opens.is_empty());
+    assert!(state.queries.is_empty());
+    assert_eq!(state.commits, 0);
+    assert_eq!(state.rollbacks, 0);
+    assert_eq!(source_state.lock().unwrap().closes, 1);
+}
+
+#[tokio::test]
+async fn retained_relation_reference_facade_fences_foreign_database_before_io() {
+    let installed = installed();
+    let event = type_id(TypeKind::Relation, "event");
+    let (source_backend, _source_state) = RecordingBackend::new(
+        vec![documents(vec![event_document("0x11")])],
+        CommitBehavior::Success,
+    );
+    let source_database = Database::with_backend(Box::new(source_backend), "source");
+    let hydrated = ProjectedCrudExecutor::new(&installed)
+        .get_relation_by_iid(&source_database, &event, "0x11")
+        .await
+        .unwrap()
+        .unwrap();
+    let projected = hydrated.try_to_reference(&installed).unwrap();
+    let retained = retained_reference_facade(&installed, &projected);
+    let create = membership_create_with_reference(&installed, retained);
+
+    let (target_backend, target_state) = RecordingBackend::new(vec![], CommitBehavior::Success);
+    let target_database = Database::with_backend(Box::new(target_backend), "target");
+    let diagnostic = ProjectedCrudExecutor::new(&installed)
+        .insert_relation(&target_database, &create)
+        .await
+        .unwrap_err();
+
+    assert_eq!(diagnostic.category(), SdkDiagnosticCategory::InvalidInput);
+    assert_eq!(diagnostic.code().as_str(), "reference_database_mismatch");
+    let state = target_state.lock().unwrap();
+    assert!(state.opens.is_empty());
+    assert!(state.queries.is_empty());
+    assert_eq!(state.commits, 0);
+    assert_eq!(state.rollbacks, 0);
+}
+
+#[tokio::test]
+async fn borrowed_origin_is_preserved_and_a_value_equal_lookalike_remains_unbound() {
+    let installed = installed();
+    let person = type_id(TypeKind::Entity, "person");
+    let authority = DatabaseConnectionAuthority::isolated();
+    let (source_backend, source_state) = RecordingBackend::new(
+        vec![documents(vec![person_document("0x10")])],
+        CommitBehavior::Success,
+    );
+    let source_database =
+        Database::with_backend_authority(Box::new(source_backend), "shared", authority.clone());
+    let transaction = source_database
+        .transaction_context(TxType::Read)
+        .await
+        .unwrap();
+    let hydrated = ProjectedCrudExecutor::new(&installed)
+        .get_entity_by_iid_in_transaction(&transaction, &person, "0x10")
+        .await
+        .unwrap()
+        .unwrap();
+    let retained = retained_complete_reference(&installed, &hydrated);
+    let visible_lookalike = ProjectedReference::try_new(
+        &installed,
+        retained.type_id().clone(),
+        retained.iid().map(str::to_owned),
+        retained
+            .keys()
+            .iter()
+            .map(|(field, value)| (field.clone(), value.clone()))
+            .collect(),
+    )
+    .unwrap();
+    assert_eq!(retained, visible_lookalike);
+    assert!(retained.origin_carrier().is_some());
+    assert!(visible_lookalike.origin_carrier().is_none());
+
+    let retained_create = membership_create_with_reference(&installed, retained);
+    let (same_backend, same_state) = RecordingBackend::new(vec![], CommitBehavior::Success);
+    let same_database =
+        Database::with_backend_authority(Box::new(same_backend), "shared", authority);
+    ProjectedCrudExecutor::new(&installed)
+        .preflight_relation_create_for_database_with_compatibility(&same_database, &retained_create)
+        .unwrap();
+    assert!(same_state.lock().unwrap().opens.is_empty());
+
+    let lookalike_create = membership_create_with_reference(&installed, visible_lookalike);
+    let (foreign_backend, foreign_state) = RecordingBackend::new(
+        vec![
+            insert_iid("0x20"),
+            documents(vec![membership_document("0x20")]),
+        ],
+        CommitBehavior::Success,
+    );
+    let foreign_database = Database::with_backend(Box::new(foreign_backend), "foreign");
+    let created = ProjectedCrudExecutor::new(&installed)
+        .insert_relation(&foreign_database, &lookalike_create)
+        .await
+        .unwrap();
+    assert_eq!(created.iid(), "0x20");
+    {
+        let state = foreign_state.lock().unwrap();
+        assert_eq!(state.opens, [TxType::Write]);
+        assert_eq!(state.queries.len(), 2);
+        assert_eq!(state.commits, 1);
+    }
+    transaction.close().await.unwrap();
+    assert_eq!(source_state.lock().unwrap().closes, 1);
 }
 
 #[tokio::test]
