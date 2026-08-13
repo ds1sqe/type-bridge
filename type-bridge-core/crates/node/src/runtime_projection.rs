@@ -12,9 +12,14 @@ use serde_json::Value;
 use type_bridge_contract::codec::to_canonical_json;
 use type_bridge_contract::id::{TypeId, TypeKind, is_canonical_thing_iid};
 use type_bridge_contract::projection::{
-    BindingTarget, ProjectedModelForm, ProjectionConfig, RuntimeProjection,
+    BindingTarget, ProjectedContainer, ProjectedModelForm, ProjectedMultiplicity, ProjectionConfig,
+    RuntimeProjection,
 };
 use type_bridge_contract::projection_wire::decode_runtime_projection_verified;
+use type_bridge_contract::sdk_diagnostic::{
+    MAX_SDK_DIAGNOSTIC_PATH_SEGMENTS, SdkDiagnosticCategory, SdkDiagnosticCode,
+    SdkDiagnosticMessage, SdkDiagnosticPathSegment, SdkExecutionDiagnostic,
+};
 use type_bridge_contract::temporal::{
     CanonicalDate, CanonicalDateTime, CanonicalDateTimeTz, CanonicalDuration,
 };
@@ -29,13 +34,14 @@ use type_bridge_orm::_dynamic::{
 use type_bridge_orm::_manager::{DynamicEntityManager, DynamicRelationManager};
 use type_bridge_orm::{
     AnswerCancellation, AttributeValue, Database, HydratedAttribute, InstalledRuntimeProjection,
-    ProviderRuntimeOwner, QueryExecutionResourceLimits, ThingKind, TransactionContext, ValueType,
+    ProjectedAttributeValue, ProjectedCreate, ProjectedReference, ProviderRuntimeOwner,
+    QueryExecutionResourceLimits, ThingKind, TransactionContext, ValueType,
 };
 use type_bridge_schema::{decode_schema_authority, schema_authority_capability_vocabulary};
 use type_bridge_schema_codegen::{TypeScriptEmitter, verify_projection_evidence};
 
 use crate::match_runtime::{
-    NodeQueryCancellation, NodeQueryExecutionResources, revalidate_diagnostic,
+    NodeQueryCancellation, NodeQueryExecutionResources, napi_sdk_diagnostic, revalidate_diagnostic,
 };
 use crate::query_v2_runtime::schema_authority_diagnostic;
 use crate::{
@@ -263,11 +269,18 @@ impl NodeRuntimeProjection {
             .ok_or_else(|| invalid_error("projection attribute has no scalar domain"))?;
         let wire: ScalarWire = serde_json::from_str(&value_json)
             .map_err(|error| invalid_error(format!("invalid projected scalar wire: {error}")))?;
-        let value = scalar_to_attribute(&wire, projected_value_type(value_type))?;
-        self.package
-            .projection
-            .validate_attribute_value(&id, &value)
-            .map_err(|error| invalid_error(error.to_string()))
+        let expected = projected_value_type(value_type);
+        if projection_uses_ordered_collections(self.package.projection.projection()) {
+            project_attribute_scalar(&self.package.projection, id, &wire, expected)
+                .map(|_| ())
+                .map_err(napi_sdk_diagnostic)
+        } else {
+            let value = scalar_to_attribute(&wire, expected)?;
+            self.package
+                .projection
+                .validate_attribute_value(&id, &value)
+                .map_err(|error| invalid_error(error.to_string()))
+        }
     }
 
     /// Validate one generated owned-field scalar through the installed Rust projection.
@@ -310,11 +323,53 @@ impl NodeRuntimeProjection {
             .ok_or_else(|| invalid_error("projection field attribute has no scalar domain"))?;
         let wire: ScalarWire = serde_json::from_str(&value_json)
             .map_err(|error| invalid_error(format!("invalid projected scalar wire: {error}")))?;
-        let value = scalar_to_attribute(&wire, projected_value_type(value_type))?;
-        self.package
-            .projection
-            .validate_field_value(&id, &field_name, &value)
-            .map_err(|error| invalid_error(error.to_string()))
+        let expected = projected_value_type(value_type);
+        if projection_uses_ordered_collections(self.package.projection.projection()) {
+            let projected =
+                project_attribute_scalar(&self.package.projection, attribute_id, &wire, expected)
+                    .map_err(napi_sdk_diagnostic)?;
+            self.package
+                .projection
+                .validate_canonical_field_value(&id, field.id(), projected.value())
+                .map_err(napi_sdk_diagnostic)
+        } else {
+            let value = scalar_to_attribute(&wire, expected)?;
+            self.package
+                .projection
+                .validate_field_value(&id, &field_name, &value)
+                .map_err(|error| invalid_error(error.to_string()))
+        }
+    }
+
+    /// Validate one complete generated create payload through the common Rust contract.
+    #[napi(js_name = "validateCreateJson")]
+    pub fn validate_create_json(&self, type_key: String, value_json: String) -> napi::Result<()> {
+        let id = manageable_type(self.package.as_ref(), &type_key)?;
+        let wire = parse_wire(&value_json)?;
+        if wire.type_key != type_key || wire.form != WireForm::Complete {
+            return Err(napi_sdk_diagnostic(generated_token_package_mismatch_at([
+                SdkDiagnosticPathSegment::Type(id.clone()),
+            ])));
+        }
+        if wire.iid.is_some() || wire.value.is_some() {
+            return Err(napi_sdk_diagnostic(malformed_projected_create_at([
+                SdkDiagnosticPathSegment::Type(id.clone()),
+            ])));
+        }
+        project_create_wire(self.package.as_ref(), &id, &wire)
+            .map(|_| ())
+            .map_err(napi_sdk_diagnostic)
+    }
+
+    /// Surface a stable package-boundary diagnostic at an exact create member path.
+    #[napi(js_name = "rejectGeneratedTokenPackageMismatch")]
+    pub fn reject_generated_token_package_mismatch(&self, path_json: String) -> napi::Result<()> {
+        let path: Vec<GeneratedPackagePathWire> = serde_json::from_str(&path_json)
+            .map_err(|error| invalid_error(format!("invalid generated package path: {error}")))?;
+        let path = generated_package_path(self.package.as_ref(), &path)?;
+        Err(napi_sdk_diagnostic(generated_token_package_mismatch_at(
+            path,
+        )))
     }
 
     /// Revalidate a diagnostic against this exact installed projection.
@@ -910,6 +965,395 @@ fn projection_uses_ordered_collections(projection: &RuntimeProjection) -> bool {
 struct ScalarWire {
     value_type: ValueTypeTag,
     value: Value,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum GeneratedPackagePathWire {
+    Type {
+        #[serde(rename = "typeKey")]
+        type_key: String,
+    },
+    Field {
+        name: String,
+    },
+    Role {
+        name: String,
+    },
+    Index {
+        value: u32,
+    },
+}
+
+fn generated_package_path(
+    package: &InstalledPackage,
+    path: &[GeneratedPackagePathWire],
+) -> napi::Result<Vec<SdkDiagnosticPathSegment>> {
+    if path.is_empty()
+        || path.len() > MAX_SDK_DIAGNOSTIC_PATH_SEGMENTS
+        || !path.len().is_multiple_of(3)
+    {
+        return Err(invalid_error(
+            "generated package mismatch path has an invalid shape",
+        ));
+    }
+    let mut lowered = Vec::with_capacity(path.len());
+    for chunk in path.chunks_exact(3) {
+        let GeneratedPackagePathWire::Type { type_key } = &chunk[0] else {
+            return Err(invalid_error(
+                "generated package mismatch path requires a projected type",
+            ));
+        };
+        let id = manageable_type(package, type_key)?;
+        let model = package
+            .projection
+            .projection()
+            .models()
+            .get(&id)
+            .ok_or_else(|| invalid_error("projection model is absent"))?;
+        let member = match &chunk[1] {
+            GeneratedPackagePathWire::Field { name } => model
+                .query_tokens()
+                .fields()
+                .values()
+                .find(|field| field.target_name().as_str() == name)
+                .map(|field| SdkDiagnosticPathSegment::Field(field.id().clone())),
+            GeneratedPackagePathWire::Role { name } => model
+                .query_tokens()
+                .roles()
+                .iter()
+                .find(|(_, role)| role.target_name().as_str() == name)
+                .map(|(role, _)| SdkDiagnosticPathSegment::Role(role.clone())),
+            _ => None,
+        }
+        .ok_or_else(|| invalid_error("generated package mismatch member is not projected"))?;
+        let GeneratedPackagePathWire::Index { value } = &chunk[2] else {
+            return Err(invalid_error(
+                "generated package mismatch member requires an index",
+            ));
+        };
+        lowered.extend([
+            SdkDiagnosticPathSegment::Type(id),
+            member,
+            SdkDiagnosticPathSegment::Index(u64::from(*value)),
+        ]);
+    }
+    Ok(lowered)
+}
+
+fn project_create_wire(
+    package: &InstalledPackage,
+    id: &TypeId,
+    wire: &ProjectedWire,
+) -> Result<ProjectedCreate, SdkExecutionDiagnostic> {
+    let model = package
+        .projection
+        .projection()
+        .models()
+        .get(id)
+        .ok_or_else(|| {
+            malformed_projected_create_at([SdkDiagnosticPathSegment::Type(id.clone())])
+        })?;
+    let projected_path = || SdkDiagnosticPathSegment::Type(id.clone());
+    let mut allowed = BTreeSet::new();
+    let mut fields = Vec::with_capacity(model.create().fields().len());
+    for field in model.create().fields() {
+        let token = model
+            .query_tokens()
+            .fields()
+            .get(field.token())
+            .ok_or_else(|| malformed_projected_create_at([projected_path()]))?;
+        allowed.insert(token.target_name().as_str());
+        let values = projected_wire_items(
+            wire.values.get(token.target_name().as_str()),
+            field.multiplicity(),
+            [
+                projected_path(),
+                SdkDiagnosticPathSegment::Field(field.token().clone()),
+            ],
+        )?;
+        let projected = values
+            .iter()
+            .enumerate()
+            .map(|(index, value)| {
+                project_attribute_wire(package, value).map_err(|diagnostic| {
+                    rebase_sdk_diagnostic(
+                        diagnostic,
+                        [
+                            projected_path(),
+                            SdkDiagnosticPathSegment::Field(field.token().clone()),
+                            SdkDiagnosticPathSegment::Index(projected_index(index)),
+                        ],
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        fields.push((field.token().clone(), projected));
+    }
+
+    let mut roles = Vec::with_capacity(model.create().roles().len());
+    for (role_id, role) in model.create().roles() {
+        let token = model
+            .query_tokens()
+            .roles()
+            .get(role_id)
+            .ok_or_else(|| malformed_projected_create_at([projected_path()]))?;
+        allowed.insert(token.target_name().as_str());
+        let values = projected_wire_items(
+            wire.values.get(token.target_name().as_str()),
+            role.multiplicity(),
+            [
+                projected_path(),
+                SdkDiagnosticPathSegment::Role(role_id.clone()),
+            ],
+        )?;
+        let projected = values
+            .iter()
+            .enumerate()
+            .map(|(index, value)| {
+                project_reference_wire(
+                    package,
+                    role.players(),
+                    value,
+                    &[
+                        projected_path(),
+                        SdkDiagnosticPathSegment::Role(role_id.clone()),
+                        SdkDiagnosticPathSegment::Index(projected_index(index)),
+                    ],
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        roles.push((role_id.clone(), projected));
+    }
+    if wire
+        .values
+        .keys()
+        .any(|name| !allowed.contains(name.as_str()))
+    {
+        return Err(malformed_projected_create_at([projected_path()]));
+    }
+    ProjectedCreate::try_new(&package.projection, id.clone(), fields, roles)
+}
+
+fn projected_wire_items(
+    value: Option<&Value>,
+    multiplicity: ProjectedMultiplicity,
+    path: impl IntoIterator<Item = SdkDiagnosticPathSegment>,
+) -> Result<Vec<ProjectedWire>, SdkExecutionDiagnostic> {
+    let path = path.into_iter().collect::<Vec<_>>();
+    match value {
+        None | Some(Value::Null) => Ok(Vec::new()),
+        Some(Value::Array(values)) if multiplicity.container() == ProjectedContainer::Sequence => {
+            values
+                .iter()
+                .map(|value| {
+                    serde_json::from_value(value.clone())
+                        .map_err(|_| malformed_projected_create_at(path.clone()))
+                })
+                .collect()
+        }
+        Some(value) if multiplicity.container() == ProjectedContainer::Scalar => {
+            serde_json::from_value(value.clone())
+                .map(|value| vec![value])
+                .map_err(|_| malformed_projected_create_at(path))
+        }
+        Some(_) => Err(malformed_projected_create_at(path)),
+    }
+}
+
+fn project_attribute_wire(
+    package: &InstalledPackage,
+    wire: &ProjectedWire,
+) -> Result<ProjectedAttributeValue, SdkExecutionDiagnostic> {
+    let id = type_id_from_key(&wire.type_key)
+        .map_err(|_| malformed_projected_create_at(std::iter::empty()))?;
+    let path = [SdkDiagnosticPathSegment::Type(id.clone())];
+    if id.kind() != TypeKind::Attribute
+        || wire.form != WireForm::Complete
+        || !wire.values.is_empty()
+    {
+        return Err(malformed_projected_create_at(path));
+    }
+    let model = package
+        .projection
+        .projection()
+        .models()
+        .get(&id)
+        .ok_or_else(|| generated_token_package_mismatch_at(path.clone()))?;
+    let value_type = model
+        .declaration()
+        .value_type()
+        .ok_or_else(|| malformed_projected_create_at(path.clone()))?;
+    let scalar = wire
+        .value
+        .as_ref()
+        .ok_or_else(|| malformed_projected_create_at(path))?;
+    project_attribute_scalar(
+        &package.projection,
+        id,
+        scalar,
+        projected_value_type(value_type),
+    )
+}
+
+fn project_attribute_scalar(
+    projection: &InstalledRuntimeProjection,
+    id: TypeId,
+    wire: &ScalarWire,
+    expected: ValueType,
+) -> Result<ProjectedAttributeValue, SdkExecutionDiagnostic> {
+    let value = scalar_to_ordered_attribute(wire, expected)
+        .map_err(|_| wrong_scalar_domain_at([SdkDiagnosticPathSegment::Type(id.clone())]))?;
+    ProjectedAttributeValue::try_from_attribute_value(projection, id, &value)
+}
+
+fn project_reference_wire(
+    package: &InstalledPackage,
+    allowed_players: &BTreeSet<type_bridge_contract::projection::ProjectedModelUse>,
+    wire: &ProjectedWire,
+    operation_path: &[SdkDiagnosticPathSegment],
+) -> Result<ProjectedReference, SdkExecutionDiagnostic> {
+    let id = type_id_from_key(&wire.type_key)
+        .map_err(|_| malformed_projected_create_at(operation_path.iter().cloned()))?;
+    let form = match wire.form {
+        WireForm::Complete => ProjectedModelForm::Complete,
+        WireForm::Reference => ProjectedModelForm::Reference,
+    };
+    if !matches!(id.kind(), TypeKind::Entity | TypeKind::Relation)
+        || wire.value.is_some()
+        || !allowed_players
+            .iter()
+            .any(|player| player.id() == &id && player.form() == form)
+    {
+        return Err(malformed_projected_create_at(
+            operation_path.iter().cloned(),
+        ));
+    }
+    let model = package
+        .projection
+        .projection()
+        .models()
+        .get(&id)
+        .ok_or_else(|| malformed_projected_create_at(operation_path.iter().cloned()))?;
+    let mut keys = Vec::new();
+    for key_id in model.reference_read().key_fields() {
+        let token = model
+            .query_tokens()
+            .fields()
+            .get(key_id)
+            .ok_or_else(|| malformed_projected_create_at(operation_path.iter().cloned()))?;
+        let read = model
+            .complete_read()
+            .fields()
+            .iter()
+            .find(|field| field.token() == key_id)
+            .ok_or_else(|| malformed_projected_create_at(operation_path.iter().cloned()))?;
+        let mut key_path = operation_path.to_vec();
+        key_path.extend([
+            SdkDiagnosticPathSegment::Type(id.clone()),
+            SdkDiagnosticPathSegment::Field(key_id.clone()),
+        ]);
+        let values = projected_wire_items(
+            wire.values.get(token.target_name().as_str()),
+            read.multiplicity(),
+            key_path.iter().cloned(),
+        )?;
+        for (index, value) in values.iter().enumerate() {
+            let mut value_path = key_path.clone();
+            value_path.push(SdkDiagnosticPathSegment::Index(projected_index(index)));
+            keys.push((
+                key_id.clone(),
+                project_attribute_wire(package, value)
+                    .map_err(|diagnostic| rebase_sdk_diagnostic(diagnostic, value_path))?,
+            ));
+        }
+    }
+    ProjectedReference::try_new(&package.projection, id, wire.iid.clone(), keys).map_err(
+        |diagnostic| {
+            let mut path = operation_path.to_vec();
+            path.extend(diagnostic.path().iter().cloned());
+            rebase_sdk_diagnostic(diagnostic, path)
+        },
+    )
+}
+
+fn rebase_sdk_diagnostic(
+    diagnostic: SdkExecutionDiagnostic,
+    path: impl IntoIterator<Item = SdkDiagnosticPathSegment>,
+) -> SdkExecutionDiagnostic {
+    let rebased = match diagnostic.category() {
+        SdkDiagnosticCategory::InvalidInput => {
+            SdkExecutionDiagnostic::invalid_input(diagnostic.code().clone(), diagnostic.message())
+        }
+        SdkDiagnosticCategory::ResourceLimit => {
+            SdkExecutionDiagnostic::resource_limit(diagnostic.code().clone(), diagnostic.message())
+        }
+        SdkDiagnosticCategory::Integrity => {
+            SdkExecutionDiagnostic::integrity(diagnostic.code().clone(), diagnostic.message())
+        }
+        _ => return malformed_projected_create_at(path),
+    };
+    let rebased = append_sdk_path(rebased, path);
+    diagnostic
+        .details()
+        .iter()
+        .fold(rebased, |rebased, (name, detail)| {
+            rebased
+                .try_with_detail(name.clone(), detail.clone())
+                .expect("common projected-reference details fit the SDK diagnostic contract")
+        })
+}
+
+fn wrong_scalar_domain_at(
+    path: impl IntoIterator<Item = SdkDiagnosticPathSegment>,
+) -> SdkExecutionDiagnostic {
+    append_sdk_path(
+        SdkExecutionDiagnostic::invalid_input(
+            SdkDiagnosticCode::new("wrong_scalar_domain")
+                .expect("static projected-value code is canonical"),
+            SdkDiagnosticMessage::new("projected scalar has the wrong canonical domain")
+                .expect("static projected-value message is canonical"),
+        ),
+        path,
+    )
+}
+
+fn malformed_projected_create_at(
+    path: impl IntoIterator<Item = SdkDiagnosticPathSegment>,
+) -> SdkExecutionDiagnostic {
+    append_sdk_path(
+        SdkExecutionDiagnostic::invalid_input(
+            SdkDiagnosticCode::new("malformed_projected_create")
+                .expect("static generated-create code is canonical"),
+            SdkDiagnosticMessage::new("generated create payload has an invalid projected shape")
+                .expect("static generated-create message is canonical"),
+        ),
+        path,
+    )
+}
+
+fn generated_token_package_mismatch_at(
+    path: impl IntoIterator<Item = SdkDiagnosticPathSegment>,
+) -> SdkExecutionDiagnostic {
+    append_sdk_path(
+        SdkExecutionDiagnostic::generated_token_package_mismatch(),
+        path,
+    )
+}
+
+fn append_sdk_path(
+    diagnostic: SdkExecutionDiagnostic,
+    path: impl IntoIterator<Item = SdkDiagnosticPathSegment>,
+) -> SdkExecutionDiagnostic {
+    path.into_iter().fold(diagnostic, |diagnostic, segment| {
+        diagnostic
+            .try_at(segment)
+            .expect("a generated create operation path fits the SDK diagnostic contract")
+    })
+}
+
+fn projected_index(index: usize) -> u64 {
+    u64::try_from(index).expect("a projected collection index fits the SDK diagnostic contract")
 }
 
 fn manageable_type(package: &InstalledPackage, type_key: &str) -> napi::Result<TypeId> {
@@ -1646,6 +2090,53 @@ fn scalar_to_attribute(wire: &ScalarWire, expected: ValueType) -> napi::Result<A
     }
 }
 
+fn scalar_to_ordered_attribute(
+    wire: &ScalarWire,
+    expected: ValueType,
+) -> napi::Result<AttributeValue> {
+    let timezone = match expected {
+        ValueType::DateTime => false,
+        ValueType::DateTimeTz => true,
+        _ => return scalar_to_attribute(wire, expected),
+    };
+    let value = wire
+        .value
+        .as_str()
+        .map(|value| Value::String(canonical_typescript_datetime(value, timezone)))
+        .unwrap_or_else(|| wire.value.clone());
+    scalar_to_attribute(
+        &ScalarWire {
+            value_type: wire.value_type,
+            value,
+        },
+        expected,
+    )
+}
+
+fn canonical_typescript_datetime(value: &str, timezone: bool) -> String {
+    let local = if timezone {
+        let Some(local) = value.strip_suffix('Z') else {
+            return value.to_owned();
+        };
+        local
+    } else {
+        value
+    };
+    let Some((whole, fraction)) = local.rsplit_once('.') else {
+        return value.to_owned();
+    };
+    if fraction.len() != 3 || !fraction.bytes().all(|byte| byte.is_ascii_digit()) {
+        return value.to_owned();
+    }
+    let fraction = fraction.trim_end_matches('0');
+    let local = if fraction.is_empty() {
+        whole.to_owned()
+    } else {
+        format!("{whole}.{fraction}")
+    };
+    if timezone { format!("{local}Z") } else { local }
+}
+
 fn canonical_temporal<T>(
     value: &str,
     construct: impl FnOnce(String) -> AttributeValue,
@@ -1806,14 +2297,51 @@ mod tests {
 
     const ORDERED_SCHEMA: &str = r#"format: typebridge.schema/v2
 attributes:
+  identifier: { value: string }
   tag: { value: string }
+  score: { value: integer }
+  val-double: { value: double }
+  val-datetime: { value: datetime }
+  val-datetime-tz: { value: datetime-tz }
 entities:
+  actor:
+    abstract: true
   person:
+    sub: actor
     owns:
+      identifier: { key: true }
+      score: { card: 1, range: { min: 1, max: 5 } }
       tag:
         card: { min: 0, max: 4 }
         ordered: true
         distinct: true
+relations:
+  membership:
+    relates:
+      member:
+        card: { min: 1, max: 4 }
+        ordered: true
+        distinct: true
+  base-activity:
+    relates:
+      participant: { abstract: true, card: 1 }
+  plain-activity:
+    sub: base-activity
+plays:
+  person:
+    membership:
+      member: { card: { min: 0, max: 4 } }
+    base-activity:
+      participant: { card: { min: 0, max: 1 } }
+"#;
+
+    const UNORDERED_SCHEMA: &str = r#"format: typebridge.schema/v2
+attributes:
+  score: { value: integer }
+entities:
+  person:
+    owns:
+      score: { card: 1, range: { min: 1, max: 5 } }
 "#;
 
     fn authority(source: &str, document: &str) -> VerifiedSchemaAuthority {
@@ -1870,6 +2398,40 @@ entities:
         .unwrap()
     }
 
+    fn runtime_for_schema(source: &str, document: &str) -> NodeRuntimeProjection {
+        let authority = authority(source, document);
+        let authority_json = String::from_utf8(encode_schema_authority(&authority)).unwrap();
+        let projection = typescript_projection(&authority);
+        let registrations = registrations(&projection);
+        let (projection, semantic, fingerprint) = evidence(&projection);
+        NodeRuntimeProjection::new(
+            projection,
+            semantic,
+            fingerprint,
+            registrations,
+            Some(authority_json),
+        )
+        .unwrap()
+    }
+
+    fn ordered_runtime() -> NodeRuntimeProjection {
+        runtime_for_schema(ORDERED_SCHEMA, "node-create-admission.yaml")
+    }
+
+    fn type_key(kind: TypeKind, label: &str) -> String {
+        canonical_type_key(&TypeId::new(kind, label).unwrap()).unwrap()
+    }
+
+    fn attribute_wire(label: &str, value_type: ValueTypeTag, value: Value) -> ProjectedWire {
+        ProjectedWire {
+            type_key: type_key(TypeKind::Attribute, label),
+            form: WireForm::Complete,
+            iid: None,
+            value: Some(ScalarWire { value_type, value }),
+            values: BTreeMap::new(),
+        }
+    }
+
     #[test]
     fn scalar_envelopes_preserve_long_and_reject_noncanonical_domains() {
         let long = ScalarWire {
@@ -1898,6 +2460,288 @@ entities:
             value: Value::String("2023-02-29".into()),
         };
         assert!(scalar_to_attribute(&bad_date, ValueType::Date).is_err());
+    }
+
+    #[test]
+    fn ordered_scalar_admission_is_canonical_and_structured() {
+        let runtime = ordered_runtime();
+        let score = type_key(TypeKind::Attribute, "score");
+        let overflow = serde_json::to_string(&ScalarWire {
+            value_type: ValueTypeTag::Long,
+            value: Value::String("9223372036854775808".into()),
+        })
+        .unwrap();
+        let error = runtime
+            .validate_attribute_value_json(score, overflow)
+            .unwrap_err();
+        let diagnostic: Value = serde_json::from_str(&error.reason).unwrap();
+        assert_eq!(diagnostic["sdkCategory"], "invalid_input");
+        assert_eq!(diagnostic["code"], "wrong_scalar_domain");
+
+        let double = type_key(TypeKind::Attribute, "val-double");
+        let nonfinite = serde_json::to_string(&ScalarWire {
+            value_type: ValueTypeTag::Double,
+            value: Value::Null,
+        })
+        .unwrap();
+        let error = runtime
+            .validate_attribute_value_json(double, nonfinite)
+            .unwrap_err();
+        let diagnostic: Value = serde_json::from_str(&error.reason).unwrap();
+        assert_eq!(diagnostic["code"], "wrong_scalar_domain");
+
+        let datetime = type_key(TypeKind::Attribute, "val-datetime");
+        runtime
+            .validate_attribute_value_json(
+                datetime,
+                serde_json::to_string(&ScalarWire {
+                    value_type: ValueTypeTag::DateTime,
+                    value: Value::String("2026-07-29T01:02:03.120".into()),
+                })
+                .unwrap(),
+            )
+            .unwrap();
+        let datetime_tz = type_key(TypeKind::Attribute, "val-datetime-tz");
+        runtime
+            .validate_attribute_value_json(
+                datetime_tz.clone(),
+                serde_json::to_string(&ScalarWire {
+                    value_type: ValueTypeTag::DateTimeTz,
+                    value: Value::String("2026-07-29T01:02:03.120Z".into()),
+                })
+                .unwrap(),
+            )
+            .unwrap();
+        let error = runtime
+            .validate_attribute_value_json(
+                datetime_tz,
+                serde_json::to_string(&ScalarWire {
+                    value_type: ValueTypeTag::DateTimeTz,
+                    value: Value::String("2026-07-29T01:02:03.1200Z".into()),
+                })
+                .unwrap(),
+            )
+            .unwrap_err();
+        let diagnostic: Value = serde_json::from_str(&error.reason).unwrap();
+        assert_eq!(diagnostic["code"], "wrong_scalar_domain");
+    }
+
+    #[test]
+    fn unordered_scalar_admission_retains_the_legacy_plain_error_contract() {
+        let runtime = runtime_for_schema(UNORDERED_SCHEMA, "node-legacy-admission.yaml");
+        let score = type_key(TypeKind::Attribute, "score");
+        let overflow = serde_json::to_string(&ScalarWire {
+            value_type: ValueTypeTag::Long,
+            value: Value::String("9223372036854775808".into()),
+        })
+        .unwrap();
+        let error = runtime
+            .validate_attribute_value_json(score, overflow)
+            .unwrap_err();
+        assert_eq!(error.reason, "long envelope is outside i64");
+        assert!(serde_json::from_str::<Value>(&error.reason).is_err());
+    }
+
+    #[test]
+    fn ordered_whole_create_rejects_duplicates_and_accepts_inherited_players() {
+        let runtime = ordered_runtime();
+        let tag = attribute_wire("tag", ValueTypeTag::String, Value::String("same".into()));
+        let identifier = attribute_wire(
+            "identifier",
+            ValueTypeTag::String,
+            Value::String("person-1".into()),
+        );
+        let score = attribute_wire("score", ValueTypeTag::Long, Value::String("3".into()));
+        let person_key = type_key(TypeKind::Entity, "person");
+        let duplicate_person = ProjectedWire {
+            type_key: person_key.clone(),
+            form: WireForm::Complete,
+            iid: None,
+            value: None,
+            values: BTreeMap::from([
+                (
+                    "identifier".into(),
+                    serde_json::to_value(&identifier).unwrap(),
+                ),
+                ("score".into(), serde_json::to_value(&score).unwrap()),
+                (
+                    "tag".into(),
+                    Value::Array(
+                        [
+                            serde_json::to_value(&tag).unwrap(),
+                            serde_json::to_value(&tag).unwrap(),
+                        ]
+                        .into(),
+                    ),
+                ),
+            ]),
+        };
+        let error = runtime
+            .validate_create_json(
+                person_key.clone(),
+                serde_json::to_string(&duplicate_person).unwrap(),
+            )
+            .unwrap_err();
+        let diagnostic: Value = serde_json::from_str(&error.reason).unwrap();
+        assert_eq!(diagnostic["code"], "ordered_distinct_duplicate");
+        assert_eq!(diagnostic["details"]["first_index"]["value"], "0");
+        assert_eq!(diagnostic["details"]["duplicate_index"]["value"], "1");
+
+        let out_of_range_person = ProjectedWire {
+            type_key: person_key.clone(),
+            form: WireForm::Complete,
+            iid: None,
+            value: None,
+            values: BTreeMap::from([
+                (
+                    "identifier".into(),
+                    serde_json::to_value(&identifier).unwrap(),
+                ),
+                (
+                    "score".into(),
+                    serde_json::to_value(attribute_wire(
+                        "score",
+                        ValueTypeTag::Long,
+                        Value::String("6".into()),
+                    ))
+                    .unwrap(),
+                ),
+                ("tag".into(), Value::Array(Vec::new())),
+            ]),
+        };
+        let error = runtime
+            .validate_create_json(
+                person_key.clone(),
+                serde_json::to_string(&out_of_range_person).unwrap(),
+            )
+            .unwrap_err();
+        let diagnostic: Value = serde_json::from_str(&error.reason).unwrap();
+        assert_eq!(diagnostic["code"], "range_constraint_violation");
+        assert_eq!(diagnostic["path"][0]["kind"], "type");
+        assert_eq!(diagnostic["path"][1]["kind"], "field");
+
+        let identified_person = ProjectedWire {
+            type_key: person_key,
+            form: WireForm::Complete,
+            iid: Some("0xa".into()),
+            value: None,
+            values: BTreeMap::from([
+                (
+                    "identifier".into(),
+                    serde_json::to_value(&identifier).unwrap(),
+                ),
+                ("score".into(), serde_json::to_value(&score).unwrap()),
+                ("tag".into(), Value::Array(Vec::new())),
+            ]),
+        };
+        let plain_activity_key = type_key(TypeKind::Relation, "plain-activity");
+        let plain_activity = ProjectedWire {
+            type_key: plain_activity_key.clone(),
+            form: WireForm::Complete,
+            iid: None,
+            value: None,
+            values: BTreeMap::from([(
+                "participant".into(),
+                serde_json::to_value(&identified_person).unwrap(),
+            )]),
+        };
+        runtime
+            .validate_create_json(
+                plain_activity_key,
+                serde_json::to_string(&plain_activity).unwrap(),
+            )
+            .unwrap();
+
+        let membership_key = type_key(TypeKind::Relation, "membership");
+        let membership = ProjectedWire {
+            type_key: membership_key.clone(),
+            form: WireForm::Complete,
+            iid: None,
+            value: None,
+            values: BTreeMap::from([(
+                "member".into(),
+                Value::Array(
+                    [
+                        serde_json::to_value(&identified_person).unwrap(),
+                        serde_json::to_value(&identified_person).unwrap(),
+                    ]
+                    .into(),
+                ),
+            )]),
+        };
+        let error = runtime
+            .validate_create_json(
+                membership_key.clone(),
+                serde_json::to_string(&membership).unwrap(),
+            )
+            .unwrap_err();
+        let diagnostic: Value = serde_json::from_str(&error.reason).unwrap();
+        assert_eq!(diagnostic["code"], "ordered_distinct_duplicate");
+
+        let unidentified_person = ProjectedWire {
+            type_key: type_key(TypeKind::Entity, "person"),
+            form: WireForm::Complete,
+            iid: None,
+            value: None,
+            values: BTreeMap::from([("tag".into(), Value::Array(Vec::new()))]),
+        };
+        let unidentified_membership = ProjectedWire {
+            type_key: membership_key.clone(),
+            form: WireForm::Complete,
+            iid: None,
+            value: None,
+            values: BTreeMap::from([(
+                "member".into(),
+                Value::Array(vec![serde_json::to_value(unidentified_person).unwrap()]),
+            )]),
+        };
+        let error = runtime
+            .validate_create_json(
+                membership_key,
+                serde_json::to_string(&unidentified_membership).unwrap(),
+            )
+            .unwrap_err();
+        let diagnostic: Value = serde_json::from_str(&error.reason).unwrap();
+        assert_eq!(diagnostic["code"], "missing_reference_identity");
+        assert_eq!(
+            diagnostic["path"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|segment| segment["kind"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["type", "role", "index", "type"]
+        );
+    }
+
+    #[test]
+    fn foreign_member_diagnostic_has_fixed_message_and_operation_path() {
+        let runtime = ordered_runtime();
+        let membership = type_key(TypeKind::Relation, "membership");
+        let error = runtime
+            .reject_generated_token_package_mismatch(
+                serde_json::json!([
+                    {"kind": "type", "typeKey": membership},
+                    {"kind": "role", "name": "member"},
+                    {"kind": "index", "value": 1},
+                ])
+                .to_string(),
+            )
+            .unwrap_err();
+        let diagnostic: Value = serde_json::from_str(&error.reason).unwrap();
+        assert_eq!(diagnostic["category"], "integrity");
+        assert_eq!(diagnostic["sdkCategory"], "integrity");
+        assert_eq!(diagnostic["code"], "generated_token_package_mismatch");
+        assert_eq!(
+            diagnostic["message"],
+            "The generated token belongs to a different installed schema package"
+        );
+        assert_eq!(diagnostic["path"][0]["kind"], "type");
+        assert_eq!(diagnostic["path"][1]["kind"], "role");
+        assert_eq!(
+            diagnostic["path"][2],
+            serde_json::json!({"kind": "index", "value": 1})
+        );
     }
 
     #[test]

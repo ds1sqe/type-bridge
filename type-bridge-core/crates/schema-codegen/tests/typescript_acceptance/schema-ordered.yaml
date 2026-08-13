@@ -1,0 +1,42 @@
+format: typebridge.schema/v2
+
+attributes:
+  identifier: { value: string }
+  tag: { value: string }
+  score: { value: integer }
+  val-double: { value: double }
+  val-datetime: { value: datetime }
+  val-datetime-tz: { value: datetime-tz }
+
+entities:
+  actor:
+    abstract: true
+  person:
+    sub: actor
+    owns:
+      identifier: { key: true }
+      score: { card: 1, range: { min: 1, max: 5 } }
+      tag:
+        card: { min: 0, max: 4 }
+        ordered: true
+        distinct: true
+
+relations:
+  membership:
+    relates:
+      member:
+        card: { min: 1, max: 4 }
+        ordered: true
+        distinct: true
+  base-activity:
+    relates:
+      participant: { abstract: true, card: 1 }
+  plain-activity:
+    sub: base-activity
+
+plays:
+  person:
+    membership:
+      member: { card: { min: 0, max: 4 } }
+    base-activity:
+      participant: { card: { min: 0, max: 1 } }

@@ -119,6 +119,8 @@ interface NativeProjectionHandle {
     matchModelType(typeKey: string): string;
     validateAttributeValueJson(typeKey: string, valueJson: string): void;
     validateFieldValueJson(typeKey: string, fieldName: string, valueJson: string): void;
+    validateCreateJson(typeKey: string, valueJson: string): void;
+    rejectGeneratedTokenPackageMismatch(pathJson: string): void;
     revalidateMatchDiagnostic(diagnostic: string): string;
     materializeMatchThingJson(thing: RuntimeProjectionMatchThing): string;
 }
@@ -136,6 +138,10 @@ export declare class InstalledRuntimeProjection {
     validateAttributeValueJson(typeKey: string, valueJson: string): void;
     /** @internal Validate one generated owned-field scalar against projected constraints. */
     validateFieldValueJson(typeKey: string, fieldName: string, valueJson: string): void;
+    /** @internal Validate one complete generated create payload. */
+    validateCreateJson(typeKey: string, valueJson: string): void;
+    /** @internal Surface one exact foreign generated-member package boundary. */
+    rejectGeneratedTokenPackageMismatch(pathJson: string): void;
     /** @internal Reject structural or foreign connection lookalikes. */
     assertConnection(connection: RuntimeProjectionConnection): void;
     /** @internal Materialize one native-validated thing as projected private JSON. */

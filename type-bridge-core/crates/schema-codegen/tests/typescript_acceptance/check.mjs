@@ -8,6 +8,7 @@ const CORE = resolve(HERE, "../../../..");
 const ROOT = resolve(CORE, "..");
 const STAGE = resolve(CORE, "target/schema-codegen-typescript-acceptance");
 const GENERATED = resolve(STAGE, "generated_v2");
+const ORDERED = resolve(STAGE, "generated_ordered");
 const FOREIGN = resolve(STAGE, "generated_foreign");
 const NODE_PACKAGE = resolve(CORE, "crates/node");
 const DOCUMENTED_EXAMPLES = resolve(
@@ -74,6 +75,19 @@ command("cargo", [
   resolve(HERE, "../acceptance/schema.yaml"),
   GENERATED,
 ]);
+command("cargo", [
+  "run",
+  "--quiet",
+  "--manifest-path",
+  resolve(CORE, "Cargo.toml"),
+  "--package",
+  "type-bridge-schema-codegen",
+  "--example",
+  "emit_typescript_acceptance",
+  "--",
+  resolve(HERE, "schema-ordered.yaml"),
+  ORDERED,
+]);
 const schemaPath = resolve(HERE, "../acceptance/schema.yaml");
 const schemaSource = readFileSync(schemaPath, "utf8");
 const foreignSource = schemaSource.replace(
@@ -101,6 +115,7 @@ command("cargo", [
 mkdirSync(resolve(STAGE, "node_modules/@type-bridge"), { recursive: true });
 symlinkSync(NODE_PACKAGE, resolve(STAGE, "node_modules/@type-bridge/node"), "dir");
 command("tsc", ["--project", resolve(GENERATED, "tsconfig.json")]);
+command("tsc", ["--project", resolve(ORDERED, "tsconfig.json")]);
 command("tsc", ["--project", resolve(FOREIGN, "tsconfig.json")]);
 
 for (const fixture of [
@@ -132,6 +147,7 @@ writeFileSync(
       "negative.ts",
       "documented_examples.ts",
       "generated_v2/src/**/*.ts",
+      "generated_ordered/src/**/*.ts",
       "generated_foreign/src/**/*.ts",
     ],
   }, null, 2)}\n`,

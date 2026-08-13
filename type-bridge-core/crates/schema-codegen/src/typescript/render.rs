@@ -113,8 +113,14 @@ fn render_authority(authority: &EmbeddedAuthority) -> Result<String, Diagnostic>
 
 fn render_models(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
     let mut output = String::from(header());
-    output.push_str(
-        "import {\n  defineFieldToken,\n  defineModel,\n  defineRoleToken,\n  type CompleteFacet,\n  type FieldToken,\n  type ModelToken,\n  type ReferenceFacet,\n  type RoleToken,\n} from \"./runtime.js\";\nimport type * as Structs from \"./structs.js\";\n\n",
+    let define_model = if projection_uses_ordered_collections(projection) {
+        "defineOrderedModel as defineModel"
+    } else {
+        "defineModel"
+    };
+    let _ = write!(
+        output,
+        "import {{\n  defineFieldToken,\n  {define_model},\n  defineRoleToken,\n  type CompleteFacet,\n  type FieldToken,\n  type ModelToken,\n  type ReferenceFacet,\n  type RoleToken,\n}} from \"./runtime.js\";\nimport type * as Structs from \"./structs.js\";\n\n",
     );
 
     for id in projection.emission().model_shells() {

@@ -281,6 +281,7 @@ fn ordered_projection_selects_successor_evidence_and_descriptors_in_all_bindings
     let typescript_runtime =
         std::str::from_utf8(typescript_package.get("src/runtime.ts").unwrap()).unwrap();
     assert!(typescript_models.contains("\"collection_mode\":\"ordered_list\""));
+    assert!(typescript_models.contains("defineOrderedModel as defineModel"));
     assert!(typescript_models.contains("\"kind\":\"distinct\""));
     assert!(typescript_models.contains("readonly (Tag)[]"));
     assert!(typescript_runtime.contains("readonly collection_mode?: \"ordered_list\""));
@@ -606,6 +607,10 @@ fn unordered_schema_aware_evidence_and_fixed_resources_remain_exactly_legacy() {
         typescript_package.get("src/runtime.ts").unwrap(),
         include_bytes!("../src/typescript/runtime.ts")
     );
+    let typescript_models =
+        std::str::from_utf8(typescript_package.get("src/models.ts").unwrap()).unwrap();
+    assert!(typescript_models.contains("\n  defineModel,\n"));
+    assert!(!typescript_models.contains("defineOrderedModel"));
     let typescript_index =
         std::str::from_utf8(typescript_package.get("src/index.ts").unwrap()).unwrap();
     assert!(typescript_index.contains("__installRuntimeProjectionPackage("));

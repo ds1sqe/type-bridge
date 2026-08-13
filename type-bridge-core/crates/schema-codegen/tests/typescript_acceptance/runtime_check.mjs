@@ -46,6 +46,31 @@ import {
   integerInput,
   qualifyingScore,
 } from "./generated_v2/dist/index.js";
+import {
+  Identifier as ForeignIdentifier,
+  Person as ForeignPerson,
+} from "./generated_foreign/dist/index.js";
+import {
+  Identifier as OrderedIdentifier,
+  Membership as OrderedMembership,
+  Person as OrderedPerson,
+  PlainActivity as OrderedPlainActivity,
+  Score as OrderedScore,
+  Tag as OrderedTag,
+  ValDatetime as OrderedValDatetime,
+  ValDatetimeTz as OrderedValDatetimeTz,
+  ValDouble as OrderedValDouble,
+} from "./generated_ordered/dist/index.js";
+
+function captureNativeDiagnostic(operation) {
+  try {
+    operation();
+  } catch (error) {
+    assert(error instanceof Error);
+    return JSON.parse(error.message);
+  }
+  assert.fail("operation did not emit a native diagnostic");
+}
 
 const identifier = Identifier.create("person-1");
 assert.equal(identifier.value, "person-1");
@@ -151,6 +176,104 @@ assert.throws(() => Employment.create({ employee: event }), TypeError);
 assert.throws(
   () => Employment.create({ employee: person, member: person }),
   TypeError,
+);
+
+const orderedPerson = OrderedPerson.create({
+  identifier: OrderedIdentifier.create("ordered-person"),
+  score: OrderedScore.create(3n),
+  tag: [OrderedTag.create("first"), OrderedTag.create("second")],
+});
+assert.deepEqual(
+  orderedPerson.tag.map((tag) => tag.value),
+  ["first", "second"],
+);
+const duplicateField = captureNativeDiagnostic(() =>
+  OrderedPerson.create({
+    identifier: OrderedIdentifier.create("ordered-duplicate"),
+    score: OrderedScore.create(3n),
+    tag: [OrderedTag.create("duplicate"), OrderedTag.create("duplicate")],
+  }),
+);
+assert.equal(duplicateField.sdkCategory, "invalid_input");
+assert.equal(duplicateField.code, "ordered_distinct_duplicate");
+assert.deepEqual(duplicateField.details, {
+  duplicate_index: { kind: "count", value: "1" },
+  first_index: { kind: "count", value: "0" },
+});
+const constrainedField = captureNativeDiagnostic(() =>
+  OrderedPerson.create({
+    identifier: OrderedIdentifier.create("ordered-range"),
+    score: OrderedScore.create(6n),
+    tag: [],
+  }),
+);
+assert.equal(constrainedField.sdkCategory, "invalid_input");
+assert.equal(constrainedField.code, "range_constraint_violation");
+
+// Hydration remains outside this constructor-only slice; use its existing hook
+// only to provide canonical identity for role-constructor admission fixtures.
+const orderedHydrate = Object.getOwnPropertySymbols(OrderedPerson).find(
+  (symbol) => symbol.description === "typebridge.hydrate-complete",
+);
+assert(orderedHydrate);
+const identifiedOrderedPerson = OrderedPerson[orderedHydrate]("0xa", {
+  identifier: OrderedIdentifier.create("identified-ordered-person"),
+  score: OrderedScore.create(3n),
+  tag: [],
+});
+const duplicateRole = captureNativeDiagnostic(() =>
+  OrderedMembership.create({
+    member: [identifiedOrderedPerson, identifiedOrderedPerson],
+  }),
+);
+assert.equal(duplicateRole.sdkCategory, "invalid_input");
+assert.equal(duplicateRole.code, "ordered_distinct_duplicate");
+assert.equal(
+  OrderedPlainActivity.create({ participant: identifiedOrderedPerson })
+    .participant,
+  identifiedOrderedPerson,
+);
+
+assert.equal(OrderedScore.create(3n).value, 3n);
+assert.throws(() => OrderedScore.create(1n << 63n), TypeError);
+assert.throws(() => OrderedValDouble.create(Number.POSITIVE_INFINITY), TypeError);
+const fractionalInstant = new Date("2026-07-29T01:02:03.120Z");
+assert.equal(
+  OrderedValDatetime.create(fractionalInstant).value,
+  fractionalInstant,
+);
+assert.equal(
+  OrderedValDatetimeTz.create(fractionalInstant).value,
+  fractionalInstant,
+);
+
+const foreignPerson = ForeignPerson.create(personValues);
+const foreignPackage = captureNativeDiagnostic(() =>
+  OrderedMembership.create({ member: [foreignPerson] }),
+);
+assert.equal(foreignPackage.category, "integrity");
+assert.equal(foreignPackage.sdkCategory, "integrity");
+assert.equal(foreignPackage.code, "generated_token_package_mismatch");
+assert.equal(
+  foreignPackage.message,
+  "The generated token belongs to a different installed schema package",
+);
+assert.deepEqual(
+  foreignPackage.path.map((segment) => segment.kind),
+  ["type", "role", "index"],
+);
+const nestedForeignKeyPerson = OrderedPerson[orderedHydrate]("0xb", {
+  identifier: ForeignIdentifier.create("nested-foreign-key"),
+  score: OrderedScore.create(3n),
+  tag: [],
+});
+const nestedForeignPackage = captureNativeDiagnostic(() =>
+  OrderedMembership.create({ member: [nestedForeignKeyPerson] }),
+);
+assert.equal(nestedForeignPackage.code, "generated_token_package_mismatch");
+assert.deepEqual(
+  nestedForeignPackage.path.map((segment) => segment.kind),
+  ["type", "role", "index", "type", "field", "index"],
 );
 
 assert.equal(Employment.employee.kind, "role");

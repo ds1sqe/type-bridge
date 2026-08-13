@@ -29,6 +29,157 @@ export interface Multiplicity {
 
 const TYPE_BRIDGE_ORDERED_COLLECTION_RESOURCE_VERSION = 2 as const;
 
+type OrderedPackagePathSegment =
+  | { readonly kind: "type"; readonly typeKey: string }
+  | { readonly kind: "field"; readonly name: string }
+  | { readonly kind: "role"; readonly name: string }
+  | { readonly kind: "index"; readonly value: number };
+
+function orderedMemberKind(
+  member: CreateMemberDefinition,
+): "field" | "role" {
+  return member.accepted === undefined ? "field" : "role";
+}
+
+function rejectForeignOrderedValue(
+  value: unknown,
+  path: readonly OrderedPackagePathSegment[],
+): void {
+  assertRecord(value, "ordered generated member");
+  const typeKey = value["__typebridgeModel"];
+  const form = value["__typebridgeForm"];
+  const entry = typeof typeKey === "string" ? runtimeModels.get(typeKey) : undefined;
+  const localBrand =
+    form === "complete"
+      ? Object.getOwnPropertyDescriptor(value, COMPLETE_BRAND)?.value
+      : form === "reference"
+        ? Object.getOwnPropertyDescriptor(value, REFERENCE_BRAND)?.value
+        : undefined;
+  if (
+    typeof typeKey !== "string" ||
+    entry === undefined ||
+    localBrand !== typeKey
+  ) {
+    requireProjection().rejectGeneratedTokenPackageMismatch(
+      JSON.stringify(path),
+    );
+    return;
+  }
+  if (entry.definition.valueType !== null) {
+    return;
+  }
+  const members =
+    form === "complete"
+      ? entry.definition.createMembers
+      : entry.definition.referenceKeys.map((name) => ({
+          name,
+          multiplicity: {
+            cardinality: { kind: "cardinality" as const, min: "1", max: "1" },
+            required: true,
+            container: "scalar" as const,
+          },
+        }));
+  for (const member of members) {
+    const nested = value[member.name];
+    if (nested === undefined || nested === null) {
+      continue;
+    }
+    const values: readonly unknown[] = Array.isArray(nested) ? nested : [nested];
+    values.forEach((candidate, index) =>
+      rejectForeignOrderedValue(candidate, [
+        ...path,
+        { kind: "type", typeKey },
+        { kind: orderedMemberKind(member), name: member.name },
+        { kind: "index", value: index },
+      ]),
+    );
+  }
+}
+
+function validateOrderedMemberPackages(
+  definition: ModelDefinition<string, object, object>,
+  input: unknown,
+): void {
+  if (definition.valueType !== null) {
+    return;
+  }
+  assertRecord(input, `${definition.name}.create result`);
+  for (const member of definition.createMembers) {
+    const value = input[member.name];
+    if (value === undefined || value === null) {
+      continue;
+    }
+    const values: readonly unknown[] = Array.isArray(value) ? value : [value];
+    values.forEach((candidate, index) =>
+      rejectForeignOrderedValue(candidate, [
+        { kind: "type", typeKey: definition.typeKey },
+        { kind: orderedMemberKind(member), name: member.name },
+        { kind: "index", value: index },
+      ]),
+    );
+  }
+}
+
+/** @internal Define an ordered model whose create facet uses common native admission. */
+export function defineOrderedModel<
+  Id extends string,
+  Complete,
+  CreateFactory,
+  ReferenceFactory,
+  Fields extends object,
+  Roles extends object,
+>(
+  definition: ModelDefinition<Id, Fields, Roles>,
+): ModelToken<Id, Complete, CreateFactory, ReferenceFactory, Fields, Roles> {
+  const original = defineModel<
+    Id,
+    Complete,
+    CreateFactory,
+    ReferenceFactory,
+    Fields,
+    Roles
+  >(definition);
+  const descriptors = Object.getOwnPropertyDescriptors(original) as Record<
+    PropertyKey,
+    PropertyDescriptor
+  >;
+  if (typeof original.create === "function") {
+    const create = original.create as (input: unknown) => Complete;
+    descriptors["create"] = {
+      ...descriptors["create"],
+      value: (input: unknown): Complete => {
+        const result = create(input);
+        validateOrderedMemberPackages(definition, result);
+        if (definition.valueType === null) {
+          requireProjection().validateCreateJson(
+            definition.typeKey,
+            JSON.stringify(lowerProjectedValue(result)),
+          );
+        }
+        return result;
+      },
+    };
+  }
+  const token = Object.create(
+    Object.getPrototypeOf(original),
+    descriptors,
+  ) as ModelToken<
+    Id,
+    Complete,
+    CreateFactory,
+    ReferenceFactory,
+    Fields,
+    Roles
+  >;
+  const entry = runtimeModels.get(definition.typeKey);
+  if (entry === undefined || entry.token !== original) {
+    throw new TypeError("ordered model token registration is inconsistent");
+  }
+  runtimeModels.set(definition.typeKey, { ...entry, token });
+  Object.freeze(token);
+  return token;
+}
+
 /** @internal Install authority-backed evidence for an ordered generated package. */
 export function __installOrderedRuntimeProjectionPackage(
   projectionJson: string,
@@ -166,4 +317,25 @@ fn runtime_source(ordered: bool) -> Vec<u8> {
         bytes.extend_from_slice(suffix);
     }
     bytes
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_runtime_source_remains_byte_exact() {
+        assert_eq!(runtime_source(false), RUNTIME_SOURCE);
+    }
+
+    #[test]
+    fn ordered_runtime_source_installs_whole_create_validation() {
+        let source = String::from_utf8(runtime_source(true)).unwrap();
+
+        assert!(source.starts_with(std::str::from_utf8(RUNTIME_SOURCE).unwrap()));
+        assert!(source.contains("export function defineOrderedModel<"));
+        assert!(source.contains("Object.getOwnPropertyDescriptors(original)"));
+        assert!(source.contains("requireProjection().validateCreateJson("));
+        assert!(source.contains("rejectGeneratedTokenPackageMismatch("));
+    }
 }
