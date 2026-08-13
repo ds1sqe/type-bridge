@@ -611,6 +611,41 @@ impl SdkExecutionDiagnostic {
         .expect("the fixed projection-evidence diagnostic path is bounded")
     }
 
+    /// Construct the fixed diagnostic for one required projection-evidence
+    /// identity that is absent from its expected position.
+    ///
+    /// The caller supplies a validated contract identity and whether the
+    /// rejected package was foreign. The occurrence counts are fixed by the
+    /// missing-evidence case: exactly one occurrence was expected and none was
+    /// present. Other mismatch shapes must use
+    /// [`Self::projection_evidence_mismatch`] and attach their own exact typed
+    /// metadata rather than relabeling them as missing evidence.
+    #[must_use]
+    pub fn projection_evidence_missing(
+        index: u64,
+        identity: SdkQueryDiagnosticIdentity,
+        foreign_package: bool,
+    ) -> Self {
+        Self::projection_evidence_mismatch()
+            .try_at(SdkDiagnosticPathSegment::Index(index))
+            .and_then(|diagnostic| {
+                diagnostic.try_at(SdkDiagnosticPathSegment::ContractIdentity(identity))
+            })
+            .expect("the fixed missing-evidence diagnostic path is bounded")
+            .with_static_detail(
+                static_name("actual_occurrence_count"),
+                SdkDiagnosticDetailValue::Count(0),
+            )
+            .with_static_detail(
+                static_name("expected_occurrence_count"),
+                SdkDiagnosticDetailValue::Count(1),
+            )
+            .with_static_detail(
+                static_name("foreign_package"),
+                SdkDiagnosticDetailValue::Boolean(foreign_package),
+            )
+    }
+
     /// Construct the fixed generated-token package-brand diagnostic.
     ///
     /// Operation owners append the exact model, field, role, or query path at
@@ -874,5 +909,43 @@ mod tests {
         );
         assert!(token.path().is_empty());
         assert!(token.details().is_empty());
+    }
+
+    #[test]
+    fn missing_projection_evidence_matches_v3_representative() {
+        let missing = SdkExecutionDiagnostic::projection_evidence_missing(
+            0,
+            SdkQueryDiagnosticIdentity::new("semantic_schema_fingerprint").unwrap(),
+            false,
+        );
+        assert_eq!(missing.category(), SdkDiagnosticCategory::Integrity);
+        assert_eq!(missing.code().as_str(), "projection_evidence_mismatch");
+        assert!(matches!(
+            missing.path(),
+            [
+                SdkDiagnosticPathSegment::Argument(argument),
+                SdkDiagnosticPathSegment::Index(0),
+                SdkDiagnosticPathSegment::ContractIdentity(identity),
+            ] if argument.as_str() == "projection_evidence"
+                && identity.as_str() == "semantic_schema_fingerprint"
+        ));
+        assert_eq!(
+            missing
+                .details()
+                .iter()
+                .map(|(name, value)| (name.as_str(), value))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    "actual_occurrence_count",
+                    &SdkDiagnosticDetailValue::Count(0),
+                ),
+                (
+                    "expected_occurrence_count",
+                    &SdkDiagnosticDetailValue::Count(1),
+                ),
+                ("foreign_package", &SdkDiagnosticDetailValue::Boolean(false),),
+            ],
+        );
     }
 }
