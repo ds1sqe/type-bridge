@@ -321,14 +321,14 @@ fn worker_fetch(iid: &str, name: &str) -> Response {
     })]))
 }
 
-fn assignment_fetch(iid: &str, position: &str, worker_iid: &str) -> Response {
+fn assignment_fetch(iid: &str, position: &str, worker_iid: &str, worker_name: &str) -> Response {
     Response::Result(QueryResult::Documents(vec![serde_json::json!({
         "_iid": iid,
         "_type": "assignment",
         "attributes": {"position": [position]},
         "_role_0_iid": worker_iid,
         "_role_0_type": "person",
-        "_role_0_attributes": {}
+        "_role_0_attributes": {"name": [worker_name]}
     })]))
 }
 
@@ -458,7 +458,7 @@ async fn write_transaction_commits_multiple_operations_in_one_context() {
         iid_doc("0x1"),
         worker_fetch("0x1", "alice"),
         iid_doc("0x2"),
-        assignment_fetch("0x2", "captain", "0x1"),
+        assignment_fetch("0x2", "captain", "0x1", "alice"),
     ]);
     let tx = db.write().await.unwrap();
     let worker = tx
