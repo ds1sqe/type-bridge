@@ -1,4 +1,4 @@
-use type_bridge_contract::fingerprint::SemanticProfileId;
+use type_bridge_contract::fingerprint::{Fingerprint, SemanticProfileId};
 use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind};
 use type_bridge_contract::limits::MAX_CANONICAL_STRING_BYTES;
 use type_bridge_contract::projection::{
@@ -243,6 +243,40 @@ fn assert_code(
 ) {
     assert_eq!(diagnostic.category(), category);
     assert_eq!(diagnostic.code().as_str(), code);
+}
+
+fn assert_generated_token_package_mismatch(
+    diagnostic: &type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic,
+    path: &[SdkDiagnosticPathSegment],
+    fingerprints: Option<(&Fingerprint, &Fingerprint)>,
+) {
+    assert_code(
+        diagnostic,
+        SdkDiagnosticCategory::Integrity,
+        "generated_token_package_mismatch",
+    );
+    assert_eq!(
+        diagnostic.message().as_str(),
+        "The generated token belongs to a different installed schema package",
+    );
+    assert_eq!(diagnostic.path(), path);
+    if let Some((expected, actual)) = fingerprints {
+        assert_eq!(
+            diagnostic
+                .details()
+                .get(&SdkDiagnosticName::new("expected_fingerprint").unwrap()),
+            Some(&SdkDiagnosticDetailValue::Fingerprint(expected.clone())),
+        );
+        assert_eq!(
+            diagnostic
+                .details()
+                .get(&SdkDiagnosticName::new("actual_fingerprint").unwrap()),
+            Some(&SdkDiagnosticDetailValue::Fingerprint(actual.clone())),
+        );
+        assert_eq!(diagnostic.details().len(), 2);
+    } else {
+        assert!(diagnostic.details().is_empty());
+    }
 }
 
 fn assert_duplicate_details(
@@ -1267,11 +1301,13 @@ fn brands_fence_binding_targets_and_semantic_schemas() {
         vec![],
     )
     .unwrap_err();
-    assert_code(
-        &target_error,
-        SdkDiagnosticCategory::Integrity,
-        "binding_target_brand_mismatch",
-    );
+    let identifier = field(&person, "identifier");
+    let identifier_path = [
+        SdkDiagnosticPathSegment::Type(person.clone()),
+        SdkDiagnosticPathSegment::Field(identifier),
+        SdkDiagnosticPathSegment::Index(0),
+    ];
+    assert_generated_token_package_mismatch(&target_error, &identifier_path, None);
 
     let changed_schema = SCHEMA.replace("entities:\n", "entities:\n  robot: {}\n");
     let changed = installed(BindingTarget::Python, &changed_schema);
@@ -1289,10 +1325,13 @@ fn brands_fence_binding_targets_and_semantic_schemas() {
         vec![],
     )
     .unwrap_err();
-    assert_code(
+    assert_generated_token_package_mismatch(
         &semantic_error,
-        SdkDiagnosticCategory::Integrity,
-        "semantic_brand_mismatch",
+        &identifier_path,
+        Some((
+            python.projection().semantic_fingerprint().as_fingerprint(),
+            changed.projection().semantic_fingerprint().as_fingerprint(),
+        )),
     );
 
     let first_c = installed_c(SCHEMA, "first");
@@ -1312,10 +1351,24 @@ fn brands_fence_binding_targets_and_semantic_schemas() {
         vec![],
     )
     .unwrap_err();
-    assert_code(
+    let c_identifier_path = [
+        SdkDiagnosticPathSegment::Type(c_person.clone()),
+        SdkDiagnosticPathSegment::Field(field(&c_person, "identifier")),
+        SdkDiagnosticPathSegment::Index(0),
+    ];
+    assert_generated_token_package_mismatch(
         &projection_error,
-        SdkDiagnosticCategory::Integrity,
-        "projection_brand_mismatch",
+        &c_identifier_path,
+        Some((
+            first_c
+                .projection()
+                .projection_fingerprint()
+                .as_fingerprint(),
+            second_c
+                .projection()
+                .projection_fingerprint()
+                .as_fingerprint(),
+        )),
     );
 }
 

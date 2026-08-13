@@ -75,26 +75,18 @@ impl ProjectionBrand {
     ) -> Result<(), SdkExecutionDiagnostic> {
         let expected_semantic = installed.projection().semantic_fingerprint();
         if &self.semantic != expected_semantic {
-            return Err(fingerprint_mismatch(
-                "semantic_brand_mismatch",
-                "The projected value belongs to a different semantic schema",
+            return Err(generated_token_package_fingerprint_mismatch(
                 path,
                 expected_semantic.as_fingerprint(),
                 self.semantic.as_fingerprint(),
             ));
         }
         if self.target != installed.projection().target() {
-            return Err(integrity(
-                "binding_target_brand_mismatch",
-                "The projected value belongs to a different binding target",
-                path,
-            ));
+            return Err(generated_token_package_mismatch(path));
         }
         let expected_projection = installed.projection().projection_fingerprint();
         if &self.projection != expected_projection {
-            return Err(fingerprint_mismatch(
-                "projection_brand_mismatch",
-                "The projected value belongs to a different binding projection",
+            return Err(generated_token_package_fingerprint_mismatch(
                 path,
                 expected_projection.as_fingerprint(),
                 self.projection.as_fingerprint(),
@@ -1941,14 +1933,12 @@ fn role_id_bytes(role_id: &RoleId) -> usize {
         .saturating_add(role_id.label().as_str().len())
 }
 
-fn fingerprint_mismatch(
-    code: &'static str,
-    message: &'static str,
+fn generated_token_package_fingerprint_mismatch(
     path: Vec<SdkDiagnosticPathSegment>,
     expected: &type_bridge_contract::fingerprint::Fingerprint,
     actual: &type_bridge_contract::fingerprint::Fingerprint,
 ) -> SdkExecutionDiagnostic {
-    integrity(code, message, path)
+    generated_token_package_mismatch(path)
         .try_with_detail(
             sdk_name("expected_fingerprint"),
             SdkDiagnosticDetailValue::Fingerprint(expected.clone()),
@@ -1959,6 +1949,17 @@ fn fingerprint_mismatch(
             SdkDiagnosticDetailValue::Fingerprint(actual.clone()),
         )
         .expect("the static brand details fit the contract")
+}
+
+fn generated_token_package_mismatch(path: Vec<SdkDiagnosticPathSegment>) -> SdkExecutionDiagnostic {
+    path.into_iter().fold(
+        SdkExecutionDiagnostic::generated_token_package_mismatch(),
+        |diagnostic, segment| {
+            diagnostic
+                .try_at(segment)
+                .expect("a projected-value operation path fits the SDK diagnostic contract")
+        },
+    )
 }
 
 fn member_limit(actual: usize, path: Vec<SdkDiagnosticPathSegment>) -> SdkExecutionDiagnostic {
