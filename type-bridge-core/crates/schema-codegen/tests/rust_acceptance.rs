@@ -15,6 +15,8 @@ mod support;
 
 const POSITIVE: &str = include_str!("rust_acceptance/positive.rs");
 const NEGATIVE: &str = include_str!("rust_acceptance/negative.rs");
+const PHASE2_PARITY: &str = include_str!("rust_acceptance/phase2_parity.rs");
+const PHASE2_FOREIGN_NEGATIVE: &str = include_str!("rust_acceptance/phase2_foreign_negative.rs");
 static STAGE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 struct Stage(PathBuf);
@@ -3117,4 +3119,211 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert!(stderr.contains("FamilyRootFamily"));
     assert!(stderr.contains("redeclared_value"));
     assert!(stderr.contains("no method"));
+}
+
+fn rename_generated_package(root: &Path, package_name: &str) {
+    let manifest = root.join("Cargo.toml");
+    let source = fs::read_to_string(&manifest).unwrap();
+    let replaced = source.replacen(
+        "name = \"type-bridge-generated-schema\"",
+        &format!("name = \"{package_name}\""),
+        1,
+    );
+    assert_ne!(
+        source, replaced,
+        "generated package manifest has its stable name"
+    );
+    fs::write(manifest, replaced).unwrap();
+}
+
+fn write_phase2_consumer(root: &Path, source: &str) {
+    let crates = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .to_owned();
+    let rust_path = crates.join("rust").to_string_lossy().replace('\\', "\\\\");
+    let contract_path = crates
+        .join("contract")
+        .to_string_lossy()
+        .replace('\\', "\\\\");
+    let orm_path = crates.join("orm").to_string_lossy().replace('\\', "\\\\");
+    let schema_path = crates
+        .join("schema")
+        .to_string_lossy()
+        .replace('\\', "\\\\");
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(
+        root.join("Cargo.toml"),
+        format!(
+            r#"[package]
+name = "rust-phase2-projection-parity"
+version = "0.0.0"
+edition = "2024"
+
+[dependencies]
+generated = {{ package = "type-bridge-generated-schema", path = "../generated" }}
+foreign = {{ package = "type-bridge-generated-schema-foreign", path = "../foreign" }}
+serde_json = "1"
+sha2 = "0.10"
+tokio = {{ version = "1", features = ["macros", "rt-multi-thread"] }}
+type-bridge = {{ path = "{rust_path}", default-features = false }}
+type-bridge-contract = {{ path = "{contract_path}" }}
+type-bridge-orm = {{ path = "{orm_path}", default-features = false }}
+type-bridge-schema = {{ path = "{schema_path}" }}
+
+[patch.crates-io]
+type-bridge = {{ path = "{rust_path}" }}
+type-bridge-contract = {{ path = "{contract_path}" }}
+type-bridge-orm = {{ path = "{orm_path}" }}
+type-bridge-schema = {{ path = "{schema_path}" }}
+
+[workspace]
+"#
+        ),
+    )
+    .unwrap();
+    fs::write(root.join("src/main.rs"), source).unwrap();
+}
+
+fn run_phase2_consumer(
+    manifest: &Path,
+    target_dir: &std::ffi::OsStr,
+    report: &Path,
+    repository: &Path,
+) -> Output {
+    let executable = env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    Command::new(executable)
+        .args([
+            "run",
+            "--offline",
+            "--quiet",
+            "--manifest-path",
+            manifest.to_str().unwrap(),
+        ])
+        .env("CARGO_TARGET_DIR", target_dir)
+        .env("TYPE_BRIDGE_PHASE2_RUST_REPORT", report)
+        .env("TYPE_BRIDGE_PHASE2_REPOSITORY_ROOT", repository)
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn generated_rust_phase2_projection_parity_producer() {
+    let stage = Stage::new();
+    let generated = stage.path().join("generated");
+    let foreign = stage.path().join("foreign");
+    let producer = stage.path().join("producer");
+    let negative = stage.path().join("foreign-negative");
+    let repository = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .canonicalize()
+        .unwrap();
+    let schema = fs::read_to_string(
+        repository.join("tests/contracts/sdk_conformance/workforce-v3/schema-v3.yaml"),
+    )
+    .unwrap();
+    let foreign_schema = schema.replacen(
+        "member: { card: { min: 0, max: 2 }, doc: membership player }",
+        "member: { card: { min: 0, max: 3 }, doc: membership player }",
+        1,
+    );
+    assert_ne!(
+        schema, foreign_schema,
+        "foreign projection mutation is applied"
+    );
+    write_package(&emit_from_source(&schema), &generated);
+    write_package(&emit_from_source(&foreign_schema), &foreign);
+    rename_generated_package(&foreign, "type-bridge-generated-schema-foreign");
+    write_phase2_consumer(&producer, PHASE2_PARITY);
+    write_phase2_consumer(&negative, PHASE2_FOREIGN_NEGATIVE);
+
+    let negative_output = cargo(
+        &[
+            "check",
+            "--offline",
+            "--quiet",
+            "--manifest-path",
+            negative.join("Cargo.toml").to_str().unwrap(),
+        ],
+        &stage.path().join("foreign-negative-target"),
+    );
+    assert!(
+        !negative_output.status.success(),
+        "foreign package values unexpectedly crossed the local nominal fence"
+    );
+    let stderr = String::from_utf8_lossy(&negative_output.stderr);
+    assert!(
+        stderr.contains("mismatched types")
+            && stderr.contains("type_bridge_generated_schema_foreign")
+            && stderr.contains("type_bridge_generated_schema::PersonRef")
+            && stderr.contains("type_bridge_generated_schema::Person"),
+        "foreign nominal-fence diagnostics were incomplete:\n{stderr}"
+    );
+
+    let report = stage.path().join("rust-phase2-parity.json");
+    let _guard = CARGO_MUTEX.lock().unwrap();
+    let workspace_target = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("target/tmp_acceptance_target");
+    let target_dir = env::var_os("ACCEPTANCE_TARGET_DIR")
+        .unwrap_or_else(|| workspace_target.as_os_str().to_os_string());
+    let producer_manifest = producer.join("Cargo.toml");
+    let output = run_phase2_consumer(
+        &producer_manifest,
+        target_dir.as_os_str(),
+        &report,
+        &repository,
+    );
+    assert!(
+        output.status.success(),
+        "Rust Phase-2 parity producer failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let metadata = fs::symlink_metadata(&report).unwrap();
+    assert!(metadata.is_file() && !metadata.file_type().is_symlink());
+    assert!(metadata.len() <= 256 * 1024);
+    let payload = fs::read(&report).unwrap();
+    assert_eq!(payload.last(), Some(&b'\n'));
+    let duplicate = run_phase2_consumer(
+        &producer_manifest,
+        target_dir.as_os_str(),
+        &report,
+        &repository,
+    );
+    drop(_guard);
+    assert!(
+        !duplicate.status.success(),
+        "Rust Phase-2 publisher unexpectedly replaced an existing report"
+    );
+    assert_eq!(
+        fs::read(&report).unwrap(),
+        payload,
+        "failed create-new publication must preserve the existing report"
+    );
+
+    let comparator = repository.join("scripts/ci/compare_phase2_projection_parity.py");
+    let verify = Command::new("python3")
+        .arg("-c")
+        .arg(
+            "import importlib.util,pathlib,sys; p=pathlib.Path(sys.argv[1]); s=importlib.util.spec_from_file_location('phase2_compare',p); m=importlib.util.module_from_spec(s); sys.modules[s.name]=m; s.loader.exec_module(m); binding,_=m._load_report(pathlib.Path(sys.argv[2]),m.load_contract()); assert binding=='rust'",
+        )
+        .arg(comparator)
+        .arg(&report)
+        .output()
+        .unwrap();
+    assert!(
+        verify.status.success(),
+        "Rust Phase-2 report failed canonical comparator validation:\n{}\nreport:\n{}",
+        String::from_utf8_lossy(&verify.stderr),
+        String::from_utf8_lossy(&payload),
+    );
 }
