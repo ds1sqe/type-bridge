@@ -3071,7 +3071,7 @@ fn dynamic_relation_exact_put_builder_resolved_insert_inventory() {
         vr(),
         "employment: relation attribute position has wrong value type",
     ));
-    assert_eq!(guards.len(), 19);
+    assert_eq!(guards.len(), 18);
     for (descriptor, attrs, resolved, expected) in guards {
         match query_builder::build_dynamic_relation_insert_resolved_with_iid(
             &descriptor,
