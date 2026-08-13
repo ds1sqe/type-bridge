@@ -6,7 +6,7 @@ use type_bridge_contract::schema::OwnsFactId;
 use type_bridge_contract::value::CanonicalValue;
 use type_bridge_orm::{
     InstalledRuntimeProjection, ProjectedAttributeValue, ProjectedCreate, ProjectedReference,
-    ProjectedThing,
+    ProjectedRolePlayer, ProjectedThing,
 };
 
 use crate::__codegen::{
@@ -31,6 +31,27 @@ pub(crate) fn project_create<T: IntoEncodedCreate>(
     project_encoded_create(&encoded, expected_type, installed)
 }
 
+pub(crate) fn validate_encoded_create(
+    encoded: &EncodedCreate,
+    installed: &InstalledRuntimeProjection,
+) -> Result<()> {
+    let expected_type = decode_type_identity(
+        encoded.type_id_json(),
+        ModelValidationPhase::Input,
+        "invalid_model_identity",
+        vec!["type".into()],
+        "generated model identity is not canonical",
+    )?;
+    project_encoded_create(encoded, &expected_type, installed).map(|_| ())
+}
+
+pub(crate) fn validate_hydrated_row(
+    row: &HydratedRow,
+    installed: &InstalledRuntimeProjection,
+) -> Result<()> {
+    project_hydrated_row(row, installed).map(|_| ())
+}
+
 fn project_encoded_create(
     encoded: &EncodedCreate,
     expected_type: &TypeId,
@@ -38,6 +59,7 @@ fn project_encoded_create(
 ) -> Result<ProjectedCreate> {
     let encoded_type = decode_type_identity(
         encoded.type_id_json(),
+        ModelValidationPhase::Input,
         "invalid_model_identity",
         vec!["type".into()],
         "generated model identity is not canonical",
@@ -58,6 +80,7 @@ fn project_encoded_create(
             installed,
             expected_type,
             identity,
+            ModelValidationPhase::Input,
             "unexpected_field_evidence",
             field_path.clone(),
             "generated ownership identity is not one projected field of the selected model",
@@ -96,6 +119,7 @@ fn project_encoded_create(
     for (role_index, (identity, references)) in encoded.roles().iter().enumerate() {
         let role_id = decode_role_identity(
             identity,
+            ModelValidationPhase::Input,
             "invalid_role_identity",
             vec![format!("roles[{role_index}]")],
             "generated role identity is not canonical",
@@ -134,6 +158,7 @@ fn project_reference(
     let base = format!("{role_segment}[{reference_index}]");
     let type_id = decode_type_identity(
         reference.type_id_json(),
+        ModelValidationPhase::Input,
         "invalid_player_identity",
         vec![base.clone(), "type".into()],
         "generated role-player identity is not canonical",
@@ -145,6 +170,7 @@ fn project_reference(
             installed,
             &type_id,
             identity,
+            ModelValidationPhase::Input,
             "unexpected_reference_key",
             key_path.clone(),
             "generated reference-key identity is not one projected field of the selected model",
@@ -190,6 +216,147 @@ fn project_reference(
             Error::from_sdk_execution(error, ModelValidationPhase::Input)
         }
     })
+}
+
+fn project_hydrated_row(
+    row: &HydratedRow,
+    installed: &InstalledRuntimeProjection,
+) -> Result<ProjectedThing> {
+    let type_id = decode_type_identity(
+        row.type_id_json(),
+        ModelValidationPhase::Hydration,
+        "invalid_model_identity",
+        vec!["type".into()],
+        "hydrated model identity is not canonical",
+    )?;
+
+    let mut fields = Vec::with_capacity(row.fields().len());
+    for (field_index, (identity, values)) in row.fields().iter().enumerate() {
+        let field_path = vec![format!("fields[{field_index}]")];
+        let field_id = resolve_owns_identity(
+            installed,
+            &type_id,
+            identity,
+            ModelValidationPhase::Hydration,
+            "unexpected_field_evidence",
+            field_path.clone(),
+            "hydrated ownership identity is not one projected field of the selected model",
+        )?;
+        let attribute_type =
+            TypeId::new(TypeKind::Attribute, field_id.attribute().label().as_str()).map_err(
+                |source| {
+                    Error::model_validation(
+                        ModelValidationPhase::Hydration,
+                        "invalid_field_identity",
+                        field_path.clone(),
+                        "hydrated ownership identity has an invalid attribute type",
+                        Some(Box::new(source)),
+                    )
+                },
+            )?;
+        let mut projected_values = Vec::with_capacity(values.len());
+        for (value_index, value) in values.iter().enumerate() {
+            let path = ValidationPath::root()
+                .join(format!("fields[{field_index}]"))
+                .join_index(value_index);
+            let canonical = value
+                .to_canonical_value(&path)
+                .map_err(|error| map_validation_error(error, ModelValidationPhase::Hydration))?;
+            projected_values.push(
+                ProjectedAttributeValue::try_new(installed, attribute_type.clone(), canonical)
+                    .map_err(|error| {
+                        Error::from_sdk_execution(error, ModelValidationPhase::Hydration)
+                    })?,
+            );
+        }
+        fields.push((field_id, projected_values));
+    }
+
+    let mut roles = Vec::with_capacity(row.roles().len());
+    for (role_index, (identity, players)) in row.roles().iter().enumerate() {
+        let role_id = decode_role_identity(
+            identity,
+            ModelValidationPhase::Hydration,
+            "invalid_role_identity",
+            vec![format!("roles[{role_index}]")],
+            "hydrated role identity is not canonical",
+        )?;
+        let role_segment = installed
+            .projection()
+            .models()
+            .get(&type_id)
+            .and_then(|model| model.query_tokens().roles().get(&role_id))
+            .map_or_else(
+                || role_id.label().as_str().to_owned(),
+                |token| token.target_name().as_str().to_owned(),
+            );
+        let projected_players = players
+            .iter()
+            .enumerate()
+            .map(|(player_index, player)| {
+                project_hydrated_player(player, &role_segment, player_index, installed)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        roles.push((role_id, projected_players));
+    }
+
+    ProjectedThing::try_new(installed, type_id, row.iid().to_owned(), fields, roles)
+        .map_err(|error| Error::from_sdk_execution(error, ModelValidationPhase::Hydration))
+}
+
+fn project_hydrated_player(
+    player: &HydratedPlayer,
+    role_segment: &str,
+    player_index: usize,
+    installed: &InstalledRuntimeProjection,
+) -> Result<ProjectedRolePlayer> {
+    let base = format!("{role_segment}[{player_index}]");
+    let type_id = decode_type_identity(
+        player.type_id_json(),
+        ModelValidationPhase::Hydration,
+        "invalid_player_identity",
+        vec![base.clone(), "type".into()],
+        "hydrated role-player identity is not canonical",
+    )?;
+    let mut keys = Vec::with_capacity(player.keys().len());
+    for (key_index, (identity, scalar)) in player.keys().iter().enumerate() {
+        let key_path = vec![base.clone(), format!("keys[{key_index}]")];
+        let field_id = resolve_owns_identity(
+            installed,
+            &type_id,
+            identity,
+            ModelValidationPhase::Hydration,
+            "unexpected_reference_key",
+            key_path.clone(),
+            "hydrated reference-key identity is not one projected field of the selected model",
+        )?;
+        let attribute_type =
+            TypeId::new(TypeKind::Attribute, field_id.attribute().label().as_str()).map_err(
+                |source| {
+                    Error::model_validation(
+                        ModelValidationPhase::Hydration,
+                        "invalid_reference_key_identity",
+                        key_path.clone(),
+                        "hydrated reference key has an invalid attribute type",
+                        Some(Box::new(source)),
+                    )
+                },
+            )?;
+        let path = ValidationPath::root()
+            .join(base.clone())
+            .join(format!("keys[{key_index}]"));
+        let canonical = scalar
+            .to_canonical_value(&path)
+            .map_err(|error| map_validation_error(error, ModelValidationPhase::Hydration))?;
+        let value = ProjectedAttributeValue::try_new(installed, attribute_type, canonical)
+            .map_err(|error| Error::from_sdk_execution(error, ModelValidationPhase::Hydration))?;
+        keys.push((field_id, value));
+    }
+    let reference =
+        ProjectedReference::try_new(installed, type_id, player.iid().map(str::to_owned), keys)
+            .map_err(|error| Error::from_sdk_execution(error, ModelValidationPhase::Hydration))?;
+    ProjectedRolePlayer::try_new(installed, reference)
+        .map_err(|error| Error::from_sdk_execution(error, ModelValidationPhase::Hydration))
 }
 
 /// Convert one engine-validated projected thing into the closed generated
@@ -300,18 +467,13 @@ fn hydration_scalar_error(source: crate::__codegen::ValidationError) -> Error {
 
 fn decode_type_identity(
     identity: &str,
+    phase: ModelValidationPhase,
     code: &'static str,
     path: Vec<String>,
     message: &'static str,
 ) -> Result<TypeId> {
     from_canonical_json(identity.as_bytes()).map_err(|source| {
-        Error::model_validation(
-            ModelValidationPhase::Input,
-            code,
-            path,
-            message,
-            Some(Box::new(source)),
-        )
+        Error::model_validation(phase, code, path, message, Some(Box::new(source)))
     })
 }
 
@@ -319,13 +481,14 @@ fn resolve_owns_identity(
     installed: &InstalledRuntimeProjection,
     owner: &TypeId,
     identity: &str,
+    phase: ModelValidationPhase,
     code: &'static str,
     path: Vec<String>,
     message: &'static str,
 ) -> Result<OwnsFactId> {
     let Some(model) = installed.projection().models().get(owner) else {
         return Err(model_error(
-            ModelValidationPhase::Input,
+            phase,
             "model_not_projected",
             vec!["type".into()],
             "selected model is absent from the installed projection",
@@ -338,16 +501,11 @@ fn resolve_owns_identity(
         (canonical.as_slice() == identity.as_bytes()).then(|| token.id().clone())
     });
     let Some(field_id) = matches.next() else {
-        return Err(model_error(
-            ModelValidationPhase::Input,
-            code,
-            path,
-            message,
-        ));
+        return Err(model_error(phase, code, path, message));
     };
     if matches.next().is_some() {
         return Err(model_error(
-            ModelValidationPhase::Input,
+            phase,
             "ambiguous_field_identity",
             path,
             "generated ownership identity resolves to more than one projected field",
@@ -380,18 +538,13 @@ fn declaring_owns_identity<'a>(
 
 fn decode_role_identity(
     identity: &str,
+    phase: ModelValidationPhase,
     code: &'static str,
     path: Vec<String>,
     message: &'static str,
 ) -> Result<RoleId> {
     from_canonical_json(identity.as_bytes()).map_err(|source| {
-        Error::model_validation(
-            ModelValidationPhase::Input,
-            code,
-            path,
-            message,
-            Some(Box::new(source)),
-        )
+        Error::model_validation(phase, code, path, message, Some(Box::new(source)))
     })
 }
 
@@ -475,6 +628,7 @@ mod tests {
             &installed,
             &person,
             &identity,
+            ModelValidationPhase::Input,
             "unexpected_field_evidence",
             vec!["fields[0]".into()],
             "generated ownership identity must resolve",
@@ -509,6 +663,25 @@ mod tests {
         let expected = String::from_utf8(to_canonical_json(&declaring).unwrap()).unwrap();
 
         assert_eq!(row.fields()[0].0, expected);
+    }
+
+    #[test]
+    fn malformed_hydration_identity_retains_the_hydration_phase() {
+        let (installed, _, _, _) = inherited_field_fixture();
+        let row = HydratedRow::from_owned(
+            "not-canonical-json".into(),
+            "0x10".into(),
+            Vec::new(),
+            Vec::new(),
+        );
+
+        let error = validate_hydrated_row(&row, &installed).unwrap_err();
+
+        assert_eq!(
+            error.model_validation_phase(),
+            Some(ModelValidationPhase::Hydration)
+        );
+        assert_eq!(error.code(), Some("invalid_model_identity"));
     }
 
     fn inherited_field_fixture() -> (InstalledRuntimeProjection, OwnsFactId, OwnsFactId, TypeId) {

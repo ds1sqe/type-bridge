@@ -320,7 +320,10 @@ fn ordered_projection_selects_successor_evidence_and_descriptors_in_all_bindings
     assert!(rust_tokens.contains("\\\"kind\\\":\\\"distinct\\\""));
     assert!(rust_create.contains("Vec<Tag>"));
     assert!(rust_runtime.contains("Successor resource for ordered collection projections"));
-    assert!(rust_runtime.contains("const _: u16 = 2;"));
+    assert!(rust_runtime.contains("const _: u16 = 3;"));
+    assert!(rust_create.contains("__tb_validate_generated_create"));
+    let rust_read = std::str::from_utf8(rust_package.get("src/read.rs").unwrap()).unwrap();
+    assert!(rust_read.contains("__tb_validate_generated_hydration"));
 
     let c = CEmitter::new();
     let c_handlers = c.generator_handlers_for(&schema);
@@ -658,5 +661,300 @@ fn unordered_schema_aware_evidence_and_fixed_resources_remain_exactly_legacy() {
     assert_eq!(
         c_package.get("CMakeLists.txt").unwrap(),
         expected_cmake.as_bytes()
+    );
+}
+
+#[test]
+fn ordered_rust_construction_and_hydration_use_common_projected_validation() {
+    const SOURCE: &str = r#"format: typebridge.schema/v2
+attributes:
+  tag: { value: string }
+entities:
+  actor:
+    abstract: true
+    owns:
+      tag:
+        card: { min: 0, max: 4 }
+        ordered: true
+        distinct: true
+  person:
+    sub: actor
+relations:
+  membership-base:
+    abstract: true
+    relates:
+      participant:
+        card: { min: 0, max: 4 }
+        ordered: true
+        distinct: true
+  membership:
+    sub: membership-base
+plays:
+  person:
+    membership-base:
+      participant: { card: { min: 0, max: 4 } }
+"#;
+
+    let (schema, authority) = resolved(SOURCE);
+    let emitter = RustEmitter::new();
+    let runtime_projection = projection(
+        &schema,
+        BindingTarget::Rust,
+        &ProjectionConfig::rust(),
+        &emitter.generator_handlers_for(&schema),
+        &emitter.code_resources_for(&schema).unwrap(),
+    );
+    let package = emitter.emit(&runtime_projection, &authority).unwrap();
+    let stage = Stage::new();
+    let generated = stage.path().join("generated");
+    let consumer = stage.path().join("consumer");
+    write_package(&package, &generated);
+    fs::create_dir_all(consumer.join("src")).unwrap();
+
+    let rust_sdk = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("rust");
+    let rust_path = rust_sdk.to_string_lossy().replace('\\', "\\\\");
+    fs::write(
+        consumer.join("Cargo.toml"),
+        format!(
+            "[package]\nname=\"ordered-rust-validation\"\nversion=\"0.0.0\"\nedition=\"2024\"\npublish=false\n[dependencies]\ngenerated={{package=\"type-bridge-generated-schema\",path=\"../generated\",features=[\"test-harness\"]}}\ntype-bridge={{path=\"{rust_path}\",default-features=false,features=[\"test-harness\"]}}\n[patch.crates-io]\ntype-bridge={{path=\"{rust_path}\"}}\n[workspace]\n"
+        ),
+    )
+    .unwrap();
+    fs::write(
+        consumer.join("src/main.rs"),
+        r#"use generated::*;
+use type_bridge::__codegen::{
+    CanonicalDouble, HydratedPlayer, HydratedRow, IntoEncodedScalar,
+    materialize_model_for_test,
+};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let first = Tag::new("first")?;
+    let second = Tag::new("second")?;
+    let person = PersonCreate::new(vec![first.clone(), second.clone()])?;
+    assert_eq!(
+        person.tag().iter().map(|value| value.value().as_str()).collect::<Vec<_>>(),
+        ["first", "second"],
+    );
+
+    let error = PersonCreate::new(vec![first.clone(), first.clone()]).unwrap_err();
+    assert_eq!(error.code(), "ordered_distinct_duplicate");
+    assert_eq!(error.field(), "type.tag[1]");
+
+    let first_player = PersonRef::from_iid("0xa")?;
+    let second_player = PersonRef::from_iid("0xb")?;
+    let membership = MembershipCreate::new(vec![first_player.clone(), second_player])?;
+    assert_eq!(
+        membership
+            .participant()
+            .iter()
+            .map(|reference| reference.iid())
+            .collect::<Vec<_>>(),
+        [Some("0xa"), Some("0xb")],
+    );
+    let error =
+        MembershipCreate::new(vec![first_player.clone(), first_player]).unwrap_err();
+    assert_eq!(error.code(), "ordered_distinct_duplicate");
+    assert_eq!(error.field(), "type.participant[1].type");
+
+    let error = CanonicalDouble::try_new(f64::INFINITY).unwrap_err();
+    assert_eq!((error.code(), error.field()), ("noncanonical_double", ""));
+
+    let duplicate_field_row = HydratedRow::new(
+        Person::TYPE_ID_JSON,
+        "0x1".to_owned(),
+        vec![(
+            PersonType::tag.owns_id_json(),
+            vec![
+                first.value().into_encoded_scalar(),
+                first.value().into_encoded_scalar(),
+            ],
+        )],
+        vec![],
+    );
+    let error = materialize_model_for_test::<Person>(&duplicate_field_row).unwrap_err();
+    assert_eq!(error.code(), "ordered_distinct_duplicate");
+    assert_eq!(error.field(), "type.tag[1]");
+
+    let duplicate_shape_row = HydratedRow::new(
+        Person::TYPE_ID_JSON,
+        "0x1".to_owned(),
+        vec![
+            (PersonType::tag.owns_id_json(), vec![]),
+            (PersonType::tag.owns_id_json(), vec![]),
+        ],
+        vec![],
+    );
+    let error = materialize_model_for_test::<Person>(&duplicate_shape_row).unwrap_err();
+    assert_eq!(error.code(), "duplicate_scalar_evidence");
+    assert_eq!(error.field(), "");
+
+    let wrong_domain_row = HydratedRow::new(
+        Person::TYPE_ID_JSON,
+        "0x1".to_owned(),
+        vec![(PersonType::tag.owns_id_json(), vec![1_i64.into_encoded_scalar()])],
+        vec![],
+    );
+    let error = materialize_model_for_test::<Person>(&wrong_domain_row).unwrap_err();
+    assert_eq!(error.code(), "wrong_scalar_domain");
+    assert_eq!(error.field(), "tag[0]");
+
+    let hydrated_player = HydratedPlayer::new(
+        Person::TYPE_ID_JSON,
+        Some("0xa".to_owned()),
+        vec![],
+    );
+    let duplicate_role_row = HydratedRow::new(
+        Membership::TYPE_ID_JSON,
+        "0x2".to_owned(),
+        vec![],
+        vec![(
+            MembershipType::participant.role_id_json(),
+            vec![hydrated_player.clone(), hydrated_player],
+        )],
+    );
+    let error = materialize_model_for_test::<Membership>(&duplicate_role_row).unwrap_err();
+    assert_eq!(error.code(), "ordered_distinct_duplicate");
+    assert_eq!(error.field(), "type.participant[1].type");
+
+    let accepted_role_row = HydratedRow::new(
+        Membership::TYPE_ID_JSON,
+        "0x2".to_owned(),
+        vec![],
+        vec![(
+            MembershipType::participant.role_id_json(),
+            vec![
+                HydratedPlayer::new(Person::TYPE_ID_JSON, Some("0xa".to_owned()), vec![]),
+                HydratedPlayer::new(Person::TYPE_ID_JSON, Some("0xb".to_owned()), vec![]),
+            ],
+        )],
+    );
+    let accepted_membership: Membership = materialize_model_for_test(&accepted_role_row)?;
+    assert_eq!(
+        accepted_membership
+            .participant()
+            .iter()
+            .map(|player| match player {
+                MembershipParticipantPlayer::Person(reference) => reference.iid(),
+            })
+            .collect::<Vec<_>>(),
+        [Some("0xa"), Some("0xb")],
+    );
+
+    let accepted_row = HydratedRow::new(
+        Person::TYPE_ID_JSON,
+        "0x3".to_owned(),
+        vec![(
+            PersonType::tag.owns_id_json(),
+            vec![
+                first.value().into_encoded_scalar(),
+                second.value().into_encoded_scalar(),
+            ],
+        )],
+        vec![],
+    );
+    let accepted: Person = materialize_model_for_test(&accepted_row)?;
+    assert_eq!(accepted.iid(), "0x3");
+    assert_eq!(
+        accepted.tag().iter().map(|value| value.value().as_str()).collect::<Vec<_>>(),
+        ["first", "second"],
+    );
+
+    let noncanonical_iid_row = HydratedRow::new(
+        Person::TYPE_ID_JSON,
+        "person-3".to_owned(),
+        vec![(
+            PersonType::tag.owns_id_json(),
+            vec![first.value().into_encoded_scalar()],
+        )],
+        vec![],
+    );
+    let error = materialize_model_for_test::<Person>(&noncanonical_iid_row).unwrap_err();
+    assert_eq!(error.code(), "noncanonical_hydrated_iid");
+    assert_eq!(error.field(), "type.iid");
+    Ok(())
+}
+"#,
+    )
+    .unwrap();
+
+    checked_command(
+        Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()))
+            .arg("run")
+            .arg("--quiet")
+            .arg("--offline")
+            .arg("--manifest-path")
+            .arg(consumer.join("Cargo.toml"))
+            .env(
+                "CARGO_TARGET_DIR",
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .unwrap()
+                    .join("target/ordered-rust-phase2"),
+            ),
+        "ordered generated Rust common-validation consumer",
+    );
+
+    let foreign_generated = stage.path().join("foreign-generated");
+    write_package(&package, &foreign_generated);
+    let foreign_manifest = foreign_generated.join("Cargo.toml");
+    let foreign_manifest_source = fs::read_to_string(&foreign_manifest).unwrap();
+    fs::write(
+        &foreign_manifest,
+        foreign_manifest_source.replace(
+            "name = \"type-bridge-generated-schema\"",
+            "name = \"type-bridge-generated-schema-foreign\"",
+        ),
+    )
+    .unwrap();
+    let foreign_consumer = stage.path().join("foreign-consumer");
+    fs::create_dir_all(foreign_consumer.join("src")).unwrap();
+    fs::write(
+        foreign_consumer.join("Cargo.toml"),
+        format!(
+            "[package]\nname=\"ordered-rust-foreign-fence\"\nversion=\"0.0.0\"\nedition=\"2024\"\npublish=false\n[dependencies]\nschema_a={{package=\"type-bridge-generated-schema\",path=\"../generated\"}}\nschema_b={{package=\"type-bridge-generated-schema-foreign\",path=\"../foreign-generated\"}}\ntype-bridge={{path=\"{rust_path}\",default-features=false}}\n[patch.crates-io]\ntype-bridge={{path=\"{rust_path}\"}}\n[workspace]\n"
+        ),
+    )
+    .unwrap();
+    fs::write(
+        foreign_consumer.join("src/main.rs"),
+        r#"fn foreign_package_value(player: schema_b::PersonRef) {
+    let _ = schema_a::MembershipCreate::new(vec![player]);
+}
+
+fn main() {}
+"#,
+    )
+    .unwrap();
+    let output = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()))
+        .arg("check")
+        .arg("--quiet")
+        .arg("--offline")
+        .arg("--manifest-path")
+        .arg(foreign_consumer.join("Cargo.toml"))
+        .env(
+            "CARGO_TARGET_DIR",
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .unwrap()
+                .join("target/ordered-rust-phase2"),
+        )
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "foreign ordered package compiled");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("mismatched types")
+            && stderr.contains("actually distinct types")
+            && stderr.contains(
+                "`PersonRef` is defined in crate `type_bridge_generated_schema_foreign`"
+            )
+            && stderr.contains(
+                "`type_bridge_generated_schema::PersonRef` is defined in crate `type_bridge_generated_schema`"
+            ),
+        "foreign package rejection did not preserve nominal identities:\n{stderr}",
     );
 }

@@ -14,6 +14,7 @@ use type_bridge_contract::value::{Cardinality, ValueTypeTag};
 
 use crate::{
     EmbeddedAuthority, GeneratedPackage, documentation_annotation, invalid, model_documentation,
+    projection_uses_ordered_collections,
 };
 
 macro_rules! canonical_text {
@@ -146,6 +147,7 @@ pub(super) fn render(
     runtime: &[u8],
 ) -> Result<GeneratedPackage, Diagnostic> {
     validate_projection(projection)?;
+    let ordered = projection_uses_ordered_collections(projection);
     GeneratedPackage::try_new([
         ("Cargo.toml".to_owned(), cargo_toml.to_vec()),
         ("src/lib.rs".to_owned(), render_lib().into_bytes()),
@@ -156,11 +158,11 @@ pub(super) fn render(
         ),
         (
             "src/create.rs".to_owned(),
-            render_create(projection)?.into_bytes(),
+            render_create(projection, ordered)?.into_bytes(),
         ),
         (
             "src/read.rs".to_owned(),
-            render_read(projection)?.into_bytes(),
+            render_read(projection, ordered)?.into_bytes(),
         ),
         (
             "src/reference.rs".to_owned(),
@@ -406,7 +408,7 @@ fn render_declaration(projection: &RuntimeProjection) -> Result<String, Diagnost
     Ok(output)
 }
 
-fn render_create(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
+fn render_create(projection: &RuntimeProjection, ordered: bool) -> Result<String, Diagnostic> {
     let mut output = String::from(header());
     output.push_str("use crate::read::*;\nuse crate::reference::*;\nuse crate::runtime::*;\nuse crate::structs::*;\n\n");
     for id in projection.emission().model_shells() {
@@ -432,6 +434,7 @@ fn render_create(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
             "try_new",
             true,
             &validation_checks,
+            ordered,
         );
         let read_name = model.target_name().as_str();
 
@@ -574,7 +577,7 @@ fn decode_field_expr(
     }
 }
 
-fn render_read(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
+fn render_read(projection: &RuntimeProjection, ordered: bool) -> Result<String, Diagnostic> {
     let mut output = String::from(header());
     output.push_str("use crate::reference::*;\nuse crate::runtime::*;\nuse crate::structs::*;\nuse crate::tokens::*;\n\n");
     for id in projection.emission().model_shells() {
@@ -704,7 +707,7 @@ fn render_read(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
 
             let _ = writeln!(
                 output,
-                "impl MaterializeModel for {name} {{\n  fn materialize(__tb_row: &HydratedRow, __tb_cap: &HydrationCapability) -> Result<Self, ValidationError> {{\n    let __tb_path = ValidationPath::root();\n    __tb_row.validate_shape(Self::TYPE_ID_JSON, &[{exp_fields_str}], &[{exp_roles_str}], &__tb_path)?;\n    let __tb_iid = __tb_row.iid().to_owned();\n    if __tb_iid.trim().is_empty() {{\n      return Err(ValidationError::new(__tb_path.path(), \"empty_iid\"));\n    }}"
+                "impl MaterializeModel for {name} {{\n  fn materialize(__tb_row: &HydratedRow, __tb_cap: &HydrationCapability) -> Result<Self, ValidationError> {{\n    let __tb_path = ValidationPath::root();\n    __tb_row.validate_shape(Self::TYPE_ID_JSON, &[{exp_fields_str}], &[{exp_roles_str}], &__tb_path)?;\n    let __tb_iid = __tb_row.iid().to_owned();\n    if __tb_iid.trim().is_empty() {{\n      return Err(ValidationError::new(__tb_path.path(), \"empty_iid\"));\n    }}",
             );
             for member in &members {
                 if member.name == "iid" {
@@ -779,7 +782,11 @@ fn render_read(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
                     }
                 }
             }
-            output.push_str("    Ok(Self {\n      __tb_origin: __tb_row.origin().clone(),\n      iid: __tb_iid,\n");
+            output.push_str(if ordered {
+                "    let __tb_value = Self {\n      __tb_origin: __tb_row.origin().clone(),\n      iid: __tb_iid,\n"
+            } else {
+                "    Ok(Self {\n      __tb_origin: __tb_row.origin().clone(),\n      iid: __tb_iid,\n"
+            });
             for member in &members {
                 if member.name == "iid" {
                     continue;
@@ -802,7 +809,11 @@ fn render_read(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
                     }
                 }
             }
-            output.push_str("    })\n  }\n}\n\n");
+            output.push_str(if ordered {
+                "    };\n    __tb_validate_generated_hydration(__tb_row)?;\n    Ok(__tb_value)\n  }\n}\n\n"
+            } else {
+                "    })\n  }\n}\n\n"
+            });
 
             if let Some(reference_name) = model.reference_read().target_name() {
                 let ref_name = reference_name.as_str();
@@ -1840,6 +1851,7 @@ fn render_record(
     constructor: &str,
     fallible: bool,
     validation_checks: &str,
+    validate_projected_create: bool,
 ) {
     let _ = writeln!(
         output,
@@ -1867,7 +1879,11 @@ fn render_record(
             output.push_str("    if iid.trim().is_empty() { return Err(ValidationError::new(\"iid\", \"empty_iid\")); }\n");
         }
         output.push_str(validation_checks);
-        output.push_str("    Ok(Self {\n");
+        if validate_projected_create {
+            output.push_str("    let __tb_value = Self {\n");
+        } else {
+            output.push_str("    Ok(Self {\n");
+        }
     } else {
         output.push_str(") -> Self {\n    Self {\n");
     }
@@ -1875,7 +1891,11 @@ fn render_record(
         let _ = writeln!(output, "      {}: {},", member.name, member.initializer());
     }
     if fallible {
-        output.push_str("    })\n  }\n");
+        if validate_projected_create {
+            output.push_str("    };\n    __tb_validate_generated_create(&__tb_value.clone().into_encoded_create()?)?;\n    Ok(__tb_value)\n  }\n");
+        } else {
+            output.push_str("    })\n  }\n");
+        }
     } else {
         output.push_str("    }\n  }\n");
     }

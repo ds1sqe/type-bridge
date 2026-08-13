@@ -17,8 +17,34 @@ const RUNTIME_SOURCE: &[u8] = include_bytes!("runtime.rs");
 const CARGO_TOML_ID: &str = "typebridge.generator.rust.cargo-toml";
 const RUNTIME_SOURCE_ID: &str = "typebridge.generator.rust.runtime-source";
 
-const ORDERED_RUNTIME_SOURCE_SUFFIX: &[u8] =
-    b"\n// Successor resource for ordered collection projections.\nconst _: u16 = 2;\n";
+const ORDERED_RUNTIME_SOURCE_SUFFIX: &[u8] = br#"
+
+// Successor resource for ordered collection projections.
+const _: u16 = 3;
+
+fn __tb_projection_validator(
+) -> Result<&'static type_bridge::schema::GeneratedProjectionValidator, ValidationError> {
+    static VALIDATOR: std::sync::OnceLock<
+        Result<type_bridge::schema::GeneratedProjectionValidator, ValidationError>,
+    > = std::sync::OnceLock::new();
+    match VALIDATOR.get_or_init(|| crate::schema::SCHEMA.generated_projection_validator()) {
+        Ok(validator) => Ok(validator),
+        Err(error) => Err(error.clone()),
+    }
+}
+
+pub(crate) fn __tb_validate_generated_create(
+    encoded: &EncodedCreate,
+) -> Result<(), ValidationError> {
+    __tb_projection_validator()?.validate_create(encoded)
+}
+
+pub(crate) fn __tb_validate_generated_hydration(
+    row: &HydratedRow,
+) -> Result<(), ValidationError> {
+    __tb_projection_validator()?.validate_hydration(row)
+}
+"#;
 
 /// Rust schema-crate emitter with feature-selected legacy and ordered evidence ledgers.
 #[derive(Clone, Copy, Debug, Default)]
@@ -107,4 +133,24 @@ fn runtime_source(ordered: bool) -> Vec<u8> {
         bytes.extend_from_slice(suffix);
     }
     bytes
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_runtime_source_remains_byte_exact() {
+        assert_eq!(runtime_source(false), RUNTIME_SOURCE);
+    }
+
+    #[test]
+    fn ordered_runtime_source_installs_common_projection_validation() {
+        let source = String::from_utf8(runtime_source(true)).unwrap();
+
+        assert!(source.contains("const _: u16 = 3;"));
+        assert!(source.contains("SCHEMA.generated_projection_validator()"));
+        assert!(source.contains("validate_create(encoded)"));
+        assert!(source.contains("validate_hydration(row)"));
+    }
 }

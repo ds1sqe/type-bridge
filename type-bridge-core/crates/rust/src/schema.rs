@@ -11,6 +11,7 @@ use type_bridge_schema::{
 };
 use type_bridge_schema_codegen::RustEmitter;
 
+use crate::__codegen::{EncodedCreate, HydratedRow, ValidationError};
 use crate::error::{Error, Result};
 
 #[doc(hidden)]
@@ -27,6 +28,53 @@ pub struct Unbound;
 
 impl sealed::Sealed for Unbound {}
 impl Schema for Unbound {}
+
+/// Opaque installed projection used by generated successor runtimes.
+#[doc(hidden)]
+pub struct GeneratedProjectionValidator {
+    installed: Arc<type_bridge_orm::InstalledRuntimeProjection>,
+}
+
+impl GeneratedProjectionValidator {
+    /// Validate one generated create encoding through the common projected model authority.
+    pub fn validate_create(&self, encoded: &EncodedCreate) -> Result<(), ValidationError> {
+        crate::projected_codec::validate_encoded_create(encoded, &self.installed)
+            .map_err(generated_validation_error)
+    }
+
+    /// Validate one generated hydration row through the common projected model authority.
+    pub fn validate_hydration(&self, row: &HydratedRow) -> Result<(), ValidationError> {
+        crate::projected_codec::validate_hydrated_row(row, &self.installed)
+            .map_err(generated_validation_error)
+    }
+}
+
+fn generated_validation_error(error: Error) -> ValidationError {
+    let code = error
+        .code()
+        .expect("generated projected validation always returns a classified model error")
+        .to_owned();
+    let path = error
+        .path()
+        .map(generated_validation_path)
+        .unwrap_or_default();
+    ValidationError::new(path, code)
+}
+
+fn generated_validation_path(segments: &[String]) -> String {
+    let mut path = String::new();
+    for segment in segments {
+        if segment.starts_with('[') {
+            path.push_str(segment);
+        } else {
+            if !path.is_empty() {
+                path.push('.');
+            }
+            path.push_str(segment);
+        }
+    }
+    path
+}
 
 /// A generated schema package marker carrying fingerprint evidence branded by `S: Schema`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -114,6 +162,20 @@ impl<S: Schema> SchemaPackage<S> {
     pub fn verify(&self) -> Result<()> {
         let _ = self.verify_and_install_with_authority()?;
         Ok(())
+    }
+
+    /// Install the package's exact projection for generated successor-runtime validation.
+    /// Package verification remains projection-evidence admission; generated-token package
+    /// fencing is provided by the nominal generated Rust types.
+    #[doc(hidden)]
+    pub fn generated_projection_validator(
+        &self,
+    ) -> std::result::Result<GeneratedProjectionValidator, ValidationError> {
+        self.verify_and_install()
+            .map(|installed| GeneratedProjectionValidator { installed })
+            .map_err(|_| {
+                ValidationError::new("projection_evidence", "projection_evidence_mismatch")
+            })
     }
 
     /// Return the semantic schema fingerprint JSON string (generated-code SPI).
@@ -504,6 +566,13 @@ mod tests {
                 .to_string()
                 .contains("require compiled schema authority")
         );
+
+        let diagnostic = authorityless
+            .generated_projection_validator()
+            .err()
+            .expect("ordered successor validation must reject the detached package");
+        assert_eq!(diagnostic.code(), "projection_evidence_mismatch");
+        assert_eq!(diagnostic.field(), "projection_evidence");
     }
 
     #[test]
