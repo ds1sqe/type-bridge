@@ -11,9 +11,14 @@ use pythonize::pythonize;
 use type_bridge_contract::codec::to_canonical_json;
 use type_bridge_contract::id::{TypeId, TypeKind, is_canonical_thing_iid};
 use type_bridge_contract::projection::{
-    BindingTarget, ProjectedModelForm, ProjectionConfig, RuntimeProjection,
+    BindingTarget, ProjectedContainer, ProjectedModelForm, ProjectedModelUse,
+    ProjectedMultiplicity, ProjectionConfig, RuntimeProjection,
 };
 use type_bridge_contract::projection_wire::decode_runtime_projection_verified;
+use type_bridge_contract::sdk_diagnostic::{
+    SdkDiagnosticCode, SdkDiagnosticMessage, SdkDiagnosticPathSegment, SdkExecutionDiagnostic,
+};
+use type_bridge_contract::temporal::CanonicalDuration;
 use type_bridge_contract::value::ValueTypeTag;
 use type_bridge_core_lib::ast::{Clause, Constraint, Pattern, RolePlayer, Statement};
 use type_bridge_core_lib::compiler::QueryCompiler;
@@ -28,13 +33,16 @@ use type_bridge_orm::_dynamic::{
 use type_bridge_orm::_manager::{DynamicEntityManager, DynamicRelationManager};
 use type_bridge_orm::session::{Database, TransactionContext};
 use type_bridge_orm::value::AttributeValue;
-use type_bridge_orm::{HydratedAttribute, HydratedRolePlayer, HydratedThing, ThingKind};
+use type_bridge_orm::{
+    HydratedAttribute, HydratedRolePlayer, HydratedThing, ProjectedAttributeValue, ProjectedCreate,
+    ProjectedReference, ThingKind,
+};
 use type_bridge_orm::{InstalledRuntimeProjection, ProviderRuntimeOwner};
 use type_bridge_schema::{decode_schema_authority, schema_authority_capability_vocabulary};
 use type_bridge_schema_codegen::{PythonEmitter, verify_projection_evidence};
 
 use crate::match_runtime::{
-    PyMatchSessionHandle, PyQueryCancellation, PyQueryExecutionResourceLimits,
+    PyMatchSessionHandle, PyQueryCancellation, PyQueryExecutionResourceLimits, py_sdk_diagnostic,
 };
 use crate::orm_runtime::{PyRustDatabase, PyRustTransactionContext, provider_block_on};
 use crate::query_v2_runtime::schema_authority_diagnostic;
@@ -208,11 +216,11 @@ impl PyRuntimeProjection {
             .declaration()
             .value_type()
             .ok_or_else(|| py_runtime_error("projection attribute has no scalar domain"))?;
-        let value = attribute_value_from_py(py, &value, projected_value_type(value_type))?;
-        self.package
-            .projection
-            .validate_attribute_value(&id, &value)
-            .map_err(|error| py_value_error(error.to_string()))
+        let value =
+            canonical_attribute_value_from_py(py, &value, projected_value_type(value_type))?;
+        ProjectedAttributeValue::try_from_attribute_value(&self.package.projection, id, &value)
+            .map(|_| ())
+            .map_err(py_sdk_diagnostic)
     }
 
     /// Validate one exact generated owned-field value through the Rust projection contract.
@@ -242,7 +250,12 @@ impl PyRuntimeProjection {
         let attribute_id =
             TypeId::new(TypeKind::Attribute, field.id().attribute().label().as_str())
                 .map_err(py_diagnostic)?;
-        let (actual_id, form) = self.package.identify_value(py, &value)?;
+        let (actual_id, form) = self.package.identify_value(py, &value).map_err(|_| {
+            py_sdk_diagnostic(generated_token_package_mismatch_at([
+                SdkDiagnosticPathSegment::Type(id.clone()),
+                SdkDiagnosticPathSegment::Field(field.id().clone()),
+            ]))
+        })?;
         if actual_id != attribute_id || form != ProjectedModelForm::Complete {
             return Err(py_type_error(
                 "generated owned field requires its exact attribute wrapper",
@@ -260,11 +273,39 @@ impl PyRuntimeProjection {
             .value_type()
             .ok_or_else(|| py_runtime_error("projection field attribute has no scalar domain"))?;
         let scalar = value.call_method0("runtime_attribute_value")?;
-        let scalar = attribute_value_from_py(py, &scalar, projected_value_type(value_type))?;
+        let scalar =
+            canonical_attribute_value_from_py(py, &scalar, projected_value_type(value_type))?;
+        let projected = ProjectedAttributeValue::try_from_attribute_value(
+            &self.package.projection,
+            attribute_id,
+            &scalar,
+        )
+        .map_err(py_sdk_diagnostic)?;
         self.package
             .projection
-            .validate_field_value(&id, field_name, &scalar)
-            .map_err(|error| py_value_error(error.to_string()))
+            .validate_canonical_field_value(&id, field.id(), projected.value())
+            .map_err(py_sdk_diagnostic)
+    }
+
+    /// Validate one complete generated create payload through the common Rust contract.
+    fn validate_create(
+        &self,
+        py: Python<'_>,
+        model: Py<PyType>,
+        instance: Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        let id = self.package.model_id_for_class(py, &model)?;
+        let (instance_id, form) = self.package.identify_value(py, &instance).map_err(|_| {
+            py_sdk_diagnostic(generated_token_package_mismatch_at([
+                SdkDiagnosticPathSegment::Type(id.clone()),
+            ]))
+        })?;
+        if instance_id != id || form != ProjectedModelForm::Complete {
+            return Err(py_sdk_diagnostic(generated_token_package_mismatch_at([
+                SdkDiagnosticPathSegment::Type(id.clone()),
+            ])));
+        }
+        project_create(py, self.package.as_ref(), &id, &instance).map(|_| ())
     }
 
     /// Compile a retained raw-query entity match from one exact generated class.
@@ -1406,6 +1447,212 @@ fn lower_attributes(
     Ok(attributes)
 }
 
+fn project_create(
+    py: Python<'_>,
+    package: &InstalledPackage,
+    id: &TypeId,
+    instance: &Bound<'_, PyAny>,
+) -> PyResult<ProjectedCreate> {
+    let projection = package.projection.projection();
+    let model = projection
+        .models()
+        .get(id)
+        .ok_or_else(|| py_runtime_error("projection model is absent"))?;
+    let values = instance.call_method0("runtime_values")?;
+    let values = values.downcast::<PyDict>()?;
+
+    let mut fields = Vec::with_capacity(model.create().fields().len());
+    for field in model.create().fields() {
+        let token = model
+            .query_tokens()
+            .fields()
+            .get(field.token())
+            .ok_or_else(|| py_runtime_error("projected create field has no query token"))?;
+        let value = values.get_item(token.target_name().as_str())?;
+        let projected = projected_items(value.as_ref(), field.multiplicity())?
+            .into_iter()
+            .enumerate()
+            .map(|(index, value)| {
+                project_attribute_value(
+                    py,
+                    package,
+                    &value,
+                    &[
+                        SdkDiagnosticPathSegment::Type(id.clone()),
+                        SdkDiagnosticPathSegment::Field(field.token().clone()),
+                        SdkDiagnosticPathSegment::Index(projected_index(index)),
+                    ],
+                )
+            })
+            .collect::<PyResult<Vec<_>>>()?;
+        fields.push((field.token().clone(), projected));
+    }
+
+    let mut roles = Vec::with_capacity(model.create().roles().len());
+    for (role_id, role) in model.create().roles() {
+        let token = model
+            .query_tokens()
+            .roles()
+            .get(role_id)
+            .ok_or_else(|| py_runtime_error("projected create role has no query token"))?;
+        let value = values.get_item(token.target_name().as_str())?;
+        let projected = projected_items(value.as_ref(), role.multiplicity())?
+            .into_iter()
+            .enumerate()
+            .map(|(index, value)| {
+                project_reference(
+                    py,
+                    package,
+                    &value,
+                    role.players(),
+                    &[
+                        SdkDiagnosticPathSegment::Type(id.clone()),
+                        SdkDiagnosticPathSegment::Role(role_id.clone()),
+                        SdkDiagnosticPathSegment::Index(projected_index(index)),
+                    ],
+                )
+            })
+            .collect::<PyResult<Vec<_>>>()?;
+        roles.push((role_id.clone(), projected));
+    }
+
+    ProjectedCreate::try_new(&package.projection, id.clone(), fields, roles)
+        .map_err(py_sdk_diagnostic)
+}
+
+fn project_attribute_value(
+    py: Python<'_>,
+    package: &InstalledPackage,
+    value: &Bound<'_, PyAny>,
+    operation_path: &[SdkDiagnosticPathSegment],
+) -> PyResult<ProjectedAttributeValue> {
+    let (attribute_id, form) = package.identify_value(py, value).map_err(|_| {
+        py_sdk_diagnostic(generated_token_package_mismatch_at(
+            operation_path.iter().cloned(),
+        ))
+    })?;
+    if attribute_id.kind() != TypeKind::Attribute || form != ProjectedModelForm::Complete {
+        return Err(py_type_error(
+            "projected field value is not an exact complete attribute wrapper",
+        ));
+    }
+    let attribute = package
+        .projection
+        .projection()
+        .models()
+        .get(&attribute_id)
+        .ok_or_else(|| py_runtime_error("projection field attribute is absent"))?;
+    let value_type = attribute
+        .declaration()
+        .value_type()
+        .ok_or_else(|| py_runtime_error("projection field attribute has no scalar domain"))?;
+    let scalar = value.call_method0("runtime_attribute_value")?;
+    let scalar = canonical_attribute_value_from_py(py, &scalar, projected_value_type(value_type))?;
+    ProjectedAttributeValue::try_from_attribute_value(&package.projection, attribute_id, &scalar)
+        .map_err(py_sdk_diagnostic)
+}
+
+fn project_reference(
+    py: Python<'_>,
+    package: &InstalledPackage,
+    value: &Bound<'_, PyAny>,
+    allowed_players: &BTreeSet<ProjectedModelUse>,
+    operation_path: &[SdkDiagnosticPathSegment],
+) -> PyResult<ProjectedReference> {
+    let (id, form) = package.identify_value(py, value).map_err(|_| {
+        py_sdk_diagnostic(generated_token_package_mismatch_at(
+            operation_path.iter().cloned(),
+        ))
+    })?;
+    if !matches!(id.kind(), TypeKind::Entity | TypeKind::Relation) {
+        return Err(py_type_error(
+            "projected role player is not an exact entity or relation value",
+        ));
+    }
+    if !allowed_players
+        .iter()
+        .any(|player| player.id() == &id && player.form() == form)
+    {
+        return Err(py_type_error(
+            "projected role player has an incompatible generated model form",
+        ));
+    }
+    let model = package
+        .projection
+        .projection()
+        .models()
+        .get(&id)
+        .ok_or_else(|| py_runtime_error("projection role-player model is absent"))?;
+    let values = value.call_method0("runtime_values")?;
+    let values = values.downcast::<PyDict>()?;
+    let mut keys = Vec::new();
+    for key_id in model.reference_read().key_fields() {
+        let token = model
+            .query_tokens()
+            .fields()
+            .get(key_id)
+            .ok_or_else(|| py_runtime_error("projected reference key has no query token"))?;
+        let read = model
+            .complete_read()
+            .fields()
+            .iter()
+            .find(|field| field.token() == key_id)
+            .ok_or_else(|| py_runtime_error("projected reference key has no read field"))?;
+        let key = values.get_item(token.target_name().as_str())?;
+        for (index, item) in projected_items(key.as_ref(), read.multiplicity())?
+            .into_iter()
+            .enumerate()
+        {
+            let mut key_path = operation_path.to_vec();
+            key_path.extend([
+                SdkDiagnosticPathSegment::Type(id.clone()),
+                SdkDiagnosticPathSegment::Field(key_id.clone()),
+                SdkDiagnosticPathSegment::Index(projected_index(index)),
+            ]);
+            keys.push((
+                key_id.clone(),
+                project_attribute_value(py, package, &item, &key_path)?,
+            ));
+        }
+    }
+    ProjectedReference::try_new(&package.projection, id, projected_iid(value)?, keys)
+        .map_err(py_sdk_diagnostic)
+}
+
+fn projected_items<'py>(
+    value: Option<&Bound<'py, PyAny>>,
+    multiplicity: ProjectedMultiplicity,
+) -> PyResult<Vec<Bound<'py, PyAny>>> {
+    match value {
+        None => Ok(Vec::new()),
+        Some(value) if value.is_none() => Ok(Vec::new()),
+        Some(value) if multiplicity.container() == ProjectedContainer::Scalar => {
+            Ok(vec![value.clone()])
+        }
+        Some(value) => value
+            .downcast::<PyTuple>()
+            .map_err(|_| py_type_error("projected sequence input is not normalized as a tuple"))
+            .map(|values| values.iter().collect()),
+    }
+}
+
+fn generated_token_package_mismatch_at(
+    path: impl IntoIterator<Item = SdkDiagnosticPathSegment>,
+) -> SdkExecutionDiagnostic {
+    path.into_iter().fold(
+        SdkExecutionDiagnostic::generated_token_package_mismatch(),
+        |diagnostic, segment| {
+            diagnostic
+                .try_at(segment)
+                .expect("a generated create operation path fits the SDK diagnostic contract")
+        },
+    )
+}
+
+fn projected_index(index: usize) -> u64 {
+    u64::try_from(index).expect("a projected collection index fits the SDK diagnostic contract")
+}
+
 fn lower_filter_kwargs(
     py: Python<'_>,
     package: &InstalledPackage,
@@ -2203,6 +2450,29 @@ fn attribute_value_from_py(
     }
 }
 
+fn canonical_attribute_value_from_py(
+    py: Python<'_>,
+    value: &Bound<'_, PyAny>,
+    value_type: ValueType,
+) -> PyResult<AttributeValue> {
+    let value = match value_type {
+        ValueType::DateTime => exact_temporal_string(py, value, "datetime", false)
+            .map(|value| AttributeValue::DateTime(canonical_python_datetime(&value, false))),
+        ValueType::DateTimeTz => exact_temporal_string(py, value, "datetime", true)
+            .map(|value| AttributeValue::DateTimeTZ(canonical_python_datetime(&value, true))),
+        ValueType::Duration => canonical_duration_from_py(py, value).map(AttributeValue::Duration),
+        _ => attribute_value_from_py(py, value, value_type),
+    };
+    value.map_err(|_| {
+        py_sdk_diagnostic(SdkExecutionDiagnostic::invalid_input(
+            SdkDiagnosticCode::new("wrong_scalar_domain")
+                .expect("static projected-value code is canonical"),
+            SdkDiagnosticMessage::new("projected scalar has the wrong canonical domain")
+                .expect("static projected-value message is canonical"),
+        ))
+    })
+}
+
 fn exact_temporal_string(
     py: Python<'_>,
     value: &Bound<'_, PyAny>,
@@ -2228,6 +2498,36 @@ fn exact_temporal_string(
     value.call_method0("isoformat")?.extract()
 }
 
+fn canonical_python_datetime(value: &str, timezone_required: bool) -> String {
+    let Some(tail) = value.get(19..) else {
+        return value.to_owned();
+    };
+    let suffix_start = timezone_required
+        .then(|| {
+            tail.char_indices()
+                .find_map(|(index, character)| matches!(character, '+' | '-').then_some(19 + index))
+        })
+        .flatten()
+        .unwrap_or(value.len());
+    let (local, suffix) = value.split_at(suffix_start);
+    let local = local.rsplit_once('.').map_or_else(
+        || local.to_owned(),
+        |(whole, fraction)| {
+            let fraction = fraction.trim_end_matches('0');
+            if fraction.is_empty() {
+                whole.to_owned()
+            } else {
+                format!("{whole}.{fraction}")
+            }
+        },
+    );
+    if suffix == "+00:00" {
+        format!("{local}Z")
+    } else {
+        format!("{local}{suffix}")
+    }
+}
+
 fn exact_module_value_string(
     py: Python<'_>,
     value: &Bound<'_, PyAny>,
@@ -2244,6 +2544,35 @@ fn exact_module_value_string(
 }
 
 fn duration_from_py(py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<String> {
+    let (days, seconds, micros) = duration_components_from_py(py, value)?;
+    let hours = seconds / 3600;
+    let minutes = seconds % 3600 / 60;
+    let seconds = seconds % 60;
+    let fraction = if micros == 0 {
+        String::new()
+    } else {
+        format!(".{micros:06}").trim_end_matches('0').to_owned()
+    };
+    Ok(format!("P{days}DT{hours}H{minutes}M{seconds}{fraction}S"))
+}
+
+fn canonical_duration_from_py(py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<String> {
+    let (days, seconds, micros) = duration_components_from_py(py, value)?;
+    CanonicalDuration::new(
+        false,
+        0,
+        u64::try_from(days).expect("a nonnegative Python timedelta day count fits u64"),
+        u64::try_from(seconds).expect("a nonnegative Python timedelta second count fits u64"),
+        u32::try_from(micros).expect("Python timedelta microseconds fit u32") * 1_000,
+    )
+    .map(|duration| duration.to_string())
+    .map_err(py_diagnostic)
+}
+
+fn duration_components_from_py(
+    py: Python<'_>,
+    value: &Bound<'_, PyAny>,
+) -> PyResult<(i64, i64, i64)> {
     let class = py.import("datetime")?.getattr("timedelta")?;
     if value.get_type().as_ptr() != class.as_ptr() {
         return Err(py_type_error("attribute value requires an exact timedelta"));
@@ -2256,15 +2585,7 @@ fn duration_from_py(py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<String
             "negative projected durations are not representable losslessly",
         ));
     }
-    let hours = seconds / 3600;
-    let minutes = seconds % 3600 / 60;
-    let seconds = seconds % 60;
-    let fraction = if micros == 0 {
-        String::new()
-    } else {
-        format!(".{micros:06}").trim_end_matches('0').to_owned()
-    };
-    Ok(format!("P{days}DT{hours}H{minutes}M{seconds}{fraction}S"))
+    Ok((days, seconds, micros))
 }
 
 fn ensure_attribute_type(value: &AttributeValue, expected: ValueType) -> PyResult<()> {
@@ -2584,6 +2905,22 @@ entities:
         });
     }
 
+    #[test]
+    fn python_datetime_isoformats_normalize_without_changing_nonzero_offsets() {
+        assert_eq!(
+            canonical_python_datetime("2026-07-29T01:02:03.120000", false),
+            "2026-07-29T01:02:03.12"
+        );
+        assert_eq!(
+            canonical_python_datetime("2026-07-29T01:02:03.120000+00:00", true),
+            "2026-07-29T01:02:03.12Z"
+        );
+        assert_eq!(
+            canonical_python_datetime("2026-07-29T01:02:03.120000+05:30", true),
+            "2026-07-29T01:02:03.12+05:30"
+        );
+    }
+
     fn classes(
         py: Python<'_>,
         projection: &RuntimeProjection,
@@ -2777,6 +3114,69 @@ class Reference:
                 error
                     .to_string()
                     .contains("runtime projection does not target Python")
+            );
+        });
+    }
+
+    #[test]
+    fn whole_create_rejects_a_shape_compatible_foreign_fieldless_instance() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            let (projection, local_package) = install(py);
+            let projection_json =
+                String::from_utf8(to_canonical_json(&projection).unwrap()).unwrap();
+            let semantic =
+                String::from_utf8(to_canonical_json(projection.semantic_fingerprint()).unwrap())
+                    .unwrap();
+            let fingerprint =
+                String::from_utf8(to_canonical_json(projection.projection_fingerprint()).unwrap())
+                    .unwrap();
+            let foreign_package = install_projection(
+                py,
+                &projection_json,
+                &semantic,
+                &fingerprint,
+                classes(py, &projection),
+                None,
+            )
+            .unwrap();
+            let event_id = local_package
+                .type_by_label("event", TypeKind::Relation)
+                .unwrap()
+                .clone();
+            let local_class = local_package
+                .class(&event_id, ProjectedModelForm::Complete)
+                .unwrap()
+                .clone_ref(py);
+            let local_instance = local_class.bind(py).call0().unwrap();
+            let runtime = PyRuntimeProjection {
+                package: local_package,
+            };
+            runtime
+                .validate_create(py, local_class.clone_ref(py), local_instance)
+                .unwrap();
+
+            let foreign_instance = foreign_package
+                .class(&event_id, ProjectedModelForm::Complete)
+                .unwrap()
+                .bind(py)
+                .call0()
+                .unwrap();
+            let error = runtime
+                .validate_create(py, local_class, foreign_instance)
+                .unwrap_err();
+            let value = error.value(py);
+            assert_eq!(
+                value
+                    .getattr("sdk_category")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "integrity"
+            );
+            assert_eq!(
+                value.getattr("code").unwrap().extract::<String>().unwrap(),
+                "generated_token_package_mismatch"
             );
         });
     }

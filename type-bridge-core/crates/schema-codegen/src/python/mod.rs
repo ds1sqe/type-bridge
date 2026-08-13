@@ -60,6 +60,28 @@ def _install_runtime_projection_with_authority(
 
 
 globals()["install_runtime_projection"] = _install_runtime_projection_with_authority
+
+
+class _CreateValidator(Protocol):
+    def validate_create(
+        self,
+        model: type[ModelBase],
+        instance: ModelBase,
+    ) -> None: ...
+
+
+def _initialize_model_with_validation(
+    instance: ModelBase,
+    values: Mapping[str, object],
+) -> None:
+    instance.initialize_runtime_values({})
+    for name, value in values.items():
+        setattr(instance, name, value)
+    projection = cast(_CreateValidator, type(instance).__runtime_projection__)
+    projection.validate_create(type(instance), instance)
+
+
+globals()["initialize_model"] = _initialize_model_with_validation
 "#;
 
 /// Python package emitter with feature-selected legacy and ordered evidence ledgers.
@@ -166,4 +188,24 @@ fn resource_with_suffix(resource: &[u8], suffix: Option<&[u8]>) -> Vec<u8> {
         bytes.extend_from_slice(suffix);
     }
     bytes
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_runtime_source_remains_byte_exact() {
+        assert_eq!(ordered_runtime_source(false), RUNTIME_SOURCE);
+    }
+
+    #[test]
+    fn ordered_runtime_source_installs_create_validation_override() {
+        let source = String::from_utf8(ordered_runtime_source(true)).unwrap();
+
+        assert!(source.contains("projection.validate_create(type(instance), instance)"));
+        assert!(
+            source.contains("globals()[\"initialize_model\"] = _initialize_model_with_validation")
+        );
+    }
 }

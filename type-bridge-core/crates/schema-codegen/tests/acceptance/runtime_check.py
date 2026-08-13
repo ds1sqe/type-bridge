@@ -4,11 +4,15 @@ import json
 import os
 import struct
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
 import generated_v2._query as generated_query_module
+import generated_variant as variant
+from generated_ordered import Membership as OrderedMembership
+from generated_ordered import Person as OrderedPerson
+from generated_ordered import Tag as OrderedTag
 from generated_v2 import (
     PLAYING_FACTS,
     PROJECTION_FINGERPRINT_JSON,
@@ -108,8 +112,10 @@ for invalid_owner_value in (
 ):
     try:
         invalid_owner_value()
-    except ValueError as error:
-        assert "range_violation" in str(error)
+    except MatchRequestError as error:
+        assert error.category == "invalid_input"
+        assert error.sdk_category == "invalid_input"
+        assert error.code == "range_constraint_violation"
     else:
         raise AssertionError("generated ownership range was not enforced")
 
@@ -119,8 +125,9 @@ assert (
 )
 try:
     person.val_constrained = ValConstrained(81)
-except ValueError as error:
-    assert "range_violation" in str(error)
+except MatchRequestError as error:
+    assert error.category == "invalid_input"
+    assert error.code == "range_constraint_violation"
 else:
     raise AssertionError("generated assignment bypassed its ownership range")
 assert person.val_constrained.value == 20
@@ -128,6 +135,52 @@ event = Event(subject=person)
 assert event.subject is person
 employment = Employment(employee=person)
 assert employment.employee is person
+interaction = Interaction(
+    identifier=Identifier("interaction-1"),
+    actor=person,
+    target=person,
+)
+assert interaction.actor is person
+assert interaction.target is person
+
+fractional_datetime = datetime(2026, 7, 29, 1, 2, 3, 120000)
+fractional_utc = datetime(2026, 7, 29, 1, 2, 3, 120000, tzinfo=UTC)
+fractional_fixed = datetime(
+    2026,
+    7,
+    29,
+    1,
+    2,
+    3,
+    120000,
+    tzinfo=timezone(timedelta(hours=5, minutes=30)),
+)
+utc_person = make_person(
+    "person-temporal-utc",
+    val_datetime=ValDatetime(fractional_datetime),
+    val_datetime_tz=ValDatetimeTz(fractional_utc),
+)
+fixed_person = make_person(
+    "person-temporal-fixed",
+    val_datetime_tz=ValDatetimeTz(fractional_fixed),
+)
+assert utc_person.val_datetime.value == fractional_datetime
+assert utc_person.val_datetime_tz.value == fractional_utc
+assert fixed_person.val_datetime_tz.value == fractional_fixed
+
+for invalid_scalar_value in (
+    lambda: Score(2**63),
+    lambda: ValDouble(float("inf")),
+    lambda: ValDouble(float("nan")),
+):
+    try:
+        invalid_scalar_value()
+    except MatchRequestError as error:
+        assert error.category == "invalid_input"
+        assert error.sdk_category == "invalid_input"
+        assert error.code == "wrong_scalar_domain"
+    else:
+        raise AssertionError("unconstrained scalar bypassed canonical conversion")
 
 container = Container(item=[EventRef("event-iid")])
 assert len(container.item) == 1
@@ -167,6 +220,54 @@ assert reference.iid == "person-iid"
 assert reference.__model_form__ == "reference"
 assert person.iid is None
 assert person.identifier.value == "person-1"
+
+ordered_person = OrderedPerson(tag=[OrderedTag("first"), OrderedTag("second")])
+assert [tag.value for tag in ordered_person.tag] == ["first", "second"]
+try:
+    OrderedPerson(tag=[OrderedTag("duplicate"), OrderedTag("duplicate")])
+except MatchRequestError as error:
+    assert error.category == "invalid_input"
+    assert error.sdk_category == "invalid_input"
+    assert error.code == "ordered_distinct_duplicate"
+    assert error.details == {
+        "duplicate_index": {"kind": "count", "value": 1},
+        "first_index": {"kind": "count", "value": 0},
+    }
+else:
+    raise AssertionError("ordered create ownership accepted a duplicate scalar")
+
+ordered_person.attach_runtime_iid("0xa")
+try:
+    OrderedMembership(member=[ordered_person, ordered_person])
+except MatchRequestError as error:
+    assert error.category == "invalid_input"
+    assert error.code == "ordered_distinct_duplicate"
+else:
+    raise AssertionError("ordered create role accepted a duplicate identity")
+
+foreign_person = variant.Person(
+    identifier=variant.Identifier("foreign-person"),
+    score=variant.Score(3),
+    foo__bar=variant.FooBar(7),
+    val_bool=variant.ValBool(True),
+    val_constrained=variant.ValConstrained(20),
+    val_date=variant.ValDate(date(2026, 7, 29)),
+    val_datetime=variant.ValDatetime(datetime(2026, 7, 29)),
+    val_datetime_tz=variant.ValDatetimeTz(datetime(2026, 7, 29, tzinfo=UTC)),
+    val_decimal=variant.ValDecimal(Decimal("3.5")),
+    val_double=variant.ValDouble(3.5),
+    val_duration=variant.ValDuration(timedelta(seconds=3)),
+)
+foreign_person.attach_runtime_iid("0xb")
+try:
+    OrderedMembership(member=[foreign_person])
+except MatchRequestError as error:
+    assert error.category == "integrity"
+    assert error.sdk_category == "integrity"
+    assert error.code == "generated_token_package_mismatch"
+    assert [segment["kind"] for segment in error.path] == ["type", "role", "index"]
+else:
+    raise AssertionError("ordered create accepted a foreign-package role player")
 
 entity_match = QueryBuilder.match_entity(
     Person,
