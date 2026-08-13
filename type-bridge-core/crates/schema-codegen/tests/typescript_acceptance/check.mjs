@@ -10,16 +10,19 @@ const STAGE = resolve(CORE, "target/schema-codegen-typescript-acceptance");
 const GENERATED = resolve(STAGE, "generated_v2");
 const ORDERED = resolve(STAGE, "generated_ordered");
 const FOREIGN = resolve(STAGE, "generated_foreign");
+const PHASE2 = resolve(STAGE, "generated_phase2");
+const PHASE2_FOREIGN = resolve(STAGE, "generated_phase2_foreign");
 const NODE_PACKAGE = resolve(CORE, "crates/node");
 const DOCUMENTED_EXAMPLES = resolve(
   ROOT,
   "tests/contracts/typed_query/typescript/documented_examples.ts",
 );
 
-function command(program, args, cwd = ROOT) {
+function command(program, args, cwd = ROOT, environment = process.env) {
   const completed = spawnSync(program, args, {
     cwd,
     encoding: "utf8",
+    env: environment,
     stdio: "pipe",
   });
   if (completed.status !== 0) {
@@ -29,7 +32,12 @@ function command(program, args, cwd = ROOT) {
   }
 }
 
-for (const fixture of ["positive.ts", "negative.ts", "runtime_check.mjs"]) {
+for (const fixture of [
+  "positive.ts",
+  "negative.ts",
+  "runtime_check.mjs",
+  "phase2_parity_check.mjs",
+]) {
   const source = readFileSync(resolve(HERE, fixture), "utf8");
   for (const forbidden of ["as unknown as", "@ts-ignore"]) {
     if (source.includes(forbidden)) {
@@ -112,17 +120,62 @@ command("cargo", [
   foreignSchema,
   FOREIGN,
 ]);
+const phase2Schema = resolve(
+  ROOT,
+  "tests/contracts/sdk_conformance/workforce-v3/schema-v3.yaml",
+);
+command("cargo", [
+  "run",
+  "--quiet",
+  "--manifest-path",
+  resolve(CORE, "Cargo.toml"),
+  "--package",
+  "type-bridge-schema-codegen",
+  "--example",
+  "emit_typescript_acceptance",
+  "--",
+  phase2Schema,
+  PHASE2,
+]);
+const phase2Source = readFileSync(phase2Schema, "utf8");
+const phase2ForeignSource = phase2Source.replace(
+  "member: { card: { min: 0, max: 2 }, doc: membership player }",
+  "member: { card: { min: 0, max: 3 }, doc: membership player }",
+);
+if (phase2ForeignSource === phase2Source) {
+  throw new Error(
+    "Phase-2 foreign package variant did not modify one playing fact",
+  );
+}
+const phase2ForeignSchema = resolve(STAGE, "phase2-foreign-schema.yaml");
+writeFileSync(phase2ForeignSchema, phase2ForeignSource);
+command("cargo", [
+  "run",
+  "--quiet",
+  "--manifest-path",
+  resolve(CORE, "Cargo.toml"),
+  "--package",
+  "type-bridge-schema-codegen",
+  "--example",
+  "emit_typescript_acceptance",
+  "--",
+  phase2ForeignSchema,
+  PHASE2_FOREIGN,
+]);
 mkdirSync(resolve(STAGE, "node_modules/@type-bridge"), { recursive: true });
 symlinkSync(NODE_PACKAGE, resolve(STAGE, "node_modules/@type-bridge/node"), "dir");
 command("tsc", ["--project", resolve(GENERATED, "tsconfig.json")]);
 command("tsc", ["--project", resolve(ORDERED, "tsconfig.json")]);
 command("tsc", ["--project", resolve(FOREIGN, "tsconfig.json")]);
+command("tsc", ["--project", resolve(PHASE2, "tsconfig.json")]);
+command("tsc", ["--project", resolve(PHASE2_FOREIGN, "tsconfig.json")]);
 
 for (const fixture of [
   "positive.ts",
   "negative.ts",
   "runtime_check.mjs",
   "authority_rejection_check.mjs",
+  "phase2_parity_check.mjs",
 ]) {
   copyFileSync(resolve(HERE, fixture), resolve(STAGE, fixture));
 }
@@ -155,4 +208,31 @@ writeFileSync(
 command("tsc", ["--project", resolve(STAGE, "tsconfig.json")]);
 command("node", [resolve(STAGE, "authority_rejection_check.mjs")]);
 command("node", [resolve(STAGE, "runtime_check.mjs")]);
+const phase2Report = resolve(STAGE, "phase2-node-report.json");
+command(
+  "node",
+  [resolve(STAGE, "phase2_parity_check.mjs")],
+  ROOT,
+  {
+    ...process.env,
+    TYPE_BRIDGE_PHASE2_PARITY_REPORT: phase2Report,
+    TYPE_BRIDGE_PHASE2_REPOSITORY_ROOT: ROOT,
+  },
+);
+command("uv", [
+  "run",
+  "python",
+  "-c",
+  [
+    "import importlib.util, pathlib, sys",
+    "path = pathlib.Path(sys.argv[1])",
+    "spec = importlib.util.spec_from_file_location('phase2_comparator', path)",
+    "module = importlib.util.module_from_spec(spec)",
+    "sys.modules[spec.name] = module",
+    "spec.loader.exec_module(module)",
+    "module._load_report(pathlib.Path(sys.argv[2]), module.load_contract())",
+  ].join("; "),
+  resolve(ROOT, "scripts/ci/compare_phase2_projection_parity.py"),
+  phase2Report,
+]);
 console.log("schema-codegen TypeScript acceptance passed");
