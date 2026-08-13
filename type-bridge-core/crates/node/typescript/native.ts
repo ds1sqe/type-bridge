@@ -454,8 +454,10 @@ interface NativeRuntimeProjectionHandle {
   ): NativeMatchSessionHandle;
   matchModelType(typeKey: string): string;
   validateAttributeValueJson(typeKey: string, valueJson: string): void;
+  validateHydratedAttributeValueJson(typeKey: string, valueJson: string): void;
   validateFieldValueJson(typeKey: string, fieldName: string, valueJson: string): void;
   validateCreateJson(typeKey: string, valueJson: string): void;
+  validateThingJson(typeKey: string, valueJson: string): void;
   rejectGeneratedTokenPackageMismatch(pathJson: string): void;
   revalidateMatchDiagnostic(diagnostic: string): string;
   materializeMatchThingJson(thing: NativeValidatedThingHandle): string;

@@ -285,7 +285,9 @@ fn ordered_projection_selects_successor_evidence_and_descriptors_in_all_bindings
     assert!(typescript_models.contains("\"kind\":\"distinct\""));
     assert!(typescript_models.contains("readonly (Tag)[]"));
     assert!(typescript_runtime.contains("readonly collection_mode?: \"ordered_list\""));
-    assert!(typescript_runtime.contains("TYPE_BRIDGE_ORDERED_COLLECTION_RESOURCE_VERSION = 2"));
+    assert!(typescript_runtime.contains("TYPE_BRIDGE_ORDERED_COLLECTION_RESOURCE_VERSION = 3"));
+    assert!(typescript_runtime.contains("descriptors[HYDRATE_COMPLETE_BRAND]"));
+    assert!(typescript_runtime.contains("requireProjection().validateThingJson("));
     assert!(
         std::str::from_utf8(typescript_package.get("src/index.ts").unwrap())
             .unwrap()
@@ -661,6 +663,205 @@ fn unordered_schema_aware_evidence_and_fixed_resources_remain_exactly_legacy() {
     assert_eq!(
         c_package.get("CMakeLists.txt").unwrap(),
         expected_cmake.as_bytes()
+    );
+}
+
+#[test]
+#[ignore = "requires a built Node native addon and the TypeScript toolchain"]
+fn ordered_typescript_hydration_uses_common_projected_validation() {
+    const SOURCE: &str = r#"format: typebridge.schema/v2
+attributes:
+  tag:
+    value:
+      type: string
+      regex: "^[a-z]+$"
+entities:
+  actor:
+    abstract: true
+    owns:
+      tag:
+        card: { min: 0, max: 4 }
+        ordered: true
+        distinct: true
+  person:
+    sub: actor
+  group:
+    sub: actor
+relations:
+  membership-base:
+    abstract: true
+    relates:
+      participant:
+        card: { min: 0, max: 4 }
+        ordered: true
+        distinct: true
+  membership:
+    sub: membership-base
+  activity-link:
+    relates:
+      subject:
+        card: { min: 0, max: 4 }
+        ordered: true
+        distinct: true
+plays:
+  person:
+    membership-base:
+      participant: { card: { min: 0, max: 4 } }
+  group:
+    membership-base:
+      participant: { card: { min: 0, max: 4 } }
+  membership:
+    activity-link:
+      subject: { card: { min: 0, max: 4 } }
+"#;
+
+    let (schema, authority) = resolved(SOURCE);
+    let emitter = TypeScriptEmitter::new();
+    let runtime_projection = projection(
+        &schema,
+        BindingTarget::TypeScript,
+        &ProjectionConfig::typescript(),
+        &emitter.generator_handlers_for(&schema),
+        &emitter.code_resources_for(&schema).unwrap(),
+    );
+    let package = emitter.emit(&runtime_projection, &authority).unwrap();
+    let stage = Stage::new();
+    let generated = stage.path().join("generated");
+    let foreign = stage.path().join("foreign");
+    write_package(&package, &generated);
+    write_package(&package, &foreign);
+
+    let node_package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("node");
+    let installed_node = stage
+        .path()
+        .join("node_modules")
+        .join("@type-bridge")
+        .join("node");
+    fs::create_dir_all(&installed_node).unwrap();
+    fs::copy(
+        node_package.join("package.json"),
+        installed_node.join("package.json"),
+    )
+    .unwrap();
+    copy_tree(&node_package.join("dist"), &installed_node.join("dist"));
+    let native_addons = fs::read_dir(&node_package)
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .path()
+                .extension()
+                .is_some_and(|extension| extension == "node")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        native_addons.len(),
+        1,
+        "ordered Node hydration acceptance requires one built native addon"
+    );
+    fs::copy(
+        native_addons[0].path(),
+        installed_node.join(native_addons[0].file_name()),
+    )
+    .unwrap();
+
+    for root in [&generated, &foreign] {
+        checked_command(
+            Command::new(node_package.join("node_modules/.bin/tsc"))
+                .arg("--project")
+                .arg(root.join("tsconfig.json")),
+            "ordered generated TypeScript hydration package compile",
+        );
+    }
+
+    fs::write(
+        stage.path().join("hydrate.mjs"),
+        r#"import assert from "node:assert/strict";
+import * as Local from "./generated/dist/index.js";
+import * as Foreign from "./foreign/dist/index.js";
+
+const diagnostic = (error) => {
+  assert.ok(error instanceof Error);
+  return JSON.parse(error.message);
+};
+const rejects = (operation, code, memberKind) => {
+  assert.throws(operation, (error) => {
+    const value = diagnostic(error);
+    assert.equal(value.sdkCategory, "integrity");
+    assert.equal(value.code, code);
+    assert.equal(value.path[0].kind, "type");
+    if (memberKind !== undefined) assert.equal(value.path[1].kind, memberKind);
+    return true;
+  });
+};
+const hydrate = (token, iid, input) => {
+  const symbol = Object.getOwnPropertySymbols(token).find(
+    (candidate) => candidate.description === "typebridge.hydrate-complete",
+  );
+  assert.notEqual(symbol, undefined);
+  const materialize = token[symbol];
+  assert.equal(typeof materialize, "function");
+  return materialize(iid, input);
+};
+
+const first = Local.Tag.create("first");
+const second = Local.Tag.create("second");
+rejects(
+  () => hydrate(Local.Tag, null, "INVALID"),
+  "regex_constraint_violation",
+);
+const person = hydrate(Local.Person, "0xa1", { tag: [first, second] });
+assert.deepEqual(person.tag.map((value) => value.value), ["first", "second"]);
+rejects(
+  () => hydrate(Local.Person, "0xa2", { tag: [first, first] }),
+  "ordered_distinct_duplicate",
+  "field",
+);
+
+const group = hydrate(Local.Group, "0xa3", { tag: [Local.Tag.create("group")] });
+const membership = hydrate(Local.Membership, "0xb1", { participant: [person, group] });
+assert.deepEqual(membership.participant.map((value) => value.iid), ["0xa1", "0xa3"]);
+assert.equal(group.iid, "0xa3");
+rejects(
+  () => hydrate(Local.Membership, "0xb2", { participant: [person, person] }),
+  "ordered_distinct_duplicate",
+  "role",
+);
+rejects(
+  () => hydrate(Local.Person, "person-a5", { tag: [] }),
+  "noncanonical_hydrated_iid",
+  "argument",
+);
+
+const link = hydrate(Local.ActivityLink, "0xc1", {
+  subject: [Local.Membership.reference("0xb1", {})],
+});
+assert.equal(link.subject[0].iid, "0xb1");
+rejects(
+  () => hydrate(Local.ActivityLink, "0xc2", {
+    subject: [Local.Membership.reference("membership-bad", {})],
+  }),
+  "noncanonical_iid",
+  "role",
+);
+
+const foreignPerson = hydrate(Foreign.Person, "0xf1", {
+  tag: [Foreign.Tag.create("foreign")],
+});
+rejects(
+  () => hydrate(Local.Membership, "0xf2", { participant: [foreignPerson] }),
+  "generated_token_package_mismatch",
+  "role",
+);
+"#,
+    )
+    .unwrap();
+    checked_command(
+        Command::new("node").arg(stage.path().join("hydrate.mjs")),
+        "ordered generated TypeScript common-validation hydration",
     );
 }
 

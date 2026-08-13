@@ -255,8 +255,10 @@ interface NativeProjectionHandle {
   ): RuntimeProjectionMatchSession;
   matchModelType(typeKey: string): string;
   validateAttributeValueJson(typeKey: string, valueJson: string): void;
+  validateHydratedAttributeValueJson(typeKey: string, valueJson: string): void;
   validateFieldValueJson(typeKey: string, fieldName: string, valueJson: string): void;
   validateCreateJson(typeKey: string, valueJson: string): void;
+  validateThingJson(typeKey: string, valueJson: string): void;
   rejectGeneratedTokenPackageMismatch(pathJson: string): void;
   revalidateMatchDiagnostic(diagnostic: string): string;
   materializeMatchThingJson(thing: RuntimeProjectionMatchThing): string;
@@ -313,6 +315,11 @@ export class InstalledRuntimeProjection {
     this.#native.validateAttributeValueJson(typeKey, valueJson);
   }
 
+  /** @internal Validate one provider-hydrated attribute scalar. */
+  validateHydratedAttributeValueJson(typeKey: string, valueJson: string): void {
+    this.#native.validateHydratedAttributeValueJson(typeKey, valueJson);
+  }
+
   /** @internal Validate one generated owned-field scalar against projected constraints. */
   validateFieldValueJson(typeKey: string, fieldName: string, valueJson: string): void {
     this.#native.validateFieldValueJson(typeKey, fieldName, valueJson);
@@ -321,6 +328,11 @@ export class InstalledRuntimeProjection {
   /** @internal Validate one complete generated create payload. */
   validateCreateJson(typeKey: string, valueJson: string): void {
     this.#native.validateCreateJson(typeKey, valueJson);
+  }
+
+  /** @internal Validate one complete generated provider result. */
+  validateThingJson(typeKey: string, valueJson: string): void {
+    this.#native.validateThingJson(typeKey, valueJson);
   }
 
   /** @internal Surface one exact foreign generated-member package boundary. */

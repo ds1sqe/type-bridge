@@ -118,8 +118,10 @@ interface NativeProjectionHandle {
     matchSessionWithResources(resources: NativeQueryExecutionResources, cancellation: NativeQueryCancellation): RuntimeProjectionMatchSession;
     matchModelType(typeKey: string): string;
     validateAttributeValueJson(typeKey: string, valueJson: string): void;
+    validateHydratedAttributeValueJson(typeKey: string, valueJson: string): void;
     validateFieldValueJson(typeKey: string, fieldName: string, valueJson: string): void;
     validateCreateJson(typeKey: string, valueJson: string): void;
+    validateThingJson(typeKey: string, valueJson: string): void;
     rejectGeneratedTokenPackageMismatch(pathJson: string): void;
     revalidateMatchDiagnostic(diagnostic: string): string;
     materializeMatchThingJson(thing: RuntimeProjectionMatchThing): string;
@@ -136,10 +138,14 @@ export declare class InstalledRuntimeProjection {
     matchModelType(typeKey: string): string;
     /** @internal Validate one generated attribute scalar against projected constraints. */
     validateAttributeValueJson(typeKey: string, valueJson: string): void;
+    /** @internal Validate one provider-hydrated attribute scalar. */
+    validateHydratedAttributeValueJson(typeKey: string, valueJson: string): void;
     /** @internal Validate one generated owned-field scalar against projected constraints. */
     validateFieldValueJson(typeKey: string, fieldName: string, valueJson: string): void;
     /** @internal Validate one complete generated create payload. */
     validateCreateJson(typeKey: string, valueJson: string): void;
+    /** @internal Validate one complete generated provider result. */
+    validateThingJson(typeKey: string, valueJson: string): void;
     /** @internal Surface one exact foreign generated-member package boundary. */
     rejectGeneratedTokenPackageMismatch(pathJson: string): void;
     /** @internal Reject structural or foreign connection lookalikes. */

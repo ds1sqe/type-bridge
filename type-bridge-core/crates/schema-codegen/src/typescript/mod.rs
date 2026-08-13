@@ -27,7 +27,7 @@ export interface Multiplicity {
   readonly collection_mode?: "ordered_list";
 }
 
-const TYPE_BRIDGE_ORDERED_COLLECTION_RESOURCE_VERSION = 2 as const;
+const TYPE_BRIDGE_ORDERED_COLLECTION_RESOURCE_VERSION = 3 as const;
 
 type OrderedPackagePathSegment =
   | { readonly kind: "type"; readonly typeKey: string }
@@ -44,6 +44,7 @@ function orderedMemberKind(
 function rejectForeignOrderedValue(
   value: unknown,
   path: readonly OrderedPackagePathSegment[],
+  completeRead = false,
 ): void {
   assertRecord(value, "ordered generated member");
   const typeKey = value["__typebridgeModel"];
@@ -70,7 +71,9 @@ function rejectForeignOrderedValue(
   }
   const members =
     form === "complete"
-      ? entry.definition.createMembers
+      ? completeRead
+        ? entry.definition.completeMembers
+        : entry.definition.createMembers
       : entry.definition.referenceKeys.map((name) => ({
           name,
           multiplicity: {
@@ -86,12 +89,16 @@ function rejectForeignOrderedValue(
     }
     const values: readonly unknown[] = Array.isArray(nested) ? nested : [nested];
     values.forEach((candidate, index) =>
-      rejectForeignOrderedValue(candidate, [
-        ...path,
-        { kind: "type", typeKey },
-        { kind: orderedMemberKind(member), name: member.name },
-        { kind: "index", value: index },
-      ]),
+      rejectForeignOrderedValue(
+        candidate,
+        [
+          ...path,
+          { kind: "type", typeKey },
+          { kind: orderedMemberKind(member), name: member.name },
+          { kind: "index", value: index },
+        ],
+        completeRead,
+      ),
     );
   }
 }
@@ -99,6 +106,7 @@ function rejectForeignOrderedValue(
 function validateOrderedMemberPackages(
   definition: ModelDefinition<string, object, object>,
   input: unknown,
+  completeRead = false,
 ): void {
   if (definition.valueType !== null) {
     return;
@@ -111,13 +119,50 @@ function validateOrderedMemberPackages(
     }
     const values: readonly unknown[] = Array.isArray(value) ? value : [value];
     values.forEach((candidate, index) =>
-      rejectForeignOrderedValue(candidate, [
-        { kind: "type", typeKey: definition.typeKey },
-        { kind: orderedMemberKind(member), name: member.name },
-        { kind: "index", value: index },
-      ]),
+      rejectForeignOrderedValue(
+        candidate,
+        [
+          { kind: "type", typeKey: definition.typeKey },
+          { kind: orderedMemberKind(member), name: member.name },
+          { kind: "index", value: index },
+        ],
+        completeRead,
+      ),
     );
   }
+}
+
+function lowerOrderedHydratedValue(value: unknown): ProjectedWire {
+  assertRecord(value, "ordered hydrated value");
+  const typeKey = value["__typebridgeModel"];
+  const form = value["__typebridgeForm"];
+  if (typeof typeKey !== "string" || (form !== "complete" && form !== "reference")) {
+    throw new TypeError("ordered hydrated value is not a generated projected model");
+  }
+  const entry = runtimeModels.get(typeKey);
+  if (entry === undefined) {
+    throw new TypeError("ordered hydrated value belongs to a different runtime projection");
+  }
+  if (form === "reference" || entry.definition.valueType !== null) {
+    return lowerProjectedValue(value);
+  }
+  if (Object.getOwnPropertyDescriptor(value, COMPLETE_BRAND)?.value !== typeKey) {
+    throw new TypeError("ordered hydrated value has no complete nominal brand");
+  }
+  const iid = value["iid"];
+  if (iid !== null && (typeof iid !== "string" || iid.length === 0)) {
+    throw new TypeError("ordered hydrated IID must be null or a non-empty string");
+  }
+  const values: Record<string, unknown> = {};
+  for (const member of entry.definition.completeMembers) {
+    const nested = value[member.name];
+    values[member.name] = Array.isArray(nested)
+      ? nested.map(lowerOrderedHydratedValue)
+      : nested === null || nested === undefined
+        ? null
+        : lowerOrderedHydratedValue(nested);
+  }
+  return { typeKey, form, iid, value: null, values };
 }
 
 /** @internal Define an ordered model whose create facet uses common native admission. */
@@ -160,6 +205,34 @@ export function defineOrderedModel<
       },
     };
   }
+  const hydrate = original[HYDRATE_COMPLETE_BRAND] as (
+    iid: string | null,
+    input: unknown,
+  ) => Complete;
+  descriptors[HYDRATE_COMPLETE_BRAND] = {
+    ...descriptors[HYDRATE_COMPLETE_BRAND],
+    value: (iid: string | null, input: unknown): Complete => {
+      if (definition.valueType !== null) {
+        requireProjection().validateHydratedAttributeValueJson(
+          definition.typeKey,
+          JSON.stringify(scalarToWire(definition.valueType, input)),
+        );
+      }
+      const result = hydrate(iid, input);
+      validateOrderedMemberPackages(
+        { ...definition, createMembers: definition.completeMembers },
+        result,
+        true,
+      );
+      if (definition.valueType === null) {
+        requireProjection().validateThingJson(
+          definition.typeKey,
+          JSON.stringify(lowerOrderedHydratedValue(result)),
+        );
+      }
+      return result;
+    },
+  };
   const token = Object.create(
     Object.getPrototypeOf(original),
     descriptors,
@@ -336,6 +409,10 @@ mod tests {
         assert!(source.contains("export function defineOrderedModel<"));
         assert!(source.contains("Object.getOwnPropertyDescriptors(original)"));
         assert!(source.contains("requireProjection().validateCreateJson("));
+        assert!(source.contains("descriptors[HYDRATE_COMPLETE_BRAND]"));
+        assert!(source.contains("requireProjection().validateHydratedAttributeValueJson("));
+        assert!(source.contains("requireProjection().validateThingJson("));
+        assert!(!source.contains("__materializeOrderedThing"));
         assert!(source.contains("rejectGeneratedTokenPackageMismatch("));
     }
 }
