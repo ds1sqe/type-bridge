@@ -492,6 +492,7 @@ impl NodeProjectedModelManager {
     pub fn insert_json(&self, instance_json: String) -> napi::Result<String> {
         let mut instance = parse_wire(&instance_json)?;
         ensure_root_wire(self.package.as_ref(), &instance, &self.type_id)?;
+        self.validate_ordered_single_write(&instance)?;
         let iid = match self.descriptor()? {
             TypeDescriptor::Entity(descriptor) => {
                 let attributes = lower_attributes(
@@ -533,6 +534,7 @@ impl NodeProjectedModelManager {
     pub fn put_json(&self, instance_json: String) -> napi::Result<String> {
         let mut instance = parse_wire(&instance_json)?;
         ensure_root_wire(self.package.as_ref(), &instance, &self.type_id)?;
+        self.validate_ordered_single_write(&instance)?;
         let iid = match self.descriptor()? {
             TypeDescriptor::Entity(descriptor) => {
                 let attributes = lower_attributes(
@@ -574,6 +576,7 @@ impl NodeProjectedModelManager {
     pub fn update_json(&self, iid: String, instance_json: String) -> napi::Result<String> {
         let instance = parse_wire(&instance_json)?;
         ensure_root_wire(self.package.as_ref(), &instance, &self.type_id)?;
+        self.validate_ordered_single_write(&instance)?;
         ensure_iid(&iid)?;
         let stored = match self.descriptor()? {
             TypeDescriptor::Entity(descriptor) => {
@@ -763,6 +766,15 @@ impl NodeProjectedModelManager {
 }
 
 impl NodeProjectedModelManager {
+    fn validate_ordered_single_write(&self, instance: &ProjectedWire) -> napi::Result<()> {
+        if projection_uses_ordered_collections(self.package.projection.projection()) {
+            project_create_wire(self.package.as_ref(), &self.type_id, instance)
+                .map(|_| ())
+                .map_err(napi_sdk_diagnostic)?;
+        }
+        Ok(())
+    }
+
     fn write_many_json(&self, batch_json: &str, put: bool) -> napi::Result<String> {
         let mut instances: Vec<ProjectedWire> = serde_json::from_str(batch_json)
             .map_err(|error| invalid_error(format!("invalid projected batch wire: {error}")))?;
@@ -2418,6 +2430,22 @@ entities:
         runtime_for_schema(ORDERED_SCHEMA, "node-create-admission.yaml")
     }
 
+    fn manager_without_execution_target(
+        runtime: &NodeRuntimeProjection,
+        type_id: TypeId,
+    ) -> NodeProjectedModelManager {
+        NodeProjectedModelManager {
+            package: Arc::clone(&runtime.package),
+            type_id,
+            database: None,
+            transaction: None,
+            runtime: Arc::new(
+                ProviderRuntimeOwner::new().expect("provider runtime should start for native test"),
+            ),
+            filters: vec![],
+        }
+    }
+
     fn type_key(kind: TypeKind, label: &str) -> String {
         canonical_type_key(&TypeId::new(kind, label).unwrap()).unwrap()
     }
@@ -2712,6 +2740,75 @@ entities:
                 .collect::<Vec<_>>(),
             ["type", "role", "index", "type"]
         );
+    }
+
+    #[test]
+    fn ordered_single_writes_validate_before_iid_and_execution_target_resolution() {
+        let runtime = ordered_runtime();
+        let person_id = TypeId::new(TypeKind::Entity, "person").unwrap();
+        let person_key = canonical_type_key(&person_id).unwrap();
+        let identifier = attribute_wire(
+            "identifier",
+            ValueTypeTag::String,
+            Value::String("person-1".into()),
+        );
+        let score = attribute_wire("score", ValueTypeTag::Long, Value::String("3".into()));
+        let tag = attribute_wire("tag", ValueTypeTag::String, Value::String("same".into()));
+        let duplicate = ProjectedWire {
+            type_key: person_key.clone(),
+            form: WireForm::Complete,
+            iid: None,
+            value: None,
+            values: BTreeMap::from([
+                (
+                    "identifier".into(),
+                    serde_json::to_value(&identifier).unwrap(),
+                ),
+                ("score".into(), serde_json::to_value(&score).unwrap()),
+                (
+                    "tag".into(),
+                    Value::Array(vec![
+                        serde_json::to_value(&tag).unwrap(),
+                        serde_json::to_value(&tag).unwrap(),
+                    ]),
+                ),
+            ]),
+        };
+        let duplicate_json = serde_json::to_string(&duplicate).unwrap();
+        let manager = manager_without_execution_target(&runtime, person_id);
+
+        for error in [
+            manager.insert_json(duplicate_json.clone()).unwrap_err(),
+            manager.put_json(duplicate_json.clone()).unwrap_err(),
+            manager
+                .update_json(String::new(), duplicate_json)
+                .unwrap_err(),
+        ] {
+            let diagnostic: Value = serde_json::from_str(&error.reason).unwrap();
+            assert_eq!(diagnostic["sdkCategory"], "invalid_input");
+            assert_eq!(diagnostic["code"], "ordered_distinct_duplicate");
+            assert_eq!(diagnostic["details"]["first_index"]["value"], "0");
+            assert_eq!(diagnostic["details"]["duplicate_index"]["value"], "1");
+        }
+
+        let valid = ProjectedWire {
+            type_key: person_key,
+            form: WireForm::Complete,
+            iid: None,
+            value: None,
+            values: BTreeMap::from([
+                (
+                    "identifier".into(),
+                    serde_json::to_value(identifier).unwrap(),
+                ),
+                ("score".into(), serde_json::to_value(score).unwrap()),
+                ("tag".into(), Value::Array(Vec::new())),
+            ]),
+        };
+        let error = manager
+            .insert_json(serde_json::to_string(&valid).unwrap())
+            .unwrap_err();
+        assert_eq!(error.reason, "projected manager has no execution target");
     }
 
     #[test]
