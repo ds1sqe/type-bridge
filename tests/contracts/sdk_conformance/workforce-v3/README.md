@@ -80,6 +80,12 @@ producer owns four lanes: connection policy, data-operation cancellation,
 data-operation resource limits, and the structured data-operation diagnostic.
 All other selected observations must come from the live producer.
 
+The shared projection-evidence diagnostic uses one raw-admission mutation that
+exists before every binding-specific ledger is decoded: a missing semantic
+schema fingerprint at canonical evidence index zero. Its occurrence counts are
+therefore `1` to `0` in every binding; fixed-resource totals are deliberately
+not compared across bindings because those ledgers have different cardinality.
+
 The report job creates one fresh 64-lowercase-hex nonce and supplies it through
 `TYPE_BRIDGE_WORKFORCE_V3_PROOF_RUN_NONCE`. Each fragment emitter receives one
 create-new destination through `TYPE_BRIDGE_WORKFORCE_V3_PROOF_FRAGMENT`; the

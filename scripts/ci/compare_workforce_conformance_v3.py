@@ -385,7 +385,12 @@ EXPECTED_OBSERVATION_FIELDS = {
         }
     ),
     "projection_evidence_integrity": frozenset(
-        {"rejected_mutations", "diagnostic", "rejected_before_provider_io"}
+        {
+            "rejected_mutations",
+            "representative_mutation",
+            "diagnostic",
+            "rejected_before_provider_io",
+        }
     ),
     "relation_batch_insert_put": frozenset(
         {"empty", "insert", "duplicate_key", "put", "late_failure"}

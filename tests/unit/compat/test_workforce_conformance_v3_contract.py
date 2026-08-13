@@ -527,6 +527,7 @@ def test_workforce_v3_journey_freezes_21_complete_observation_shapes() -> None:
         },
         "projection_evidence_integrity": {
             "rejected_mutations",
+            "representative_mutation",
             "diagnostic",
             "rejected_before_provider_io",
         },
@@ -717,9 +718,27 @@ def test_workforce_v3_journey_freezes_21_complete_observation_shapes() -> None:
 
     evidence = observations["projection_evidence_integrity"]
     assert "foreign" in evidence["rejected_mutations"]
-    assert evidence["diagnostic"]["category"] == "integrity"
-    assert evidence["diagnostic"]["path"]
-    assert evidence["diagnostic"]["details"]
+    assert evidence["representative_mutation"] == {
+        "evidence": "semantic_schema_fingerprint",
+        "kind": "missing",
+    }
+    assert evidence["diagnostic"] == {
+        "category": "integrity",
+        "code": "projection_evidence_mismatch",
+        "path": [
+            {"kind": "argument", "value": "projection_evidence"},
+            {"kind": "index", "value": 0},
+            {
+                "kind": "contract_identity",
+                "value": "semantic_schema_fingerprint",
+            },
+        ],
+        "details": {
+            "actual_occurrence_count": {"kind": "count", "value": "0"},
+            "expected_occurrence_count": {"kind": "count", "value": "1"},
+            "foreign_package": {"kind": "boolean", "value": False},
+        },
+    }
     tokens = observations["token_package_fencing"]
     assert set(tokens["accepted_local"]) == {"construction", "batch", "filter", "hydration"}
     assert set(tokens["rejections"]) == {"construction", "batch", "filter", "hydration"}

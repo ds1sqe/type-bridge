@@ -1372,6 +1372,10 @@
         "reordered",
         "stale"
       ],
+      "representative_mutation": {
+        "evidence": "semantic_schema_fingerprint",
+        "kind": "missing"
+      },
       "diagnostic": {
         "category": "integrity",
         "code": "projection_evidence_mismatch",
@@ -1382,25 +1386,25 @@
           },
           {
             "kind": "index",
-            "value": 2
+            "value": 0
           },
           {
             "kind": "contract_identity",
-            "value": "entity:person"
+            "value": "semantic_schema_fingerprint"
           }
         ],
         "details": {
-          "expected_resource_count": {
+          "expected_occurrence_count": {
             "kind": "count",
-            "value": "7"
+            "value": "1"
           },
-          "actual_resource_count": {
+          "actual_occurrence_count": {
             "kind": "count",
-            "value": "6"
+            "value": "0"
           },
           "foreign_package": {
             "kind": "boolean",
-            "value": true
+            "value": false
           }
         }
       },
