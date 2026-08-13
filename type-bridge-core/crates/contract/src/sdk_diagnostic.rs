@@ -591,6 +591,39 @@ impl SdkExecutionDiagnostic {
         Self::stable(SdkDiagnosticCategory::Integrity, code, message)
     }
 
+    /// Construct the fixed generated-package projection-evidence diagnostic.
+    ///
+    /// Callers may append the exact rejected evidence index and validated
+    /// evidence identity, plus closed typed count or provenance details. The
+    /// root argument is fixed here so every binding exposes the same path.
+    #[must_use]
+    pub fn projection_evidence_mismatch() -> Self {
+        Self::stable(
+            SdkDiagnosticCategory::Integrity,
+            static_code("projection_evidence_mismatch"),
+            static_message(
+                "Generated projection evidence does not match the verified schema package",
+            ),
+        )
+        .try_at(SdkDiagnosticPathSegment::Argument(static_name(
+            "projection_evidence",
+        )))
+        .expect("the fixed projection-evidence diagnostic path is bounded")
+    }
+
+    /// Construct the fixed generated-token package-brand diagnostic.
+    ///
+    /// Operation owners append the exact model, field, role, or query path at
+    /// which a token from another installed package was rejected.
+    #[must_use]
+    pub fn generated_token_package_mismatch() -> Self {
+        Self::stable(
+            SdkDiagnosticCategory::Integrity,
+            static_code("generated_token_package_mismatch"),
+            static_message("The generated token belongs to a different installed schema package"),
+        )
+    }
+
     /// Construct a redacted provider diagnostic.
     ///
     /// The constructor accepts only a closed operation class. In particular,
@@ -810,4 +843,36 @@ fn static_message(value: &'static str) -> SdkDiagnosticMessage {
 
 fn static_name(value: &'static str) -> SdkDiagnosticName {
     SdkDiagnosticName::new(value).expect("static SDK diagnostic name is canonical")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generated_package_diagnostics_have_fixed_binding_neutral_vocabulary() {
+        let evidence = SdkExecutionDiagnostic::projection_evidence_mismatch();
+        assert_eq!(evidence.category(), SdkDiagnosticCategory::Integrity);
+        assert_eq!(evidence.code().as_str(), "projection_evidence_mismatch");
+        assert_eq!(
+            evidence.message().as_str(),
+            "Generated projection evidence does not match the verified schema package",
+        );
+        assert!(matches!(
+            evidence.path(),
+            [SdkDiagnosticPathSegment::Argument(name)]
+                if name.as_str() == "projection_evidence"
+        ));
+        assert!(evidence.details().is_empty());
+
+        let token = SdkExecutionDiagnostic::generated_token_package_mismatch();
+        assert_eq!(token.category(), SdkDiagnosticCategory::Integrity);
+        assert_eq!(token.code().as_str(), "generated_token_package_mismatch");
+        assert_eq!(
+            token.message().as_str(),
+            "The generated token belongs to a different installed schema package",
+        );
+        assert!(token.path().is_empty());
+        assert!(token.details().is_empty());
+    }
 }
