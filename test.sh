@@ -109,7 +109,13 @@ for runner_owned_workforce_variable in \
     TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENTS \
     TYPE_BRIDGE_WORKFORCE_V2_PROOF_RUN_NONCE \
     TYPE_BRIDGE_WORKFORCE_V2_VALIDATED_OBSERVATIONS \
-    TYPE_BRIDGE_WORKFORCE_V2_VALIDATOR_PYTHON; do
+    TYPE_BRIDGE_WORKFORCE_V2_VALIDATOR_PYTHON \
+    TYPE_BRIDGE_PHASE2_LIVE_REPORT \
+    TYPE_BRIDGE_PHASE2_LIVE_DATABASE \
+    TYPE_BRIDGE_PHASE2_PYTHON_PACKAGE_ROOT \
+    TYPE_BRIDGE_PHASE2_NODE_PACKAGE_ROOT \
+    TYPE_BRIDGE_PHASE2_REPOSITORY_ROOT \
+    ACCEPTANCE_TARGET_DIR; do
     if [[ ${!runner_owned_workforce_variable+x} == x ]]; then
         printf "${RED}%s is runner-owned; unset it before invoking test.sh.${RESET}\n" \
             "$runner_owned_workforce_variable" >&2
@@ -563,6 +569,17 @@ if [[ "$integration" == 1 ]]; then
         printf "${CYAN}Workforce reports: %s${RESET}\n\n" "$workforce_report_dir"
     elif [[ "$typedb_server_version" == "3.12.1" ]]; then
         printf "${CYAN}Workforce report fan-in skipped because forwarded pytest arguments may change collection.${RESET}\n\n"
+    fi
+
+    if [[ "$typedb_server_version" == "3.12.1" ]]; then
+        printf "${BOLD}━━━ Phase-2 exact-live parity (integration) ━━━${RESET}\n\n"
+        run_step "four-binding exact-TypeDB-3.12.1 Phase-2 live fan-in" \
+            env TYPE_BRIDGE_PHASE2_LIVE_ADDRESS="$TYPEDB_ADDRESS" \
+                TYPE_BRIDGE_PHASE2_LIVE_HTTP_PORT="$TYPEDB_HTTP_PORT" \
+            uv run python scripts/ci/run_phase2_projection_live.py
+    else
+        printf "${CYAN}Phase-2 exact-live fan-in requires TypeDB 3.12.1; skipping %s.${RESET}\n\n" \
+            "$typedb_server_version"
     fi
 
     printf "${BOLD}━━━ Rust (integration) ━━━${RESET}\n\n"

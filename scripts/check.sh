@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Local source-tree CI checks. Release-artifact acceptance is workflow-only:
 # this script neither builds/installs Python wheels nor claims publication parity.
-# Run from repo root: ./scripts/check.sh [rust|python|node|c|all]
+# Run from repo root: ./scripts/check.sh [rust|python|node|c|phase2-parity|phase2-live|all]
 set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
@@ -186,6 +186,12 @@ run_phase2_parity() {
         uv run python scripts/ci/run_phase2_projection_parity.py
 }
 
+run_phase2_live() {
+    printf "${BOLD}━━━ Exact-TypeDB-3.12.1 Phase-2 live parity ━━━${RESET}\n\n"
+    run_step "four-binding exact-TypeDB-3.12.1 Phase-2 live fan-in" \
+        uv run python scripts/ci/run_phase2_projection_live.py
+}
+
 # ── Dispatch ─────────────────────────────────────────────────────────────────
 target="${1:-all}"
 case "$target" in
@@ -194,9 +200,10 @@ case "$target" in
     node)   run_node   ;;
     c)      run_c      ;;
     phase2-parity) run_phase2_parity ;;
+    phase2-live) run_phase2_live ;;
     all)    run_rust; run_python; run_node; run_c; run_phase2_parity; run_generated_examples ;;
     *)
-        echo "Usage: $0 [rust|python|node|c|phase2-parity|all]"
+        echo "Usage: $0 [rust|python|node|c|phase2-parity|phase2-live|all]"
         exit 1
         ;;
 esac

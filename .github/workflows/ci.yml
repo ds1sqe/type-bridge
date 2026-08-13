@@ -259,6 +259,88 @@ jobs:
       - name: Compare all four provider-free Phase-2 reports
         run: uv run python scripts/ci/run_phase2_projection_parity.py
 
+  phase2-live:
+    name: Exact-TypeDB-3.12.1 Phase-2 live parity
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    services:
+      typedb:
+        image: typedb/typedb:3.12.1
+        ports:
+          - 1729:1729
+          - 8000:8000
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13.5"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          enable-cache: true
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
+            type-bridge-core/target
+          key: ${{ runner.os }}-cargo-phase2-live-v1-${{ hashFiles('type-bridge-core/Cargo.lock') }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: type-bridge-core/crates/node/package-lock.json
+
+      - name: Install Python and Node dependencies
+        run: |
+          uv sync --extra dev
+          uv pip install maturin==1.14.1
+          npm ci --prefix type-bridge-core/crates/node
+
+      - name: Require both strict C compilers
+        run: |
+          gcc --version
+          clang --version
+
+      - name: Wait for exact TypeDB fixture
+        run: |
+          for i in {1..30}; do
+            version="$(curl --fail --silent --max-time 3 \
+              http://localhost:8000/v1/version 2>/dev/null || true)"
+            if nc -z localhost 1729 2>/dev/null \
+              && python3 -c \
+                'import json,sys; value=json.loads(sys.argv[1]); raise SystemExit(0 if isinstance(value,dict) and value.get("version")=="3.12.1" else 1)' \
+                "$version"; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs ${{ job.services.typedb.id }} 2>&1 || true
+          exit 1
+
+      - name: Compare all four exact-live Phase-2 reports
+        env:
+          TYPE_BRIDGE_PHASE2_LIVE_ADDRESS: localhost:1729
+          TYPE_BRIDGE_PHASE2_LIVE_HTTP_PORT: "8000"
+        run: ./scripts/check.sh phase2-live
+
+      - name: Show TypeDB logs after failure
+        if: failure()
+        run: docker logs ${{ job.services.typedb.id }} 2>&1 || true
+
   # I6 single-band V2 legs: verify neither supported driver selection pulls the other band.
   # These are compile-only checks (no live server, no tests) plus an exact dependency proof.
   band-feature-check:
