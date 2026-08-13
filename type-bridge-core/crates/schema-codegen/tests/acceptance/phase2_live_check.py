@@ -855,8 +855,8 @@ def _run_owned_database(
                 "database_preexisting",
                 f"{DATABASE_ENV} must name an absent isolated database",
             )
-        owns_database = True
         database.create_database()
+        owns_database = True
         if not database.database_exists():
             raise ProducerError("database_create_failed", "isolated database was not created")
         database.execute_query(provider_schema, transaction_type="schema")

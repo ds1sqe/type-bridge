@@ -208,6 +208,34 @@ def test_preexisting_database_is_never_deleted() -> None:
     assert events == ["connect", "version", "exists", "close"]
 
 
+def test_create_failure_is_never_claimed_or_deleted() -> None:
+    events: list[str] = []
+
+    class CreateFailure(_FakeDatabase):
+        def create_database(self) -> None:
+            self.events.append("create")
+            raise RuntimeError("create failed")
+
+    def factory(**arguments: object) -> CreateFailure:
+        return CreateFailure(**arguments, events=events)
+
+    with pytest.raises(RuntimeError, match="create failed"):
+        producer._run_owned_database(
+            object(),
+            "127.0.0.1:1729",
+            "raced_database",
+            32943,
+            "define entity person;",
+            {},
+            [],
+            [],
+            database_factory=factory,
+            journey_runner=_journey_result,
+        )
+
+    assert events == ["connect", "version", "exists", "create", "close"]
+
+
 def test_wrong_server_version_fails_before_database_administration() -> None:
     events: list[str] = []
 
@@ -438,6 +466,7 @@ def test_source_uses_only_schema_raw_query_and_no_committed_result_seed() -> Non
         assert forbidden not in source
     assert source.count("execute_query(") == 1
     assert 'transaction_type="schema"' in source
+    assert source.index("database.create_database()") < source.index("owns_database = True")
     assert "TYPE_BRIDGE_PHASE2_LIVE_REPORT" in source
     assert "TYPE_BRIDGE_PHASE2_LIVE_ADDRESS" in source
     assert "TYPE_BRIDGE_PHASE2_LIVE_DATABASE" in source
