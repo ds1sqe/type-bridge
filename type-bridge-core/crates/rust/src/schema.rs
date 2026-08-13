@@ -3,11 +3,13 @@
 use core::marker::PhantomData;
 use std::sync::Arc;
 
+use type_bridge_contract::projection::{ProjectionConfig, RuntimeProjection};
 use type_bridge_contract::schema::encode_declared_schema;
 use type_bridge_schema::{
     MAX_SCHEMA_AUTHORITY_BYTES, VerifiedSchemaAuthority, decode_schema_authority,
     schema_authority_capability_vocabulary,
 };
+use type_bridge_schema_codegen::RustEmitter;
 
 use crate::error::{Error, Result};
 
@@ -107,7 +109,8 @@ impl<S: Schema> SchemaPackage<S> {
         }
     }
 
-    /// Perform offline fingerprint verification without connecting to a live server.
+    /// Perform offline fingerprint, authority, and exact emitter-evidence verification
+    /// without connecting to a live server.
     pub fn verify(&self) -> Result<()> {
         let _ = self.verify_and_install_with_authority()?;
         Ok(())
@@ -138,7 +141,8 @@ impl<S: Schema> SchemaPackage<S> {
         self.declared_schema_json
     }
 
-    /// Perform runtime fingerprint verification and derive provider descriptors (crate-internal).
+    /// Verify all package evidence and derive provider descriptors without provider I/O
+    /// (crate-internal).
     pub(crate) fn verify_and_install(
         &self,
     ) -> Result<Arc<type_bridge_orm::InstalledRuntimeProjection>> {
@@ -170,6 +174,7 @@ impl<S: Schema> SchemaPackage<S> {
                 "generated schema authority does not match the installed runtime projection",
             ));
         }
+        verify_rust_projection_evidence(&projection, authority.as_ref())?;
         Ok((Arc::new(projection), authority))
     }
 
@@ -224,6 +229,63 @@ impl<S: Schema> SchemaPackage<S> {
     }
 }
 
+fn verify_rust_projection_evidence(
+    installed: &type_bridge_orm::InstalledRuntimeProjection,
+    authority: Option<&VerifiedSchemaAuthority>,
+) -> Result<()> {
+    let projection = installed.projection();
+    let emitter = RustEmitter::new();
+    if projection.config() != &ProjectionConfig::rust() {
+        return Err(authority_error(
+            "generated Rust schema package does not match the exact shipped projection configuration",
+        ));
+    }
+    if let Some(authority) = authority {
+        return type_bridge_schema_codegen::verify_projection_evidence(authority, projection)
+            .map_err(|error| Error::SchemaVerification {
+                message: "generated Rust schema package does not match compiled schema authority and exact shipped emitter evidence"
+                    .into(),
+                source: Some(Box::new(error)),
+            });
+    }
+
+    if projection_uses_ordered_collections(projection) {
+        return Err(authority_error(
+            "ordered Rust schema packages require compiled schema authority",
+        ));
+    }
+    let resources = emitter
+        .code_resources()
+        .map_err(|error| Error::SchemaVerification {
+            message: "legacy Rust schema package resource evidence cannot be reconstructed".into(),
+            source: Some(Box::new(error)),
+        })?;
+    if projection.generator_handlers() != emitter.generator_handlers()
+        || projection.code_resources() != resources
+    {
+        return Err(authority_error(
+            "legacy Rust schema package does not match the exact shipped handler and resource evidence",
+        ));
+    }
+
+    Ok(())
+}
+
+fn projection_uses_ordered_collections(projection: &RuntimeProjection) -> bool {
+    projection.models().values().any(|model| {
+        model
+            .query_tokens()
+            .fields()
+            .values()
+            .any(|field| !field.multiplicity().collection_mode().is_unordered())
+            || model
+                .query_tokens()
+                .roles()
+                .values()
+                .any(|role| !role.multiplicity().collection_mode().is_unordered())
+    })
+}
+
 fn authority_error(message: &'static str) -> Error {
     Error::SchemaVerification {
         message: message.into(),
@@ -259,6 +321,15 @@ mod tests {
     }
 
     fn generated_package(source: &str, scope: &str) -> SchemaPackage<TestSchema> {
+        package_with_evidence(source, scope, None, None)
+    }
+
+    fn package_with_evidence(
+        source: &str,
+        scope: &str,
+        handlers: Option<Vec<type_bridge_contract::projection::ProjectionHandler>>,
+        resources: Option<Vec<type_bridge_contract::projection::CodeResourceDigest>>,
+    ) -> SchemaPackage<TestSchema> {
         let documents =
             SchemaDocumentSet::parse([(DocumentId::new("authority-test.yaml").unwrap(), source)])
                 .unwrap();
@@ -276,12 +347,14 @@ mod tests {
         )
         .unwrap();
         let emitter = RustEmitter::new();
+        let handlers = handlers.unwrap_or_else(|| emitter.generator_handlers_for(&resolved));
+        let resources = resources.unwrap_or_else(|| emitter.code_resources_for(&resolved).unwrap());
         let projection = project(
             &resolved,
             BindingTarget::Rust,
             &ProjectionConfig::rust(),
-            &emitter.generator_handlers(),
-            &emitter.code_resources().unwrap(),
+            &handlers,
+            &resources,
         )
         .unwrap();
         SchemaPackage::new_with_authority(
@@ -292,6 +365,29 @@ mod tests {
             leak(encode_declared_schema(&declared).unwrap()),
             Box::leak(scope.to_owned().into_boxed_str()),
             "typedb-3.12.1/v1",
+        )
+    }
+
+    fn without_authority(package: SchemaPackage<TestSchema>) -> SchemaPackage<TestSchema> {
+        SchemaPackage::new(
+            package.semantic_fingerprint_json,
+            package.projection_fingerprint_json,
+            package.runtime_projection_json,
+        )
+    }
+
+    fn with_runtime_projection(
+        package: SchemaPackage<TestSchema>,
+        runtime_projection_json: &'static str,
+    ) -> SchemaPackage<TestSchema> {
+        SchemaPackage::new_with_authority(
+            package.semantic_fingerprint_json,
+            package.projection_fingerprint_json,
+            runtime_projection_json,
+            package.schema_authority_json.unwrap(),
+            package.declared_schema_json.unwrap(),
+            package.managed_scope_id.unwrap(),
+            package.semantic_profile_id.unwrap(),
         )
     }
 
@@ -355,6 +451,181 @@ mod tests {
             .verify()
             .expect_err("foreign semantic authority must not bind to the projection");
         assert!(error.to_string().contains("installed runtime projection"));
+    }
+
+    #[test]
+    fn ordered_package_requires_exact_successor_handler_and_compiled_authority() {
+        const ORDERED: &str = "format: typebridge.schema/v2\nattributes:\n  tag: { value: string }\nentities:\n  person:\n    owns:\n      tag:\n        card: 1\n        ordered: true\n        distinct: true\n";
+
+        let valid = generated_package(ORDERED, "rust-ordered-evidence");
+        let installed = valid.verify_and_install().unwrap();
+        assert_eq!(
+            installed.projection().generator_handlers(),
+            [type_bridge_contract::projection::ProjectionHandler::rust_v2()],
+        );
+        let resource_ids = installed
+            .projection()
+            .code_resources()
+            .iter()
+            .map(|resource| resource.id().as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            resource_ids,
+            [
+                "typebridge.generator.rust.cargo-toml",
+                "typebridge.generator.rust.runtime-source",
+            ],
+        );
+        assert_ne!(
+            installed.projection().code_resources(),
+            RustEmitter::new().code_resources().unwrap(),
+            "the ordered package must carry the successor runtime-resource digest",
+        );
+
+        let legacy = package_with_evidence(
+            ORDERED,
+            "rust-ordered-evidence",
+            Some(vec![
+                type_bridge_contract::projection::ProjectionHandler::rust_v1(),
+            ]),
+            Some(RustEmitter::new().code_resources().unwrap()),
+        );
+        let error = legacy
+            .verify()
+            .expect_err("an ordered package cannot claim the legacy Rust ledger");
+        assert!(error.to_string().contains("exact shipped emitter evidence"));
+
+        let authorityless = without_authority(valid);
+        let error = authorityless
+            .verify()
+            .expect_err("ordered packages require reconstructable schema authority");
+        assert!(
+            error
+                .to_string()
+                .contains("require compiled schema authority")
+        );
+    }
+
+    #[test]
+    fn package_rejects_missing_forged_and_foreign_resource_evidence() {
+        const UNORDERED: &str = "format: typebridge.schema/v2\nentities:\n  person: {}\n";
+        const ORDERED: &str = "format: typebridge.schema/v2\nattributes:\n  tag: { value: string }\nentities:\n  person:\n    owns:\n      tag:\n        card: 1\n        ordered: true\n";
+
+        let missing = package_with_evidence(
+            ORDERED,
+            "rust-resource-evidence",
+            Some(vec![
+                type_bridge_contract::projection::ProjectionHandler::rust_v2(),
+            ]),
+            Some(Vec::new()),
+        );
+        assert!(
+            missing
+                .verify()
+                .expect_err("ordered resource evidence is mandatory")
+                .to_string()
+                .contains("exact shipped emitter evidence")
+        );
+
+        let emitter = RustEmitter::new();
+        let documents =
+            SchemaDocumentSet::parse([(DocumentId::new("forged-resource.yaml").unwrap(), ORDERED)])
+                .unwrap();
+        let declared = normalize_documents(&documents).unwrap();
+        let profile = SemanticProfileId::new("typedb-3.12.1/v1").unwrap();
+        let resolved = resolve(&declared, &profile).unwrap();
+        let mut forged_resources = emitter.code_resources_for(&resolved).unwrap();
+        let first_id = forged_resources[0].id().as_str().to_owned();
+        forged_resources[0] = type_bridge_contract::projection::CodeResourceDigest::from_bytes(
+            first_id,
+            b"forged Rust emitter resource",
+        )
+        .unwrap();
+        let forged = package_with_evidence(
+            ORDERED,
+            "rust-resource-evidence",
+            Some(emitter.generator_handlers_for(&resolved)),
+            Some(forged_resources),
+        );
+        assert!(
+            forged
+                .verify()
+                .expect_err("self-consistent forged resource evidence must reject")
+                .to_string()
+                .contains("exact shipped emitter evidence")
+        );
+
+        let foreign_resources = type_bridge_schema_codegen::PythonEmitter::new()
+            .code_resources_for(&resolved)
+            .unwrap();
+        let foreign = package_with_evidence(
+            ORDERED,
+            "rust-resource-evidence",
+            Some(emitter.generator_handlers_for(&resolved)),
+            Some(foreign_resources),
+        );
+        assert!(
+            foreign
+                .verify()
+                .expect_err("foreign binding resource evidence must reject")
+                .to_string()
+                .contains("exact shipped emitter evidence")
+        );
+
+        let valid_legacy = generated_package(UNORDERED, "rust-resource-evidence");
+        let installed_legacy = valid_legacy.verify_and_install().unwrap();
+        assert_eq!(
+            installed_legacy.projection().generator_handlers(),
+            [type_bridge_contract::projection::ProjectionHandler::rust_v1()],
+        );
+        assert_eq!(
+            installed_legacy.projection().code_resources(),
+            RustEmitter::new().code_resources().unwrap(),
+        );
+        assert!(without_authority(valid_legacy).verify().is_ok());
+    }
+
+    #[test]
+    fn package_rejects_stale_and_reordered_evidence() {
+        const UNORDERED: &str = "format: typebridge.schema/v2\nentities:\n  person: {}\n";
+        const ORDERED: &str = "format: typebridge.schema/v2\nattributes:\n  tag: { value: string }\nentities:\n  person:\n    owns:\n      tag:\n        card: 1\n        ordered: true\n";
+
+        let emitter = RustEmitter::new();
+        let ordered_documents =
+            SchemaDocumentSet::parse([(DocumentId::new("stale-resource.yaml").unwrap(), ORDERED)])
+                .unwrap();
+        let ordered_declared = normalize_documents(&ordered_documents).unwrap();
+        let profile = SemanticProfileId::new("typedb-3.12.1/v1").unwrap();
+        let ordered_resolved = resolve(&ordered_declared, &profile).unwrap();
+        let stale_successor = package_with_evidence(
+            UNORDERED,
+            "rust-stale-evidence",
+            Some(emitter.generator_handlers_for(&ordered_resolved)),
+            Some(emitter.code_resources_for(&ordered_resolved).unwrap()),
+        );
+        assert!(
+            stale_successor
+                .verify()
+                .expect_err("an unordered package cannot claim successor evidence")
+                .to_string()
+                .contains("exact shipped emitter evidence")
+        );
+
+        let ordered = generated_package(ORDERED, "rust-reordered-evidence");
+        let mut runtime: Value = serde_json::from_str(ordered.runtime_projection_json).unwrap();
+        runtime["code_resources"]
+            .as_array_mut()
+            .expect("runtime projection has a resource ledger")
+            .swap(0, 1);
+        let reordered = with_runtime_projection(ordered, canonical(&runtime));
+        let error = reordered
+            .verify()
+            .expect_err("resource ledger wire order is canonical and cannot be changed");
+        assert!(
+            error
+                .to_string()
+                .contains("non_canonical_runtime_projection")
+        );
     }
 
     #[test]

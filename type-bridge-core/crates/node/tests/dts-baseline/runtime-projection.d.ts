@@ -26,6 +26,7 @@ export interface RuntimeProjectionBinding {
     readonly reference: boolean;
 }
 export interface RuntimeProjectionInstall {
+    readonly schemaAuthorityJson?: string;
     readonly projectionJson: string;
     readonly semanticFingerprintJson: string;
     readonly projectionFingerprintJson: string;

@@ -17,6 +17,7 @@ use super::reserved::{
 };
 use crate::{
     EmbeddedAuthority, GeneratedPackage, documentation_annotation, invalid, model_documentation,
+    projection_uses_ordered_collections,
 };
 
 macro_rules! canonical_text {
@@ -77,6 +78,11 @@ fn header() -> &'static str {
 }
 
 fn render_index(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
+    let install = if projection_uses_ordered_collections(projection) {
+        "__installOrderedRuntimeProjectionPackage"
+    } else {
+        "__installRuntimeProjectionPackage"
+    };
     let names = projection
         .emission()
         .model_shells()
@@ -90,7 +96,7 @@ fn render_index(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
         })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(format!(
-        "{}import {{ SCHEMA_AUTHORITY_JSON }} from \"./authority.js\";\nimport {{ __installRuntimeProjectionPackage }} from \"./runtime.js\";\nimport {{ {} }} from \"./models.js\";\nimport {{ PROJECTION_FINGERPRINT_JSON, RUNTIME_PROJECTION_JSON, SEMANTIC_SCHEMA_FINGERPRINT_JSON }} from \"./schema.js\";\n\n__installRuntimeProjectionPackage(\n  RUNTIME_PROJECTION_JSON,\n  SEMANTIC_SCHEMA_FINGERPRINT_JSON,\n  PROJECTION_FINGERPRINT_JSON,\n  [{}],\n  SCHEMA_AUTHORITY_JSON,\n);\n\nexport * from \"./runtime.js\";\nexport * from \"./models.js\";\nexport * from \"./structs.js\";\nexport * from \"./functions.js\";\nexport * from \"./schema.js\";\n",
+        "{}import {{ SCHEMA_AUTHORITY_JSON }} from \"./authority.js\";\nimport {{ {install} }} from \"./runtime.js\";\nimport {{ {} }} from \"./models.js\";\nimport {{ PROJECTION_FINGERPRINT_JSON, RUNTIME_PROJECTION_JSON, SEMANTIC_SCHEMA_FINGERPRINT_JSON }} from \"./schema.js\";\n\n{install}(\n  RUNTIME_PROJECTION_JSON,\n  SEMANTIC_SCHEMA_FINGERPRINT_JSON,\n  PROJECTION_FINGERPRINT_JSON,\n  [{}],\n  SCHEMA_AUTHORITY_JSON,\n);\n\nexport * from \"./runtime.js\";\nexport * from \"./models.js\";\nexport * from \"./structs.js\";\nexport * from \"./functions.js\";\nexport * from \"./schema.js\";\n",
         header(),
         names.join(", "),
         names.join(", "),

@@ -3186,6 +3186,7 @@ dependencies = [
  "type-bridge-migration",
  "type-bridge-orm",
  "type-bridge-schema",
+ "type-bridge-schema-codegen",
  "type-bridge-schema-compat",
  "type-bridge-toml-transpiler",
 ]
@@ -3257,6 +3258,7 @@ dependencies = [
  "type-bridge-core-lib",
  "type-bridge-orm",
  "type-bridge-schema",
+ "type-bridge-schema-codegen",
 ]
 
 [[package]]

@@ -59,6 +59,7 @@ export interface RuntimeProjectionBinding {
 }
 
 export interface RuntimeProjectionInstall {
+  readonly schemaAuthorityJson?: string;
   readonly projectionJson: string;
   readonly semanticFingerprintJson: string;
   readonly projectionFingerprintJson: string;
@@ -744,6 +745,7 @@ export function installRuntimeProjection(input: RuntimeProjectionInstall): Insta
     input.semanticFingerprintJson,
     input.projectionFingerprintJson,
     JSON.stringify(input.bindings),
+    input.schemaAuthorityJson,
   ));
 }
 

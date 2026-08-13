@@ -636,6 +636,20 @@ mod schema_generation_atomicity_tests {
         let accepted_authority =
             fs::read(root.join("generated/schema-authority.json")).expect("authority reads");
 
+        run_schema_generate(&accepted).expect("identical ordered packages regenerate");
+        for (target, accepted_tree) in &accepted_trees {
+            assert_eq!(
+                &snapshot(&root.join("generated").join(target)),
+                accepted_tree,
+                "{target} destination changed after deterministic regeneration",
+            );
+        }
+        assert_eq!(
+            fs::read(root.join("generated/schema-authority.json")).expect("authority rereads"),
+            accepted_authority,
+            "schema authority changed after deterministic regeneration",
+        );
+
         fs::write(
             root.join("schema/fragments/model.yaml"),
             "format: typebridge.schema/v2\n\

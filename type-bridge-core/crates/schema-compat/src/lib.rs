@@ -369,10 +369,11 @@ pub(crate) fn released_unresolved_capability_ranges(
         let Ok((role, _)) = capability_type_ref(&relates.related) else {
             continue;
         };
-        let specializes = relates
-            .specialised
-            .as_ref()
-            .and_then(|specialized| plain_type_ref(specialized).ok());
+        let specializes = relates.specialised.as_ref().and_then(|specialized| {
+            capability_type_ref(specialized)
+                .ok()
+                .map(|(label, _)| label)
+        });
         let role_is_portable = Label::new(&role).is_ok()
             && specializes
                 .as_ref()
@@ -1453,7 +1454,8 @@ fn insert_capability(
                 .specialised
                 .as_ref()
                 .map(|specialized| {
-                    plain_type_ref(specialized)
+                    capability_type_ref(specialized)
+                        .map(|(label, _)| label)
                         .map_err(|message| {
                             at(
                                 document,
@@ -2006,19 +2008,6 @@ fn reject_annotations_if_present(
         ));
     }
     Ok(())
-}
-
-fn plain_type_ref(reference: &TypeRefAny) -> Result<String, String> {
-    match reference {
-        TypeRefAny::Type(TypeRef::Label(label)) => Ok(typeql_label(label)),
-        TypeRefAny::Type(TypeRef::Scoped(_)) => {
-            Err("scoped type references are not valid in this capability".to_owned())
-        }
-        TypeRefAny::Type(TypeRef::Variable(_)) => {
-            Err("type variables are not valid in schema declarations".to_owned())
-        }
-        TypeRefAny::List(_) => Err("list capability references are not live-pinned".to_owned()),
-    }
 }
 
 fn capability_type_ref(reference: &TypeRefAny) -> Result<(String, CollectionMode), String> {

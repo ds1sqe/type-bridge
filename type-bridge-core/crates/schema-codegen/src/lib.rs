@@ -17,11 +17,111 @@ pub use rust::RustEmitter;
 pub use typescript::TypeScriptEmitter;
 
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
-use type_bridge_contract::projection::{ModelProjection, ProjectedAnnotation, RuntimeProjection};
+use type_bridge_contract::projection::{
+    BindingTarget, ModelProjection, ProjectedAnnotation, ProjectionConfig, RuntimeProjection,
+};
 use type_bridge_contract::schema::{
     AnnotationFactId, AnnotationKindId, SchemaAnnotationValue, encode_declared_schema,
 };
-use type_bridge_schema::{ResolvedSchema, VerifiedSchemaAuthority, encode_schema_authority};
+use type_bridge_schema::{
+    ResolvedSchema, VerifiedSchemaAuthority, encode_schema_authority, project,
+};
+
+/// Verify that a runtime projection carries the exact feature-selected
+/// handler and fixed-resource evidence emitted for its binding target.
+///
+/// This is the shared package-admission boundary for generated runtimes. It
+/// derives all evidence from the verified schema authority, recomputes the
+/// complete projection, and rejects self-consistent projections forged with a
+/// legacy or foreign emitter ledger.
+pub fn verify_projection_evidence(
+    authority: &VerifiedSchemaAuthority,
+    projection: &RuntimeProjection,
+) -> Result<(), Diagnostic> {
+    let schema = authority.resolved_schema();
+    let reproject =
+        |target,
+         handlers: &[type_bridge_contract::projection::ProjectionHandler],
+         resources: &[type_bridge_contract::projection::CodeResourceDigest]| {
+            project(schema, target, projection.config(), handlers, resources).map_err(|_| {
+            invalid(
+                "schema_codegen_projection_evidence_mismatch",
+                "runtime projection cannot be reproduced from the verified schema authority and emitter evidence",
+            )
+        })
+        };
+    let expected = match projection.target() {
+        BindingTarget::Python => {
+            if projection.config() != &ProjectionConfig::python() {
+                return Err(invalid(
+                    "schema_codegen_projection_evidence_mismatch",
+                    "Python runtime projection carries a foreign target configuration",
+                ));
+            }
+            let emitter = PythonEmitter::new();
+            reproject(
+                BindingTarget::Python,
+                &emitter.generator_handlers_for(schema),
+                &emitter.code_resources_for(schema)?,
+            )?
+        }
+        BindingTarget::TypeScript => {
+            if projection.config() != &ProjectionConfig::typescript() {
+                return Err(invalid(
+                    "schema_codegen_projection_evidence_mismatch",
+                    "TypeScript runtime projection carries a foreign target configuration",
+                ));
+            }
+            let emitter = TypeScriptEmitter::new();
+            reproject(
+                BindingTarget::TypeScript,
+                &emitter.generator_handlers_for(schema),
+                &emitter.code_resources_for(schema)?,
+            )?
+        }
+        BindingTarget::Rust => {
+            if projection.config() != &ProjectionConfig::rust() {
+                return Err(invalid(
+                    "schema_codegen_projection_evidence_mismatch",
+                    "Rust runtime projection carries a foreign target configuration",
+                ));
+            }
+            let emitter = RustEmitter::new();
+            reproject(
+                BindingTarget::Rust,
+                &emitter.generator_handlers_for(schema),
+                &emitter.code_resources_for(schema)?,
+            )?
+        }
+        BindingTarget::C => {
+            if projection.config().c_symbol_prefix().is_none() {
+                return Err(invalid(
+                    "schema_codegen_projection_evidence_mismatch",
+                    "C runtime projection omits its generated link-namespace configuration",
+                ));
+            }
+            let emitter = CEmitter::new();
+            reproject(
+                BindingTarget::C,
+                &emitter.generator_handlers_for(schema),
+                &emitter.code_resources_for(schema)?,
+            )?
+        }
+        _ => {
+            return Err(invalid(
+                "schema_codegen_projection_evidence_mismatch",
+                "runtime projection targets an unsupported generated binding",
+            ));
+        }
+    };
+    if &expected != projection {
+        return Err(invalid(
+            "schema_codegen_projection_evidence_mismatch",
+            "runtime projection differs from the exact feature-selected emitter evidence",
+        ));
+    }
+    Ok(())
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct EmbeddedAuthority {

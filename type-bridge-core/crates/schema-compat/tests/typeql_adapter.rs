@@ -212,6 +212,40 @@ fn ordered_owns_and_relates_with_distinct_are_canonical_facts() {
 }
 
 #[test]
+fn ordered_role_specialization_is_canonical_in_strict_and_released_adapters() {
+    let source = "define\n\
+        relation membership, relates member[] @distinct;\n\
+        relation curated-membership, sub membership,\n\
+          relates curated-member[] as member[];\n";
+
+    for declared in [
+        typeql_to_declared(document(), source)
+            .expect("strict adapter accepts ordered specialization"),
+        released_typeql_to_declared_projection(document(), source)
+            .expect("released adapter accepts ordered specialization"),
+    ] {
+        let specialized = declared
+            .facts()
+            .find_map(|fact| match fact {
+                SchemaFact::Relates(relates)
+                    if relates.id().role().label().as_str() == "curated-member" =>
+                {
+                    Some(relates)
+                }
+                _ => None,
+            })
+            .expect("specialized role is a canonical fact");
+
+        assert_eq!(specialized.collection_mode(), CollectionMode::OrderedList);
+        let parent = specialized
+            .specializes()
+            .expect("specialization target is preserved");
+        assert_eq!(parent.declaring_relation().as_str(), "membership");
+        assert_eq!(parent.label().as_str(), "member");
+    }
+}
+
+#[test]
 fn oversized_body_only_schema_references_reject_without_panicking() {
     let oversized = "x".repeat(256);
     let source = format!(

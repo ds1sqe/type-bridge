@@ -44,6 +44,26 @@ def install_runtime_projection(
     return installed
 
 
+def install_runtime_projection_with_authority(
+    projection_json: str,
+    semantic_fingerprint_json: str,
+    projection_fingerprint_json: str,
+    models: Sequence[tuple[type[object], type[object] | None]],
+    schema_authority: bytes,
+) -> PyRuntimeProjection:
+    """Verify and install one ordered generated package with compiled authority."""
+    installed = rust_core().PyRuntimeProjection(
+        projection_json,
+        semantic_fingerprint_json,
+        projection_fingerprint_json,
+        list(models),
+        schema_authority,
+    )
+    for model, _reference in models:
+        _installed_projection_by_model[model] = installed
+    return installed
+
+
 def _installed_projection_for(model: type[object]) -> PyRuntimeProjection:
     try:
         return _installed_projection_by_model[model]

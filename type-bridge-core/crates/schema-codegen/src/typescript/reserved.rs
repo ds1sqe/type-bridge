@@ -49,6 +49,7 @@ pub(super) const PUBLIC_RUNTIME_NAMES: &[&str] = &[
     "definePlaysToken",
     "defineRoleToken",
     "defineStruct",
+    "__installOrderedRuntimeProjectionPackage",
     "__installRuntimeProjectionPackage",
 ];
 

@@ -75,8 +75,10 @@ pub fn generate_define_block(info: &SchemaInfo) -> String {
     for entity_name in &entity_order {
         let entity = &info.entities[entity_name.as_str()];
 
-        // Determine parent's owned attribute names to skip inherited attrs
-        let parent_attr_names: HashSet<&str> = entity
+        // Skip only effective entries copied unchanged from the parent. A direct
+        // redeclaration may retain the attribute label while changing constraints
+        // such as ordered-list `@distinct`, and must still be emitted.
+        let parent_attributes: BTreeMap<&str, &super::info::OwnedAttributeEntry> = entity
             .parent_type
             .as_ref()
             .and_then(|p| info.entities.get(p))
@@ -84,7 +86,7 @@ pub fn generate_define_block(info: &SchemaInfo) -> String {
                 parent
                     .owned_attributes
                     .iter()
-                    .map(|a| a.attr_name.as_str())
+                    .map(|attribute| (attribute.attr_name.as_str(), attribute))
                     .collect()
             })
             .unwrap_or_default();
@@ -92,7 +94,10 @@ pub fn generate_define_block(info: &SchemaInfo) -> String {
         // Build owns clauses (only non-inherited attributes)
         let mut parts = Vec::new();
         for attr in &entity.owned_attributes {
-            if parent_attr_names.contains(attr.attr_name.as_str()) {
+            if parent_attributes
+                .get(attr.attr_name.as_str())
+                .is_some_and(|parent| *parent == attr)
+            {
                 continue;
             }
             parts.push(build_owns_clause(attr));
@@ -128,8 +133,9 @@ pub fn generate_define_block(info: &SchemaInfo) -> String {
     for relation_name in &relation_order {
         let relation = &info.relations[relation_name.as_str()];
 
-        // Determine parent's attribute and role names
-        let parent_attr_names: HashSet<&str> = relation
+        // As for entities, equal entries are inherited copies while changed entries
+        // are direct redeclarations that must remain visible to TypeQL.
+        let parent_attributes: BTreeMap<&str, &super::info::OwnedAttributeEntry> = relation
             .parent_type
             .as_ref()
             .and_then(|p| info.relations.get(p))
@@ -137,7 +143,7 @@ pub fn generate_define_block(info: &SchemaInfo) -> String {
                 parent
                     .owned_attributes
                     .iter()
-                    .map(|a| a.attr_name.as_str())
+                    .map(|attribute| (attribute.attr_name.as_str(), attribute))
                     .collect()
             })
             .unwrap_or_default();
@@ -165,15 +171,21 @@ pub fn generate_define_block(info: &SchemaInfo) -> String {
                 continue;
             }
             if seen_roles.insert(&role.role_name) {
-                // Emit per canon: relates <name>[<[]>][ as <parent>][ @abstract][ @distinct][ @card(...)].
-                // `[]` attaches directly to the name with no space.
+                // Emit per canon: relates <name>[<[]>][ as <parent>[<[]>]][ @abstract][ @distinct][ @card(...)].
+                // `[]` attaches directly to both role labels with no space. TypeQL's
+                // list-specialization grammar requires the child and parent labels to
+                // carry the same list marker.
                 let mut clause = if role.ordered {
                     format!("    relates {}[]", role.role_name)
                 } else {
                     format!("    relates {}", role.role_name)
                 };
                 if let Some(ref parent_role) = role.overrides {
-                    clause.push_str(&format!(" as {parent_role}"));
+                    if role.ordered {
+                        clause.push_str(&format!(" as {parent_role}[]"));
+                    } else {
+                        clause.push_str(&format!(" as {parent_role}"));
+                    }
                 }
                 if role.is_abstract {
                     clause.push_str(" @abstract");
@@ -209,7 +221,10 @@ pub fn generate_define_block(info: &SchemaInfo) -> String {
         }
 
         for attr in &relation.owned_attributes {
-            if parent_attr_names.contains(attr.attr_name.as_str()) {
+            if parent_attributes
+                .get(attr.attr_name.as_str())
+                .is_some_and(|parent| *parent == attr)
+            {
                 continue;
             }
             parts.push(build_owns_clause(attr));
@@ -987,6 +1002,60 @@ mod tests {
     }
 
     #[test]
+    fn emits_changed_ordered_ownership_redeclaration_on_subtype() {
+        let mut info = SchemaInfo::default();
+        info.attributes.insert(
+            "tag".into(),
+            AttributeSchemaEntry::new("tag", ValueType::String),
+        );
+        info.entities.insert(
+            "base".into(),
+            EntitySchemaEntry {
+                type_name: "base".into(),
+                is_abstract: false,
+                parent_type: None,
+                owned_attributes: vec![OwnedAttributeEntry {
+                    attr_name: "tag".into(),
+                    value_type: ValueType::String,
+                    annotations: vec![Annotation::Distinct, Annotation::Card(0, Some(3))],
+                    is_ordered: true,
+                    doc: None,
+                    meta: Default::default(),
+                }],
+                plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
+            },
+        );
+        info.entities.insert(
+            "child".into(),
+            EntitySchemaEntry {
+                type_name: "child".into(),
+                is_abstract: false,
+                parent_type: Some("base".into()),
+                owned_attributes: vec![OwnedAttributeEntry {
+                    attr_name: "tag".into(),
+                    value_type: ValueType::String,
+                    annotations: vec![Annotation::Card(0, Some(3))],
+                    is_ordered: true,
+                    doc: None,
+                    meta: Default::default(),
+                }],
+                plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
+            },
+        );
+
+        let emitted = generate_define_block(&info);
+        assert!(
+            emitted.contains("entity child sub base,\n    owns tag[] @card(0..3);"),
+            "the distinct drop must remain an explicit subtype redeclaration: {emitted}"
+        );
+        typeql::parse_query(&emitted).expect("TypeQL 3.12 accepts the ordered redeclaration");
+    }
+
+    #[test]
     fn generates_abstract_relation() {
         let mut info = SchemaInfo::default();
         info.relations.insert(
@@ -1590,6 +1659,65 @@ mod tests {
             !authoring_section.contains("relates contributor"),
             "inherited role must not be re-emitted: {authoring_section}"
         );
+    }
+
+    #[test]
+    fn ordered_specialized_role_marks_both_labels_and_parses_as_typeql_3_12() {
+        let mut info = SchemaInfo::default();
+        info.relations.insert(
+            "contribution".into(),
+            RelationSchemaEntry {
+                type_name: "contribution".into(),
+                is_abstract: false,
+                parent_type: None,
+                owned_attributes: vec![],
+                roles: vec![RoleEntry {
+                    role_name: "contributor".into(),
+                    ordered: true,
+                    ..Default::default()
+                }],
+                plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
+            },
+        );
+        info.relations.insert(
+            "authoring".into(),
+            RelationSchemaEntry {
+                type_name: "authoring".into(),
+                is_abstract: false,
+                parent_type: Some("contribution".into()),
+                owned_attributes: vec![],
+                roles: vec![RoleEntry {
+                    role_name: "author".into(),
+                    overrides: Some("contributor".into()),
+                    ordered: true,
+                    ..Default::default()
+                }],
+                plays_cardinalities: BTreeMap::new(),
+                doc: None,
+                meta: Default::default(),
+            },
+        );
+
+        let emitted = generate_define_block(&info);
+        assert_eq!(
+            emitted,
+            concat!(
+                "define\n\n",
+                "relation contribution,\n",
+                "    relates contributor[];\n",
+                "relation authoring sub contribution,\n",
+                "    relates author[] as contributor[];",
+            )
+        );
+        typeql::parse_query(&emitted).expect("TypeQL 3.12 accepts ordered specialization");
+
+        let parsed = SchemaInfo::from_typeql(&emitted)
+            .expect("the schema compatibility parser accepts ordered specialization");
+        let author = &parsed.relations["authoring"].roles[0];
+        assert!(author.ordered);
+        assert_eq!(author.overrides.as_deref(), Some("contributor"));
     }
 
     /// Abstract own role emits `relates participant @abstract`.

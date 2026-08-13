@@ -1113,6 +1113,7 @@ fn production_authority_accepts_released_annotation_and_role_specialization_shap
                     player_type_names: vec!["worker".into()],
                     cardinality: Some((1, Some(1))),
                     overrides: Some("participant".into()),
+                    ordered: true,
                     plays_cardinality: Some((0, Some(1))),
                     ..Default::default()
                 },

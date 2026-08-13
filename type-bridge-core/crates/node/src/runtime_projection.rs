@@ -11,7 +11,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use type_bridge_contract::codec::to_canonical_json;
 use type_bridge_contract::id::{TypeId, TypeKind, is_canonical_thing_iid};
-use type_bridge_contract::projection::{BindingTarget, ProjectedModelForm};
+use type_bridge_contract::projection::{
+    BindingTarget, ProjectedModelForm, ProjectionConfig, RuntimeProjection,
+};
 use type_bridge_contract::projection_wire::decode_runtime_projection_verified;
 use type_bridge_contract::temporal::{
     CanonicalDate, CanonicalDateTime, CanonicalDateTimeTz, CanonicalDuration,
@@ -29,10 +31,13 @@ use type_bridge_orm::{
     AnswerCancellation, AttributeValue, Database, HydratedAttribute, InstalledRuntimeProjection,
     ProviderRuntimeOwner, QueryExecutionResourceLimits, ThingKind, TransactionContext, ValueType,
 };
+use type_bridge_schema::{decode_schema_authority, schema_authority_capability_vocabulary};
+use type_bridge_schema_codegen::{TypeScriptEmitter, verify_projection_evidence};
 
 use crate::match_runtime::{
     NodeQueryCancellation, NodeQueryExecutionResources, revalidate_diagnostic,
 };
+use crate::query_v2_runtime::schema_authority_diagnostic;
 use crate::{
     NodeMatchSessionHandle, NodeRustDatabase, NodeRustTransactionContext, NodeValidatedThingHandle,
 };
@@ -74,6 +79,7 @@ impl NodeRuntimeProjection {
         semantic_fingerprint_json: String,
         projection_fingerprint_json: String,
         registrations_json: String,
+        schema_authority_json: Option<String>,
     ) -> napi::Result<Self> {
         let runtime = decode_runtime_projection_verified(
             projection_json.as_bytes(),
@@ -85,6 +91,17 @@ impl NodeRuntimeProjection {
             return Err(invalid_error(
                 "runtime projection does not target TypeScript",
             ));
+        }
+        match schema_authority_json {
+            Some(schema_authority_json) => {
+                let authority = decode_schema_authority(
+                    schema_authority_json.as_bytes(),
+                    &schema_authority_capability_vocabulary(),
+                )
+                .map_err(|error| diagnostic_error(schema_authority_diagnostic(&error)))?;
+                verify_projection_evidence(&authority, &runtime).map_err(diagnostic_error)?;
+            }
+            None => verify_legacy_typescript_projection_evidence(&runtime)?,
         }
         let registrations: Vec<ModelRegistration> = serde_json::from_str(&registrations_json)
             .map_err(|error| invalid_error(format!("invalid projection registrations: {error}")))?;
@@ -852,6 +869,40 @@ struct ProjectedWire {
     iid: Option<String>,
     value: Option<ScalarWire>,
     values: BTreeMap<String, Value>,
+}
+
+fn verify_legacy_typescript_projection_evidence(runtime: &RuntimeProjection) -> napi::Result<()> {
+    if projection_uses_ordered_collections(runtime) {
+        return Err(invalid_error(
+            "ordered TypeScript runtime projections require compiled schema authority",
+        ));
+    }
+    let emitter = TypeScriptEmitter::new();
+    let resources = emitter.code_resources().map_err(diagnostic_error)?;
+    if runtime.config() != &ProjectionConfig::typescript()
+        || runtime.generator_handlers() != emitter.generator_handlers()
+        || runtime.code_resources() != resources
+    {
+        return Err(invalid_error(
+            "legacy TypeScript runtime projection does not match the exact shipped handler and resource evidence",
+        ));
+    }
+    Ok(())
+}
+
+fn projection_uses_ordered_collections(projection: &RuntimeProjection) -> bool {
+    projection.models().values().any(|model| {
+        model
+            .query_tokens()
+            .fields()
+            .values()
+            .any(|field| !field.multiplicity().collection_mode().is_unordered())
+            || model
+                .query_tokens()
+                .roles()
+                .values()
+                .any(|role| !role.multiplicity().collection_mode().is_unordered())
+    })
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -1738,7 +1789,86 @@ fn runtime_error(message: impl Into<String>) -> Error {
 
 #[cfg(test)]
 mod tests {
+    use type_bridge_contract::codec::to_canonical_json;
+    use type_bridge_contract::fingerprint::SemanticProfileId;
+    use type_bridge_contract::managed_scope::ManagedScopeId;
+    use type_bridge_contract::projection::{
+        CodeResourceDigest, ProjectionConfig, ProjectionHandler, RuntimeProjection,
+    };
+    use type_bridge_contract::schema::DocumentId;
+    use type_bridge_schema::{
+        ManagedDeltaContext, SchemaDocumentSet, VerifiedSchemaAuthority, build_schema_authority,
+        encode_schema_authority, normalize_documents, project,
+    };
+    use type_bridge_schema_codegen::{PythonEmitter, TypeScriptEmitter};
+
     use super::*;
+
+    const ORDERED_SCHEMA: &str = r#"format: typebridge.schema/v2
+attributes:
+  tag: { value: string }
+entities:
+  person:
+    owns:
+      tag:
+        card: { min: 0, max: 4 }
+        ordered: true
+        distinct: true
+"#;
+
+    fn authority(source: &str, document: &str) -> VerifiedSchemaAuthority {
+        let documents =
+            SchemaDocumentSet::parse([(DocumentId::new(document).unwrap(), source)]).unwrap();
+        let declared = normalize_documents(&documents).unwrap();
+        let context = ManagedDeltaContext::new(
+            ManagedScopeId::new("node-native").unwrap(),
+            SemanticProfileId::new("typedb-3.12.1/v1").unwrap(),
+            schema_authority_capability_vocabulary(),
+        );
+        build_schema_authority(&declared, declared.required_capabilities(), &context).unwrap()
+    }
+
+    fn typescript_projection(authority: &VerifiedSchemaAuthority) -> RuntimeProjection {
+        let emitter = TypeScriptEmitter::new();
+        project(
+            authority.resolved_schema(),
+            BindingTarget::TypeScript,
+            &ProjectionConfig::typescript(),
+            &emitter.generator_handlers_for(authority.resolved_schema()),
+            &emitter
+                .code_resources_for(authority.resolved_schema())
+                .unwrap(),
+        )
+        .unwrap()
+    }
+
+    fn evidence(projection: &RuntimeProjection) -> (String, String, String) {
+        (
+            String::from_utf8(to_canonical_json(projection).unwrap()).unwrap(),
+            String::from_utf8(to_canonical_json(projection.semantic_fingerprint()).unwrap())
+                .unwrap(),
+            String::from_utf8(to_canonical_json(projection.projection_fingerprint()).unwrap())
+                .unwrap(),
+        )
+    }
+
+    fn registrations(projection: &RuntimeProjection) -> String {
+        serde_json::to_string(
+            &projection
+                .models()
+                .iter()
+                .map(|(id, model)| {
+                    serde_json::json!({
+                        "typeKey": canonical_type_key(id).unwrap(),
+                        "targetName": model.target_name().as_str(),
+                        "create": model.create().enabled(),
+                        "reference": model.reference_read().target_name().is_some(),
+                    })
+                })
+                .collect::<Vec<_>>(),
+        )
+        .unwrap()
+    }
 
     #[test]
     fn scalar_envelopes_preserve_long_and_reject_noncanonical_domains() {
@@ -1768,5 +1898,128 @@ mod tests {
             value: Value::String("2023-02-29".into()),
         };
         assert!(scalar_to_attribute(&bad_date, ValueType::Date).is_err());
+    }
+
+    #[test]
+    fn install_rejects_a_foreign_binding_target_before_registration() {
+        let authority = authority(ORDERED_SCHEMA, "node-foreign-target.yaml");
+        let emitter = PythonEmitter::new();
+        let projection = project(
+            authority.resolved_schema(),
+            BindingTarget::Python,
+            &ProjectionConfig::python(),
+            &emitter.generator_handlers_for(authority.resolved_schema()),
+            &emitter
+                .code_resources_for(authority.resolved_schema())
+                .unwrap(),
+        )
+        .unwrap();
+        let (projection, semantic, fingerprint) = evidence(&projection);
+        let error =
+            NodeRuntimeProjection::new(projection, semantic, fingerprint, "[]".into(), None)
+                .err()
+                .expect("a Python projection must not install as TypeScript");
+        assert!(
+            error
+                .to_string()
+                .contains("runtime projection does not target TypeScript")
+        );
+    }
+
+    #[test]
+    fn ordered_install_rejects_missing_stale_forged_reordered_and_foreign_evidence() {
+        let ordered_authority = authority(ORDERED_SCHEMA, "node-ordered.yaml");
+        let authority_json =
+            String::from_utf8(encode_schema_authority(&ordered_authority)).unwrap();
+        let exact = typescript_projection(&ordered_authority);
+        let emitter = TypeScriptEmitter::new();
+        assert_eq!(
+            exact.generator_handlers(),
+            [ProjectionHandler::typescript_v2()]
+        );
+
+        let (exact_json, exact_semantic, exact_fingerprint) = evidence(&exact);
+        NodeRuntimeProjection::new(
+            exact_json.clone(),
+            exact_semantic.clone(),
+            exact_fingerprint.clone(),
+            registrations(&exact),
+            Some(authority_json.clone()),
+        )
+        .expect("the exact ordered TypeScript package evidence must install");
+
+        let rejected = |projection: &RuntimeProjection,
+                        projection_json: Option<String>,
+                        authority_json: Option<&str>| {
+            let (canonical, semantic, fingerprint) = evidence(projection);
+            NodeRuntimeProjection::new(
+                projection_json.unwrap_or(canonical),
+                semantic,
+                fingerprint,
+                "[]".into(),
+                authority_json.map(str::to_owned),
+            )
+            .err()
+            .expect("hostile ordered projection evidence must fail")
+        };
+
+        let mut missing_resources = exact.code_resources().to_vec();
+        missing_resources.pop();
+        let missing = project(
+            ordered_authority.resolved_schema(),
+            BindingTarget::TypeScript,
+            &ProjectionConfig::typescript(),
+            &[ProjectionHandler::typescript_v2()],
+            &missing_resources,
+        )
+        .unwrap();
+
+        let stale = project(
+            ordered_authority.resolved_schema(),
+            BindingTarget::TypeScript,
+            &ProjectionConfig::typescript(),
+            &emitter.generator_handlers(),
+            &emitter.code_resources().unwrap(),
+        )
+        .unwrap();
+
+        let mut forged_resources = exact.code_resources().to_vec();
+        let forged_id = forged_resources[0].id().as_str().to_owned();
+        forged_resources[0] =
+            CodeResourceDigest::from_bytes(forged_id, b"forged TypeScript resource").unwrap();
+        let forged = project(
+            ordered_authority.resolved_schema(),
+            BindingTarget::TypeScript,
+            &ProjectionConfig::typescript(),
+            &[ProjectionHandler::typescript_v2()],
+            &forged_resources,
+        )
+        .unwrap();
+
+        let mut reordered: Value = serde_json::from_str(&exact_json).unwrap();
+        reordered["code_resources"]
+            .as_array_mut()
+            .unwrap()
+            .reverse();
+        let reordered = String::from_utf8(to_canonical_json(&reordered).unwrap()).unwrap();
+
+        let foreign = authority(
+            "format: typebridge.schema/v2\nentities:\n  foreign: {}\n",
+            "node-foreign.yaml",
+        );
+        let foreign = String::from_utf8(encode_schema_authority(&foreign)).unwrap();
+
+        for error in [
+            rejected(&exact, None, None),
+            rejected(&missing, None, Some(&authority_json)),
+            rejected(&stale, None, Some(&authority_json)),
+            rejected(&forged, None, Some(&authority_json)),
+            rejected(&exact, Some(reordered), Some(&authority_json)),
+            rejected(&exact, None, Some(&foreign)),
+        ] {
+            assert!(
+                error.to_string().contains("projection") || error.to_string().contains("canonical")
+            );
+        }
     }
 }

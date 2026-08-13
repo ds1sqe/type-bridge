@@ -449,6 +449,11 @@ run_step "pytest tests/unit/" \
 printf "${BOLD}━━━ Node (build + offline) ━━━${RESET}\n\n"
 run_step "npm ci"            bash -c "cd '$NODE_DIR' && npm ci"
 run_step "npm run build"     bash -c "cd '$NODE_DIR' && npm run build"
+run_step "ordered four-binding generated package compiler smoke" \
+    cargo test --locked --manifest-path type-bridge-core/Cargo.toml \
+    -p type-bridge-schema-codegen --test ordered_collections \
+    ordered_generated_packages_pass_all_four_language_compilers \
+    -- --exact --ignored
 run_step "npm run scope:probe" bash -c "cd '$NODE_DIR' && npm run scope:probe"
 run_step "npm run test:unit" bash -c "cd '$NODE_DIR' && npm run test:unit"
 run_step "npm run test:dts"  bash -c "cd '$NODE_DIR' && npm run test:dts"

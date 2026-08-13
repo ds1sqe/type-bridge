@@ -1,4 +1,8 @@
 use std::collections::BTreeSet;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::projection::{
@@ -10,9 +14,37 @@ use type_bridge_schema::{
     ResolvedSchema, SchemaDocumentSet, VerifiedSchemaAuthority, normalize_documents, project,
     resolve,
 };
-use type_bridge_schema_codegen::{CEmitter, PythonEmitter, RustEmitter, TypeScriptEmitter};
+use type_bridge_schema_codegen::{
+    CEmitter, PythonEmitter, RustEmitter, TypeScriptEmitter, verify_projection_evidence,
+};
 
 mod support;
+
+static STAGE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+struct Stage(PathBuf);
+
+impl Stage {
+    fn new() -> Self {
+        let sequence = STAGE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "typebridge-ordered-four-target-{}-{sequence}",
+            std::process::id(),
+        ));
+        fs::create_dir(&path).expect("unique ordered-collection stage creates");
+        Self(path)
+    }
+
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for Stage {
+    fn drop(&mut self) {
+        fs::remove_dir_all(&self.0).expect("ordered-collection stage removes");
+    }
+}
 
 const UNORDERED_SOURCE: &str = r#"format: typebridge.schema/v2
 attributes:
@@ -112,6 +144,75 @@ fn projection(
     project(schema, target, config, handlers, resources).unwrap()
 }
 
+fn write_package(package: &type_bridge_schema_codegen::GeneratedPackage, root: &Path) {
+    for (relative, bytes) in package.files() {
+        let path = root.join(relative);
+        fs::create_dir_all(path.parent().expect("generated path has a parent")).unwrap();
+        fs::write(path, bytes).unwrap();
+    }
+}
+
+fn checked_command(command: &mut Command, description: &str) -> Output {
+    let output = command.output().unwrap_or_else(|error| {
+        panic!("{description} did not launch: {error}");
+    });
+    assert!(
+        output.status.success(),
+        "{description} failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    output
+}
+
+fn copy_tree(source: &Path, destination: &Path) {
+    fs::create_dir_all(destination).unwrap();
+    for entry in fs::read_dir(source).unwrap() {
+        let entry = entry.unwrap();
+        let target = destination.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_tree(&entry.path(), &target);
+        } else {
+            fs::copy(entry.path(), target).unwrap();
+        }
+    }
+}
+
+fn assert_exact_and_legacy_evidence(
+    schema: &ResolvedSchema,
+    authority: &VerifiedSchemaAuthority,
+    target: BindingTarget,
+    config: ProjectionConfig,
+    exact: (Vec<ProjectionHandler>, Vec<CodeResourceDigest>),
+    legacy: (Vec<ProjectionHandler>, Vec<CodeResourceDigest>),
+) {
+    let (exact_handlers, exact_resources) = exact;
+    let (legacy_handlers, legacy_resources) = legacy;
+    let exact = projection(schema, target, &config, &exact_handlers, &exact_resources);
+    verify_projection_evidence(authority, &exact).unwrap();
+
+    let legacy = projection(schema, target, &config, &legacy_handlers, &legacy_resources);
+    assert_eq!(
+        verify_projection_evidence(authority, &legacy)
+            .unwrap_err()
+            .code()
+            .as_str(),
+        "schema_codegen_projection_evidence_mismatch",
+    );
+
+    let mut forged_resources = exact_resources;
+    let forged_id = forged_resources[0].id().as_str().to_owned();
+    forged_resources[0] = CodeResourceDigest::from_bytes(forged_id, b"forged resource").unwrap();
+    let forged = projection(schema, target, &config, &exact_handlers, &forged_resources);
+    assert_eq!(
+        verify_projection_evidence(authority, &forged)
+            .unwrap_err()
+            .code()
+            .as_str(),
+        "schema_codegen_projection_evidence_mismatch",
+    );
+}
+
 #[test]
 fn ordered_projection_selects_successor_evidence_and_descriptors_in_all_bindings() {
     let (schema, authority) = resolved(ORDERED_SOURCE);
@@ -145,6 +246,12 @@ fn ordered_projection_selects_successor_evidence_and_descriptors_in_all_bindings
     assert!(python_stub.contains("Sequence[Tag]"));
     assert!(python_stub.contains("tuple[Tag, ...]"));
     assert!(python_runtime.contains("_TYPE_BRIDGE_ORDERED_COLLECTION_RESOURCE_VERSION = 2"));
+    assert!(python_models.contains("_install_runtime_projection("));
+    assert!(python_runtime.contains("def _install_runtime_projection_with_authority("));
+    assert!(python_runtime.contains("from ._authority import SCHEMA_AUTHORITY_BYTES"));
+    assert!(python_runtime.contains(
+        "globals()[\"install_runtime_projection\"] = _install_runtime_projection_with_authority"
+    ));
 
     let typescript = TypeScriptEmitter::new();
     let typescript_handlers = typescript.generator_handlers_for(&schema);
@@ -176,6 +283,11 @@ fn ordered_projection_selects_successor_evidence_and_descriptors_in_all_bindings
     assert!(typescript_models.contains("readonly (Tag)[]"));
     assert!(typescript_runtime.contains("readonly collection_mode?: \"ordered_list\""));
     assert!(typescript_runtime.contains("TYPE_BRIDGE_ORDERED_COLLECTION_RESOURCE_VERSION = 2"));
+    assert!(
+        std::str::from_utf8(typescript_package.get("src/index.ts").unwrap())
+            .unwrap()
+            .contains("__installOrderedRuntimeProjectionPackage(")
+    );
 
     let rust = RustEmitter::new();
     let rust_handlers = rust.generator_handlers_for(&schema);
@@ -240,6 +352,205 @@ fn ordered_projection_selects_successor_evidence_and_descriptors_in_all_bindings
 }
 
 #[test]
+fn shared_package_gate_rejects_legacy_and_forged_ordered_evidence_in_all_bindings() {
+    let (schema, authority) = resolved(ORDERED_SOURCE);
+
+    let python = PythonEmitter::new();
+    assert_exact_and_legacy_evidence(
+        &schema,
+        &authority,
+        BindingTarget::Python,
+        ProjectionConfig::python(),
+        (
+            python.generator_handlers_for(&schema),
+            python.code_resources_for(&schema).unwrap(),
+        ),
+        (
+            python.generator_handlers(),
+            python.code_resources().unwrap(),
+        ),
+    );
+
+    let typescript = TypeScriptEmitter::new();
+    assert_exact_and_legacy_evidence(
+        &schema,
+        &authority,
+        BindingTarget::TypeScript,
+        ProjectionConfig::typescript(),
+        (
+            typescript.generator_handlers_for(&schema),
+            typescript.code_resources_for(&schema).unwrap(),
+        ),
+        (
+            typescript.generator_handlers(),
+            typescript.code_resources().unwrap(),
+        ),
+    );
+
+    let rust = RustEmitter::new();
+    assert_exact_and_legacy_evidence(
+        &schema,
+        &authority,
+        BindingTarget::Rust,
+        ProjectionConfig::rust(),
+        (
+            rust.generator_handlers_for(&schema),
+            rust.code_resources_for(&schema).unwrap(),
+        ),
+        (rust.generator_handlers(), rust.code_resources().unwrap()),
+    );
+
+    let c = CEmitter::new();
+    assert_exact_and_legacy_evidence(
+        &schema,
+        &authority,
+        BindingTarget::C,
+        ProjectionConfig::c(CSymbolPrefix::new("ordered_evidence").unwrap()),
+        (
+            c.generator_handlers_for(&schema),
+            c.code_resources_for(&schema).unwrap(),
+        ),
+        (c.generator_handlers(), c.code_resources().unwrap()),
+    );
+}
+
+#[test]
+#[ignore = "requires the combined Python, TypeScript, Rust, and C compiler toolchain"]
+fn ordered_generated_packages_pass_all_four_language_compilers() {
+    let (schema, authority) = resolved(ORDERED_SOURCE);
+    let stage = Stage::new();
+
+    let python = PythonEmitter::new();
+    let python_projection = projection(
+        &schema,
+        BindingTarget::Python,
+        &ProjectionConfig::python(),
+        &python.generator_handlers_for(&schema),
+        &python.code_resources_for(&schema).unwrap(),
+    );
+    let python_root = stage.path().join("python");
+    write_package(
+        &python.emit(&python_projection, &authority).unwrap(),
+        &python_root,
+    );
+    let mut python_command = Command::new("python3");
+    python_command.arg("-m").arg("py_compile");
+    for path in ["_authority.py", "_models.py", "_query.py", "_runtime.py"] {
+        python_command.arg(python_root.join(path));
+    }
+    checked_command(
+        &mut python_command,
+        "ordered generated Python syntax compile",
+    );
+
+    let typescript = TypeScriptEmitter::new();
+    let typescript_projection = projection(
+        &schema,
+        BindingTarget::TypeScript,
+        &ProjectionConfig::typescript(),
+        &typescript.generator_handlers_for(&schema),
+        &typescript.code_resources_for(&schema).unwrap(),
+    );
+    let typescript_root = stage.path().join("typescript");
+    write_package(
+        &typescript.emit(&typescript_projection, &authority).unwrap(),
+        &typescript_root,
+    );
+    let node_package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("node");
+    let installed_node = stage
+        .path()
+        .join("node_modules")
+        .join("@type-bridge")
+        .join("node");
+    fs::create_dir_all(&installed_node).unwrap();
+    fs::copy(
+        node_package.join("package.json"),
+        installed_node.join("package.json"),
+    )
+    .unwrap();
+    copy_tree(&node_package.join("dist"), &installed_node.join("dist"));
+    checked_command(
+        Command::new(node_package.join("node_modules/.bin/tsc"))
+            .arg("--project")
+            .arg(typescript_root.join("tsconfig.json")),
+        "ordered generated TypeScript compile",
+    );
+
+    let rust = RustEmitter::new();
+    let rust_projection = projection(
+        &schema,
+        BindingTarget::Rust,
+        &ProjectionConfig::rust(),
+        &rust.generator_handlers_for(&schema),
+        &rust.code_resources_for(&schema).unwrap(),
+    );
+    let rust_root = stage.path().join("rust");
+    write_package(
+        &rust.emit(&rust_projection, &authority).unwrap(),
+        &rust_root,
+    );
+    let rust_sdk = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("rust");
+    let patch = format!(
+        "patch.crates-io.type-bridge.path=\"{}\"",
+        rust_sdk.to_string_lossy().replace('\\', "\\\\"),
+    );
+    checked_command(
+        Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()))
+            .arg("check")
+            .arg("--quiet")
+            .arg("--offline")
+            .arg("--manifest-path")
+            .arg(rust_root.join("Cargo.toml"))
+            .arg("--config")
+            .arg(patch)
+            .env(
+                "CARGO_TARGET_DIR",
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .unwrap()
+                    .parent()
+                    .unwrap()
+                    .join("target/ordered-four-target"),
+            ),
+        "ordered generated Rust compile",
+    );
+
+    let c = CEmitter::new();
+    let c_projection = projection(
+        &schema,
+        BindingTarget::C,
+        &ProjectionConfig::c(CSymbolPrefix::new("ordered_codegen").unwrap()),
+        &c.generator_handlers_for(&schema),
+        &c.code_resources_for(&schema).unwrap(),
+    );
+    let c_root = stage.path().join("c");
+    write_package(&c.emit(&c_projection, &authority).unwrap(), &c_root);
+    let c_runtime_include = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("c/include");
+    checked_command(
+        Command::new("cc")
+            .args(["-std=c17", "-Wall", "-Wextra", "-Werror", "-pedantic"])
+            .arg("-I")
+            .arg(c_root.join("include"))
+            .arg("-I")
+            .arg(c_runtime_include)
+            .arg("-c")
+            .arg(c_root.join("src/models.c"))
+            .arg("-o")
+            .arg(c_root.join("models.o")),
+        "ordered generated C17 compile",
+    );
+}
+
+#[test]
 fn unordered_schema_aware_evidence_and_fixed_resources_remain_exactly_legacy() {
     let (schema, authority) = resolved(UNORDERED_SOURCE);
 
@@ -268,6 +579,9 @@ fn unordered_schema_aware_evidence_and_fixed_resources_remain_exactly_legacy() {
         python_package.get("_runtime.pyi").unwrap(),
         include_bytes!("../src/python/runtime.pyi")
     );
+    let python_models = std::str::from_utf8(python_package.get("_models.py").unwrap()).unwrap();
+    assert!(python_models.contains("_install_runtime_projection("));
+    assert!(!python_models.contains("_SCHEMA_AUTHORITY_BYTES"));
 
     let typescript = TypeScriptEmitter::new();
     assert_eq!(
@@ -290,6 +604,10 @@ fn unordered_schema_aware_evidence_and_fixed_resources_remain_exactly_legacy() {
         typescript_package.get("src/runtime.ts").unwrap(),
         include_bytes!("../src/typescript/runtime.ts")
     );
+    let typescript_index =
+        std::str::from_utf8(typescript_package.get("src/index.ts").unwrap()).unwrap();
+    assert!(typescript_index.contains("__installRuntimeProjectionPackage("));
+    assert!(!typescript_index.contains("__installOrderedRuntimeProjectionPackage("));
 
     let rust = RustEmitter::new();
     assert_eq!(

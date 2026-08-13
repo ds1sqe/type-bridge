@@ -428,7 +428,7 @@ pub fn query_v2_authority(
     })
 }
 
-fn schema_authority_diagnostic(error: &SchemaAuthorityError) -> Diagnostic {
+pub(crate) fn schema_authority_diagnostic(error: &SchemaAuthorityError) -> Diagnostic {
     if let Some(contract) = error.contract() {
         return contract.clone();
     }

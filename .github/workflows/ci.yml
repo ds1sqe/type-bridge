@@ -400,6 +400,13 @@ jobs:
       - name: Build native module and TypeScript surface
         run: npm run build
 
+      - name: Compile ordered packages for all four bindings
+        run: >-
+          cargo test --locked --manifest-path ../../Cargo.toml
+          -p type-bridge-schema-codegen --test ordered_collections
+          ordered_generated_packages_pass_all_four_language_compilers
+          -- --exact --ignored
+
       - name: Verify native module built
         run: ls type_bridge_node.*.node
 

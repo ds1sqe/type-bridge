@@ -4,13 +4,15 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyBool, PyDict, PyFloat, PyInt, PyList, PyString, PyTuple, PyType};
+use pyo3::types::{
+    PyAny, PyBool, PyBytes, PyDict, PyFloat, PyInt, PyList, PyString, PyTuple, PyType,
+};
 use pythonize::pythonize;
 use type_bridge_contract::codec::to_canonical_json;
 use type_bridge_contract::id::{TypeId, TypeKind, is_canonical_thing_iid};
-#[cfg(test)]
-use type_bridge_contract::projection::RuntimeProjection;
-use type_bridge_contract::projection::{BindingTarget, ProjectedModelForm};
+use type_bridge_contract::projection::{
+    BindingTarget, ProjectedModelForm, ProjectionConfig, RuntimeProjection,
+};
 use type_bridge_contract::projection_wire::decode_runtime_projection_verified;
 use type_bridge_contract::value::ValueTypeTag;
 use type_bridge_core_lib::ast::{Clause, Constraint, Pattern, RolePlayer, Statement};
@@ -28,11 +30,14 @@ use type_bridge_orm::session::{Database, TransactionContext};
 use type_bridge_orm::value::AttributeValue;
 use type_bridge_orm::{HydratedAttribute, HydratedRolePlayer, HydratedThing, ThingKind};
 use type_bridge_orm::{InstalledRuntimeProjection, ProviderRuntimeOwner};
+use type_bridge_schema::{decode_schema_authority, schema_authority_capability_vocabulary};
+use type_bridge_schema_codegen::{PythonEmitter, verify_projection_evidence};
 
 use crate::match_runtime::{
     PyMatchSessionHandle, PyQueryCancellation, PyQueryExecutionResourceLimits,
 };
 use crate::orm_runtime::{PyRustDatabase, PyRustTransactionContext, provider_block_on};
+use crate::query_v2_runtime::schema_authority_diagnostic;
 use crate::validated_result_runtime::PyValidatedMatchThingHandle;
 
 struct RegisteredModel {
@@ -113,12 +118,20 @@ pub struct PyRuntimeProjection {
 impl PyRuntimeProjection {
     /// Verify canonical projection bytes and install their exact generated classes.
     #[new]
+    #[pyo3(signature = (
+        projection_json,
+        semantic_fingerprint_json,
+        projection_fingerprint_json,
+        models,
+        schema_authority = None,
+    ))]
     fn new(
         py: Python<'_>,
         projection_json: &str,
         semantic_fingerprint_json: &str,
         projection_fingerprint_json: &str,
         models: Vec<(Py<PyType>, Option<Py<PyType>>)>,
+        schema_authority: Option<&Bound<'_, PyBytes>>,
     ) -> PyResult<Self> {
         install_projection(
             py,
@@ -126,6 +139,7 @@ impl PyRuntimeProjection {
             semantic_fingerprint_json,
             projection_fingerprint_json,
             models,
+            schema_authority.map(|authority| authority.as_bytes()),
         )
         .map(|package| Self { package })
     }
@@ -1189,6 +1203,7 @@ fn install_projection(
     semantic_fingerprint_json: &str,
     projection_fingerprint_json: &str,
     models: Vec<(Py<PyType>, Option<Py<PyType>>)>,
+    schema_authority: Option<&[u8]>,
 ) -> PyResult<Arc<InstalledPackage>> {
     let runtime = decode_runtime_projection_verified(
         projection_json.as_bytes(),
@@ -1200,6 +1215,17 @@ fn install_projection(
         return Err(py_runtime_error(
             "runtime projection does not target Python",
         ));
+    }
+    match schema_authority {
+        Some(schema_authority) => {
+            let authority = decode_schema_authority(
+                schema_authority,
+                &schema_authority_capability_vocabulary(),
+            )
+            .map_err(|error| py_diagnostic(schema_authority_diagnostic(&error)))?;
+            verify_projection_evidence(&authority, &runtime).map_err(py_diagnostic)?;
+        }
+        None => verify_legacy_python_projection_evidence(&runtime)?,
     }
     let mut expected = BTreeMap::new();
     let mut types_by_label = BTreeMap::new();
@@ -1266,6 +1292,40 @@ fn install_projection(
         models: registered,
         types_by_label,
     }))
+}
+
+fn verify_legacy_python_projection_evidence(runtime: &RuntimeProjection) -> PyResult<()> {
+    if projection_uses_ordered_collections(runtime) {
+        return Err(py_value_error(
+            "ordered Python runtime projections require compiled schema authority",
+        ));
+    }
+    let emitter = PythonEmitter::new();
+    let resources = emitter.code_resources().map_err(py_diagnostic)?;
+    if runtime.config() != &ProjectionConfig::python()
+        || runtime.generator_handlers() != emitter.generator_handlers()
+        || runtime.code_resources() != resources
+    {
+        return Err(py_value_error(
+            "legacy Python runtime projection does not match the exact shipped handler and resource evidence",
+        ));
+    }
+    Ok(())
+}
+
+fn projection_uses_ordered_collections(projection: &RuntimeProjection) -> bool {
+    projection.models().values().any(|model| {
+        model
+            .query_tokens()
+            .fields()
+            .values()
+            .any(|field| !field.multiplicity().collection_mode().is_unordered())
+            || model
+                .query_tokens()
+                .roles()
+                .values()
+                .any(|role| !role.multiplicity().collection_mode().is_unordered())
+    })
 }
 
 fn verify_class(
@@ -2413,10 +2473,19 @@ pub fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
 #[cfg(test)]
 mod tests {
     use pyo3::ffi;
+    use type_bridge_contract::capability::{CapabilityId, CapabilitySet};
     use type_bridge_contract::fingerprint::SemanticProfileId;
-    use type_bridge_contract::projection::{BindingTarget, ProjectionConfig, ProjectionHandler};
+    use type_bridge_contract::managed_scope::ManagedScopeId;
+    use type_bridge_contract::projection::{
+        BindingTarget, CodeResourceDigest, ProjectionConfig, ProjectionHandler,
+    };
     use type_bridge_contract::schema::DocumentId;
-    use type_bridge_schema::{SchemaDocumentSet, normalize_documents, project, resolve};
+    use type_bridge_schema::{
+        BUILTIN_SCHEMA_CAPABILITY_IDS, ManagedDeltaContext, SchemaDocumentSet,
+        VerifiedSchemaAuthority, build_schema_authority, encode_schema_authority,
+        normalize_documents, project,
+    };
+    use type_bridge_schema_codegen::{PythonEmitter, TypeScriptEmitter};
 
     use super::*;
 
@@ -2444,19 +2513,44 @@ plays:
     container: [item]
 "#;
 
-    fn projection() -> RuntimeProjection {
+    const ORDERED_SCHEMA: &str = r#"format: typebridge.schema/v2
+attributes:
+  tag: { value: string }
+entities:
+  person:
+    owns:
+      tag:
+        card: { min: 0, max: 4 }
+        ordered: true
+        distinct: true
+"#;
+
+    fn authority(source: &str, document: &str) -> VerifiedSchemaAuthority {
         let documents =
-            SchemaDocumentSet::parse([(DocumentId::new("python-native.yaml").unwrap(), SCHEMA)])
-                .unwrap();
+            SchemaDocumentSet::parse([(DocumentId::new(document).unwrap(), source)]).unwrap();
         let declared = normalize_documents(&documents).unwrap();
-        let profile = SemanticProfileId::new("typedb-3.12.1/v1").unwrap();
-        let resolved = resolve(&declared, &profile).unwrap();
+        let available: CapabilitySet = BUILTIN_SCHEMA_CAPABILITY_IDS
+            .iter()
+            .map(|id| CapabilityId::new(*id).unwrap())
+            .collect();
+        let context = ManagedDeltaContext::new(
+            ManagedScopeId::new("python-native").unwrap(),
+            SemanticProfileId::new("typedb-3.12.1/v1").unwrap(),
+            available,
+        );
+        build_schema_authority(&declared, declared.required_capabilities(), &context).unwrap()
+    }
+
+    fn python_projection(authority: &VerifiedSchemaAuthority) -> RuntimeProjection {
+        let emitter = PythonEmitter::new();
         project(
-            &resolved,
+            authority.resolved_schema(),
             BindingTarget::Python,
             &ProjectionConfig::python(),
-            &[ProjectionHandler::python_v1()],
-            &[],
+            &emitter.generator_handlers_for(authority.resolved_schema()),
+            &emitter
+                .code_resources_for(authority.resolved_schema())
+                .unwrap(),
         )
         .unwrap()
     }
@@ -2582,7 +2676,8 @@ class Reference:
     }
 
     fn install(py: Python<'_>) -> (RuntimeProjection, Arc<InstalledPackage>) {
-        let projection = projection();
+        let authority = authority(SCHEMA, "python-native.yaml");
+        let projection = python_projection(&authority);
         let projection_json = String::from_utf8(to_canonical_json(&projection).unwrap()).unwrap();
         let semantic =
             String::from_utf8(to_canonical_json(projection.semantic_fingerprint()).unwrap())
@@ -2596,6 +2691,7 @@ class Reference:
             &semantic,
             &fingerprint,
             classes(py, &projection),
+            None,
         )
         .unwrap();
         (projection, package)
@@ -2605,7 +2701,8 @@ class Reference:
     fn install_is_canonical_tamper_evident_and_requires_exact_coverage() {
         pyo3::prepare_freethreaded_python();
         Python::with_gil(|py| {
-            let projection = projection();
+            let authority = authority(SCHEMA, "python-native.yaml");
+            let projection = python_projection(&authority);
             let projection_json =
                 String::from_utf8(to_canonical_json(&projection).unwrap()).unwrap();
             let semantic =
@@ -2620,13 +2717,15 @@ class Reference:
                 &semantic,
                 &fingerprint,
                 classes(py, &projection),
+                None,
             )
             .unwrap();
 
             let mut missing = classes(py, &projection);
             missing.pop();
             assert!(
-                install_projection(py, &projection_json, &semantic, &fingerprint, missing).is_err()
+                install_projection(py, &projection_json, &semantic, &fingerprint, missing, None,)
+                    .is_err()
             );
 
             let mut tampered: serde_json::Value = serde_json::from_str(&projection_json).unwrap();
@@ -2638,10 +2737,162 @@ class Reference:
                     &tampered,
                     &semantic,
                     &fingerprint,
-                    classes(py, &projection)
+                    classes(py, &projection),
+                    None,
                 )
                 .is_err()
             );
+        });
+    }
+
+    #[test]
+    fn install_rejects_a_foreign_binding_target_before_registration() {
+        let authority = authority(SCHEMA, "typescript-native.yaml");
+        let emitter = TypeScriptEmitter::new();
+        let projection = project(
+            authority.resolved_schema(),
+            BindingTarget::TypeScript,
+            &ProjectionConfig::typescript(),
+            &emitter.generator_handlers_for(authority.resolved_schema()),
+            &emitter
+                .code_resources_for(authority.resolved_schema())
+                .unwrap(),
+        )
+        .unwrap();
+        let projection_json = String::from_utf8(to_canonical_json(&projection).unwrap()).unwrap();
+        let semantic =
+            String::from_utf8(to_canonical_json(projection.semantic_fingerprint()).unwrap())
+                .unwrap();
+        let fingerprint =
+            String::from_utf8(to_canonical_json(projection.projection_fingerprint()).unwrap())
+                .unwrap();
+
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            let error =
+                install_projection(py, &projection_json, &semantic, &fingerprint, vec![], None)
+                    .err()
+                    .expect("a TypeScript projection must not install as Python");
+            assert!(
+                error
+                    .to_string()
+                    .contains("runtime projection does not target Python")
+            );
+        });
+    }
+
+    #[test]
+    fn ordered_install_rejects_missing_stale_forged_reordered_and_foreign_evidence() {
+        let ordered_authority = authority(ORDERED_SCHEMA, "python-ordered.yaml");
+        let authority_bytes = encode_schema_authority(&ordered_authority);
+        let exact = python_projection(&ordered_authority);
+        let emitter = PythonEmitter::new();
+        assert_eq!(exact.generator_handlers(), [ProjectionHandler::python_v2()]);
+
+        let rejected = |py: Python<'_>,
+                        projection: &RuntimeProjection,
+                        projection_json: Option<String>,
+                        authority_bytes: Option<&[u8]>| {
+            let projection_json = projection_json.unwrap_or_else(|| {
+                String::from_utf8(to_canonical_json(projection).unwrap()).unwrap()
+            });
+            let semantic =
+                String::from_utf8(to_canonical_json(projection.semantic_fingerprint()).unwrap())
+                    .unwrap();
+            let fingerprint =
+                String::from_utf8(to_canonical_json(projection.projection_fingerprint()).unwrap())
+                    .unwrap();
+            install_projection(
+                py,
+                &projection_json,
+                &semantic,
+                &fingerprint,
+                vec![],
+                authority_bytes,
+            )
+            .err()
+            .expect("hostile ordered projection evidence must fail")
+        };
+
+        let mut missing_resources = exact.code_resources().to_vec();
+        missing_resources.pop();
+        let missing = project(
+            ordered_authority.resolved_schema(),
+            BindingTarget::Python,
+            &ProjectionConfig::python(),
+            &[ProjectionHandler::python_v2()],
+            &missing_resources,
+        )
+        .unwrap();
+
+        let stale = project(
+            ordered_authority.resolved_schema(),
+            BindingTarget::Python,
+            &ProjectionConfig::python(),
+            &emitter.generator_handlers(),
+            &emitter.code_resources().unwrap(),
+        )
+        .unwrap();
+
+        let mut forged_resources = exact.code_resources().to_vec();
+        let forged_id = forged_resources[0].id().as_str().to_owned();
+        forged_resources[0] =
+            CodeResourceDigest::from_bytes(forged_id, b"forged Python resource").unwrap();
+        let forged = project(
+            ordered_authority.resolved_schema(),
+            BindingTarget::Python,
+            &ProjectionConfig::python(),
+            &[ProjectionHandler::python_v2()],
+            &forged_resources,
+        )
+        .unwrap();
+
+        let mut reordered: serde_json::Value =
+            serde_json::from_slice(&to_canonical_json(&exact).unwrap()).unwrap();
+        reordered["code_resources"]
+            .as_array_mut()
+            .unwrap()
+            .reverse();
+        let reordered = String::from_utf8(to_canonical_json(&reordered).unwrap()).unwrap();
+
+        let foreign = authority(
+            "format: typebridge.schema/v2\nentities:\n  foreign: {}\n",
+            "python-foreign.yaml",
+        );
+        let foreign = encode_schema_authority(&foreign);
+
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            let exact_json = String::from_utf8(to_canonical_json(&exact).unwrap()).unwrap();
+            let exact_semantic =
+                String::from_utf8(to_canonical_json(exact.semantic_fingerprint()).unwrap())
+                    .unwrap();
+            let exact_fingerprint =
+                String::from_utf8(to_canonical_json(exact.projection_fingerprint()).unwrap())
+                    .unwrap();
+            install_projection(
+                py,
+                &exact_json,
+                &exact_semantic,
+                &exact_fingerprint,
+                classes(py, &exact),
+                Some(&authority_bytes),
+            )
+            .expect("the exact ordered Python package evidence must install");
+
+            for error in [
+                rejected(py, &exact, None, None),
+                rejected(py, &missing, None, Some(&authority_bytes)),
+                rejected(py, &stale, None, Some(&authority_bytes)),
+                rejected(py, &forged, None, Some(&authority_bytes)),
+                rejected(py, &exact, Some(reordered), Some(&authority_bytes)),
+                rejected(py, &exact, None, Some(&foreign)),
+            ] {
+                assert!(
+                    error.to_string().contains("projection")
+                        || error.to_string().contains("canonical")
+                );
+            }
         });
     }
 

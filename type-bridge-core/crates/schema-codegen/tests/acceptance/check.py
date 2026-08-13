@@ -136,6 +136,25 @@ def main() -> None:
             str(STAGE / "generated_v2"),
         ]
     )
+    command(
+        [
+            "cargo",
+            "run",
+            "--quiet",
+            "--manifest-path",
+            str(CORE / "Cargo.toml"),
+            "--package",
+            "type-bridge-schema-codegen",
+            "--example",
+            "emit_python_acceptance",
+            "--",
+            str(HERE / "schema-ordered.yaml"),
+            str(STAGE / "generated_ordered"),
+        ]
+    )
+    ordered = pyright(STAGE / "generated_ordered", expected_exit=0)
+    if ordered["summary"]["errorCount"] != 0:
+        raise AssertionError(f"ordered generated package Pyright failed: {ordered}")
 
     variant_source = (
         (HERE / "schema.yaml")

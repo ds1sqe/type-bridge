@@ -23,7 +23,44 @@ const QUERY_SOURCE_ID: &str = "typebridge.generator.python.query-source";
 const QUERY_STUB_ID: &str = "typebridge.generator.python.query-stub";
 const PY_TYPED_ID: &str = "typebridge.generator.python.py-typed";
 
-const ORDERED_RUNTIME_SOURCE_SUFFIX: &[u8] = b"\n# Successor resource for ordered collection projections.\n_TYPE_BRIDGE_ORDERED_COLLECTION_RESOURCE_VERSION = 2\n";
+const ORDERED_RUNTIME_SOURCE_SUFFIX: &[u8] = br#"
+
+# Successor resource for ordered collection projections.
+_TYPE_BRIDGE_ORDERED_COLLECTION_RESOURCE_VERSION = 2
+
+
+def _install_runtime_projection_with_authority(
+    projection_json: str,
+    semantic_fingerprint_json: str,
+    projection_fingerprint_json: str,
+    models: Sequence[tuple[type[ModelBase], type[ReferenceBase] | None]],
+) -> None:
+    global _package_models, _package_runtime_projection
+    if _package_runtime_projection is not None:
+        raise RuntimeError("generated package runtime projection is already installed")
+    from type_bridge._runtime_projection import (
+        install_runtime_projection_with_authority as install_native,
+    )
+    from ._authority import SCHEMA_AUTHORITY_BYTES
+
+    installed = install_native(
+        projection_json,
+        semantic_fingerprint_json,
+        projection_fingerprint_json,
+        models,
+        SCHEMA_AUTHORITY_BYTES,
+    )
+    for model, _reference in models:
+        model.__runtime_projection__ = installed
+    _package_models = tuple(model for model, _reference in models)
+    _package_runtime_projection = installed
+    from ._query import install_projection
+
+    install_projection(installed)
+
+
+globals()["install_runtime_projection"] = _install_runtime_projection_with_authority
+"#;
 
 /// Python package emitter with feature-selected legacy and ordered evidence ledgers.
 #[derive(Clone, Copy, Debug, Default)]

@@ -116,6 +116,11 @@ run_node() {
 
     run_step "npm ci"                npm ci
     run_step "npm run build"         npm run build
+    run_step "ordered four-binding generated package compiler smoke" \
+        cargo test --locked --manifest-path ../../Cargo.toml \
+        -p type-bridge-schema-codegen --test ordered_collections \
+        ordered_generated_packages_pass_all_four_language_compilers \
+        -- --exact --ignored
     run_step "npm run typecheck"     npm run typecheck
     run_step "npm run typecheck:projection-integration" npm run typecheck:projection-integration
     run_step "npm run scope:probe"    npm run scope:probe

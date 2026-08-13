@@ -465,6 +465,7 @@ interface NativeRuntimeProjectionModule {
     semanticFingerprintJson: string,
     projectionFingerprintJson: string,
     registrationsJson: string,
+    schemaAuthorityJson?: string,
   ) => NativeRuntimeProjectionHandle;
 }
 

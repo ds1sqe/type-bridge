@@ -28,6 +28,48 @@ export interface Multiplicity {
 }
 
 const TYPE_BRIDGE_ORDERED_COLLECTION_RESOURCE_VERSION = 2 as const;
+
+/** @internal Install authority-backed evidence for an ordered generated package. */
+export function __installOrderedRuntimeProjectionPackage(
+  projectionJson: string,
+  semanticFingerprintJson: string,
+  projectionFingerprintJson: string,
+  tokens: readonly object[],
+  schemaAuthorityJson: string,
+): void {
+  if (installedProjection !== null) {
+    throw new TypeError("generated runtime projection is already installed");
+  }
+  const entries = tokens.map((token) => {
+    const entry = [...runtimeModels.values()].find(
+      (candidate) => candidate.token === token,
+    );
+    if (entry === undefined) {
+      throw new TypeError(
+        "runtime projection registration contains an unknown model token",
+      );
+    }
+    return entry;
+  });
+  const authority = installGeneratedSchemaAuthority({
+    schemaAuthorityJson,
+    semanticFingerprintJson,
+  });
+  const projection = installRuntimeProjection({
+    schemaAuthorityJson,
+    projectionJson,
+    semanticFingerprintJson,
+    projectionFingerprintJson,
+    bindings: entries.map(({ token }) => ({
+      typeKey: token.typeKey,
+      targetName: token.name,
+      create: typeof token.create === "function",
+      reference: typeof token.reference === "function",
+    })),
+  });
+  installedProjection = projection;
+  installedQueryAuthority = authority;
+}
 "#;
 
 /// TypeScript emitter with feature-selected legacy and ordered evidence ledgers.

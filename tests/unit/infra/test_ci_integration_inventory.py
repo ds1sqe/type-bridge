@@ -53,3 +53,26 @@ def test_rust_orm_live_suite_is_serialized_locally_and_in_ci() -> None:
 
     assert expected_tail in local_command
     assert local_command.count("--test-threads=1") == 1
+
+
+def test_ordered_four_binding_compiler_smoke_runs_after_node_build() -> None:
+    """Run the combined toolchain smoke only where all four compilers exist."""
+    workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
+    node_steps = workflow["jobs"]["node-check"]["steps"]
+    names = [step["name"] for step in node_steps]
+    ordered_step = node_steps[names.index("Compile ordered packages for all four bindings")]
+    ci_command = " ".join(ordered_step["run"].split())
+
+    selector = "ordered_generated_packages_pass_all_four_language_compilers"
+    assert selector in ci_command
+    assert "-- --exact --ignored" in ci_command
+    assert names.index("Build native module and TypeScript surface") < names.index(
+        "Compile ordered packages for all four bindings"
+    )
+
+    for path in (REPO_ROOT / "test.sh", REPO_ROOT / "scripts/check.sh"):
+        source = path.read_text(encoding="utf-8")
+        assert source.count(selector) == 1
+        assert source.index("npm run build") < source.index(selector)
+        command = source[source.index(selector) : source.index(selector) + 160]
+        assert "-- --exact --ignored" in command

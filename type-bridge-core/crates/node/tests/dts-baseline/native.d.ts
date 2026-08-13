@@ -193,7 +193,7 @@ interface NativeRuntimeProjectionHandle {
     materializeMatchThingJson(thing: NativeValidatedThingHandle): string;
 }
 interface NativeRuntimeProjectionModule {
-    NodeRuntimeProjection: new (projectionJson: string, semanticFingerprintJson: string, projectionFingerprintJson: string, registrationsJson: string) => NativeRuntimeProjectionHandle;
+    NodeRuntimeProjection: new (projectionJson: string, semanticFingerprintJson: string, projectionFingerprintJson: string, registrationsJson: string, schemaAuthorityJson?: string) => NativeRuntimeProjectionHandle;
 }
 type LoadedNativeModule = NativeModule & NativeRemoteModelQueryModule & NativeRuntimeProjectionModule;
 /**
