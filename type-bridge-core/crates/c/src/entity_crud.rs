@@ -1172,7 +1172,7 @@ functions:
         );
         assert_eq!(
             diagnostic(diagnostics).1,
-            "c_projected_handle_brand_mismatch"
+            "generated_token_package_mismatch"
         );
         close_diagnostics(&mut diagnostics);
 
@@ -1214,7 +1214,7 @@ functions:
         );
         assert_eq!(
             diagnostic(diagnostics).1,
-            "c_projected_token_brand_mismatch"
+            "generated_token_package_mismatch"
         );
         close_diagnostics(&mut diagnostics);
 
@@ -2508,7 +2508,7 @@ functions:
         );
         assert_eq!(
             diagnostic(diagnostics).1,
-            "c_projected_handle_brand_mismatch"
+            "generated_token_package_mismatch"
         );
         close_diagnostics(&mut diagnostics);
 
@@ -2579,7 +2579,7 @@ functions:
         );
         assert_eq!(
             diagnostic(diagnostics).1,
-            "c_projected_token_brand_mismatch"
+            "generated_token_package_mismatch"
         );
         close_diagnostics(&mut diagnostics);
         assert_eq!(

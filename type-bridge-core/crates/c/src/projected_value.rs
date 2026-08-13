@@ -863,10 +863,7 @@ pub unsafe extern "C" fn type_bridge_projected_value_close(
 }
 
 pub(crate) fn invalid_brand_diagnostic() -> SdkExecutionDiagnostic {
-    SdkExecutionDiagnostic::integrity(
-        code("c_projected_handle_brand_mismatch"),
-        message("The projected handle belongs to a different schema package"),
-    )
+    SdkExecutionDiagnostic::generated_token_package_mismatch()
 }
 
 pub(crate) fn invalid_shape_diagnostic(

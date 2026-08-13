@@ -31,7 +31,9 @@ use crate::projected_model::{
 use crate::projected_token::{
     TypeBridgeProjectedTokenV1, resolve_field_token, resolve_model_token, resolve_role_token,
 };
-use crate::projected_value::{TypeBridgeProjectedValue, same_package_brand};
+use crate::projected_value::{
+    TypeBridgeProjectedValue, invalid_brand_diagnostic, same_package_brand,
+};
 
 const PROJECTED_CREATE_BUILDER_CHUNK_LEN_MAX: usize = 256;
 
@@ -376,7 +378,7 @@ pub unsafe extern "C" fn type_bridge_projected_create_builder_add_v1(
                     // SAFETY: each complete immutable handle was preflighted.
                     let handle = unsafe { &*handle };
                     if !same_package_brand(&builder.package, handle.package()) {
-                        return return_execution_error(invalid_handle_array(), out_diagnostics);
+                        return return_execution_error(invalid_brand_diagnostic(), out_diagnostics);
                     }
                     if let Err(diagnostic) = handle
                         .value()
@@ -464,7 +466,7 @@ pub unsafe extern "C" fn type_bridge_projected_create_builder_add_v1(
                     // SAFETY: each complete immutable handle was preflighted.
                     let handle = unsafe { &*handle };
                     if !same_package_brand(&builder.package, &handle.package) {
-                        return return_execution_error(invalid_handle_array(), out_diagnostics);
+                        return return_execution_error(invalid_brand_diagnostic(), out_diagnostics);
                     }
                     if let Err(diagnostic) = handle
                         .value
@@ -903,6 +905,48 @@ mod tests {
         assert!(diagnostics.is_null());
         assert_eq!(unsafe { &*builder }.fields[0].1.len(), 1);
         // SAFETY: the slot uniquely owns the still-live builder after a successful retry.
+        assert_eq!(
+            unsafe { type_bridge_projected_create_builder_close(&mut builder) },
+            TypeBridgeStatus::Ok,
+        );
+        assert!(builder.is_null());
+    }
+
+    #[test]
+    fn builder_rejects_a_foreign_value_with_the_common_package_diagnostic() {
+        let local = package("builderlocalbrand");
+        let foreign = package("builderforeignbrand");
+        let person = TypeId::new(TypeKind::Entity, "person").expect("test model is valid");
+        let model = model_token(&local, person.clone());
+        let field = field_token(&local, &person, "identifier");
+        let foreign_value = identifier_value(&foreign);
+        let local_value = identifier_value(&local);
+        // SAFETY: retained package/model satisfy the builder-open contract.
+        let mut builder = unsafe { open_builder(&local, &model) };
+        let mut diagnostics = ptr::null_mut();
+        assert_eq!(
+            // SAFETY: the builder, token, foreign value, and output remain live.
+            unsafe { add_identifier(builder, &field, &foreign_value, &mut diagnostics) },
+            TypeBridgeStatus::ExecutionFailed,
+        );
+        assert!(!diagnostics.is_null());
+        // SAFETY: the diagnostic remains live for this inspection and close.
+        assert_eq!(
+            unsafe { diagnostic_code(diagnostics) },
+            "generated_token_package_mismatch",
+        );
+        // SAFETY: the slot uniquely owns the diagnostic handle.
+        unsafe { close_diagnostics(&mut diagnostics) };
+        // Package fencing precedes every logical builder mutation.
+        assert!(unsafe { &*builder }.fields.is_empty());
+
+        assert_eq!(
+            // SAFETY: the same builder remains reusable with local immutable input.
+            unsafe { add_identifier(builder, &field, &local_value, &mut diagnostics) },
+            TypeBridgeStatus::Ok,
+        );
+        assert!(diagnostics.is_null());
+        // SAFETY: the slot uniquely owns the still-live builder.
         assert_eq!(
             unsafe { type_bridge_projected_create_builder_close(&mut builder) },
             TypeBridgeStatus::Ok,

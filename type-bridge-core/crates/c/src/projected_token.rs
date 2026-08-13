@@ -41,10 +41,7 @@ fn invalid_layout() -> SdkExecutionDiagnostic {
 }
 
 fn invalid_brand() -> SdkExecutionDiagnostic {
-    SdkExecutionDiagnostic::integrity(
-        code("c_projected_token_brand_mismatch"),
-        message("The generated projection token belongs to a different schema package"),
-    )
+    SdkExecutionDiagnostic::generated_token_package_mismatch()
 }
 
 fn invalid_ordinal() -> SdkExecutionDiagnostic {

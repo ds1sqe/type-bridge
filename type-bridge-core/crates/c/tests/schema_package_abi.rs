@@ -4008,7 +4008,7 @@ int main(void) {
             (const relation_person_ref *)foreign_person, &member,
             &diagnostics) == TYPE_BRIDGE_STATUS_EXECUTION_FAILED);
   CHECK(member == NULL && diagnostics != NULL);
-  CHECK(execution_code_is(diagnostics, "c_projected_token_brand_mismatch"));
+  CHECK(execution_code_is(diagnostics, "generated_token_package_mismatch"));
   CHECK(type_bridge_execution_diagnostics_close(&diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
 

@@ -1055,7 +1055,7 @@ fn all_nine_domains_person_create_reference_and_membership_are_package_branded()
         TypeBridgeStatus::ExecutionFailed,
         diagnostics,
         TypeBridgeExecutionDiagnosticCategory::Integrity,
-        "c_projected_token_brand_mismatch",
+        "generated_token_package_mismatch",
     );
     diagnostics = ptr::null_mut();
     let mut forged_role = member_role;
@@ -1069,7 +1069,7 @@ fn all_nine_domains_person_create_reference_and_membership_are_package_branded()
         TypeBridgeStatus::ExecutionFailed,
         diagnostics,
         TypeBridgeExecutionDiagnosticCategory::Integrity,
-        "c_projected_token_brand_mismatch",
+        "generated_token_package_mismatch",
     );
     diagnostics = ptr::null_mut();
 
@@ -1694,7 +1694,7 @@ fn all_nine_domains_person_create_reference_and_membership_are_package_branded()
         TypeBridgeStatus::ExecutionFailed,
         diagnostics,
         TypeBridgeExecutionDiagnosticCategory::Integrity,
-        "c_projected_handle_brand_mismatch",
+        "generated_token_package_mismatch",
     );
     // SAFETY: this exact reference family owns the derived slot.
     assert_eq!(
@@ -2989,7 +2989,7 @@ fn invalid_scalar_token_layout_and_cross_package_inputs_fail_with_typed_diagnost
         TypeBridgeStatus::ExecutionFailed,
         diagnostics,
         TypeBridgeExecutionDiagnosticCategory::Integrity,
-        "c_projected_handle_brand_mismatch",
+        "generated_token_package_mismatch",
     );
     close_value(&mut foreign_value);
 
