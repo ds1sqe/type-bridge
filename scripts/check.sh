@@ -180,6 +180,12 @@ run_generated_examples() {
         scripts/ci/validate_generated_examples.sh
 }
 
+run_phase2_parity() {
+    printf "${BOLD}━━━ Provider-free Phase-2 projection parity ━━━${RESET}\n\n"
+    run_step "four-binding provider-free Phase-2 parity fan-in" \
+        uv run python scripts/ci/run_phase2_projection_parity.py
+}
+
 # ── Dispatch ─────────────────────────────────────────────────────────────────
 target="${1:-all}"
 case "$target" in
@@ -187,9 +193,10 @@ case "$target" in
     python) run_python ;;
     node)   run_node   ;;
     c)      run_c      ;;
-    all)    run_rust; run_python; run_node; run_c; run_generated_examples ;;
+    phase2-parity) run_phase2_parity ;;
+    all)    run_rust; run_python; run_node; run_c; run_phase2_parity; run_generated_examples ;;
     *)
-        echo "Usage: $0 [rust|python|node|c|all]"
+        echo "Usage: $0 [rust|python|node|c|phase2-parity|all]"
         exit 1
         ;;
 esac

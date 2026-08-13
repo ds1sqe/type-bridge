@@ -3265,7 +3265,20 @@ fn generated_rust_phase2_projection_parity_producer() {
         "foreign nominal-fence diagnostics were incomplete:\n{stderr}"
     );
 
-    let report = stage.path().join("rust-phase2-parity.json");
+    let report = if let Some(path) = env::var_os("TYPE_BRIDGE_PHASE2_RUST_REPORT") {
+        let path = PathBuf::from(path);
+        assert!(
+            path.is_absolute(),
+            "external Rust Phase-2 report path must be absolute"
+        );
+        assert!(
+            !path.exists(),
+            "external Rust Phase-2 report path must not exist"
+        );
+        path
+    } else {
+        stage.path().join("rust-phase2-parity.json")
+    };
     let _guard = CARGO_MUTEX.lock().unwrap();
     let workspace_target = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
