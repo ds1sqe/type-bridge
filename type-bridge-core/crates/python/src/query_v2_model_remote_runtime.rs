@@ -17,15 +17,17 @@ use type_bridge_contract::query_remote::{
 use type_bridge_contract::query_remote_v2::RemoteLimitsV2;
 use type_bridge_orm::_registry::DescriptorRegistry;
 use type_bridge_orm::{
-    AnswerCancellation, OrderHandle, PendingRemoteModelQueryV2, QueryExecutionDeadline,
-    QueryExecutionResourceLimits, RemoteModelQueryV2Error, Window, lower_remote_query_diagnostic,
-    prepare_remote_model_query_v2_with_budget, validate_public_order_term_count,
+    AnswerCancellation, OrderHandle, PendingRemoteModelQueryV2, ProjectedQueryOrigin,
+    QueryExecutionDeadline, QueryExecutionResourceLimits, RemoteModelQueryV2Error, Window,
+    lower_remote_query_diagnostic, prepare_remote_model_query_v2_with_budget,
+    validate_public_order_term_count,
 };
 
 use crate::match_runtime::{
     PyMatchBindingHandle, PyMatchFieldHandle, PyMatchOrderHandle, PyMatchQueryHandle,
-    PyQueryCancellation, PyQueryExecutionResourceLimits, borrow_reduce_terms, order_handles,
-    parse_cardinality, py_match_error, py_match_orm_error, py_sdk_diagnostic, reduce_terms,
+    PyQueryCancellation, PyQueryExecutionResourceLimits, PyQueryInvocationBudget,
+    borrow_reduce_terms, order_handles, parse_cardinality, py_match_error, py_match_orm_error,
+    py_sdk_diagnostic, reduce_terms, validated_result_handle,
 };
 use crate::query_v2_runtime::{
     PyQueryV2Authority, PythonBytes, python_limit, python_optional_limit,
@@ -46,6 +48,8 @@ pub(crate) struct PyRemoteModelQueryContext {
 #[pyclass(name = "PendingRemoteModelQuery", frozen)]
 pub(crate) struct PyPendingRemoteModelQuery {
     pending: PendingRemoteModelQueryV2,
+    installed: Option<Arc<type_bridge_orm::InstalledRuntimeProjection>>,
+    resources: QueryExecutionResourceLimits,
     deadline: QueryExecutionDeadline,
     cancellation: AnswerCancellation,
 }
@@ -92,13 +96,19 @@ impl PyPendingRemoteModelQuery {
         let (request, result, registry) = py
             .allow_threads(move || claimed.decode_with_cancellation(&response, &cancellation))
             .map_err(remote_model_error)?;
-        Ok(PyValidatedMatchResultHandle::new_with_budget(
+        let installed = self.installed.as_ref();
+        validated_result_handle(
+            installed,
+            installed.map(|_| ProjectedQueryOrigin::remote_unbound()),
             request,
             result,
             registry,
-            self.deadline,
-            self.cancellation.clone(),
-        ))
+            PyQueryInvocationBudget::from_parts(
+                self.resources,
+                self.deadline,
+                self.cancellation.clone(),
+            ),
+        )
     }
 }
 
@@ -206,6 +216,7 @@ pub(crate) fn query_v2_prepare_remote_model_rows(
     cardinality: &str,
 ) -> PyResult<PyPendingRemoteModelQuery> {
     let (deadline, cancellation) = begin_remote_invocation(query, context)?;
+    let installed = query.installed_projection();
     let offset = python_unsigned(offset)?;
     let limit = python_unsigned(limit)?;
     let query = query.inner().clone();
@@ -217,7 +228,15 @@ pub(crate) fn query_v2_prepare_remote_model_rows(
             query.validate_fetch_rows(&order, Window { offset, limit }, cardinality)
         })
         .map_err(py_match_orm_error)?;
-    prepare_pending(py, context, registry, request, deadline, cancellation)
+    prepare_pending(
+        py,
+        installed,
+        context,
+        registry,
+        request,
+        deadline,
+        cancellation,
+    )
 }
 
 /// Prepare one distinct-root remote page.
@@ -238,6 +257,7 @@ pub(crate) fn query_v2_prepare_remote_model_page(
     include_total: &Bound<'_, PyAny>,
 ) -> PyResult<PyPendingRemoteModelQuery> {
     let (deadline, cancellation) = begin_remote_invocation(query, context)?;
+    let installed = query.installed_projection();
     let offset = python_unsigned(offset)?;
     let limit = python_unsigned(limit)?;
     let include_total = python_bool(include_total, "include_total")?;
@@ -250,7 +270,15 @@ pub(crate) fn query_v2_prepare_remote_model_page(
             query.validate_page_by(&root, &order, Window { offset, limit }, include_total)
         })
         .map_err(py_match_orm_error)?;
-    prepare_pending(py, context, registry, request, deadline, cancellation)
+    prepare_pending(
+        py,
+        installed,
+        context,
+        registry,
+        request,
+        deadline,
+        cancellation,
+    )
 }
 
 /// Prepare one lossless distinct-root remote count.
@@ -262,13 +290,22 @@ pub(crate) fn query_v2_prepare_remote_model_count(
     root: &PyMatchBindingHandle,
 ) -> PyResult<PyPendingRemoteModelQuery> {
     let (deadline, cancellation) = begin_remote_invocation(query, context)?;
+    let installed = query.installed_projection();
     let query = query.inner().clone();
     let registry = query.registry_arc();
     let root = root.inner().clone();
     let request = py
         .allow_threads(move || query.validate_count_by(&root))
         .map_err(py_match_orm_error)?;
-    prepare_pending(py, context, registry, request, deadline, cancellation)
+    prepare_pending(
+        py,
+        installed,
+        context,
+        registry,
+        request,
+        deadline,
+        cancellation,
+    )
 }
 
 /// Prepare one distinct-root remote existence query.
@@ -280,13 +317,22 @@ pub(crate) fn query_v2_prepare_remote_model_exists(
     root: &PyMatchBindingHandle,
 ) -> PyResult<PyPendingRemoteModelQuery> {
     let (deadline, cancellation) = begin_remote_invocation(query, context)?;
+    let installed = query.installed_projection();
     let query = query.inner().clone();
     let registry = query.registry_arc();
     let root = root.inner().clone();
     let request = py
         .allow_threads(move || query.validate_exists_by(&root))
         .map_err(py_match_orm_error)?;
-    prepare_pending(py, context, registry, request, deadline, cancellation)
+    prepare_pending(
+        py,
+        installed,
+        context,
+        registry,
+        request,
+        deadline,
+        cancellation,
+    )
 }
 
 /// Prepare one typed ungrouped or grouped reduction over a distinct root.
@@ -310,6 +356,7 @@ pub(crate) fn query_v2_prepare_remote_model_reduce(
         .map_err(py_match_orm_error)?;
     prepare_pending(
         py,
+        query.installed_projection(),
         context,
         query.inner().registry_arc(),
         request,
@@ -339,6 +386,7 @@ pub(crate) fn query_v2_prepare_remote_model_reduce_by_field(
         .map_err(py_match_orm_error)?;
     prepare_pending(
         py,
+        query.installed_projection(),
         context,
         query.inner().registry_arc(),
         request,
@@ -373,6 +421,7 @@ pub(crate) fn query_v2_prepare_remote_model_reduce_by_fields(
         .map_err(py_match_orm_error)?;
     prepare_pending(
         py,
+        query.installed_projection(),
         context,
         query.inner().registry_arc(),
         request,
@@ -395,6 +444,7 @@ fn begin_remote_invocation(
 
 fn prepare_pending(
     py: Python<'_>,
+    installed: Option<Arc<type_bridge_orm::InstalledRuntimeProjection>>,
     context: &PyRemoteModelQueryContext,
     registry: Arc<DescriptorRegistry>,
     request: type_bridge_orm::ValidatedMatchRequest,
@@ -420,6 +470,8 @@ fn prepare_pending(
         .map_err(remote_model_error)?;
     Ok(PyPendingRemoteModelQuery {
         pending,
+        installed,
+        resources: context.resources,
         deadline,
         cancellation,
     })

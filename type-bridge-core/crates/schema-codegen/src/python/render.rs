@@ -320,7 +320,13 @@ fn render_models(
 ) -> Result<String, Diagnostic> {
     let mut body = String::new();
     for id in projection.emission().model_shells() {
-        render_model(&mut body, projection, &projection.models()[id], stub)?;
+        render_model(
+            &mut body,
+            projection,
+            &projection.models()[id],
+            stub,
+            ordered,
+        )?;
     }
     for id in projection.emission().structs() {
         render_struct(&mut body, &projection.structs()[id], stub)?;
@@ -532,6 +538,7 @@ fn render_model(
     projection: &RuntimeProjection,
     model: &ModelProjection,
     stub: bool,
+    ordered: bool,
 ) -> Result<(), Diagnostic> {
     let name = model.target_name().as_str();
     let documentation = model_documentation(model);
@@ -557,7 +564,15 @@ fn render_model(
     if !stub {
         let id = canonical_text!(model.id());
         let _ = writeln!(output, "    __type_id__ = {}", python_string(&id)?);
-        output.push_str("    __model_form__ = \"complete\"\n    __slots__ = ()\n");
+        output.push_str("    __model_form__ = \"complete\"\n");
+        if ordered
+            && model.declaration().parent().is_none()
+            && matches!(model.id().kind(), TypeKind::Entity | TypeKind::Relation)
+        {
+            output.push_str("    __slots__ = (\"__weakref__\",)\n");
+        } else {
+            output.push_str("    __slots__ = ()\n");
+        }
     }
     if stub {
         render_descriptors(output, projection, model)?;
@@ -573,11 +588,11 @@ fn render_model(
 
     if let Some(reference) = model.reference_read().target_name() {
         let reference = reference.as_str();
-        let base = model
+        let inherited_reference = model
             .declaration()
             .parent()
-            .and_then(|parent| projection.models()[parent].reference_read().target_name())
-            .map_or("_Reference", |name| name.as_str());
+            .and_then(|parent| projection.models()[parent].reference_read().target_name());
+        let base = inherited_reference.map_or("_Reference", |name| name.as_str());
         let _ = writeln!(output, "class {reference}({base}):");
         if let Some(documentation) = &documentation {
             let _ = writeln!(output, "    {}", python_string(documentation)?);
@@ -585,7 +600,12 @@ fn render_model(
         if !stub {
             let id = canonical_text!(model.id());
             let _ = writeln!(output, "    __type_id__ = {}", python_string(&id)?);
-            output.push_str("    __model_form__ = \"reference\"\n    __slots__ = ()\n");
+            output.push_str("    __model_form__ = \"reference\"\n");
+            if ordered && inherited_reference.is_none() {
+                output.push_str("    __slots__ = (\"__weakref__\",)\n");
+            } else {
+                output.push_str("    __slots__ = ()\n");
+            }
         }
         render_reference_constructor(output, projection, model, stub)?;
         output.push('\n');

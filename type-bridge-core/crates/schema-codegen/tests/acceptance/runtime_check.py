@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 import struct
+import weakref
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta, timezone
 from decimal import Decimal
@@ -12,7 +13,9 @@ import generated_v2._query as generated_query_module
 import generated_variant as variant
 from generated_ordered import CrudHook as OrderedCrudHook
 from generated_ordered import Membership as OrderedMembership
+from generated_ordered import MembershipRef as OrderedMembershipRef
 from generated_ordered import Person as OrderedPerson
+from generated_ordered import PersonRef as OrderedPersonRef
 from generated_ordered import ProjectedModelManager as OrderedProjectedModelManager
 from generated_ordered import Tag as OrderedTag
 from generated_v2 import (
@@ -222,9 +225,21 @@ assert reference.iid == "person-iid"
 assert reference.__model_form__ == "reference"
 assert person.iid is None
 assert person.identifier.value == "person-1"
+try:
+    weakref.ref(person)
+except TypeError:
+    pass
+else:
+    raise AssertionError("legacy unordered facade unexpectedly changed weakref layout")
 
 ordered_person = OrderedPerson(tag=[OrderedTag("first"), OrderedTag("second")])
 assert [tag.value for tag in ordered_person.tag] == ["first", "second"]
+ordered_person_weak = weakref.ref(ordered_person)
+assert ordered_person_weak() is ordered_person
+ordered_person_ref = OrderedPersonRef("0xa1")
+assert weakref.ref(ordered_person_ref)() is ordered_person_ref
+ordered_membership_ref = OrderedMembershipRef("0xb1")
+assert weakref.ref(ordered_membership_ref)() is ordered_membership_ref
 try:
     OrderedPerson(tag=[OrderedTag("duplicate"), OrderedTag("duplicate")])
 except MatchRequestError as error:

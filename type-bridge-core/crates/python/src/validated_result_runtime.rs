@@ -9,14 +9,19 @@ use std::sync::Arc;
 use pyo3::exceptions::{PyIndexError, PyRuntimeError};
 use pyo3::prelude::*;
 use pythonize::pythonize;
+use type_bridge_contract::sdk_diagnostic::{
+    SdkDiagnosticCode, SdkDiagnosticMessage, SdkDiagnosticPathSegment, SdkExecutionDiagnostic,
+    SdkQueryDiagnosticPathKind,
+};
 use type_bridge_orm::_registry::DescriptorRegistry;
 #[cfg(test)]
 use type_bridge_orm::QueryExecutionResourceLimits;
 use type_bridge_orm::{
     AnswerCancellation, AttributeValue, DescriptorId, FetchShape, HydratedAttribute, HydratedRole,
     HydratedRolePlayer, HydratedThing, MatchOperation, MatchResult, MatchRow,
-    QueryExecutionDeadline, ReducedValue, ReductionRow, SlotValue, ThingKind,
-    ValidatedMatchRequest, ValidatedMatchResult, Window,
+    ProjectedQuerySlotValue, ProjectedQueryValue, ProjectedThing, QueryExecutionDeadline,
+    ReducedValue, ReductionRow, SlotValue, ThingKind, ValidatedMatchRequest, ValidatedMatchResult,
+    Window,
 };
 
 use crate::match_runtime::{py_match_error, py_sdk_diagnostic};
@@ -25,6 +30,7 @@ struct ValidatedResultProof {
     request: ValidatedMatchRequest,
     result: ValidatedMatchResult,
     registry: Arc<DescriptorRegistry>,
+    projected: Option<Arc<ProjectedQueryValue>>,
     deadline: QueryExecutionDeadline,
     cancellation: AnswerCancellation,
 }
@@ -180,6 +186,78 @@ impl ValidatedResultProof {
         self.selected_rows()?
             .get(index)
             .ok_or_else(|| index_error("row", index))
+    }
+
+    fn projected_thing(&self, path: ThingPath) -> PyResult<Option<Arc<ProjectedThing>>> {
+        let Some(projected) = &self.projected else {
+            return Ok(None);
+        };
+        let hydrated = self.thing(path)?;
+        let row = match (path.source, projected.as_ref()) {
+            (ThingSource::Slot(slot), ProjectedQueryValue::Rows { rows }) => rows.get(slot.row),
+            (ThingSource::Slot(slot), ProjectedQueryValue::Page { entries, .. }) => {
+                entries.get(slot.row)
+            }
+            (ThingSource::ReductionGroup { row }, ProjectedQueryValue::Reduction { rows, .. }) => {
+                let projected = rows.get(row).and_then(|row| match row.group() {
+                    Some(type_bridge_orm::ProjectedReductionGroup::Thing(thing))
+                        if path.thing == 0 =>
+                    {
+                        Some(Arc::clone(thing))
+                    }
+                    _ => None,
+                });
+                return projected
+                    .ok_or_else(projected_companion_mismatch)
+                    .and_then(|projected| {
+                        self.ensure_projected_thing_matches(hydrated, &projected)?;
+                        Ok(Some(projected))
+                    });
+            }
+            _ => None,
+        }
+        .ok_or_else(projected_companion_mismatch)?;
+        let ThingSource::Slot(slot) = path.source else {
+            return Err(projected_companion_mismatch());
+        };
+        let value = row
+            .slots()
+            .get(slot.slot)
+            .ok_or_else(projected_companion_mismatch)?
+            .value();
+        let projected = match value {
+            ProjectedQuerySlotValue::One(thing) if path.thing == 0 => Some(Arc::clone(thing)),
+            ProjectedQuerySlotValue::Many(things) => things.get(path.thing).cloned(),
+            ProjectedQuerySlotValue::One(_) => None,
+        }
+        .ok_or_else(projected_companion_mismatch)?;
+        self.ensure_projected_thing_matches(hydrated, &projected)?;
+        Ok(Some(projected))
+    }
+
+    fn ensure_projected_thing_matches(
+        &self,
+        hydrated: &HydratedThing,
+        projected: &ProjectedThing,
+    ) -> PyResult<()> {
+        let hydrated_label = self.descriptor_type_name(hydrated.concrete_descriptor())?;
+        let kind_matches = matches!(
+            (hydrated.kind(), projected.type_id().kind()),
+            (
+                ThingKind::Entity,
+                type_bridge_contract::id::TypeKind::Entity
+            ) | (
+                ThingKind::Relation,
+                type_bridge_contract::id::TypeKind::Relation
+            )
+        );
+        if !kind_matches
+            || hydrated_label != projected.type_id().label().as_str()
+            || hydrated.concept_id().as_str() != projected.iid()
+        {
+            return Err(projected_companion_mismatch());
+        }
+        Ok(())
     }
 
     fn slot(&self, path: SlotPath) -> PyResult<&SlotValue> {
@@ -352,6 +430,27 @@ impl PyValidatedMatchResultHandle {
                 request,
                 result,
                 registry,
+                projected: None,
+                deadline,
+                cancellation,
+            }),
+        }
+    }
+
+    pub(crate) fn new_with_projected_budget(
+        request: ValidatedMatchRequest,
+        result: ValidatedMatchResult,
+        registry: Arc<DescriptorRegistry>,
+        projected: ProjectedQueryValue,
+        deadline: QueryExecutionDeadline,
+        cancellation: AnswerCancellation,
+    ) -> Self {
+        Self {
+            proof: Arc::new(ValidatedResultProof {
+                request,
+                result,
+                registry,
+                projected: Some(Arc::new(projected)),
                 deadline,
                 cancellation,
             }),
@@ -543,6 +642,10 @@ impl PyValidatedMatchThingHandle {
 
     pub(crate) fn descriptor_type_name(&self, descriptor: &DescriptorId) -> PyResult<String> {
         self.proof.descriptor_type_name(descriptor)
+    }
+
+    pub(crate) fn projected(&self) -> PyResult<Option<Arc<ProjectedThing>>> {
+        self.proof.projected_thing(self.path)
     }
 }
 
@@ -746,6 +849,22 @@ fn attribute_value_to_py(py: Python<'_>, value: &AttributeValue) -> PyResult<PyO
 
 fn access_error(message: &'static str) -> PyErr {
     PyRuntimeError::new_err(message)
+}
+
+fn projected_companion_mismatch() -> PyErr {
+    let diagnostic = SdkExecutionDiagnostic::integrity(
+        SdkDiagnosticCode::new("projected_query_result_mismatch")
+            .expect("static projected-query code is canonical"),
+        SdkDiagnosticMessage::new(
+            "Typed query evidence cannot be projected as the validated result shape",
+        )
+        .expect("static projected-query message is canonical"),
+    )
+    .try_at(SdkDiagnosticPathSegment::Query(
+        SdkQueryDiagnosticPathKind::Result,
+    ))
+    .expect("static projected-query path is bounded");
+    py_sdk_diagnostic(diagnostic)
 }
 
 fn index_error(kind: &'static str, index: usize) -> PyErr {

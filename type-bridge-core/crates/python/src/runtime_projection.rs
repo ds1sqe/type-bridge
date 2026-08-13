@@ -1,11 +1,12 @@
 //! Verified package-scoped runtime projections for generated Python models.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use pyo3::prelude::*;
 use pyo3::types::{
-    PyAny, PyBool, PyBytes, PyDict, PyFloat, PyInt, PyList, PyString, PyTuple, PyType,
+    PyAny, PyBool, PyBytes, PyCFunction, PyDict, PyFloat, PyInt, PyList, PyString, PyTuple, PyType,
+    PyWeakrefMethods, PyWeakrefReference,
 };
 use pythonize::pythonize;
 use type_bridge_contract::codec::to_canonical_json;
@@ -35,7 +36,7 @@ use type_bridge_orm::session::{Database, TransactionContext};
 use type_bridge_orm::value::AttributeValue;
 use type_bridge_orm::{
     HydratedAttribute, HydratedRolePlayer, HydratedThing, ProjectedAttributeValue, ProjectedCreate,
-    ProjectedReference, ProjectedRolePlayer, ProjectedThing, ThingKind,
+    ProjectedCrudExecutor, ProjectedReference, ProjectedRolePlayer, ProjectedThing, ThingKind,
 };
 use type_bridge_orm::{InstalledRuntimeProjection, ProviderRuntimeOwner};
 use type_bridge_schema::{decode_schema_authority, schema_authority_capability_vocabulary};
@@ -56,6 +57,132 @@ struct InstalledPackage {
     projection: Arc<InstalledRuntimeProjection>,
     models: BTreeMap<TypeId, RegisteredModel>,
     types_by_label: BTreeMap<String, TypeId>,
+    facade_origins: FacadeOriginRegistry,
+    named_zone_marker: Option<Py<PyType>>,
+}
+
+struct FacadeOriginEntry {
+    facade: Py<PyWeakrefReference>,
+    proof: FacadeProjectionProof,
+}
+
+struct PreparedFacadeOrigin {
+    pointer: usize,
+    facade: Py<PyWeakrefReference>,
+}
+
+struct ProjectedFacadeSnapshot {
+    iid: PyObject,
+    values: PyObject,
+}
+
+#[derive(Clone)]
+enum FacadeProjectionProof {
+    Thing(Arc<ProjectedThing>),
+    Reference(Arc<ProjectedReference>),
+}
+
+impl FacadeProjectionProof {
+    fn reference(
+        &self,
+        installed: &InstalledRuntimeProjection,
+    ) -> Result<ProjectedReference, SdkExecutionDiagnostic> {
+        match self {
+            Self::Thing(thing) => thing.try_to_reference(installed),
+            Self::Reference(reference) => Ok(reference.as_ref().clone()),
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+struct FacadeOriginRegistry {
+    entries: Arc<Mutex<BTreeMap<usize, FacadeOriginEntry>>>,
+}
+
+impl FacadeOriginRegistry {
+    fn retain_thing(&self, value: &Bound<'_, PyAny>, thing: Arc<ProjectedThing>) -> PyResult<()> {
+        let prepared = self.prepare(value)?;
+        self.install(prepared, FacadeProjectionProof::Thing(thing));
+        Ok(())
+    }
+
+    fn retain_reference(
+        &self,
+        value: &Bound<'_, PyAny>,
+        reference: Arc<ProjectedReference>,
+    ) -> PyResult<()> {
+        let prepared = self.prepare(value)?;
+        self.install(prepared, FacadeProjectionProof::Reference(reference));
+        Ok(())
+    }
+
+    fn prepare(&self, value: &Bound<'_, PyAny>) -> PyResult<PreparedFacadeOrigin> {
+        let pointer = value.as_ptr() as usize;
+        let py = value.py();
+        let entries = Arc::downgrade(&self.entries);
+        let callback =
+            PyCFunction::new_closure(py, None, None, move |args, _kwargs| -> PyResult<()> {
+                let Some(entries) = entries.upgrade() else {
+                    return Ok(());
+                };
+                let expired = args.get_item(0)?;
+                let mut entries = entries
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if entries.get(&pointer).is_some_and(|entry| {
+                    let facade = entry.facade.bind(expired.py());
+                    facade.is(&expired) && facade.upgrade().is_none()
+                }) {
+                    entries.remove(&pointer);
+                }
+                Ok(())
+            })?;
+        let facade = PyWeakrefReference::new_with(value, &callback)?.unbind();
+        Ok(PreparedFacadeOrigin { pointer, facade })
+    }
+
+    fn install(&self, prepared: PreparedFacadeOrigin, proof: FacadeProjectionProof) {
+        let mut entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        entries.insert(
+            prepared.pointer,
+            FacadeOriginEntry {
+                facade: prepared.facade,
+                proof,
+            },
+        );
+    }
+
+    fn proof(&self, value: &Bound<'_, PyAny>) -> Option<FacadeProjectionProof> {
+        let pointer = value.as_ptr() as usize;
+        let py = value.py();
+        let mut entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let retained = entries.get(&pointer).and_then(|entry| {
+            entry
+                .facade
+                .bind(py)
+                .upgrade()
+                .filter(|facade| facade.is(value))
+                .map(|_| entry.proof.clone())
+        });
+        if retained.is_none() {
+            entries.remove(&pointer);
+        }
+        retained
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
+    }
 }
 
 impl InstalledPackage {
@@ -215,8 +342,12 @@ impl PyRuntimeProjection {
             .declaration()
             .value_type()
             .ok_or_else(|| py_runtime_error("projection attribute has no scalar domain"))?;
-        let value =
-            canonical_attribute_value_from_py(py, &value, projected_value_type(value_type))?;
+        let value = canonical_attribute_value_from_py(
+            py,
+            &value,
+            projected_value_type(value_type),
+            self.package.named_zone_marker.as_ref(),
+        )?;
         ProjectedAttributeValue::try_from_attribute_value(&self.package.projection, id, &value)
             .map(|_| ())
             .map_err(py_sdk_diagnostic)
@@ -272,8 +403,12 @@ impl PyRuntimeProjection {
             .value_type()
             .ok_or_else(|| py_runtime_error("projection field attribute has no scalar domain"))?;
         let scalar = value.call_method0("runtime_attribute_value")?;
-        let scalar =
-            canonical_attribute_value_from_py(py, &scalar, projected_value_type(value_type))?;
+        let scalar = canonical_attribute_value_from_py(
+            py,
+            &scalar,
+            projected_value_type(value_type),
+            self.package.named_zone_marker.as_ref(),
+        )?;
         let projected = ProjectedAttributeValue::try_from_attribute_value(
             &self.package.projection,
             attribute_id,
@@ -532,6 +667,13 @@ impl PyProjectedModelManager {
     fn insert(&self, py: Python<'_>, instance: Bound<'_, PyAny>) -> PyResult<PyObject> {
         self.ensure_instance(py, &instance)?;
         self.validate_ordered_create(py, &instance)?;
+        if self.uses_successor_runtime() {
+            let input = project_create(py, self.package.as_ref(), &self.type_id, &instance)?;
+            let prepared = self.package.facade_origins.prepare(&instance)?;
+            let snapshot = snapshot_projected_instance(&instance)?;
+            let projected = self.insert_projected(py, &input)?;
+            return self.publish_projected_write(instance, prepared, snapshot, projected);
+        }
         let iid = match self.descriptor()? {
             TypeDescriptor::Entity(descriptor) => {
                 let attributes = lower_attributes(
@@ -580,6 +722,13 @@ impl PyProjectedModelManager {
     fn put(&self, py: Python<'_>, instance: Bound<'_, PyAny>) -> PyResult<PyObject> {
         self.ensure_instance(py, &instance)?;
         self.validate_ordered_create(py, &instance)?;
+        if self.uses_successor_runtime() {
+            let input = project_create(py, self.package.as_ref(), &self.type_id, &instance)?;
+            let prepared = self.package.facade_origins.prepare(&instance)?;
+            let snapshot = snapshot_projected_instance(&instance)?;
+            let projected = self.put_projected(py, &input)?;
+            return self.publish_projected_write(instance, prepared, snapshot, projected);
+        }
         let iid = match self.descriptor()? {
             TypeDescriptor::Entity(descriptor) => {
                 let attributes = lower_attributes(
@@ -629,6 +778,18 @@ impl PyProjectedModelManager {
         self.ensure_instance(py, &instance)?;
         self.validate_ordered_create(py, &instance)?;
         let iid = required_projected_iid(&instance)?;
+        if self.uses_successor_runtime() {
+            let input = project_create(py, self.package.as_ref(), &self.type_id, &instance)?;
+            let prepared = self.package.facade_origins.prepare(&instance)?;
+            let snapshot = snapshot_projected_instance(&instance)?;
+            let projected = self.update_projected(py, &iid, &input)?;
+            let hydrated = hydrate_projected_thing_value(py, self.package.as_ref(), &projected)?;
+            replace_projected_instance_atomic(py, &instance, hydrated, &snapshot)?;
+            self.package
+                .facade_origins
+                .install(prepared, FacadeProjectionProof::Thing(Arc::new(projected)));
+            return Ok(instance.unbind());
+        }
         let hydrated = match self.descriptor()? {
             TypeDescriptor::Entity(descriptor) => {
                 let attributes = lower_attributes(
@@ -1071,6 +1232,14 @@ impl PyProjectedModelManager {
         if !is_canonical_thing_iid(iid) {
             return Ok(py.None());
         }
+        if self.uses_successor_runtime() {
+            return match self.get_projected(py, iid)? {
+                Some(projected) => {
+                    hydrate_projected_thing(py, self.package.as_ref(), Arc::new(projected))
+                }
+                None => Ok(py.None()),
+            };
+        }
         let iid = iid.to_owned();
         match self.descriptor()? {
             TypeDescriptor::Entity(descriptor) => {
@@ -1101,8 +1270,165 @@ impl PyProjectedModelManager {
 }
 
 impl PyProjectedModelManager {
+    fn uses_successor_runtime(&self) -> bool {
+        projection_uses_ordered_collections(self.package.projection.projection())
+    }
+
+    fn insert_projected(
+        &self,
+        py: Python<'_>,
+        input: &ProjectedCreate,
+    ) -> PyResult<ProjectedThing> {
+        let executor = ProjectedCrudExecutor::new(self.package.projection.as_ref());
+        let result = match (self.type_id.kind(), &self.database, &self.transaction) {
+            (TypeKind::Entity, Some(database), None) => provider_block_on(
+                py,
+                self.runtime.as_ref(),
+                executor.insert_entity(database.as_ref(), input),
+            ),
+            (TypeKind::Entity, None, Some(transaction)) => provider_block_on(
+                py,
+                self.runtime.as_ref(),
+                executor.insert_entity_in_transaction(transaction, input),
+            ),
+            (TypeKind::Relation, Some(database), None) => provider_block_on(
+                py,
+                self.runtime.as_ref(),
+                executor.insert_relation(database.as_ref(), input),
+            ),
+            (TypeKind::Relation, None, Some(transaction)) => provider_block_on(
+                py,
+                self.runtime.as_ref(),
+                executor.insert_relation_in_transaction(transaction, input),
+            ),
+            _ => {
+                return Err(py_runtime_error(
+                    "projected manager has no execution target",
+                ));
+            }
+        };
+        result.map_err(py_sdk_diagnostic)
+    }
+
+    fn put_projected(&self, py: Python<'_>, input: &ProjectedCreate) -> PyResult<ProjectedThing> {
+        let executor = ProjectedCrudExecutor::new(self.package.projection.as_ref());
+        let result = match (self.type_id.kind(), &self.database, &self.transaction) {
+            (TypeKind::Entity, Some(database), None) => provider_block_on(
+                py,
+                self.runtime.as_ref(),
+                executor.put_entity(database.as_ref(), input),
+            ),
+            (TypeKind::Entity, None, Some(transaction)) => provider_block_on(
+                py,
+                self.runtime.as_ref(),
+                executor.put_entity_in_transaction(transaction, input),
+            ),
+            (TypeKind::Relation, Some(database), None) => provider_block_on(
+                py,
+                self.runtime.as_ref(),
+                executor.put_relation(database.as_ref(), input),
+            ),
+            (TypeKind::Relation, None, Some(transaction)) => provider_block_on(
+                py,
+                self.runtime.as_ref(),
+                executor.put_relation_in_transaction(transaction, input),
+            ),
+            _ => {
+                return Err(py_runtime_error(
+                    "projected manager has no execution target",
+                ));
+            }
+        };
+        result.map_err(py_sdk_diagnostic)
+    }
+
+    fn update_projected(
+        &self,
+        py: Python<'_>,
+        iid: &str,
+        input: &ProjectedCreate,
+    ) -> PyResult<ProjectedThing> {
+        let executor = ProjectedCrudExecutor::new(self.package.projection.as_ref());
+        let result = match (self.type_id.kind(), &self.database, &self.transaction) {
+            (TypeKind::Entity, Some(database), None) => provider_block_on(
+                py,
+                self.runtime.as_ref(),
+                executor.update_entity(database.as_ref(), iid, input),
+            ),
+            (TypeKind::Entity, None, Some(transaction)) => provider_block_on(
+                py,
+                self.runtime.as_ref(),
+                executor.update_entity_in_transaction(transaction, iid, input),
+            ),
+            (TypeKind::Relation, Some(database), None) => provider_block_on(
+                py,
+                self.runtime.as_ref(),
+                executor.update_relation(database.as_ref(), iid, input),
+            ),
+            (TypeKind::Relation, None, Some(transaction)) => provider_block_on(
+                py,
+                self.runtime.as_ref(),
+                executor.update_relation_in_transaction(transaction, iid, input),
+            ),
+            _ => {
+                return Err(py_runtime_error(
+                    "projected manager has no execution target",
+                ));
+            }
+        };
+        result.map_err(py_sdk_diagnostic)
+    }
+
+    fn get_projected(&self, py: Python<'_>, iid: &str) -> PyResult<Option<ProjectedThing>> {
+        let executor = ProjectedCrudExecutor::new(self.package.projection.as_ref());
+        let result = match (self.type_id.kind(), &self.database, &self.transaction) {
+            (TypeKind::Entity, Some(database), None) => provider_block_on(
+                py,
+                self.runtime.as_ref(),
+                executor.get_entity_by_iid(database.as_ref(), &self.type_id, iid),
+            ),
+            (TypeKind::Entity, None, Some(transaction)) => provider_block_on(
+                py,
+                self.runtime.as_ref(),
+                executor.get_entity_by_iid_in_transaction(transaction, &self.type_id, iid),
+            ),
+            (TypeKind::Relation, Some(database), None) => provider_block_on(
+                py,
+                self.runtime.as_ref(),
+                executor.get_relation_by_iid(database.as_ref(), &self.type_id, iid),
+            ),
+            (TypeKind::Relation, None, Some(transaction)) => provider_block_on(
+                py,
+                self.runtime.as_ref(),
+                executor.get_relation_by_iid_in_transaction(transaction, &self.type_id, iid),
+            ),
+            _ => {
+                return Err(py_runtime_error(
+                    "projected manager has no execution target",
+                ));
+            }
+        };
+        result.map_err(py_sdk_diagnostic)
+    }
+
+    fn publish_projected_write(
+        &self,
+        instance: Bound<'_, PyAny>,
+        prepared: PreparedFacadeOrigin,
+        snapshot: ProjectedFacadeSnapshot,
+        projected: ProjectedThing,
+    ) -> PyResult<PyObject> {
+        let py = instance.py();
+        let hydrated = hydrate_projected_thing_value(py, self.package.as_ref(), &projected)?;
+        replace_projected_instance_atomic(py, &instance, hydrated, &snapshot)?;
+        self.package
+            .facade_origins
+            .install(prepared, FacadeProjectionProof::Thing(Arc::new(projected)));
+        Ok(instance.unbind())
+    }
+
     fn validate_ordered_create(&self, py: Python<'_>, instance: &Bound<'_, PyAny>) -> PyResult<()> {
-        if projection_uses_ordered_collections(self.package.projection.projection()) {
+        if self.uses_successor_runtime() {
             project_create(py, self.package.as_ref(), &self.type_id, instance)?;
         }
         Ok(())
@@ -1340,12 +1666,53 @@ fn install_projection(
             "projection model registration coverage is incomplete",
         ));
     }
+    let successor = projection_uses_ordered_collections(&runtime);
     let installed = Arc::new(InstalledRuntimeProjection::try_new(runtime).map_err(py_orm_error)?);
     Ok(Arc::new(InstalledPackage {
         projection: installed,
         models: registered,
         types_by_label,
+        facade_origins: FacadeOriginRegistry::default(),
+        named_zone_marker: successor.then(|| named_zone_marker_class(py)).transpose()?,
     }))
+}
+
+fn named_zone_marker_class(py: Python<'_>) -> PyResult<Py<PyType>> {
+    PyModule::from_code(
+        py,
+        pyo3::ffi::c_str!(
+            r#"
+import datetime as _datetime
+
+class _TypeBridgeNamedZone(_datetime.tzinfo):
+    __slots__ = ("_offset", "_type_bridge_zone")
+
+    def __init__(self, offset_seconds, zone):
+        self._offset = _datetime.timedelta(seconds=offset_seconds)
+        self._type_bridge_zone = zone
+
+    def utcoffset(self, _datetime_value):
+        return self._offset
+
+    def dst(self, _datetime_value):
+        return _datetime.timedelta(0)
+
+    def tzname(self, _datetime_value):
+        return self._type_bridge_zone
+
+    def fromutc(self, datetime_value):
+        if datetime_value.tzinfo is not self:
+            raise ValueError("fromutc requires this exact timezone marker")
+        return datetime_value + self._offset
+"#
+        ),
+        pyo3::ffi::c_str!("_type_bridge_named_zone.py"),
+        pyo3::ffi::c_str!("_type_bridge_native"),
+    )?
+    .getattr("_TypeBridgeNamedZone")?
+    .downcast_into::<PyType>()
+    .map(Bound::unbind)
+    .map_err(|error| py_runtime_error(error.to_string()))
 }
 
 fn install_authority_backed_projection(
@@ -1586,7 +1953,12 @@ fn project_attribute_value(
         .value_type()
         .ok_or_else(|| py_runtime_error("projection field attribute has no scalar domain"))?;
     let scalar = value.call_method0("runtime_attribute_value")?;
-    let scalar = canonical_attribute_value_from_py(py, &scalar, projected_value_type(value_type))?;
+    let scalar = canonical_attribute_value_from_py(
+        py,
+        &scalar,
+        projected_value_type(value_type),
+        package.named_zone_marker.as_ref(),
+    )?;
     ProjectedAttributeValue::try_from_attribute_value(&package.projection, attribute_id, &scalar)
         .map_err(py_sdk_diagnostic)
 }
@@ -1654,8 +2026,32 @@ fn project_reference(
             ));
         }
     }
-    ProjectedReference::try_new(&package.projection, id, projected_iid(value)?, keys)
-        .map_err(py_sdk_diagnostic)
+    let visible = ProjectedReference::try_new(
+        &package.projection,
+        id.clone(),
+        projected_iid(value)?,
+        keys.clone(),
+    )
+    .map_err(py_sdk_diagnostic)?;
+    let Some(proof) = package.facade_origins.proof(value) else {
+        return Ok(visible);
+    };
+    let expected = proof
+        .reference(&package.projection)
+        .map_err(py_sdk_diagnostic)?;
+    if visible != expected {
+        return Err(py_sdk_diagnostic(facade_projection_evidence_mismatch(
+            operation_path,
+        )));
+    }
+    ProjectedReference::try_new_with_origin_carrier(
+        &package.projection,
+        id,
+        visible.iid().map(str::to_owned),
+        keys,
+        expected.origin_carrier(),
+    )
+    .map_err(py_sdk_diagnostic)
 }
 
 fn project_hydrated_thing(
@@ -1761,7 +2157,12 @@ fn project_hydrated_attribute_value(
         .value_type()
         .ok_or_else(|| py_runtime_error("projection hydrated attribute has no scalar domain"))?;
     let scalar = value.call_method0("runtime_attribute_value")?;
-    let scalar = canonical_attribute_value_from_py(py, &scalar, projected_value_type(value_type))?;
+    let scalar = canonical_attribute_value_from_py(
+        py,
+        &scalar,
+        projected_value_type(value_type),
+        package.named_zone_marker.as_ref(),
+    )?;
     ProjectedAttributeValue::try_from_hydrated_attribute_value(
         &package.projection,
         attribute_id,
@@ -1863,6 +2264,26 @@ fn generated_token_package_mismatch_at(
             diagnostic
                 .try_at(segment)
                 .expect("a generated create operation path fits the SDK diagnostic contract")
+        },
+    )
+}
+
+fn facade_projection_evidence_mismatch(
+    path: &[SdkDiagnosticPathSegment],
+) -> SdkExecutionDiagnostic {
+    path.iter().cloned().fold(
+        SdkExecutionDiagnostic::integrity(
+            SdkDiagnosticCode::new("hydrated_facade_evidence_mismatch")
+                .expect("static hydrated-facade code is canonical"),
+            SdkDiagnosticMessage::new(
+                "The hydrated facade no longer matches its retained projection evidence",
+            )
+            .expect("static hydrated-facade message is canonical"),
+        ),
+        |diagnostic, segment| {
+            diagnostic
+                .try_at(segment)
+                .expect("a generated role-player path fits the SDK diagnostic contract")
         },
     )
 }
@@ -2234,11 +2655,255 @@ fn role_cardinality(descriptor: &RoleDescriptor) -> (u32, Option<u32>) {
     descriptor.cardinality.unwrap_or((0, Some(1)))
 }
 
+fn hydrate_projected_thing(
+    py: Python<'_>,
+    package: &InstalledPackage,
+    projected: Arc<ProjectedThing>,
+) -> PyResult<PyObject> {
+    let instance = hydrate_projected_thing_value(py, package, projected.as_ref())?;
+    package
+        .facade_origins
+        .retain_thing(instance.bind(py), projected)?;
+    Ok(instance)
+}
+
+fn hydrate_projected_thing_value(
+    py: Python<'_>,
+    package: &InstalledPackage,
+    projected: &ProjectedThing,
+) -> PyResult<PyObject> {
+    projected
+        .validate_for(package.projection.as_ref())
+        .map_err(py_sdk_diagnostic)?;
+    let id = projected.type_id();
+    if !matches!(id.kind(), TypeKind::Entity | TypeKind::Relation) {
+        return Err(py_runtime_error(
+            "projected thing hydration requires an entity or relation",
+        ));
+    }
+    let values = hydrate_projected_fields(py, package, id, projected.fields(), false)?;
+    if id.kind() == TypeKind::Relation {
+        let model = package
+            .projection
+            .projection()
+            .models()
+            .get(id)
+            .ok_or_else(|| py_runtime_error("projected relation model is absent"))?;
+        for (role_id, read) in model.complete_read().roles() {
+            let token = model.query_tokens().roles().get(role_id).ok_or_else(|| {
+                py_runtime_error("projected relation read role has no query token")
+            })?;
+            let players = projected.roles().get(role_id).ok_or_else(|| {
+                py_runtime_error("projected relation omitted a validated read role")
+            })?;
+            let mut hydrated = Vec::new();
+            hydrated
+                .try_reserve(players.len())
+                .map_err(|_| py_runtime_error("projected relation role allocation failed"))?;
+            for player in players {
+                hydrated.push(hydrate_projected_player(py, package, player)?);
+            }
+            set_projected_hydrated_values(
+                py,
+                &values,
+                token.target_name().as_str(),
+                hydrated,
+                read.multiplicity(),
+            )?;
+        }
+    } else if !projected.roles().is_empty() {
+        return Err(py_runtime_error(
+            "projected entity unexpectedly contains relation roles",
+        ));
+    }
+    allocate_projected_complete(py, package, id, &values, projected.iid())
+}
+
+fn hydrate_projected_player(
+    py: Python<'_>,
+    package: &InstalledPackage,
+    player: &ProjectedRolePlayer,
+) -> PyResult<PyObject> {
+    player
+        .validate_for(package.projection.as_ref())
+        .map_err(py_sdk_diagnostic)?;
+    let reference = Arc::new(player.reference().clone());
+    let instance = match player.exact_form() {
+        Some(ProjectedModelForm::Complete) => {
+            if player.type_id().kind() != TypeKind::Entity {
+                return Err(py_sdk_diagnostic(projected_role_player_form_missing(
+                    player.type_id(),
+                )));
+            }
+            let values =
+                hydrate_projected_fields(py, package, player.type_id(), player.fields(), false)?;
+            allocate_projected_complete(py, package, player.type_id(), &values, player.iid())?
+        }
+        Some(ProjectedModelForm::Reference) => {
+            let fields = player
+                .keys()
+                .iter()
+                .map(|(field, value)| (field.clone(), vec![value.clone()]))
+                .collect::<BTreeMap<_, _>>();
+            let values = hydrate_projected_fields(py, package, player.type_id(), &fields, true)?;
+            allocate_projected_reference(py, package, player.type_id(), &values, player.iid())?
+        }
+        None => {
+            return Err(py_sdk_diagnostic(projected_role_player_form_missing(
+                player.type_id(),
+            )));
+        }
+    };
+    package
+        .facade_origins
+        .retain_reference(instance.bind(py), reference)?;
+    Ok(instance)
+}
+
+fn hydrate_projected_fields<'py>(
+    py: Python<'py>,
+    package: &InstalledPackage,
+    id: &TypeId,
+    fields: &BTreeMap<type_bridge_contract::schema::OwnsFactId, Vec<ProjectedAttributeValue>>,
+    reference: bool,
+) -> PyResult<Bound<'py, PyDict>> {
+    let model = package
+        .projection
+        .projection()
+        .models()
+        .get(id)
+        .ok_or_else(|| py_runtime_error("projected hydrated model is absent"))?;
+    let descriptors = match package.projection.descriptor(id).map_err(py_orm_error)? {
+        TypeDescriptor::Entity(descriptor) => &descriptor.owned_attributes,
+        TypeDescriptor::Relation(descriptor) => &descriptor.owned_attributes,
+    };
+    let selected = model
+        .complete_read()
+        .fields()
+        .iter()
+        .filter(|field| !reference || model.reference_read().key_fields().contains(field.token()))
+        .collect::<Vec<_>>();
+    if fields.len() != selected.len() {
+        return Err(py_runtime_error(
+            "projected hydrated fields do not match the selected model form",
+        ));
+    }
+    let values = PyDict::new(py);
+    for read in selected {
+        let field_id = read.token();
+        let token = model
+            .query_tokens()
+            .fields()
+            .get(field_id)
+            .ok_or_else(|| py_runtime_error("projected hydrated field has no query token"))?;
+        let descriptor = descriptors
+            .iter()
+            .find(|descriptor| {
+                descriptor.field_name == token.target_name().as_str()
+                    && descriptor.attr_name == field_id.attribute().label().as_str()
+            })
+            .ok_or_else(|| py_runtime_error("projected hydrated field has no descriptor"))?;
+        let projected_values = fields
+            .get(field_id)
+            .ok_or_else(|| py_runtime_error("projected hydrated model omitted a selected field"))?;
+        let mut hydrated = Vec::new();
+        hydrated
+            .try_reserve(projected_values.len())
+            .map_err(|_| py_runtime_error("projected hydrated field allocation failed"))?;
+        for value in projected_values {
+            if value.attribute_type().label().as_str() != descriptor.attr_name {
+                return Err(py_runtime_error(
+                    "projected hydrated scalar has the wrong attribute type",
+                ));
+            }
+            hydrated.push(hydrate_attribute(
+                py,
+                package,
+                descriptor,
+                &value.to_attribute_value(),
+            )?);
+        }
+        set_projected_hydrated_values(
+            py,
+            &values,
+            token.target_name().as_str(),
+            hydrated,
+            read.multiplicity(),
+        )?;
+    }
+    Ok(values)
+}
+
+fn set_projected_hydrated_values(
+    py: Python<'_>,
+    values: &Bound<'_, PyDict>,
+    name: &str,
+    items: Vec<PyObject>,
+    multiplicity: ProjectedMultiplicity,
+) -> PyResult<()> {
+    let cardinality = multiplicity.cardinality();
+    let count = u64::try_from(items.len())
+        .map_err(|_| py_runtime_error("projected hydrated value count exceeds u64"))?;
+    if count < cardinality.min() || cardinality.max().is_some_and(|maximum| count > maximum) {
+        return Err(py_runtime_error(
+            "projected hydrated value violates its projected cardinality",
+        ));
+    }
+    match multiplicity.container() {
+        ProjectedContainer::Scalar => match items.into_iter().next() {
+            Some(value) => values.set_item(name, value),
+            None => values.set_item(name, py.None()),
+        },
+        ProjectedContainer::Sequence => values.set_item(name, PyTuple::new(py, items)?),
+    }
+}
+
+fn allocate_projected_complete(
+    py: Python<'_>,
+    package: &InstalledPackage,
+    id: &TypeId,
+    values: &Bound<'_, PyDict>,
+    iid: &str,
+) -> PyResult<PyObject> {
+    let instance = allocate(py, package.class(id, ProjectedModelForm::Complete)?)?;
+    instance.call_method1("initialize_runtime_values", (values,))?;
+    instance.call_method1("attach_runtime_iid", (iid,))?;
+    Ok(instance.unbind())
+}
+
+fn allocate_projected_reference(
+    py: Python<'_>,
+    package: &InstalledPackage,
+    id: &TypeId,
+    values: &Bound<'_, PyDict>,
+    iid: &str,
+) -> PyResult<PyObject> {
+    let instance = allocate(py, package.class(id, ProjectedModelForm::Reference)?)?;
+    instance.call_method1("initialize_runtime_reference", (iid, values))?;
+    Ok(instance.unbind())
+}
+
+fn projected_role_player_form_missing(type_id: &TypeId) -> SdkExecutionDiagnostic {
+    SdkExecutionDiagnostic::integrity(
+        SdkDiagnosticCode::new("hydrated_role_player_form_missing")
+            .expect("static projected-role code is canonical"),
+        SdkDiagnosticMessage::new(
+            "Successor hydration requires exact complete-or-reference role-player evidence",
+        )
+        .expect("static projected-role message is canonical"),
+    )
+    .try_at(SdkDiagnosticPathSegment::Type(type_id.clone()))
+    .expect("a projected role-player type path is bounded")
+}
+
 fn hydrate_validated_thing(
     py: Python<'_>,
     package: &InstalledPackage,
     handle: &PyValidatedMatchThingHandle,
 ) -> PyResult<PyObject> {
+    if let Some(projected) = handle.projected()? {
+        return hydrate_projected_thing(py, package, projected);
+    }
     let thing = handle.hydrated()?;
     let label = handle.descriptor_type_name(thing.concrete_descriptor())?;
     let id = package
@@ -2423,6 +3088,46 @@ fn replace_projected_instance(
     Ok(instance.unbind())
 }
 
+fn snapshot_projected_instance(instance: &Bound<'_, PyAny>) -> PyResult<ProjectedFacadeSnapshot> {
+    Ok(ProjectedFacadeSnapshot {
+        iid: instance.getattr("_iid")?.unbind(),
+        values: instance.getattr("_values")?.unbind(),
+    })
+}
+
+fn replace_projected_instance_atomic(
+    py: Python<'_>,
+    instance: &Bound<'_, PyAny>,
+    hydrated: PyObject,
+    snapshot: &ProjectedFacadeSnapshot,
+) -> PyResult<()> {
+    if let Err(error) = replace_projected_instance(py, instance.clone(), hydrated) {
+        if let Err(rollback) = restore_projected_instance(instance, snapshot) {
+            return Err(py_runtime_error(format!(
+                "projected facade replacement failed and rollback failed: {error}; {rollback}"
+            )));
+        }
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn restore_projected_instance(
+    instance: &Bound<'_, PyAny>,
+    snapshot: &ProjectedFacadeSnapshot,
+) -> PyResult<()> {
+    let py = instance.py();
+    let values_error = instance.setattr("_values", snapshot.values.bind(py)).err();
+    let iid_error = instance.setattr("_iid", snapshot.iid.bind(py)).err();
+    match (values_error, iid_error) {
+        (None, None) => Ok(()),
+        (Some(error), None) | (None, Some(error)) => Err(error),
+        (Some(values), Some(iid)) => Err(py_runtime_error(format!(
+            "projected facade values and IID rollback both failed: {values}; {iid}"
+        ))),
+    }
+}
+
 fn hydrate_relation(
     py: Python<'_>,
     package: &InstalledPackage,
@@ -2563,7 +3268,7 @@ fn hydrate_attribute(
         .map_err(py_sdk_diagnostic)?;
     }
     let class = package.class(id, ProjectedModelForm::Complete)?;
-    let scalar = attribute_value_to_py(py, value)?;
+    let scalar = attribute_value_to_py(py, value, package.named_zone_marker.as_ref())?;
     class.bind(py).call1((scalar,)).map(Bound::unbind)
 }
 
@@ -2683,10 +3388,15 @@ fn canonical_attribute_value_from_py(
     py: Python<'_>,
     value: &Bound<'_, PyAny>,
     value_type: ValueType,
+    named_zone_marker: Option<&Py<PyType>>,
 ) -> PyResult<AttributeValue> {
     let value = match value_type {
         ValueType::DateTime => exact_temporal_string(py, value, "datetime", false)
             .map(|value| AttributeValue::DateTime(canonical_python_datetime(&value, false))),
+        ValueType::DateTimeTz if named_zone_marker.is_some() => {
+            canonical_python_datetime_tz(py, value, named_zone_marker)
+                .map(AttributeValue::DateTimeTZ)
+        }
         ValueType::DateTimeTz => exact_temporal_string(py, value, "datetime", true)
             .map(|value| AttributeValue::DateTimeTZ(canonical_python_datetime(&value, true))),
         ValueType::Duration => canonical_duration_from_py(py, value).map(AttributeValue::Duration),
@@ -2700,6 +3410,26 @@ fn canonical_attribute_value_from_py(
                 .expect("static projected-value message is canonical"),
         ))
     })
+}
+
+fn canonical_python_datetime_tz(
+    py: Python<'_>,
+    value: &Bound<'_, PyAny>,
+    named_zone_marker: Option<&Py<PyType>>,
+) -> PyResult<String> {
+    let value_text = exact_temporal_string(py, value, "datetime", true)?;
+    let canonical = canonical_python_datetime(&value_text, true);
+    let timezone = value.getattr("tzinfo")?;
+    if named_zone_marker.is_some_and(|marker| timezone.get_type().is(marker.bind(py))) {
+        let zone = timezone.getattr("_type_bridge_zone")?.extract::<String>()?;
+        return Ok(format!("{canonical}[{zone}]"));
+    }
+    let zoneinfo = py.import("zoneinfo")?.getattr("ZoneInfo")?;
+    if timezone.get_type().as_ptr() != zoneinfo.as_ptr() {
+        return Ok(canonical);
+    }
+    let key = timezone.getattr("key")?.extract::<String>()?;
+    Ok(format!("{canonical}[{key}]"))
 }
 
 fn exact_temporal_string(
@@ -2839,7 +3569,11 @@ fn ensure_attribute_type(value: &AttributeValue, expected: ValueType) -> PyResul
     }
 }
 
-fn attribute_value_to_py(py: Python<'_>, value: &AttributeValue) -> PyResult<PyObject> {
+fn attribute_value_to_py(
+    py: Python<'_>,
+    value: &AttributeValue,
+    named_zone_marker: Option<&Py<PyType>>,
+) -> PyResult<PyObject> {
     match value {
         AttributeValue::String(value) => pythonize(py, value)
             .map(Bound::unbind)
@@ -2858,7 +3592,15 @@ fn attribute_value_to_py(py: Python<'_>, value: &AttributeValue) -> PyResult<PyO
             .getattr("date")?
             .call_method1("fromisoformat", (value,))
             .map(Bound::unbind),
-        AttributeValue::DateTime(value) | AttributeValue::DateTimeTZ(value) => py
+        AttributeValue::DateTime(value) => py
+            .import("datetime")?
+            .getattr("datetime")?
+            .call_method1("fromisoformat", (value,))
+            .map(Bound::unbind),
+        AttributeValue::DateTimeTZ(value) if named_zone_marker.is_some() => {
+            datetime_tz_to_py(py, value, named_zone_marker)
+        }
+        AttributeValue::DateTimeTZ(value) => py
             .import("datetime")?
             .getattr("datetime")?
             .call_method1("fromisoformat", (value,))
@@ -2872,6 +3614,50 @@ fn attribute_value_to_py(py: Python<'_>, value: &AttributeValue) -> PyResult<PyO
         }
         AttributeValue::Duration(value) => duration_to_py(py, value),
     }
+}
+
+fn datetime_tz_to_py(
+    py: Python<'_>,
+    value: &str,
+    named_zone_marker: Option<&Py<PyType>>,
+) -> PyResult<PyObject> {
+    let Some((evidence, zone)) = value
+        .strip_suffix(']')
+        .and_then(|value| value.rsplit_once('['))
+    else {
+        return py
+            .import("datetime")?
+            .getattr("datetime")?
+            .call_method1("fromisoformat", (value,))
+            .map(Bound::unbind);
+    };
+    let marker = named_zone_marker
+        .ok_or_else(|| py_runtime_error("named-zone hydration requires successor evidence"))?;
+    let resolved = py
+        .import("datetime")?
+        .getattr("datetime")?
+        .call_method1("fromisoformat", (evidence,))?;
+    let offset_seconds = python_timedelta_integral_seconds(&resolved.call_method0("utcoffset")?)?;
+    let timezone = marker.bind(py).call1((offset_seconds, zone))?;
+    let kwargs = PyDict::new(py);
+    kwargs.set_item("tzinfo", timezone)?;
+    resolved
+        .call_method("replace", (), Some(&kwargs))
+        .map(Bound::unbind)
+}
+
+fn python_timedelta_integral_seconds(value: &Bound<'_, PyAny>) -> PyResult<i32> {
+    let days = value.getattr("days")?.extract::<i32>()?;
+    let seconds = value.getattr("seconds")?.extract::<i32>()?;
+    let microseconds = value.getattr("microseconds")?.extract::<i32>()?;
+    if microseconds != 0 {
+        return Err(py_runtime_error(
+            "timezone offsets must resolve to an integral number of seconds",
+        ));
+    }
+    days.checked_mul(86_400)
+        .and_then(|days| days.checked_add(seconds))
+        .ok_or_else(|| py_runtime_error("timezone offset exceeds the supported range"))
 }
 
 fn duration_to_py(py: Python<'_>, value: &str) -> PyResult<PyObject> {
@@ -3022,6 +3808,9 @@ pub fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::VecDeque;
+    use std::sync::Mutex;
+
     use pyo3::ffi;
     use type_bridge_contract::capability::{CapabilityId, CapabilitySet};
     use type_bridge_contract::fingerprint::SemanticProfileId;
@@ -3030,6 +3819,16 @@ mod tests {
         BindingTarget, CodeResourceDigest, ProjectionConfig, ProjectionHandler,
     };
     use type_bridge_contract::schema::DocumentId;
+    use type_bridge_core_lib::ast::{TypedFetchRows, TypedHydrateThings};
+    use type_bridge_orm::session::backend::{
+        AnswerConsumer, AnswerControl, AnswerItem, BoundedAnswerLimits, BoundedAnswerReader,
+        BoundedAnswerStats, BoxFuture, DriverBackend, QueryResult, TransactionOps,
+    };
+    use type_bridge_orm::{
+        AnswerCancellation, ClassifiedCommitError, DatabaseConnectionAuthority, OrmError,
+        ProjectedQueryMaterializationLimits, ProjectedQueryOrigin, QueryExecutionDeadline,
+        QueryExecutionResourceLimits, RowCardinality, SessionHandle, TxType, Window,
+    };
     use type_bridge_schema::{
         BUILTIN_SCHEMA_CAPABILITY_IDS, ManagedDeltaContext, SchemaDocumentSet,
         VerifiedSchemaAuthority, build_schema_authority, encode_schema_authority,
@@ -3038,6 +3837,7 @@ mod tests {
     use type_bridge_schema_codegen::{PythonEmitter, TypeScriptEmitter};
 
     use super::*;
+    use crate::match_runtime::{PyQueryInvocationBudget, validated_result_handle};
 
     const SCHEMA: &str = r#"format: typebridge.schema/v2
 attributes:
@@ -3089,10 +3889,302 @@ relations:
         distinct: true
   gathering:
     sub: activity
+  container:
+    relates:
+      item:
+        card: { min: 0, max: 4 }
+        ordered: true
+        distinct: true
 plays:
   person:
     activity: [participant]
+  gathering:
+    container: [item]
 "#;
+
+    #[derive(Debug, Default)]
+    struct OriginRecordingState {
+        opens: Vec<TxType>,
+        queries: Vec<String>,
+        commits: usize,
+        rollbacks: usize,
+        closes: usize,
+    }
+
+    struct OriginRecordingBackend {
+        responses: Arc<Mutex<VecDeque<QueryResult>>>,
+        state: Arc<Mutex<OriginRecordingState>>,
+    }
+
+    #[derive(Debug, Default)]
+    struct QueryOriginState {
+        opens: Vec<TxType>,
+        selected: usize,
+        hydrated: usize,
+        closes: usize,
+    }
+
+    struct QueryOriginBackend {
+        state: Arc<Mutex<QueryOriginState>>,
+        iid: &'static str,
+        kind: QueryOriginKind,
+    }
+
+    #[derive(Clone, Copy)]
+    enum QueryOriginKind {
+        Person,
+        Gathering,
+    }
+
+    impl QueryOriginBackend {
+        fn new(iid: &'static str) -> (Self, Arc<Mutex<QueryOriginState>>) {
+            let state = Arc::new(Mutex::new(QueryOriginState::default()));
+            (
+                Self {
+                    state: Arc::clone(&state),
+                    iid,
+                    kind: QueryOriginKind::Person,
+                },
+                state,
+            )
+        }
+
+        fn gathering(iid: &'static str) -> (Self, Arc<Mutex<QueryOriginState>>) {
+            let state = Arc::new(Mutex::new(QueryOriginState::default()));
+            (
+                Self {
+                    state: Arc::clone(&state),
+                    iid,
+                    kind: QueryOriginKind::Gathering,
+                },
+                state,
+            )
+        }
+    }
+
+    impl DriverBackend for QueryOriginBackend {
+        fn match_capabilities(&self) -> type_bridge_orm::CapabilitySet {
+            type_bridge_orm::CapabilitySet::all()
+        }
+
+        fn open_transaction(
+            &self,
+            _database: &str,
+            tx_type: TxType,
+        ) -> BoxFuture<'_, Result<Box<dyn TransactionOps>, OrmError>> {
+            self.state.lock().unwrap().opens.push(tx_type);
+            let transaction = QueryOriginTransaction {
+                state: Arc::clone(&self.state),
+                iid: self.iid,
+                kind: self.kind,
+            };
+            Box::pin(async move { Ok(Box::new(transaction) as Box<dyn TransactionOps>) })
+        }
+
+        fn is_open(&self) -> bool {
+            true
+        }
+    }
+
+    struct QueryOriginTransaction {
+        state: Arc<Mutex<QueryOriginState>>,
+        iid: &'static str,
+        kind: QueryOriginKind,
+    }
+
+    impl QueryOriginTransaction {
+        fn selected(
+            &self,
+            limits: BoundedAnswerLimits,
+            consumer: &mut dyn AnswerConsumer,
+        ) -> Result<BoundedAnswerStats, OrmError> {
+            self.state.lock().unwrap().selected += 1;
+            feed_query_origin(
+                vec![AnswerItem::Row(serde_json::json!({
+                    "bindings": [{"binding": 0, "concept_id": self.iid}],
+                    "satisfied_role_edges": [],
+                }))],
+                limits,
+                consumer,
+            )
+        }
+    }
+
+    impl TransactionOps for QueryOriginTransaction {
+        fn query(&mut self, _typeql: &str) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
+            Box::pin(async { panic!("successor Python query-origin test used a string query") })
+        }
+
+        fn query_typed_bounded<'a>(
+            &'a mut self,
+            _query: &'a TypedFetchRows,
+            limits: BoundedAnswerLimits,
+            consumer: &'a mut dyn AnswerConsumer,
+        ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
+            Box::pin(async move { self.selected(limits, consumer) })
+        }
+
+        fn query_tuple_typed_bounded<'a>(
+            &'a mut self,
+            _query: &'a TypedFetchRows,
+            limits: BoundedAnswerLimits,
+            consumer: &'a mut dyn AnswerConsumer,
+        ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
+            Box::pin(async move { self.selected(limits, consumer) })
+        }
+
+        fn hydrate_typed_bounded<'a>(
+            &'a mut self,
+            _query: &'a TypedHydrateThings,
+            limits: BoundedAnswerLimits,
+            consumer: &'a mut dyn AnswerConsumer,
+        ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
+            self.state.lock().unwrap().hydrated += 1;
+            let iid = self.iid;
+            let document = match self.kind {
+                QueryOriginKind::Person => serde_json::json!({
+                    "binding": 0,
+                    "concept_id": iid,
+                    "concrete_type": "person",
+                    "kind": "entity",
+                    "attributes": [{
+                        "field": "tag",
+                        "value_type": "string",
+                        "values": ["query-tag"],
+                    }],
+                    "roles": [],
+                }),
+                QueryOriginKind::Gathering => serde_json::json!({
+                    "binding": 0,
+                    "concept_id": iid,
+                    "concrete_type": "gathering",
+                    "kind": "relation",
+                    "attributes": [],
+                    "roles": [{
+                        "role": "participant",
+                        "players": [{
+                            "concept_id": "0xa6",
+                            "declared_type": "person",
+                            "concrete_type": "person",
+                            "kind": "entity",
+                            "attributes": [{
+                                "field": "tag",
+                                "value_type": "string",
+                                "values": ["nested-query-tag"],
+                            }],
+                        }],
+                    }],
+                }),
+            };
+            Box::pin(async move {
+                feed_query_origin(vec![AnswerItem::Document(document)], limits, consumer)
+            })
+        }
+
+        fn commit(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn rollback(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn close(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
+            self.state.lock().unwrap().closes += 1;
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    fn feed_query_origin(
+        items: Vec<AnswerItem>,
+        limits: BoundedAnswerLimits,
+        consumer: &mut dyn AnswerConsumer,
+    ) -> Result<BoundedAnswerStats, OrmError> {
+        let mut reader = BoundedAnswerReader::new(limits);
+        reader.check_before_read()?;
+        for item in items {
+            if reader.accept(item, consumer)? == AnswerControl::Stop {
+                break;
+            }
+        }
+        Ok(reader.stats())
+    }
+
+    impl OriginRecordingBackend {
+        fn new(responses: Vec<QueryResult>) -> (Self, Arc<Mutex<OriginRecordingState>>) {
+            let state = Arc::new(Mutex::new(OriginRecordingState::default()));
+            (
+                Self {
+                    responses: Arc::new(Mutex::new(responses.into())),
+                    state: Arc::clone(&state),
+                },
+                state,
+            )
+        }
+    }
+
+    impl DriverBackend for OriginRecordingBackend {
+        fn open_transaction(
+            &self,
+            _database: &str,
+            tx_type: TxType,
+        ) -> BoxFuture<'_, Result<Box<dyn TransactionOps>, OrmError>> {
+            self.state.lock().unwrap().opens.push(tx_type);
+            let transaction = OriginRecordingTransaction {
+                responses: Arc::clone(&self.responses),
+                state: Arc::clone(&self.state),
+            };
+            Box::pin(async move { Ok(Box::new(transaction) as Box<dyn TransactionOps>) })
+        }
+
+        fn is_open(&self) -> bool {
+            true
+        }
+    }
+
+    struct OriginRecordingTransaction {
+        responses: Arc<Mutex<VecDeque<QueryResult>>>,
+        state: Arc<Mutex<OriginRecordingState>>,
+    }
+
+    impl TransactionOps for OriginRecordingTransaction {
+        fn query(&mut self, _typeql: &str) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
+            Box::pin(async { panic!("successor Python origin test used a legacy query") })
+        }
+
+        fn query_canonical(
+            &mut self,
+            typeql: &str,
+        ) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
+            self.state.lock().unwrap().queries.push(typeql.to_owned());
+            let response = self
+                .responses
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("successor Python origin test issued unexpected provider I/O");
+            Box::pin(async move { Ok(response) })
+        }
+
+        fn commit(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
+            Box::pin(async { panic!("successor Python origin test used the lossy commit path") })
+        }
+
+        fn commit_classified(&mut self) -> BoxFuture<'_, Result<(), ClassifiedCommitError>> {
+            self.state.lock().unwrap().commits += 1;
+            Box::pin(async { Ok(()) })
+        }
+
+        fn rollback(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
+            self.state.lock().unwrap().rollbacks += 1;
+            Box::pin(async { Ok(()) })
+        }
+
+        fn close(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
+            self.state.lock().unwrap().closes += 1;
+            Box::pin(async { Ok(()) })
+        }
+    }
 
     fn authority(source: &str, document: &str) -> VerifiedSchemaAuthority {
         let documents =
@@ -3137,10 +4229,11 @@ plays:
         pyo3::prepare_freethreaded_python();
         Python::with_gil(|py| {
             let decimal =
-                attribute_value_to_py(py, &AttributeValue::Decimal("3.50dec".into())).unwrap();
+                attribute_value_to_py(py, &AttributeValue::Decimal("3.50dec".into()), None)
+                    .unwrap();
             assert_eq!(decimal.bind(py).str().unwrap().to_str().unwrap(), "3.50");
             let duration =
-                attribute_value_to_py(py, &AttributeValue::Duration("PT3S".into())).unwrap();
+                attribute_value_to_py(py, &AttributeValue::Duration("PT3S".into()), None).unwrap();
             assert_eq!(
                 duration
                     .bind(py)
@@ -3167,6 +4260,95 @@ plays:
             canonical_python_datetime("2026-07-29T01:02:03.120000+05:30", true),
             "2026-07-29T01:02:03.12+05:30"
         );
+    }
+
+    #[test]
+    fn named_zone_hydration_preserves_both_dst_overlap_instants_without_host_tzdb() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            let (_, package) = install_ordered(py);
+            let marker = package.named_zone_marker.as_ref();
+            for (evidence, expected) in [
+                (
+                    "2026-11-01T01:30:00-04:00[America/New_York]",
+                    "2026-11-01T01:30:00-04:00",
+                ),
+                (
+                    "2026-11-01T01:30:00-05:00[America/New_York]",
+                    "2026-11-01T01:30:00-05:00",
+                ),
+            ] {
+                let hydrated = datetime_tz_to_py(py, evidence, marker).unwrap();
+                assert_eq!(
+                    hydrated
+                        .bind(py)
+                        .call_method0("isoformat")
+                        .unwrap()
+                        .extract::<String>()
+                        .unwrap(),
+                    expected
+                );
+                let timezone_type = py.import("datetime").unwrap().getattr("timezone").unwrap();
+                assert!(
+                    !hydrated
+                        .bind(py)
+                        .getattr("tzinfo")
+                        .unwrap()
+                        .is_instance(&timezone_type)
+                        .unwrap()
+                );
+                assert_eq!(
+                    canonical_python_datetime_tz(py, hydrated.bind(py), marker).unwrap(),
+                    evidence
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn unordered_datetime_tz_keeps_offset_only_predecessor_behavior() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            let authored = py
+                .import("datetime")
+                .unwrap()
+                .getattr("datetime")
+                .unwrap()
+                .call_method1("fromisoformat", ("2026-11-01T01:30:00-05:00",))
+                .unwrap();
+            assert_eq!(
+                canonical_attribute_value_from_py(py, &authored, ValueType::DateTimeTz, None)
+                    .unwrap(),
+                AttributeValue::DateTimeTZ("2026-11-01T01:30:00-05:00".into())
+            );
+
+            let hydrated = attribute_value_to_py(
+                py,
+                &AttributeValue::DateTimeTZ("2026-11-01T01:30:00-05:00".into()),
+                None,
+            )
+            .unwrap();
+            assert!(
+                hydrated
+                    .bind(py)
+                    .getattr("tzinfo")
+                    .unwrap()
+                    .getattr("key")
+                    .is_err(),
+                "legacy unordered hydration must not upgrade offset evidence to ZoneInfo",
+            );
+            assert!(
+                attribute_value_to_py(
+                    py,
+                    &AttributeValue::DateTimeTZ(
+                        "2026-11-01T01:30:00-05:00[America/New_York]".into(),
+                    ),
+                    None,
+                )
+                .is_err(),
+                "legacy unordered hydration keeps rejecting bracketed named-zone evidence",
+            );
+        });
     }
 
     fn classes(
@@ -3303,6 +4485,149 @@ class Reference:
         )
         .unwrap();
         (projection, package)
+    }
+
+    fn origin_person_document(iid: &str) -> serde_json::Value {
+        serde_json::json!({
+            "_iid": iid,
+            "_type": "person",
+            "attributes": {
+                "tag": [{"value": "source-tag"}]
+            }
+        })
+    }
+
+    fn origin_gathering_document(iid: &str, player_iid: &str) -> serde_json::Value {
+        serde_json::json!({
+            "_iid": iid,
+            "_type": "gathering",
+            "attributes": {},
+            "role_players": [{
+                "role_name": "participant",
+                "player_iid": player_iid,
+                "player_type_name": "person",
+                "attributes": {
+                    "tag": [{"value": "source-tag"}]
+                }
+            }]
+        })
+    }
+
+    fn origin_container_document(iid: &str, player_iid: &str) -> serde_json::Value {
+        serde_json::json!({
+            "_iid": iid,
+            "_type": "container",
+            "attributes": {},
+            "role_players": [{
+                "role_name": "item",
+                "player_iid": player_iid,
+                "player_type_name": "gathering",
+                "attributes": {}
+            }]
+        })
+    }
+
+    fn origin_manager(
+        package: Arc<InstalledPackage>,
+        type_id: TypeId,
+        database: Option<Arc<Database>>,
+        transaction: Option<TransactionContext>,
+        runtime: Arc<ProviderRuntimeOwner>,
+    ) -> PyProjectedModelManager {
+        PyProjectedModelManager {
+            package,
+            type_id,
+            database,
+            transaction,
+            runtime,
+            filters: vec![],
+        }
+    }
+
+    fn thing_query(
+        package: &InstalledPackage,
+        type_name: &str,
+    ) -> (
+        Arc<type_bridge_orm::_registry::DescriptorRegistry>,
+        type_bridge_orm::ValidatedMatchRequest,
+    ) {
+        let registry = Arc::new(package.projection.match_registry().unwrap());
+        let session = SessionHandle::new(Arc::clone(&registry));
+        let thing = session.exact(type_name).unwrap();
+        let shape = session.positional([thing.one()]).unwrap();
+        let query = session.query(shape).unwrap();
+        let validated = query
+            .validate_fetch_rows(
+                &[],
+                Window {
+                    offset: 0,
+                    limit: 1,
+                },
+                RowCardinality::ExactlyOne,
+            )
+            .unwrap();
+        (registry, validated)
+    }
+
+    fn person_query(
+        package: &InstalledPackage,
+    ) -> (
+        Arc<type_bridge_orm::_registry::DescriptorRegistry>,
+        type_bridge_orm::ValidatedMatchRequest,
+    ) {
+        thing_query(package, "person")
+    }
+
+    fn query_budget() -> PyQueryInvocationBudget {
+        let resources = QueryExecutionResourceLimits::default();
+        PyQueryInvocationBudget::from_parts(
+            resources,
+            QueryExecutionDeadline::for_limits(resources),
+            AnswerCancellation::default(),
+        )
+    }
+
+    fn hydrate_first_query_thing(
+        py: Python<'_>,
+        package: &InstalledPackage,
+        handle: crate::validated_result_runtime::PyValidatedMatchResultHandle,
+    ) -> PyObject {
+        let handle = Py::new(py, handle).unwrap();
+        let row = handle.bind(py).call_method1("row", (0,)).unwrap();
+        let slot = row.call_method1("slot", (0,)).unwrap();
+        let thing = slot.call_method1("thing", (0,)).unwrap();
+        let thing = thing
+            .extract::<PyRef<'_, PyValidatedMatchThingHandle>>()
+            .unwrap();
+        hydrate_validated_thing(py, package, &thing).unwrap()
+    }
+
+    fn gathering_with_player<'py>(
+        py: Python<'py>,
+        package: &InstalledPackage,
+        gathering_id: &TypeId,
+        player: &Bound<'py, PyAny>,
+    ) -> Bound<'py, PyAny> {
+        relation_with_player(py, package, gathering_id, "participant", player)
+    }
+
+    fn relation_with_player<'py>(
+        py: Python<'py>,
+        package: &InstalledPackage,
+        relation_id: &TypeId,
+        role: &str,
+        player: &Bound<'py, PyAny>,
+    ) -> Bound<'py, PyAny> {
+        let kwargs = PyDict::new(py);
+        kwargs
+            .set_item(role, PyTuple::new(py, [player]).unwrap())
+            .unwrap();
+        package
+            .class(relation_id, ProjectedModelForm::Complete)
+            .unwrap()
+            .bind(py)
+            .call((), Some(&kwargs))
+            .unwrap()
     }
 
     #[test]
@@ -3782,6 +5107,15 @@ class Reference:
         pyo3::prepare_freethreaded_python();
         Python::with_gil(|py| {
             let (_, package) = install(py);
+            assert!(
+                !PyRuntimeProjection {
+                    package: Arc::clone(&package),
+                }
+                .match_session()
+                .unwrap()
+                .projected_companion_enabled(),
+                "legacy unordered queries must keep the released hydration path",
+            );
             let person_id = package
                 .type_by_label("person", TypeKind::Entity)
                 .unwrap()
@@ -3812,6 +5146,1361 @@ class Reference:
                 .unwrap()
                 .unwrap();
             assert_eq!(aliases.downcast::<PyTuple>().unwrap().len(), 2);
+        });
+    }
+
+    #[test]
+    fn ordered_match_sessions_enable_successor_projected_companions() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            let (_, package) = install_ordered(py);
+            assert!(
+                PyRuntimeProjection { package }
+                    .match_session()
+                    .unwrap()
+                    .projected_companion_enabled(),
+            );
+        });
+    }
+
+    #[test]
+    fn facade_origin_registry_is_exact_identity_weak_and_eagerly_collected() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            let (_, package) = install_ordered(py);
+            let person_id = package
+                .type_by_label("person", TypeKind::Entity)
+                .unwrap()
+                .clone();
+            let values = PyDict::new(py);
+            let original =
+                hydrate_reference(py, package.as_ref(), &person_id, &values, "0xa1").unwrap();
+            let reference = Arc::new(
+                ProjectedReference::try_new(
+                    package.projection.as_ref(),
+                    person_id,
+                    Some("0xa1".into()),
+                    vec![],
+                )
+                .unwrap(),
+            );
+            package
+                .facade_origins
+                .retain_reference(original.bind(py), Arc::clone(&reference))
+                .unwrap();
+            assert!(matches!(
+                package.facade_origins.proof(original.bind(py)),
+                Some(FacadeProjectionProof::Reference(proof)) if proof.as_ref() == reference.as_ref()
+            ));
+
+            let copied = py
+                .import("copy")
+                .unwrap()
+                .call_method1("copy", (original.bind(py),))
+                .unwrap();
+            let lookalike =
+                hydrate_reference(py, package.as_ref(), reference.type_id(), &values, "0xa1")
+                    .unwrap();
+            assert!(package.facade_origins.proof(&copied).is_none());
+            assert!(package.facade_origins.proof(lookalike.bind(py)).is_none());
+
+            let observer = PyWeakrefReference::new(original.bind(py)).unwrap().unbind();
+            assert_eq!(package.facade_origins.len(), 1);
+            drop(original);
+            py.import("gc").unwrap().call_method0("collect").unwrap();
+            assert!(observer.bind(py).upgrade().is_none());
+            assert_eq!(package.facade_origins.len(), 0);
+        });
+    }
+
+    #[test]
+    fn hydrated_facade_origin_is_absent_from_python_introspection_and_serialization() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            let (_, package) = install_ordered(py);
+            let person_id = package
+                .type_by_label("person", TypeKind::Entity)
+                .unwrap()
+                .clone();
+            let runtime =
+                Arc::new(ProviderRuntimeOwner::new().expect("provider runtime should start"));
+            let (backend, _) = OriginRecordingBackend::new(vec![QueryResult::Documents(vec![
+                origin_person_document("0xa0"),
+            ])]);
+            let database = Arc::new(Database::with_backend(
+                Box::new(backend),
+                "private-origin-secret",
+            ));
+            let manager = origin_manager(
+                Arc::clone(&package),
+                person_id,
+                Some(database),
+                None,
+                runtime,
+            );
+            let facade = manager
+                .get_by_iid(py, "0xa0")
+                .expect("ordered manager hydration should succeed");
+            assert!(package.facade_origins.proof(facade.bind(py)).is_some());
+
+            let copied = py
+                .import("copy")
+                .unwrap()
+                .call_method1("copy", (facade.bind(py),))
+                .unwrap();
+            assert!(package.facade_origins.proof(&copied).is_none());
+
+            let builtins = py.import("builtins").unwrap();
+            let names = builtins
+                .call_method1("dir", (facade.bind(py),))
+                .unwrap()
+                .extract::<Vec<String>>()
+                .unwrap();
+            let forbidden = [
+                "origin",
+                "origin_carrier",
+                "origin_token",
+                "database_identity",
+                "authority",
+            ];
+            assert!(names.iter().all(|name| {
+                let name = name.to_ascii_lowercase();
+                forbidden.iter().all(|needle| !name.contains(needle))
+            }));
+            for name in forbidden {
+                assert!(!facade.bind(py).hasattr(name).unwrap());
+            }
+
+            let visible = builtins
+                .call_method1("vars", (facade.bind(py),))
+                .unwrap()
+                .downcast_into::<PyDict>()
+                .unwrap();
+            let mut keys = visible
+                .keys()
+                .iter()
+                .map(|key| key.extract::<String>().unwrap())
+                .collect::<Vec<_>>();
+            keys.sort();
+            assert_eq!(keys, ["_iid", "_values"]);
+
+            let json = py.import("json").unwrap();
+            let options = PyDict::new(py);
+            options
+                .set_item("default", builtins.getattr("vars").unwrap())
+                .unwrap();
+            options.set_item("sort_keys", true).unwrap();
+            let serialized = json
+                .call_method("dumps", (facade.bind(py),), Some(&options))
+                .unwrap()
+                .extract::<String>()
+                .unwrap();
+            let public_type = facade
+                .bind(py)
+                .get_type()
+                .repr()
+                .unwrap()
+                .extract::<String>()
+                .unwrap();
+            let public_mro = facade
+                .bind(py)
+                .get_type()
+                .getattr("__mro__")
+                .unwrap()
+                .repr()
+                .unwrap()
+                .extract::<String>()
+                .unwrap();
+            let representation = facade.bind(py).repr().unwrap().extract::<String>().unwrap();
+            for public_text in [serialized, public_type, public_mro, representation] {
+                let public_text = public_text.to_ascii_lowercase();
+                assert!(!public_text.contains("private-origin-secret"));
+                assert!(forbidden.iter().all(|needle| !public_text.contains(needle)));
+            }
+
+            let operator = py.import("operator").unwrap();
+            assert!(
+                operator
+                    .call_method1("eq", (facade.bind(py), facade.bind(py)))
+                    .unwrap()
+                    .extract::<bool>()
+                    .unwrap()
+            );
+            assert!(
+                !operator
+                    .call_method1("eq", (facade.bind(py), &copied))
+                    .unwrap()
+                    .extract::<bool>()
+                    .unwrap()
+            );
+        });
+    }
+
+    #[test]
+    fn ordered_manager_facades_accept_same_origin_and_fence_foreign_before_io() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            let (_, package) = install_ordered(py);
+            let person_id = package
+                .type_by_label("person", TypeKind::Entity)
+                .unwrap()
+                .clone();
+            let gathering_id = package
+                .type_by_label("gathering", TypeKind::Relation)
+                .unwrap()
+                .clone();
+            let runtime =
+                Arc::new(ProviderRuntimeOwner::new().expect("provider runtime should start"));
+            let authority = DatabaseConnectionAuthority::isolated();
+            let (source_backend, source_state) = OriginRecordingBackend::new(vec![
+                QueryResult::Documents(vec![origin_person_document("0xa1")]),
+            ]);
+            let source = Arc::new(Database::with_backend_authority(
+                Box::new(source_backend),
+                "shared",
+                authority.clone(),
+            ));
+            let source_manager = origin_manager(
+                Arc::clone(&package),
+                person_id,
+                Some(source),
+                None,
+                Arc::clone(&runtime),
+            );
+            let person = source_manager
+                .get_by_iid(py, "0xa1")
+                .expect("ordered manager hydration should succeed");
+            assert!(package.facade_origins.proof(person.bind(py)).is_some());
+            let registry_weakref = py
+                .import("weakref")
+                .unwrap()
+                .call_method1("getweakrefs", (person.bind(py),))
+                .unwrap()
+                .downcast_into::<PyList>()
+                .unwrap()
+                .iter()
+                .find(|candidate| {
+                    candidate
+                        .getattr("__callback__")
+                        .is_ok_and(|callback| !callback.is_none())
+                })
+                .expect("the native registry weakref has a cleanup callback");
+            registry_weakref
+                .getattr("__callback__")
+                .unwrap()
+                .call1((&registry_weakref,))
+                .expect("a hostile live cleanup callback call remains harmless");
+            assert!(
+                package.facade_origins.proof(person.bind(py)).is_some(),
+                "a live caller cannot erase opaque origin proof by invoking the weakref callback",
+            );
+
+            let (same_backend, same_state) = OriginRecordingBackend::new(vec![
+                QueryResult::Documents(vec![serde_json::json!({"iid": "0xb1"})]),
+                QueryResult::Documents(vec![origin_gathering_document("0xb1", "0xa1")]),
+            ]);
+            let same = Arc::new(Database::with_backend_authority(
+                Box::new(same_backend),
+                "shared",
+                authority,
+            ));
+            let same_manager = origin_manager(
+                Arc::clone(&package),
+                gathering_id.clone(),
+                Some(same),
+                None,
+                Arc::clone(&runtime),
+            );
+            let same_value =
+                gathering_with_player(py, package.as_ref(), &gathering_id, person.bind(py));
+            same_manager
+                .insert(py, same_value)
+                .expect("same database authority should accept its hydrated facade");
+            {
+                let state = same_state.lock().unwrap();
+                assert_eq!(state.opens, [TxType::Write]);
+                assert_eq!(state.queries.len(), 2);
+                assert_eq!(state.commits, 1);
+                assert_eq!(state.rollbacks, 0);
+            }
+
+            let (foreign_backend, foreign_state) = OriginRecordingBackend::new(vec![]);
+            let foreign = Arc::new(Database::with_backend(Box::new(foreign_backend), "shared"));
+            let foreign_manager = origin_manager(
+                Arc::clone(&package),
+                gathering_id.clone(),
+                Some(foreign),
+                None,
+                runtime,
+            );
+            let foreign_value =
+                gathering_with_player(py, package.as_ref(), &gathering_id, person.bind(py));
+            let error = foreign_manager.insert(py, foreign_value).unwrap_err();
+            let diagnostic = error.value(py);
+            assert_eq!(
+                diagnostic
+                    .getattr("sdk_category")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "invalid_input"
+            );
+            assert_eq!(
+                diagnostic
+                    .getattr("code")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "reference_database_mismatch"
+            );
+            let state = foreign_state.lock().unwrap();
+            assert!(state.opens.is_empty());
+            assert!(state.queries.is_empty());
+            assert_eq!(state.commits, 0);
+            assert_eq!(state.rollbacks, 0);
+            assert_eq!(source_state.lock().unwrap().closes, 1);
+        });
+    }
+
+    #[test]
+    fn ordered_borrowed_facade_keeps_transaction_authority_identity() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            let (_, package) = install_ordered(py);
+            let person_id = package
+                .type_by_label("person", TypeKind::Entity)
+                .unwrap()
+                .clone();
+            let gathering_id = package
+                .type_by_label("gathering", TypeKind::Relation)
+                .unwrap()
+                .clone();
+            let runtime =
+                Arc::new(ProviderRuntimeOwner::new().expect("provider runtime should start"));
+            let authority = DatabaseConnectionAuthority::isolated();
+            let (source_backend, source_state) = OriginRecordingBackend::new(vec![
+                QueryResult::Documents(vec![origin_person_document("0xa2")]),
+            ]);
+            let source = Arc::new(Database::with_backend_authority(
+                Box::new(source_backend),
+                "shared",
+                authority.clone(),
+            ));
+            let transaction = provider_block_on(
+                py,
+                runtime.as_ref(),
+                source.transaction_context(TxType::Read),
+            )
+            .unwrap();
+            let source_manager = origin_manager(
+                Arc::clone(&package),
+                person_id,
+                None,
+                Some(transaction.clone()),
+                Arc::clone(&runtime),
+            );
+            let person = source_manager
+                .get_by_iid(py, "0xa2")
+                .expect("borrowed transaction hydration should succeed");
+
+            let (same_backend, same_state) = OriginRecordingBackend::new(vec![
+                QueryResult::Documents(vec![serde_json::json!({"iid": "0xb2"})]),
+                QueryResult::Documents(vec![origin_gathering_document("0xb2", "0xa2")]),
+            ]);
+            let same = Arc::new(Database::with_backend_authority(
+                Box::new(same_backend),
+                "shared",
+                authority,
+            ));
+            let same_manager = origin_manager(
+                Arc::clone(&package),
+                gathering_id.clone(),
+                Some(same),
+                None,
+                Arc::clone(&runtime),
+            );
+            let value = gathering_with_player(py, package.as_ref(), &gathering_id, person.bind(py));
+            same_manager
+                .insert(py, value)
+                .expect("borrowed proof should share its database authority");
+            assert_eq!(same_state.lock().unwrap().commits, 1);
+
+            provider_block_on(py, runtime.as_ref(), transaction.close()).unwrap();
+            let state = source_state.lock().unwrap();
+            assert_eq!(state.opens, [TxType::Read]);
+            assert_eq!(state.queries.len(), 1);
+            assert_eq!(state.closes, 1);
+            assert_eq!(state.commits, 0);
+            assert_eq!(state.rollbacks, 0);
+        });
+    }
+
+    #[test]
+    fn ordered_query_facades_bind_direct_and_borrowed_origins_but_remote_stays_unbound() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            let (_, package) = install_ordered(py);
+            let gathering_id = package
+                .type_by_label("gathering", TypeKind::Relation)
+                .unwrap()
+                .clone();
+            let runtime =
+                Arc::new(ProviderRuntimeOwner::new().expect("provider runtime should start"));
+
+            let (direct_backend, direct_state) = QueryOriginBackend::new("0xa3");
+            let direct_database = Arc::new(Database::with_backend(
+                Box::new(direct_backend),
+                "query-direct",
+            ));
+            let (direct_registry, direct_request) = person_query(package.as_ref());
+            let direct_result = provider_block_on(
+                py,
+                runtime.as_ref(),
+                direct_database.execute_match(&direct_registry, &direct_request),
+            )
+            .unwrap();
+            let direct_handle = validated_result_handle(
+                Some(&package.projection),
+                Some(ProjectedQueryOrigin::for_database(direct_database.as_ref())),
+                direct_request,
+                direct_result,
+                direct_registry,
+                query_budget(),
+            )
+            .unwrap();
+            let direct = hydrate_first_query_thing(py, package.as_ref(), direct_handle);
+            let direct_proof = package.facade_origins.proof(direct.bind(py)).unwrap();
+            assert!(
+                direct_proof
+                    .reference(package.projection.as_ref())
+                    .unwrap()
+                    .origin_carrier()
+                    .is_some()
+            );
+
+            let (foreign_backend, foreign_state) = OriginRecordingBackend::new(vec![]);
+            let foreign = Arc::new(Database::with_backend(
+                Box::new(foreign_backend),
+                "query-foreign",
+            ));
+            let foreign_manager = origin_manager(
+                Arc::clone(&package),
+                gathering_id.clone(),
+                Some(foreign),
+                None,
+                Arc::clone(&runtime),
+            );
+            let foreign_value =
+                gathering_with_player(py, package.as_ref(), &gathering_id, direct.bind(py));
+            let error = foreign_manager.insert(py, foreign_value).unwrap_err();
+            assert_eq!(
+                error
+                    .value(py)
+                    .getattr("code")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "reference_database_mismatch"
+            );
+            {
+                let state = foreign_state.lock().unwrap();
+                assert!(state.opens.is_empty());
+                assert!(state.queries.is_empty());
+                assert_eq!(state.commits, 0);
+                assert_eq!(state.rollbacks, 0);
+            }
+            {
+                let state = direct_state.lock().unwrap();
+                assert_eq!(state.opens, [TxType::Read]);
+                assert_eq!(state.selected, 1);
+                assert_eq!(state.hydrated, 1);
+                assert_eq!(state.closes, 1);
+            }
+
+            let authority = DatabaseConnectionAuthority::isolated();
+            let (borrowed_backend, borrowed_state) = QueryOriginBackend::new("0xa4");
+            let borrowed_database = Arc::new(Database::with_backend_authority(
+                Box::new(borrowed_backend),
+                "query-shared",
+                authority.clone(),
+            ));
+            let borrowed_transaction = provider_block_on(
+                py,
+                runtime.as_ref(),
+                borrowed_database.transaction_context(TxType::Read),
+            )
+            .unwrap();
+            let (borrowed_registry, borrowed_request) = person_query(package.as_ref());
+            let borrowed_result = provider_block_on(
+                py,
+                runtime.as_ref(),
+                borrowed_transaction.execute_match(&borrowed_registry, &borrowed_request),
+            )
+            .unwrap();
+            let borrowed_origin =
+                ProjectedQueryOrigin::for_transaction(&borrowed_transaction).unwrap();
+            let borrowed_handle = validated_result_handle(
+                Some(&package.projection),
+                Some(borrowed_origin),
+                borrowed_request,
+                borrowed_result,
+                borrowed_registry,
+                query_budget(),
+            )
+            .unwrap();
+            let borrowed = hydrate_first_query_thing(py, package.as_ref(), borrowed_handle);
+            let (same_backend, same_state) = OriginRecordingBackend::new(vec![
+                QueryResult::Documents(vec![serde_json::json!({"iid": "0xb4"})]),
+                QueryResult::Documents(vec![origin_gathering_document("0xb4", "0xa4")]),
+            ]);
+            let same_database = Arc::new(Database::with_backend_authority(
+                Box::new(same_backend),
+                "query-shared",
+                authority,
+            ));
+            let same_manager = origin_manager(
+                Arc::clone(&package),
+                gathering_id.clone(),
+                Some(same_database),
+                None,
+                Arc::clone(&runtime),
+            );
+            let same_value =
+                gathering_with_player(py, package.as_ref(), &gathering_id, borrowed.bind(py));
+            same_manager
+                .insert(py, same_value)
+                .expect("borrowed query facade should keep database authority identity");
+            assert_eq!(same_state.lock().unwrap().commits, 1);
+            provider_block_on(py, runtime.as_ref(), borrowed_transaction.close()).unwrap();
+            {
+                let state = borrowed_state.lock().unwrap();
+                assert_eq!(state.opens, [TxType::Read]);
+                assert_eq!(state.selected, 1);
+                assert_eq!(state.hydrated, 1);
+                assert_eq!(state.closes, 1);
+            }
+
+            let (remote_backend, remote_state) = QueryOriginBackend::new("0xa5");
+            let remote_evidence_database = Arc::new(Database::with_backend(
+                Box::new(remote_backend),
+                "remote-evidence",
+            ));
+            let (remote_registry, remote_request) = person_query(package.as_ref());
+            let remote_result = provider_block_on(
+                py,
+                runtime.as_ref(),
+                remote_evidence_database.execute_match(&remote_registry, &remote_request),
+            )
+            .unwrap();
+            let remote_handle = validated_result_handle(
+                Some(&package.projection),
+                Some(ProjectedQueryOrigin::remote_unbound()),
+                remote_request,
+                remote_result,
+                remote_registry,
+                query_budget(),
+            )
+            .unwrap();
+            let remote = hydrate_first_query_thing(py, package.as_ref(), remote_handle);
+            let remote_reference = || {
+                package
+                    .facade_origins
+                    .proof(remote.bind(py))
+                    .unwrap()
+                    .reference(package.projection.as_ref())
+                    .unwrap()
+            };
+            assert!(remote_reference().origin_carrier().is_none());
+
+            let (target_backend, target_state) = OriginRecordingBackend::new(vec![
+                QueryResult::Documents(vec![serde_json::json!({"iid": "0xb5"})]),
+                QueryResult::Documents(vec![origin_gathering_document("0xb5", "0xa5")]),
+            ]);
+            let target = Arc::new(Database::with_backend(
+                Box::new(target_backend),
+                "remote-target",
+            ));
+            let target_manager = origin_manager(
+                Arc::clone(&package),
+                gathering_id.clone(),
+                Some(target),
+                None,
+                runtime,
+            );
+            let target_value =
+                gathering_with_player(py, package.as_ref(), &gathering_id, remote.bind(py));
+            target_manager
+                .insert(py, target_value)
+                .expect("remote query facade must remain explicitly unbound and resolvable");
+            assert!(remote_reference().origin_carrier().is_none());
+            {
+                let state = target_state.lock().unwrap();
+                assert_eq!(state.opens, [TxType::Write]);
+                assert_eq!(state.queries.len(), 2);
+                assert_eq!(state.commits, 1);
+                assert_eq!(state.rollbacks, 0);
+            }
+            {
+                let state = remote_state.lock().unwrap();
+                assert_eq!(state.opens, [TxType::Read]);
+                assert_eq!(state.selected, 1);
+                assert_eq!(state.hydrated, 1);
+                assert_eq!(state.closes, 1);
+            }
+        });
+    }
+
+    #[test]
+    fn query_hydration_rejects_a_mismatched_raw_and_projected_companion() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            let (_, package) = install_ordered(py);
+            let runtime = ProviderRuntimeOwner::new().expect("provider runtime should start");
+
+            let (raw_backend, _) = QueryOriginBackend::new("0xae");
+            let raw_database = Database::with_backend(Box::new(raw_backend), "mismatch-raw");
+            let (raw_registry, raw_request) = person_query(package.as_ref());
+            let raw_result = provider_block_on(
+                py,
+                &runtime,
+                raw_database.execute_match(&raw_registry, &raw_request),
+            )
+            .unwrap();
+
+            let (projected_backend, _) = QueryOriginBackend::new("0xaf");
+            let projected_database =
+                Database::with_backend(Box::new(projected_backend), "mismatch-projected");
+            let (projected_registry, projected_request) = person_query(package.as_ref());
+            let projected_result = provider_block_on(
+                py,
+                &runtime,
+                projected_database.execute_match(&projected_registry, &projected_request),
+            )
+            .unwrap();
+            let projected = ProjectedQueryOrigin::remote_unbound()
+                .materialize_borrowed_with_budget(
+                    package.projection.as_ref(),
+                    &projected_registry,
+                    &projected_request,
+                    &projected_result,
+                    ProjectedQueryMaterializationLimits::default(),
+                    &AnswerCancellation::default(),
+                    None,
+                )
+                .unwrap()
+                .0;
+
+            let handle = crate::validated_result_runtime::PyValidatedMatchResultHandle::new_with_projected_budget(
+                raw_request,
+                raw_result,
+                raw_registry,
+                projected,
+                QueryExecutionDeadline::for_limits(QueryExecutionResourceLimits::default()),
+                AnswerCancellation::default(),
+            );
+            let handle = Py::new(py, handle).unwrap();
+            let row = handle.bind(py).call_method1("row", (0,)).unwrap();
+            let slot = row.call_method1("slot", (0,)).unwrap();
+            let thing = slot.call_method1("thing", (0,)).unwrap();
+            let thing = thing
+                .extract::<PyRef<'_, PyValidatedMatchThingHandle>>()
+                .unwrap();
+            let error = hydrate_validated_thing(py, package.as_ref(), &thing).unwrap_err();
+            let diagnostic = error.value(py);
+            assert_eq!(
+                diagnostic
+                    .getattr("sdk_category")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "integrity"
+            );
+            assert_eq!(
+                diagnostic
+                    .getattr("code")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "projected_query_result_mismatch"
+            );
+        });
+    }
+
+    #[test]
+    fn ordered_manager_and_query_relation_players_fence_foreign_origin_before_io() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            let (_, package) = install_ordered(py);
+            let gathering_id = package
+                .type_by_label("gathering", TypeKind::Relation)
+                .unwrap()
+                .clone();
+            let container_id = package
+                .type_by_label("container", TypeKind::Relation)
+                .unwrap()
+                .clone();
+            let runtime =
+                Arc::new(ProviderRuntimeOwner::new().expect("provider runtime should start"));
+            let manager_authority = DatabaseConnectionAuthority::isolated();
+
+            let (manager_backend, manager_source_state) = OriginRecordingBackend::new(vec![
+                QueryResult::Documents(vec![origin_gathering_document("0xb6", "0xa6")]),
+            ]);
+            let manager_source = Arc::new(Database::with_backend_authority(
+                Box::new(manager_backend),
+                "manager-relation-shared",
+                manager_authority.clone(),
+            ));
+            let source_manager = origin_manager(
+                Arc::clone(&package),
+                gathering_id.clone(),
+                Some(manager_source),
+                None,
+                Arc::clone(&runtime),
+            );
+            let manager_relation = source_manager
+                .get_by_iid(py, "0xb6")
+                .expect("manager relation hydration should succeed");
+
+            let (manager_same_backend, manager_same_state) = OriginRecordingBackend::new(vec![
+                QueryResult::Documents(vec![serde_json::json!({"iid": "0xb6"})]),
+                QueryResult::Documents(vec![serde_json::json!({"iid": "0xc6"})]),
+                QueryResult::Documents(vec![origin_container_document("0xc6", "0xb6")]),
+            ]);
+            let manager_same = Arc::new(Database::with_backend_authority(
+                Box::new(manager_same_backend),
+                "manager-relation-shared",
+                manager_authority,
+            ));
+            let manager_same_manager = origin_manager(
+                Arc::clone(&package),
+                container_id.clone(),
+                Some(manager_same),
+                None,
+                Arc::clone(&runtime),
+            );
+            let manager_same_container = relation_with_player(
+                py,
+                package.as_ref(),
+                &container_id,
+                "item",
+                manager_relation.bind(py),
+            );
+            manager_same_manager
+                .insert(py, manager_same_container)
+                .expect("same authority must accept a hydrated relation-as-player reference");
+            {
+                let state = manager_same_state.lock().unwrap();
+                assert_eq!(state.opens, [TxType::Write]);
+                assert_eq!(state.queries.len(), 3);
+                assert_eq!(state.commits, 1);
+                assert_eq!(state.rollbacks, 0);
+            }
+
+            let (manager_target_backend, manager_target_state) =
+                OriginRecordingBackend::new(vec![]);
+            let manager_target = Arc::new(Database::with_backend(
+                Box::new(manager_target_backend),
+                "manager-relation-target",
+            ));
+            let manager_target_manager = origin_manager(
+                Arc::clone(&package),
+                container_id.clone(),
+                Some(manager_target),
+                None,
+                Arc::clone(&runtime),
+            );
+            let manager_container = relation_with_player(
+                py,
+                package.as_ref(),
+                &container_id,
+                "item",
+                manager_relation.bind(py),
+            );
+            let error = manager_target_manager
+                .insert(py, manager_container)
+                .unwrap_err();
+            assert_eq!(
+                error
+                    .value(py)
+                    .getattr("code")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "reference_database_mismatch"
+            );
+            {
+                let state = manager_target_state.lock().unwrap();
+                assert!(state.opens.is_empty());
+                assert!(state.queries.is_empty());
+                assert_eq!(state.commits, 0);
+                assert_eq!(state.rollbacks, 0);
+            }
+            assert_eq!(manager_source_state.lock().unwrap().closes, 1);
+
+            let (query_backend, query_source_state) = QueryOriginBackend::gathering("0xb7");
+            let query_source = Arc::new(Database::with_backend(
+                Box::new(query_backend),
+                "query-relation-source",
+            ));
+            let (registry, request) = thing_query(package.as_ref(), "gathering");
+            let result = provider_block_on(
+                py,
+                runtime.as_ref(),
+                query_source.execute_match(&registry, &request),
+            )
+            .unwrap();
+            let handle = validated_result_handle(
+                Some(&package.projection),
+                Some(ProjectedQueryOrigin::for_database(query_source.as_ref())),
+                request,
+                result,
+                registry,
+                query_budget(),
+            )
+            .unwrap();
+            let query_relation = hydrate_first_query_thing(py, package.as_ref(), handle);
+            let (query_target_backend, query_target_state) = OriginRecordingBackend::new(vec![]);
+            let query_target = Arc::new(Database::with_backend(
+                Box::new(query_target_backend),
+                "query-relation-target",
+            ));
+            let query_target_manager = origin_manager(
+                Arc::clone(&package),
+                container_id.clone(),
+                Some(query_target),
+                None,
+                runtime,
+            );
+            let query_container = relation_with_player(
+                py,
+                package.as_ref(),
+                &container_id,
+                "item",
+                query_relation.bind(py),
+            );
+            let error = query_target_manager
+                .insert(py, query_container)
+                .unwrap_err();
+            assert_eq!(
+                error
+                    .value(py)
+                    .getattr("code")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "reference_database_mismatch"
+            );
+            {
+                let state = query_target_state.lock().unwrap();
+                assert!(state.opens.is_empty());
+                assert!(state.queries.is_empty());
+                assert_eq!(state.commits, 0);
+                assert_eq!(state.rollbacks, 0);
+            }
+            {
+                let state = query_source_state.lock().unwrap();
+                assert_eq!(state.opens, [TxType::Read]);
+                assert_eq!(state.selected, 1);
+                assert_eq!(state.hydrated, 1);
+                assert_eq!(state.closes, 1);
+            }
+        });
+    }
+
+    #[test]
+    fn retained_facade_mutation_is_integrity_failure_before_target_io() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            let (_, package) = install_ordered(py);
+            let person_id = package
+                .type_by_label("person", TypeKind::Entity)
+                .unwrap()
+                .clone();
+            let gathering_id = package
+                .type_by_label("gathering", TypeKind::Relation)
+                .unwrap()
+                .clone();
+            let runtime =
+                Arc::new(ProviderRuntimeOwner::new().expect("provider runtime should start"));
+            let (source_backend, _) =
+                OriginRecordingBackend::new(vec![QueryResult::Documents(vec![
+                    origin_person_document("0xa8"),
+                ])]);
+            let source = Arc::new(Database::with_backend(
+                Box::new(source_backend),
+                "mutation-source",
+            ));
+            let source_manager = origin_manager(
+                Arc::clone(&package),
+                person_id,
+                Some(source),
+                None,
+                Arc::clone(&runtime),
+            );
+            let person = source_manager.get_by_iid(py, "0xa8").unwrap();
+            person.bind(py).setattr("_iid", "0xa9").unwrap();
+
+            let (target_backend, target_state) = OriginRecordingBackend::new(vec![]);
+            let target = Arc::new(Database::with_backend(
+                Box::new(target_backend),
+                "mutation-target",
+            ));
+            let target_manager = origin_manager(
+                Arc::clone(&package),
+                gathering_id.clone(),
+                Some(target),
+                None,
+                runtime,
+            );
+            let value = gathering_with_player(py, package.as_ref(), &gathering_id, person.bind(py));
+            let error = target_manager.insert(py, value).unwrap_err();
+            assert_eq!(
+                error
+                    .value(py)
+                    .getattr("code")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "hydrated_facade_evidence_mismatch"
+            );
+            let state = target_state.lock().unwrap();
+            assert!(state.opens.is_empty());
+            assert!(state.queries.is_empty());
+            assert_eq!(state.commits, 0);
+            assert_eq!(state.rollbacks, 0);
+        });
+    }
+
+    #[test]
+    fn retained_reference_key_mutation_is_not_silently_rebound() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            let (_, package) = install(py);
+            let person_id = package
+                .type_by_label("person", TypeKind::Entity)
+                .unwrap()
+                .clone();
+            let model = &package.projection.projection().models()[&person_id];
+            let key_id = model.reference_read().key_fields()[0].clone();
+            let attribute_id = package
+                .type_by_label(key_id.attribute().label().as_str(), TypeKind::Attribute)
+                .unwrap()
+                .clone();
+            let key = ProjectedAttributeValue::try_from_attribute_value(
+                package.projection.as_ref(),
+                attribute_id.clone(),
+                &AttributeValue::String("original-key".into()),
+            )
+            .unwrap();
+            let reference = Arc::new(
+                ProjectedReference::try_new(
+                    package.projection.as_ref(),
+                    person_id.clone(),
+                    Some("0xaa".into()),
+                    vec![(key_id.clone(), key.clone())],
+                )
+                .unwrap(),
+            );
+            let fields = BTreeMap::from([(key_id.clone(), vec![key])]);
+            let values =
+                hydrate_projected_fields(py, package.as_ref(), &person_id, &fields, true).unwrap();
+            let facade =
+                allocate_projected_reference(py, package.as_ref(), &person_id, &values, "0xaa")
+                    .unwrap();
+            package
+                .facade_origins
+                .retain_reference(facade.bind(py), reference)
+                .unwrap();
+
+            let changed = package
+                .class(&attribute_id, ProjectedModelForm::Complete)
+                .unwrap()
+                .bind(py)
+                .call1(("changed-key",))
+                .unwrap();
+            facade
+                .bind(py)
+                .call_method0("runtime_values")
+                .unwrap()
+                .downcast::<PyDict>()
+                .unwrap()
+                .set_item(
+                    model.query_tokens().fields()[&key_id]
+                        .target_name()
+                        .as_str(),
+                    changed,
+                )
+                .unwrap();
+            let allowed = BTreeSet::from([ProjectedModelUse::new(
+                person_id,
+                ProjectedModelForm::Reference,
+            )]);
+            let error = project_reference(py, package.as_ref(), facade.bind(py), &allowed, &[])
+                .unwrap_err();
+            assert_eq!(
+                error
+                    .value(py)
+                    .getattr("code")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "hydrated_facade_evidence_mismatch"
+            );
+        });
+    }
+
+    #[test]
+    fn ordered_insert_and_put_publish_exact_provider_rehydration() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            for put in [false, true] {
+                let (_, package) = install_ordered(py);
+                let person_id = package
+                    .type_by_label("person", TypeKind::Entity)
+                    .unwrap()
+                    .clone();
+                let tag_id = package
+                    .type_by_label("tag", TypeKind::Attribute)
+                    .unwrap()
+                    .clone();
+                let iid = if put { "0xab" } else { "0xaa" };
+                let responses = vec![
+                    QueryResult::Documents(vec![serde_json::json!({"iid": iid})]),
+                    QueryResult::Documents(vec![serde_json::json!({
+                        "_iid": iid,
+                        "_type": "person",
+                        "attributes": {
+                            "tag": [{"value": "provider-normalized"}]
+                        }
+                    })]),
+                ];
+                let (backend, state) = OriginRecordingBackend::new(responses);
+                let manager = origin_manager(
+                    Arc::clone(&package),
+                    person_id.clone(),
+                    Some(Arc::new(Database::with_backend(
+                        Box::new(backend),
+                        if put {
+                            "provider-normalized-put"
+                        } else {
+                            "provider-normalized-insert"
+                        },
+                    ))),
+                    None,
+                    Arc::new(ProviderRuntimeOwner::new().expect("provider runtime should start")),
+                );
+                let authored = package
+                    .class(&tag_id, ProjectedModelForm::Complete)
+                    .unwrap()
+                    .bind(py)
+                    .call1(("authored",))
+                    .unwrap();
+                let kwargs = PyDict::new(py);
+                kwargs
+                    .set_item("tag", PyTuple::new(py, [authored]).unwrap())
+                    .unwrap();
+                let instance = package
+                    .class(&person_id, ProjectedModelForm::Complete)
+                    .unwrap()
+                    .bind(py)
+                    .call((), Some(&kwargs))
+                    .unwrap();
+
+                let published = if put {
+                    manager.put(py, instance.clone())
+                } else {
+                    manager.insert(py, instance.clone())
+                }
+                .expect("valid provider rehydration should publish");
+                assert!(published.bind(py).is(&instance));
+                assert_eq!(
+                    instance
+                        .getattr("iid")
+                        .unwrap()
+                        .extract::<String>()
+                        .unwrap(),
+                    iid
+                );
+                let values = instance
+                    .call_method0("runtime_values")
+                    .unwrap()
+                    .downcast_into::<PyDict>()
+                    .unwrap();
+                let tags = values
+                    .get_item("tag")
+                    .unwrap()
+                    .unwrap()
+                    .downcast_into::<PyTuple>()
+                    .unwrap();
+                assert_eq!(tags.len(), 1);
+                assert_eq!(
+                    tags.get_item(0)
+                        .unwrap()
+                        .call_method0("runtime_attribute_value")
+                        .unwrap()
+                        .extract::<String>()
+                        .unwrap(),
+                    "provider-normalized"
+                );
+
+                let proof = match package.facade_origins.proof(&instance).unwrap() {
+                    FacadeProjectionProof::Thing(proof) => proof,
+                    FacadeProjectionProof::Reference(_) => {
+                        panic!("insert/put retained a reference proof")
+                    }
+                };
+                let field_id = package.projection.projection().models()[&person_id]
+                    .complete_read()
+                    .fields()[0]
+                    .token();
+                assert_eq!(
+                    proof.fields()[field_id][0].to_attribute_value(),
+                    AttributeValue::String("provider-normalized".into())
+                );
+                let state = state.lock().unwrap();
+                assert_eq!(state.opens, [TxType::Write]);
+                assert_eq!(state.queries.len(), 2);
+                assert_eq!(state.commits, 1);
+                assert_eq!(state.rollbacks, 0);
+            }
+        });
+    }
+
+    #[test]
+    fn ordered_insert_and_put_reject_malformed_provider_iids_without_publication() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            for put in [false, true] {
+                let (_, package) = install_ordered(py);
+                let person_id = package
+                    .type_by_label("person", TypeKind::Entity)
+                    .unwrap()
+                    .clone();
+                let responses = vec![QueryResult::Documents(vec![serde_json::json!({
+                    "iid": "not-a-canonical-iid"
+                })])];
+                let (backend, state) = OriginRecordingBackend::new(responses);
+                let database = Arc::new(Database::with_backend(
+                    Box::new(backend),
+                    if put {
+                        "malformed-put"
+                    } else {
+                        "malformed-insert"
+                    },
+                ));
+                let manager = origin_manager(
+                    Arc::clone(&package),
+                    person_id.clone(),
+                    Some(database),
+                    None,
+                    Arc::new(ProviderRuntimeOwner::new().expect("provider runtime should start")),
+                );
+                let instance = package
+                    .class(&person_id, ProjectedModelForm::Complete)
+                    .unwrap()
+                    .bind(py)
+                    .call0()
+                    .unwrap();
+                let error = if put {
+                    manager.put(py, instance.clone())
+                } else {
+                    manager.insert(py, instance.clone())
+                }
+                .unwrap_err();
+                let diagnostic = error.value(py);
+                assert_eq!(
+                    diagnostic
+                        .getattr("sdk_category")
+                        .unwrap()
+                        .extract::<String>()
+                        .unwrap(),
+                    "integrity"
+                );
+                assert_eq!(
+                    diagnostic
+                        .getattr("code")
+                        .unwrap()
+                        .extract::<String>()
+                        .unwrap(),
+                    "provider_hydration_failed"
+                );
+                assert!(instance.getattr("iid").unwrap().is_none());
+                assert!(package.facade_origins.proof(&instance).is_none());
+                let state = state.lock().unwrap();
+                assert_eq!(state.opens, [TxType::Write]);
+                assert_eq!(state.queries.len(), 1);
+                assert_eq!(state.commits, 0);
+                assert_eq!(state.rollbacks, 1);
+            }
+        });
+    }
+
+    #[test]
+    fn ordered_insert_put_and_update_restore_exact_facade_state_after_local_failure() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            let helpers = PyModule::from_code(
+                py,
+                ffi::c_str!(
+                    r#"
+def failing_attach(target):
+    def attach(self, iid):
+        if self is target:
+            self._iid = iid
+            self._values = {"corrupt": True}
+            raise RuntimeError("injected attach failure")
+        self._iid = iid
+    return attach
+
+def failing_initialize(target, original):
+    def initialize(self, values):
+        if self is target:
+            self._values = {"corrupt": True}
+            self._iid = "0xff"
+            raise RuntimeError("injected replacement failure")
+        return original(self, values)
+    return initialize
+"#
+                ),
+                ffi::c_str!("origin_failure_helpers.py"),
+                ffi::c_str!("origin_failure_helpers"),
+            )
+            .unwrap();
+
+            for put in [false, true] {
+                let (_, package) = install_ordered(py);
+                let person_id = package
+                    .type_by_label("person", TypeKind::Entity)
+                    .unwrap()
+                    .clone();
+                let responses = vec![
+                    QueryResult::Documents(vec![serde_json::json!({"iid": "0xac"})]),
+                    QueryResult::Documents(vec![origin_person_document("0xac")]),
+                ];
+                let (backend, state) = OriginRecordingBackend::new(responses);
+                let manager = origin_manager(
+                    Arc::clone(&package),
+                    person_id.clone(),
+                    Some(Arc::new(Database::with_backend(
+                        Box::new(backend),
+                        if put {
+                            "rollback-put"
+                        } else {
+                            "rollback-insert"
+                        },
+                    ))),
+                    None,
+                    Arc::new(ProviderRuntimeOwner::new().expect("provider runtime should start")),
+                );
+                let class = package
+                    .class(&person_id, ProjectedModelForm::Complete)
+                    .unwrap()
+                    .bind(py);
+                let instance = class.call0().unwrap();
+                let prior_values = instance.getattr("_values").unwrap().unbind();
+                let prior_iid = instance.getattr("_iid").unwrap().unbind();
+                let original_attach = class.getattr("attach_runtime_iid").unwrap().unbind();
+                let failing = helpers
+                    .getattr("failing_attach")
+                    .unwrap()
+                    .call1((&instance,))
+                    .unwrap();
+                class.setattr("attach_runtime_iid", failing).unwrap();
+
+                let error = if put {
+                    manager.put(py, instance.clone())
+                } else {
+                    manager.insert(py, instance.clone())
+                }
+                .unwrap_err();
+                class
+                    .setattr("attach_runtime_iid", original_attach.bind(py))
+                    .unwrap();
+                assert!(error.to_string().contains("injected attach failure"));
+                assert!(
+                    instance
+                        .getattr("_values")
+                        .unwrap()
+                        .is(prior_values.bind(py))
+                );
+                assert!(instance.getattr("_iid").unwrap().is(prior_iid.bind(py)));
+                assert!(package.facade_origins.proof(&instance).is_none());
+                let state = state.lock().unwrap();
+                assert_eq!(state.opens, [TxType::Write]);
+                assert_eq!(state.queries.len(), 2);
+                assert_eq!(state.commits, 1);
+                assert_eq!(state.rollbacks, 0);
+            }
+
+            let (_, package) = install_ordered(py);
+            let person_id = package
+                .type_by_label("person", TypeKind::Entity)
+                .unwrap()
+                .clone();
+            let (backend, state) = OriginRecordingBackend::new(vec![
+                QueryResult::Documents(vec![origin_person_document("0xad")]),
+                QueryResult::Ok,
+                QueryResult::Documents(vec![origin_person_document("0xad")]),
+            ]);
+            let manager = origin_manager(
+                Arc::clone(&package),
+                person_id.clone(),
+                Some(Arc::new(Database::with_backend(
+                    Box::new(backend),
+                    "rollback-update",
+                ))),
+                None,
+                Arc::new(ProviderRuntimeOwner::new().expect("provider runtime should start")),
+            );
+            let instance = manager.get_by_iid(py, "0xad").unwrap();
+            let prior_values = instance.bind(py).getattr("_values").unwrap().unbind();
+            let prior_iid = instance.bind(py).getattr("_iid").unwrap().unbind();
+            let prior_proof = match package.facade_origins.proof(instance.bind(py)).unwrap() {
+                FacadeProjectionProof::Thing(proof) => proof,
+                FacadeProjectionProof::Reference(_) => panic!("manager get retained a reference"),
+            };
+            let class = package
+                .class(&person_id, ProjectedModelForm::Complete)
+                .unwrap()
+                .bind(py);
+            let original_initialize = class.getattr("initialize_runtime_values").unwrap().unbind();
+            let failing = helpers
+                .getattr("failing_initialize")
+                .unwrap()
+                .call1((instance.bind(py), original_initialize.bind(py)))
+                .unwrap();
+            class.setattr("initialize_runtime_values", failing).unwrap();
+            let error = manager.update(py, instance.bind(py).clone()).unwrap_err();
+            class
+                .setattr("initialize_runtime_values", original_initialize.bind(py))
+                .unwrap();
+            assert!(error.to_string().contains("injected replacement failure"));
+            assert!(
+                instance
+                    .bind(py)
+                    .getattr("_values")
+                    .unwrap()
+                    .is(prior_values.bind(py))
+            );
+            assert!(
+                instance
+                    .bind(py)
+                    .getattr("_iid")
+                    .unwrap()
+                    .is(prior_iid.bind(py))
+            );
+            let after_proof = match package.facade_origins.proof(instance.bind(py)).unwrap() {
+                FacadeProjectionProof::Thing(proof) => proof,
+                FacadeProjectionProof::Reference(_) => panic!("update retained a reference"),
+            };
+            assert!(Arc::ptr_eq(&prior_proof, &after_proof));
+            let state = state.lock().unwrap();
+            assert_eq!(state.opens, [TxType::Read, TxType::Write]);
+            assert_eq!(state.queries.len(), 3);
+            assert_eq!(state.commits, 1);
+            assert_eq!(state.rollbacks, 0);
+            assert_eq!(state.closes, 1);
         });
     }
 

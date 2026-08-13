@@ -22,9 +22,9 @@ use type_bridge_orm::{
     AnswerCancellation, BindingHandle, ComparisonOp, FieldHandle, FunctionArgumentHandle,
     FunctionCallHandle, FunctionHandle, FunctionValueHandle, InstalledRuntimeProjection,
     MatchError, MissingOrder, OrderHandle, OrmError, PredicateHandle, ProjectedAttributeValue,
-    QueryExecutionDeadline, QueryExecutionResourceLimits, QueryHandle, Reduction, RoleHandle,
-    RowCardinality, SelectionHandle, SessionHandle, ShapeHandle, SortDirection,
-    UnvalidatedMatchRequest, ValidatedMatchRequest, Window, lower_match_error,
+    ProjectedQueryOrigin, QueryExecutionDeadline, QueryExecutionResourceLimits, QueryHandle,
+    Reduction, RoleHandle, RowCardinality, SelectionHandle, SessionHandle, ShapeHandle,
+    SortDirection, UnvalidatedMatchRequest, ValidatedMatchRequest, Window, lower_match_error,
     query_resource_closed_diagnostic, validate_public_order_term_count,
 };
 
@@ -96,6 +96,7 @@ struct PyMatchShapeHandle {
 #[pyclass(name = "MatchQueryHandle", frozen)]
 pub(crate) struct PyMatchQueryHandle {
     inner: QueryHandle,
+    installed: Option<Arc<InstalledRuntimeProjection>>,
     resources: QueryExecutionResourceLimits,
     cancellation: AnswerCancellation,
     session_closed: Arc<AtomicBool>,
@@ -106,6 +107,7 @@ impl Clone for PyMatchQueryHandle {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
+            installed: self.installed.as_ref().map(Arc::clone),
             resources: self.resources,
             cancellation: self.cancellation.clone(),
             session_closed: Arc::clone(&self.session_closed),
@@ -138,6 +140,20 @@ pub(crate) struct PyQueryInvocationBudget {
     resources: QueryExecutionResourceLimits,
     deadline: QueryExecutionDeadline,
     cancellation: AnswerCancellation,
+}
+
+impl PyQueryInvocationBudget {
+    pub(crate) const fn from_parts(
+        resources: QueryExecutionResourceLimits,
+        deadline: QueryExecutionDeadline,
+        cancellation: AnswerCancellation,
+    ) -> Self {
+        Self {
+            resources,
+            deadline,
+            cancellation,
+        }
+    }
 }
 
 /// Canonical cross-binding generated-query execution budgets.
@@ -322,6 +338,10 @@ impl PyMatchQueryHandle {
         &self.inner
     }
 
+    pub(crate) fn installed_projection(&self) -> Option<Arc<InstalledRuntimeProjection>> {
+        self.installed.as_ref().map(Arc::clone)
+    }
+
     pub(crate) fn begin_invocation(&self) -> PyResult<PyQueryInvocationBudget> {
         self.ensure_open()?;
         let deadline = QueryExecutionDeadline::for_limits(self.resources);
@@ -338,6 +358,7 @@ impl PyMatchQueryHandle {
     fn derived(&self, inner: QueryHandle) -> Self {
         Self {
             inner,
+            installed: self.installed.as_ref().map(Arc::clone),
             resources: self.resources,
             cancellation: self.cancellation.clone(),
             session_closed: Arc::clone(&self.session_closed),
@@ -397,6 +418,28 @@ impl PyMatchSessionHandle {
             closed: Arc::new(AtomicBool::new(false)),
         }
     }
+
+    #[cfg(test)]
+    pub(crate) fn projected_companion_enabled(&self) -> bool {
+        self.installed
+            .as_deref()
+            .is_some_and(supports_projected_query_companion)
+    }
+}
+
+fn supports_projected_query_companion(installed: &InstalledRuntimeProjection) -> bool {
+    installed.projection().models().values().any(|model| {
+        model
+            .query_tokens()
+            .fields()
+            .values()
+            .any(|field| !field.multiplicity().collection_mode().is_unordered())
+            || model
+                .query_tokens()
+                .roles()
+                .values()
+                .any(|role| !role.multiplicity().collection_mode().is_unordered())
+    })
 }
 
 #[pymethods]
@@ -568,6 +611,11 @@ impl PyMatchSessionHandle {
             .query(shape.inner.clone())
             .map(|inner| PyMatchQueryHandle {
                 inner,
+                installed: self
+                    .installed
+                    .as_ref()
+                    .filter(|installed| supports_projected_query_companion(installed))
+                    .map(Arc::clone),
                 resources: self.resources,
                 cancellation: self.cancellation.clone(),
                 session_closed: Arc::clone(&self.closed),
@@ -940,7 +988,14 @@ impl PyMatchQueryHandle {
             )
             .map_err(py_match_orm_error)?;
         let registry = self.inner.registry_arc();
-        execute_validated_owned(py, database, validated, registry, budget)
+        execute_validated_owned(
+            py,
+            database,
+            self.installed.as_ref(),
+            validated,
+            registry,
+            budget,
+        )
     }
 
     fn execute_fetch_rows_borrowed(
@@ -963,7 +1018,14 @@ impl PyMatchQueryHandle {
             )
             .map_err(py_match_orm_error)?;
         let registry = self.inner.registry_arc();
-        execute_validated_borrowed(py, transaction, validated, registry, budget)
+        execute_validated_borrowed(
+            py,
+            transaction,
+            self.installed.as_ref(),
+            validated,
+            registry,
+            budget,
+        )
     }
 
     // PyO3 exposes these operation-local arguments as the stable Python terminal contract.
@@ -989,7 +1051,14 @@ impl PyMatchQueryHandle {
                 include_total,
             )
             .map_err(py_match_orm_error)?;
-        execute_validated_owned(py, database, validated, self.inner.registry_arc(), budget)
+        execute_validated_owned(
+            py,
+            database,
+            self.installed.as_ref(),
+            validated,
+            self.inner.registry_arc(),
+            budget,
+        )
     }
 
     // PyO3 exposes these operation-local arguments as the stable Python terminal contract.
@@ -1018,6 +1087,7 @@ impl PyMatchQueryHandle {
         execute_validated_borrowed(
             py,
             transaction,
+            self.installed.as_ref(),
             validated,
             self.inner.registry_arc(),
             budget,
@@ -1035,7 +1105,14 @@ impl PyMatchQueryHandle {
             .inner
             .validate_count_by(&root.inner)
             .map_err(py_match_orm_error)?;
-        execute_validated_owned(py, database, validated, self.inner.registry_arc(), budget)
+        execute_validated_owned(
+            py,
+            database,
+            self.installed.as_ref(),
+            validated,
+            self.inner.registry_arc(),
+            budget,
+        )
     }
 
     fn execute_count_by_borrowed(
@@ -1052,6 +1129,7 @@ impl PyMatchQueryHandle {
         execute_validated_borrowed(
             py,
             transaction,
+            self.installed.as_ref(),
             validated,
             self.inner.registry_arc(),
             budget,
@@ -1069,7 +1147,14 @@ impl PyMatchQueryHandle {
             .inner
             .validate_exists_by(&root.inner)
             .map_err(py_match_orm_error)?;
-        execute_validated_owned(py, database, validated, self.inner.registry_arc(), budget)
+        execute_validated_owned(
+            py,
+            database,
+            self.installed.as_ref(),
+            validated,
+            self.inner.registry_arc(),
+            budget,
+        )
     }
 
     fn execute_exists_by_borrowed(
@@ -1086,6 +1171,7 @@ impl PyMatchQueryHandle {
         execute_validated_borrowed(
             py,
             transaction,
+            self.installed.as_ref(),
             validated,
             self.inner.registry_arc(),
             budget,
@@ -1134,7 +1220,14 @@ impl PyMatchQueryHandle {
                 &terms,
             )
             .map_err(py_match_orm_error)?;
-        execute_validated_owned(py, database, validated, self.inner.registry_arc(), budget)
+        execute_validated_owned(
+            py,
+            database,
+            self.installed.as_ref(),
+            validated,
+            self.inner.registry_arc(),
+            budget,
+        )
     }
 
     // PyO3 exposes these operation-local arguments as the stable Python terminal contract.
@@ -1163,6 +1256,7 @@ impl PyMatchQueryHandle {
         execute_validated_borrowed(
             py,
             transaction,
+            self.installed.as_ref(),
             validated,
             self.inner.registry_arc(),
             budget,
@@ -1206,7 +1300,14 @@ impl PyMatchQueryHandle {
             .inner
             .validate_reduce_by_field(&root.inner, &group.inner, &terms)
             .map_err(py_match_orm_error)?;
-        execute_validated_owned(py, database, validated, self.inner.registry_arc(), budget)
+        execute_validated_owned(
+            py,
+            database,
+            self.installed.as_ref(),
+            validated,
+            self.inner.registry_arc(),
+            budget,
+        )
     }
 
     // PyO3 exposes these operation-local arguments as the stable Python terminal contract.
@@ -1231,6 +1332,7 @@ impl PyMatchQueryHandle {
         execute_validated_borrowed(
             py,
             transaction,
+            self.installed.as_ref(),
             validated,
             self.inner.registry_arc(),
             budget,
@@ -1281,7 +1383,14 @@ impl PyMatchQueryHandle {
             .inner
             .validate_reduce_by_fields(&root.inner, &groups, &terms)
             .map_err(py_match_orm_error)?;
-        execute_validated_owned(py, database, validated, self.inner.registry_arc(), budget)
+        execute_validated_owned(
+            py,
+            database,
+            self.installed.as_ref(),
+            validated,
+            self.inner.registry_arc(),
+            budget,
+        )
     }
 
     // PyO3 exposes these operation-local arguments as the stable Python terminal contract.
@@ -1311,6 +1420,7 @@ impl PyMatchQueryHandle {
         execute_validated_borrowed(
             py,
             transaction,
+            self.installed.as_ref(),
             validated,
             self.inner.registry_arc(),
             budget,
@@ -1352,11 +1462,13 @@ pub(crate) fn borrow_reduce_terms(
 fn execute_validated_owned(
     py: Python<'_>,
     database: &PyRustDatabase,
+    installed: Option<&Arc<InstalledRuntimeProjection>>,
     validated: ValidatedMatchRequest,
     registry: std::sync::Arc<DescriptorRegistry>,
     budget: PyQueryInvocationBudget,
 ) -> PyResult<PyValidatedMatchResultHandle> {
     let (database, runtime) = database.handles();
+    let origin = installed.map(|_| ProjectedQueryOrigin::for_database(database.as_ref()));
     let result = provider_block_on(
         py,
         runtime.as_ref(),
@@ -1369,23 +1481,22 @@ fn execute_validated_owned(
         ),
     )
     .map_err(py_match_orm_error)?;
-    Ok(PyValidatedMatchResultHandle::new_with_budget(
-        validated,
-        result,
-        registry,
-        budget.deadline,
-        budget.cancellation,
-    ))
+    validated_result_handle(installed, origin, validated, result, registry, budget)
 }
 
 fn execute_validated_borrowed(
     py: Python<'_>,
     transaction: &PyRustTransactionContext,
+    installed: Option<&Arc<InstalledRuntimeProjection>>,
     validated: ValidatedMatchRequest,
     registry: std::sync::Arc<DescriptorRegistry>,
     budget: PyQueryInvocationBudget,
 ) -> PyResult<PyValidatedMatchResultHandle> {
     let (transaction, runtime) = transaction.handles();
+    let origin = installed
+        .map(|_| ProjectedQueryOrigin::for_transaction(&transaction))
+        .transpose()
+        .map_err(py_sdk_diagnostic)?;
     let result = provider_block_on(
         py,
         runtime.as_ref(),
@@ -1398,13 +1509,51 @@ fn execute_validated_borrowed(
         ),
     )
     .map_err(py_match_orm_error)?;
-    Ok(PyValidatedMatchResultHandle::new_with_budget(
-        validated,
-        result,
-        registry,
-        budget.deadline,
-        budget.cancellation,
-    ))
+    validated_result_handle(installed, origin, validated, result, registry, budget)
+}
+
+pub(crate) fn validated_result_handle(
+    installed: Option<&Arc<InstalledRuntimeProjection>>,
+    origin: Option<ProjectedQueryOrigin>,
+    validated: ValidatedMatchRequest,
+    result: type_bridge_orm::ValidatedMatchResult,
+    registry: Arc<DescriptorRegistry>,
+    budget: PyQueryInvocationBudget,
+) -> PyResult<PyValidatedMatchResultHandle> {
+    let projected = installed
+        .zip(origin)
+        .map(|(installed, origin)| {
+            origin
+                .materialize_borrowed_with_budget(
+                    installed,
+                    &registry,
+                    &validated,
+                    &result,
+                    budget.resources.projected(),
+                    &budget.cancellation,
+                    Some(budget.deadline),
+                )
+                .map(|(value, _measure)| value)
+                .map_err(py_sdk_diagnostic)
+        })
+        .transpose()?;
+    match projected {
+        Some(projected) => Ok(PyValidatedMatchResultHandle::new_with_projected_budget(
+            validated,
+            result,
+            registry,
+            projected,
+            budget.deadline,
+            budget.cancellation,
+        )),
+        None => Ok(PyValidatedMatchResultHandle::new_with_budget(
+            validated,
+            result,
+            registry,
+            budget.deadline,
+            budget.cancellation,
+        )),
+    }
 }
 
 pub(crate) fn order_handles(py: Python<'_>, values: &[Py<PyMatchOrderHandle>]) -> Vec<OrderHandle> {
@@ -1991,6 +2140,7 @@ mod tests {
         let shape = session.inner.positional([person.one()]).unwrap();
         let query = PyMatchQueryHandle {
             inner: session.inner.query(shape).unwrap(),
+            installed: None,
             resources: session.resources,
             cancellation: session.cancellation.clone(),
             session_closed: Arc::clone(&session.closed),
