@@ -161,6 +161,8 @@ pub use query_v2_model_remote::{
     prepare_remote_model_query_v2, prepare_remote_model_query_v2_with_budget,
 };
 pub use runtime_projection::InstalledRuntimeProjection;
+#[doc(hidden)]
+pub use session::TransactionContextState;
 pub use session::backend::AnswerCancellation;
 #[doc(hidden)]
 pub use session::database::is_identity_safe_provider_address;

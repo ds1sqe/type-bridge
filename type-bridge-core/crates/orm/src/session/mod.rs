@@ -15,6 +15,8 @@ pub mod real_driver;
 
 pub use backend::{GivenRowsSpec, GivenValue, TxType};
 pub use context::TransactionContext;
+#[doc(hidden)]
+pub use context::TransactionContextState;
 pub use database::{Database, DatabaseConnectionAuthority};
 pub use legacy_writer::{require_legacy_writer_open, require_legacy_writer_open_in_transaction};
 pub use transaction::Transaction;
