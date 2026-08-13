@@ -10,8 +10,10 @@ from pathlib import Path
 
 import generated_v2._query as generated_query_module
 import generated_variant as variant
+from generated_ordered import CrudHook as OrderedCrudHook
 from generated_ordered import Membership as OrderedMembership
 from generated_ordered import Person as OrderedPerson
+from generated_ordered import ProjectedModelManager as OrderedProjectedModelManager
 from generated_ordered import Tag as OrderedTag
 from generated_v2 import (
     PLAYING_FACTS,
@@ -229,12 +231,25 @@ except MatchRequestError as error:
     assert error.category == "invalid_input"
     assert error.sdk_category == "invalid_input"
     assert error.code == "ordered_distinct_duplicate"
+else:
+    raise AssertionError("ordered create ownership accepted a duplicate scalar")
+ordered_person.tag = [OrderedTag("third"), OrderedTag("fourth")]
+assert [tag.value for tag in ordered_person.tag] == ["third", "fourth"]
+previous_ordered_tags = ordered_person.tag
+try:
+    duplicate_tag = OrderedTag("duplicate")
+    ordered_person.tag = [duplicate_tag, duplicate_tag]
+except MatchRequestError as error:
+    assert error.category == "invalid_input"
+    assert error.sdk_category == "invalid_input"
+    assert error.code == "ordered_distinct_duplicate"
     assert error.details == {
         "duplicate_index": {"kind": "count", "value": 1},
         "first_index": {"kind": "count", "value": 0},
     }
 else:
-    raise AssertionError("ordered create ownership accepted a duplicate scalar")
+    raise AssertionError("ordered ownership reassignment accepted a duplicate scalar")
+assert ordered_person.tag is previous_ordered_tags
 
 ordered_person.attach_runtime_iid("0xa")
 try:
@@ -244,6 +259,18 @@ except MatchRequestError as error:
     assert error.code == "ordered_distinct_duplicate"
 else:
     raise AssertionError("ordered create role accepted a duplicate identity")
+other_ordered_person = OrderedPerson(tag=[OrderedTag("other")])
+other_ordered_person.attach_runtime_iid("0xc")
+ordered_membership = OrderedMembership(member=[ordered_person, other_ordered_person])
+previous_ordered_members = ordered_membership.member
+try:
+    ordered_membership.member = [ordered_person, ordered_person]
+except MatchRequestError as error:
+    assert error.category == "invalid_input"
+    assert error.code == "ordered_distinct_duplicate"
+else:
+    raise AssertionError("ordered role reassignment accepted a duplicate identity")
+assert ordered_membership.member is previous_ordered_members
 
 foreign_person = variant.Person(
     identifier=variant.Identifier("foreign-person"),
@@ -268,6 +295,78 @@ except MatchRequestError as error:
     assert [segment["kind"] for segment in error.path] == ["type", "role", "index"]
 else:
     raise AssertionError("ordered create accepted a foreign-package role player")
+try:
+    ordered_membership.member = [foreign_person]
+except MatchRequestError as error:
+    assert error.category == "integrity"
+    assert error.sdk_category == "integrity"
+    assert error.code == "generated_token_package_mismatch"
+    assert [segment["kind"] for segment in error.path] == ["type", "role", "index"]
+    assert error.path[-1] == {"kind": "index", "value": 0}
+else:
+    raise AssertionError("ordered role reassignment accepted a foreign-package role player")
+assert ordered_membership.member is previous_ordered_members
+
+
+class MutatingOrderedUpdateHook(OrderedCrudHook[OrderedPerson]):
+    def __init__(self) -> None:
+        self.pre_update_calls = 0
+        self.post_update_calls = 0
+
+    def pre_update(
+        self,
+        sender: type[OrderedPerson],
+        instance: OrderedPerson,
+    ) -> None:
+        assert sender is OrderedPerson
+        self.pre_update_calls += 1
+        duplicate = OrderedTag("hook-duplicate")
+        instance.runtime_values()["tag"] = (duplicate, duplicate)
+
+    def post_update(
+        self,
+        sender: type[OrderedPerson],
+        instance: OrderedPerson,
+    ) -> None:
+        assert sender is OrderedPerson
+        assert isinstance(instance, OrderedPerson)
+        self.post_update_calls += 1
+
+
+class FakeOrderedUpdateNative:
+    def __init__(self) -> None:
+        self.resolve_iid_calls = 0
+        self.update_calls = 0
+
+    def resolve_iid(self, instance: OrderedPerson) -> str | None:
+        assert isinstance(instance, OrderedPerson)
+        self.resolve_iid_calls += 1
+        return "0xd"
+
+    def update(self, instance: OrderedPerson) -> OrderedPerson:
+        self.update_calls += 1
+        return instance
+
+
+detached_ordered_person = OrderedPerson(tag=[OrderedTag("detached")])
+fake_ordered_native = FakeOrderedUpdateNative()
+ordered_update_hook = MutatingOrderedUpdateHook()
+ordered_manager = OrderedProjectedModelManager.__new__(OrderedProjectedModelManager)
+object.__setattr__(ordered_manager, "_model", OrderedPerson)
+object.__setattr__(ordered_manager, "_native", fake_ordered_native)
+object.__setattr__(ordered_manager, "_hooks", [ordered_update_hook])
+object.__setattr__(ordered_manager, "_filtered", False)
+try:
+    ordered_manager.update(detached_ordered_person)
+except MatchRequestError as error:
+    assert error.category == "invalid_input"
+    assert error.code == "ordered_distinct_duplicate"
+else:
+    raise AssertionError("ordered detached update resolved before whole-create validation")
+assert ordered_update_hook.pre_update_calls == 1
+assert ordered_update_hook.post_update_calls == 0
+assert fake_ordered_native.resolve_iid_calls == 0
+assert fake_ordered_native.update_calls == 0
 
 entity_match = QueryBuilder.match_entity(
     Person,

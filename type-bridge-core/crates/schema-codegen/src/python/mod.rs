@@ -26,7 +26,7 @@ const PY_TYPED_ID: &str = "typebridge.generator.python.py-typed";
 const ORDERED_RUNTIME_SOURCE_SUFFIX: &[u8] = br#"
 
 # Successor resource for ordered collection projections.
-_TYPE_BRIDGE_ORDERED_COLLECTION_RESOURCE_VERSION = 2
+_TYPE_BRIDGE_ORDERED_COLLECTION_RESOURCE_VERSION = 3
 
 
 def _install_runtime_projection_with_authority(
@@ -70,18 +70,66 @@ class _CreateValidator(Protocol):
     ) -> None: ...
 
 
+_LegacyProjectedField = _ProjectedField
+
+
+class _WholeCreateProjectedField(_LegacyProjectedField):
+    def __set__(self, instance: ModelBase, value: object) -> None:
+        values = instance.runtime_values()
+        had_value = self.name in values
+        previous = values.get(self.name)
+        _LegacyProjectedField.__set__(self, instance, value)
+        try:
+            projection = cast(_CreateValidator, type(instance).__runtime_projection__)
+            projection.validate_create(type(instance), instance)
+        except BaseException:
+            if had_value:
+                values[self.name] = previous
+            else:
+                del values[self.name]
+            raise
+
+
+globals()["_ProjectedField"] = _WholeCreateProjectedField
+
+
 def _initialize_model_with_validation(
     instance: ModelBase,
     values: Mapping[str, object],
 ) -> None:
     instance.initialize_runtime_values({})
     for name, value in values.items():
-        setattr(instance, name, value)
+        descriptor: object | None = None
+        for owner in type(instance).__mro__:
+            if name in owner.__dict__:
+                descriptor = owner.__dict__[name]
+                break
+        if not isinstance(descriptor, _LegacyProjectedField):
+            raise TypeError("generated model initializer requires a projected field")
+        _LegacyProjectedField.__set__(descriptor, instance, value)
     projection = cast(_CreateValidator, type(instance).__runtime_projection__)
     projection.validate_create(type(instance), instance)
 
 
 globals()["initialize_model"] = _initialize_model_with_validation
+
+
+class _WholeCreateProjectedModelManager[ModelT: ModelBase](
+    ProjectedModelManager[ModelT]
+):
+    def update(self, instance: ModelT) -> ModelT:
+        self._run_pre(CrudEvent.PRE_UPDATE, instance)
+        projection = cast(_CreateValidator, type(instance).__runtime_projection__)
+        projection.validate_create(type(instance), instance)
+        if self._resolve_instance_iid(instance):
+            result = self._native.update(instance)
+        else:
+            result = instance
+        self._run_post(CrudEvent.POST_UPDATE, result)
+        return result
+
+
+globals()["ProjectedModelManager"] = _WholeCreateProjectedModelManager
 "#;
 
 /// Python package emitter with feature-selected legacy and ordered evidence ledgers.
@@ -203,9 +251,19 @@ mod tests {
     fn ordered_runtime_source_installs_create_validation_override() {
         let source = String::from_utf8(ordered_runtime_source(true)).unwrap();
 
+        assert!(source.contains("_TYPE_BRIDGE_ORDERED_COLLECTION_RESOURCE_VERSION = 3"));
         assert!(source.contains("projection.validate_create(type(instance), instance)"));
+        assert!(source.contains("except BaseException:"));
+        assert!(source.contains("for owner in type(instance).__mro__:"));
+        assert!(source.contains("_LegacyProjectedField.__set__(descriptor, instance, value)"));
+        assert!(source.contains("class _WholeCreateProjectedModelManager"));
         assert!(
             source.contains("globals()[\"initialize_model\"] = _initialize_model_with_validation")
+        );
+        assert!(
+            source.contains(
+                "globals()[\"ProjectedModelManager\"] = _WholeCreateProjectedModelManager"
+            )
         );
     }
 }

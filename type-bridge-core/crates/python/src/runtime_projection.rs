@@ -532,6 +532,7 @@ impl PyProjectedModelManager {
     /// Insert one exact generated model and attach the returned TypeDB IID.
     fn insert(&self, py: Python<'_>, instance: Bound<'_, PyAny>) -> PyResult<PyObject> {
         self.ensure_instance(py, &instance)?;
+        self.validate_ordered_create(py, &instance)?;
         let iid = match self.descriptor()? {
             TypeDescriptor::Entity(descriptor) => {
                 let attributes = lower_attributes(
@@ -579,6 +580,7 @@ impl PyProjectedModelManager {
     /// Insert or update one exact generated model and attach its TypeDB IID.
     fn put(&self, py: Python<'_>, instance: Bound<'_, PyAny>) -> PyResult<PyObject> {
         self.ensure_instance(py, &instance)?;
+        self.validate_ordered_create(py, &instance)?;
         let iid = match self.descriptor()? {
             TypeDescriptor::Entity(descriptor) => {
                 let attributes = lower_attributes(
@@ -626,6 +628,7 @@ impl PyProjectedModelManager {
     /// Replace one exact generated model already identified by its TypeDB IID.
     fn update(&self, py: Python<'_>, instance: Bound<'_, PyAny>) -> PyResult<PyObject> {
         self.ensure_instance(py, &instance)?;
+        self.validate_ordered_create(py, &instance)?;
         let iid = required_projected_iid(&instance)?;
         let hydrated = match self.descriptor()? {
             TypeDescriptor::Entity(descriptor) => {
@@ -1099,6 +1102,13 @@ impl PyProjectedModelManager {
 }
 
 impl PyProjectedModelManager {
+    fn validate_ordered_create(&self, py: Python<'_>, instance: &Bound<'_, PyAny>) -> PyResult<()> {
+        if projection_uses_ordered_collections(self.package.projection.projection()) {
+            project_create(py, self.package.as_ref(), &self.type_id, instance)?;
+        }
+        Ok(())
+    }
+
     fn write_many(
         &self,
         py: Python<'_>,
@@ -3034,6 +3044,29 @@ class Reference:
         (projection, package)
     }
 
+    fn install_ordered(py: Python<'_>) -> (RuntimeProjection, Arc<InstalledPackage>) {
+        let authority = authority(ORDERED_SCHEMA, "python-ordered-native.yaml");
+        let authority_bytes = encode_schema_authority(&authority);
+        let projection = python_projection(&authority);
+        let projection_json = String::from_utf8(to_canonical_json(&projection).unwrap()).unwrap();
+        let semantic =
+            String::from_utf8(to_canonical_json(projection.semantic_fingerprint()).unwrap())
+                .unwrap();
+        let fingerprint =
+            String::from_utf8(to_canonical_json(projection.projection_fingerprint()).unwrap())
+                .unwrap();
+        let package = install_projection(
+            py,
+            &projection_json,
+            &semantic,
+            &fingerprint,
+            classes(py, &projection),
+            Some(&authority_bytes),
+        )
+        .unwrap();
+        (projection, package)
+    }
+
     #[test]
     fn install_is_canonical_tamper_evident_and_requires_exact_coverage() {
         pyo3::prepare_freethreaded_python();
@@ -3178,6 +3211,70 @@ class Reference:
                 value.getattr("code").unwrap().extract::<String>().unwrap(),
                 "generated_token_package_mismatch"
             );
+        });
+    }
+
+    #[test]
+    fn ordered_single_writes_reject_invalid_whole_creates_before_execution_target_resolution() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            let (_, package) = install_ordered(py);
+            let person_id = package
+                .type_by_label("person", TypeKind::Entity)
+                .unwrap()
+                .clone();
+            let tag_id = package
+                .type_by_label("tag", TypeKind::Attribute)
+                .unwrap()
+                .clone();
+            let person_class = package
+                .class(&person_id, ProjectedModelForm::Complete)
+                .unwrap()
+                .bind(py);
+            let tag_class = package
+                .class(&tag_id, ProjectedModelForm::Complete)
+                .unwrap()
+                .bind(py);
+            let duplicate = tag_class.call1(("duplicate",)).unwrap();
+            let tags = PyTuple::new(py, [duplicate.clone(), duplicate]).unwrap();
+            let kwargs = PyDict::new(py);
+            kwargs.set_item("tag", tags).unwrap();
+            let invalid = person_class.call((), Some(&kwargs)).unwrap();
+            invalid
+                .call_method1("attach_runtime_iid", ("0xa",))
+                .unwrap();
+            let manager = PyProjectedModelManager {
+                package,
+                type_id: person_id,
+                database: None,
+                transaction: None,
+                runtime: Arc::new(
+                    ProviderRuntimeOwner::new().expect("provider runtime should start"),
+                ),
+                filters: Vec::new(),
+            };
+
+            let errors = [
+                manager.insert(py, invalid.clone()).unwrap_err(),
+                manager.put(py, invalid.clone()).unwrap_err(),
+                manager.update(py, invalid).unwrap_err(),
+            ];
+            for error in errors {
+                assert!(!error.to_string().contains("no execution target"));
+                let value = error.value(py);
+                assert_eq!(
+                    value
+                        .getattr("sdk_category")
+                        .unwrap()
+                        .extract::<String>()
+                        .unwrap(),
+                    "invalid_input"
+                );
+                assert_eq!(
+                    value.getattr("code").unwrap().extract::<String>().unwrap(),
+                    "ordered_distinct_duplicate"
+                );
+            }
         });
     }
 

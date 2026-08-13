@@ -245,7 +245,9 @@ fn ordered_projection_selects_successor_evidence_and_descriptors_in_all_bindings
     assert!(python_models.contains("\\\"kind\\\":\\\"distinct\\\""));
     assert!(python_stub.contains("Sequence[Tag]"));
     assert!(python_stub.contains("tuple[Tag, ...]"));
-    assert!(python_runtime.contains("_TYPE_BRIDGE_ORDERED_COLLECTION_RESOURCE_VERSION = 2"));
+    assert!(python_runtime.contains("_TYPE_BRIDGE_ORDERED_COLLECTION_RESOURCE_VERSION = 3"));
+    assert!(python_runtime.contains("class _WholeCreateProjectedField"));
+    assert!(python_runtime.contains("class _WholeCreateProjectedModelManager"));
     assert!(python_models.contains("_install_runtime_projection("));
     assert!(python_runtime.contains("def _install_runtime_projection_with_authority("));
     assert!(python_runtime.contains("from ._authority import SCHEMA_AUTHORITY_BYTES"));
