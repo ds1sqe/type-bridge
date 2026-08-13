@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 ROOT = Path(__file__).resolve().parents[3]
 CONTRACT_ROOT = ROOT / "tests/contracts/sdk_conformance/workforce-v3"
 
@@ -289,9 +291,9 @@ def test_workforce_v3_catalog_freezes_phase0_ledger_without_future_digests() -> 
         "id": "workforce-v3",
         "version": 3,
         "semantic_profile": "typedb-3.12.1/v1",
-        "schema_path": "type-bridge-core/crates/schema-codegen/tests/acceptance/schema.yaml",
+        "schema_path": "tests/contracts/sdk_conformance/workforce-v3/schema-v3.yaml",
         "provider_schema_path": (
-            "type-bridge-core/crates/schema-codegen/tests/acceptance/provider-3.12.1.tql"
+            "tests/contracts/sdk_conformance/workforce-v3/provider-3.12.1-v3.tql"
         ),
     }
     assert catalog["report_bindings"] == ["python", "node", "rust", "c"]
@@ -313,6 +315,44 @@ def test_workforce_v3_catalog_freezes_phase0_ledger_without_future_digests() -> 
     } == selected_cases
 
 
+def test_workforce_v3_fixture_is_ordered_without_mutating_the_preserved_v1_v2_fixture() -> None:
+    fixture = yaml.safe_load((CONTRACT_ROOT / "schema-v3.yaml").read_text(encoding="utf-8"))
+    aliases = fixture["entities"]["person"]["owns"]["aliases"]
+    participants = fixture["relations"]["network-link"]["relates"]["participant"]
+    assert aliases["ordered"] is True
+    assert aliases["distinct"] is True
+    assert participants["ordered"] is True
+    assert participants["distinct"] is True
+
+    preserved = yaml.safe_load(
+        (ROOT / "type-bridge-core/crates/schema-codegen/tests/acceptance/schema.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert "ordered" not in preserved["entities"]["person"]["owns"]["aliases"]
+    assert "ordered" not in preserved["relations"]["network-link"]["relates"]["participant"]
+    preserved["entities"]["person"]["owns"]["aliases"].update({"ordered": True, "distinct": True})
+    preserved["relations"]["network-link"]["relates"]["participant"].update(
+        {"ordered": True, "distinct": True}
+    )
+    assert fixture == preserved
+
+    provider = (CONTRACT_ROOT / "provider-3.12.1-v3.tql").read_text(encoding="utf-8")
+    preserved_provider = (
+        ROOT / "type-bridge-core/crates/schema-codegen/tests/acceptance/provider-3.12.1.tql"
+    ).read_text(encoding="utf-8")
+    expected_provider = preserved_provider.replace(
+        "    relates participant @card(0..3);",
+        "    relates participant[] @distinct @card(0..3);",
+        1,
+    ).replace(
+        "    owns aliases @unique @card(0..3),",
+        "    owns aliases[] @unique @distinct @card(0..3),",
+        1,
+    )
+    assert provider == expected_provider
+
+
 def test_workforce_v3_journey_freezes_21_complete_observation_shapes() -> None:
     journey = _load("journey-v3.json")
 
@@ -326,11 +366,16 @@ def test_workforce_v3_journey_freezes_21_complete_observation_shapes() -> None:
         "memberships",
         "network_links",
         "interactions",
-        "employment",
+        "plain_activity",
         "event",
         "container",
     }
     assert journey["cleanup_order"] == list(reversed(journey["create_order"]))
+    assert journey["records"]["plain_activity"] == {
+        "ref": "plain-activity-ada",
+        "model": "plain-activity",
+        "roles": {"participant": [{"model": "person", "key": "data-ada"}]},
+    }
     observations = journey["expected_observations"]
     assert set(observations) == {row[2] for row in EXPECTED_SELECTED_PROOFS}
     assert len(observations) == 21
@@ -415,7 +460,6 @@ def test_workforce_v3_journey_freezes_21_complete_observation_shapes() -> None:
         "inherited_relation_role_lifecycle": {
             "model",
             "inherited_relation",
-            "specialized_role",
             "inherited_role",
             "player_model",
             "created",
@@ -625,6 +669,9 @@ def test_workforce_v3_journey_freezes_21_complete_observation_shapes() -> None:
     assert integer_roles["absent"]["role_present"] is False
     assert integer_roles["relation_as_player"]["preserved"] is True
     inherited = observations["inherited_relation_role_lifecycle"]
+    assert inherited["model"] == "plain-activity"
+    assert inherited["inherited_relation"] == "base-activity"
+    assert inherited["inherited_role"] == "participant"
     assert inherited["read_after_delete"] is False
     assert inherited["count_after_delete"] == 0
 

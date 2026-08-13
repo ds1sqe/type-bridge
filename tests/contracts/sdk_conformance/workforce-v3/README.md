@@ -8,7 +8,9 @@ The catalog is deliberately in `phase0_unfinalized` state. G01 changes the
 canonical schema and every binding projection, so Phase 0 cannot truthfully
 name their future digests. `expected_fingerprints` therefore remains `null`,
 and the V3 comparator rejects report validation and fan-in with
-`unfinalized_contract`. After the ordered fixture and all four emitters are
+`unfinalized_contract`. The dedicated V3 fixture keeps the preserved V1/V2
+fixture unordered while adding ordered-distinct `aliases` and `participant`
+facts for this campaign. After that fixture and all four emitters are
 complete, one explicit authority update must freeze the real semantic and four
 distinct projection fingerprints and change the state to `finalized` before
 any report can be accepted.

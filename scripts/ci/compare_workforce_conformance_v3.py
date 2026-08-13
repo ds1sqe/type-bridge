@@ -18,10 +18,8 @@ MANIFEST_RELATIVE = "tests/contracts/sdk_conformance/manifest-v1.json"
 CATALOG_RELATIVE = "tests/contracts/sdk_conformance/workforce-v3/catalog-v3.json"
 JOURNEY_RELATIVE = "tests/contracts/sdk_conformance/workforce-v3/journey-v3.json"
 REPORT_SCHEMA_RELATIVE = "tests/contracts/sdk_conformance/workforce-v3/report-schema-v3.json"
-SCHEMA_RELATIVE = "type-bridge-core/crates/schema-codegen/tests/acceptance/schema.yaml"
-PROVIDER_SCHEMA_RELATIVE = (
-    "type-bridge-core/crates/schema-codegen/tests/acceptance/provider-3.12.1.tql"
-)
+SCHEMA_RELATIVE = "tests/contracts/sdk_conformance/workforce-v3/schema-v3.yaml"
+PROVIDER_SCHEMA_RELATIVE = "tests/contracts/sdk_conformance/workforce-v3/provider-3.12.1-v3.tql"
 
 REPORT_FORMAT = "typebridge.sdk-conformance-report/v3"
 SUMMARY_FORMAT = "typebridge.sdk-conformance-summary/v3"
@@ -210,10 +208,22 @@ EXPECTED_CREATE_ORDER = (
     "interaction-robot",
     "interaction-absent",
     "interaction-person",
-    "employment-ada",
+    "plain-activity-ada",
     "event-ada",
     "container-event",
 )
+EXPECTED_PLAIN_ACTIVITY_RECORD = {
+    "ref": "plain-activity-ada",
+    "model": "plain-activity",
+    "roles": {
+        "participant": [
+            {
+                "model": "person",
+                "key": "data-ada",
+            }
+        ]
+    },
+}
 
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 CONTRACT_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._/-]*$")
@@ -323,7 +333,6 @@ EXPECTED_OBSERVATION_FIELDS = {
         {
             "model",
             "inherited_relation",
-            "specialized_role",
             "inherited_role",
             "player_model",
             "created",
@@ -731,7 +740,7 @@ def _validate_journey(value: Any) -> dict[str, dict[str, Any]]:
             "memberships",
             "network_links",
             "interactions",
-            "employment",
+            "plain_activity",
             "event",
             "container",
         },
@@ -768,7 +777,7 @@ def _validate_journey(value: Any) -> dict[str, dict[str, Any]]:
                 )
             observed_refs.append(_string(item["ref"], f"journey {name}[{index}] ref"))
     for name, model, item_fields in (
-        ("employment", "employment", {"ref", "model", "roles"}),
+        ("plain_activity", "plain-activity", {"ref", "model", "roles"}),
         ("event", "event", {"ref", "model", "roles"}),
         ("container", "container", {"ref", "model", "roles"}),
     ):
@@ -776,6 +785,11 @@ def _validate_journey(value: Any) -> dict[str, dict[str, Any]]:
         if item["model"] != model:
             raise ContractError("invalid_journey_model", f"journey {name} has the wrong model")
         observed_refs.append(_string(item["ref"], f"journey {name} ref"))
+    if records["plain_activity"] != EXPECTED_PLAIN_ACTIVITY_RECORD:
+        raise ContractError(
+            "invalid_journey_record",
+            "journey plain_activity record is not the frozen inherited-role lifecycle",
+        )
 
     create_order = _exact_list(journey["create_order"], "create order")
     cleanup_order = _exact_list(journey["cleanup_order"], "cleanup order")

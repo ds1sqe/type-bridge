@@ -354,11 +354,11 @@
         }
       }
     ],
-    "employment": {
-      "ref": "employment-ada",
-      "model": "employment",
+    "plain_activity": {
+      "ref": "plain-activity-ada",
+      "model": "plain-activity",
       "roles": {
-        "employee": [
+        "participant": [
           {
             "model": "person",
             "key": "data-ada"
@@ -405,14 +405,14 @@
     "interaction-robot",
     "interaction-absent",
     "interaction-person",
-    "employment-ada",
+    "plain-activity-ada",
     "event-ada",
     "container-event"
   ],
   "cleanup_order": [
     "container-event",
     "event-ada",
-    "employment-ada",
+    "plain-activity-ada",
     "interaction-person",
     "interaction-absent",
     "interaction-robot",
@@ -1008,10 +1008,9 @@
       "generated_token_string_parser_used": false
     },
     "inherited_relation_role_lifecycle": {
-      "model": "employment",
-      "inherited_relation": "membership",
-      "specialized_role": "employee",
-      "inherited_role": "member",
+      "model": "plain-activity",
+      "inherited_relation": "base-activity",
+      "inherited_role": "participant",
       "player_model": "person",
       "created": true,
       "read_after_create": true,

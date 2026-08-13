@@ -5,8 +5,8 @@
     "id": "workforce-v3",
     "version": 3,
     "semantic_profile": "typedb-3.12.1/v1",
-    "schema_path": "type-bridge-core/crates/schema-codegen/tests/acceptance/schema.yaml",
-    "provider_schema_path": "type-bridge-core/crates/schema-codegen/tests/acceptance/provider-3.12.1.tql"
+    "schema_path": "tests/contracts/sdk_conformance/workforce-v3/schema-v3.yaml",
+    "provider_schema_path": "tests/contracts/sdk_conformance/workforce-v3/provider-3.12.1-v3.tql"
   },
   "journey_path": "tests/contracts/sdk_conformance/workforce-v3/journey-v3.json",
   "report_schema_path": "tests/contracts/sdk_conformance/workforce-v3/report-schema-v3.json",

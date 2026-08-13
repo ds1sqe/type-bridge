@@ -201,6 +201,7 @@ def test_phase0_catalog_mutations_fail_closed(
     [
         ("missing_observation", "invalid_object_fields"),
         ("extra_observation_field", "observation_shape_mismatch"),
+        ("plain_activity_role", "invalid_journey_record"),
     ],
 )
 def test_journey_observation_shape_drift_fails_closed(
@@ -216,6 +217,10 @@ def test_journey_observation_shape_drift_fails_closed(
         journey["expected_observations"].pop("ordered_distinct_collections")
     elif mutation == "extra_observation_field":
         journey["expected_observations"]["ordered_distinct_collections"]["unexpected"] = True
+    elif mutation == "plain_activity_role":
+        journey["records"]["plain_activity"]["roles"] = {
+            "employee": [{"model": "person", "key": "data-ada"}]
+        }
     else:
         raise AssertionError(f"unhandled mutation {mutation}")
     _write_json(journey_path, journey)
