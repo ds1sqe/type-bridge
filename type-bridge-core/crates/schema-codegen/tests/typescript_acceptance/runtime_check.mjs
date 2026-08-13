@@ -262,18 +262,30 @@ assert.deepEqual(
   foreignPackage.path.map((segment) => segment.kind),
   ["type", "role", "index"],
 );
-const nestedForeignKeyPerson = OrderedPerson[orderedHydrate]("0xb", {
-  identifier: ForeignIdentifier.create("nested-foreign-key"),
-  score: OrderedScore.create(3n),
-  tag: [],
-});
-const nestedForeignPackage = captureNativeDiagnostic(() =>
-  OrderedMembership.create({ member: [nestedForeignKeyPerson] }),
+const nestedForeignHydration = captureNativeDiagnostic(() =>
+  OrderedPerson[orderedHydrate]("0xb", {
+    identifier: ForeignIdentifier.create("nested-foreign-key"),
+    score: OrderedScore.create(3n),
+    tag: [],
+  }),
 );
-assert.equal(nestedForeignPackage.code, "generated_token_package_mismatch");
+assert.equal(
+  nestedForeignHydration.code,
+  "generated_token_package_mismatch",
+);
 assert.deepEqual(
-  nestedForeignPackage.path.map((segment) => segment.kind),
-  ["type", "role", "index", "type", "field", "index"],
+  nestedForeignHydration.path,
+  [
+    { kind: "type", value: { kind: "entity", label: "person" } },
+    {
+      kind: "field",
+      value: {
+        attribute: "identifier",
+        owner: { kind: "entity", label: "person" },
+      },
+    },
+    { kind: "index", value: 0 },
+  ],
 );
 
 assert.equal(Employment.employee.kind, "role");
