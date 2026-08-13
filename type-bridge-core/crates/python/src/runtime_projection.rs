@@ -45,7 +45,6 @@ use crate::match_runtime::{
     PyMatchSessionHandle, PyQueryCancellation, PyQueryExecutionResourceLimits, py_sdk_diagnostic,
 };
 use crate::orm_runtime::{PyRustDatabase, PyRustTransactionContext, provider_block_on};
-use crate::query_v2_runtime::schema_authority_diagnostic;
 use crate::validated_result_runtime::PyValidatedMatchThingHandle;
 
 struct RegisteredModel {
@@ -1256,28 +1255,32 @@ fn install_projection(
     models: Vec<(Py<PyType>, Option<Py<PyType>>)>,
     schema_authority: Option<&[u8]>,
 ) -> PyResult<Arc<InstalledPackage>> {
-    let runtime = decode_runtime_projection_verified(
-        projection_json.as_bytes(),
-        semantic_fingerprint_json.as_bytes(),
-        projection_fingerprint_json.as_bytes(),
-    )
-    .map_err(py_diagnostic)?;
-    if runtime.target() != BindingTarget::Python {
-        return Err(py_runtime_error(
-            "runtime projection does not target Python",
-        ));
-    }
-    match schema_authority {
-        Some(schema_authority) => {
-            let authority = decode_schema_authority(
-                schema_authority,
-                &schema_authority_capability_vocabulary(),
+    let runtime = match schema_authority {
+        Some(schema_authority) => install_authority_backed_projection(
+            projection_json,
+            semantic_fingerprint_json,
+            projection_fingerprint_json,
+            schema_authority,
+        )?,
+        None => {
+            let runtime = decode_runtime_projection_verified(
+                projection_json.as_bytes(),
+                semantic_fingerprint_json.as_bytes(),
+                projection_fingerprint_json.as_bytes(),
             )
-            .map_err(|error| py_diagnostic(schema_authority_diagnostic(&error)))?;
-            verify_projection_evidence(&authority, &runtime).map_err(py_diagnostic)?;
+            .map_err(py_diagnostic)?;
+            if runtime.target() != BindingTarget::Python {
+                return Err(py_runtime_error(
+                    "runtime projection does not target Python",
+                ));
+            }
+            if projection_uses_ordered_collections(&runtime) {
+                return Err(projection_evidence_mismatch());
+            }
+            verify_legacy_python_projection_evidence(&runtime)?;
+            runtime
         }
-        None => verify_legacy_python_projection_evidence(&runtime)?,
-    }
+    };
     let mut expected = BTreeMap::new();
     let mut types_by_label = BTreeMap::new();
     for (id, model) in runtime.models() {
@@ -1343,6 +1346,32 @@ fn install_projection(
         models: registered,
         types_by_label,
     }))
+}
+
+fn install_authority_backed_projection(
+    projection_json: &str,
+    semantic_fingerprint_json: &str,
+    projection_fingerprint_json: &str,
+    schema_authority: &[u8],
+) -> PyResult<RuntimeProjection> {
+    let runtime = decode_runtime_projection_verified(
+        projection_json.as_bytes(),
+        semantic_fingerprint_json.as_bytes(),
+        projection_fingerprint_json.as_bytes(),
+    )
+    .map_err(|_| projection_evidence_mismatch())?;
+    if runtime.target() != BindingTarget::Python {
+        return Err(projection_evidence_mismatch());
+    }
+    let authority =
+        decode_schema_authority(schema_authority, &schema_authority_capability_vocabulary())
+            .map_err(|_| projection_evidence_mismatch())?;
+    verify_projection_evidence(&authority, &runtime).map_err(|_| projection_evidence_mismatch())?;
+    Ok(runtime)
+}
+
+fn projection_evidence_mismatch() -> PyErr {
+    py_sdk_diagnostic(SdkExecutionDiagnostic::projection_evidence_mismatch())
 }
 
 fn verify_legacy_python_projection_evidence(runtime: &RuntimeProjection) -> PyResult<()> {
@@ -3787,7 +3816,9 @@ class Reference:
     }
 
     #[test]
-    fn ordered_install_rejects_missing_stale_forged_reordered_and_foreign_evidence() {
+    fn ordered_install_normalizes_all_projection_admission_failures() {
+        use pythonize::depythonize;
+
         let ordered_authority = authority(ORDERED_SCHEMA, "python-ordered.yaml");
         let authority_bytes = encode_schema_authority(&ordered_authority);
         let exact = python_projection(&ordered_authority);
@@ -3795,23 +3826,15 @@ class Reference:
         assert_eq!(exact.generator_handlers(), [ProjectionHandler::python_v2()]);
 
         let rejected = |py: Python<'_>,
-                        projection: &RuntimeProjection,
-                        projection_json: Option<String>,
+                        projection_json: &str,
+                        semantic_fingerprint_json: &str,
+                        projection_fingerprint_json: &str,
                         authority_bytes: Option<&[u8]>| {
-            let projection_json = projection_json.unwrap_or_else(|| {
-                String::from_utf8(to_canonical_json(projection).unwrap()).unwrap()
-            });
-            let semantic =
-                String::from_utf8(to_canonical_json(projection.semantic_fingerprint()).unwrap())
-                    .unwrap();
-            let fingerprint =
-                String::from_utf8(to_canonical_json(projection.projection_fingerprint()).unwrap())
-                    .unwrap();
             install_projection(
                 py,
-                &projection_json,
-                &semantic,
-                &fingerprint,
+                projection_json,
+                semantic_fingerprint_json,
+                projection_fingerprint_json,
                 vec![],
                 authority_bytes,
             )
@@ -3827,6 +3850,24 @@ class Reference:
             &ProjectionConfig::python(),
             &[ProjectionHandler::python_v2()],
             &missing_resources,
+        )
+        .unwrap();
+
+        let mut extra_resources = exact.code_resources().to_vec();
+        extra_resources.push(
+            CodeResourceDigest::from_bytes(
+                "typebridge.generator.python.unexpected-resource",
+                b"unexpected Python resource",
+            )
+            .unwrap(),
+        );
+        extra_resources.sort_by(|left, right| left.id().cmp(right.id()));
+        let extra = project(
+            ordered_authority.resolved_schema(),
+            BindingTarget::Python,
+            &ProjectionConfig::python(),
+            &[ProjectionHandler::python_v2()],
+            &extra_resources,
         )
         .unwrap();
 
@@ -3852,13 +3893,56 @@ class Reference:
         )
         .unwrap();
 
-        let mut reordered: serde_json::Value =
-            serde_json::from_slice(&to_canonical_json(&exact).unwrap()).unwrap();
+        let exact_json = String::from_utf8(to_canonical_json(&exact).unwrap()).unwrap();
+        let exact_semantic =
+            String::from_utf8(to_canonical_json(exact.semantic_fingerprint()).unwrap()).unwrap();
+        let exact_fingerprint =
+            String::from_utf8(to_canonical_json(exact.projection_fingerprint()).unwrap()).unwrap();
+
+        let projection_parts = |projection: &RuntimeProjection| {
+            (
+                String::from_utf8(to_canonical_json(projection).unwrap()).unwrap(),
+                String::from_utf8(to_canonical_json(projection.semantic_fingerprint()).unwrap())
+                    .unwrap(),
+                String::from_utf8(to_canonical_json(projection.projection_fingerprint()).unwrap())
+                    .unwrap(),
+            )
+        };
+        let missing = projection_parts(&missing);
+        let extra = projection_parts(&extra);
+        let stale = projection_parts(&stale);
+        let forged = projection_parts(&forged);
+
+        let mut duplicate: serde_json::Value = serde_json::from_str(&exact_json).unwrap();
+        let resources = duplicate["code_resources"].as_array_mut().unwrap();
+        let repeated_resource = resources[0].clone();
+        resources.insert(1, repeated_resource);
+        let duplicate = String::from_utf8(to_canonical_json(&duplicate).unwrap()).unwrap();
+
+        let mut reordered: serde_json::Value = serde_json::from_str(&exact_json).unwrap();
         reordered["code_resources"]
             .as_array_mut()
             .unwrap()
             .reverse();
         let reordered = String::from_utf8(to_canonical_json(&reordered).unwrap()).unwrap();
+
+        let noncanonical = serde_json::to_string_pretty(
+            &serde_json::from_str::<serde_json::Value>(&exact_json).unwrap(),
+        )
+        .unwrap();
+
+        let typescript = TypeScriptEmitter::new();
+        let foreign_target = project(
+            ordered_authority.resolved_schema(),
+            BindingTarget::TypeScript,
+            &ProjectionConfig::typescript(),
+            &typescript.generator_handlers_for(ordered_authority.resolved_schema()),
+            &typescript
+                .code_resources_for(ordered_authority.resolved_schema())
+                .unwrap(),
+        )
+        .unwrap();
+        let foreign_target = projection_parts(&foreign_target);
 
         let foreign = authority(
             "format: typebridge.schema/v2\nentities:\n  foreign: {}\n",
@@ -3868,13 +3952,6 @@ class Reference:
 
         pyo3::prepare_freethreaded_python();
         Python::with_gil(|py| {
-            let exact_json = String::from_utf8(to_canonical_json(&exact).unwrap()).unwrap();
-            let exact_semantic =
-                String::from_utf8(to_canonical_json(exact.semantic_fingerprint()).unwrap())
-                    .unwrap();
-            let exact_fingerprint =
-                String::from_utf8(to_canonical_json(exact.projection_fingerprint()).unwrap())
-                    .unwrap();
             install_projection(
                 py,
                 &exact_json,
@@ -3886,18 +3963,195 @@ class Reference:
             .expect("the exact ordered Python package evidence must install");
 
             for error in [
-                rejected(py, &exact, None, None),
-                rejected(py, &missing, None, Some(&authority_bytes)),
-                rejected(py, &stale, None, Some(&authority_bytes)),
-                rejected(py, &forged, None, Some(&authority_bytes)),
-                rejected(py, &exact, Some(reordered), Some(&authority_bytes)),
-                rejected(py, &exact, None, Some(&foreign)),
+                rejected(py, &exact_json, &exact_semantic, &exact_fingerprint, None),
+                rejected(
+                    py,
+                    &missing.0,
+                    &missing.1,
+                    &missing.2,
+                    Some(&authority_bytes),
+                ),
+                rejected(py, &extra.0, &extra.1, &extra.2, Some(&authority_bytes)),
+                rejected(
+                    py,
+                    &duplicate,
+                    &exact_semantic,
+                    &exact_fingerprint,
+                    Some(&authority_bytes),
+                ),
+                rejected(
+                    py,
+                    &reordered,
+                    &exact_semantic,
+                    &exact_fingerprint,
+                    Some(&authority_bytes),
+                ),
+                rejected(py, &forged.0, &forged.1, &forged.2, Some(&authority_bytes)),
+                rejected(py, &stale.0, &stale.1, &stale.2, Some(&authority_bytes)),
+                rejected(
+                    py,
+                    &noncanonical,
+                    &exact_semantic,
+                    &exact_fingerprint,
+                    Some(&authority_bytes),
+                ),
+                rejected(
+                    py,
+                    "{",
+                    &exact_semantic,
+                    &exact_fingerprint,
+                    Some(&authority_bytes),
+                ),
+                rejected(
+                    py,
+                    &exact_json,
+                    "{",
+                    &exact_fingerprint,
+                    Some(&authority_bytes),
+                ),
+                rejected(
+                    py,
+                    &exact_json,
+                    &exact_semantic,
+                    "{",
+                    Some(&authority_bytes),
+                ),
+                rejected(
+                    py,
+                    &foreign_target.0,
+                    &foreign_target.1,
+                    &foreign_target.2,
+                    Some(&authority_bytes),
+                ),
+                rejected(
+                    py,
+                    &exact_json,
+                    &exact_semantic,
+                    &exact_fingerprint,
+                    Some(b"{"),
+                ),
+                rejected(
+                    py,
+                    &exact_json,
+                    &exact_semantic,
+                    &exact_fingerprint,
+                    Some(&foreign),
+                ),
             ] {
-                assert!(
-                    error.to_string().contains("projection")
-                        || error.to_string().contains("canonical")
+                let value = error.value(py);
+                assert_eq!(
+                    value
+                        .getattr("category")
+                        .unwrap()
+                        .extract::<String>()
+                        .unwrap(),
+                    "integrity",
+                );
+                assert_eq!(
+                    value
+                        .getattr("sdk_category")
+                        .unwrap()
+                        .extract::<String>()
+                        .unwrap(),
+                    "integrity",
+                );
+                assert_eq!(
+                    value.getattr("code").unwrap().extract::<String>().unwrap(),
+                    "projection_evidence_mismatch",
+                );
+                assert_eq!(
+                    value
+                        .getattr("message")
+                        .unwrap()
+                        .extract::<String>()
+                        .unwrap(),
+                    "Generated projection evidence does not match the verified schema package",
+                );
+                let path: serde_json::Value = depythonize(&value.getattr("path").unwrap()).unwrap();
+                assert_eq!(
+                    path,
+                    serde_json::json!([
+                        {"kind": "argument", "value": "projection_evidence"}
+                    ]),
                 );
             }
+        });
+    }
+
+    #[test]
+    fn authorityless_unordered_install_keeps_legacy_diagnostics() {
+        let unordered_authority = authority(SCHEMA, "python-legacy-diagnostics.yaml");
+        let projection = python_projection(&unordered_authority);
+        let projection_json = String::from_utf8(to_canonical_json(&projection).unwrap()).unwrap();
+        let semantic =
+            String::from_utf8(to_canonical_json(projection.semantic_fingerprint()).unwrap())
+                .unwrap();
+        let fingerprint =
+            String::from_utf8(to_canonical_json(projection.projection_fingerprint()).unwrap())
+                .unwrap();
+
+        let typescript = TypeScriptEmitter::new();
+        let foreign_target = project(
+            unordered_authority.resolved_schema(),
+            BindingTarget::TypeScript,
+            &ProjectionConfig::typescript(),
+            &typescript.generator_handlers(),
+            &typescript.code_resources().unwrap(),
+        )
+        .unwrap();
+        let foreign_json = String::from_utf8(to_canonical_json(&foreign_target).unwrap()).unwrap();
+        let foreign_semantic =
+            String::from_utf8(to_canonical_json(foreign_target.semantic_fingerprint()).unwrap())
+                .unwrap();
+        let foreign_fingerprint =
+            String::from_utf8(to_canonical_json(foreign_target.projection_fingerprint()).unwrap())
+                .unwrap();
+
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            let malformed = install_projection(py, "{", &semantic, &fingerprint, vec![], None)
+                .err()
+                .expect("malformed legacy projection must fail");
+            let malformed_value = malformed.value(py);
+            assert!(malformed_value.is_instance_of::<pyo3::exceptions::PyValueError>());
+            assert_eq!(
+                malformed_value.str().unwrap().to_str().unwrap(),
+                "invalid_contract [malformed_canonical_json]: input is not valid canonical JSON",
+            );
+            assert!(malformed_value.getattr("sdk_category").is_err());
+
+            let target = install_projection(
+                py,
+                &foreign_json,
+                &foreign_semantic,
+                &foreign_fingerprint,
+                vec![],
+                None,
+            )
+            .err()
+            .expect("foreign legacy target must fail");
+            let target_value = target.value(py);
+            assert!(target_value.is_instance_of::<pyo3::exceptions::PyRuntimeError>());
+            assert_eq!(
+                target_value.str().unwrap().to_str().unwrap(),
+                "runtime projection does not target Python",
+            );
+            assert!(target_value.getattr("sdk_category").is_err());
+
+            let coverage =
+                install_projection(py, &projection_json, &semantic, &fingerprint, vec![], None)
+                    .err()
+                    .expect("incomplete legacy registrations must fail");
+            let coverage_value = coverage.value(py);
+            assert!(coverage_value.is_instance_of::<pyo3::exceptions::PyValueError>());
+            assert_eq!(
+                coverage_value.str().unwrap().to_str().unwrap(),
+                format!(
+                    "projection requires exactly {} model registrations, received 0",
+                    projection.models().len(),
+                ),
+            );
+            assert!(coverage_value.getattr("sdk_category").is_err());
         });
     }
 

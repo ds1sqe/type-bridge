@@ -240,6 +240,8 @@ fn resource_with_suffix(resource: &[u8], suffix: Option<&[u8]>) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::*;
 
     #[test]
@@ -264,6 +266,27 @@ mod tests {
             source.contains(
                 "globals()[\"ProjectedModelManager\"] = _WholeCreateProjectedModelManager"
             )
+        );
+    }
+
+    #[test]
+    fn ordered_evidence_changes_only_the_runtime_source_resource() {
+        let emitter = PythonEmitter::new();
+        let legacy = emitter.resources_for_ordered(false).unwrap();
+        let ordered = emitter.resources_for_ordered(true).unwrap();
+        let legacy_by_id = legacy
+            .iter()
+            .map(|resource| (resource.id(), resource))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let changed = ordered
+            .iter()
+            .filter(|resource| legacy_by_id.get(resource.id()) != Some(resource))
+            .map(|resource| resource.id().as_str())
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(
+            changed,
+            BTreeSet::from(["typebridge.generator.python.runtime-source"]),
         );
     }
 }

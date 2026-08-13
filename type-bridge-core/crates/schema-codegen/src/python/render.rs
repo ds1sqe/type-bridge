@@ -13,6 +13,7 @@ use type_bridge_contract::value::ValueTypeTag;
 
 use crate::{
     EmbeddedAuthority, GeneratedPackage, documentation_annotation, invalid, model_documentation,
+    projection_uses_ordered_collections,
 };
 
 const PUBLIC_RUNTIME_NAMES: &[&str] = &[
@@ -88,6 +89,7 @@ pub(super) fn render(
     py_typed: &[u8],
 ) -> Result<GeneratedPackage, Diagnostic> {
     validate_projection(projection)?;
+    let ordered = projection_uses_ordered_collections(projection);
     GeneratedPackage::try_new([
         (
             "_authority.py".to_owned(),
@@ -95,19 +97,19 @@ pub(super) fn render(
         ),
         (
             "__init__.py".to_owned(),
-            finish(render_init(projection, false)),
+            finish(render_init(projection, false, ordered)),
         ),
         (
             "__init__.pyi".to_owned(),
-            finish(render_init(projection, true)),
+            finish(render_init(projection, true, ordered)),
         ),
         (
             "_models.py".to_owned(),
-            finish(render_models(projection, false)?),
+            finish(render_models(projection, false, ordered)?),
         ),
         (
             "_models.pyi".to_owned(),
-            finish(render_models(projection, true)?),
+            finish(render_models(projection, true, ordered)?),
         ),
         ("_runtime.py".to_owned(), runtime_source.to_vec()),
         ("_runtime.pyi".to_owned(), runtime_stub.to_vec()),
@@ -133,7 +135,7 @@ fn finish(mut source: String) -> Vec<u8> {
     source.into_bytes()
 }
 
-fn render_init(projection: &RuntimeProjection, stub: bool) -> String {
+fn render_init(projection: &RuntimeProjection, stub: bool, ordered: bool) -> String {
     let mut output = String::from(
         "from ._runtime import CrudEvent as CrudEvent\n\
          from ._runtime import CrudHook as CrudHook\n\
@@ -142,8 +144,9 @@ fn render_init(projection: &RuntimeProjection, stub: bool) -> String {
          from ._runtime import HookCancelled as HookCancelled\n\
          from ._runtime import ProjectedModelManager as ProjectedModelManager\n\
          from ._runtime import ProjectedModelNotFoundError as ProjectedModelNotFoundError\n\
-         from ._runtime import RoleToken as RoleToken\n\
-         from ._query import Aggregate as Aggregate\n\
+         from ._runtime import RoleToken as RoleToken\n",
+    );
+    let query_imports = "from ._query import Aggregate as Aggregate\n\
          from ._query import BoundField as BoundField\n\
          from ._query import BoundRole as BoundRole\n\
          from ._query import BoundVar as BoundVar\n\
@@ -163,8 +166,10 @@ fn render_init(projection: &RuntimeProjection, stub: bool) -> String {
          from ._query import RemoteQueryLimits as RemoteQueryLimits\n\
          from ._query import RemoteQuerySession as RemoteQuerySession\n\
          from ._query import SubtypeBoundVar as SubtypeBoundVar\n\
-         from ._query import aggregate as aggregate\n",
-    );
+         from ._query import aggregate as aggregate\n";
+    if stub || !ordered {
+        output.push_str(query_imports);
+    }
     if stub {
         output.push_str(
             "from collections.abc import Mapping\nfrom typing import Final\n\n\
@@ -250,6 +255,9 @@ fn render_init(projection: &RuntimeProjection, stub: bool) -> String {
         import(&mut output, &name);
         exports.push(name);
     }
+    if ordered && !stub {
+        output.push_str(query_imports);
+    }
     exports.sort();
     output.push_str("\n__all__ = (\n");
     for name in exports {
@@ -305,7 +313,11 @@ fn render_schema(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
     Ok(output)
 }
 
-fn render_models(projection: &RuntimeProjection, stub: bool) -> Result<String, Diagnostic> {
+fn render_models(
+    projection: &RuntimeProjection,
+    stub: bool,
+    ordered: bool,
+) -> Result<String, Diagnostic> {
     let mut body = String::new();
     for id in projection.emission().model_shells() {
         render_model(&mut body, projection, &projection.models()[id], stub)?;
@@ -348,11 +360,12 @@ fn render_models(projection: &RuntimeProjection, stub: bool) -> Result<String, D
         body.push_str("    ],\n)\n");
         body.push('\n');
     }
+    let mut function_body = String::new();
     let mut emitted_inputs = BTreeSet::new();
     let mut emitted_calls = BTreeSet::new();
     for id in projection.emission().functions() {
         render_function(
-            &mut body,
+            &mut function_body,
             projection,
             &projection.functions()[id],
             stub,
@@ -360,12 +373,18 @@ fn render_models(projection: &RuntimeProjection, stub: bool) -> Result<String, D
             &mut emitted_calls,
         )?;
     }
-    let mut output = render_model_header(&body, stub);
+    let defer_query_imports = ordered && !stub;
+    if defer_query_imports {
+        render_model_query_imports(&mut body, &function_body);
+        body.push('\n');
+    }
+    body.push_str(&function_body);
+    let mut output = render_model_header(&body, stub, defer_query_imports);
     output.push_str(&body);
     Ok(output)
 }
 
-fn render_model_header(body: &str, stub: bool) -> String {
+fn render_model_header(body: &str, stub: bool, defer_query_imports: bool) -> String {
     let mut output = if stub {
         String::new()
     } else {
@@ -469,6 +488,21 @@ fn render_model_header(body: &str, stub: bool) -> String {
     if !runtime.is_empty() {
         let _ = writeln!(output, "from ._runtime import {}", runtime.join(", "));
     }
+    if !defer_query_imports {
+        render_model_query_imports(&mut output, body);
+    }
+    if body.contains("_install_runtime_projection(") {
+        output.push_str(
+            "from ._schema import PROJECTION_FINGERPRINT_JSON as _PROJECTION_FINGERPRINT_JSON\n\
+             from ._schema import RUNTIME_PROJECTION_JSON as _RUNTIME_PROJECTION_JSON\n\
+             from ._schema import SEMANTIC_SCHEMA_FINGERPRINT_JSON as _SEMANTIC_SCHEMA_FINGERPRINT_JSON\n",
+        );
+    }
+    output.push('\n');
+    output
+}
+
+fn render_model_query_imports(output: &mut String, body: &str) {
     let mut query = Vec::new();
     if body.contains("_BoundVar[") {
         query.push("BoundVar as _BoundVar");
@@ -491,15 +525,6 @@ fn render_model_header(body: &str, stub: bool) -> String {
     if !query.is_empty() {
         let _ = writeln!(output, "from ._query import {}", query.join(", "));
     }
-    if body.contains("_install_runtime_projection(") {
-        output.push_str(
-            "from ._schema import PROJECTION_FINGERPRINT_JSON as _PROJECTION_FINGERPRINT_JSON\n\
-             from ._schema import RUNTIME_PROJECTION_JSON as _RUNTIME_PROJECTION_JSON\n\
-             from ._schema import SEMANTIC_SCHEMA_FINGERPRINT_JSON as _SEMANTIC_SCHEMA_FINGERPRINT_JSON\n",
-        );
-    }
-    output.push('\n');
-    output
 }
 
 fn render_model(
