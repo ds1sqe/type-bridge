@@ -112,6 +112,33 @@ plays:
   robot:
     membership: [member]
 "#;
+
+const ORDERED_PHASE2_SOURCE: &str = r#"format: typebridge.schema/v2
+attributes:
+  aliases: { value: string }
+entities:
+  actor:
+    abstract: true
+    owns:
+      aliases:
+        card: { min: 0, max: 3 }
+        ordered: true
+        distinct: true
+  person: { sub: actor }
+relations:
+  base-activity:
+    relates:
+      participant:
+        abstract: true
+        card: { min: 0, max: 3 }
+        ordered: true
+        distinct: true
+  plain-activity: { sub: base-activity }
+plays:
+  person:
+    base-activity:
+      participant: { card: { min: 0, max: 3 } }
+"#;
 const EXPORTED_SYMBOLS: [&str; 180] = [
     "type_bridge_c_abi_major",
     "type_bridge_c_abi_minor",
@@ -487,6 +514,16 @@ struct RelationEmittedFixture {
     container_role_ordinal: u32,
 }
 
+#[derive(Debug)]
+struct OrderedPhase2EmittedFixture {
+    package: GeneratedPackage,
+    foreign_package: GeneratedPackage,
+    person_model_ordinal: u32,
+    person_aliases_field_ordinal: u32,
+    plain_activity_model_ordinal: u32,
+    plain_activity_participant_role_ordinal: u32,
+}
+
 impl EmittedDescriptorBytes {
     fn descriptor(&self) -> TypeBridgeSchemaPackageDescriptorV1 {
         TypeBridgeSchemaPackageDescriptorV1 {
@@ -726,6 +763,113 @@ fn emitted_relation_fixture() -> RelationEmittedFixture {
         membership_role_ordinal,
         container_model_ordinal,
         container_role_ordinal,
+    }
+}
+
+fn emitted_ordered_phase2_fixture() -> OrderedPhase2EmittedFixture {
+    let documents = SchemaDocumentSet::parse([(
+        DocumentId::new("c-ordered-phase2-schema-package-abi.yaml")
+            .expect("ordered Phase-2 fixture document ID is valid"),
+        ORDERED_PHASE2_SOURCE,
+    )])
+    .expect("ordered Phase-2 C ABI fixture parses");
+    let declared =
+        normalize_documents(&documents).expect("ordered Phase-2 C ABI fixture normalizes");
+    let profile = SemanticProfileId::new("typedb-3.12.1/v1").expect("profile is valid");
+    let resolved = resolve(&declared, &profile).expect("ordered Phase-2 C ABI fixture resolves");
+    let available: CapabilitySet = BUILTIN_SCHEMA_CAPABILITY_IDS
+        .iter()
+        .map(|id| CapabilityId::new(*id).expect("built-in capability ID is valid"))
+        .collect();
+    let context = ManagedDeltaContext::new(
+        ManagedScopeId::new("c-ordered-phase2-schema-package-abi").expect("scope is valid"),
+        profile,
+        available,
+    );
+    let authority = build_schema_authority(&declared, declared.required_capabilities(), &context)
+        .expect("ordered Phase-2 C ABI fixture authority builds");
+    let emitter = CEmitter::new();
+    let handlers = emitter.generator_handlers_for(&resolved);
+    let resources = emitter
+        .code_resources_for(&resolved)
+        .expect("ordered Phase-2 C emitter resources hash");
+    let emit = |prefix: &str| {
+        let projection = project(
+            &resolved,
+            BindingTarget::C,
+            &ProjectionConfig::c(CSymbolPrefix::new(prefix).expect("prefix is valid")),
+            &handlers,
+            &resources,
+        )
+        .expect("ordered Phase-2 C ABI fixture projects");
+        let package = emitter
+            .emit(&projection, &authority)
+            .expect("ordered Phase-2 C ABI fixture emits");
+        (projection, package)
+    };
+    let (projection, package) = emit("orderedphase");
+    let (foreign_projection, foreign_package) = emit("orderedforeign");
+
+    let token_ordinals = |projection: &RuntimeProjection| {
+        let person = projection
+            .models()
+            .values()
+            .find(|model| model.id().label().as_str() == "person")
+            .expect("ordered Phase-2 fixture projects person");
+        let aliases = person
+            .create()
+            .fields()
+            .iter()
+            .find(|field| field.token().attribute().label().as_str() == "aliases")
+            .expect("person create facet includes inherited aliases");
+        let plain_activity = projection
+            .models()
+            .values()
+            .find(|model| model.id().label().as_str() == "plain-activity")
+            .expect("ordered Phase-2 fixture projects plain-activity");
+        let participant = plain_activity
+            .create()
+            .roles()
+            .values()
+            .find(|role| role.role().label().as_str() == "participant")
+            .expect("plain-activity create facet includes inherited participant");
+        (
+            projection
+                .projected_token_ordinal(&ProjectedTokenIdentity::Model(person.id().clone()))
+                .expect("person has a generated model token"),
+            projection
+                .projected_token_ordinal(&ProjectedTokenIdentity::Field {
+                    owner: person.id().clone(),
+                    field: aliases.token().clone(),
+                })
+                .expect("person aliases has a generated field token"),
+            projection
+                .projected_token_ordinal(&ProjectedTokenIdentity::Model(
+                    plain_activity.id().clone(),
+                ))
+                .expect("plain-activity has a generated model token"),
+            projection
+                .projected_token_ordinal(&ProjectedTokenIdentity::Role {
+                    owner: plain_activity.id().clone(),
+                    role: participant.role().clone(),
+                })
+                .expect("plain-activity participant has a generated role token"),
+        )
+    };
+    let ordinals = token_ordinals(&projection);
+    assert_eq!(
+        token_ordinals(&foreign_projection),
+        ordinals,
+        "symbol-prefix changes must not reorder canonical generated tokens",
+    );
+
+    OrderedPhase2EmittedFixture {
+        package,
+        foreign_package,
+        person_model_ordinal: ordinals.0,
+        person_aliases_field_ordinal: ordinals.1,
+        plain_activity_model_ordinal: ordinals.2,
+        plain_activity_participant_role_ordinal: ordinals.3,
     }
 }
 
@@ -4184,6 +4328,598 @@ int main(void) {
         assert!(
             output.status.success(),
             "{compiler}'s generated relation C17 consumer failed with {}:\nstdout:\n{}\nstderr:\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+    assert!(
+        invocations > 0,
+        "no GCC- or Clang-compatible C compiler was available"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn standalone_ordered_generated_facade_enforces_construction_hydration_and_package_fences() {
+    let Some(native_library) = native_library_or_skip(
+        "standalone_ordered_generated_facade_enforces_construction_hydration_and_package_fences",
+    ) else {
+        return;
+    };
+    let fixture = emitted_ordered_phase2_fixture();
+    let stage = TempDirectory::new();
+    let package_stage = stage.path().join("ordered-package");
+    let foreign_stage = stage.path().join("ordered-foreign-package");
+    write_package(&fixture.package, &package_stage);
+    write_package(&fixture.foreign_package, &foreign_stage);
+    let consumer = stage.path().join("ordered-phase2-consumer.c");
+    let source = r#"#include <stdint.h>
+#include <string.h>
+
+#include <typebridge/type_bridge.h>
+#include <orderedphase/models.h>
+#include <orderedforeign/models.h>
+
+#define CHECK(condition) do { if (!(condition)) { return __LINE__; } } while (0)
+#define VIEW(literal)                                                         \
+  ((type_bridge_byte_view_t){                                                \
+      (const uint8_t *)(literal), sizeof(literal) - 1u})
+
+static int same_view(type_bridge_byte_view_t actual,
+                     type_bridge_byte_view_t expected) {
+  return actual.length == expected.length &&
+         memcmp(actual.data, expected.data, actual.length) == 0;
+}
+
+static int projected_value_is(const type_bridge_projected_value_t *value,
+                              type_bridge_byte_view_t expected) {
+  type_bridge_byte_view_t actual = {NULL, 0u};
+  return type_bridge_projected_value_text(value, &actual) ==
+             TYPE_BRIDGE_STATUS_OK &&
+         same_view(actual, expected);
+}
+
+static int projected_reference_is(
+    const type_bridge_projected_reference_t *reference,
+    type_bridge_byte_view_t expected) {
+  type_bridge_byte_view_t actual = {NULL, 0u};
+  return type_bridge_projected_reference_iid(reference, &actual) ==
+             TYPE_BRIDGE_STATUS_OK &&
+         same_view(actual, expected);
+}
+
+static int diagnostic_is(
+    const type_bridge_execution_diagnostics_t *diagnostics,
+    type_bridge_execution_diagnostic_category_t category,
+    const char *expected_code) {
+  type_bridge_execution_diagnostic_view_v1_t diagnostic = {0};
+  size_t count = 0u;
+  const size_t expected_length = strlen(expected_code);
+  return diagnostics != NULL &&
+         type_bridge_execution_diagnostics_count(diagnostics, &count) ==
+             TYPE_BRIDGE_STATUS_OK &&
+         count == 1u &&
+         type_bridge_execution_diagnostics_get_v1(
+             diagnostics, 0u, &diagnostic) == TYPE_BRIDGE_STATUS_OK &&
+         diagnostic.category == category &&
+         diagnostic.code.length == expected_length &&
+         memcmp(diagnostic.code.data, expected_code, expected_length) == 0;
+}
+
+int main(void) {
+  type_bridge_schema_package_t *package = NULL;
+  type_bridge_schema_package_t *foreign_package = NULL;
+  type_bridge_diagnostics_t *package_diagnostics = NULL;
+  type_bridge_execution_diagnostics_t *diagnostics = NULL;
+  orderedphase_aliases *first_alias = NULL;
+  orderedphase_aliases *second_alias = NULL;
+  orderedforeign_aliases *foreign_alias = NULL;
+  orderedphase_person_ref *first_person = NULL;
+  orderedphase_person_ref *second_person = NULL;
+  orderedphase_person_ref *hydrated_person = NULL;
+  orderedphase_plainzhactivity_participant_player *first_player = NULL;
+  orderedphase_plainzhactivity_participant_player *second_player = NULL;
+  orderedphase_plainzhactivity_participant_player *hydrated_player = NULL;
+  orderedphase_person_create *person_create = NULL;
+  orderedphase_person_create *duplicate_person_create = NULL;
+  orderedphase_plainzhactivity_create *activity_create = NULL;
+  orderedphase_plainzhactivity_create *duplicate_activity_create = NULL;
+  type_bridge_projected_thing_t *person_thing = NULL;
+  type_bridge_projected_thing_t *activity_thing = NULL;
+  type_bridge_projected_thing_t *duplicate_thing = NULL;
+  type_bridge_projected_thing_t *foreign_person_thing = NULL;
+  type_bridge_projected_value_t *generic_value = NULL;
+  type_bridge_projected_reference_t *generic_reference = NULL;
+  orderedphase_aliases *hydrated_alias = NULL;
+  size_t count = 0u;
+
+  CHECK(orderedphase_schema_package_open(&package, &package_diagnostics) ==
+        TYPE_BRIDGE_STATUS_OK);
+  CHECK(package != NULL && package_diagnostics == NULL);
+  CHECK(orderedforeign_schema_package_open(
+            &foreign_package, &package_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(foreign_package != NULL && package_diagnostics == NULL);
+
+  CHECK(orderedphase_aliases_open(
+            package, VIEW("first"), &first_alias, &diagnostics) ==
+        TYPE_BRIDGE_STATUS_OK);
+  CHECK(orderedphase_aliases_open(
+            package, VIEW("second"), &second_alias, &diagnostics) ==
+        TYPE_BRIDGE_STATUS_OK);
+  CHECK(orderedphase_person_ref_from_iid(
+            package, VIEW("0x01"), &first_person, &diagnostics) ==
+        TYPE_BRIDGE_STATUS_OK);
+  CHECK(orderedphase_person_ref_from_iid(
+            package, VIEW("0x02"), &second_person, &diagnostics) ==
+        TYPE_BRIDGE_STATUS_OK);
+  CHECK(orderedphase_plainzhactivity_participant_player_from_person(
+            first_person, &first_player, &diagnostics) ==
+        TYPE_BRIDGE_STATUS_OK);
+  CHECK(orderedphase_plainzhactivity_participant_player_from_person(
+            second_person, &second_player, &diagnostics) ==
+        TYPE_BRIDGE_STATUS_OK);
+  CHECK(diagnostics == NULL);
+
+  {
+    const orderedphase_aliases *head_values[] = {second_alias};
+    const orderedphase_aliases *tail_values[] = {first_alias};
+    orderedphase_person_create_field_aliases_chunks_v1_t tail = {0};
+    orderedphase_person_create_field_aliases_chunks_v1_t head = {0};
+    orderedphase_person_create_args_v1_t args = {0};
+    tail.struct_size = sizeof(tail);
+    tail.version = ORDEREDPHASE_CREATE_ARGS_VERSION;
+    tail.values = tail_values;
+    tail.count = 1u;
+    head.struct_size = sizeof(head);
+    head.version = ORDEREDPHASE_CREATE_ARGS_VERSION;
+    head.values = head_values;
+    head.count = 1u;
+    head.next = &tail;
+    args.struct_size = sizeof(args);
+    args.version = ORDEREDPHASE_CREATE_ARGS_VERSION;
+    args.field_aliases_chunks = &head;
+    CHECK(orderedphase_person_create_open(
+              package, &args, &person_create, &diagnostics) ==
+          TYPE_BRIDGE_STATUS_OK);
+  }
+  CHECK(person_create != NULL && diagnostics == NULL);
+  CHECK(type_bridge_projected_create_field_count(
+            (const type_bridge_projected_create_t *)person_create,
+            &LOCAL_PERSON_FIELD_TOKEN, &count, &diagnostics) ==
+        TYPE_BRIDGE_STATUS_OK);
+  CHECK(count == 2u);
+  CHECK(type_bridge_projected_create_field_value_at(
+            (const type_bridge_projected_create_t *)person_create,
+            &LOCAL_PERSON_FIELD_TOKEN, 0u, &generic_value, &diagnostics) ==
+        TYPE_BRIDGE_STATUS_OK);
+  CHECK(projected_value_is(generic_value, VIEW("second")));
+  CHECK(type_bridge_projected_value_close(&generic_value) ==
+        TYPE_BRIDGE_STATUS_OK);
+  CHECK(type_bridge_projected_create_field_value_at(
+            (const type_bridge_projected_create_t *)person_create,
+            &LOCAL_PERSON_FIELD_TOKEN, 1u, &generic_value, &diagnostics) ==
+        TYPE_BRIDGE_STATUS_OK);
+  CHECK(projected_value_is(generic_value, VIEW("first")));
+  CHECK(type_bridge_projected_value_close(&generic_value) ==
+        TYPE_BRIDGE_STATUS_OK);
+
+  {
+    const orderedphase_aliases *duplicate_values[] = {first_alias};
+    orderedphase_person_create_field_aliases_chunks_v1_t tail = {0};
+    orderedphase_person_create_field_aliases_chunks_v1_t head = {0};
+    orderedphase_person_create_args_v1_t args = {0};
+    tail.struct_size = sizeof(tail);
+    tail.version = ORDEREDPHASE_CREATE_ARGS_VERSION;
+    tail.values = duplicate_values;
+    tail.count = 1u;
+    head.struct_size = sizeof(head);
+    head.version = ORDEREDPHASE_CREATE_ARGS_VERSION;
+    head.values = duplicate_values;
+    head.count = 1u;
+    head.next = &tail;
+    args.struct_size = sizeof(args);
+    args.version = ORDEREDPHASE_CREATE_ARGS_VERSION;
+    args.field_aliases_chunks = &head;
+    duplicate_person_create =
+        (orderedphase_person_create *)(uintptr_t)1u;
+    CHECK(orderedphase_person_create_open(
+              package, &args, &duplicate_person_create, &diagnostics) ==
+          TYPE_BRIDGE_STATUS_INVALID_ARGUMENT);
+  }
+  CHECK(duplicate_person_create == NULL);
+  CHECK(diagnostic_is(
+      diagnostics, TYPE_BRIDGE_EXECUTION_DIAGNOSTIC_INVALID_INPUT,
+      "ordered_distinct_duplicate"));
+  CHECK(type_bridge_execution_diagnostics_close(&diagnostics) ==
+        TYPE_BRIDGE_STATUS_OK);
+
+  {
+    const orderedphase_plainzhactivity_participant_player *head_values[] = {
+        second_player};
+    const orderedphase_plainzhactivity_participant_player *tail_values[] = {
+        first_player};
+    orderedphase_plainzhactivity_create_role_participant_chunks_v1_t tail =
+        {0};
+    orderedphase_plainzhactivity_create_role_participant_chunks_v1_t head =
+        {0};
+    orderedphase_plainzhactivity_create_args_v1_t args = {0};
+    tail.struct_size = sizeof(tail);
+    tail.version = ORDEREDPHASE_CREATE_ARGS_VERSION;
+    tail.values = tail_values;
+    tail.count = 1u;
+    head.struct_size = sizeof(head);
+    head.version = ORDEREDPHASE_CREATE_ARGS_VERSION;
+    head.values = head_values;
+    head.count = 1u;
+    head.next = &tail;
+    args.struct_size = sizeof(args);
+    args.version = ORDEREDPHASE_CREATE_ARGS_VERSION;
+    args.role_participant_chunks = &head;
+    CHECK(orderedphase_plainzhactivity_create_open(
+              package, &args, &activity_create, &diagnostics) ==
+          TYPE_BRIDGE_STATUS_OK);
+  }
+  CHECK(activity_create != NULL && diagnostics == NULL);
+  CHECK(type_bridge_projected_create_role_count(
+            (const type_bridge_projected_create_t *)activity_create,
+            &LOCAL_ACTIVITY_ROLE_TOKEN, &count, &diagnostics) ==
+        TYPE_BRIDGE_STATUS_OK);
+  CHECK(count == 2u);
+  CHECK(type_bridge_projected_create_role_reference_at(
+            (const type_bridge_projected_create_t *)activity_create,
+            &LOCAL_ACTIVITY_ROLE_TOKEN, 0u, &generic_reference,
+            &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(projected_reference_is(generic_reference, VIEW("0x02")));
+  CHECK(type_bridge_projected_reference_close(&generic_reference) ==
+        TYPE_BRIDGE_STATUS_OK);
+  CHECK(type_bridge_projected_create_role_reference_at(
+            (const type_bridge_projected_create_t *)activity_create,
+            &LOCAL_ACTIVITY_ROLE_TOKEN, 1u, &generic_reference,
+            &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(projected_reference_is(generic_reference, VIEW("0x01")));
+  CHECK(type_bridge_projected_reference_close(&generic_reference) ==
+        TYPE_BRIDGE_STATUS_OK);
+
+  {
+    const orderedphase_plainzhactivity_participant_player *duplicate_values[] = {
+        first_player};
+    orderedphase_plainzhactivity_create_role_participant_chunks_v1_t tail =
+        {0};
+    orderedphase_plainzhactivity_create_role_participant_chunks_v1_t head =
+        {0};
+    orderedphase_plainzhactivity_create_args_v1_t args = {0};
+    tail.struct_size = sizeof(tail);
+    tail.version = ORDEREDPHASE_CREATE_ARGS_VERSION;
+    tail.values = duplicate_values;
+    tail.count = 1u;
+    head.struct_size = sizeof(head);
+    head.version = ORDEREDPHASE_CREATE_ARGS_VERSION;
+    head.values = duplicate_values;
+    head.count = 1u;
+    head.next = &tail;
+    args.struct_size = sizeof(args);
+    args.version = ORDEREDPHASE_CREATE_ARGS_VERSION;
+    args.role_participant_chunks = &head;
+    duplicate_activity_create =
+        (orderedphase_plainzhactivity_create *)(uintptr_t)1u;
+    CHECK(orderedphase_plainzhactivity_create_open(
+              package, &args, &duplicate_activity_create, &diagnostics) ==
+          TYPE_BRIDGE_STATUS_INVALID_ARGUMENT);
+  }
+  CHECK(duplicate_activity_create == NULL);
+  CHECK(diagnostic_is(
+      diagnostics, TYPE_BRIDGE_EXECUTION_DIAGNOSTIC_INVALID_INPUT,
+      "ordered_distinct_duplicate"));
+  CHECK(type_bridge_execution_diagnostics_close(&diagnostics) ==
+        TYPE_BRIDGE_STATUS_OK);
+
+  {
+    const type_bridge_projected_value_t *values[] = {
+        (const type_bridge_projected_value_t *)second_alias,
+        (const type_bridge_projected_value_t *)first_alias};
+    type_bridge_projected_field_input_v1_t field = {0};
+    type_bridge_projected_thing_descriptor_v1_t descriptor = {0};
+    field.struct_size = sizeof(field);
+    field.version = TYPE_BRIDGE_PROJECTED_MODEL_INPUT_VERSION;
+    field.field = &LOCAL_PERSON_FIELD_TOKEN;
+    field.values = values;
+    field.value_count = 2u;
+    descriptor.struct_size = sizeof(descriptor);
+    descriptor.version = TYPE_BRIDGE_PROJECTED_MODEL_INPUT_VERSION;
+    descriptor.model = &LOCAL_PERSON_MODEL_TOKEN;
+    descriptor.iid = VIEW("0x10");
+    descriptor.fields = &field;
+    descriptor.field_count = 1u;
+    CHECK(type_bridge_projected_thing_open_v1(
+              package, &descriptor, &person_thing, &diagnostics) ==
+          TYPE_BRIDGE_STATUS_OK);
+  }
+  CHECK(person_thing != NULL && diagnostics == NULL);
+  CHECK(orderedphase_person_aliases_count(
+            (const orderedphase_person *)person_thing, &count,
+            &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(count == 2u);
+  CHECK(orderedphase_person_aliases_at(
+            (const orderedphase_person *)person_thing, 0u, &hydrated_alias,
+            &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(projected_value_is(
+      (const type_bridge_projected_value_t *)hydrated_alias, VIEW("second")));
+  CHECK(orderedphase_aliases_close(&hydrated_alias) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(orderedphase_person_aliases_at(
+            (const orderedphase_person *)person_thing, 1u, &hydrated_alias,
+            &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(projected_value_is(
+      (const type_bridge_projected_value_t *)hydrated_alias, VIEW("first")));
+  CHECK(orderedphase_aliases_close(&hydrated_alias) == TYPE_BRIDGE_STATUS_OK);
+
+  {
+    const type_bridge_projected_value_t *values[] = {
+        (const type_bridge_projected_value_t *)first_alias,
+        (const type_bridge_projected_value_t *)first_alias};
+    type_bridge_projected_field_input_v1_t field = {0};
+    type_bridge_projected_thing_descriptor_v1_t descriptor = {0};
+    field.struct_size = sizeof(field);
+    field.version = TYPE_BRIDGE_PROJECTED_MODEL_INPUT_VERSION;
+    field.field = &LOCAL_PERSON_FIELD_TOKEN;
+    field.values = values;
+    field.value_count = 2u;
+    descriptor.struct_size = sizeof(descriptor);
+    descriptor.version = TYPE_BRIDGE_PROJECTED_MODEL_INPUT_VERSION;
+    descriptor.model = &LOCAL_PERSON_MODEL_TOKEN;
+    descriptor.iid = VIEW("0x11");
+    descriptor.fields = &field;
+    descriptor.field_count = 1u;
+    duplicate_thing = (type_bridge_projected_thing_t *)(uintptr_t)1u;
+    CHECK(type_bridge_projected_thing_open_v1(
+              package, &descriptor, &duplicate_thing, &diagnostics) ==
+          TYPE_BRIDGE_STATUS_EXECUTION_FAILED);
+  }
+  CHECK(duplicate_thing == NULL);
+  CHECK(diagnostic_is(
+      diagnostics, TYPE_BRIDGE_EXECUTION_DIAGNOSTIC_INTEGRITY,
+      "ordered_distinct_duplicate"));
+  CHECK(type_bridge_execution_diagnostics_close(&diagnostics) ==
+        TYPE_BRIDGE_STATUS_OK);
+
+  {
+    const type_bridge_projected_reference_t *references[] = {
+        (const type_bridge_projected_reference_t *)second_person,
+        (const type_bridge_projected_reference_t *)first_person};
+    type_bridge_projected_role_input_v1_t role = {0};
+    type_bridge_projected_thing_descriptor_v1_t descriptor = {0};
+    role.struct_size = sizeof(role);
+    role.version = TYPE_BRIDGE_PROJECTED_MODEL_INPUT_VERSION;
+    role.role = &LOCAL_ACTIVITY_ROLE_TOKEN;
+    role.references = references;
+    role.reference_count = 2u;
+    descriptor.struct_size = sizeof(descriptor);
+    descriptor.version = TYPE_BRIDGE_PROJECTED_MODEL_INPUT_VERSION;
+    descriptor.model = &LOCAL_ACTIVITY_MODEL_TOKEN;
+    descriptor.iid = VIEW("0x20");
+    descriptor.roles = &role;
+    descriptor.role_count = 1u;
+    CHECK(type_bridge_projected_thing_open_v1(
+              package, &descriptor, &activity_thing, &diagnostics) ==
+          TYPE_BRIDGE_STATUS_OK);
+  }
+  CHECK(activity_thing != NULL && diagnostics == NULL);
+  CHECK(orderedphase_plainzhactivity_participant_count(
+            (const orderedphase_plainzhactivity *)activity_thing, &count,
+            &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(count == 2u);
+  CHECK(orderedphase_plainzhactivity_participant_at(
+            (const orderedphase_plainzhactivity *)activity_thing, 0u,
+            &hydrated_player, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(orderedphase_plainzhactivity_participant_player_as_person(
+            hydrated_player, &hydrated_person, &diagnostics) ==
+        TYPE_BRIDGE_STATUS_OK);
+  CHECK(projected_reference_is(
+      (const type_bridge_projected_reference_t *)hydrated_person,
+      VIEW("0x02")));
+  CHECK(orderedphase_person_ref_close(&hydrated_person) ==
+        TYPE_BRIDGE_STATUS_OK);
+  CHECK(orderedphase_plainzhactivity_participant_player_close(
+            &hydrated_player) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(orderedphase_plainzhactivity_participant_at(
+            (const orderedphase_plainzhactivity *)activity_thing, 1u,
+            &hydrated_player, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(orderedphase_plainzhactivity_participant_player_as_person(
+            hydrated_player, &hydrated_person, &diagnostics) ==
+        TYPE_BRIDGE_STATUS_OK);
+  CHECK(projected_reference_is(
+      (const type_bridge_projected_reference_t *)hydrated_person,
+      VIEW("0x01")));
+  CHECK(orderedphase_person_ref_close(&hydrated_person) ==
+        TYPE_BRIDGE_STATUS_OK);
+  CHECK(orderedphase_plainzhactivity_participant_player_close(
+            &hydrated_player) == TYPE_BRIDGE_STATUS_OK);
+
+  {
+    const type_bridge_projected_reference_t *references[] = {
+        (const type_bridge_projected_reference_t *)first_person,
+        (const type_bridge_projected_reference_t *)first_person};
+    type_bridge_projected_role_input_v1_t role = {0};
+    type_bridge_projected_thing_descriptor_v1_t descriptor = {0};
+    role.struct_size = sizeof(role);
+    role.version = TYPE_BRIDGE_PROJECTED_MODEL_INPUT_VERSION;
+    role.role = &LOCAL_ACTIVITY_ROLE_TOKEN;
+    role.references = references;
+    role.reference_count = 2u;
+    descriptor.struct_size = sizeof(descriptor);
+    descriptor.version = TYPE_BRIDGE_PROJECTED_MODEL_INPUT_VERSION;
+    descriptor.model = &LOCAL_ACTIVITY_MODEL_TOKEN;
+    descriptor.iid = VIEW("0x21");
+    descriptor.roles = &role;
+    descriptor.role_count = 1u;
+    duplicate_thing = (type_bridge_projected_thing_t *)(uintptr_t)1u;
+    CHECK(type_bridge_projected_thing_open_v1(
+              package, &descriptor, &duplicate_thing, &diagnostics) ==
+          TYPE_BRIDGE_STATUS_EXECUTION_FAILED);
+  }
+  CHECK(duplicate_thing == NULL);
+  CHECK(diagnostic_is(
+      diagnostics, TYPE_BRIDGE_EXECUTION_DIAGNOSTIC_INTEGRITY,
+      "ordered_distinct_duplicate"));
+  CHECK(type_bridge_execution_diagnostics_close(&diagnostics) ==
+        TYPE_BRIDGE_STATUS_OK);
+
+  CHECK(orderedforeign_aliases_open(
+            foreign_package, VIEW("foreign"), &foreign_alias,
+            &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  {
+    const type_bridge_projected_value_t *values[] = {
+        (const type_bridge_projected_value_t *)foreign_alias};
+    type_bridge_projected_field_input_v1_t field = {0};
+    type_bridge_projected_thing_descriptor_v1_t descriptor = {0};
+    field.struct_size = sizeof(field);
+    field.version = TYPE_BRIDGE_PROJECTED_MODEL_INPUT_VERSION;
+    field.field = &FOREIGN_PERSON_FIELD_TOKEN;
+    field.values = values;
+    field.value_count = 1u;
+    descriptor.struct_size = sizeof(descriptor);
+    descriptor.version = TYPE_BRIDGE_PROJECTED_MODEL_INPUT_VERSION;
+    descriptor.model = &FOREIGN_PERSON_MODEL_TOKEN;
+    descriptor.iid = VIEW("0x30");
+    descriptor.fields = &field;
+    descriptor.field_count = 1u;
+    CHECK(type_bridge_projected_thing_open_v1(
+              foreign_package, &descriptor, &foreign_person_thing,
+              &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  }
+  CHECK(foreign_person_thing != NULL && diagnostics == NULL);
+  count = SIZE_MAX;
+  CHECK(orderedphase_person_aliases_count(
+            (const orderedphase_person *)foreign_person_thing, &count,
+            &diagnostics) == TYPE_BRIDGE_STATUS_EXECUTION_FAILED);
+  CHECK(count == 0u);
+  CHECK(diagnostic_is(
+      diagnostics, TYPE_BRIDGE_EXECUTION_DIAGNOSTIC_INTEGRITY,
+      "generated_token_package_mismatch"));
+  CHECK(type_bridge_execution_diagnostics_close(&diagnostics) ==
+        TYPE_BRIDGE_STATUS_OK);
+
+  CHECK(type_bridge_projected_thing_close(&foreign_person_thing) ==
+        TYPE_BRIDGE_STATUS_OK);
+  CHECK(type_bridge_projected_thing_close(&activity_thing) ==
+        TYPE_BRIDGE_STATUS_OK);
+  CHECK(type_bridge_projected_thing_close(&person_thing) ==
+        TYPE_BRIDGE_STATUS_OK);
+  CHECK(orderedphase_plainzhactivity_create_close(&activity_create) ==
+        TYPE_BRIDGE_STATUS_OK);
+  CHECK(orderedphase_person_create_close(&person_create) ==
+        TYPE_BRIDGE_STATUS_OK);
+  CHECK(orderedphase_plainzhactivity_participant_player_close(
+            &second_player) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(orderedphase_plainzhactivity_participant_player_close(
+            &first_player) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(orderedphase_person_ref_close(&second_person) ==
+        TYPE_BRIDGE_STATUS_OK);
+  CHECK(orderedphase_person_ref_close(&first_person) ==
+        TYPE_BRIDGE_STATUS_OK);
+  CHECK(orderedforeign_aliases_close(&foreign_alias) ==
+        TYPE_BRIDGE_STATUS_OK);
+  CHECK(orderedphase_aliases_close(&second_alias) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(orderedphase_aliases_close(&first_alias) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(type_bridge_schema_package_close(&foreign_package) ==
+        TYPE_BRIDGE_STATUS_OK);
+  CHECK(type_bridge_schema_package_close(&package) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(package == NULL && foreign_package == NULL && diagnostics == NULL);
+  return 0;
+}
+"#
+    .replace(
+        "LOCAL_PERSON_MODEL_TOKEN",
+        &format!(
+            "orderedphase_projected_model_token_{}",
+            fixture.person_model_ordinal
+        ),
+    )
+    .replace(
+        "LOCAL_PERSON_FIELD_TOKEN",
+        &format!(
+            "orderedphase_projected_field_token_{}",
+            fixture.person_aliases_field_ordinal
+        ),
+    )
+    .replace(
+        "LOCAL_ACTIVITY_MODEL_TOKEN",
+        &format!(
+            "orderedphase_projected_model_token_{}",
+            fixture.plain_activity_model_ordinal
+        ),
+    )
+    .replace(
+        "LOCAL_ACTIVITY_ROLE_TOKEN",
+        &format!(
+            "orderedphase_projected_role_token_{}",
+            fixture.plain_activity_participant_role_ordinal
+        ),
+    )
+    .replace(
+        "FOREIGN_PERSON_MODEL_TOKEN",
+        &format!(
+            "orderedforeign_projected_model_token_{}",
+            fixture.person_model_ordinal
+        ),
+    )
+    .replace(
+        "FOREIGN_PERSON_FIELD_TOKEN",
+        &format!(
+            "orderedforeign_projected_field_token_{}",
+            fixture.person_aliases_field_ordinal
+        ),
+    );
+    fs::write(&consumer, source).expect("ordered Phase-2 C17 consumer is written");
+
+    let runtime_include = Path::new(env!("CARGO_MANIFEST_DIR")).join("include");
+    let native_directory = native_library
+        .parent()
+        .expect("native library has a parent directory");
+    let mut invocations = 0;
+    for compiler in ["gcc", "clang"] {
+        if !command_exists(compiler) {
+            continue;
+        }
+        invocations += 1;
+        let executable = stage.path().join(format!("ordered-consumer-{compiler}"));
+        let output = Command::new(compiler)
+            .args([
+                "-std=c17",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+                "-pedantic-errors",
+            ])
+            .arg("-I")
+            .arg(&runtime_include)
+            .arg("-I")
+            .arg(package_stage.join("include"))
+            .arg("-I")
+            .arg(foreign_stage.join("include"))
+            .arg(package_stage.join("src/models.c"))
+            .arg(foreign_stage.join("src/models.c"))
+            .arg(&consumer)
+            .arg("-L")
+            .arg(native_directory)
+            .arg("-ltype_bridge_c")
+            .arg(format!("-Wl,-rpath,{}", native_directory.display()))
+            .arg("-o")
+            .arg(&executable)
+            .output()
+            .unwrap_or_else(|error| panic!("failed to launch {compiler}: {error}"));
+        assert!(
+            output.status.success(),
+            "{compiler} failed to link the ordered Phase-2 C17 consumer:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        let output = Command::new(&executable)
+            .output()
+            .unwrap_or_else(|error| panic!("failed to run {}: {error}", executable.display()));
+        assert!(
+            output.status.success(),
+            "{compiler}'s ordered Phase-2 C17 consumer failed with {}:\nstdout:\n{}\nstderr:\n{}",
             output.status,
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr),
