@@ -10,8 +10,8 @@ use type_bridge_contract::sdk_diagnostic::{
 };
 use type_bridge_contract::value::{CanonicalString, CanonicalValue};
 use type_bridge_orm::{
-    InstalledRuntimeProjection, ProjectedAttributeValue, ProjectedCreate, ProjectedReference,
-    ProjectedRolePlayer, ProjectedThing,
+    AttributeValue, InstalledRuntimeProjection, ProjectedAttributeValue, ProjectedCreate,
+    ProjectedReference, ProjectedRolePlayer, ProjectedThing,
 };
 use type_bridge_schema::{SchemaDocumentSet, normalize_documents, project, resolve};
 
@@ -503,6 +503,47 @@ fn scalar_constraints_keep_stable_annotation_order_and_exact_long_bound_details(
     );
     assert_eq!(upper.path(), [SdkDiagnosticPathSegment::Type(constrained)],);
     assert_signed_range_details(&upper, 81, "maximum", 80);
+}
+
+#[test]
+fn hydration_only_scalar_and_reference_constructors_classify_provider_evidence_as_integrity() {
+    let installed = installed(BindingTarget::Python, CONSTRAINT_SCHEMA);
+    let nickname = type_id(TypeKind::Attribute, "nickname");
+    let scalar = ProjectedAttributeValue::try_from_hydrated_attribute_value(
+        &installed,
+        nickname.clone(),
+        &AttributeValue::String("ada".into()),
+    )
+    .unwrap_err();
+    assert_code(
+        &scalar,
+        SdkDiagnosticCategory::Integrity,
+        "regex_constraint_violation",
+    );
+    assert_eq!(scalar.path(), [SdkDiagnosticPathSegment::Type(nickname)],);
+
+    let person = type_id(TypeKind::Entity, "person");
+    let reference = ProjectedReference::try_new_for_hydration(
+        &installed,
+        person.clone(),
+        Some("not-a-canonical-iid".into()),
+        vec![],
+    )
+    .unwrap_err();
+    assert_code(
+        &reference,
+        SdkDiagnosticCategory::Integrity,
+        "noncanonical_iid",
+    );
+    assert_eq!(
+        reference.path(),
+        [
+            SdkDiagnosticPathSegment::Type(person),
+            SdkDiagnosticPathSegment::Argument(
+                type_bridge_contract::sdk_diagnostic::SdkDiagnosticName::new("iid").unwrap(),
+            ),
+        ],
+    );
 }
 
 #[test]

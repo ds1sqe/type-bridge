@@ -231,6 +231,21 @@ impl ProjectedAttributeValue {
         Self::try_new(installed, attribute_type, canonical)
     }
 
+    /// Validate and brand one provider-hydrated scalar.
+    ///
+    /// Provider data that violates generated scalar authority is an integrity
+    /// failure, while resource-limit and existing integrity failures retain
+    /// their original categories.
+    #[doc(hidden)]
+    pub fn try_from_hydrated_attribute_value(
+        installed: &InstalledRuntimeProjection,
+        attribute_type: TypeId,
+        value: &AttributeValue,
+    ) -> Result<Self, SdkExecutionDiagnostic> {
+        Self::try_from_attribute_value(installed, attribute_type, value)
+            .map_err(|diagnostic| diagnostic_for_origin(diagnostic, ValidationOrigin::Hydration))
+    }
+
     /// Return the exact projected attribute identity.
     #[must_use]
     pub const fn attribute_type(&self) -> &TypeId {
@@ -321,6 +336,22 @@ impl ProjectedReference {
         keys: Vec<(OwnsFactId, ProjectedAttributeValue)>,
     ) -> Result<Self, SdkExecutionDiagnostic> {
         Self::try_new_with_origin(installed, type_id, iid, keys, None)
+    }
+
+    /// Validate and brand one provider-hydrated, provider-free reference.
+    ///
+    /// This constructor is intentionally hydration-specific: it converts
+    /// invalid provider identity or key evidence into an integrity diagnostic
+    /// without exposing a generic diagnostic-category remapping API.
+    #[doc(hidden)]
+    pub fn try_new_for_hydration(
+        installed: &InstalledRuntimeProjection,
+        type_id: TypeId,
+        iid: Option<String>,
+        keys: Vec<(OwnsFactId, ProjectedAttributeValue)>,
+    ) -> Result<Self, SdkExecutionDiagnostic> {
+        Self::try_new_with_origin(installed, type_id, iid, keys, None)
+            .map_err(|diagnostic| diagnostic_for_origin(diagnostic, ValidationOrigin::Hydration))
     }
 
     /// Validate a reference while restoring an opaque hydrated origin.
