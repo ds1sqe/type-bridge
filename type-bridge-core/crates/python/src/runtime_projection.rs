@@ -18,6 +18,7 @@ use type_bridge_contract::projection::{
 use type_bridge_contract::projection_wire::decode_runtime_projection_verified;
 use type_bridge_contract::sdk_diagnostic::{
     SdkDiagnosticCode, SdkDiagnosticMessage, SdkDiagnosticPathSegment, SdkExecutionDiagnostic,
+    SdkProjectionEvidenceSlotPresence,
 };
 use type_bridge_contract::temporal::CanonicalDuration;
 use type_bridge_contract::value::ValueTypeTag;
@@ -1721,24 +1722,36 @@ fn install_authority_backed_projection(
     projection_fingerprint_json: &str,
     schema_authority: &[u8],
 ) -> PyResult<RuntimeProjection> {
+    let rejection = || projection_evidence_rejection(semantic_fingerprint_json);
     let runtime = decode_runtime_projection_verified(
         projection_json.as_bytes(),
         semantic_fingerprint_json.as_bytes(),
         projection_fingerprint_json.as_bytes(),
     )
-    .map_err(|_| projection_evidence_mismatch())?;
+    .map_err(|_| rejection())?;
     if runtime.target() != BindingTarget::Python {
-        return Err(projection_evidence_mismatch());
+        return Err(rejection());
     }
     let authority =
         decode_schema_authority(schema_authority, &schema_authority_capability_vocabulary())
-            .map_err(|_| projection_evidence_mismatch())?;
-    verify_projection_evidence(&authority, &runtime).map_err(|_| projection_evidence_mismatch())?;
+            .map_err(|_| rejection())?;
+    verify_projection_evidence(&authority, &runtime).map_err(|_| rejection())?;
     Ok(runtime)
 }
 
 fn projection_evidence_mismatch() -> PyErr {
     py_sdk_diagnostic(SdkExecutionDiagnostic::projection_evidence_mismatch())
+}
+
+fn projection_evidence_rejection(semantic_fingerprint_json: &str) -> PyErr {
+    let presence = if semantic_fingerprint_json.is_empty() {
+        SdkProjectionEvidenceSlotPresence::Absent
+    } else {
+        SdkProjectionEvidenceSlotPresence::Present
+    };
+    py_sdk_diagnostic(
+        SdkExecutionDiagnostic::classify_detached_semantic_schema_fingerprint_rejection(presence),
+    )
 }
 
 fn verify_legacy_python_projection_evidence(runtime: &RuntimeProjection) -> PyResult<()> {
@@ -6651,6 +6664,52 @@ def failing_initialize(target, original):
             )
             .expect("the exact ordered Python package evidence must install");
 
+            // An empty detached first slot is the package-install API's only
+            // representable absence. Translate it before decoding so all
+            // managed bindings reach the common C29 classifier.
+            let absent_semantic = rejected(
+                py,
+                &exact_json,
+                "",
+                &exact_fingerprint,
+                Some(&authority_bytes),
+            );
+            let value = absent_semantic.value(py);
+            assert_eq!(
+                value
+                    .getattr("sdk_category")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "integrity",
+            );
+            assert_eq!(
+                value.getattr("code").unwrap().extract::<String>().unwrap(),
+                "projection_evidence_mismatch",
+            );
+            let path: serde_json::Value = depythonize(&value.getattr("path").unwrap()).unwrap();
+            assert_eq!(
+                path,
+                serde_json::json!([
+                    {"kind": "argument", "value": "projection_evidence"},
+                    {"kind": "index", "value": 0},
+                    {
+                        "kind": "contract_identity",
+                        "value": "semantic_schema_fingerprint",
+                    },
+                ]),
+            );
+            let details: serde_json::Value =
+                depythonize(&value.getattr("details").unwrap()).unwrap();
+            assert_eq!(
+                details,
+                serde_json::json!({
+                    "actual_occurrence_count": {"kind": "count", "value": 0},
+                    "expected_occurrence_count": {"kind": "count", "value": 1},
+                    "foreign_package": {"kind": "boolean", "value": false},
+                }),
+            );
+
             for error in [
                 rejected(py, &exact_json, &exact_semantic, &exact_fingerprint, None),
                 rejected(
@@ -6763,6 +6822,9 @@ def failing_initialize(target, original):
                         {"kind": "argument", "value": "projection_evidence"}
                     ]),
                 );
+                let details: serde_json::Value =
+                    depythonize(&value.getattr("details").unwrap()).unwrap();
+                assert_eq!(details, serde_json::json!({}));
             }
         });
     }

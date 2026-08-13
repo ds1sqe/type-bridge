@@ -536,6 +536,18 @@ pub enum SdkDiagnosticDetailValue {
     QueryIdentityList(Vec<SdkQueryDiagnosticIdentity>),
 }
 
+/// Raw presence of one binding-supplied projection-evidence slot.
+///
+/// This closed value records presence only. It does not parse evidence bytes,
+/// infer package provenance, or classify arbitrary evidence collections.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum SdkProjectionEvidenceSlotPresence {
+    /// The binding received no bytes for the required slot.
+    Absent,
+    /// The binding received one or more bytes for the slot.
+    Present,
+}
+
 /// One stable, binding-neutral SDK execution failure.
 ///
 /// This value is versioned but intentionally has no wire representation. A
@@ -644,6 +656,30 @@ impl SdkExecutionDiagnostic {
                 static_name("foreign_package"),
                 SdkDiagnosticDetailValue::Boolean(foreign_package),
             )
+    }
+
+    /// Classify a rejected package by the raw presence of its detached
+    /// semantic-schema-fingerprint evidence.
+    ///
+    /// The detached semantic fingerprint is the first item in the current
+    /// generated-package admission evidence, so an absent slot has canonical
+    /// index zero and identity `semantic_schema_fingerprint`. Absence alone
+    /// never proves a foreign package. A present slot deliberately retains the
+    /// generic mismatch because malformed, noncanonical, stale, forged, or
+    /// otherwise conflicting bytes cannot honestly be narrowed by presence.
+    #[must_use]
+    pub fn classify_detached_semantic_schema_fingerprint_rejection(
+        presence: SdkProjectionEvidenceSlotPresence,
+    ) -> Self {
+        match presence {
+            SdkProjectionEvidenceSlotPresence::Absent => Self::projection_evidence_missing(
+                0,
+                SdkQueryDiagnosticIdentity::new("semantic_schema_fingerprint")
+                    .expect("the fixed projection-evidence identity is canonical"),
+                false,
+            ),
+            SdkProjectionEvidenceSlotPresence::Present => Self::projection_evidence_mismatch(),
+        }
     }
 
     /// Construct the fixed generated-token package-brand diagnostic.
@@ -912,12 +948,11 @@ mod tests {
     }
 
     #[test]
-    fn missing_projection_evidence_matches_v3_representative() {
-        let missing = SdkExecutionDiagnostic::projection_evidence_missing(
-            0,
-            SdkQueryDiagnosticIdentity::new("semantic_schema_fingerprint").unwrap(),
-            false,
-        );
+    fn detached_semantic_fingerprint_classifier_matches_v3_representative() {
+        let missing =
+            SdkExecutionDiagnostic::classify_detached_semantic_schema_fingerprint_rejection(
+                SdkProjectionEvidenceSlotPresence::Absent,
+            );
         assert_eq!(missing.category(), SdkDiagnosticCategory::Integrity);
         assert_eq!(missing.code().as_str(), "projection_evidence_mismatch");
         assert!(matches!(
@@ -946,6 +981,15 @@ mod tests {
                 ),
                 ("foreign_package", &SdkDiagnosticDetailValue::Boolean(false),),
             ],
+        );
+
+        let present =
+            SdkExecutionDiagnostic::classify_detached_semantic_schema_fingerprint_rejection(
+                SdkProjectionEvidenceSlotPresence::Present,
+            );
+        assert_eq!(
+            present,
+            SdkExecutionDiagnostic::projection_evidence_mismatch()
         );
     }
 }

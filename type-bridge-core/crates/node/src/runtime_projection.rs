@@ -20,6 +20,7 @@ use type_bridge_contract::schema::OwnsFactId;
 use type_bridge_contract::sdk_diagnostic::{
     MAX_SDK_DIAGNOSTIC_PATH_SEGMENTS, SdkDiagnosticCategory, SdkDiagnosticCode,
     SdkDiagnosticMessage, SdkDiagnosticPathSegment, SdkExecutionDiagnostic,
+    SdkProjectionEvidenceSlotPresence,
 };
 use type_bridge_contract::temporal::{
     CanonicalDate, CanonicalDateTime, CanonicalDateTimeTz, CanonicalDuration,
@@ -1275,26 +1276,38 @@ fn install_authority_backed_projection(
     projection_fingerprint_json: &str,
     schema_authority_json: &str,
 ) -> napi::Result<RuntimeProjection> {
+    let rejection = || projection_evidence_rejection(semantic_fingerprint_json);
     let runtime = decode_runtime_projection_verified(
         projection_json.as_bytes(),
         semantic_fingerprint_json.as_bytes(),
         projection_fingerprint_json.as_bytes(),
     )
-    .map_err(|_| projection_evidence_mismatch())?;
+    .map_err(|_| rejection())?;
     if runtime.target() != BindingTarget::TypeScript {
-        return Err(projection_evidence_mismatch());
+        return Err(rejection());
     }
     let authority = decode_schema_authority(
         schema_authority_json.as_bytes(),
         &schema_authority_capability_vocabulary(),
     )
-    .map_err(|_| projection_evidence_mismatch())?;
-    verify_projection_evidence(&authority, &runtime).map_err(|_| projection_evidence_mismatch())?;
+    .map_err(|_| rejection())?;
+    verify_projection_evidence(&authority, &runtime).map_err(|_| rejection())?;
     Ok(runtime)
 }
 
 fn projection_evidence_mismatch() -> Error {
     napi_sdk_diagnostic(SdkExecutionDiagnostic::projection_evidence_mismatch())
+}
+
+fn projection_evidence_rejection(semantic_fingerprint_json: &str) -> Error {
+    let presence = if semantic_fingerprint_json.is_empty() {
+        SdkProjectionEvidenceSlotPresence::Absent
+    } else {
+        SdkProjectionEvidenceSlotPresence::Present
+    };
+    napi_sdk_diagnostic(
+        SdkExecutionDiagnostic::classify_detached_semantic_schema_fingerprint_rejection(presence),
+    )
 }
 
 fn verify_legacy_typescript_projection_evidence(runtime: &RuntimeProjection) -> napi::Result<()> {
@@ -3441,6 +3454,33 @@ entities:
         );
     }
 
+    fn assert_missing_semantic_fingerprint(error: Error) {
+        let diagnostic: Value = serde_json::from_str(&error.reason).unwrap();
+        assert_eq!(
+            diagnostic,
+            serde_json::json!({
+                "category": "integrity",
+                "sdkCategory": "integrity",
+                "queryCategory": null,
+                "code": "projection_evidence_mismatch",
+                "message": "Generated projection evidence does not match the verified schema package",
+                "path": [
+                    {"kind": "argument", "value": "projection_evidence"},
+                    {"kind": "index", "value": 0},
+                    {
+                        "kind": "contract_identity",
+                        "value": "semantic_schema_fingerprint",
+                    },
+                ],
+                "details": {
+                    "actual_occurrence_count": {"kind": "count", "value": "0"},
+                    "expected_occurrence_count": {"kind": "count", "value": "1"},
+                    "foreign_package": {"kind": "boolean", "value": false},
+                },
+            })
+        );
+    }
+
     fn runtime_for_schema(source: &str, document: &str) -> NodeRuntimeProjection {
         let authority = authority(source, document);
         let authority_json = String::from_utf8(encode_schema_authority(&authority)).unwrap();
@@ -4374,6 +4414,16 @@ entities:
         let (missing, missing_semantic, missing_fingerprint) = evidence(&missing);
         let (stale, stale_semantic, stale_fingerprint) = evidence(&stale);
         let (forged, forged_semantic, forged_fingerprint) = evidence(&forged);
+
+        // The string-based install boundary translates only empty bytes into
+        // absence of the first detached evidence slot. The shared classifier
+        // owns the resulting identity, index, counts, and provenance fact.
+        assert_missing_semantic_fingerprint(rejected(
+            exact_json.clone(),
+            String::new(),
+            exact_fingerprint.clone(),
+            Some(&authority_json),
+        ));
 
         for error in [
             rejected(

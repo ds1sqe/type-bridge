@@ -6,7 +6,8 @@ use std::fmt;
 
 use type_bridge_contract::sdk_diagnostic::{
     SdkDiagnosticCategory, SdkDiagnosticDetailValue, SdkDiagnosticPathSegment,
-    SdkExecutionDiagnostic, SdkQueryDiagnosticCategory, SdkQueryDiagnosticPathKind,
+    SdkExecutionDiagnostic, SdkProjectionEvidenceSlotPresence, SdkQueryDiagnosticCategory,
+    SdkQueryDiagnosticPathKind,
 };
 use type_bridge_orm::match_request::MatchError;
 use type_bridge_orm::{
@@ -358,8 +359,12 @@ impl Error {
         Self::classified_with_diagnostic(category, phase, code, path, None, message, source)
     }
 
-    pub(crate) fn projection_evidence_mismatch() -> Self {
-        let error = SdkExecutionDiagnostic::projection_evidence_mismatch();
+    pub(crate) fn projection_evidence_rejection(
+        presence: SdkProjectionEvidenceSlotPresence,
+    ) -> Self {
+        let error = SdkExecutionDiagnostic::classify_detached_semantic_schema_fingerprint_rejection(
+            presence,
+        );
         let code = error.code().as_str().to_owned();
         let message = error.message().as_str().to_owned();
         let path = error.path().iter().map(flatten_sdk_path).collect();
@@ -374,7 +379,11 @@ impl Error {
                     other => typed_sdk_path(other),
                 })
                 .collect(),
-            details: BTreeMap::new(),
+            details: error
+                .details()
+                .iter()
+                .map(|(name, value)| (name.as_str().to_owned(), flatten_sdk_detail(value)))
+                .collect(),
         };
         Self::classified_with_diagnostic(
             ErrorCategory::Integrity,

@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use type_bridge_contract::projection::{ProjectionConfig, RuntimeProjection};
 use type_bridge_contract::schema::encode_declared_schema;
+use type_bridge_contract::sdk_diagnostic::SdkProjectionEvidenceSlotPresence;
 use type_bridge_schema::{
     MAX_SCHEMA_AUTHORITY_BYTES, VerifiedSchemaAuthority, decode_schema_authority,
     schema_authority_capability_vocabulary,
@@ -219,9 +220,18 @@ impl<S: Schema> SchemaPackage<S> {
         Option<VerifiedSchemaAuthority>,
     )> {
         let authority_backed = self.schema_authority_json.is_some();
-        let authority = self
-            .verify_embedded_authority()
-            .map_err(|error| classify_admission_error(authority_backed, error))?;
+        // The detached semantic-fingerprint string is canonical evidence slot
+        // zero. Empty bytes are the generated Rust install boundary's only
+        // representable absence; every nonempty shape remains merely present
+        // until the binding-neutral rejection classifier sees the failure.
+        let semantic_fingerprint_presence = if self.semantic_fingerprint_json.is_empty() {
+            SdkProjectionEvidenceSlotPresence::Absent
+        } else {
+            SdkProjectionEvidenceSlotPresence::Present
+        };
+        let authority = self.verify_embedded_authority().map_err(|error| {
+            classify_admission_error(authority_backed, semantic_fingerprint_presence, error)
+        })?;
         let projection = type_bridge_orm::InstalledRuntimeProjection::from_verified_rust_json(
             self.runtime_projection_json.as_bytes(),
             self.semantic_fingerprint_json.as_bytes(),
@@ -230,6 +240,7 @@ impl<S: Schema> SchemaPackage<S> {
         .map_err(|err| {
             classify_admission_error(
                 authority_backed,
+                semantic_fingerprint_presence,
                 Error::SchemaVerification {
                     message: err.to_string(),
                     source: Some(Box::new(err)),
@@ -244,13 +255,15 @@ impl<S: Schema> SchemaPackage<S> {
         }) {
             return Err(classify_admission_error(
                 successor,
+                semantic_fingerprint_presence,
                 authority_error(
                     "generated schema authority does not match the installed runtime projection",
                 ),
             ));
         }
-        verify_rust_projection_evidence(&projection, authority.as_ref())
-            .map_err(|error| classify_admission_error(successor, error))?;
+        verify_rust_projection_evidence(&projection, authority.as_ref()).map_err(|error| {
+            classify_admission_error(successor, semantic_fingerprint_presence, error)
+        })?;
         Ok((Arc::new(projection), authority))
     }
 
@@ -369,13 +382,17 @@ fn authority_error(message: &'static str) -> Error {
     }
 }
 
-fn projection_evidence_error() -> Error {
-    Error::projection_evidence_mismatch()
+fn projection_evidence_error(presence: SdkProjectionEvidenceSlotPresence) -> Error {
+    Error::projection_evidence_rejection(presence)
 }
 
-fn classify_admission_error(successor: bool, error: Error) -> Error {
+fn classify_admission_error(
+    successor: bool,
+    semantic_fingerprint_presence: SdkProjectionEvidenceSlotPresence,
+    error: Error,
+) -> Error {
     if successor {
-        projection_evidence_error()
+        projection_evidence_error(semantic_fingerprint_presence)
     } else {
         error
     }
@@ -393,7 +410,8 @@ mod tests {
     use type_bridge_contract::projection::{BindingTarget, ProjectionConfig};
     use type_bridge_contract::schema::{DocumentId, encode_declared_schema};
     use type_bridge_contract::sdk_diagnostic::{
-        SdkDiagnosticCategory, SdkDiagnosticPathSegment, SdkExecutionDiagnostic,
+        SdkDiagnosticCategory, SdkDiagnosticDetailValue, SdkDiagnosticPathSegment,
+        SdkExecutionDiagnostic,
     };
     use type_bridge_schema::{
         ManagedDeltaContext, SCHEMA_AUTHORITY_FINGERPRINT_CANONICALIZATION,
@@ -497,6 +515,21 @@ mod tests {
         )
     }
 
+    fn with_semantic_fingerprint(
+        package: SchemaPackage<TestSchema>,
+        semantic_fingerprint_json: &'static str,
+    ) -> SchemaPackage<TestSchema> {
+        SchemaPackage::new_with_authority(
+            semantic_fingerprint_json,
+            package.projection_fingerprint_json,
+            package.runtime_projection_json,
+            package.schema_authority_json.unwrap(),
+            package.declared_schema_json.unwrap(),
+            package.managed_scope_id.unwrap(),
+            package.semantic_profile_id.unwrap(),
+        )
+    }
+
     fn canonical(value: &Value) -> &'static str {
         leak(to_canonical_json(value).unwrap())
     }
@@ -530,6 +563,12 @@ mod tests {
                 .expect("evidence mismatch retains its typed path"),
             [crate::ErrorPathSegment::Argument(name)] if name == "projection_evidence"
         ));
+        assert!(
+            error
+                .details()
+                .expect("evidence mismatch retains typed details")
+                .is_empty()
+        );
 
         let diagnostic = std::error::Error::source(error)
             .and_then(|source| source.downcast_ref::<SdkExecutionDiagnostic>())
@@ -541,6 +580,77 @@ mod tests {
                 if name.as_str() == "projection_evidence"
         ));
         assert!(diagnostic.details().is_empty());
+    }
+
+    fn assert_missing_semantic_fingerprint(error: &Error) {
+        assert_eq!(error.category(), crate::ErrorCategory::Integrity);
+        assert_eq!(error.model_validation_phase(), None);
+        assert_eq!(error.code(), Some("projection_evidence_mismatch"));
+        assert_eq!(
+            error.path().expect("missing evidence has a stable path"),
+            ["projection_evidence", "[0]", "semantic_schema_fingerprint",],
+        );
+        assert!(matches!(
+            error
+                .diagnostic_path()
+                .expect("missing evidence retains its typed path"),
+            [
+                crate::ErrorPathSegment::Argument(argument),
+                crate::ErrorPathSegment::Index(0),
+                crate::ErrorPathSegment::ContractIdentity(identity),
+            ] if argument == "projection_evidence"
+                && identity == "semantic_schema_fingerprint"
+        ));
+        assert_eq!(
+            error
+                .details()
+                .expect("missing evidence retains typed details"),
+            &std::collections::BTreeMap::from([
+                (
+                    "actual_occurrence_count".to_owned(),
+                    crate::ErrorDetail::Long(0),
+                ),
+                (
+                    "expected_occurrence_count".to_owned(),
+                    crate::ErrorDetail::Long(1),
+                ),
+                (
+                    "foreign_package".to_owned(),
+                    crate::ErrorDetail::Boolean(false),
+                ),
+            ]),
+        );
+
+        let diagnostic = std::error::Error::source(error)
+            .and_then(|source| source.downcast_ref::<SdkExecutionDiagnostic>())
+            .expect("the Rust error retains the exact common SDK diagnostic");
+        assert!(matches!(
+            diagnostic.path(),
+            [
+                SdkDiagnosticPathSegment::Argument(argument),
+                SdkDiagnosticPathSegment::Index(0),
+                SdkDiagnosticPathSegment::ContractIdentity(identity),
+            ] if argument.as_str() == "projection_evidence"
+                && identity.as_str() == "semantic_schema_fingerprint"
+        ));
+        assert_eq!(
+            diagnostic
+                .details()
+                .iter()
+                .map(|(name, value)| (name.as_str(), value))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    "actual_occurrence_count",
+                    &SdkDiagnosticDetailValue::Count(0),
+                ),
+                (
+                    "expected_occurrence_count",
+                    &SdkDiagnosticDetailValue::Count(1),
+                ),
+                ("foreign_package", &SdkDiagnosticDetailValue::Boolean(false),),
+            ],
+        );
     }
 
     #[test]
@@ -699,6 +809,23 @@ mod tests {
             RustEmitter::new().code_resources().unwrap(),
         );
         assert!(without_authority(valid_legacy).verify().is_ok());
+    }
+
+    #[test]
+    fn successor_admission_classifies_only_absent_detached_semantic_fingerprint() {
+        let package = generated_package(
+            "format: typebridge.schema/v2\nattributes:\n  tag: { value: string }\nentities:\n  person:\n    owns:\n      tag:\n        card: 1\n        ordered: true\n",
+            "rust-missing-semantic-evidence",
+        );
+        let malformed = with_semantic_fingerprint(package, "{")
+            .verify()
+            .expect_err("nonempty malformed semantic evidence must reject");
+        assert_projection_evidence_mismatch(&malformed);
+
+        let error = with_semantic_fingerprint(package, "")
+            .verify()
+            .expect_err("an absent detached semantic fingerprint must reject");
+        assert_missing_semantic_fingerprint(&error);
     }
 
     #[test]
