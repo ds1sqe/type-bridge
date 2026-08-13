@@ -242,7 +242,29 @@ impl ProjectedAttributeValue {
         attribute_type: TypeId,
         value: &AttributeValue,
     ) -> Result<Self, SdkExecutionDiagnostic> {
-        Self::try_from_attribute_value(installed, attribute_type, value)
+        let canonical =
+            crate::runtime_projection::canonical_attribute_value(value).map_err(|code| {
+                integrity(
+                    code,
+                    "The provider scalar is outside its canonical domain",
+                    type_path(&attribute_type),
+                )
+            })?;
+        Self::try_from_hydrated_canonical_value(installed, attribute_type, canonical)
+    }
+
+    /// Validate and brand one exact canonical provider-hydrated scalar.
+    ///
+    /// This seam retains private canonical evidence, including the selected
+    /// effective offset for either side of a named-zone daylight-saving
+    /// overlap, while classifying invalid provider evidence as integrity.
+    #[doc(hidden)]
+    pub fn try_from_hydrated_canonical_value(
+        installed: &InstalledRuntimeProjection,
+        attribute_type: TypeId,
+        value: CanonicalValue,
+    ) -> Result<Self, SdkExecutionDiagnostic> {
+        Self::try_new(installed, attribute_type, value)
             .map_err(|diagnostic| diagnostic_for_origin(diagnostic, ValidationOrigin::Hydration))
     }
 
@@ -350,7 +372,19 @@ impl ProjectedReference {
         iid: Option<String>,
         keys: Vec<(OwnsFactId, ProjectedAttributeValue)>,
     ) -> Result<Self, SdkExecutionDiagnostic> {
-        Self::try_new_with_origin(installed, type_id, iid, keys, None)
+        Self::try_new_for_hydration_with_origin_carrier(installed, type_id, iid, keys, None)
+    }
+
+    /// Validate a provider-hydrated reference while restoring its opaque origin.
+    #[doc(hidden)]
+    pub fn try_new_for_hydration_with_origin_carrier(
+        installed: &InstalledRuntimeProjection,
+        type_id: TypeId,
+        iid: Option<String>,
+        keys: Vec<(OwnsFactId, ProjectedAttributeValue)>,
+        origin: Option<ProjectedReferenceOrigin>,
+    ) -> Result<Self, SdkExecutionDiagnostic> {
+        Self::try_new_with_origin(installed, type_id, iid, keys, origin.map(|origin| origin.0))
             .map_err(|diagnostic| diagnostic_for_origin(diagnostic, ValidationOrigin::Hydration))
     }
 
@@ -925,6 +959,36 @@ impl ProjectedThing {
         Self::try_new_with_origin(installed, type_id, iid, fields, roles, None)
     }
 
+    /// Validate a complete provider result while restoring its opaque origin.
+    #[doc(hidden)]
+    pub fn try_new_with_origin_carrier(
+        installed: &InstalledRuntimeProjection,
+        type_id: TypeId,
+        iid: String,
+        fields: Vec<(OwnsFactId, Vec<ProjectedAttributeValue>)>,
+        roles: Vec<(RoleId, Vec<ProjectedRolePlayer>)>,
+        origin: Option<ProjectedReferenceOrigin>,
+    ) -> Result<Self, SdkExecutionDiagnostic> {
+        Self::try_new_with_origin(
+            installed,
+            type_id,
+            iid,
+            fields,
+            roles,
+            origin.map(|origin| origin.0),
+        )
+    }
+
+    /// Validate one provider-hydrated exact model identity and IID.
+    #[doc(hidden)]
+    pub fn validate_hydrated_iid(
+        installed: &InstalledRuntimeProjection,
+        type_id: &TypeId,
+        iid: &str,
+    ) -> Result<(), SdkExecutionDiagnostic> {
+        validate_hydrated_thing_identity(installed, type_id, iid).map(|_| ())
+    }
+
     pub(crate) fn try_new_for_database(
         installed: &InstalledRuntimeProjection,
         type_id: TypeId,
@@ -951,14 +1015,7 @@ impl ProjectedThing {
         roles: Vec<(RoleId, Vec<ProjectedRolePlayer>)>,
         database_origin: Option<ProjectedDatabaseOrigin>,
     ) -> Result<Self, SdkExecutionDiagnostic> {
-        let model = require_concrete_thing_model(installed, &type_id, ValidationOrigin::Hydration)?;
-        if !is_canonical_thing_iid(&iid) {
-            return Err(integrity(
-                "noncanonical_hydrated_iid",
-                "The hydrated thing IID is not canonical TypeDB identity text",
-                argument_path(&type_id, "iid"),
-            ));
-        }
+        let model = validate_hydrated_thing_identity(installed, &type_id, &iid)?;
         let mut budget = ProjectedBudget::default();
         budget.add(
             ProjectedSize {
@@ -1596,6 +1653,22 @@ fn require_concrete_thing_model<'a>(
             "model_not_constructible",
             "The selected projected model is abstract or not constructible",
             type_path(type_id),
+        ));
+    }
+    Ok(model)
+}
+
+fn validate_hydrated_thing_identity<'a>(
+    installed: &'a InstalledRuntimeProjection,
+    type_id: &TypeId,
+    iid: &str,
+) -> Result<&'a ModelProjection, SdkExecutionDiagnostic> {
+    let model = require_concrete_thing_model(installed, type_id, ValidationOrigin::Hydration)?;
+    if !is_canonical_thing_iid(iid) {
+        return Err(integrity(
+            "noncanonical_hydrated_iid",
+            "The hydrated thing IID is not canonical TypeDB identity text",
+            argument_path(type_id, "iid"),
         ));
     }
     Ok(model)
@@ -2584,6 +2657,109 @@ plays:
         assert_eq!(
             stripped.code().as_str(),
             "provider_free_role_player_database_origin_present"
+        );
+    }
+
+    #[test]
+    fn hydration_carrier_constructors_retain_nested_and_provider_free_origins() {
+        let installed = origin_projection();
+        let person = TypeId::new(TypeKind::Entity, "person").unwrap();
+        let friendship = TypeId::new(TypeKind::Relation, "friendship").unwrap();
+        let friend = RoleId::new("friendship", "friend").unwrap();
+        let identity = DatabaseExecutionIdentity::isolated("hydration-carrier");
+
+        let bound_reference = ProjectedReference::try_new_for_database(
+            &installed,
+            person.clone(),
+            Some("0x1".into()),
+            vec![],
+            identity.clone(),
+        )
+        .unwrap();
+        let rebuilt_reference = ProjectedReference::try_new_for_hydration_with_origin_carrier(
+            &installed,
+            person.clone(),
+            Some("0x1".into()),
+            vec![],
+            bound_reference.origin_carrier(),
+        )
+        .unwrap();
+        assert_eq!(rebuilt_reference.database_identity(), Some(&identity));
+        let bound_player = ProjectedRolePlayer::try_new(&installed, rebuilt_reference).unwrap();
+
+        let source = ProjectedThing::try_new_for_database(
+            &installed,
+            friendship.clone(),
+            "0x10".into(),
+            vec![],
+            vec![(friend.clone(), vec![bound_player.clone()])],
+            identity.clone(),
+        )
+        .unwrap();
+        let rebuilt = ProjectedThing::try_new_with_origin_carrier(
+            &installed,
+            friendship.clone(),
+            "0x10".into(),
+            vec![],
+            vec![(friend.clone(), vec![bound_player])],
+            source.origin_carrier(),
+        )
+        .unwrap();
+        assert_eq!(
+            rebuilt.database_origin.as_ref().map(|origin| &origin.0),
+            Some(&identity)
+        );
+        assert_eq!(
+            rebuilt.roles()[&friend][0].reference().database_identity(),
+            Some(&identity)
+        );
+
+        let unbound_player = ProjectedRolePlayer::try_new(
+            &installed,
+            ProjectedReference::try_new_for_hydration_with_origin_carrier(
+                &installed,
+                person,
+                Some("0x2".into()),
+                vec![],
+                None,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let unbound = ProjectedThing::try_new_with_origin_carrier(
+            &installed,
+            friendship,
+            "0x11".into(),
+            vec![],
+            vec![(friend.clone(), vec![unbound_player])],
+            None,
+        )
+        .unwrap();
+        assert!(unbound.database_origin.is_none());
+        assert!(
+            unbound.roles()[&friend][0]
+                .reference()
+                .database_identity()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn hydrated_iid_validation_has_the_complete_thing_integrity_contract() {
+        let installed = origin_projection();
+        let person = TypeId::new(TypeKind::Entity, "person").unwrap();
+        ProjectedThing::validate_hydrated_iid(&installed, &person, "0x1").unwrap();
+
+        let diagnostic =
+            ProjectedThing::validate_hydrated_iid(&installed, &person, "not-an-iid").unwrap_err();
+        assert_eq!(diagnostic.category(), SdkDiagnosticCategory::Integrity);
+        assert_eq!(diagnostic.code().as_str(), "noncanonical_hydrated_iid");
+        assert_eq!(
+            diagnostic.path(),
+            [
+                SdkDiagnosticPathSegment::Type(person),
+                SdkDiagnosticPathSegment::Argument(sdk_name("iid")),
+            ]
         );
     }
 

@@ -1050,6 +1050,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         [Some("0xa"), Some("0xb")],
     );
 
+    let invalid_player_iid_row = HydratedRow::new(
+        Membership::TYPE_ID_JSON,
+        "0x2".to_owned(),
+        vec![],
+        vec![(
+            MembershipType::participant.role_id_json(),
+            vec![HydratedPlayer::new(
+                Person::TYPE_ID_JSON,
+                Some("person-a".to_owned()),
+                vec![],
+            )],
+        )],
+    );
+    let error = materialize_model_for_test::<Membership>(&invalid_player_iid_row).unwrap_err();
+    assert_eq!(error.code(), "noncanonical_iid");
+    assert_eq!(error.field(), "type.iid");
+
     let accepted_row = HydratedRow::new(
         Person::TYPE_ID_JSON,
         "0x3".to_owned(),
