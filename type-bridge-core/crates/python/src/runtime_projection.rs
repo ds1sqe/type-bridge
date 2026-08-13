@@ -35,7 +35,7 @@ use type_bridge_orm::session::{Database, TransactionContext};
 use type_bridge_orm::value::AttributeValue;
 use type_bridge_orm::{
     HydratedAttribute, HydratedRolePlayer, HydratedThing, ProjectedAttributeValue, ProjectedCreate,
-    ProjectedReference, ThingKind,
+    ProjectedReference, ProjectedRolePlayer, ProjectedThing, ThingKind,
 };
 use type_bridge_orm::{InstalledRuntimeProjection, ProviderRuntimeOwner};
 use type_bridge_schema::{decode_schema_authority, schema_authority_capability_vocabulary};
@@ -1629,6 +1629,185 @@ fn project_reference(
         .map_err(py_sdk_diagnostic)
 }
 
+fn project_hydrated_thing(
+    py: Python<'_>,
+    package: &InstalledPackage,
+    id: &TypeId,
+    values: &Bound<'_, PyDict>,
+    iid: Option<&str>,
+) -> PyResult<ProjectedThing> {
+    let model = package
+        .projection
+        .projection()
+        .models()
+        .get(id)
+        .ok_or_else(|| py_runtime_error("projection hydrated model is absent"))?;
+    let mut fields = Vec::with_capacity(model.complete_read().fields().len());
+    for field in model.complete_read().fields() {
+        let token = model
+            .query_tokens()
+            .fields()
+            .get(field.token())
+            .ok_or_else(|| py_runtime_error("projected read field has no query token"))?;
+        let value = values.get_item(token.target_name().as_str())?;
+        let projected = projected_items(value.as_ref(), field.multiplicity())?
+            .into_iter()
+            .enumerate()
+            .map(|(index, value)| {
+                project_hydrated_attribute_value(
+                    py,
+                    package,
+                    &value,
+                    &[
+                        SdkDiagnosticPathSegment::Type(id.clone()),
+                        SdkDiagnosticPathSegment::Field(field.token().clone()),
+                        SdkDiagnosticPathSegment::Index(projected_index(index)),
+                    ],
+                )
+            })
+            .collect::<PyResult<Vec<_>>>()?;
+        fields.push((field.token().clone(), projected));
+    }
+
+    let mut roles = Vec::with_capacity(model.complete_read().roles().len());
+    for (role_id, role) in model.complete_read().roles() {
+        let token = model
+            .query_tokens()
+            .roles()
+            .get(role_id)
+            .ok_or_else(|| py_runtime_error("projected read role has no query token"))?;
+        let value = values.get_item(token.target_name().as_str())?;
+        let players = projected_items(value.as_ref(), role.multiplicity())?
+            .into_iter()
+            .enumerate()
+            .map(|(index, value)| {
+                let path = [
+                    SdkDiagnosticPathSegment::Type(id.clone()),
+                    SdkDiagnosticPathSegment::Role(role_id.clone()),
+                    SdkDiagnosticPathSegment::Index(projected_index(index)),
+                ];
+                let reference =
+                    project_hydrated_reference(py, package, &value, role.players(), &path)?;
+                ProjectedRolePlayer::try_new(&package.projection, reference)
+                    .map_err(py_sdk_diagnostic)
+            })
+            .collect::<PyResult<Vec<_>>>()?;
+        roles.push((role_id.clone(), players));
+    }
+
+    ProjectedThing::try_new(
+        &package.projection,
+        id.clone(),
+        iid.unwrap_or_default().to_owned(),
+        fields,
+        roles,
+    )
+    .map_err(py_sdk_diagnostic)
+}
+
+fn project_hydrated_attribute_value(
+    py: Python<'_>,
+    package: &InstalledPackage,
+    value: &Bound<'_, PyAny>,
+    operation_path: &[SdkDiagnosticPathSegment],
+) -> PyResult<ProjectedAttributeValue> {
+    let (attribute_id, form) = package.identify_value(py, value).map_err(|_| {
+        py_sdk_diagnostic(generated_token_package_mismatch_at(
+            operation_path.iter().cloned(),
+        ))
+    })?;
+    if attribute_id.kind() != TypeKind::Attribute || form != ProjectedModelForm::Complete {
+        return Err(py_type_error(
+            "hydrated field value is not an exact complete attribute wrapper",
+        ));
+    }
+    let attribute = package
+        .projection
+        .projection()
+        .models()
+        .get(&attribute_id)
+        .ok_or_else(|| py_runtime_error("projection hydrated attribute is absent"))?;
+    let value_type = attribute
+        .declaration()
+        .value_type()
+        .ok_or_else(|| py_runtime_error("projection hydrated attribute has no scalar domain"))?;
+    let scalar = value.call_method0("runtime_attribute_value")?;
+    let scalar = canonical_attribute_value_from_py(py, &scalar, projected_value_type(value_type))?;
+    ProjectedAttributeValue::try_from_hydrated_attribute_value(
+        &package.projection,
+        attribute_id,
+        &scalar,
+    )
+    .map_err(py_sdk_diagnostic)
+}
+
+fn project_hydrated_reference(
+    py: Python<'_>,
+    package: &InstalledPackage,
+    value: &Bound<'_, PyAny>,
+    allowed_players: &BTreeSet<ProjectedModelUse>,
+    operation_path: &[SdkDiagnosticPathSegment],
+) -> PyResult<ProjectedReference> {
+    let (id, form) = package.identify_value(py, value).map_err(|_| {
+        py_sdk_diagnostic(generated_token_package_mismatch_at(
+            operation_path.iter().cloned(),
+        ))
+    })?;
+    if !matches!(id.kind(), TypeKind::Entity | TypeKind::Relation) {
+        return Err(py_type_error(
+            "hydrated role player is not an exact entity or relation value",
+        ));
+    }
+    if !allowed_players
+        .iter()
+        .any(|player| player.id() == &id && player.form() == form)
+    {
+        return Err(py_type_error(
+            "hydrated role player has an incompatible generated model form",
+        ));
+    }
+    let model = package
+        .projection
+        .projection()
+        .models()
+        .get(&id)
+        .ok_or_else(|| py_runtime_error("projection hydrated role-player model is absent"))?;
+    let values = value.call_method0("runtime_values")?;
+    let values = values.downcast::<PyDict>()?;
+    let mut keys = Vec::new();
+    for key_id in model.reference_read().key_fields() {
+        let token = model
+            .query_tokens()
+            .fields()
+            .get(key_id)
+            .ok_or_else(|| py_runtime_error("projected hydrated key has no query token"))?;
+        let read = model
+            .complete_read()
+            .fields()
+            .iter()
+            .find(|field| field.token() == key_id)
+            .ok_or_else(|| py_runtime_error("projected hydrated key has no read field"))?;
+        let key = values.get_item(token.target_name().as_str())?;
+        for (index, item) in projected_items(key.as_ref(), read.multiplicity())?
+            .into_iter()
+            .enumerate()
+        {
+            let mut key_path = operation_path.to_vec();
+            key_path.extend([
+                SdkDiagnosticPathSegment::Type(id.clone()),
+                SdkDiagnosticPathSegment::Field(key_id.clone()),
+                SdkDiagnosticPathSegment::Index(projected_index(index)),
+            ]);
+            keys.push((
+                key_id.clone(),
+                project_hydrated_attribute_value(py, package, &item, &key_path)?,
+            ));
+        }
+    }
+    ProjectedReference::try_new_for_hydration(&package.projection, id, projected_iid(value)?, keys)
+        .map_err(py_sdk_diagnostic)
+}
+
 fn projected_items<'py>(
     value: Option<&Bound<'py, PyAny>>,
     multiplicity: ProjectedMultiplicity,
@@ -2346,6 +2525,14 @@ fn hydrate_attribute(
 ) -> PyResult<PyObject> {
     ensure_attribute_type(value, descriptor.value_type)?;
     let id = package.type_by_label(&descriptor.attr_name, TypeKind::Attribute)?;
+    if projection_uses_ordered_collections(package.projection.projection()) {
+        ProjectedAttributeValue::try_from_hydrated_attribute_value(
+            &package.projection,
+            id.clone(),
+            value,
+        )
+        .map_err(py_sdk_diagnostic)?;
+    }
     let class = package.class(id, ProjectedModelForm::Complete)?;
     let scalar = attribute_value_to_py(py, value)?;
     class.bind(py).call1((scalar,)).map(Bound::unbind)
@@ -2384,6 +2571,9 @@ fn hydrate_complete(
     values: &Bound<'_, PyDict>,
     iid: Option<&str>,
 ) -> PyResult<PyObject> {
+    if projection_uses_ordered_collections(package.projection.projection()) {
+        project_hydrated_thing(py, package, id, values, iid)?;
+    }
     let instance = allocate(py, package.class(id, ProjectedModelForm::Complete)?)?;
     instance.call_method1("initialize_runtime_values", (values,))?;
     if let Some(iid) = iid {
@@ -2846,14 +3036,33 @@ plays:
 
     const ORDERED_SCHEMA: &str = r#"format: typebridge.schema/v2
 attributes:
-  tag: { value: string }
+  tag:
+    value:
+      type: string
+      regex: "^.+$"
 entities:
-  person:
+  actor:
+    abstract: true
     owns:
       tag:
         card: { min: 0, max: 4 }
         ordered: true
         distinct: true
+  person:
+    sub: actor
+relations:
+  activity:
+    relates:
+      participant:
+        abstract: true
+        card: { min: 0, max: 4 }
+        ordered: true
+        distinct: true
+  gathering:
+    sub: activity
+plays:
+  person:
+    activity: [participant]
 "#;
 
     fn authority(source: &str, document: &str) -> VerifiedSchemaAuthority {
@@ -3275,6 +3484,305 @@ class Reference:
                     "ordered_distinct_duplicate"
                 );
             }
+        });
+    }
+
+    #[test]
+    fn ordered_hydration_rejects_duplicate_scalars_and_players_with_integrity_paths() {
+        use pythonize::depythonize;
+
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            let (_, package) = install_ordered(py);
+            let person_id = package
+                .type_by_label("person", TypeKind::Entity)
+                .unwrap()
+                .clone();
+            let gathering_id = package
+                .type_by_label("gathering", TypeKind::Relation)
+                .unwrap()
+                .clone();
+            let person_model = &package.projection.projection().models()[&person_id];
+            let tag = person_model.complete_read().fields()[0].token().clone();
+            let participant = package.projection.projection().models()[&gathering_id]
+                .complete_read()
+                .roles()
+                .keys()
+                .next()
+                .unwrap()
+                .clone();
+
+            let scalar_error = hydrate_entity(
+                py,
+                package.as_ref(),
+                &person_id,
+                &DynamicEntityRow {
+                    iid: Some("0xa1".into()),
+                    type_name: Some("person".into()),
+                    attributes: vec![
+                        ("tag".into(), AttributeValue::String("same".into())),
+                        ("tag".into(), AttributeValue::String("same".into())),
+                    ],
+                },
+            )
+            .unwrap_err();
+            let scalar = scalar_error.value(py);
+            assert_eq!(
+                scalar
+                    .getattr("sdk_category")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "integrity"
+            );
+            assert_eq!(
+                scalar.getattr("code").unwrap().extract::<String>().unwrap(),
+                "ordered_distinct_duplicate"
+            );
+            let scalar_path: serde_json::Value =
+                depythonize(&scalar.getattr("path").unwrap()).unwrap();
+            assert_eq!(
+                scalar_path,
+                serde_json::json!([
+                    {"kind": "type", "value": person_id},
+                    {"kind": "field", "value": tag},
+                    {"kind": "index", "value": 1},
+                ])
+            );
+
+            let duplicate_player = || DynamicRolePlayer {
+                role_name: "participant".into(),
+                player_iid: Some("0xa1".into()),
+                player_type_name: Some("person".into()),
+                attributes: vec![],
+            };
+            let role_error = hydrate_relation(
+                py,
+                package.as_ref(),
+                &gathering_id,
+                &DynamicRelationRow {
+                    iid: Some("0xb1".into()),
+                    type_name: Some("gathering".into()),
+                    attributes: vec![],
+                    role_players: vec![duplicate_player(), duplicate_player()],
+                },
+            )
+            .unwrap_err();
+            let role = role_error.value(py);
+            assert_eq!(
+                role.getattr("sdk_category")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "integrity"
+            );
+            assert_eq!(
+                role.getattr("code").unwrap().extract::<String>().unwrap(),
+                "ordered_distinct_duplicate"
+            );
+            let role_path: serde_json::Value = depythonize(&role.getattr("path").unwrap()).unwrap();
+            assert_eq!(
+                role_path,
+                serde_json::json!([
+                    {"kind": "type", "value": gathering_id},
+                    {"kind": "role", "value": participant},
+                    {"kind": "index", "value": 1},
+                    {"kind": "type", "value": person_id},
+                ])
+            );
+        });
+    }
+
+    #[test]
+    fn ordered_hydration_preserves_inherited_field_role_and_reference_order() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            let (_, package) = install_ordered(py);
+            let person_id = package
+                .type_by_label("person", TypeKind::Entity)
+                .unwrap()
+                .clone();
+            let gathering_id = package
+                .type_by_label("gathering", TypeKind::Relation)
+                .unwrap()
+                .clone();
+            let person = hydrate_entity(
+                py,
+                package.as_ref(),
+                &person_id,
+                &DynamicEntityRow {
+                    iid: Some("0xa1".into()),
+                    type_name: Some("person".into()),
+                    attributes: vec![
+                        ("tag".into(), AttributeValue::String("first".into())),
+                        ("tag".into(), AttributeValue::String("second".into())),
+                    ],
+                },
+            )
+            .expect("a valid inherited ordered ownership hydrates");
+            let values = person.bind(py).call_method0("runtime_values").unwrap();
+            let tags = values
+                .downcast::<PyDict>()
+                .unwrap()
+                .get_item("tag")
+                .unwrap()
+                .unwrap();
+            let tags = tags.downcast::<PyTuple>().unwrap();
+            let hydrated_tags = tags
+                .iter()
+                .map(|tag| {
+                    tag.call_method0("runtime_attribute_value")
+                        .unwrap()
+                        .extract::<String>()
+                        .unwrap()
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(hydrated_tags, ["first", "second"]);
+
+            let player = |iid: &str| DynamicRolePlayer {
+                role_name: "participant".into(),
+                player_iid: Some(iid.into()),
+                player_type_name: Some("person".into()),
+                attributes: vec![],
+            };
+            let gathering = hydrate_relation(
+                py,
+                package.as_ref(),
+                &gathering_id,
+                &DynamicRelationRow {
+                    iid: Some("0xb1".into()),
+                    type_name: Some("gathering".into()),
+                    attributes: vec![],
+                    role_players: vec![player("0xa1"), player("0xa2")],
+                },
+            )
+            .expect("a valid inherited ordered role hydrates");
+            let values = gathering.bind(py).call_method0("runtime_values").unwrap();
+            let participants = values
+                .downcast::<PyDict>()
+                .unwrap()
+                .get_item("participant")
+                .unwrap()
+                .unwrap();
+            let participants = participants.downcast::<PyTuple>().unwrap();
+            let hydrated_iids = participants
+                .iter()
+                .map(|participant| {
+                    participant
+                        .getattr("iid")
+                        .unwrap()
+                        .extract::<String>()
+                        .unwrap()
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(hydrated_iids, ["0xa1", "0xa2"]);
+        });
+    }
+
+    #[test]
+    fn ordered_hydration_maps_scalar_constraints_and_iids_to_integrity() {
+        use pythonize::depythonize;
+
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            let (_, package) = install_ordered(py);
+            let person_id = package
+                .type_by_label("person", TypeKind::Entity)
+                .unwrap()
+                .clone();
+            let tag_id = package
+                .type_by_label("tag", TypeKind::Attribute)
+                .unwrap()
+                .clone();
+
+            let scalar_error = hydrate_entity(
+                py,
+                package.as_ref(),
+                &person_id,
+                &DynamicEntityRow {
+                    iid: Some("0xa1".into()),
+                    type_name: Some("person".into()),
+                    attributes: vec![("tag".into(), AttributeValue::String(String::new()))],
+                },
+            )
+            .unwrap_err();
+            let scalar = scalar_error.value(py);
+            assert_eq!(
+                scalar
+                    .getattr("sdk_category")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "integrity"
+            );
+            assert_eq!(
+                scalar.getattr("code").unwrap().extract::<String>().unwrap(),
+                "regex_constraint_violation"
+            );
+            let path: serde_json::Value = depythonize(&scalar.getattr("path").unwrap()).unwrap();
+            assert_eq!(path, serde_json::json!([{"kind": "type", "value": tag_id}]));
+
+            let iid_error = hydrate_entity(
+                py,
+                package.as_ref(),
+                &person_id,
+                &DynamicEntityRow {
+                    iid: Some("not-a-canonical-iid".into()),
+                    type_name: Some("person".into()),
+                    attributes: vec![],
+                },
+            )
+            .unwrap_err();
+            let iid = iid_error.value(py);
+            assert_eq!(
+                iid.getattr("sdk_category")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "integrity"
+            );
+            assert_eq!(
+                iid.getattr("code").unwrap().extract::<String>().unwrap(),
+                "noncanonical_hydrated_iid"
+            );
+        });
+    }
+
+    #[test]
+    fn unordered_hydration_keeps_duplicate_members_on_the_legacy_path() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            let (_, package) = install(py);
+            let person_id = package
+                .type_by_label("person", TypeKind::Entity)
+                .unwrap()
+                .clone();
+            let hydrated = hydrate_entity(
+                py,
+                package.as_ref(),
+                &person_id,
+                &DynamicEntityRow {
+                    iid: Some("0x-person".into()),
+                    type_name: Some("person".into()),
+                    attributes: vec![
+                        (
+                            "identifier".into(),
+                            AttributeValue::String("person-1".into()),
+                        ),
+                        ("aliases".into(), AttributeValue::String("same".into())),
+                        ("aliases".into(), AttributeValue::String("same".into())),
+                    ],
+                },
+            )
+            .expect("legacy unordered hydration accepts repeated collection members");
+            let values = hydrated.bind(py).call_method0("runtime_values").unwrap();
+            let aliases = values
+                .downcast::<PyDict>()
+                .unwrap()
+                .get_item("aliases")
+                .unwrap()
+                .unwrap();
+            assert_eq!(aliases.downcast::<PyTuple>().unwrap().len(), 2);
         });
     }
 
