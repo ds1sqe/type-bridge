@@ -159,6 +159,11 @@ run_c() {
         cargo build --locked --manifest-path type-bridge-core/Cargo.toml \
         -p type-bridge-c --lib
 
+    run_step "C provider-free Phase-2 parity producer" \
+        env TYPE_BRIDGE_C_REQUIRE_SHARED_CONSUMER=1 \
+        cargo test --locked --manifest-path type-bridge-core/Cargo.toml \
+        -p type-bridge-c --test phase2_projection_parity
+
     run_step "C foundation on MSRV 1.88" \
         cargo +1.88.0 check --locked --manifest-path type-bridge-core/Cargo.toml \
         -p type-bridge-c --all-targets

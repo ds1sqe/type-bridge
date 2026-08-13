@@ -148,6 +148,13 @@ jobs:
         working-directory: type-bridge-core
         run: cargo build --locked -p type-bridge-c --lib
 
+      - name: Check C provider-free Phase-2 parity producer
+        if: runner.os != 'Windows'
+        working-directory: type-bridge-core
+        env:
+          TYPE_BRIDGE_C_REQUIRE_SHARED_CONSUMER: "1"
+        run: cargo test --locked -p type-bridge-c --test phase2_projection_parity
+
       - name: Check C ABI and standalone consumer
         if: runner.os != 'Windows'
         working-directory: type-bridge-core
