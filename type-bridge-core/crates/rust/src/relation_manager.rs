@@ -166,7 +166,9 @@ where
                 Some(&encoded),
             )
             .await?;
-        let output = self.write(input, false).await?;
+        let output = self
+            .projected_write(input, CrudOperation::Insert, None)
+            .await?;
         self.hooks
             .run_post(
                 M::TYPE_ID_JSON,
@@ -198,7 +200,9 @@ where
                 Some(&encoded),
             )
             .await?;
-        let output = self.write(input, true).await?;
+        let output = self
+            .projected_write(input, CrudOperation::Put, None)
+            .await?;
         self.hooks
             .run_post(
                 M::TYPE_ID_JSON,
@@ -320,7 +324,9 @@ where
                 Some(&encoded),
             )
             .await?;
-        let output = self.update_write(iid, input).await?;
+        let output = self
+            .projected_write(input, CrudOperation::Update, Some(iid))
+            .await?;
         self.hooks
             .run_post(
                 M::TYPE_ID_JSON,
@@ -334,71 +340,6 @@ where
         Ok(output)
     }
 
-    async fn update_write(&self, iid: &str, input: M::Create) -> Result<M> {
-        let installed = self.db.installed_schema().ok_or_else(schema_not_bound)?;
-        let (id, descriptor) = resolve_relation_authority(
-            M::TYPE_ID_JSON,
-            installed,
-            ModelValidationPhase::Input,
-            true,
-        )?;
-        let prepared = lower_relation_create(input, &id, installed)?;
-        let tx = self
-            .db
-            .inner_orm()
-            .transaction_context(TxType::Write)
-            .await
-            .map_err(Error::from_orm)?;
-        let manager = DynamicRelationManager::with_canonical_transaction(
-            tx.clone(),
-            Arc::new(descriptor.clone()),
-        );
-        if let Err(error) = manager
-            .update_exact(iid, &prepared.attributes, &prepared.role_players)
-            .await
-        {
-            let _ = tx.rollback().await;
-            return Err(Error::from_orm(error));
-        }
-        let rows = match manager.get_by_iid_exact(iid).await {
-            Ok(rows) => rows,
-            Err(error) => {
-                let _ = tx.rollback().await;
-                return Err(Error::from_orm(error));
-            }
-        };
-        let row = match one_coalesced_row(rows) {
-            Ok(Some(row)) => row,
-            Ok(None) => {
-                let _ = tx.rollback().await;
-                return Err(missing_post_write_row());
-            }
-            Err(error) => {
-                let _ = tx.rollback().await;
-                return Err(error);
-            }
-        };
-        let hydrated = match hydrate_relation(row, &id, installed) {
-            Ok(value) => value,
-            Err(error) => {
-                let _ = tx.rollback().await;
-                return Err(error);
-            }
-        };
-        let value = match M::materialize(&hydrated, &HydrationCapability::new()) {
-            Ok(value) => value,
-            Err(error) => {
-                let mapped = crate::entity_codec::map_validation_error(
-                    error,
-                    ModelValidationPhase::Hydration,
-                );
-                let _ = tx.rollback().await;
-                return Err(mapped);
-            }
-        };
-        tx.commit().await.map_err(Error::from_orm)?;
-        Ok(value)
-    }
     /// Deletes only the exact relation at canonical `iid`; subtype instances are not
     /// targeted.
     pub async fn delete(&self, iid: &str) -> Result<()> {
@@ -418,7 +359,7 @@ where
                 None,
             )
             .await?;
-        self.delete_write(iid).await?;
+        self.projected_delete(iid).await?;
         self.hooks
             .run_post(
                 M::TYPE_ID_JSON,
@@ -430,31 +371,6 @@ where
             )
             .await;
         Ok(())
-    }
-
-    async fn delete_write(&self, iid: &str) -> Result<()> {
-        let installed = self.db.installed_schema().ok_or_else(schema_not_bound)?;
-        let (_id, descriptor) = resolve_relation_authority(
-            M::TYPE_ID_JSON,
-            installed,
-            ModelValidationPhase::Input,
-            true,
-        )?;
-        let tx = self
-            .db
-            .inner_orm()
-            .transaction_context(TxType::Write)
-            .await
-            .map_err(Error::from_orm)?;
-        let manager = DynamicRelationManager::with_canonical_transaction(
-            tx.clone(),
-            Arc::new(descriptor.clone()),
-        );
-        if let Err(error) = manager.delete_by_iid_exact(iid).await {
-            let _ = tx.rollback().await;
-            return Err(Error::from_orm(error));
-        }
-        tx.commit().await.map_err(Error::from_orm)
     }
 
     /// Atomically replaces each exact relation identified by its canonical IID and returns
@@ -708,55 +624,6 @@ where
         tx.commit_classified()
             .await
             .map_err(|error| Error::from_orm(error.into_orm_error()))
-    }
-
-    async fn write(&self, input: M::Create, put: bool) -> Result<M> {
-        let installed = self.db.installed_schema().ok_or_else(schema_not_bound)?;
-        let (id, descriptor) = resolve_relation_authority(
-            M::TYPE_ID_JSON,
-            installed,
-            ModelValidationPhase::Input,
-            true,
-        )?;
-        let prepared = lower_relation_create(input, &id, installed)?;
-        let tx = self
-            .db
-            .inner_orm()
-            .transaction_context(TxType::Write)
-            .await
-            .map_err(Error::from_orm)?;
-        let manager = DynamicRelationManager::with_canonical_transaction(
-            tx.clone(),
-            Arc::new(descriptor.clone()),
-        );
-        let iid = if put {
-            manager
-                .put_exact(&prepared.attributes, &prepared.role_players)
-                .await
-        } else {
-            manager
-                .insert(&prepared.attributes, &prepared.role_players)
-                .await
-        };
-        let iid = match iid {
-            Ok(iid) => iid,
-            Err(error) => {
-                let _ = tx.rollback().await;
-                return Err(Error::from_orm(error));
-            }
-        };
-        let value = match self
-            .hydrate_in_transaction(&manager, &iid, &id, installed)
-            .await
-        {
-            Ok(value) => value,
-            Err(error) => {
-                let _ = tx.rollback().await;
-                return Err(error);
-            }
-        };
-        tx.commit().await.map_err(Error::from_orm)?;
-        Ok(value)
     }
 
     async fn write_many(&self, inputs: Vec<M::Create>, put: bool) -> Result<Vec<M>> {

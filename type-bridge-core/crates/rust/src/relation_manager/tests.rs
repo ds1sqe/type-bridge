@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::__codegen::{
@@ -6,6 +7,7 @@ use crate::__codegen::{
     HydrationCapability, IntoEncodedCreate, IntoEncodedReference, MaterializeModel, Model,
     ReferenceOrigin, RelationModel, ThingModel, ValidationError, ValidationPath,
 };
+use crate::hooks::{HookContext, HookError, HookFuture, LifecycleHook, PreHookResult};
 use crate::schema::{Schema, sealed};
 use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::projection::{BindingTarget, ProjectionConfig};
@@ -20,6 +22,34 @@ use type_bridge_schema_codegen::RustEmitter;
 struct TestSchema;
 impl sealed::Sealed for TestSchema {}
 impl Schema for TestSchema {}
+
+#[derive(Default)]
+struct ContinueHook {
+    before: AtomicUsize,
+    after: AtomicUsize,
+}
+
+impl LifecycleHook for ContinueHook {
+    fn name(&self) -> &str {
+        "continue"
+    }
+
+    fn before_operation<'a>(
+        &'a self,
+        _context: &'a mut HookContext<'_>,
+    ) -> HookFuture<'a, Result<PreHookResult, HookError>> {
+        self.before.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async { Ok(PreHookResult::Continue) })
+    }
+
+    fn after_operation<'a>(
+        &'a self,
+        _context: &'a HookContext<'_>,
+    ) -> HookFuture<'a, Result<(), HookError>> {
+        self.after.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async { Ok(()) })
+    }
+}
 
 const ASSIGNMENT_JSON: &str = r#"{"kind":"relation","label":"assignment"}"#;
 const POSITION_OWNS: &str =
@@ -662,12 +692,32 @@ async fn hydrated_generated_reference_preserves_database_origin_before_relation_
         "foreign-origin rejection must occur before opening a transaction"
     );
 
-    let stored = source
-        .relations::<Assignment>()
+    let (hooked_foreign, hooked_foreign_state) = test_db(Vec::new());
+    let hook = Arc::new(ContinueHook::default());
+    let mut hooked_manager = hooked_foreign.relations::<Assignment>();
+    hooked_manager.add_hook(hook.clone());
+    let error = hooked_manager
+        .insert(create_from_person("captain", &person))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), Some("reference_database_mismatch"));
+    assert_eq!(hook.before.load(Ordering::SeqCst), 1);
+    assert_eq!(hook.after.load(Ordering::SeqCst), 0);
+    assert!(
+        hooked_foreign_state.lock().unwrap().events.is_empty(),
+        "hooked foreign-origin rejection must occur after pre-hooks and before provider I/O"
+    );
+
+    let source_hook = Arc::new(ContinueHook::default());
+    let mut source_manager = source.relations::<Assignment>();
+    source_manager.add_hook(source_hook.clone());
+    let stored = source_manager
         .insert(create_from_person("captain", &person))
         .await
         .unwrap();
     assert_assignment(&stored, "0x1", "captain", "0x9");
+    assert_eq!(source_hook.before.load(Ordering::SeqCst), 1);
+    assert_eq!(source_hook.after.load(Ordering::SeqCst), 1);
     let guard = source_state.lock().unwrap();
     assert_eq!(
         guard
