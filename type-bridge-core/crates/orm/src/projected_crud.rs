@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use type_bridge_contract::id::{RoleId, TypeId, TypeKind, is_canonical_thing_iid};
 use type_bridge_contract::projection::{
-    ModelProjection, ProjectedModelUse, ReadRoleProjection, RoleTokenProjection,
+    ModelProjection, ProjectedModelForm, ProjectedModelUse, ReadRoleProjection, RoleTokenProjection,
 };
 use type_bridge_contract::schema::{AnnotationKindId, OwnsFactId};
 use type_bridge_contract::sdk_diagnostic::{
@@ -2158,6 +2158,8 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         };
         self.require_exact_model(player_type, player_type.kind())
             .map_err(provider_integrity)?;
+        let form = ProjectedRolePlayer::form_for_read_role(self.installed, read_role, player_type)
+            .map_err(provider_integrity)?;
         let attributes = self
             .installed
             .role_player_attributes(player_type, &player.attributes)
@@ -2173,6 +2175,55 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
                 )
             })?;
         let player_model = self.model_integrity(player_type)?;
+        let fields = match form {
+            ProjectedModelForm::Complete => self.hydrate_fields(player_type, &attributes, mode)?,
+            ProjectedModelForm::Reference => Vec::new(),
+        };
+        let keys = match form {
+            ProjectedModelForm::Complete => fields
+                .iter()
+                .flat_map(|(field, values)| {
+                    values
+                        .iter()
+                        .cloned()
+                        .map(move |value| (field.clone(), value))
+                })
+                .filter(|(field, _)| player_model.reference_read().key_fields().contains(field))
+                .collect(),
+            ProjectedModelForm::Reference => {
+                self.hydrate_reference_keys(player_type, player_model, &attributes)?
+            }
+        };
+        let reference = ProjectedReference::try_new_for_database(
+            self.installed,
+            (*player_type).clone(),
+            Some(iid.to_owned()),
+            keys,
+            database_identity.clone(),
+        )
+        .map_err(provider_integrity)?;
+        match form {
+            ProjectedModelForm::Complete => ProjectedRolePlayer::try_new_complete_for_hydration(
+                self.installed,
+                read_role,
+                reference,
+                fields,
+            ),
+            ProjectedModelForm::Reference => ProjectedRolePlayer::try_new_reference_for_hydration(
+                self.installed,
+                read_role,
+                reference,
+            ),
+        }
+        .map_err(provider_integrity)
+    }
+
+    fn hydrate_reference_keys(
+        &self,
+        player_type: &TypeId,
+        player_model: &ModelProjection,
+        attributes: &DynamicAttributeMap,
+    ) -> Result<Vec<(OwnsFactId, ProjectedAttributeValue)>, SdkExecutionDiagnostic> {
         let mut keys = Vec::new();
         for field_id in player_model.reference_read().key_fields() {
             let values = attributes
@@ -2211,15 +2262,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
                 }
             }
         }
-        let reference = ProjectedReference::try_new_for_database(
-            self.installed,
-            (*player_type).clone(),
-            Some(iid.to_owned()),
-            keys,
-            database_identity.clone(),
-        )
-        .map_err(provider_integrity)?;
-        ProjectedRolePlayer::try_new(self.installed, reference).map_err(provider_integrity)
+        Ok(keys)
     }
 }
 
@@ -2383,6 +2426,10 @@ fn compatibility_stage(
             | "hydrated_player_iid_invalid"
             | "hydrated_player_type_missing"
             | "hydrated_role_player_not_accepted"
+            | "hydrated_role_player_form_ambiguous"
+            | "hydrated_role_player_form_mismatch"
+            | "complete_relation_role_player_unsupported"
+            | "hydrated_reference_key_mismatch"
             | "projected_player_type_ambiguous"
             | "duplicate_reference_key"
             | "provider_identity_answer_invalid"

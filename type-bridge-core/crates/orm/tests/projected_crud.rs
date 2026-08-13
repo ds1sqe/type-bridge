@@ -3,7 +3,9 @@ use std::sync::{Arc, Mutex};
 
 use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind};
-use type_bridge_contract::projection::{BindingTarget, ProjectionConfig, ProjectionHandler};
+use type_bridge_contract::projection::{
+    BindingTarget, ProjectedModelForm, ProjectionConfig, ProjectionHandler,
+};
 use type_bridge_contract::schema::{DocumentId, OwnsFactId};
 use type_bridge_contract::sdk_diagnostic::SdkDiagnosticCategory;
 use type_bridge_contract::value::{CanonicalString, CanonicalValue};
@@ -33,7 +35,10 @@ relations:
   membership:
     relates:
       member: { card: 1 }
-  event: {}
+  event:
+    owns:
+      identifier: { key: true }
+      email: { card: 1 }
 plays:
   actor:
     membership: [member]
@@ -462,14 +467,21 @@ fn membership_with_relation_player_document(iid: &str) -> serde_json::Value {
         "_type": "membership",
         "_role_0_iid": "0x11",
         "_role_0_type": "event",
-        "_role_0_attributes": {}
+        "_role_0_attributes": {
+            "identifier": [{"value": "event-key"}],
+            "email": [{"value": "event@example.test"}]
+        }
     })
 }
 
 fn event_document(iid: &str) -> serde_json::Value {
     serde_json::json!({
         "_iid": iid,
-        "_type": "event"
+        "_type": "event",
+        "attributes": {
+            "identifier": [{"value": "event-key"}],
+            "email": [{"value": "event@example.test"}]
+        }
     })
 }
 
@@ -611,6 +623,19 @@ async fn ordered_role_order_survives_write_lowering_and_hydration() {
             .map(|player| player.iid())
             .collect::<Vec<_>>(),
         ["0x10", "0x11"],
+    );
+    assert!(
+        thing.roles()[&participant]
+            .iter()
+            .all(|player| player.exact_form() == Some(ProjectedModelForm::Complete))
+    );
+    assert!(
+        thing.roles()[&participant].iter().all(|player| player
+            .fields()
+            .values()
+            .map(Vec::len)
+            .sum::<usize>()
+            == 1)
     );
     let state = state.lock().unwrap();
     let write = &state.queries[0];
@@ -758,6 +783,15 @@ async fn abstract_nominal_role_reference_resolves_one_exact_concrete_player() {
         .unwrap();
 
     assert_eq!(relation.iid(), "0x20");
+    let member = RoleId::new("membership", "member").unwrap();
+    let player = &relation.roles()[&member][0];
+    assert_eq!(player.exact_form(), Some(ProjectedModelForm::Complete));
+    assert_eq!(player.keys().len(), 1);
+    assert_eq!(player.fields().len(), 3);
+    assert_eq!(
+        player.fields()[&field(&type_id(TypeKind::Entity, "person"), "email")][0].value(),
+        &CanonicalValue::String(CanonicalString::new("ada@example.test").unwrap())
+    );
     let state = state.lock().unwrap();
     assert_eq!(state.queries.len(), 2);
     assert!(state.queries[0].contains("isa! person"));
@@ -786,6 +820,16 @@ async fn relation_role_player_uses_a_strict_relation_identity_lookup() {
         .unwrap();
 
     assert_eq!(relation.iid(), "0x20");
+    let member = RoleId::new("membership", "member").unwrap();
+    let player = &relation.roles()[&member][0];
+    assert_eq!(player.exact_form(), Some(ProjectedModelForm::Reference));
+    assert!(player.fields().is_empty());
+    assert_eq!(player.keys().len(), 1);
+    assert_eq!(
+        player.keys()[&field(&type_id(TypeKind::Relation, "event"), "identifier")].value(),
+        &CanonicalValue::String(CanonicalString::new("event-key").unwrap())
+    );
+    assert!(player.reference().origin_carrier().is_some());
     let state = state.lock().unwrap();
     assert_eq!(state.queries.len(), 3);
     assert!(state.queries[0].contains("$p isa! event"));
@@ -1080,14 +1124,18 @@ async fn owned_relation_put_and_update_rehydrate_before_commit() {
 
     let inserted = executor.put_relation(&put_database, &create).await.unwrap();
     assert_eq!(inserted.iid(), "0x20");
+    let member = RoleId::new("membership", "member").unwrap();
+    assert_eq!(inserted.roles().get(&member).unwrap().len(), 1);
+    let player = &inserted.roles()[&member][0];
+    assert_eq!(player.exact_form(), Some(ProjectedModelForm::Complete));
+    assert_eq!(player.keys().len(), 1);
+    assert_eq!(player.fields().len(), 3);
     assert_eq!(
-        inserted
-            .roles()
-            .get(&RoleId::new("membership", "member").unwrap())
-            .unwrap()
-            .len(),
-        1
+        player.fields()[&field(&type_id(TypeKind::Entity, "person"), "email")][0].value(),
+        &CanonicalValue::String(CanonicalString::new("ada@example.test").unwrap())
     );
+    assert!(player.fields()[&field(&type_id(TypeKind::Entity, "person"), "nickname")].is_empty());
+    assert!(player.reference().origin_carrier().is_some());
     {
         let state = put_state.lock().unwrap();
         assert_eq!(state.opens, [TxType::Write]);

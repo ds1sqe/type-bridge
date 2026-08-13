@@ -8,8 +8,8 @@ use type_bridge_contract::codec::to_canonical_json;
 use type_bridge_contract::id::{RoleId, TypeId, TypeKind, is_canonical_thing_iid};
 use type_bridge_contract::limits::{MAX_CANONICAL_BYTES, MAX_CANONICAL_COLLECTION_LEN};
 use type_bridge_contract::projection::{
-    BindingProjectionFingerprint, BindingTarget, ModelProjection, ProjectedModelUse,
-    ProjectedMultiplicity,
+    BindingProjectionFingerprint, BindingTarget, ModelProjection, ProjectedModelForm,
+    ProjectedModelUse, ProjectedMultiplicity, ReadRoleProjection,
 };
 use type_bridge_contract::schema::{AnnotationKindId, OwnsFactId};
 use type_bridge_contract::schema_fingerprint::SemanticSchemaFingerprint;
@@ -590,10 +590,23 @@ impl ProjectedReference {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProjectedRolePlayer {
     reference: ProjectedReference,
+    evidence: ProjectedRolePlayerEvidence,
+    size: ProjectedSize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum ProjectedRolePlayerEvidence {
+    Legacy,
+    Reference,
+    Complete(BTreeMap<OwnsFactId, Vec<ProjectedAttributeValue>>),
 }
 
 impl ProjectedRolePlayer {
-    /// Validate a reference for use as hydrated nonrecursive role-player evidence.
+    /// Validate legacy hydrated nonrecursive role-player evidence.
+    ///
+    /// This compatibility constructor does not assert whether a historical
+    /// binding hydrated a complete or reference facade. New common producers
+    /// use the exact form-specific constructors below.
     pub fn try_new(
         installed: &InstalledRuntimeProjection,
         reference: ProjectedReference,
@@ -607,7 +620,138 @@ impl ProjectedRolePlayer {
                 type_path(reference.type_id()),
             ));
         }
-        Ok(Self { reference })
+        let size = reference.size;
+        Ok(Self {
+            reference,
+            evidence: ProjectedRolePlayerEvidence::Legacy,
+            size,
+        })
+    }
+
+    /// Validate one exact reference-form player for an exact read role.
+    #[doc(hidden)]
+    pub fn try_new_reference_for_hydration(
+        installed: &InstalledRuntimeProjection,
+        read_role: &ReadRoleProjection,
+        reference: ProjectedReference,
+    ) -> Result<Self, SdkExecutionDiagnostic> {
+        reference.validate_for(installed)?;
+        let model = require_concrete_thing_model(
+            installed,
+            reference.type_id(),
+            ValidationOrigin::Hydration,
+        )?;
+        if reference.iid().is_none() {
+            return Err(integrity(
+                "hydrated_player_iid_missing",
+                "A hydrated role player requires a canonical provider IID",
+                type_path(reference.type_id()),
+            ));
+        }
+        let selected = select_read_role_player_form(installed, read_role, reference.type_id())?;
+        if selected != ProjectedModelForm::Reference {
+            return Err(integrity(
+                "hydrated_role_player_form_mismatch",
+                "The hydrated role player form does not match its exact read-role projection",
+                read_role_player_path(read_role, reference.type_id()),
+            ));
+        }
+        validate_exact_hydrated_reference_keys(model, &reference)?;
+        let size = reference.size;
+        Ok(Self {
+            reference,
+            evidence: ProjectedRolePlayerEvidence::Reference,
+            size,
+        })
+    }
+
+    /// Validate one complete nonrecursive entity role player for an exact read role.
+    ///
+    /// The concrete player type selects its nearest projected role-player form.
+    /// Complete relation players are rejected because relation materialization
+    /// would recursively require their roles. Reference-form players continue
+    /// to use [`Self::try_new_reference_for_hydration`].
+    #[doc(hidden)]
+    pub fn try_new_complete_for_hydration(
+        installed: &InstalledRuntimeProjection,
+        read_role: &ReadRoleProjection,
+        reference: ProjectedReference,
+        fields: Vec<(OwnsFactId, Vec<ProjectedAttributeValue>)>,
+    ) -> Result<Self, SdkExecutionDiagnostic> {
+        reference.validate_for(installed)?;
+        let model = require_concrete_thing_model(
+            installed,
+            reference.type_id(),
+            ValidationOrigin::Hydration,
+        )?;
+        if reference.iid().is_none() {
+            return Err(integrity(
+                "hydrated_player_iid_missing",
+                "A hydrated role player requires a canonical provider IID",
+                type_path(reference.type_id()),
+            ));
+        }
+        if reference.type_id().kind() != TypeKind::Entity {
+            return Err(integrity(
+                "complete_relation_role_player_unsupported",
+                "A complete nonrecursive role player must be an entity",
+                read_role_player_path(read_role, reference.type_id()),
+            ));
+        }
+        let selected = select_read_role_player_form(installed, read_role, reference.type_id())?;
+        if selected != ProjectedModelForm::Complete {
+            return Err(integrity(
+                "hydrated_role_player_form_mismatch",
+                "The hydrated role player form does not match its exact read-role projection",
+                read_role_player_path(read_role, reference.type_id()),
+            ));
+        }
+
+        let mut budget = ProjectedBudget::default();
+        budget.add(
+            ProjectedSize {
+                members: 2,
+                bytes: type_id_bytes(reference.type_id()) + reference.iid().map_or(0, str::len),
+            },
+            read_role_player_path(read_role, reference.type_id()),
+        )?;
+        let supplied = collect_unique_fields(
+            reference.type_id(),
+            fields,
+            &mut budget,
+            ValidationOrigin::Hydration,
+        )?;
+        let fields =
+            validate_read_fields(installed, reference.type_id(), model, supplied, &mut budget)?;
+        validate_exact_hydrated_reference_keys(model, &reference)?;
+        for field_id in model.reference_read().key_fields() {
+            let Some(expected) = reference.keys().get(field_id) else {
+                return Err(integrity(
+                    "hydrated_reference_key_mismatch",
+                    "The complete role player does not retain its exact reference key",
+                    field_path(reference.type_id(), field_id),
+                ));
+            };
+            let Some([actual]) = fields.get(field_id).map(Vec::as_slice) else {
+                return Err(integrity(
+                    "hydrated_reference_key_mismatch",
+                    "The complete role player does not retain its exact reference key",
+                    field_path(reference.type_id(), field_id),
+                ));
+            };
+            if actual != expected {
+                return Err(integrity(
+                    "hydrated_reference_key_mismatch",
+                    "The complete role player does not retain its exact reference key",
+                    field_path(reference.type_id(), field_id),
+                ));
+            }
+        }
+        Ok(Self {
+            reference,
+            evidence: ProjectedRolePlayerEvidence::Complete(fields),
+            size: budget.finish(),
+        })
     }
 
     /// Return the exact role-player type.
@@ -630,10 +774,47 @@ impl ProjectedRolePlayer {
         self.reference.keys()
     }
 
+    /// Return the exact common-producer form, if this is not legacy evidence.
+    #[must_use]
+    pub const fn exact_form(&self) -> Option<ProjectedModelForm> {
+        match &self.evidence {
+            ProjectedRolePlayerEvidence::Legacy => None,
+            ProjectedRolePlayerEvidence::Reference => Some(ProjectedModelForm::Reference),
+            ProjectedRolePlayerEvidence::Complete(_) => Some(ProjectedModelForm::Complete),
+        }
+    }
+
+    /// Return complete nonrecursive fields, or an empty map for a reference player.
+    #[must_use]
+    pub const fn fields(&self) -> &BTreeMap<OwnsFactId, Vec<ProjectedAttributeValue>> {
+        match &self.evidence {
+            ProjectedRolePlayerEvidence::Complete(fields) => fields,
+            ProjectedRolePlayerEvidence::Legacy | ProjectedRolePlayerEvidence::Reference => {
+                const EMPTY: &BTreeMap<OwnsFactId, Vec<ProjectedAttributeValue>> = &BTreeMap::new();
+                EMPTY
+            }
+        }
+    }
+
     /// Return this role player's nonrecursive reference value.
     #[must_use]
     pub const fn reference(&self) -> &ProjectedReference {
         &self.reference
+    }
+
+    /// Return the cached binding-neutral resource measure without allocation.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn resource_measure(&self) -> ProjectedResourceMeasure {
+        ProjectedResourceMeasure(self.size)
+    }
+
+    pub(crate) fn form_for_read_role(
+        installed: &InstalledRuntimeProjection,
+        read_role: &ReadRoleProjection,
+        concrete_type: &TypeId,
+    ) -> Result<ProjectedModelForm, SdkExecutionDiagnostic> {
+        select_read_role_player_form(installed, read_role, concrete_type)
     }
 
     /// Return the semantic-schema brand carried by this role player.
@@ -661,6 +842,29 @@ impl ProjectedRolePlayer {
     ) -> Result<(), SdkExecutionDiagnostic> {
         self.reference.validate_for(installed)
     }
+}
+
+fn validate_exact_hydrated_reference_keys(
+    model: &ModelProjection,
+    reference: &ProjectedReference,
+) -> Result<(), SdkExecutionDiagnostic> {
+    for field_id in model.reference_read().key_fields() {
+        if !reference.keys().contains_key(field_id) {
+            return Err(integrity(
+                "hydrated_reference_key_mismatch",
+                "The exact hydrated role player is missing a projected reference key",
+                field_path(reference.type_id(), field_id),
+            ));
+        }
+    }
+    if reference.keys().len() != model.reference_read().key_fields().len() {
+        return Err(integrity(
+            "hydrated_reference_key_mismatch",
+            "The exact hydrated role player carries a different projected reference key set",
+            type_path(reference.type_id()),
+        ));
+    }
+    Ok(())
 }
 
 impl ProjectedCreateBudget {
@@ -1542,7 +1746,7 @@ fn validate_read_roles(
         let role_value_path = role_path(type_id, role_id);
         budget.add(
             combined_size(
-                players.iter().map(|player| player.reference.size),
+                players.iter().map(|player| player.size),
                 role_value_path.clone(),
             )?,
             role_value_path,
@@ -1566,6 +1770,16 @@ fn validate_read_roles(
                     "The hydrated thing type is outside the projected role-player domain",
                     path,
                 ));
+            }
+            if let Some(actual) = player.exact_form() {
+                let selected = select_read_role_player_form(installed, role, player.type_id())?;
+                if actual != selected {
+                    return Err(integrity(
+                        "hydrated_role_player_form_mismatch",
+                        "The hydrated role player form does not match its exact read-role projection",
+                        path,
+                    ));
+                }
             }
         }
         if token
@@ -1733,27 +1947,83 @@ fn role_accepts_concrete(
         })
 }
 
-fn is_same_or_subtype(
+fn select_read_role_player_form(
+    installed: &InstalledRuntimeProjection,
+    read_role: &ReadRoleProjection,
+    concrete_type: &TypeId,
+) -> Result<ProjectedModelForm, SdkExecutionDiagnostic> {
+    require_concrete_thing_model(installed, concrete_type, ValidationOrigin::Hydration)?;
+    let mut nearest_distance = None;
+    let mut nearest_forms = BTreeSet::new();
+    for allowed in read_role.players() {
+        let Some(distance) = inheritance_distance(installed, concrete_type, allowed.id()) else {
+            continue;
+        };
+        match nearest_distance {
+            None => {
+                nearest_distance = Some(distance);
+                nearest_forms.insert(allowed.form());
+            }
+            Some(nearest) if distance < nearest => {
+                nearest_distance = Some(distance);
+                nearest_forms.clear();
+                nearest_forms.insert(allowed.form());
+            }
+            Some(nearest) if distance == nearest => {
+                nearest_forms.insert(allowed.form());
+            }
+            Some(_) => {}
+        }
+    }
+    let mut forms = nearest_forms.into_iter();
+    let Some(form) = forms.next() else {
+        return Err(integrity(
+            "hydrated_role_player_not_accepted",
+            "The hydrated thing type is outside the projected read-role domain",
+            read_role_player_path(read_role, concrete_type),
+        ));
+    };
+    if forms.next().is_some() {
+        return Err(integrity(
+            "hydrated_role_player_form_ambiguous",
+            "The concrete hydrated role player selects more than one exact projected form",
+            read_role_player_path(read_role, concrete_type),
+        ));
+    }
+    Ok(form)
+}
+
+fn inheritance_distance(
     installed: &InstalledRuntimeProjection,
     candidate: &TypeId,
     ancestor: &TypeId,
-) -> bool {
+) -> Option<usize> {
     let mut current = Some(candidate);
     let mut visited = BTreeSet::new();
+    let mut distance = 0_usize;
     while let Some(type_id) = current {
         if type_id == ancestor {
-            return true;
+            return Some(distance);
         }
         if !visited.insert(type_id) {
-            return false;
+            return None;
         }
         current = installed
             .projection()
             .models()
             .get(type_id)
             .and_then(|model| model.declaration().parent());
+        distance = distance.checked_add(1)?;
     }
-    false
+    None
+}
+
+fn is_same_or_subtype(
+    installed: &InstalledRuntimeProjection,
+    candidate: &TypeId,
+    ancestor: &TypeId,
+) -> bool {
+    inheritance_distance(installed, candidate, ancestor).is_some()
 }
 
 fn enforce_cardinality(
@@ -2280,6 +2550,16 @@ fn indexed_player_path(
     ]
 }
 
+fn read_role_player_path(
+    read_role: &ReadRoleProjection,
+    player_type: &TypeId,
+) -> Vec<SdkDiagnosticPathSegment> {
+    vec![
+        SdkDiagnosticPathSegment::Role(read_role.role().clone()),
+        SdkDiagnosticPathSegment::Type(player_type.clone()),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2326,6 +2606,32 @@ plays:
         )
         .unwrap();
         InstalledRuntimeProjection::try_new(runtime).unwrap()
+    }
+
+    fn origin_complete_player(
+        installed: &InstalledRuntimeProjection,
+        reference: ProjectedReference,
+    ) -> ProjectedRolePlayer {
+        let person = TypeId::new(TypeKind::Entity, "person").unwrap();
+        let friendship = TypeId::new(TypeKind::Relation, "friendship").unwrap();
+        let friend = RoleId::new("friendship", "friend").unwrap();
+        let identifier = OwnsFactId::new(person, AttributeId::new("identifier").unwrap()).unwrap();
+        let identifier_value = ProjectedAttributeValue::try_new(
+            installed,
+            TypeId::new(TypeKind::Attribute, "identifier").unwrap(),
+            CanonicalValue::String(CanonicalString::new("ada").unwrap()),
+        )
+        .unwrap();
+        let read_role = &installed.projection().models()[&friendship]
+            .complete_read()
+            .roles()[&friend];
+        ProjectedRolePlayer::try_new_complete_for_hydration(
+            installed,
+            read_role,
+            reference,
+            vec![(identifier, vec![identifier_value])],
+        )
+        .unwrap()
     }
 
     #[test]
@@ -2592,12 +2898,11 @@ plays:
         let first = DatabaseExecutionIdentity::isolated("first");
         let second = DatabaseExecutionIdentity::isolated("second");
 
-        let unbound = ProjectedRolePlayer::try_new(
+        let unbound = origin_complete_player(
             &installed,
             ProjectedReference::try_new(&installed, person.clone(), Some("0x1".into()), vec![])
                 .unwrap(),
-        )
-        .unwrap();
+        );
         let missing = ProjectedThing::try_new_for_database(
             &installed,
             friendship.clone(),
@@ -2613,7 +2918,7 @@ plays:
         );
 
         let bound_player = |identity: DatabaseExecutionIdentity| {
-            ProjectedRolePlayer::try_new(
+            origin_complete_player(
                 &installed,
                 ProjectedReference::try_new_for_database(
                     &installed,
@@ -2624,7 +2929,6 @@ plays:
                 )
                 .unwrap(),
             )
-            .unwrap()
         };
         ProjectedThing::try_new_for_database(
             &installed,
@@ -2733,7 +3037,7 @@ plays:
             SdkDiagnosticCategory::InvalidInput
         );
         assert_eq!(duplicate_key.code().as_str(), "duplicate_reference_key");
-        let bound_player = ProjectedRolePlayer::try_new(&installed, rebuilt_reference).unwrap();
+        let bound_player = origin_complete_player(&installed, rebuilt_reference);
 
         let source = ProjectedThing::try_new_for_database(
             &installed,
@@ -2765,7 +3069,7 @@ plays:
             Some(&identity)
         );
 
-        let unbound_player = ProjectedRolePlayer::try_new(
+        let unbound_player = origin_complete_player(
             &installed,
             ProjectedReference::try_new_for_hydration_with_origin_carrier(
                 &installed,
@@ -2775,8 +3079,7 @@ plays:
                 None,
             )
             .unwrap(),
-        )
-        .unwrap();
+        );
         let unbound = ProjectedThing::try_new_with_origin_carrier(
             &installed,
             friendship,

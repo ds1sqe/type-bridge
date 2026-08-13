@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use type_bridge_contract::id::{RoleId as ProjectedRoleId, TypeId, TypeKind};
+use type_bridge_contract::projection::{ProjectedModelForm, ReadRoleProjection};
 use type_bridge_contract::schema::OwnsFactId;
 use type_bridge_contract::sdk_diagnostic::{
     SdkDiagnosticCode, SdkDiagnosticDetailValue, SdkDiagnosticName, SdkDiagnosticPathSegment,
@@ -840,19 +841,21 @@ impl<'a> Materializer<'a> {
             .values()
             .try_fold(1_usize, |count, players| count.checked_add(players.len()))
             .unwrap_or(usize::MAX);
-        let projected_attributes = projected
-            .fields()
-            .values()
-            .map(Vec::len)
-            .chain(
-                projected
-                    .roles()
-                    .values()
-                    .flatten()
-                    .map(|player| player.keys().len()),
-            )
-            .try_fold(0_usize, usize::checked_add)
-            .unwrap_or(usize::MAX);
+        let projected_attributes =
+            projected
+                .fields()
+                .values()
+                .map(Vec::len)
+                .chain(projected.roles().values().flatten().map(
+                    |player| match player.exact_form() {
+                        Some(ProjectedModelForm::Complete) => {
+                            player.fields().values().map(Vec::len).sum()
+                        }
+                        Some(ProjectedModelForm::Reference) | None => player.keys().len(),
+                    },
+                ))
+                .try_fold(0_usize, usize::checked_add)
+                .unwrap_or(usize::MAX);
         self.add_thing(&projected, projected_things, projected_attributes)?;
         Ok(Arc::new(projected))
     }
@@ -979,7 +982,7 @@ impl<'a> Materializer<'a> {
         output
             .try_reserve(model.complete_read().roles().len())
             .map_err(|_| materialization_allocation())?;
-        for role_id in model.complete_read().roles().keys() {
+        for (role_id, read_role) in model.complete_read().roles() {
             self.checkpoint()?;
             let hydrated = evidence.remove(role_id).unwrap_or_default();
             let mut players = Vec::new();
@@ -988,7 +991,7 @@ impl<'a> Materializer<'a> {
                 .map_err(|_| materialization_allocation())?;
             for player in hydrated {
                 self.checkpoint()?;
-                players.push(self.role_player(player)?);
+                players.push(self.role_player(read_role, player)?);
             }
             output.push((role_id.clone(), players));
         }
@@ -1000,23 +1003,23 @@ impl<'a> Materializer<'a> {
 
     fn role_player(
         &mut self,
+        read_role: &ReadRoleProjection,
         player: &HydratedRolePlayer,
     ) -> Result<ProjectedRolePlayer, SdkExecutionDiagnostic> {
         self.checkpoint()?;
         let type_id = projected_type_id(self.registry, player.concrete_descriptor())?;
-        let fields = self.attributes(&type_id, player.attributes())?;
+        let form = ProjectedRolePlayer::form_for_read_role(self.installed, read_role, &type_id)?;
+        let fields = match form {
+            ProjectedModelForm::Complete => self.attributes(&type_id, player.attributes())?,
+            ProjectedModelForm::Reference => Vec::new(),
+        };
+        let keys = match form {
+            ProjectedModelForm::Complete => self.reference_keys(&type_id, &fields),
+            ProjectedModelForm::Reference => {
+                self.reference_keys_from_hydrated(&type_id, player.attributes())?
+            }
+        };
         self.checkpoint()?;
-        let keys = fields
-            .into_iter()
-            .flat_map(|(field, values)| values.into_iter().map(move |value| (field.clone(), value)))
-            .filter(|(field, _)| {
-                self.installed
-                    .projection()
-                    .models()
-                    .get(&type_id)
-                    .is_some_and(|model| model.reference_read().key_fields().contains(field))
-            })
-            .collect::<Vec<_>>();
         let reference = match &self.origin.database_identity {
             Some(identity) => ProjectedReference::try_new_for_database(
                 self.installed,
@@ -1032,7 +1035,83 @@ impl<'a> Materializer<'a> {
                 keys,
             ),
         }?;
-        ProjectedRolePlayer::try_new(self.installed, reference)
+        match form {
+            ProjectedModelForm::Complete => ProjectedRolePlayer::try_new_complete_for_hydration(
+                self.installed,
+                read_role,
+                reference,
+                fields,
+            ),
+            ProjectedModelForm::Reference => ProjectedRolePlayer::try_new_reference_for_hydration(
+                self.installed,
+                read_role,
+                reference,
+            ),
+        }
+    }
+
+    fn reference_keys(
+        &self,
+        type_id: &TypeId,
+        fields: &[(OwnsFactId, Vec<ProjectedAttributeValue>)],
+    ) -> Vec<(OwnsFactId, ProjectedAttributeValue)> {
+        fields
+            .iter()
+            .flat_map(|(field, values)| {
+                values
+                    .iter()
+                    .cloned()
+                    .map(move |value| (field.clone(), value))
+            })
+            .filter(|(field, _)| {
+                self.installed
+                    .projection()
+                    .models()
+                    .get(type_id)
+                    .is_some_and(|model| model.reference_read().key_fields().contains(field))
+            })
+            .collect()
+    }
+
+    fn reference_keys_from_hydrated(
+        &mut self,
+        type_id: &TypeId,
+        attributes: &[HydratedAttribute],
+    ) -> Result<Vec<(OwnsFactId, ProjectedAttributeValue)>, SdkExecutionDiagnostic> {
+        let model = self
+            .installed
+            .projection()
+            .models()
+            .get(type_id)
+            .ok_or_else(result_integrity)?;
+        let mut keys = Vec::new();
+        for field_id in model.reference_read().key_fields() {
+            self.checkpoint()?;
+            for attribute in attributes {
+                let provider_label = self
+                    .registry
+                    .provider_attribute_name(attribute.field())
+                    .ok_or_else(result_integrity)?;
+                if provider_label.as_str() != field_id.attribute().label().as_str() {
+                    continue;
+                }
+                let attribute_type =
+                    TypeId::new(TypeKind::Attribute, field_id.attribute().label().as_str())
+                        .map_err(|_| result_integrity())?;
+                for value in attribute.values() {
+                    self.checkpoint()?;
+                    keys.push((
+                        field_id.clone(),
+                        ProjectedAttributeValue::try_new(
+                            self.installed,
+                            attribute_type.clone(),
+                            canonical_attribute_value(value).map_err(|_| result_integrity())?,
+                        )?,
+                    ));
+                }
+            }
+        }
+        Ok(keys)
     }
 
     fn add_rows(&mut self, count: usize) -> Result<(), SdkExecutionDiagnostic> {
@@ -2214,8 +2293,18 @@ plays:
                 .origin_carrier()
                 .is_some()
         );
+        let direct_player = &direct_thing.roles()[&role][0];
+        assert_eq!(
+            direct_player.exact_form(),
+            Some(ProjectedModelForm::Complete)
+        );
+        assert_eq!(
+            direct_player.fields().values().map(Vec::len).sum::<usize>(),
+            3
+        );
+        assert_eq!(direct_player.keys().len(), 1);
         assert_eq!(direct.resource_measure().things(), 2);
-        assert_eq!(direct.resource_measure().attribute_values(), 1);
+        assert_eq!(direct.resource_measure().attribute_values(), 3);
 
         let remote_request = validate_match_request(&registry, request_for()).unwrap();
         let remote_result =
@@ -2238,6 +2327,18 @@ plays:
                 .origin_carrier()
                 .is_none()
         );
+        assert_eq!(
+            remote_thing.roles()[&role][0].exact_form(),
+            Some(ProjectedModelForm::Complete)
+        );
+        assert_eq!(
+            remote_thing.roles()[&role][0]
+                .fields()
+                .values()
+                .map(Vec::len)
+                .sum::<usize>(),
+            3
+        );
         assert!(
             remote_thing
                 .try_to_reference(&installed)
@@ -2259,7 +2360,7 @@ plays:
             .preflight_relation_create_for_database_with_compatibility(&database, &remote_create)
             .expect("an explicitly remote/unbound player remains target-database resolvable");
         let measure = remote.resource_measure();
-        assert_eq!(measure.attribute_values(), 1);
+        assert_eq!(measure.attribute_values(), 3);
 
         let exact_request = validate_match_request(&registry, request_for()).unwrap();
         let exact_result =
@@ -2299,7 +2400,7 @@ plays:
         )
         .unwrap_err();
         assert_eq!(error.code().as_str(), "projected_query_attribute_limit");
-        assert_eq!(detail_count(&error, "actual"), 1);
+        assert_eq!(detail_count(&error, "actual"), 3);
     }
 
     fn first_thing(result: &ProjectedQueryResult) -> &ProjectedThing {

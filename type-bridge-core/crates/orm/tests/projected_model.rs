@@ -2,7 +2,7 @@ use type_bridge_contract::fingerprint::{Fingerprint, SemanticProfileId};
 use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind};
 use type_bridge_contract::limits::MAX_CANONICAL_STRING_BYTES;
 use type_bridge_contract::projection::{
-    BindingTarget, CSymbolPrefix, ProjectionConfig, ProjectionHandler,
+    BindingTarget, CSymbolPrefix, ProjectedModelForm, ProjectionConfig, ProjectionHandler,
 };
 use type_bridge_contract::schema::{DocumentId, OwnsFactId};
 use type_bridge_contract::sdk_diagnostic::{
@@ -49,6 +49,9 @@ relations:
       member: { card: 1 }
       observer: { card: { min: 0, max: 2 } }
       premium: { card: { min: 0, max: 1 } }
+  event:
+    owns:
+      identifier: { key: true }
 plays:
   actor:
     membership: [member]
@@ -58,6 +61,8 @@ plays:
     membership: [observer]
   premium-account:
     membership: [premium]
+  event:
+    membership: [observer]
 "#;
 
 const ORDERED_SCHEMA: &str = r#"format: typebridge.schema/v2
@@ -234,6 +239,34 @@ fn iid_reference(
     iid: &str,
 ) -> ProjectedReference {
     ProjectedReference::try_new(installed, type_id, Some(iid.to_owned()), vec![]).unwrap()
+}
+
+fn complete_role_player(
+    installed: &InstalledRuntimeProjection,
+    relation: &TypeId,
+    role: &RoleId,
+    player_type: TypeId,
+    iid: &str,
+    fields: Vec<(OwnsFactId, Vec<ProjectedAttributeValue>)>,
+) -> ProjectedRolePlayer {
+    let read_role = &installed.projection().models()[relation]
+        .complete_read()
+        .roles()[role];
+    let model = &installed.projection().models()[&player_type];
+    let keys = fields
+        .iter()
+        .flat_map(|(field, values)| {
+            values
+                .iter()
+                .cloned()
+                .map(move |value| (field.clone(), value))
+        })
+        .filter(|(field, _)| model.reference_read().key_fields().contains(field))
+        .collect();
+    let reference =
+        ProjectedReference::try_new(installed, player_type, Some(iid.to_owned()), keys).unwrap();
+    ProjectedRolePlayer::try_new_complete_for_hydration(installed, read_role, reference, fields)
+        .unwrap()
 }
 
 fn assert_code(
@@ -1035,42 +1068,61 @@ fn ordered_distinct_players_preserve_order_and_reject_projected_identity_duplica
     );
     assert_duplicate_details(&duplicate, 0, 1);
 
-    let hydrated_player = |iid: &str| {
-        ProjectedRolePlayer::try_new(
+    let collaboration = type_id(TypeKind::Relation, "collaboration");
+    let participant = RoleId::new("collaboration", "participant").unwrap();
+    let hydrated_player = |iid: &str, tags: &[&str]| {
+        complete_role_player(
             &installed,
-            ProjectedReference::try_new(&installed, person.clone(), Some(iid.to_owned()), vec![])
-                .unwrap(),
+            &collaboration,
+            &participant,
+            person.clone(),
+            iid,
+            vec![
+                (
+                    field(&person, "identifier"),
+                    vec![string_value(
+                        &installed,
+                        "identifier",
+                        format!("person-{iid}"),
+                    )],
+                ),
+                (
+                    field(&person, "tag"),
+                    tags.iter()
+                        .map(|tag| string_value(&installed, "tag", *tag))
+                        .collect(),
+                ),
+            ],
         )
-        .unwrap()
     };
     let hydrated = ProjectedThing::try_new(
         &installed,
-        type_id(TypeKind::Relation, "collaboration"),
+        collaboration.clone(),
         "0x20".into(),
         vec![],
         vec![(
-            RoleId::new("collaboration", "participant").unwrap(),
-            vec![hydrated_player("0x10"), hydrated_player("0x11")],
+            participant.clone(),
+            vec![hydrated_player("0x10", &[]), hydrated_player("0x11", &[])],
         )],
     )
     .unwrap();
     assert_eq!(
-        hydrated.roles()[&RoleId::new("collaboration", "participant").unwrap()]
+        hydrated.roles()[&participant]
             .iter()
             .map(ProjectedRolePlayer::iid)
             .collect::<Vec<_>>(),
         ["0x10", "0x11"],
     );
 
+    let first = hydrated_player("0x10", &["analyst"]);
+    let second = hydrated_player("0x10", &["mathematician"]);
+    assert_ne!(first, second);
     let duplicate = ProjectedThing::try_new(
         &installed,
-        type_id(TypeKind::Relation, "collaboration"),
+        collaboration.clone(),
         "0x21".into(),
         vec![],
-        vec![(
-            RoleId::new("collaboration", "participant").unwrap(),
-            vec![hydrated_player("0x10"), hydrated_player("0x10")],
-        )],
+        vec![(participant.clone(), vec![first, second])],
     )
     .unwrap_err();
     assert_code(
@@ -1235,11 +1287,16 @@ fn hydrated_things_are_complete_nonrecursive_and_classify_result_failures_as_int
         "hydrated_player_iid_missing",
     );
 
-    let player =
-        ProjectedRolePlayer::try_new(&installed, iid_reference(&installed, person, "0x10"))
-            .unwrap();
     let membership = type_id(TypeKind::Relation, "membership");
     let member = RoleId::new("membership", "member").unwrap();
+    let player = complete_role_player(
+        &installed,
+        &membership,
+        &member,
+        person,
+        "0x10",
+        person_fields(&installed),
+    );
     let relation = ProjectedThing::try_new(
         &installed,
         membership.clone(),
@@ -1295,19 +1352,20 @@ fn hydrated_things_are_complete_nonrecursive_and_classify_result_failures_as_int
     let concrete_account = ProjectedRolePlayer::try_new(&installed, nominal_account).unwrap();
     let exact_hydration = ProjectedThing::try_new(
         &installed,
-        membership,
+        membership.clone(),
         "0x31".into(),
         vec![],
         vec![
             (
                 RoleId::new("membership", "member").unwrap(),
-                vec![
-                    ProjectedRolePlayer::try_new(
-                        &installed,
-                        iid_reference(&installed, type_id(TypeKind::Entity, "person"), "0x10"),
-                    )
-                    .unwrap(),
-                ],
+                vec![complete_role_player(
+                    &installed,
+                    &membership,
+                    &RoleId::new("membership", "member").unwrap(),
+                    type_id(TypeKind::Entity, "person"),
+                    "0x10",
+                    person_fields(&installed),
+                )],
             ),
             (
                 RoleId::new("membership", "premium").unwrap(),
@@ -1321,6 +1379,236 @@ fn hydrated_things_are_complete_nonrecursive_and_classify_result_failures_as_int
         SdkDiagnosticCategory::Integrity,
         "hydrated_role_player_not_accepted",
     );
+}
+
+#[test]
+fn role_player_forms_preserve_complete_entity_fields_and_fail_closed() {
+    let installed = installed(BindingTarget::Python, SCHEMA);
+    let membership = type_id(TypeKind::Relation, "membership");
+    let member = RoleId::new("membership", "member").unwrap();
+    let read_role = &installed.projection().models()[&membership]
+        .complete_read()
+        .roles()[&member];
+    let person = type_id(TypeKind::Entity, "person");
+    let identifier = field(&person, "identifier");
+    let email = field(&person, "email");
+    let fields = person_fields(&installed);
+    assert!(
+        read_role.players().iter().any(|player| {
+            player.id() == &person && player.form() == ProjectedModelForm::Complete
+        })
+    );
+    let reference = ProjectedReference::try_new(
+        &installed,
+        person.clone(),
+        Some("0x10".into()),
+        vec![
+            (
+                identifier.clone(),
+                string_value(&installed, "identifier", "ada"),
+            ),
+            (
+                email.clone(),
+                string_value(&installed, "email", "ada@example.test"),
+            ),
+        ],
+    )
+    .unwrap();
+
+    let complete = ProjectedRolePlayer::try_new_complete_for_hydration(
+        &installed,
+        read_role,
+        reference.clone(),
+        fields.clone(),
+    )
+    .unwrap();
+    assert_eq!(complete.exact_form(), Some(ProjectedModelForm::Complete));
+    assert_eq!(
+        complete.fields()[&email][0].value(),
+        &CanonicalValue::String(CanonicalString::new("ada@example.test").unwrap())
+    );
+    assert!(complete.fields()[&field(&person, "nickname")].is_empty());
+    assert_eq!(complete.keys().len(), 2);
+
+    let missing_complete_key = ProjectedRolePlayer::try_new_complete_for_hydration(
+        &installed,
+        read_role,
+        iid_reference(&installed, person.clone(), "0x11"),
+        person_fields(&installed),
+    )
+    .unwrap_err();
+    assert_code(
+        &missing_complete_key,
+        SdkDiagnosticCategory::Integrity,
+        "hydrated_reference_key_mismatch",
+    );
+
+    let observer = RoleId::new("membership", "observer").unwrap();
+    let observer_read_role = &installed.projection().models()[&membership]
+        .complete_read()
+        .roles()[&observer];
+    let event = type_id(TypeKind::Relation, "event");
+    let event_identifier = field(&event, "identifier");
+    let event_reference = ProjectedReference::try_new(
+        &installed,
+        event.clone(),
+        Some("0x12".into()),
+        vec![(
+            event_identifier,
+            string_value(&installed, "identifier", "launch"),
+        )],
+    )
+    .unwrap();
+    let exact_reference = ProjectedRolePlayer::try_new_reference_for_hydration(
+        &installed,
+        observer_read_role,
+        event_reference,
+    )
+    .unwrap();
+    assert_eq!(
+        exact_reference.exact_form(),
+        Some(ProjectedModelForm::Reference)
+    );
+    assert!(exact_reference.fields().is_empty());
+    let missing_reference_key = ProjectedRolePlayer::try_new_reference_for_hydration(
+        &installed,
+        observer_read_role,
+        iid_reference(&installed, event, "0x13"),
+    )
+    .unwrap_err();
+    assert_code(
+        &missing_reference_key,
+        SdkDiagnosticCategory::Integrity,
+        "hydrated_reference_key_mismatch",
+    );
+
+    let legacy = ProjectedRolePlayer::try_new(&installed, reference.clone()).unwrap();
+    assert_eq!(legacy.exact_form(), None);
+    assert!(legacy.fields().is_empty());
+    ProjectedThing::try_new(
+        &installed,
+        membership.clone(),
+        "0x20".into(),
+        vec![],
+        vec![(member.clone(), vec![legacy])],
+    )
+    .unwrap();
+    let wrong_form = ProjectedRolePlayer::try_new_reference_for_hydration(
+        &installed,
+        read_role,
+        reference.clone(),
+    )
+    .unwrap_err();
+    assert_code(
+        &wrong_form,
+        SdkDiagnosticCategory::Integrity,
+        "hydrated_role_player_form_mismatch",
+    );
+
+    let missing = ProjectedRolePlayer::try_new_complete_for_hydration(
+        &installed,
+        read_role,
+        reference.clone(),
+        vec![(
+            identifier.clone(),
+            vec![string_value(&installed, "identifier", "ada")],
+        )],
+    )
+    .unwrap_err();
+    assert_code(
+        &missing,
+        SdkDiagnosticCategory::Integrity,
+        "missing_required_field",
+    );
+
+    let wrong = ProjectedRolePlayer::try_new_complete_for_hydration(
+        &installed,
+        read_role,
+        reference.clone(),
+        vec![
+            (
+                identifier.clone(),
+                vec![string_value(&installed, "identifier", "ada")],
+            ),
+            (
+                email.clone(),
+                vec![string_value(&installed, "identifier", "ada")],
+            ),
+        ],
+    )
+    .unwrap_err();
+    assert_code(
+        &wrong,
+        SdkDiagnosticCategory::Integrity,
+        "field_value_attribute_mismatch",
+    );
+
+    let extra = ProjectedRolePlayer::try_new_complete_for_hydration(
+        &installed,
+        read_role,
+        reference.clone(),
+        vec![
+            (
+                identifier.clone(),
+                vec![string_value(&installed, "identifier", "ada")],
+            ),
+            (
+                email.clone(),
+                vec![string_value(&installed, "email", "ada@example.test")],
+            ),
+            (
+                field(&person, "outside"),
+                vec![string_value(&installed, "email", "outside@example.test")],
+            ),
+        ],
+    )
+    .unwrap_err();
+    assert_code(
+        &extra,
+        SdkDiagnosticCategory::Integrity,
+        "field_not_readable",
+    );
+
+    let organization = type_id(TypeKind::Entity, "organization");
+    let outside_domain = ProjectedRolePlayer::try_new_complete_for_hydration(
+        &installed,
+        read_role,
+        iid_reference(&installed, organization, "0x30"),
+        vec![],
+    )
+    .unwrap_err();
+    assert_code(
+        &outside_domain,
+        SdkDiagnosticCategory::Integrity,
+        "hydrated_role_player_not_accepted",
+    );
+
+    let complete_relation = ProjectedRolePlayer::try_new_complete_for_hydration(
+        &installed,
+        read_role,
+        iid_reference(&installed, membership, "0x40"),
+        vec![],
+    )
+    .unwrap_err();
+    assert_code(
+        &complete_relation,
+        SdkDiagnosticCategory::Integrity,
+        "complete_relation_role_player_unsupported",
+    );
+
+    let mut changed_fields = fields;
+    changed_fields.push((
+        field(&person, "nickname"),
+        vec![string_value(&installed, "nickname", "nickname-other")],
+    ));
+    let changed = ProjectedRolePlayer::try_new_complete_for_hydration(
+        &installed,
+        read_role,
+        reference,
+        changed_fields,
+    )
+    .unwrap();
+    assert_ne!(complete, changed);
 }
 
 #[test]
