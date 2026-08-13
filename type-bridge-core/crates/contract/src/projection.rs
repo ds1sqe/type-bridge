@@ -12,8 +12,9 @@ use crate::fingerprint::{CanonicalizationVersion, Fingerprint, FingerprintDomain
 use crate::id::{AttributeId, FunctionId, Label, RoleId, StructId, TypeId, TypeKind};
 use crate::limits::MAX_CANONICAL_COLLECTION_LEN;
 use crate::schema::{
-    AnnotationFact, AnnotationFactId, AnnotationSubjectId, OwnsFactId, PlaysFactId,
-    SchemaAnnotationValue, SchemaFactId, SubFactId, ValueFactId,
+    AnnotationFact, AnnotationFactId, AnnotationKindId, AnnotationSubjectId, CollectionMode,
+    OwnsFactId, PlaysFactId, RelatesFactId, SchemaAnnotationValue, SchemaFactId, SubFactId,
+    ValueFactId,
 };
 use crate::schema_fingerprint::SemanticSchemaFingerprint;
 use crate::value::{Cardinality, ValueTypeTag};
@@ -22,16 +23,122 @@ const MAX_PROJECTION_COMPONENT_ID_BYTES: usize = 255;
 const PYTHON_GENERATOR_HANDLER_ID: &str = "typebridge.generator.python";
 const TYPESCRIPT_GENERATOR_HANDLER_ID: &str = "typebridge.generator.typescript";
 const RUST_GENERATOR_HANDLER_ID: &str = "typebridge.generator.rust";
+const C_GENERATOR_HANDLER_ID: &str = "typebridge.generator.c";
 const CODE_RESOURCE_DOMAIN: &str = "typebridge.binding.code-resource";
 const RAW_BYTES_CANONICALIZATION: &str = "typebridge.raw-bytes/v1";
 const BINDING_PROJECTION_DOMAIN: &str = "typebridge.binding.projection";
 const BINDING_PROJECTION_CANONICALIZATION: &str = "typebridge.binding-projection/v1";
 const BINDING_PROJECTION_CONTENT_DOMAIN: &str = "typebridge.binding.projection-content";
 const MAX_TARGET_IDENTIFIER_BYTES: usize = 255;
+const MAX_C_SYMBOL_PREFIX_BYTES: usize = 63;
+
+/// ABI major required by C packages emitted under the C-v1 projection contract.
+pub const TYPE_BRIDGE_C_ABI_MAJOR: u32 = 1;
+/// Minimum ABI minor required by C packages emitted under the C-v1 projection contract.
+pub const TYPE_BRIDGE_C_ABI_MINOR: u32 = 3;
+/// Generated-only projection-token layout version consumed by native SDK facades.
+pub const TYPE_BRIDGE_PROJECTED_TOKEN_VERSION: u32 = 1;
+/// Maximum generated C create fields on one projected model.
+///
+/// C11 guarantees 1,023 members in one structure. The versioned generated
+/// args structure reserves three members for `struct_size`, `version`, and
+/// `reserved`, leaving 1,020 semantic members.
+pub const TYPE_BRIDGE_C_CREATE_FIELD_MAX: usize = 1_020;
+/// Maximum generated C create roles on one projected model under the same
+/// 1,023-member translation minimum.
+pub const TYPE_BRIDGE_C_CREATE_ROLE_MAX: usize = 1_020;
+/// Maximum combined generated C create fields and roles on one model after
+/// reserving the three version/layout members.
+pub const TYPE_BRIDGE_C_CREATE_MEMBER_MAX: usize = 1_020;
+
+/// The closed semantic kind carried by one generated projection token.
+///
+/// Numeric spellings are frozen independently from Rust enum layout and are
+/// copied explicitly into each native ABI. New native facades must reject an
+/// unknown kind before attempting ordinal resolution.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[non_exhaustive]
+pub enum ProjectedTokenKind {
+    /// One projected model identity.
+    Model,
+    /// One owner-branded projected owned-field identity.
+    Field,
+    /// One owner-branded projected relation-role identity.
+    Role,
+    /// One exact projected schema-function identity.
+    Function,
+}
+
+impl ProjectedTokenKind {
+    /// Return the frozen positive native-ABI spelling.
+    #[must_use]
+    pub const fn as_u32(self) -> u32 {
+        match self {
+            Self::Model => 1,
+            Self::Field => 2,
+            Self::Role => 3,
+            Self::Function => 4,
+        }
+    }
+
+    /// Decode one frozen native-ABI spelling, rejecting future kinds.
+    #[must_use]
+    pub const fn from_u32(value: u32) -> Option<Self> {
+        match value {
+            1 => Some(Self::Model),
+            2 => Some(Self::Field),
+            3 => Some(Self::Role),
+            4 => Some(Self::Function),
+            _ => None,
+        }
+    }
+}
+
+/// One binding-neutral semantic identity resolved from a generated token.
+///
+/// Role and field values retain the effective model owner explicitly because
+/// inherited roles and ownership declarations may share a declaring identity
+/// while remaining distinct generated members on different concrete models.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum ProjectedTokenIdentity {
+    /// One exact projected model.
+    Model(TypeId),
+    /// One field as exposed by an exact projected model.
+    Field {
+        /// Effective projected model owner.
+        owner: TypeId,
+        /// Canonical ownership-fact identity.
+        field: OwnsFactId,
+    },
+    /// One role as exposed by an exact projected relation model.
+    Role {
+        /// Effective projected relation owner.
+        owner: TypeId,
+        /// Canonical relation-qualified role identity.
+        role: RoleId,
+    },
+    /// One exact projected schema function.
+    Function(FunctionId),
+}
+
+impl ProjectedTokenIdentity {
+    /// Return this identity's frozen token kind.
+    #[must_use]
+    pub const fn kind(&self) -> ProjectedTokenKind {
+        match self {
+            Self::Model(_) => ProjectedTokenKind::Model,
+            Self::Field { .. } => ProjectedTokenKind::Field,
+            Self::Role { .. } => ProjectedTokenKind::Role,
+            Self::Function(_) => ProjectedTokenKind::Function,
+        }
+    }
+}
 
 /// A binding target with a consumed Phase 3 projection contract.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum BindingTarget {
     /// Generated Python source and typing artifacts.
     Python,
@@ -40,14 +147,28 @@ pub enum BindingTarget {
     TypeScript,
     /// Generated native Rust types and schema tokens.
     Rust,
+    /// Generated C source, headers, and schema-package metadata.
+    C,
 }
 
 impl BindingTarget {
+    /// Return the stable canonical wire spelling for this target.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Python => "python",
+            Self::TypeScript => "typescript",
+            Self::Rust => "rust",
+            Self::C => "c",
+        }
+    }
+
     const fn required_generator_handler_id(self) -> &'static str {
         match self {
             Self::Python => PYTHON_GENERATOR_HANDLER_ID,
             Self::TypeScript => TYPESCRIPT_GENERATOR_HANDLER_ID,
             Self::Rust => RUST_GENERATOR_HANDLER_ID,
+            Self::C => C_GENERATOR_HANDLER_ID,
         }
     }
 }
@@ -86,29 +207,91 @@ pub enum RustCreatePolicy {
     ValidatedInputV1,
 }
 
+/// The exact label-to-C-name transformation consumed by the C emitter.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+pub enum CNamingPolicy {
+    /// The first collision-checked TypeBridge C naming policy.
+    #[serde(rename = "typebridge.c/v1")]
+    TypeBridgeV1,
+}
+
+/// A validated prefix for generated symbols in C's global link namespace.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(transparent)]
+pub struct CSymbolPrefix(String);
+
+impl CSymbolPrefix {
+    /// Validate and construct a bounded, non-reserved ASCII C symbol prefix.
+    pub fn new(value: impl Into<String>) -> Result<Self, Diagnostic> {
+        let value = value.into();
+        let uses_runtime_namespace = value == "type_bridge" || value.starts_with("type_bridge_");
+        let portable_path_component = value
+            .bytes()
+            .all(|byte| byte == b'_' || byte.is_ascii_lowercase() || byte.is_ascii_digit())
+            && !value.ends_with('_')
+            && !is_windows_device_name(&value);
+        if !is_valid_c_identifier(&value, MAX_C_SYMBOL_PREFIX_BYTES)
+            || !portable_path_component
+            || uses_runtime_namespace
+        {
+            return Err(Diagnostic::stable(
+                DiagnosticCategory::InvalidContract,
+                "invalid_c_symbol_prefix",
+                "C symbol prefix must be a bounded lowercase portable path outside the reserved TypeBridge runtime namespace",
+            ));
+        }
+        Ok(Self(value))
+    }
+
+    /// Return the exact prefix spelling committed by the projection config.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for CSymbolPrefix {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
 /// Target-specific options that are consumed by a shipped emitter.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(tag = "binding")]
+#[non_exhaustive]
 pub enum ProjectionConfig {
     /// Python projection options.
     #[serde(rename = "python")]
+    #[non_exhaustive]
     Python {
         /// Versioned Python naming behavior used for every generated symbol.
         naming_policy: PythonNamingPolicy,
     },
     /// TypeScript projection options.
     #[serde(rename = "typescript")]
+    #[non_exhaustive]
     TypeScript {
         /// Versioned TypeScript naming behavior used for every generated symbol.
         naming_policy: TypeScriptNamingPolicy,
     },
     /// Native Rust projection options.
     #[serde(rename = "rust")]
+    #[non_exhaustive]
     Rust {
         /// Versioned Rust naming behavior used for every generated symbol.
         naming_policy: RustNamingPolicy,
         /// Versioned checked construction surface generated for constructible models.
         create_policy: RustCreatePolicy,
+    },
+    /// C projection options.
+    #[serde(rename = "c")]
+    #[non_exhaustive]
+    C {
+        /// Versioned C naming behavior used for every generated symbol.
+        naming_policy: CNamingPolicy,
+        /// Application-specific prefix for C's global link namespace.
+        symbol_prefix: CSymbolPrefix,
     },
 }
 
@@ -138,6 +321,15 @@ impl ProjectionConfig {
         }
     }
 
+    /// Construct the initial C projection configuration.
+    #[must_use]
+    pub fn c(symbol_prefix: CSymbolPrefix) -> Self {
+        Self::C {
+            naming_policy: CNamingPolicy::TypeBridgeV1,
+            symbol_prefix,
+        }
+    }
+
     /// Return the binding target that consumes this configuration.
     #[must_use]
     pub const fn target(&self) -> BindingTarget {
@@ -145,6 +337,16 @@ impl ProjectionConfig {
             Self::Python { .. } => BindingTarget::Python,
             Self::TypeScript { .. } => BindingTarget::TypeScript,
             Self::Rust { .. } => BindingTarget::Rust,
+            Self::C { .. } => BindingTarget::C,
+        }
+    }
+
+    /// Return the Python naming policy when this is a Python config.
+    #[must_use]
+    pub const fn python_naming_policy(&self) -> Option<PythonNamingPolicy> {
+        match self {
+            Self::Python { naming_policy } => Some(*naming_policy),
+            Self::TypeScript { .. } | Self::Rust { .. } | Self::C { .. } => None,
         }
     }
 
@@ -153,7 +355,7 @@ impl ProjectionConfig {
     pub const fn typescript_naming_policy(&self) -> Option<TypeScriptNamingPolicy> {
         match self {
             Self::TypeScript { naming_policy } => Some(*naming_policy),
-            Self::Python { .. } | Self::Rust { .. } => None,
+            Self::Python { .. } | Self::Rust { .. } | Self::C { .. } => None,
         }
     }
 
@@ -162,7 +364,7 @@ impl ProjectionConfig {
     pub const fn rust_naming_policy(&self) -> Option<RustNamingPolicy> {
         match self {
             Self::Rust { naming_policy, .. } => Some(*naming_policy),
-            Self::Python { .. } | Self::TypeScript { .. } => None,
+            Self::Python { .. } | Self::TypeScript { .. } | Self::C { .. } => None,
         }
     }
 
@@ -171,7 +373,25 @@ impl ProjectionConfig {
     pub const fn rust_create_policy(&self) -> Option<RustCreatePolicy> {
         match self {
             Self::Rust { create_policy, .. } => Some(*create_policy),
-            Self::Python { .. } | Self::TypeScript { .. } => None,
+            Self::Python { .. } | Self::TypeScript { .. } | Self::C { .. } => None,
+        }
+    }
+
+    /// Return the C naming policy when this is a C config.
+    #[must_use]
+    pub const fn c_naming_policy(&self) -> Option<CNamingPolicy> {
+        match self {
+            Self::C { naming_policy, .. } => Some(*naming_policy),
+            Self::Python { .. } | Self::TypeScript { .. } | Self::Rust { .. } => None,
+        }
+    }
+
+    /// Return the symbol prefix when this is a C config.
+    #[must_use]
+    pub const fn c_symbol_prefix(&self) -> Option<&CSymbolPrefix> {
+        match self {
+            Self::C { symbol_prefix, .. } => Some(symbol_prefix),
+            Self::Python { .. } | Self::TypeScript { .. } | Self::Rust { .. } => None,
         }
     }
 }
@@ -252,6 +472,10 @@ pub struct ProjectionHandlerVersion(u16);
 impl ProjectionHandlerVersion {
     /// The initial handler behavior version.
     pub const V1: Self = Self(1);
+    /// The second handler behavior version.
+    pub const V2: Self = Self(2);
+    /// The third handler behavior version.
+    pub const V3: Self = Self(3);
 
     /// Validate and construct a handler behavior version.
     pub fn new(value: u16) -> Result<Self, Diagnostic> {
@@ -299,6 +523,16 @@ impl ProjectionHandler {
         }
     }
 
+    /// Construct the ordered-collection-aware built-in Python generator identity.
+    #[must_use]
+    pub fn python_v2() -> Self {
+        Self {
+            id: ProjectionHandlerId::new(PYTHON_GENERATOR_HANDLER_ID)
+                .expect("the built-in Python generator ID is valid"),
+            version: ProjectionHandlerVersion::V2,
+        }
+    }
+
     /// Construct the initial built-in TypeScript generator identity.
     #[must_use]
     pub fn typescript_v1() -> Self {
@@ -309,6 +543,16 @@ impl ProjectionHandler {
         }
     }
 
+    /// Construct the ordered-collection-aware built-in TypeScript generator identity.
+    #[must_use]
+    pub fn typescript_v2() -> Self {
+        Self {
+            id: ProjectionHandlerId::new(TYPESCRIPT_GENERATOR_HANDLER_ID)
+                .expect("built-in TypeScript projection handler ID is valid"),
+            version: ProjectionHandlerVersion::V2,
+        }
+    }
+
     /// Construct the initial built-in native Rust generator identity.
     #[must_use]
     pub fn rust_v1() -> Self {
@@ -316,6 +560,46 @@ impl ProjectionHandler {
             id: ProjectionHandlerId::new(RUST_GENERATOR_HANDLER_ID)
                 .expect("built-in Rust projection handler ID is valid"),
             version: ProjectionHandlerVersion::V1,
+        }
+    }
+
+    /// Construct the ordered-collection-aware built-in native Rust generator identity.
+    #[must_use]
+    pub fn rust_v2() -> Self {
+        Self {
+            id: ProjectionHandlerId::new(RUST_GENERATOR_HANDLER_ID)
+                .expect("built-in Rust projection handler ID is valid"),
+            version: ProjectionHandlerVersion::V2,
+        }
+    }
+
+    /// Construct the initial built-in C generator identity.
+    #[must_use]
+    pub fn c_v1() -> Self {
+        Self {
+            id: ProjectionHandlerId::new(C_GENERATOR_HANDLER_ID)
+                .expect("the built-in C generator ID is valid"),
+            version: ProjectionHandlerVersion::V1,
+        }
+    }
+
+    /// Construct the projected-token-aware built-in C generator identity.
+    #[must_use]
+    pub fn c_v2() -> Self {
+        Self {
+            id: ProjectionHandlerId::new(C_GENERATOR_HANDLER_ID)
+                .expect("the built-in C generator ID is valid"),
+            version: ProjectionHandlerVersion::V2,
+        }
+    }
+
+    /// Construct the ordered-collection-aware built-in C generator identity.
+    #[must_use]
+    pub fn c_v3() -> Self {
+        Self {
+            id: ProjectionHandlerId::new(C_GENERATOR_HANDLER_ID)
+                .expect("the built-in C generator ID is valid"),
+            version: ProjectionHandlerVersion::V3,
         }
     }
 
@@ -595,6 +879,41 @@ fn ensure_collection_limit(length: usize, code: &'static str) -> Result<(), Diag
     }
 }
 
+fn validate_c_create_limits(models: &BTreeMap<TypeId, ModelProjection>) -> Result<(), Diagnostic> {
+    for model in models.values() {
+        if model.create().target_name().is_none() {
+            continue;
+        }
+        let field_count = model.create().fields().len();
+        let role_count = model.create().roles().len();
+        if field_count > TYPE_BRIDGE_C_CREATE_FIELD_MAX {
+            return Err(Diagnostic::stable(
+                DiagnosticCategory::ResourceLimit,
+                "c_projection_create_field_limit_exceeded",
+                "C create fields exceed the 1020-member translation ceiling",
+            ));
+        }
+        if role_count > TYPE_BRIDGE_C_CREATE_ROLE_MAX {
+            return Err(Diagnostic::stable(
+                DiagnosticCategory::ResourceLimit,
+                "c_projection_create_role_limit_exceeded",
+                "C create roles exceed the 1020-member translation ceiling",
+            ));
+        }
+        if field_count
+            .checked_add(role_count)
+            .is_none_or(|count| count > TYPE_BRIDGE_C_CREATE_MEMBER_MAX)
+        {
+            return Err(Diagnostic::stable(
+                DiagnosticCategory::ResourceLimit,
+                "c_projection_create_member_limit_exceeded",
+                "combined C create fields and roles exceed the 1020-member translation ceiling",
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// A validated target-language identifier emitted verbatim by a generator.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(transparent)]
@@ -651,6 +970,18 @@ impl TargetIdentifier {
             return Err(invalid_projection(
                 "invalid_rust_projection_identifier",
                 "projected Rust name is not a bounded non-keyword ASCII identifier",
+            ));
+        }
+        Ok(Self(value))
+    }
+
+    /// Validate one ASCII C identifier under the frozen C-v1 policy.
+    pub fn c(value: impl Into<String>) -> Result<Self, Diagnostic> {
+        let value = value.into();
+        if !is_valid_c_identifier(&value, MAX_TARGET_IDENTIFIER_BYTES) {
+            return Err(invalid_projection(
+                "invalid_c_projection_identifier",
+                "projected C name is not a bounded, non-keyword, non-reserved ASCII identifier",
             ));
         }
         Ok(Self(value))
@@ -849,6 +1180,109 @@ fn is_rust_keyword(value: &str) -> bool {
     )
 }
 
+fn is_valid_c_identifier(value: &str, max_bytes: usize) -> bool {
+    let mut bytes = value.bytes();
+    value.len() <= max_bytes
+        && bytes.next().is_some_and(|byte| byte.is_ascii_alphabetic())
+        && bytes.all(|byte| byte == b'_' || byte.is_ascii_alphanumeric())
+        && !value.contains("__")
+        && !is_c_keyword(value)
+}
+
+fn is_windows_device_name(value: &str) -> bool {
+    matches!(
+        value,
+        "aux"
+            | "clock$"
+            | "con"
+            | "nul"
+            | "prn"
+            | "com1"
+            | "com2"
+            | "com3"
+            | "com4"
+            | "com5"
+            | "com6"
+            | "com7"
+            | "com8"
+            | "com9"
+            | "lpt1"
+            | "lpt2"
+            | "lpt3"
+            | "lpt4"
+            | "lpt5"
+            | "lpt6"
+            | "lpt7"
+            | "lpt8"
+            | "lpt9"
+    )
+}
+
+fn is_c_keyword(value: &str) -> bool {
+    matches!(
+        value,
+        "_Alignas"
+            | "_Alignof"
+            | "_Atomic"
+            | "_BitInt"
+            | "_Bool"
+            | "_Complex"
+            | "_Decimal128"
+            | "_Decimal32"
+            | "_Decimal64"
+            | "_Generic"
+            | "_Imaginary"
+            | "_Noreturn"
+            | "_Static_assert"
+            | "_Thread_local"
+            | "alignas"
+            | "alignof"
+            | "auto"
+            | "bool"
+            | "break"
+            | "case"
+            | "char"
+            | "const"
+            | "constexpr"
+            | "continue"
+            | "default"
+            | "do"
+            | "double"
+            | "else"
+            | "enum"
+            | "extern"
+            | "false"
+            | "float"
+            | "for"
+            | "goto"
+            | "if"
+            | "inline"
+            | "int"
+            | "long"
+            | "nullptr"
+            | "register"
+            | "restrict"
+            | "return"
+            | "short"
+            | "signed"
+            | "sizeof"
+            | "static"
+            | "static_assert"
+            | "struct"
+            | "switch"
+            | "thread_local"
+            | "true"
+            | "typedef"
+            | "typeof"
+            | "typeof_unqual"
+            | "union"
+            | "unsigned"
+            | "void"
+            | "volatile"
+            | "while"
+    )
+}
+
 /// Whether a projected model use is complete or a nonrecursive reference.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -912,20 +1346,31 @@ pub struct ProjectedMultiplicity {
     cardinality: Cardinality,
     required: bool,
     container: ProjectedContainer,
+    #[serde(skip_serializing_if = "CollectionMode::is_unordered")]
+    collection_mode: CollectionMode,
 }
 
 impl ProjectedMultiplicity {
-    /// Derive an honest input/read shape from resolved cardinality.
+    /// Derive the compatibility-default unordered shape from resolved cardinality.
     #[must_use]
     pub const fn from_cardinality(cardinality: Cardinality) -> Self {
-        let container = match cardinality.max() {
-            Some(0 | 1) => ProjectedContainer::Scalar,
-            Some(_) | None => ProjectedContainer::Sequence,
+        Self::new(cardinality, CollectionMode::Unordered)
+    }
+    /// Derive an honest input/read shape from cardinality and collection semantics.
+    #[must_use]
+    pub const fn new(cardinality: Cardinality, collection_mode: CollectionMode) -> Self {
+        let container = match collection_mode {
+            CollectionMode::OrderedList => ProjectedContainer::Sequence,
+            CollectionMode::Unordered => match cardinality.max() {
+                Some(0 | 1) => ProjectedContainer::Scalar,
+                Some(_) | None => ProjectedContainer::Sequence,
+            },
         };
         Self {
             cardinality,
             required: cardinality.min() > 0,
             container,
+            collection_mode,
         }
     }
     /// Return the exact resolved cardinality.
@@ -942,6 +1387,11 @@ impl ProjectedMultiplicity {
     #[must_use]
     pub const fn container(&self) -> ProjectedContainer {
         self.container
+    }
+    /// Return the canonical collection semantics.
+    #[must_use]
+    pub const fn collection_mode(&self) -> CollectionMode {
+        self.collection_mode
     }
 }
 
@@ -1017,6 +1467,16 @@ impl FieldTokenProjection {
             return Err(invalid_projection(
                 "invalid_projected_owns_annotation",
                 "owns annotations require matching exact effective owns subjects",
+            ));
+        }
+        if multiplicity.collection_mode().is_unordered()
+            && annotations
+                .keys()
+                .any(|id| id.kind() == &AnnotationKindId::Distinct)
+        {
+            return Err(invalid_projection(
+                "distinct_requires_ordered_collection",
+                "distinct applies only to an ordered ownership collection",
             ));
         }
         ensure_collection_limit(annotations.len(), "too_many_projected_annotations")?;
@@ -1104,6 +1564,31 @@ impl RoleTokenProjection {
             return Err(invalid_projection(
                 "invalid_projected_role_token",
                 "role tokens require a relation owner and entity/relation players",
+            ));
+        }
+        let effective_role = RoleId::new(
+            owner.label().as_str().to_owned(),
+            role.label().as_str().to_owned(),
+        )?;
+        let effective_subject =
+            AnnotationSubjectId::Relates(RelatesFactId::new(owner.clone(), effective_role)?);
+        if annotations
+            .iter()
+            .any(|(key, value)| key != value.id() || value.id().subject() != &effective_subject)
+        {
+            return Err(invalid_projection(
+                "invalid_projected_relates_annotation",
+                "relates annotations require matching exact effective relates subjects",
+            ));
+        }
+        if multiplicity.collection_mode().is_unordered()
+            && annotations
+                .keys()
+                .any(|id| id.kind() == &AnnotationKindId::Distinct)
+        {
+            return Err(invalid_projection(
+                "distinct_requires_ordered_collection",
+                "distinct applies only to an ordered related-role collection",
             ));
         }
         ensure_collection_limit(accepted_players.len(), "too_many_projected_role_players")?;
@@ -1855,6 +2340,34 @@ impl ModelProjection {
                 "reference keys require exact required-scalar complete/query key facets",
             ));
         }
+        let field_multiplicities_match = create.fields().iter().all(|field| {
+            query_tokens
+                .fields()
+                .get(field.token())
+                .is_some_and(|token| token.multiplicity() == field.multiplicity())
+        }) && complete_read.fields().iter().all(|field| {
+            query_tokens
+                .fields()
+                .get(field.token())
+                .is_some_and(|token| token.multiplicity() == field.multiplicity())
+        });
+        let role_multiplicities_match = create.roles().iter().all(|(id, role)| {
+            query_tokens
+                .roles()
+                .get(id)
+                .is_some_and(|token| token.multiplicity() == role.multiplicity())
+        }) && complete_read.roles().iter().all(|(id, role)| {
+            query_tokens
+                .roles()
+                .get(id)
+                .is_some_and(|token| token.multiplicity() == role.multiplicity())
+        });
+        if !field_multiplicities_match || !role_multiplicities_match {
+            return Err(invalid_projection(
+                "projected_multiplicity_mismatch",
+                "create, complete-read, and query-token facets require exact multiplicity equality",
+            ));
+        }
         if query_tokens.type_id() != &id
             || match (declaration.parent(), declaration.direct_sub()) {
                 (None, None) => false,
@@ -2193,6 +2706,12 @@ impl PlayingProjection {
         multiplicity: ProjectedMultiplicity,
         annotations: BTreeMap<AnnotationFactId, ProjectedAnnotation>,
     ) -> Result<Self, Diagnostic> {
+        if !multiplicity.collection_mode().is_unordered() {
+            return Err(invalid_projection(
+                "ordered_playing_projection",
+                "playing multiplicity must remain unordered",
+            ));
+        }
         if id.role() != &role
             || annotations.iter().any(|(key, value)| {
                 key != value.id() || key.subject() != &AnnotationSubjectId::Plays(id.clone())
@@ -2366,8 +2885,11 @@ impl RuntimeProjection {
         ] {
             ensure_collection_limit(length, "runtime_projection_limit_exceeded")?;
         }
-        if target == BindingTarget::Rust {
-            let rust_names_complete = models.values().all(|model| {
+        if target == BindingTarget::C {
+            validate_c_create_limits(&models)?;
+        }
+        if matches!(target, BindingTarget::Rust | BindingTarget::C) {
+            let native_names_complete = models.values().all(|model| {
                 model.create().enabled() == model.create().target_name().is_some()
                     && model.query_tokens().target_name().is_some()
                     && model
@@ -2380,11 +2902,19 @@ impl RuntimeProjection {
             }) && playing_facts
                 .values()
                 .all(|playing| playing.target_name().is_some());
-            if !rust_names_complete {
-                return Err(invalid_projection(
-                    "missing_rust_projection_identifier",
-                    "Rust projection omits a required create, reference, query-token, player-union, or plays identifier",
-                ));
+            if !native_names_complete {
+                let (code, message) = match target {
+                    BindingTarget::Rust => (
+                        "missing_rust_projection_identifier",
+                        "Rust projection omits a required create, reference, query-token, player-union, or plays identifier",
+                    ),
+                    BindingTarget::C => (
+                        "missing_c_projection_identifier",
+                        "C projection omits a required create, reference, query-token, player-union, or plays identifier",
+                    ),
+                    BindingTarget::Python | BindingTarget::TypeScript => unreachable!(),
+                };
+                return Err(invalid_projection(code, message));
             }
         }
         let model_ids = models.keys().cloned().collect::<BTreeSet<_>>();
@@ -2578,8 +3108,10 @@ impl RuntimeProjection {
         let closed_playing = playing_facts.values().all(|playing| {
             models.contains_key(playing.id().player())
                 && role_exists(playing.role())
-                && (!matches!(target, BindingTarget::TypeScript | BindingTarget::Rust)
-                    || playing.target_name().is_some())
+                && (!matches!(
+                    target,
+                    BindingTarget::TypeScript | BindingTarget::Rust | BindingTarget::C
+                ) || playing.target_name().is_some())
         });
         let closed_functions = functions.values().all(|function| {
             function
@@ -2654,6 +3186,105 @@ impl RuntimeProjection {
     #[must_use]
     pub const fn projection_fingerprint(&self) -> &BindingProjectionFingerprint {
         &self.projection_fingerprint
+    }
+    /// Resolve one generated-only token ordinal through canonical projection order.
+    ///
+    /// Ordinals are zero-based within their kind. Models and functions follow
+    /// their canonical identity-map order. Fields and roles follow model order
+    /// and then the canonical order of that model's token map. This method is the sole
+    /// semantic owner of the ordinal algorithm used by native generated SDKs.
+    #[must_use]
+    pub fn projected_token_identity(
+        &self,
+        kind: ProjectedTokenKind,
+        ordinal: u32,
+    ) -> Option<ProjectedTokenIdentity> {
+        let index = usize::try_from(ordinal).ok()?;
+        match kind {
+            ProjectedTokenKind::Model => self
+                .models
+                .keys()
+                .nth(index)
+                .cloned()
+                .map(ProjectedTokenIdentity::Model),
+            ProjectedTokenKind::Field => self
+                .models
+                .iter()
+                .flat_map(|(owner, model)| {
+                    model.query_tokens().fields().keys().map(move |field| {
+                        ProjectedTokenIdentity::Field {
+                            owner: owner.clone(),
+                            field: field.clone(),
+                        }
+                    })
+                })
+                .nth(index),
+            ProjectedTokenKind::Role => self
+                .models
+                .iter()
+                .flat_map(|(owner, model)| {
+                    model.query_tokens().roles().keys().map(move |role| {
+                        ProjectedTokenIdentity::Role {
+                            owner: owner.clone(),
+                            role: role.clone(),
+                        }
+                    })
+                })
+                .nth(index),
+            ProjectedTokenKind::Function => self
+                .functions
+                .keys()
+                .nth(index)
+                .cloned()
+                .map(ProjectedTokenIdentity::Function),
+        }
+    }
+
+    /// Resolve one semantic identity to its generated-only zero-based ordinal.
+    ///
+    /// Returns `None` when the identity does not belong to this exact
+    /// projection or its owner branding is inconsistent.
+    #[must_use]
+    pub fn projected_token_ordinal(&self, identity: &ProjectedTokenIdentity) -> Option<u32> {
+        let index = match identity {
+            ProjectedTokenIdentity::Model(expected) => self
+                .models
+                .keys()
+                .position(|candidate| candidate == expected),
+            ProjectedTokenIdentity::Field {
+                owner: expected_owner,
+                field: expected_field,
+            } => self
+                .models
+                .iter()
+                .flat_map(|(owner, model)| {
+                    model
+                        .query_tokens()
+                        .fields()
+                        .keys()
+                        .map(move |field| (owner, field))
+                })
+                .position(|(owner, field)| owner == expected_owner && field == expected_field),
+            ProjectedTokenIdentity::Role {
+                owner: expected_owner,
+                role: expected_role,
+            } => self
+                .models
+                .iter()
+                .flat_map(|(owner, model)| {
+                    model
+                        .query_tokens()
+                        .roles()
+                        .keys()
+                        .map(move |role| (owner, role))
+                })
+                .position(|(owner, role)| owner == expected_owner && role == expected_role),
+            ProjectedTokenIdentity::Function(expected) => self
+                .functions
+                .keys()
+                .position(|candidate| candidate == expected),
+        }?;
+        u32::try_from(index).ok()
     }
     /// Return the ordered handler evidence committed by the projection fingerprint.
     #[must_use]

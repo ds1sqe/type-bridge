@@ -596,11 +596,15 @@ fn all_open_world_evidence_is_ordered_by_original_source_offset() {
         unsupported(&set),
         vec![
             "sub missing-parent".to_owned(),
-            "tag[]".to_owned(),
-            "@distinct".to_owned(),
             "plays missing-relation:member".to_owned(),
         ]
     );
+    assert_eq!(set["format"], "typebridge.generated-descriptors/v2");
+    assert_eq!(
+        set["entities"][0]["owns"][0]["collection_mode"],
+        "ordered_list"
+    );
+    assert_eq!(set["entities"][0]["owns"][0]["distinct"], true);
 }
 
 #[test]
@@ -1489,16 +1493,19 @@ fn subkey_redaction_consumes_released_trivia_and_comment_grammar() {
 }
 
 #[test]
-fn list_markers_interleaved_with_annotations_strip_and_record() {
+fn list_markers_and_distinct_select_the_closed_v2_descriptor() {
     let set = descriptors(
         "define\nattribute tag, value string;\n\
          entity person, owns tag[] @card(0..5) @distinct;\n",
     );
-    assert!(!closed_world(&set));
+    assert!(closed_world(&set));
+    assert!(unsupported(&set).is_empty());
+    assert_eq!(set["format"], "typebridge.generated-descriptors/v2");
     assert_eq!(
-        unsupported(&set),
-        vec!["tag[]".to_string(), "@distinct".to_string()]
+        set["entities"][0]["owns"][0]["collection_mode"],
+        "ordered_list"
     );
+    assert_eq!(set["entities"][0]["owns"][0]["distinct"], true);
 }
 
 #[test]

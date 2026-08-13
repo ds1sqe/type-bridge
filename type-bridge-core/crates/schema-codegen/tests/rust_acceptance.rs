@@ -67,12 +67,13 @@ fn project_from_source(source: &str) -> RuntimeProjection {
         &SemanticProfileId::new("typedb-3.12.1/v1").unwrap(),
     )
     .unwrap();
-    let resources = RustEmitter::new().code_resources().unwrap();
+    let emitter = RustEmitter::new();
+    let resources = emitter.code_resources_for(&resolved).unwrap();
     project(
         &resolved,
         BindingTarget::Rust,
         &ProjectionConfig::rust(),
-        &RustEmitter::new().generator_handlers(),
+        &emitter.generator_handlers_for(&resolved),
         &resources,
     )
     .unwrap()

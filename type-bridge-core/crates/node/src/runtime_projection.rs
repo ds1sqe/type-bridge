@@ -26,11 +26,13 @@ use type_bridge_orm::_dynamic::{
 };
 use type_bridge_orm::_manager::{DynamicEntityManager, DynamicRelationManager};
 use type_bridge_orm::{
-    AttributeValue, Database, HydratedAttribute, InstalledRuntimeProjection, ProviderRuntimeOwner,
-    ThingKind, TransactionContext, ValueType,
+    AnswerCancellation, AttributeValue, Database, HydratedAttribute, InstalledRuntimeProjection,
+    ProviderRuntimeOwner, QueryExecutionResourceLimits, ThingKind, TransactionContext, ValueType,
 };
 
-use crate::match_runtime::revalidate_diagnostic;
+use crate::match_runtime::{
+    NodeQueryCancellation, NodeQueryExecutionResources, revalidate_diagnostic,
+};
 use crate::{
     NodeMatchSessionHandle, NodeRustDatabase, NodeRustTransactionContext, NodeValidatedThingHandle,
 };
@@ -45,7 +47,7 @@ struct ModelRegistration {
 }
 
 struct InstalledPackage {
-    projection: InstalledRuntimeProjection,
+    projection: Arc<InstalledRuntimeProjection>,
     types_by_label: BTreeMap<String, TypeId>,
 }
 
@@ -127,7 +129,7 @@ impl NodeRuntimeProjection {
                 ));
             }
         }
-        let projection = InstalledRuntimeProjection::try_new(runtime).map_err(orm_error)?;
+        let projection = Arc::new(InstalledRuntimeProjection::try_new(runtime).map_err(orm_error)?);
         Ok(Self {
             package: Arc::new(InstalledPackage {
                 projection,
@@ -182,7 +184,33 @@ impl NodeRuntimeProjection {
             .projection
             .match_registry()
             .map_err(orm_error)?;
-        Ok(NodeMatchSessionHandle::from_registry(Arc::new(registry)))
+        Ok(NodeMatchSessionHandle::from_installed(
+            Arc::clone(&self.package.projection),
+            Arc::new(registry),
+            QueryExecutionResourceLimits::default(),
+            AnswerCancellation::default(),
+        ))
+    }
+
+    /// Build an opaque match session carrying the common resource policy and
+    /// caller-owned cooperative cancellation signal.
+    #[napi(js_name = "matchSessionWithResources")]
+    pub fn match_session_with_resources(
+        &self,
+        resources: &NodeQueryExecutionResources,
+        cancellation: &NodeQueryCancellation,
+    ) -> napi::Result<NodeMatchSessionHandle> {
+        let registry = self
+            .package
+            .projection
+            .match_registry()
+            .map_err(orm_error)?;
+        Ok(NodeMatchSessionHandle::from_installed(
+            Arc::clone(&self.package.projection),
+            Arc::new(registry),
+            resources.inner(),
+            cancellation.inner(),
+        ))
     }
 
     /// Resolve one exact projected entity or relation token to its provider label.

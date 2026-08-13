@@ -864,6 +864,99 @@ def test_core_sdist_excludes_only_the_closed_nested_test_package(
     )
 
 
+def test_core_sdist_excludes_generated_outputs_without_hiding_ordinary_sources(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    core = tmp_path / "type-bridge-core"
+    core.mkdir()
+    for name in ("Cargo.lock", "Cargo.toml", "pyproject.toml", validator.ROOT_LICENSE_FILE):
+        (core / name).write_text("fixture\n", encoding="utf-8")
+
+    source_root = core / "crates/fixture"
+    ordinary_sources = {
+        "src/lib.rs": b"pub fn production() {}\n",
+        "src/distribution.rs": b"pub fn distribution() {}\n",
+        "src/targeting.rs": b"pub fn targeting() {}\n",
+        "src/cache_policy.rs": b"pub fn cache_policy() {}\n",
+    }
+    for name, payload in ordinary_sources.items():
+        path = source_root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
+
+    generated_outputs = {
+        "target/debug/leak.rlib": b"cargo output\n",
+        "node_modules/dependency/LICENSE": b"dependency output\n",
+        "dist/package.js": b"distribution output\n",
+        "src/__pycache__/module.cpython-313.pyc": b"bytecode cache\n",
+        "tests/.pytest_cache/v/cache/nodeids": b"pytest cache\n",
+        "tests/.ruff_cache/state": b"ruff cache\n",
+        "tests/.mypy_cache/state.json": b"mypy cache\n",
+        "tests/.cache/tool/state": b"tool cache\n",
+        ".venv/lib/python/site.py": b"virtual environment\n",
+        "build/package/output": b"build output\n",
+        "htmlcov/index.html": b"coverage output\n",
+        "tmp/generator/output": b"temporary output\n",
+        "wheels/type_bridge.whl": b"wheel output\n",
+        "fixture.egg-info/PKG-INFO": b"packaging output\n",
+        "type_bridge_node.linux-x64-gnu.node": b"compiled extension\n",
+        "src/native.so": b"compiled extension\n",
+    }
+    for name, payload in generated_outputs.items():
+        path = source_root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
+
+    monkeypatch.setattr(validator, "CORE_SDIST_SOURCE_ROOTS", ("crates/fixture",))
+    monkeypatch.setattr(validator, "CORE_SDIST_GENERATED_LICENSES", frozenset())
+
+    authorities = validator.core_sdist_source_authorities(tmp_path)
+
+    for name in ordinary_sources:
+        assert authorities[f"crates/fixture/{name}"] == source_root / name
+    assert not {f"crates/fixture/{name}" for name in generated_outputs} & authorities.keys()
+
+
+@pytest.mark.parametrize(
+    ("classification", "message"),
+    [("symbolic", "symbolic"), ("non-regular", "non-regular")],
+)
+def test_core_sdist_rejects_non_generated_symbolic_and_nonregular_inputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    classification: str,
+    message: str,
+) -> None:
+    core = tmp_path / "type-bridge-core"
+    core.mkdir()
+    for name in ("Cargo.lock", "Cargo.toml", "pyproject.toml", validator.ROOT_LICENSE_FILE):
+        (core / name).write_text("fixture\n", encoding="utf-8")
+    source = core / "crates/fixture/src/lib.rs"
+    source.parent.mkdir(parents=True)
+    source.write_text("pub fn production() {}\n", encoding="utf-8")
+
+    monkeypatch.setattr(validator, "CORE_SDIST_SOURCE_ROOTS", ("crates/fixture",))
+    monkeypatch.setattr(validator, "CORE_SDIST_GENERATED_LICENSES", frozenset())
+    if classification == "symbolic":
+        original_is_symlink = Path.is_symlink
+        monkeypatch.setattr(
+            Path,
+            "is_symlink",
+            lambda path: path == source or original_is_symlink(path),
+        )
+    else:
+        original_is_file = Path.is_file
+        monkeypatch.setattr(
+            Path,
+            "is_file",
+            lambda path: False if path == source else original_is_file(path),
+        )
+
+    with pytest.raises(validator.ValidationError, match=message):
+        validator.core_sdist_source_authorities(tmp_path)
+
+
 def test_core_sdist_optional_derive_source_is_an_exact_raw_include() -> None:
     assert "crates/orm-derive" in validator.CORE_SDIST_SOURCE_ROOTS
     assert "crates/orm-derive" in validator.CORE_SDIST_EXPLICIT_RAW_SOURCE_ROOTS

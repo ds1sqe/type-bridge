@@ -1,0 +1,30 @@
+[package]
+name = "type-bridge-c"
+version = "2.1.0"
+edition = "2024"
+description = "Private native C ABI for generated TypeBridge packages and typed queries"
+license.workspace = true
+license-file.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+rust-version = "1.88"
+
+[lib]
+name = "type_bridge_c"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+type-bridge-contract = { path = "../contract", version = "2.1.0" }
+type-bridge-core-lib = { path = "../core", version = "2.1.0" }
+type-bridge-orm = { path = "../orm", version = "2.1.0", default-features = false, features = ["band9"] }
+type-bridge-schema = { path = "../schema", version = "2.1.0" }
+type-bridge-schema-codegen = { path = "../schema-codegen", version = "2.1.0" }
+tokio = { version = "1", features = ["full"] }
+
+[dev-dependencies]
+serde_json = "1"
+sha2 = "0.10"
+
+[lints]
+workspace = true

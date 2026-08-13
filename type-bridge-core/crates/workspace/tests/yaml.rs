@@ -35,6 +35,8 @@ bindings:
     output: ../generated/typescript
   rust:
     output: ../generated/rust
+  c:
+    output: ../generated/c
 secrets:
   typedb.credential:
     env: TYPEDB_CREDENTIAL
@@ -126,6 +128,10 @@ fn programmatic(
             BindingTarget::Rust,
             OutputDirectory::new("generated/rust").unwrap(),
         )
+        .output(
+            BindingTarget::C,
+            OutputDirectory::new("generated/c").unwrap(),
+        )
         .schema_authority_output(
             SchemaAuthorityOutputPath::new("generated/schema-authority.json").unwrap(),
         )
@@ -157,9 +163,46 @@ fn bytes_text_and_programmatic_builder_resolve_to_the_same_config() {
 
     assert_eq!(from_text, from_bytes);
     assert_eq!(from_bytes, from_builder);
+    assert_eq!(
+        from_text.outputs()[&BindingTarget::C].as_path(),
+        Path::new("generated/c")
+    );
     assert_eq!(source.0.get(), 3);
     assert_eq!(secrets.0.get(), 3);
     assert_eq!(extensions.0.get(), 3);
+}
+
+#[test]
+fn c_binding_output_is_strict_confined_and_source_aware() {
+    let missing = WORKSPACE_YAML.replace("  c:\n    output: ../generated/c", "  c: {}");
+    let error = TypeBridgeConfigSpec::parse_yaml(missing, origin()).unwrap_err();
+    assert_eq!(
+        error.code(),
+        WorkspaceConfigErrorCode::MissingWorkspaceField
+    );
+    assert_eq!(error.detail(), Some("bindings.c.output"));
+    assert!(error.source_span().is_some());
+
+    let unknown = WORKSPACE_YAML.replace(
+        "  c:\n    output: ../generated/c",
+        "  c:\n    output: ../generated/c\n    namespace: custom",
+    );
+    let error = TypeBridgeConfigSpec::parse_yaml(unknown, origin()).unwrap_err();
+    assert_eq!(error.code(), WorkspaceConfigErrorCode::UnknownWorkspaceKey);
+    assert_eq!(error.detail(), Some("bindings.c.output.namespace"));
+    assert!(error.source_span().is_some());
+
+    let escaping = WORKSPACE_YAML.replace("../generated/c", "../../generated/c");
+    let source = CanonicalSource(Cell::new(0));
+    let secrets = AcceptSecrets(Cell::new(0));
+    let extensions = AcceptExtensions(Cell::new(0));
+    let error = TypeBridgeConfigSpec::parse_yaml(escaping, origin())
+        .unwrap()
+        .resolve(&services(&source, &secrets, &extensions))
+        .unwrap_err();
+    assert_eq!(error.code(), WorkspaceConfigErrorCode::PathNotConfined);
+    assert_eq!(error.detail(), Some("bindings.c.output"));
+    assert!(error.source_span().is_some());
 }
 
 #[test]
@@ -329,6 +372,7 @@ fn artifact_output_is_confined_portable_and_disjoint_after_manifest_resolution()
     for overlapping in [
         "../migrations/v2/schema-authority.json",
         "../generated/python/schema-authority.json",
+        "../generated/c/schema-authority.json",
     ] {
         let manifest = WORKSPACE_YAML.replace("../generated/schema-authority.json", overlapping);
         let error = TypeBridgeConfigSpec::parse_yaml(manifest, origin())

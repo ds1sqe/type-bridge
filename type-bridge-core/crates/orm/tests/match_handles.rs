@@ -2,8 +2,21 @@
 
 use std::fmt::Debug;
 use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
+use type_bridge_contract::fingerprint::SemanticProfileId;
+use type_bridge_contract::id::{FunctionId, TypeId, TypeKind};
+use type_bridge_contract::projection::{
+    BindingTarget, CodeResourceDigest, ProjectionConfig, ProjectionHandler,
+};
+use type_bridge_contract::schema::DocumentId;
+use type_bridge_contract::value::{CanonicalString, CanonicalValue};
+use type_bridge_orm::session::backend::{
+    BoxFuture, DriverBackend, GivenRowsSpec, QueryResult, TransactionOps, TxType,
+};
 use type_bridge_orm::*;
+use type_bridge_schema::{SchemaDocumentSet, normalize_documents, project, resolve};
 
 #[path = "support/internal.rs"]
 mod internal;
@@ -211,6 +224,261 @@ fn assert_match_code<T: Debug>(result: type_bridge_orm::Result<T>, expected: &st
 
 fn assert_send_sync<T: Send + Sync>() {}
 
+const QUALIFYING_SCORE_BODY: &str = "match $person has score $score-attribute; let $score = $score-attribute; $score >= $minimum; return first $score;";
+
+fn installed_function_projection() -> InstalledRuntimeProjection {
+    installed_function_projection_with_body(QUALIFYING_SCORE_BODY)
+}
+
+fn installed_function_projection_with_body(body: &str) -> InstalledRuntimeProjection {
+    installed_function_projection_with_evidence(body, BindingTarget::Python, &[])
+}
+
+fn installed_function_projection_with_evidence(
+    body: &str,
+    target: BindingTarget,
+    resources: &[CodeResourceDigest],
+) -> InstalledRuntimeProjection {
+    let source = r#"format: typebridge.schema/v2
+attributes:
+  name: { value: string }
+  score: { value: integer }
+entities:
+  actor: { abstract: true }
+  person:
+    sub: actor
+    owns:
+      name: { key: true }
+      score: { card: 1 }
+  employee: { sub: person }
+functions:
+  qualifying-score:
+    parameters:
+      - { name: person, type: person }
+      - { name: minimum, type: integer }
+    returns: { scalar: integer }
+    body: { typeql: "__QUALIFYING_SCORE_BODY__" }
+  person-name:
+    parameters:
+      - { name: person, type: person }
+    returns: { scalar: string }
+    body: { typeql: "match $person has name $name; return first $name;" }
+  person-score:
+    parameters:
+      - { name: person, type: person }
+    returns: { scalar: integer }
+    body: { typeql: "match $person has score $score-attribute; let $score = $score-attribute; return first $score;" }
+  identity-score:
+    parameters:
+      - { name: score, type: integer }
+    returns: { scalar: integer }
+    body: { typeql: "match $score == $score; return first $score;" }
+  find-people:
+    parameters: []
+    returns: { stream: [person] }
+    body: { typeql: "match $person isa person; return { $person };" }
+"#
+    .replace("__QUALIFYING_SCORE_BODY__", body);
+    let documents = SchemaDocumentSet::parse([(
+        DocumentId::new("function-handles.yaml").unwrap(),
+        source.as_str(),
+    )])
+    .unwrap();
+    let declared = normalize_documents(&documents).unwrap();
+    let resolved = resolve(
+        &declared,
+        &SemanticProfileId::new("typedb-3.12.1/v1").unwrap(),
+    )
+    .unwrap();
+    let (config, handlers) = match target {
+        BindingTarget::Python => (
+            ProjectionConfig::python(),
+            vec![ProjectionHandler::python_v1()],
+        ),
+        BindingTarget::TypeScript => (
+            ProjectionConfig::typescript(),
+            vec![ProjectionHandler::typescript_v1()],
+        ),
+        _ => panic!("focused function handles need only Python and TypeScript projections"),
+    };
+    InstalledRuntimeProjection::try_new(
+        project(&resolved, target, &config, &handlers, resources).unwrap(),
+    )
+    .unwrap()
+}
+
+fn installed_wide_function_projection(parameter_count: usize) -> InstalledRuntimeProjection {
+    let parameters = (0..parameter_count)
+        .map(|index| format!("      - {{ name: p{index}, type: integer }}\n"))
+        .collect::<String>();
+    let source = format!(
+        "format: typebridge.schema/v2\nfunctions:\n  wide-function:\n    parameters:\n{parameters}    returns: {{ scalar: integer }}\n    body: {{ typeql: \"match let $out = 1; return first $out;\" }}\n"
+    );
+    let documents = SchemaDocumentSet::parse([(
+        DocumentId::new("wide-function.yaml").unwrap(),
+        source.as_str(),
+    )])
+    .unwrap();
+    let declared = normalize_documents(&documents).unwrap();
+    let resolved = resolve(
+        &declared,
+        &SemanticProfileId::new("typedb-3.12.1/v1").unwrap(),
+    )
+    .unwrap();
+    InstalledRuntimeProjection::try_new(
+        project(
+            &resolved,
+            BindingTarget::Python,
+            &ProjectionConfig::python(),
+            &[ProjectionHandler::python_v1()],
+            &[],
+        )
+        .unwrap(),
+    )
+    .unwrap()
+}
+
+#[derive(Default)]
+struct FunctionProviderEvents {
+    opens: AtomicUsize,
+    plain: Mutex<Vec<String>>,
+    given: Mutex<Vec<(String, GivenRowsSpec)>>,
+}
+
+struct FunctionBackend {
+    events: Arc<FunctionProviderEvents>,
+    given: bool,
+    server_version: type_bridge_core_lib::version::Version,
+}
+
+impl DriverBackend for FunctionBackend {
+    fn match_capabilities(&self) -> CapabilitySet {
+        CapabilitySet::from_iter(
+            Capability::ALL
+                .into_iter()
+                .filter(|capability| self.given || *capability != Capability::SchemaFunctionCall),
+        )
+    }
+
+    fn open_transaction(
+        &self,
+        _database: &str,
+        _tx_type: TxType,
+    ) -> BoxFuture<'_, type_bridge_orm::Result<Box<dyn TransactionOps>>> {
+        self.events.opens.fetch_add(1, AtomicOrdering::SeqCst);
+        let transaction = FunctionTransaction {
+            events: Arc::clone(&self.events),
+            given: self.given,
+        };
+        Box::pin(async move { Ok(Box::new(transaction) as Box<dyn TransactionOps>) })
+    }
+
+    fn is_open(&self) -> bool {
+        true
+    }
+
+    fn server_version(&self) -> Option<type_bridge_core_lib::version::Version> {
+        Some(self.server_version)
+    }
+
+    fn supports_given_rows(&self) -> bool {
+        self.given
+    }
+}
+
+struct FunctionTransaction {
+    events: Arc<FunctionProviderEvents>,
+    given: bool,
+}
+
+impl TransactionOps for FunctionTransaction {
+    fn supports_given_rows(&self) -> bool {
+        self.given
+    }
+
+    fn query(&mut self, typeql: &str) -> BoxFuture<'_, type_bridge_orm::Result<QueryResult>> {
+        self.events.plain.lock().unwrap().push(typeql.to_owned());
+        Box::pin(async { Ok(QueryResult::Rows(Vec::new())) })
+    }
+
+    fn query_with_rows(
+        &mut self,
+        typeql: &str,
+        rows: GivenRowsSpec,
+    ) -> BoxFuture<'_, type_bridge_orm::Result<QueryResult>> {
+        self.events
+            .given
+            .lock()
+            .unwrap()
+            .push((typeql.to_owned(), rows));
+        Box::pin(async { Ok(QueryResult::Rows(Vec::new())) })
+    }
+
+    fn commit(&mut self) -> BoxFuture<'_, type_bridge_orm::Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn rollback(&mut self) -> BoxFuture<'_, type_bridge_orm::Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn close(&mut self) -> BoxFuture<'_, type_bridge_orm::Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+fn function_exists_request(
+    installed: &InstalledRuntimeProjection,
+    registry: &Arc<DescriptorRegistry>,
+) -> ValidatedMatchRequest {
+    let session = SessionHandle::new(Arc::clone(registry));
+    let person = session.exact("person").unwrap();
+    let minimum = ProjectedAttributeValue::try_new(
+        installed,
+        TypeId::new(TypeKind::Attribute, "score").unwrap(),
+        CanonicalValue::Long(40),
+    )
+    .unwrap();
+    let minimum = session.function_value(&minimum).unwrap();
+    let call = session
+        .function(&FunctionId::new("qualifying-score").unwrap())
+        .unwrap()
+        .call([person.function_argument(), minimum.function_argument()])
+        .unwrap();
+    let request = session
+        .query(session.positional([person.one()]).unwrap())
+        .unwrap()
+        .where_predicate(
+            call.compare_field(ComparisonOp::Equal, &person.field("score").unwrap())
+                .unwrap(),
+        )
+        .unwrap()
+        .exists_by(&person)
+        .unwrap();
+    validate_match_request(registry, request).unwrap()
+}
+
+fn model_only_function_exists_request(registry: &Arc<DescriptorRegistry>) -> ValidatedMatchRequest {
+    let session = SessionHandle::new(Arc::clone(registry));
+    let person = session.exact("person").unwrap();
+    let call = session
+        .function(&FunctionId::new("person-score").unwrap())
+        .unwrap()
+        .call([person.function_argument()])
+        .unwrap();
+    let request = session
+        .query(session.positional([person.one()]).unwrap())
+        .unwrap()
+        .where_predicate(
+            call.compare_field(ComparisonOp::Equal, &person.field("score").unwrap())
+                .unwrap(),
+        )
+        .unwrap()
+        .exists_by(&person)
+        .unwrap();
+    validate_match_request(registry, request).unwrap()
+}
+
 #[test]
 fn registered_bindings_are_session_owned_fresh_and_thread_safe() {
     assert_send_sync::<SessionHandle>();
@@ -238,6 +506,549 @@ fn registered_bindings_are_session_owned_fresh_and_thread_safe() {
         ThingKind::Relation
     );
     assert_match_code(session.exact("missing"), "unknown_descriptor");
+}
+
+#[test]
+fn projected_function_handles_enforce_signature_domain_and_immutable_reuse() {
+    assert_send_sync::<FunctionHandle>();
+    assert_send_sync::<FunctionValueHandle>();
+    assert_send_sync::<FunctionArgumentHandle>();
+    assert_send_sync::<FunctionCallHandle>();
+
+    let installed = installed_function_projection();
+    let registry = Arc::new(installed.match_registry().unwrap());
+    let session = SessionHandle::new(Arc::clone(&registry));
+    let qualifying = session
+        .function(&FunctionId::new("qualifying-score").unwrap())
+        .unwrap();
+    let person_name = session
+        .function(&FunctionId::new("person-name").unwrap())
+        .unwrap();
+    let identity_score = session
+        .function(&FunctionId::new("identity-score").unwrap())
+        .unwrap();
+    let person = session.exact("person").unwrap();
+    let person_subtypes = session.subtypes("person").unwrap();
+    let employee = session.exact("employee").unwrap();
+    let actor = session.subtypes("actor").unwrap();
+    let minimum = ProjectedAttributeValue::try_new(
+        &installed,
+        TypeId::new(TypeKind::Attribute, "score").unwrap(),
+        CanonicalValue::Long(40),
+    )
+    .unwrap();
+    let minimum = session.function_value(&minimum).unwrap();
+    let text = ProjectedAttributeValue::try_new(
+        &installed,
+        TypeId::new(TypeKind::Attribute, "name").unwrap(),
+        CanonicalValue::String(CanonicalString::new("Alice").unwrap()),
+    )
+    .unwrap();
+    let text = session.function_value(&text).unwrap();
+
+    let projected_long = |projection: &InstalledRuntimeProjection| {
+        ProjectedAttributeValue::try_new(
+            projection,
+            TypeId::new(TypeKind::Attribute, "score").unwrap(),
+            CanonicalValue::Long(40),
+        )
+        .unwrap()
+    };
+    let changed_semantic = installed_function_projection_with_body(
+        "match let $score = $minimum; return first $score;",
+    );
+    assert_match_code(
+        session.function_value(&projected_long(&changed_semantic)),
+        "function_value_semantic_brand_mismatch",
+    );
+    let foreign_target = installed_function_projection_with_evidence(
+        QUALIFYING_SCORE_BODY,
+        BindingTarget::TypeScript,
+        &[],
+    );
+    assert_match_code(
+        session.function_value(&projected_long(&foreign_target)),
+        "function_value_target_brand_mismatch",
+    );
+    let resources =
+        [
+            CodeResourceDigest::from_bytes("test.function-resource", b"different emitter evidence")
+                .unwrap(),
+        ];
+    let foreign_projection = installed_function_projection_with_evidence(
+        QUALIFYING_SCORE_BODY,
+        BindingTarget::Python,
+        &resources,
+    );
+    assert_match_code(
+        session.function_value(&projected_long(&foreign_projection)),
+        "function_value_projection_brand_mismatch",
+    );
+
+    for binding in [&person, &person_subtypes, &employee] {
+        qualifying
+            .call([binding.function_argument(), minimum.function_argument()])
+            .expect("same/subtype declared binding domain is universally assignable");
+    }
+    assert_match_code(
+        qualifying.call([actor.function_argument(), minimum.function_argument()]),
+        "function_argument_type",
+    );
+    assert_match_code(
+        qualifying.call([person.function_argument()]),
+        "function_argument_arity",
+    );
+
+    let unattached_person = session.exact("person").unwrap();
+    let unattached_inner = qualifying
+        .call([
+            unattached_person.function_argument(),
+            minimum.function_argument(),
+        ])
+        .unwrap();
+    let unattached_outer = identity_score
+        .call([unattached_inner.function_argument()])
+        .unwrap();
+    let unattached_predicate = unattached_outer
+        .compare_field(ComparisonOp::Equal, &person.field("score").unwrap())
+        .unwrap();
+    assert_match_code(
+        session
+            .query(session.positional([person.one()]).unwrap())
+            .unwrap()
+            .where_predicate(unattached_predicate),
+        "unattached_binding",
+    );
+
+    let joined_person = session.exact("person").unwrap();
+    let joined_inner = qualifying
+        .call([
+            joined_person.function_argument(),
+            minimum.function_argument(),
+        ])
+        .unwrap();
+    let joined_outer = identity_score
+        .call([joined_inner.function_argument()])
+        .unwrap();
+    let joined_request = session
+        .query(session.positional([person.one()]).unwrap())
+        .unwrap()
+        .add_hidden(joined_person)
+        .unwrap()
+        .where_predicate(
+            joined_outer
+                .compare_field(ComparisonOp::Equal, &person.field("score").unwrap())
+                .unwrap(),
+        )
+        .unwrap()
+        .exists_by(&person)
+        .unwrap();
+    validate_match_request(&registry, joined_request)
+        .expect("recursive model arguments contribute positive topology edges");
+
+    let call = qualifying
+        .call([person.function_argument(), minimum.function_argument()])
+        .unwrap();
+    let string_call = person_name.call([person.function_argument()]).unwrap();
+    assert_match_code(
+        call.compare_field(ComparisonOp::Equal, &person.field("name").unwrap()),
+        "function_comparison_type",
+    );
+    assert_match_code(
+        call.compare_value(ComparisonOp::Equal, &text),
+        "function_comparison_type",
+    );
+    assert_match_code(
+        call.compare_call(ComparisonOp::Equal, &string_call),
+        "function_comparison_type",
+    );
+    assert_match_code(
+        person
+            .field("name")
+            .unwrap()
+            .compare_function(ComparisonOp::Equal, &call),
+        "function_comparison_type",
+    );
+    assert_match_code(
+        string_call.compare_field(ComparisonOp::Contains, &person.field("name").unwrap()),
+        "function_comparison_operator_unsupported",
+    );
+    string_call
+        .compare_value(ComparisonOp::Equal, &text)
+        .expect("an operator rejection leaves both typed operands reusable");
+
+    // Failed comparisons do not consume or mutate either reusable operand.
+    let predicate = call
+        .compare_field(ComparisonOp::Equal, &person.field("score").unwrap())
+        .unwrap();
+    let request = session
+        .query(session.positional([person.one()]).unwrap())
+        .unwrap()
+        .where_predicate(predicate)
+        .unwrap()
+        .fetch_rows(
+            &[],
+            Window {
+                offset: 0,
+                limit: 1,
+            },
+            RowCardinality::ExactlyOne,
+        )
+        .unwrap();
+    let validated = validate_match_request(&registry, request).unwrap();
+    assert!(
+        validated
+            .capabilities()
+            .contains(Capability::SchemaFunctionCall)
+    );
+
+    let mut forged_without_call = validated.request().clone();
+    let Some(MatchExpr::ScalarComparison { left, right, .. }) =
+        forged_without_call.plan.predicate.as_mut()
+    else {
+        panic!("function handle lowers one scalar comparison")
+    };
+    *left = right.clone();
+    let error = validate_match_request(&registry, forged_without_call)
+        .expect_err("raw scalar operands cannot use the generated function-only request lane");
+    assert_eq!(error.code().as_str(), "function_comparison_missing_call");
+
+    assert_match_code(
+        session.function(&FunctionId::new("find-people").unwrap()),
+        "function_return_shape_unsupported",
+    );
+    assert_match_code(
+        session.function(&FunctionId::new("missing").unwrap()),
+        "unknown_projected_function",
+    );
+}
+
+#[test]
+fn projected_function_open_rejects_unrepresentable_arity_before_argument_materialization() {
+    let installed = installed_wide_function_projection(MAX_BOOLEAN_TERMS + 1);
+    let registry = Arc::new(installed.match_registry().unwrap());
+    let session = SessionHandle::new(registry);
+    let error = session
+        .function(&FunctionId::new("wide-function").unwrap())
+        .expect_err("a call wider than the request ceiling can never be represented");
+    let OrmError::Match(error) = error else {
+        panic!("function arity ceilings must remain structured")
+    };
+    assert_eq!(error.category(), MatchErrorCategory::ResourceLimit);
+    assert_eq!(error.code().as_str(), "structural_limit_exceeded");
+    assert_eq!(error.path().segments(), &[MatchErrorPathSegment::Predicate]);
+    assert_eq!(
+        error.details().get("limit"),
+        Some(&MatchErrorDetailValue::Text(
+            "function_arguments".to_owned()
+        ))
+    );
+}
+
+#[test]
+fn schema_function_requests_stale_when_only_the_function_body_changes() {
+    let installed = installed_function_projection();
+    let registry = Arc::new(installed.match_registry().unwrap());
+    let validated = function_exists_request(&installed, &registry);
+    let changed = installed_function_projection_with_body(
+        "match let $score = $minimum; return first $score;",
+    );
+    let changed_registry = changed.match_registry().unwrap();
+
+    assert_ne!(
+        installed.projection().semantic_fingerprint(),
+        changed.projection().semantic_fingerprint()
+    );
+    let error = validated
+        .recheck_schema(&changed_registry)
+        .expect_err("function body changes must stale an already validated request");
+    assert_eq!(error.category(), MatchErrorCategory::StaleSchema);
+    assert_eq!(error.code().as_str(), "stale_schema");
+    assert_eq!(error.path().segments(), &[MatchErrorPathSegment::Request]);
+}
+
+#[test]
+fn schema_function_predicates_reject_or_and_not_without_consuming_the_call() {
+    let installed = installed_function_projection();
+    let registry = Arc::new(installed.match_registry().unwrap());
+    let session = SessionHandle::new(Arc::clone(&registry));
+    let person = session.exact("person").unwrap();
+    let minimum = ProjectedAttributeValue::try_new(
+        &installed,
+        TypeId::new(TypeKind::Attribute, "score").unwrap(),
+        CanonicalValue::Long(40),
+    )
+    .unwrap();
+    let minimum = session.function_value(&minimum).unwrap();
+    let call = session
+        .function(&FunctionId::new("qualifying-score").unwrap())
+        .unwrap()
+        .call([person.function_argument(), minimum.function_argument()])
+        .unwrap();
+    let function_predicate = || {
+        call.compare_field(ComparisonOp::Equal, &person.field("score").unwrap())
+            .unwrap()
+    };
+    let terminal = |predicate| {
+        session
+            .query(session.positional([person.one()]).unwrap())
+            .unwrap()
+            .where_predicate(predicate)
+            .unwrap()
+            .exists_by(&person)
+            .unwrap()
+    };
+
+    for request in [
+        terminal(function_predicate().not()),
+        terminal(
+            function_predicate()
+                .or(&person.field("score").unwrap().presence(true))
+                .unwrap(),
+        ),
+    ] {
+        let error = validate_match_request(&registry, request)
+            .expect_err("function calls are admitted only in root conjunction terms");
+        assert_eq!(error.category(), MatchErrorCategory::InvalidPlan);
+        assert_eq!(error.code().as_str(), "function_not_root");
+        assert_eq!(error.path().segments(), &[MatchErrorPathSegment::Predicate]);
+    }
+
+    validate_match_request(&registry, terminal(function_predicate()))
+        .expect("the immutable call remains reusable after both rejected trees");
+}
+
+#[tokio::test]
+async fn direct_schema_function_execution_uses_one_canonical_given_row() {
+    let installed = installed_function_projection();
+    let registry = Arc::new(installed.match_registry().unwrap());
+    let validated = function_exists_request(&installed, &registry);
+    let events = Arc::new(FunctionProviderEvents::default());
+    let database = Database::with_backend(
+        Box::new(FunctionBackend {
+            events: Arc::clone(&events),
+            given: true,
+            server_version: type_bridge_core_lib::version::Version::new(3, 12, 1),
+        }),
+        "test",
+    );
+
+    let result = database.execute_match(&registry, &validated).await.unwrap();
+    assert!(matches!(
+        result.result(),
+        MatchResult::Exists { value: false, .. }
+    ));
+    assert_eq!(events.opens.load(AtomicOrdering::SeqCst), 1);
+    let given = events.given.lock().unwrap();
+    let [(typeql, rows)] = given.as_slice() else {
+        panic!("direct function execution must dispatch exactly one given statement")
+    };
+    assert!(typeql.starts_with("given $g0: integer;\nmatch\n"));
+    assert!(typeql.contains("let $c0 = qualifying-score($b0, $g0)"));
+    assert_eq!(rows.variables, ["g0"]);
+    assert_eq!(rows.rows, [vec![GivenValue::Integer(40)]]);
+    assert!(events.plain.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn direct_model_only_schema_function_keeps_empty_inputs_but_requires_full_capability() {
+    let installed = installed_function_projection();
+    let registry = Arc::new(installed.match_registry().unwrap());
+    let validated = model_only_function_exists_request(&registry);
+    let events = Arc::new(FunctionProviderEvents::default());
+    let database = Database::with_backend(
+        Box::new(FunctionBackend {
+            events: Arc::clone(&events),
+            given: true,
+            server_version: type_bridge_core_lib::version::Version::new(3, 12, 1),
+        }),
+        "test",
+    );
+
+    let result = database.execute_match(&registry, &validated).await.unwrap();
+    assert!(matches!(
+        result.result(),
+        MatchResult::Exists { value: false, .. }
+    ));
+    assert_eq!(events.opens.load(AtomicOrdering::SeqCst), 1);
+    assert!(events.given.lock().unwrap().is_empty());
+    let plain = events.plain.lock().unwrap();
+    let [typeql] = plain.as_slice() else {
+        panic!("model-only function execution dispatches one ordinary typed statement")
+    };
+    assert!(typeql.starts_with("match\n"));
+    assert!(typeql.contains("let $c0 = person-score($b0)"));
+}
+
+#[tokio::test]
+async fn direct_model_only_schema_function_still_rejects_missing_given_capability_preopen() {
+    let installed = installed_function_projection();
+    let registry = Arc::new(installed.match_registry().unwrap());
+    let validated = model_only_function_exists_request(&registry);
+    let events = Arc::new(FunctionProviderEvents::default());
+    let database = Database::with_backend(
+        Box::new(FunctionBackend {
+            events: Arc::clone(&events),
+            given: false,
+            server_version: type_bridge_core_lib::version::Version::new(3, 12, 1),
+        }),
+        "test",
+    );
+
+    let error = database
+        .execute_match(&registry, &validated)
+        .await
+        .expect_err("the first function capability is given-bound even without input cells");
+    let OrmError::Match(error) = error else {
+        panic!("request-level capability rejection must stay structured")
+    };
+    assert_eq!(error.category(), MatchErrorCategory::UnsupportedCapability);
+    assert_eq!(
+        error.code().as_str(),
+        "schema_function_given_rows_unsupported"
+    );
+    assert_eq!(error.path().segments(), &[MatchErrorPathSegment::Operation]);
+    assert_eq!(events.opens.load(AtomicOrdering::SeqCst), 0);
+    assert!(events.plain.lock().unwrap().is_empty());
+    assert!(events.given.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn schema_function_given_capability_rejects_before_transaction_open() {
+    let installed = installed_function_projection();
+    let registry = Arc::new(installed.match_registry().unwrap());
+    let validated = function_exists_request(&installed, &registry);
+    let events = Arc::new(FunctionProviderEvents::default());
+    let database = Database::with_backend(
+        Box::new(FunctionBackend {
+            events: Arc::clone(&events),
+            given: false,
+            server_version: type_bridge_core_lib::version::Version::new(3, 12, 1),
+        }),
+        "test",
+    );
+
+    let error = database
+        .execute_match(&registry, &validated)
+        .await
+        .expect_err("provider without given rows must fail pre-open");
+    let OrmError::Match(error) = error else {
+        panic!("given-row capability rejection must stay structured")
+    };
+    assert_eq!(error.category(), MatchErrorCategory::UnsupportedCapability);
+    assert_eq!(
+        error.code().as_str(),
+        "schema_function_given_rows_unsupported"
+    );
+    assert_eq!(error.path().segments(), &[MatchErrorPathSegment::Operation]);
+    assert_eq!(
+        error.details().get("capability"),
+        Some(&MatchErrorDetailValue::Text(
+            "query.input.given-rows".to_owned()
+        ))
+    );
+    assert_eq!(events.opens.load(AtomicOrdering::SeqCst), 0);
+    assert!(events.given.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn schema_function_server_version_rejects_with_the_same_preopen_capability_error() {
+    let installed = installed_function_projection();
+    let registry = Arc::new(installed.match_registry().unwrap());
+    let validated = function_exists_request(&installed, &registry);
+    let events = Arc::new(FunctionProviderEvents::default());
+    let database = Database::with_backend(
+        Box::new(FunctionBackend {
+            events: Arc::clone(&events),
+            given: true,
+            server_version: type_bridge_core_lib::version::Version::new(3, 11, 5),
+        }),
+        "test",
+    );
+
+    let error = database
+        .execute_match(&registry, &validated)
+        .await
+        .expect_err("a pre-given server must fail before transaction open");
+    let OrmError::Match(error) = error else {
+        panic!("server feature rejection must stay structured")
+    };
+    assert_eq!(error.category(), MatchErrorCategory::UnsupportedCapability);
+    assert_eq!(
+        error.code().as_str(),
+        "schema_function_given_rows_unsupported"
+    );
+    assert_eq!(error.path().segments(), &[MatchErrorPathSegment::Operation]);
+    assert_eq!(events.opens.load(AtomicOrdering::SeqCst), 0);
+    assert!(events.given.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn borrowed_schema_function_given_capability_uses_the_same_structured_rejection() {
+    let installed = installed_function_projection();
+    let registry = Arc::new(installed.match_registry().unwrap());
+    let validated = function_exists_request(&installed, &registry);
+    let events = Arc::new(FunctionProviderEvents::default());
+    let database = Database::with_backend(
+        Box::new(FunctionBackend {
+            events: Arc::clone(&events),
+            given: false,
+            server_version: type_bridge_core_lib::version::Version::new(3, 12, 1),
+        }),
+        "test",
+    );
+    let context = database.transaction_context(TxType::Read).await.unwrap();
+
+    let error = context
+        .execute_match(&registry, &validated)
+        .await
+        .expect_err("borrowed provider without given rows must fail before a statement");
+    let OrmError::Match(error) = error else {
+        panic!("given-row capability rejection must stay structured")
+    };
+    assert_eq!(error.category(), MatchErrorCategory::UnsupportedCapability);
+    assert_eq!(
+        error.code().as_str(),
+        "schema_function_given_rows_unsupported"
+    );
+    assert_eq!(error.path().segments(), &[MatchErrorPathSegment::Operation]);
+    assert_eq!(events.opens.load(AtomicOrdering::SeqCst), 1);
+    assert!(events.given.lock().unwrap().is_empty());
+    context.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn borrowed_schema_function_server_version_uses_the_same_structured_rejection() {
+    let installed = installed_function_projection();
+    let registry = Arc::new(installed.match_registry().unwrap());
+    let validated = function_exists_request(&installed, &registry);
+    let events = Arc::new(FunctionProviderEvents::default());
+    let database = Database::with_backend(
+        Box::new(FunctionBackend {
+            events: Arc::clone(&events),
+            given: true,
+            server_version: type_bridge_core_lib::version::Version::new(3, 11, 5),
+        }),
+        "test",
+    );
+    let context = database.transaction_context(TxType::Read).await.unwrap();
+
+    let error = context
+        .execute_match(&registry, &validated)
+        .await
+        .expect_err("a borrowed pre-given server must fail before a statement");
+    let OrmError::Match(error) = error else {
+        panic!("server feature rejection must stay structured")
+    };
+    assert_eq!(error.category(), MatchErrorCategory::UnsupportedCapability);
+    assert_eq!(
+        error.code().as_str(),
+        "schema_function_given_rows_unsupported"
+    );
+    assert_eq!(error.path().segments(), &[MatchErrorPathSegment::Operation]);
+    assert_eq!(events.opens.load(AtomicOrdering::SeqCst), 1);
+    assert!(events.given.lock().unwrap().is_empty());
+    context.close().await.unwrap();
 }
 
 #[test]
@@ -370,6 +1181,29 @@ fn named_declaration_is_checked_against_native_selection_contracts() {
         ),
         "unknown_declared_descriptor",
     );
+}
+
+#[test]
+fn named_shape_rejects_malformed_names_at_handle_construction() {
+    let session = SessionHandle::new(registry());
+    let person = session.exact("person").unwrap();
+    for malformed in [
+        String::new(),
+        "line\nbreak".to_owned(),
+        "x".repeat(MAX_OUTPUT_NAME_BYTES + 1),
+    ] {
+        assert_match_code(
+            session.named([(malformed.clone(), person.one())]),
+            "invalid_output_name",
+        );
+        assert_match_code(
+            session.named_checked(
+                [(malformed.clone(), "person".to_owned(), false)],
+                [(malformed, person.one())],
+            ),
+            "invalid_output_name",
+        );
+    }
 }
 
 #[test]
@@ -523,6 +1357,7 @@ fn collect_role_edge_ids(expression: &MatchExpr, ids: &mut Vec<u16>) {
         MatchExpr::Not { expression } => collect_role_edge_ids(expression, ids),
         MatchExpr::FieldValue { .. }
         | MatchExpr::FieldComparison { .. }
+        | MatchExpr::ScalarComparison { .. }
         | MatchExpr::FieldPresence { .. }
         | MatchExpr::BindingIid { .. }
         | MatchExpr::Reachable { .. } => {}

@@ -418,6 +418,9 @@ fn remote_result_kind_v2(
             type_bridge_contract::query_plan::ModelQueryV2::DistinctExists { .. } => {
                 RemoteResultKindV2::DistinctExists
             }
+            type_bridge_contract::query_plan::ModelQueryV2::Reduction { .. } => {
+                RemoteResultKindV2::ModelReduction
+            }
         });
     }
     match (invocation.operation(), validated.output_schema()) {
@@ -485,6 +488,7 @@ pub fn check_advertised_capabilities_v2(
             max_graph_nodes: 0,
             max_attribute_values: 0,
             max_role_players: 0,
+            max_statements: 3,
         },
         "capability-check-0000000000000000",
         0,
@@ -871,6 +875,7 @@ pub struct AdmittedRemoteRequestV2 {
     byte_budget: u64,
     invocation: QueryInvocation,
     limits: QueryV2AnswerLimits,
+    max_statements: u8,
     nonce: String,
     plan_fingerprint: QueryPlanFingerprint,
     provider_byte_budget: u64,
@@ -1308,7 +1313,8 @@ fn preflight_remote_request_v2_with_clock(
     let shape = match result {
         RemoteResultKindV2::Rows
         | RemoteResultKindV2::HydratedRows
-        | RemoteResultKindV2::HydratedPage => RemoteExecutionShape::Rows,
+        | RemoteResultKindV2::HydratedPage
+        | RemoteResultKindV2::ModelReduction => RemoteExecutionShape::Rows,
         RemoteResultKindV2::Documents => RemoteExecutionShape::Documents,
         RemoteResultKindV2::Count | RemoteResultKindV2::DistinctCount => {
             RemoteExecutionShape::Count
@@ -1323,6 +1329,8 @@ fn preflight_remote_request_v2_with_clock(
         .min(u64::try_from(MAX_REMOTE_ENVELOPE_BYTES).unwrap_or(u64::MAX));
     let (limits, reply_limits) =
         tighten_limits_v2(request_envelope.limits(), ceilings, execution_until, shape);
+    let max_statements = u8::try_from(request_envelope.limits().max_statements)
+        .expect("validated remote statement ceiling fits u8");
     let byte_budget = limits.answer.max_bytes;
     let plan_fingerprint = plan.fingerprint().map_err(&fail)?;
     let minimum_response_bytes = minimum_signed_success_response_len_v2(
@@ -1344,6 +1352,7 @@ fn preflight_remote_request_v2_with_clock(
         byte_budget,
         invocation,
         limits,
+        max_statements,
         nonce,
         plan_fingerprint,
         provider_byte_budget,
@@ -1505,6 +1514,10 @@ pub fn preflight_remote_request_versioned(
 }
 
 /// Exact bindings needed to audit a server-produced reply before release.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "the short-lived audit contract retains the exact V2 request without adding a boundary allocation to the historical V1 path"
+)]
 pub enum RemoteReplyExpectation {
     /// V1 correlation and shape contract.
     V1 {
@@ -1819,6 +1832,7 @@ async fn run_admitted_request_v2(
         byte_budget,
         invocation,
         limits,
+        max_statements,
         nonce,
         plan_fingerprint: _,
         provider_byte_budget,
@@ -1841,7 +1855,8 @@ async fn run_admitted_request_v2(
         | RemoteResultKindV2::HydratedRows
         | RemoteResultKindV2::HydratedPage
         | RemoteResultKindV2::DistinctCount
-        | RemoteResultKindV2::DistinctExists => None,
+        | RemoteResultKindV2::DistinctExists
+        | RemoteResultKindV2::ModelReduction => None,
     };
     let mut wire_meter = empty
         .map(|outcome| {
@@ -1879,18 +1894,27 @@ async fn run_admitted_request_v2(
             | RemoteResultKindV2::HydratedPage
             | RemoteResultKindV2::DistinctCount
             | RemoteResultKindV2::DistinctExists
+            | RemoteResultKindV2::ModelReduction
     );
     let outcome = if model_result {
-        crate::query_v2::execute_validated_model_query(
+        crate::query_v2::execute_validated_model_query_with_statement_limit(
             transaction,
             &validated,
             &invocation,
             execution_limits,
             reply_limits,
+            max_statements,
         )
         .await
         .map_err(execution_diagnostic)?
     } else {
+        if max_statements == 0 {
+            return Err(failure(
+                DiagnosticCategory::ResourceLimit,
+                "statement_count_limit",
+                "match execution exceeded its statement ceiling",
+            ));
+        }
         let provider_transaction = transaction.provider_mut().map_err(|_| {
             failure(
                 DiagnosticCategory::Integrity,
@@ -2007,7 +2031,8 @@ fn minimum_signed_success_response_len_v2(
         RemoteResultKindV2::HydratedRows
         | RemoteResultKindV2::HydratedPage
         | RemoteResultKindV2::DistinctCount
-        | RemoteResultKindV2::DistinctExists => {
+        | RemoteResultKindV2::DistinctExists
+        | RemoteResultKindV2::ModelReduction => {
             return u64::try_from(RemoteQueryResponseV2::signed_framing_floor(
                 nonce,
                 plan,
@@ -2346,6 +2371,7 @@ mod tests {
             max_graph_nodes: 11,
             max_attribute_values: 7,
             max_role_players: 5,
+            max_statements: 3,
         };
 
         let (execution, reply) = tighten_limits_v2(
@@ -2373,6 +2399,7 @@ mod tests {
             max_graph_nodes: u64::MAX,
             max_attribute_values: u64::MAX,
             max_role_players: u64::MAX,
+            max_statements: 3,
         };
         let (execution, reply) = tighten_limits_v2(
             unbounded,

@@ -9,6 +9,7 @@ from generated_v2 import (
     Event,
     EventRef,
     FooBar,
+    FunctionCall,
     Identifier,
     Membership,
     Person,
@@ -26,6 +27,7 @@ from generated_v2 import (
     ValDouble,
     ValDuration,
     aggregate,
+    qualifying_score,
 )
 
 from type_bridge.session import Database
@@ -116,6 +118,16 @@ query_session.query(  # E: too_many_query_slots:reportCallIssue
     person_var,
 )
 aggregate.mean(person_var.field(Person.identifier))  # E: non_numeric_aggregate:reportArgumentType
+
+
+def wrong_function_call_domain(call: FunctionCall[bool]) -> None:
+    qualifying_score(
+        query_session,
+        person_var,
+        call,  # E: wrong_function_call_domain:reportArgumentType
+    )
+
+
 query_session.query(person_var).aggregate(  # E: empty_aggregate:reportCallIssue
     person_var,
 )

@@ -2,9 +2,9 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use crate::__codegen::{
-    self, CompleteModel, EncodedCreate, EncodedReference, EncodedScalar, HydratedRow,
-    HydrationCapability, IntoEncodedCreate, MaterializeModel, Model, RelationModel, ThingModel,
-    ValidationError, ValidationPath,
+    self, CompleteModel, EncodedCreate, EncodedReference, EncodedScalar, EntityModel, HydratedRow,
+    HydrationCapability, IntoEncodedCreate, IntoEncodedReference, MaterializeModel, Model,
+    ReferenceOrigin, RelationModel, ThingModel, ValidationError, ValidationPath,
 };
 use crate::schema::{Schema, sealed};
 use type_bridge_contract::fingerprint::SemanticProfileId;
@@ -43,7 +43,13 @@ fn worker_role() -> &'static str {
 #[derive(Clone, Debug)]
 struct AssignmentCreate {
     position: String,
-    worker_iid: String,
+    worker: AssignmentWorker,
+}
+
+#[derive(Clone, Debug)]
+enum AssignmentWorker {
+    Iid(String),
+    Reference(PersonRef),
 }
 impl sealed::Sealed for AssignmentCreate {}
 impl IntoEncodedCreate for AssignmentCreate {
@@ -51,17 +57,112 @@ impl IntoEncodedCreate for AssignmentCreate {
         if self.position == "reject-input" {
             return Err(ValidationError::new("position", "rejected_create"));
         }
-        let reference = EncodedReference::try_new(
-            PERSON_JSON,
-            Some(self.worker_iid),
-            vec![],
-            &ValidationPath::root(),
-        )?;
+        let reference = match self.worker {
+            AssignmentWorker::Iid(worker_iid) => EncodedReference::try_new(
+                PERSON_JSON,
+                Some(worker_iid),
+                vec![],
+                &ValidationPath::root(),
+            )?,
+            AssignmentWorker::Reference(reference) => reference.into_encoded_reference()?,
+        };
         Ok(EncodedCreate::new(
             ASSIGNMENT_JSON,
             vec![(POSITION_OWNS, vec![EncodedScalar::String(self.position)])],
             vec![(worker_role(), vec![reference])],
         ))
+    }
+}
+
+#[derive(Clone, Debug)]
+struct PersonCreate {
+    name: String,
+}
+impl sealed::Sealed for PersonCreate {}
+impl IntoEncodedCreate for PersonCreate {
+    fn into_encoded_create(self) -> Result<EncodedCreate, ValidationError> {
+        Ok(EncodedCreate::new(
+            PERSON_JSON,
+            vec![(NAME_OWNS, vec![EncodedScalar::String(self.name)])],
+            vec![],
+        ))
+    }
+}
+
+#[derive(Clone, Debug)]
+struct Person {
+    origin: ReferenceOrigin,
+    iid: String,
+    name: String,
+}
+impl sealed::Sealed for Person {}
+impl Model for Person {
+    type Schema = TestSchema;
+    const TYPE_ID_JSON: &'static str = PERSON_JSON;
+}
+impl ThingModel for Person {
+    fn thing_kind() -> __codegen::ThingKind {
+        __codegen::ThingKind::Entity
+    }
+}
+impl EntityModel for Person {}
+impl CompleteModel for Person {
+    type Create = PersonCreate;
+
+    fn iid(&self) -> &str {
+        &self.iid
+    }
+}
+impl MaterializeModel for Person {
+    fn materialize(row: &HydratedRow, _cap: &HydrationCapability) -> Result<Self, ValidationError> {
+        row.validate_shape(
+            Self::TYPE_ID_JSON,
+            &[NAME_OWNS],
+            &[],
+            &ValidationPath::root(),
+        )?;
+        let name = match row.fields().first().and_then(|(_, values)| values.first()) {
+            Some(EncodedScalar::String(value)) => value.clone(),
+            _ => return Err(ValidationError::new("name", "missing_name")),
+        };
+        Ok(Self {
+            origin: row.origin().clone(),
+            iid: row.iid().to_owned(),
+            name,
+        })
+    }
+}
+impl Person {
+    fn reference(&self) -> PersonRef {
+        PersonRef {
+            origin: self.origin.clone(),
+            iid: Some(self.iid.clone()),
+            name: Some(self.name.clone()),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct PersonRef {
+    origin: ReferenceOrigin,
+    iid: Option<String>,
+    name: Option<String>,
+}
+impl sealed::Sealed for PersonRef {}
+impl IntoEncodedReference for PersonRef {
+    fn into_encoded_reference(self) -> Result<EncodedReference, ValidationError> {
+        let keys = self
+            .name
+            .map(|name| (NAME_OWNS, EncodedScalar::String(name)))
+            .into_iter()
+            .collect();
+        EncodedReference::try_new_with_origin(
+            PERSON_JSON,
+            self.iid,
+            keys,
+            self.origin,
+            &ValidationPath::root(),
+        )
     }
 }
 
@@ -312,10 +413,25 @@ fn fetch(iid: &str, position: &str, worker_iid: &str, worker_name: &str) -> Resp
     )]))
 }
 
+fn person_fetch(iid: &str, name: &str) -> Response {
+    Response::Result(QueryResult::Documents(vec![serde_json::json!({
+        "_iid": iid,
+        "_type": "person",
+        "attributes": {"name": [name]}
+    })]))
+}
+
 fn create(position: &str, worker_iid: &str) -> AssignmentCreate {
     AssignmentCreate {
         position: position.into(),
-        worker_iid: worker_iid.into(),
+        worker: AssignmentWorker::Iid(worker_iid.into()),
+    }
+}
+
+fn create_from_person(position: &str, person: &Person) -> AssignmentCreate {
+    AssignmentCreate {
+        position: position.into(),
+        worker: AssignmentWorker::Reference(person.reference()),
     }
 }
 
@@ -509,6 +625,60 @@ async fn public_relation_insert_runs_canonical_insert_fetch_commit() {
         assert!(fetch.contains(needle), "fetch missing {needle}: {fetch}");
     }
     assert!(guard.query_modes.iter().all(|mode| *mode == "canonical"));
+}
+
+#[tokio::test]
+async fn hydrated_generated_reference_preserves_database_origin_before_relation_io() {
+    let (source, source_state) = test_db(vec![
+        person_fetch("0x9", "alice"),
+        iid_doc("0x1"),
+        fetch("0x1", "captain", "0x9", "alice"),
+    ]);
+    let person = source
+        .entities::<Person>()
+        .get_by_iid("0x9")
+        .await
+        .unwrap()
+        .expect("source person exists");
+    assert_eq!(
+        person.reference(),
+        PersonRef {
+            origin: ReferenceOrigin::default(),
+            iid: Some("0x9".into()),
+            name: Some("alice".into()),
+        },
+        "opaque origin must not change generated reference value equality"
+    );
+
+    let (foreign, foreign_state) = test_db(Vec::new());
+    let error = foreign
+        .relations::<Assignment>()
+        .insert(create_from_person("captain", &person))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), Some("reference_database_mismatch"));
+    assert!(
+        foreign_state.lock().unwrap().events.is_empty(),
+        "foreign-origin rejection must occur before opening a transaction"
+    );
+
+    let stored = source
+        .relations::<Assignment>()
+        .insert(create_from_person("captain", &person))
+        .await
+        .unwrap();
+    assert_assignment(&stored, "0x1", "captain", "0x9");
+    let guard = source_state.lock().unwrap();
+    assert_eq!(
+        guard
+            .events
+            .iter()
+            .filter(|event| matches!(event, Event::Open(_)))
+            .count(),
+        2,
+        "one source read and one same-database relation write"
+    );
+    assert!(matches!(guard.events.last(), Some(Event::Commit)));
 }
 
 #[tokio::test]

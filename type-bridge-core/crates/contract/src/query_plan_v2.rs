@@ -1521,6 +1521,110 @@ pub enum QueryRowCardinalityV2 {
     BoundedMany,
 }
 
+/// The closed reducer vocabulary used by model-compatible V2 terminals.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QueryReductionKindV2 {
+    /// Count distinct reduced roots.
+    Count,
+    /// Sum a numeric scalar field.
+    Sum,
+    /// Select the smallest numeric scalar field value.
+    Min,
+    /// Select the largest numeric scalar field value.
+    Max,
+    /// Compute the arithmetic mean.
+    Mean,
+    /// Compute the statistical median.
+    Median,
+    /// Compute the sample standard deviation.
+    Std,
+}
+
+impl QueryReductionKindV2 {
+    /// Return whether this reducer consumes a numeric scalar field.
+    #[must_use]
+    pub const fn requires_input(self) -> bool {
+        !matches!(self, Self::Count)
+    }
+
+    /// Return whether this reducer always returns the double domain.
+    #[must_use]
+    pub const fn widens_to_double(self) -> bool {
+        matches!(self, Self::Mean | Self::Median | Self::Std)
+    }
+}
+
+/// One ordered typed reducer term.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct QueryReductionTermV2 {
+    input: Option<QueryFieldV2>,
+    reduction: QueryReductionKindV2,
+}
+
+impl QueryReductionTermV2 {
+    /// Construct one typed reducer term.
+    #[must_use]
+    pub const fn new(reduction: QueryReductionKindV2, input: Option<QueryFieldV2>) -> Self {
+        Self { input, reduction }
+    }
+
+    /// Return the reducer operation.
+    #[must_use]
+    pub const fn reduction(&self) -> QueryReductionKindV2 {
+        self.reduction
+    }
+
+    /// Return the optional numeric input field.
+    #[must_use]
+    pub const fn input(&self) -> Option<&QueryFieldV2> {
+        self.input.as_ref()
+    }
+}
+
+/// Optional grouping contract for one model-compatible reduction terminal.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum QueryReductionGroupV2 {
+    /// Group by one attached thing identity.
+    Binding {
+        /// Attached grouping binding.
+        #[serde(deserialize_with = "deserialize_binding")]
+        binding: BindingId,
+    },
+    /// Group by each witnessed value of one owned field.
+    Field {
+        /// Descriptor-qualified grouping field.
+        field: QueryFieldV2,
+    },
+    /// Group by the Cartesian product of multiple owned field values.
+    Fields {
+        /// Ordered descriptor-qualified grouping fields.
+        fields: Vec<QueryFieldV2>,
+    },
+}
+
+impl QueryReductionGroupV2 {
+    /// Construct a thing-identity grouping contract.
+    #[must_use]
+    pub const fn binding(binding: BindingId) -> Self {
+        Self::Binding { binding }
+    }
+
+    /// Construct a single-field grouping contract.
+    #[must_use]
+    pub const fn field(field: QueryFieldV2) -> Self {
+        Self::Field { field }
+    }
+
+    /// Construct a tuple-field grouping contract.
+    #[must_use]
+    pub const fn fields(fields: Vec<QueryFieldV2>) -> Self {
+        Self::Fields { fields }
+    }
+}
+
 impl QueryRowCardinalityV2 {
     /// Return whether exactly one distinct selected tuple is required.
     #[must_use]
@@ -1577,6 +1681,18 @@ pub enum ModelQueryV2 {
         /// Root identity binding.
         #[serde(deserialize_with = "deserialize_binding")]
         root: BindingId,
+    },
+    /// Reduce the distinct-root stream with optional typed grouping.
+    Reduction {
+        /// Complete plan-side descriptor and hydration authority.
+        hydration: HydrationProjectionV2,
+        /// Root identity whose distinct stream feeds every reducer.
+        #[serde(deserialize_with = "deserialize_binding")]
+        root: BindingId,
+        /// Optional exact grouping contract.
+        group: Option<QueryReductionGroupV2>,
+        /// Ordered typed reducer terms.
+        reducers: Vec<QueryReductionTermV2>,
     },
 }
 
@@ -1720,7 +1836,8 @@ const fn model_hydration(query: &ModelQueryV2) -> Option<&HydrationProjectionV2>
         ModelQueryV2::Rows { hydration, .. }
         | ModelQueryV2::Page { hydration, .. }
         | ModelQueryV2::DistinctCount { hydration, .. }
-        | ModelQueryV2::DistinctExists { hydration, .. } => Some(hydration),
+        | ModelQueryV2::DistinctExists { hydration, .. }
+        | ModelQueryV2::Reduction { hydration, .. } => Some(hydration),
     }
 }
 
@@ -2264,6 +2381,153 @@ fn validate_model_query(
                     DiagnosticCategory::InvalidContract,
                     "query_plan_v2_root_not_hydrated",
                     "distinct root operations require root descriptor authority",
+                ));
+            }
+        }
+        ModelQueryV2::Reduction {
+            hydration,
+            root,
+            group,
+            reducers,
+        } => {
+            check_binding(*root, binding_count)?;
+            validate_hydration(hydration, binding_count, limits)?;
+            if !hydration
+                .bindings()
+                .iter()
+                .any(|binding| binding.binding() == *root)
+            {
+                return Err(failure(
+                    DiagnosticCategory::InvalidContract,
+                    "query_plan_v2_root_not_hydrated",
+                    "reduction roots require descriptor authority",
+                ));
+            }
+            if reducers.is_empty() || !limits.allows_selected_slots(reducers.len()) {
+                return Err(failure(
+                    DiagnosticCategory::ResourceLimit,
+                    "query_plan_v2_reducer_limit",
+                    "typed reductions require a bounded non-empty reducer list",
+                ));
+            }
+            for term in reducers {
+                if term.reduction().requires_input() != term.input().is_some() {
+                    return Err(failure(
+                        DiagnosticCategory::InvalidContract,
+                        "query_plan_v2_reducer_input",
+                        "count forbids an input and every numeric reducer requires one",
+                    ));
+                }
+                if let Some(field) = term.input() {
+                    validate_reduction_field(field, hydration, binding_count, true)?;
+                }
+            }
+            match group {
+                None => {}
+                Some(QueryReductionGroupV2::Binding { binding }) => {
+                    check_binding(*binding, binding_count)?;
+                    if binding == root {
+                        return Err(failure(
+                            DiagnosticCategory::InvalidContract,
+                            "query_plan_v2_reduction_group_is_root",
+                            "the reduction group binding must differ from the reduced root",
+                        ));
+                    }
+                    if !hydration
+                        .bindings()
+                        .iter()
+                        .any(|authority| authority.binding() == *binding)
+                    {
+                        return Err(failure(
+                            DiagnosticCategory::InvalidContract,
+                            "query_plan_v2_reduction_group_not_hydrated",
+                            "thing grouping requires descriptor authority for its binding",
+                        ));
+                    }
+                }
+                Some(QueryReductionGroupV2::Field { field }) => {
+                    validate_reduction_field(field, hydration, binding_count, false)?;
+                }
+                Some(QueryReductionGroupV2::Fields { fields }) => {
+                    if fields.len() < 2 {
+                        return Err(failure(
+                            DiagnosticCategory::InvalidContract,
+                            "query_plan_v2_reduction_group_tuple",
+                            "tuple-field grouping requires at least two fields",
+                        ));
+                    }
+                    if !limits.allows_selected_slots(fields.len()) {
+                        return Err(failure(
+                            DiagnosticCategory::ResourceLimit,
+                            "query_plan_v2_reduction_group_limit",
+                            "tuple-field grouping exceeds the bounded field ceiling",
+                        ));
+                    }
+                    let mut unique = BTreeSet::new();
+                    for field in fields {
+                        validate_reduction_field(field, hydration, binding_count, false)?;
+                        if !unique.insert((field.binding(), field.descriptor(), field.attribute()))
+                        {
+                            return Err(failure(
+                                DiagnosticCategory::InvalidContract,
+                                "query_plan_v2_reduction_group_duplicate",
+                                "tuple-field grouping fields must be unique",
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_reduction_field(
+    field: &QueryFieldV2,
+    hydration: &HydrationProjectionV2,
+    binding_count: usize,
+    numeric_scalar: bool,
+) -> Result<(), Diagnostic> {
+    check_field(field, binding_count)?;
+    validate_predicate_field_authority(field, Some(hydration))?;
+    if numeric_scalar
+        && !matches!(
+            field.value_type(),
+            ValueTypeTag::Long | ValueTypeTag::Double
+        )
+    {
+        return Err(failure(
+            DiagnosticCategory::InvalidContract,
+            "query_plan_v2_reducer_domain",
+            "reducer inputs require the long or double scalar domain",
+        ));
+    }
+    if numeric_scalar {
+        let binding = hydration
+            .bindings()
+            .iter()
+            .find(|binding| binding.binding() == field.binding())
+            .expect("field authority validation proved the binding");
+        for concrete in binding.concrete_descriptors() {
+            let Some(projected) = hydration
+                .descriptors()
+                .iter()
+                .find(|descriptor| descriptor.descriptor() == concrete)
+                .and_then(|descriptor| {
+                    descriptor.fields().iter().find(|projected| {
+                        projected.reference_owners().contains(field.descriptor())
+                            && projected.attribute() == field.attribute()
+                            && projected.value_type() == field.value_type()
+                    })
+                })
+            else {
+                continue;
+            };
+            if projected.ordered() || projected.cardinality().max() != Some(1) {
+                return Err(failure(
+                    DiagnosticCategory::InvalidContract,
+                    "query_plan_v2_reducer_non_scalar",
+                    "reducer inputs must be scalar descriptor ownerships",
                 ));
             }
         }
@@ -2830,6 +3094,9 @@ fn add_model_query_capabilities(
         }
         ModelQueryV2::DistinctExists { .. } => {
             insert_capability(capabilities, CAP_DISTINCT_EXISTS)?;
+        }
+        ModelQueryV2::Reduction { .. } => {
+            insert_capability(capabilities, super::CAP_STAGE_REDUCE)?;
         }
     }
     Ok(())

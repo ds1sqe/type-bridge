@@ -50,6 +50,14 @@ fn snapshot(root: &Path) -> BTreeMap<String, Vec<u8>> {
     files
 }
 
+fn contains_hex_bytes(source: &str, needle: &[u8]) -> bool {
+    let encoded = needle
+        .iter()
+        .map(|byte| format!("0x{byte:02x}u, "))
+        .collect::<String>();
+    source.contains(&encoded)
+}
+
 #[test]
 fn published_split_yaml_v1_fixture_passes_offline_schema_check() {
     let fixture =
@@ -118,7 +126,7 @@ fn schema_generate_bindings_only_embed_authority_without_standalone_json() {
          compatibility:\n  semantic-profile: typedb-3.12.1/v1\n\
          migrations:\n  directory: migrations/v2\n  app-label: bindingsonly\n\
          bindings:\n  python:\n    output: generated/python\n  typescript:\n    \
-         output: generated/typescript\n  rust:\n    output: generated/rust\n",
+         output: generated/typescript\n  rust:\n    output: generated/rust\n  c:\n    output: generated/c\n",
     )
     .expect("manifest writes");
     fs::write(
@@ -190,6 +198,11 @@ fn schema_generate_bindings_only_embed_authority_without_standalone_json() {
             canonical_authority = Some(embedded);
         }
     }
+    assert!(
+        root.join("generated/c/include/tb_bindingsonly/models.h")
+            .is_file(),
+        "bindings-only generation omitted the configured C package",
+    );
 
     assert!(
         !snapshot(&root.join("generated"))
@@ -210,9 +223,9 @@ fn schema_generate_emits_all_configured_projections_deterministically() {
         "format: typebridge.workspace/v1\n\
          schema:\n  root: schema/schema.yaml\n  ownership: exclusive\n  managed-scope: gen-smoke\n\
          compatibility:\n  semantic-profile: typedb-3.12.1/v1\n  require: [schema.transition.define]\n\
-         migrations:\n  directory: migrations/v2\n  app-label: gensmoke\n\
+         migrations:\n  directory: migrations/v2\n  app-label: gen-smoke_v1\n\
          bindings:\n  python:\n    output: generated/python\n  typescript:\n    \
-         output: generated/typescript\n  rust:\n    output: generated/rust\n\
+         output: generated/typescript\n  rust:\n    output: generated/rust\n  c:\n    output: generated/c\n\
          artifacts:\n  schema-authority:\n    output: generated/schema-authority.json\n",
     )
     .expect("manifest writes");
@@ -223,15 +236,23 @@ fn schema_generate_emits_all_configured_projections_deterministically() {
     .expect("schema set writes");
     fs::write(
         root.join("schema/fragments/model.yaml"),
-        "format: typebridge.schema/v2\nattributes:\n  nickname: { value: string }\n\
-         entities:\n  person: { owns: [nickname] }\n  employee: { sub: { type: person } }\n",
+        "format: typebridge.schema/v2\nattributes:\n  nickname: { value: string }\n  tag: { value: string }\n\
+         entities:\n  person:\n    owns:\n      nickname: { card: { min: 0, max: 1 } }\n      tag: { card: { min: 0, max: 3 }, ordered: true, distinct: true }\n  employee: { sub: { type: person } }\n\
+         relations:\n  membership:\n    relates:\n      member: { card: { min: 0, max: 3 }, ordered: true, distinct: true }\n\
+         plays:\n  person:\n    membership:\n      member: { card: { min: 0, max: 1 } }\n",
     )
     .expect("schema writes");
 
-    assert_success(&run_cli(root, &["schema", "generate"]), "schema generate");
+    let first_output = run_cli(root, &["schema", "generate"]);
+    assert_success(&first_output, "schema generate");
+    assert!(
+        String::from_utf8_lossy(&first_output.stdout).contains("for c into"),
+        "schema generation did not report the C target by its stable spelling: {}",
+        String::from_utf8_lossy(&first_output.stdout),
+    );
 
     let mut snapshots = BTreeMap::new();
-    for target in ["python", "typescript", "rust"] {
+    for target in ["python", "typescript", "rust", "c"] {
         let output_root = root.join("generated").join(target);
         let files = snapshot(&output_root);
         assert!(
@@ -239,14 +260,33 @@ fn schema_generate_emits_all_configured_projections_deterministically() {
             "{target} projection produced no files under {}",
             output_root.display(),
         );
+        let projected_name = if target == "c" {
+            "tb_gen_hsmoke_uv1_employee"
+        } else {
+            "Employee"
+        };
         assert!(
             files
                 .values()
-                .any(|contents| String::from_utf8_lossy(contents).contains("Employee")),
+                .any(|contents| { String::from_utf8_lossy(contents).contains(projected_name) }),
             "{target} projection omitted the expanded-sub employee type",
+        );
+        assert!(
+            files.values().any(|contents| {
+                let source = String::from_utf8_lossy(contents);
+                (source.contains("ordered_list") && source.contains("distinct"))
+                    || (contains_hex_bytes(&source, b"ordered_list")
+                        && contains_hex_bytes(&source, b"distinct"))
+            }),
+            "{target} projection omitted ordered-distinct collection authority",
         );
         snapshots.insert(target, files);
     }
+    assert!(
+        root.join("generated/c/include/tb_gen_hsmoke_uv1/models.h")
+            .is_file(),
+        "C output path did not use the exact app-label-derived symbol prefix",
+    );
     let authority_path = root.join("generated/schema-authority.json");
     let authority_bytes = fs::read(&authority_path).expect("generated authority artifact reads");
     let available = schema_authority_capability_vocabulary();
@@ -285,7 +325,7 @@ fn schema_generate_emits_all_configured_projections_deterministically() {
         &run_cli(root, &["schema", "generate"]),
         "schema generate rerun",
     );
-    for target in ["python", "typescript", "rust"] {
+    for target in ["python", "typescript", "rust", "c"] {
         let files = snapshot(&root.join("generated").join(target));
         assert_eq!(
             &files, &snapshots[target],
@@ -489,7 +529,7 @@ fn schema_generate_rejects_symlinked_output_directory() {
 }
 
 #[test]
-fn schema_generate_rejects_hostile_later_target_before_replacing_earlier_binding() {
+fn schema_generate_rejects_hostile_c_target_before_publishing_any_new_output() {
     let workspace = tempfile::tempdir().expect("workspace directory");
     let root = workspace.path();
     fs::create_dir_all(root.join("schema/fragments")).expect("schema directory");
@@ -532,12 +572,12 @@ fn schema_generate_rejects_hostile_later_target_before_replacing_earlier_binding
          schema:\n  root: schema/schema.yaml\n  ownership: exclusive\n  managed-scope: gen-batch\n\
          compatibility:\n  semantic-profile: typedb-3.12.1/v1\n\
          migrations:\n  directory: migrations/v2\n  app-label: genbatch\n\
-         bindings:\n  python:\n    output: generated/python\n  typescript:\n    output: generated/typescript\n\
+         bindings:\n  python:\n    output: generated/python\n  c:\n    output: generated/c\n\
          artifacts:\n  schema-authority:\n    output: generated/schema-authority.json\n",
     )
     .expect("expanded manifest writes");
-    fs::create_dir_all(root.join("generated/typescript/package.json"))
-        .expect("hostile later final directory creates");
+    fs::create_dir_all(root.join("generated/c/src/models.c"))
+        .expect("hostile C final directory creates");
 
     let output = run_cli(root, &["schema", "generate"]);
     assert!(
@@ -553,7 +593,12 @@ fn schema_generate_rejects_hostile_later_target_before_replacing_earlier_binding
     assert_eq!(
         snapshot(&root.join("generated/python")),
         accepted_python,
-        "the earlier accepted Python generation changed before the later target rejected",
+        "the earlier accepted Python generation changed before the C target rejected",
+    );
+    assert!(
+        !root.join("generated/c/CMakeLists.txt").exists()
+            && !root.join("generated/c/include").exists(),
+        "part of the C package was published before its hostile target rejected",
     );
     assert!(
         snapshot(&root.join("generated")).keys().all(|path| {

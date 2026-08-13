@@ -22,6 +22,8 @@ struct TestSchema;
 impl sealed::Sealed for TestSchema {}
 impl Schema for TestSchema {}
 
+fn assert_send<T: Send>(_: T) {}
+
 #[derive(Clone, Debug)]
 struct RecordCreate {
     name: String,
@@ -266,6 +268,17 @@ fn assert_model_error(
         actual_path,
         path.iter().map(|v| (*v).to_owned()).collect::<Vec<_>>()
     );
+}
+
+#[test]
+fn routed_database_manager_future_is_send() {
+    let (db, state) = test_db(Vec::new());
+    let manager = db.entities::<Record>();
+    assert_send(manager.insert(RecordCreate {
+        name: "send".into(),
+        value: "proof".into(),
+    }));
+    assert!(state.lock().unwrap().events.is_empty());
 }
 
 #[tokio::test]

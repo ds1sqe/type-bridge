@@ -1,36 +1,57 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
+use std::fs;
+use std::fs::OpenOptions;
 use std::future::Future;
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration as StdDuration;
 
+use serde_json::{Value, json};
+use sha2::{Digest as _, Sha256};
+use type_bridge::__codegen::{EncodedScalar, IntoEncodedScalar};
 use type_bridge::value::{
     Date as QueryDate, DateTime as QueryDateTime, DateTimeTz as QueryDateTimeTz,
     Decimal as QueryDecimal, Double as QueryDouble, Regex, Text,
 };
 use type_bridge::{
-    ConnectionOptions, Database, PageOptions, RemoteConnectionOptions, RemoteDatabase,
+    AnswerCancellation, ConnectionOptions, Database, Error, ErrorCategory, ErrorDetail,
+    ErrorPathSegment, PageOptions, QueryDiagnosticCategory, QueryDiagnosticPathKind,
+    QueryExecutionResourceLimits, QuerySession, RemoteConnectionOptions, RemoteDatabase,
     RemoteQueryLimits, RemoteQueryTransport, RowsOptions, aggregate,
 };
 use type_bridge_generated_schema::{
     Actor, ActorType, Aliases, AppSchema, CanonicalDouble, Container, ContainerCreate,
     ContainerType, Contractor, ContractorCode, ContractorCreate, Counter, CounterCreate,
     CounterType, CounterValue, Date, DateTime, DateTimeTz, Decimal, Duration, Employee,
-    EmployeeCreate, EmployeeFamily, Employment, EmploymentCreate, EmploymentType, Event,
-    EventCreate, EventType, FooBar, Identifier, Interaction, InteractionActorPlayer,
-    InteractionActorRef, InteractionCreate, InteractionTargetPlayer, InteractionType, Manager,
-    ManagerCreate, ManagerNote, Membership, MembershipCreate, MembershipFamily,
-    MembershipMemberPlayer, MembershipMemberRef, MembershipType, NetworkLink, NetworkLinkCreate,
-    NetworkLinkDestinationPlayer, NetworkLinkOriginPlayer, NetworkLinkType, Nickname, Party,
-    PartyFamily, PartyName, Person, PersonCreate, PersonRef, PersonType, PlainActivity,
-    PlainActivityCreate, PlainActivityParticipantPlayer, PlainActivityType, Rank, Robot,
-    RobotCreate, RobotId, RobotType, SCHEMA, Score, ScoreGte, ValBool, ValConstrained, ValDate,
-    ValDatetime, ValDatetimeTz, ValDecimal, ValDouble, ValDuration, plays_event_container_item,
+    EmployeeCreate, EmployeeFamily, EmployeeType, Employment, EmploymentCreate, EmploymentType,
+    Event, EventCreate, EventType, FooBar, Identifier, IntegerCall, IntegerInput, Interaction,
+    InteractionActorPlayer, InteractionActorRef, InteractionCreate, InteractionTargetPlayer,
+    InteractionType, Manager, ManagerCreate, ManagerNote, ManagerType, Membership,
+    MembershipCreate, MembershipFamily, MembershipMemberPlayer, MembershipMemberRef,
+    MembershipType, NetworkLink, NetworkLinkCreate, NetworkLinkDestinationPlayer,
+    NetworkLinkOriginPlayer, NetworkLinkParticipantPlayer, NetworkLinkType, Nickname,
+    PROJECTION_FINGERPRINT_JSON, Party, PartyFamily, PartyName, Person, PersonCreate, PersonRef,
+    PersonType, PlainActivity, PlainActivityCreate, PlainActivityParticipantPlayer,
+    PlainActivityType, Rank, Robot, RobotCreate, RobotId, RobotType, SCHEMA,
+    SEMANTIC_SCHEMA_FINGERPRINT_JSON, Score, ScoreGte, ValBool, ValConstrained, ValDate,
+    ValDatetime, ValDatetimeTz, ValDecimal, ValDouble, ValDuration, integer_input,
+    plays_event_container_item, qualifying_score,
 };
 
 #[derive(type_bridge::SelectedRow)]
 struct PersonGraph {
     person: Person,
     members: Vec<Person>,
+}
+
+#[derive(type_bridge::SelectedRow)]
+struct WorkforceNetworkShape {
+    origin: Person,
+    participants: Vec<Person>,
 }
 
 #[derive(Clone)]
@@ -142,6 +163,7 @@ impl type_bridge::LifecycleHook for RecordingLifecycleHook {
 struct HttpTransport {
     client: reqwest::Client,
     base_url: String,
+    exchange_count: Option<Arc<AtomicUsize>>,
 }
 
 impl HttpTransport {
@@ -149,6 +171,15 @@ impl HttpTransport {
         Self {
             client: reqwest::Client::new(),
             base_url,
+            exchange_count: None,
+        }
+    }
+
+    fn recording(base_url: String, exchange_count: Arc<AtomicUsize>) -> Self {
+        Self {
+            client: reqwest::Client::new(),
+            base_url,
+            exchange_count: Some(exchange_count),
         }
     }
 }
@@ -189,6 +220,9 @@ impl RemoteQueryTransport for HttpTransport {
         request: &'a [u8],
     ) -> Pin<Box<dyn Future<Output = type_bridge::Result<Vec<u8>>> + Send + 'a>> {
         Box::pin(async move {
+            if let Some(exchange_count) = &self.exchange_count {
+                exchange_count.fetch_add(1, Ordering::SeqCst);
+            }
             Ok(self
                 .client
                 .post(format!("{}/v2/query", self.base_url))
@@ -202,6 +236,68 @@ impl RemoteQueryTransport for HttpTransport {
                 .map_err(transport_error)?
                 .to_vec())
         })
+    }
+}
+
+struct CancelBeforeDecodeTransport {
+    inner: HttpTransport,
+    cancellation: AnswerCancellation,
+    response_completed: Arc<AtomicBool>,
+}
+
+impl RemoteQueryTransport for CancelBeforeDecodeTransport {
+    fn capabilities(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = type_bridge::Result<Vec<u8>>> + Send + '_>> {
+        self.inner.capabilities()
+    }
+
+    fn exchange<'a>(
+        &'a self,
+        request: &'a [u8],
+    ) -> Pin<Box<dyn Future<Output = type_bridge::Result<Vec<u8>>> + Send + 'a>> {
+        Box::pin(async move {
+            let response = self.inner.exchange(request).await?;
+            self.response_completed.store(true, Ordering::SeqCst);
+            self.cancellation.cancel();
+            Ok(response)
+        })
+    }
+}
+
+struct CallerAbortProbeTransport {
+    cancellation: AnswerCancellation,
+}
+
+impl RemoteQueryTransport for CallerAbortProbeTransport {
+    fn capabilities(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = type_bridge::Result<Vec<u8>>> + Send + '_>> {
+        Box::pin(async {
+            Err(Error::remote(
+                "caller_transport_probe_only",
+                "caller transport probe has no capability endpoint",
+                None,
+            ))
+        })
+    }
+
+    fn exchange<'a>(
+        &'a self,
+        _request: &'a [u8],
+    ) -> Pin<Box<dyn Future<Output = type_bridge::Result<Vec<u8>>> + Send + 'a>> {
+        Box::pin(std::future::poll_fn(move |context| {
+            if self.cancellation.is_cancelled() {
+                std::task::Poll::Ready(Err(Error::remote(
+                    "caller_transport_aborted",
+                    "caller transport stopped its own exchange",
+                    None,
+                )))
+            } else {
+                context.waker().wake_by_ref();
+                std::task::Poll::Pending
+            }
+        }))
     }
 }
 
@@ -236,6 +332,3028 @@ async fn database() -> Database<AppSchema> {
         .expect("live projection database connects")
         .with_schema(SCHEMA)
         .expect("schema binding handshake succeeds")
+}
+
+const WORKFORCE_MANIFEST_PATH: &str = "tests/contracts/sdk_conformance/manifest-v1.json";
+const WORKFORCE_CATALOG_PATH: &str = "tests/contracts/sdk_conformance/workforce-v1/catalog-v1.json";
+const WORKFORCE_SCHEMA_PATH: &str =
+    "type-bridge-core/crates/schema-codegen/tests/acceptance/schema.yaml";
+const WORKFORCE_PROVIDER_SCHEMA_PATH: &str =
+    "type-bridge-core/crates/schema-codegen/tests/acceptance/provider-3.12.1.tql";
+const WORKFORCE_JOURNEY_PATH: &str = "tests/contracts/sdk_conformance/workforce-v1/journey-v1.json";
+const WORKFORCE_V2_CATALOG_PATH: &str =
+    "tests/contracts/sdk_conformance/workforce-v2/catalog-v2.json";
+const WORKFORCE_V2_JOURNEY_PATH: &str =
+    "tests/contracts/sdk_conformance/workforce-v2/journey-v2.json";
+const WORKFORCE_PROFILE: &str = "typedb-3.12.1/v1";
+
+fn workforce_env_path(name: &str) -> PathBuf {
+    PathBuf::from(env::var_os(name).unwrap_or_else(|| panic!("{name} is required")))
+}
+
+fn workforce_string<'a>(value: &'a Value, label: &str) -> &'a str {
+    value
+        .as_str()
+        .unwrap_or_else(|| panic!("{label} must be a JSON string"))
+}
+
+fn workforce_typed_field<'a>(fields: &'a Value, name: &str, kind: &str) -> &'a Value {
+    let value = fields
+        .get(name)
+        .unwrap_or_else(|| panic!("workforce person field is missing: {name}"));
+    assert_eq!(
+        workforce_string(&value["kind"], "workforce field kind"),
+        kind,
+        "workforce person field has the wrong scalar domain: {name}"
+    );
+    value
+}
+
+fn workforce_field_string(fields: &Value, name: &str, kind: &str) -> String {
+    workforce_string(
+        &workforce_typed_field(fields, name, kind)["value"],
+        "workforce field value",
+    )
+    .to_owned()
+}
+
+fn workforce_field_long(fields: &Value, name: &str) -> i64 {
+    workforce_string(
+        &workforce_typed_field(fields, name, "long")["value"],
+        "workforce long value",
+    )
+    .parse()
+    .unwrap_or_else(|_| panic!("workforce long value is invalid: {name}"))
+}
+
+fn workforce_field_double(fields: &Value, name: &str) -> f64 {
+    let bits = workforce_string(
+        &workforce_typed_field(fields, name, "double")["bits"],
+        "workforce double bits",
+    );
+    assert_eq!(
+        bits.len(),
+        16,
+        "workforce double bits must be 16 hex digits"
+    );
+    let bits = u64::from_str_radix(bits, 16).expect("workforce double bits are hexadecimal");
+    let value = f64::from_bits(bits);
+    assert!(value.is_finite(), "workforce double must be finite");
+    value
+}
+
+fn workforce_aliases(fields: &Value) -> Vec<String> {
+    fields["aliases"]
+        .as_array()
+        .expect("workforce aliases must be an array")
+        .iter()
+        .map(|value| {
+            assert_eq!(
+                workforce_string(&value["kind"], "workforce alias kind"),
+                "string"
+            );
+            workforce_string(&value["value"], "workforce alias value").to_owned()
+        })
+        .collect()
+}
+
+fn workforce_person_create(fields: &Value, nickname: &str) -> PersonCreate {
+    PersonCreate::try_new(
+        workforce_aliases(fields)
+            .into_iter()
+            .map(|value| Aliases::new(value).expect("workforce alias is valid"))
+            .collect(),
+        Some(
+            FooBar::new(workforce_field_long(fields, "foo__bar"))
+                .expect("workforce foo__bar is valid"),
+        ),
+        Identifier::new(workforce_field_string(fields, "identifier", "string"))
+            .expect("workforce identifier is valid"),
+        Some(Nickname::new(nickname.to_owned()).expect("workforce nickname is valid")),
+        Score::new(workforce_field_long(fields, "score")).expect("workforce score is valid"),
+        Some(
+            ScoreGte::new(workforce_field_long(fields, "score__gte"))
+                .expect("workforce score__gte is valid"),
+        ),
+        ValBool::new(
+            workforce_typed_field(fields, "val_bool", "boolean")["value"]
+                .as_bool()
+                .expect("workforce boolean value is valid"),
+        )
+        .expect("workforce val_bool is valid"),
+        ValConstrained::new(workforce_field_long(fields, "val_constrained"))
+            .expect("workforce val_constrained is valid"),
+        ValDate::new(
+            Date::try_new(workforce_field_string(fields, "val_date", "date"))
+                .expect("workforce date is valid"),
+        )
+        .expect("workforce val_date is valid"),
+        ValDatetime::new(
+            DateTime::try_new(workforce_field_string(fields, "val_datetime", "datetime"))
+                .expect("workforce datetime is valid"),
+        )
+        .expect("workforce val_datetime is valid"),
+        ValDatetimeTz::new(
+            DateTimeTz::try_new(workforce_field_string(
+                fields,
+                "val_datetime_tz",
+                "datetime_tz",
+            ))
+            .expect("workforce datetime-tz is valid"),
+        )
+        .expect("workforce val_datetime_tz is valid"),
+        ValDecimal::new(
+            Decimal::try_new(workforce_field_string(fields, "val_decimal", "decimal"))
+                .expect("workforce decimal is valid"),
+        )
+        .expect("workforce val_decimal is valid"),
+        ValDouble::new(
+            CanonicalDouble::try_new(workforce_field_double(fields, "val_double"))
+                .expect("workforce double is valid"),
+        )
+        .expect("workforce val_double is valid"),
+        ValDuration::new(
+            Duration::try_new(workforce_field_string(fields, "val_duration", "duration"))
+                .expect("workforce duration is valid"),
+        )
+        .expect("workforce val_duration is valid"),
+    )
+    .expect("workforce PersonCreate is valid")
+}
+
+fn assert_workforce_person(person: &Person, fields: &Value, nickname: &str) {
+    assert_eq!(
+        person.identifier().value(),
+        &workforce_field_string(fields, "identifier", "string")
+    );
+    let mut actual_aliases = person
+        .aliases()
+        .iter()
+        .map(|value| value.value().clone())
+        .collect::<Vec<_>>();
+    actual_aliases.sort();
+    let mut expected_aliases = workforce_aliases(fields);
+    expected_aliases.sort();
+    assert_eq!(actual_aliases, expected_aliases);
+    assert_eq!(
+        person.nickname().map(|value| value.value().as_str()),
+        Some(nickname)
+    );
+    assert_eq!(
+        person.foo__bar().map(FooBar::value),
+        Some(&workforce_field_long(fields, "foo__bar"))
+    );
+    assert_eq!(
+        person.score().value(),
+        &workforce_field_long(fields, "score")
+    );
+    assert_eq!(
+        person.score__gte().map(ScoreGte::value),
+        Some(&workforce_field_long(fields, "score__gte"))
+    );
+    assert_eq!(
+        person.val_bool().value(),
+        &workforce_typed_field(fields, "val_bool", "boolean")["value"]
+            .as_bool()
+            .expect("workforce boolean value is valid")
+    );
+    assert_eq!(
+        person.val_constrained().value(),
+        &workforce_field_long(fields, "val_constrained")
+    );
+    assert_eq!(
+        person.val_date().value().as_str(),
+        workforce_field_string(fields, "val_date", "date")
+    );
+    assert_eq!(
+        person.val_datetime().value().as_str(),
+        workforce_field_string(fields, "val_datetime", "datetime")
+    );
+    assert_eq!(
+        person.val_datetime_tz().value().as_str(),
+        workforce_field_string(fields, "val_datetime_tz", "datetime_tz")
+    );
+    assert_eq!(
+        person.val_decimal().value().as_str(),
+        workforce_field_string(fields, "val_decimal", "decimal")
+    );
+    assert_eq!(
+        person.val_double().value().get().to_bits(),
+        workforce_field_double(fields, "val_double").to_bits()
+    );
+    assert_eq!(
+        person.val_duration().value().as_str(),
+        workforce_field_string(fields, "val_duration", "duration")
+    );
+}
+
+fn workforce_scalar_domains(fields: &Value) -> Vec<String> {
+    let mut domains = fields
+        .as_object()
+        .expect("workforce person fields must be an object")
+        .values()
+        .flat_map(|value| {
+            value
+                .as_array()
+                .map_or_else(|| vec![value], |values| values.iter().collect())
+        })
+        .map(|value| workforce_string(&value["kind"], "workforce scalar kind").to_owned())
+        .collect::<Vec<_>>();
+    domains.sort();
+    domains.dedup();
+    domains
+}
+
+fn workforce_model_observation(
+    person: &Person,
+    fields: &Value,
+    model: &str,
+    nickname: &str,
+) -> Value {
+    assert_workforce_person(person, fields, nickname);
+    let mut aliases = person
+        .aliases()
+        .iter()
+        .map(|value| value.value().clone())
+        .collect::<Vec<_>>();
+    aliases.sort();
+    let reference = person.reference();
+    let reference_key = reference
+        .identifier()
+        .expect("workforce person reference carries its key")
+        .value()
+        .clone();
+    json!({
+        "aliases": aliases,
+        "key": person.identifier().value(),
+        "model": model,
+        "nickname": person.nickname().expect("workforce nickname is present").value(),
+        "reference": {"key": reference_key, "model": model},
+        "scalar_domains": workforce_scalar_domains(fields),
+    })
+}
+
+fn workforce_role_observations(
+    relation: &Membership,
+    person: &Person,
+    membership_record: &Value,
+) -> (Value, Value) {
+    let relation_model = workforce_string(&membership_record["model"], "workforce relation model");
+    let role = workforce_string(&membership_record["role"], "workforce relation role");
+    let player_model = workforce_string(
+        &membership_record["player"]["model"],
+        "workforce player model",
+    );
+    let player_key = match relation.member() {
+        MembershipMemberPlayer::Person(reference) => reference
+            .identifier()
+            .expect("workforce membership player carries its key")
+            .value()
+            .clone(),
+        MembershipMemberPlayer::Robot(_) => panic!("workforce membership hydrated a robot"),
+    };
+    assert_eq!(player_key, person.identifier().value().as_str());
+    (
+        json!({
+            "relation": {"model": relation_model},
+            "role": role,
+            "player": {"key": player_key, "model": player_model},
+        }),
+        json!({
+            "relation": relation_model,
+            "role": role,
+            "player": {"key": person.identifier().value(), "model": player_model},
+        }),
+    )
+}
+
+fn workforce_sha256(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn workforce_source_identity(path: &str, bytes: &[u8]) -> Value {
+    json!({"path": path, "sha256": workforce_sha256(bytes)})
+}
+
+fn sort_workforce_json(value: &mut Value) {
+    match value {
+        Value::Array(values) => {
+            for value in values {
+                sort_workforce_json(value);
+            }
+        }
+        Value::Object(values) => {
+            for value in values.values_mut() {
+                sort_workforce_json(value);
+            }
+            let mut entries = std::mem::take(values).into_iter().collect::<Vec<_>>();
+            entries.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
+            values.extend(entries);
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+    }
+}
+
+fn validate_workforce_report_path(path: &Path) {
+    let raw = path
+        .to_str()
+        .expect("TYPE_BRIDGE_WORKFORCE_REPORT must be UTF-8");
+    assert!(
+        raw.len() <= 4096,
+        "TYPE_BRIDGE_WORKFORCE_REPORT exceeds 4096 UTF-8 bytes"
+    );
+    assert!(
+        path.is_absolute(),
+        "TYPE_BRIDGE_WORKFORCE_REPORT must be absolute"
+    );
+    let parent = path
+        .parent()
+        .expect("TYPE_BRIDGE_WORKFORCE_REPORT must have a parent");
+    let parent_metadata = fs::symlink_metadata(parent)
+        .expect("TYPE_BRIDGE_WORKFORCE_REPORT parent must already exist");
+    assert!(
+        parent_metadata.is_dir() && !parent_metadata.file_type().is_symlink(),
+        "TYPE_BRIDGE_WORKFORCE_REPORT parent must be a non-symlink directory"
+    );
+    match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Ok(_) => panic!("TYPE_BRIDGE_WORKFORCE_REPORT destination must be absent"),
+        Err(error) => panic!("TYPE_BRIDGE_WORKFORCE_REPORT is not inspectable: {error}"),
+    }
+}
+
+fn publish_workforce_report(path: &Path, mut report: Value) {
+    validate_workforce_report_path(path);
+    sort_workforce_json(&mut report);
+    let mut bytes = serde_json::to_vec(&report).expect("workforce report serializes");
+    bytes.push(b'\n');
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .expect("TYPE_BRIDGE_WORKFORCE_REPORT must name a UTF-8 file");
+    let temporary = path.with_file_name(format!(".{file_name}.{}.tmp", std::process::id()));
+    struct RemoveTemporary(PathBuf);
+    impl Drop for RemoveTemporary {
+        fn drop(&mut self) {
+            let _ = fs::remove_file(&self.0);
+        }
+    }
+    let temporary_guard = RemoveTemporary(temporary.clone());
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)
+        .expect("workforce report temporary file is created without replacement");
+    file.write_all(&bytes)
+        .expect("workforce report temporary file is written");
+    file.sync_all()
+        .expect("workforce report temporary file is synchronized");
+    drop(file);
+    fs::hard_link(&temporary, path)
+        .expect("workforce report is atomically published without replacement");
+    fs::remove_file(&temporary).expect("workforce report temporary link is removed");
+    drop(temporary_guard);
+    let metadata = fs::symlink_metadata(path).expect("published workforce report is inspectable");
+    assert!(
+        metadata.is_file() && !metadata.file_type().is_symlink(),
+        "published workforce report must be a regular file"
+    );
+}
+
+fn workforce_version_endpoint() -> String {
+    assert_ne!(
+        env::var("TYPE_BRIDGE_RUST_PROJECTION_TLS").as_deref(),
+        Ok("1"),
+        "workforce evidence is accepted only from the plaintext 3.12.1 lane"
+    );
+    let address = env::var("TYPEDB_ADDRESS").unwrap_or_else(|_| "localhost:1729".to_owned());
+    let address_url = if address.contains("://") {
+        address
+    } else {
+        format!("http://{address}")
+    };
+    let parsed = reqwest::Url::parse(&address_url)
+        .expect("TYPEDB_ADDRESS can be parsed for the workforce version probe");
+    let host = parsed
+        .host_str()
+        .expect("TYPEDB_ADDRESS has a host for the workforce version probe");
+    let host = if host.contains(':') {
+        format!("[{host}]")
+    } else {
+        host.to_owned()
+    };
+    let http_port = env::var("TYPEDB_HTTP_PORT")
+        .unwrap_or_else(|_| "8000".to_owned())
+        .parse::<u16>()
+        .expect("TYPEDB_HTTP_PORT is a valid nonzero u16");
+    assert_ne!(http_port, 0, "TYPEDB_HTTP_PORT must be nonzero");
+    format!("http://{host}:{http_port}/v1/version")
+}
+
+async fn require_workforce_server_version() {
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(StdDuration::from_secs(30))
+        .build()
+        .expect("workforce version-probe client builds");
+    let mut response = client
+        .get(workforce_version_endpoint())
+        .send()
+        .await
+        .expect("workforce TypeDB version probe succeeds");
+    assert_eq!(
+        response.status(),
+        reqwest::StatusCode::OK,
+        "workforce TypeDB version probe returns HTTP 200"
+    );
+    let mut body = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .expect("workforce TypeDB version body is readable")
+    {
+        assert!(
+            body.len().saturating_add(chunk.len()) <= 4096,
+            "workforce TypeDB version body exceeds 4096 bytes"
+        );
+        body.extend_from_slice(&chunk);
+    }
+    assert!(!body.is_empty(), "workforce TypeDB version body is empty");
+    let document: Value =
+        serde_json::from_slice(&body).expect("workforce TypeDB version body is valid JSON");
+    assert_eq!(
+        document.get("version").and_then(Value::as_str),
+        Some("3.12.1"),
+        "workforce evidence requires the actual detected TypeDB server version 3.12.1"
+    );
+}
+
+fn workforce_results(catalog: &Value, observations: &BTreeMap<String, Value>) -> Vec<Value> {
+    let mut capabilities = BTreeMap::new();
+    for case in catalog["cases"]
+        .as_array()
+        .expect("workforce catalog cases must be an array")
+    {
+        let case_id = workforce_string(&case["id"], "workforce case ID").to_owned();
+        let capability =
+            workforce_string(&case["capability_id"], "workforce capability ID").to_owned();
+        assert!(
+            capabilities.insert(case_id, capability).is_none(),
+            "workforce catalog contains a duplicate case"
+        );
+    }
+    let selected = catalog["selected_proofs"]
+        .as_array()
+        .expect("workforce selected proofs must be an array");
+    assert_eq!(selected.len(), 9, "workforce report requires nine proofs");
+    let mut rows = selected
+        .iter()
+        .map(|proof| {
+            let case_id = workforce_string(&proof["case_id"], "selected case ID").to_owned();
+            let proof_kind =
+                workforce_string(&proof["proof_kind"], "selected proof kind").to_owned();
+            let observation_ref =
+                workforce_string(&proof["observation_ref"], "selected observation reference");
+            let capability_id = capabilities
+                .get(&case_id)
+                .unwrap_or_else(|| panic!("selected workforce case is unknown: {case_id}"))
+                .clone();
+            let observation = observations
+                .get(observation_ref)
+                .unwrap_or_else(|| {
+                    panic!("selected workforce observation is unknown: {observation_ref}")
+                })
+                .clone();
+            (case_id, capability_id, proof_kind, observation)
+        })
+        .collect::<Vec<_>>();
+    rows.sort_by(|left, right| (&left.0, &left.2).cmp(&(&right.0, &right.2)));
+    rows.into_iter()
+        .map(|(case_id, capability_id, proof_kind, observation)| {
+            json!({
+                "case_id": case_id,
+                "capability_id": capability_id,
+                "proof_kind": proof_kind,
+                "outcome": "passed",
+                "observation": observation,
+            })
+        })
+        .collect()
+}
+
+type WorkforceV2ObservationKey = (String, String);
+
+fn workforce_v2_observation_key(
+    observation_ref: &str,
+    proof_kind: &str,
+) -> WorkforceV2ObservationKey {
+    (observation_ref.to_owned(), proof_kind.to_owned())
+}
+
+fn workforce_v2_results(
+    catalog: &Value,
+    observations: &BTreeMap<WorkforceV2ObservationKey, Value>,
+) -> Vec<Value> {
+    let mut capabilities = BTreeMap::new();
+    for case in catalog["cases"]
+        .as_array()
+        .expect("workforce-v2 catalog cases must be an array")
+    {
+        let case_id = workforce_string(&case["id"], "workforce-v2 case ID").to_owned();
+        let capability =
+            workforce_string(&case["capability_id"], "workforce-v2 capability ID").to_owned();
+        assert!(
+            capabilities.insert(case_id, capability).is_none(),
+            "workforce-v2 catalog contains a duplicate case"
+        );
+    }
+    let selected = catalog["selected_proofs"]
+        .as_array()
+        .expect("workforce-v2 selected proofs must be an array");
+    assert_eq!(selected.len(), 34, "workforce-v2 report requires 34 proofs");
+    let mut required = BTreeMap::new();
+    let mut rows = selected
+        .iter()
+        .map(|proof| {
+            let case_id = workforce_string(&proof["case_id"], "workforce-v2 selected case ID")
+                .to_owned();
+            let proof_kind = workforce_string(
+                &proof["proof_kind"],
+                "workforce-v2 selected proof kind",
+            )
+            .to_owned();
+            let observation_ref = workforce_string(
+                &proof["observation_ref"],
+                "workforce-v2 selected observation reference",
+            )
+            .to_owned();
+            let capability_id = capabilities
+                .get(&case_id)
+                .unwrap_or_else(|| panic!("selected workforce-v2 case is unknown: {case_id}"))
+                .clone();
+            let key = workforce_v2_observation_key(&observation_ref, &proof_kind);
+            assert!(
+                required.insert(key.clone(), ()).is_none(),
+                "workforce-v2 selected proof is duplicated: {case_id}/{proof_kind}"
+            );
+            let observation = observations
+                .get(&key)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "selected workforce-v2 observation is absent: {observation_ref}/{proof_kind}"
+                    )
+                })
+                .clone();
+            (case_id, capability_id, proof_kind, observation)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        observations.keys().collect::<Vec<_>>(),
+        required.keys().collect::<Vec<_>>(),
+        "workforce-v2 producer must emit exactly the selected observation lanes"
+    );
+    rows.sort_by(|left, right| (&left.0, &left.2).cmp(&(&right.0, &right.2)));
+    rows.into_iter()
+        .map(|(case_id, capability_id, proof_kind, observation)| {
+            json!({
+                "case_id": case_id,
+                "capability_id": capability_id,
+                "proof_kind": proof_kind,
+                "outcome": "passed",
+                "observation": observation,
+            })
+        })
+        .collect()
+}
+
+fn workforce_v2_provider_proofs() -> BTreeMap<WorkforceV2ObservationKey, Value> {
+    let raw = env::var("TYPE_BRIDGE_WORKFORCE_V2_VALIDATED_OBSERVATIONS")
+        .expect("outer harness must supply validated workforce-v2 observations");
+    assert!(
+        raw.len() <= 64 * 1024,
+        "validated workforce-v2 observations exceed 64 KiB"
+    );
+    let observations: BTreeMap<String, Value> = serde_json::from_str(&raw)
+        .expect("outer-validated workforce-v2 observations are canonical JSON");
+    let allowed = [
+        workforce_v2_observation_key("cancellation_direct", "direct_runtime"),
+        workforce_v2_observation_key("cancellation_remote", "remote_runtime"),
+        workforce_v2_observation_key("remote_structured_diagnostic", "diagnostic"),
+    ];
+    assert_eq!(
+        observations.keys().map(String::as_str).collect::<Vec<_>>(),
+        allowed
+            .iter()
+            .map(|(observation_ref, proof_kind)| format!("{observation_ref}/{proof_kind}"))
+            .collect::<Vec<_>>(),
+        "outer-validated workforce-v2 observations have incomplete lane coverage"
+    );
+    allowed
+        .into_iter()
+        .map(|key| {
+            let (observation_ref, proof_kind) = (&key.0, &key.1);
+            let serialized_key = format!("{observation_ref}/{proof_kind}");
+            let observation = observations
+                .get(&serialized_key)
+                .unwrap_or_else(|| {
+                    panic!("validated workforce-v2 observation is absent: {serialized_key}")
+                })
+                .clone();
+            assert!(observation.is_object());
+            (key, observation)
+        })
+        .collect()
+}
+
+fn workforce_v2_person_create(record: &Value) -> PersonCreate {
+    let fields = &record["fields"];
+    let nickname = fields.get("nickname").map(|value| {
+        assert_eq!(
+            workforce_string(&value["kind"], "workforce-v2 nickname kind"),
+            "string"
+        );
+        Nickname::new(workforce_string(&value["value"], "workforce-v2 nickname value").to_owned())
+            .expect("workforce-v2 nickname is valid")
+    });
+    PersonCreate::try_new(
+        workforce_aliases(fields)
+            .into_iter()
+            .map(|value| Aliases::new(value).expect("workforce-v2 alias is valid"))
+            .collect(),
+        None,
+        Identifier::new(workforce_field_string(fields, "identifier", "string"))
+            .expect("workforce-v2 person identifier is valid"),
+        nickname,
+        Score::new(workforce_field_long(fields, "score")).expect("workforce-v2 score is valid"),
+        Some(
+            ScoreGte::new(workforce_field_long(fields, "score__gte"))
+                .expect("workforce-v2 score__gte is valid"),
+        ),
+        ValBool::new(
+            workforce_typed_field(fields, "val_bool", "boolean")["value"]
+                .as_bool()
+                .expect("workforce-v2 boolean is valid"),
+        )
+        .expect("workforce-v2 val_bool is valid"),
+        ValConstrained::new(workforce_field_long(fields, "val_constrained"))
+            .expect("workforce-v2 val_constrained is valid"),
+        ValDate::new(
+            Date::try_new(workforce_field_string(fields, "val_date", "date"))
+                .expect("workforce-v2 date is valid"),
+        )
+        .expect("workforce-v2 val_date is valid"),
+        ValDatetime::new(
+            DateTime::try_new(workforce_field_string(fields, "val_datetime", "datetime"))
+                .expect("workforce-v2 datetime is valid"),
+        )
+        .expect("workforce-v2 val_datetime is valid"),
+        ValDatetimeTz::new(
+            DateTimeTz::try_new(workforce_field_string(
+                fields,
+                "val_datetime_tz",
+                "datetime_tz",
+            ))
+            .expect("workforce-v2 datetime-tz is valid"),
+        )
+        .expect("workforce-v2 val_datetime_tz is valid"),
+        ValDecimal::new(
+            Decimal::try_new(workforce_field_string(fields, "val_decimal", "decimal"))
+                .expect("workforce-v2 decimal is valid"),
+        )
+        .expect("workforce-v2 val_decimal is valid"),
+        ValDouble::new(
+            CanonicalDouble::try_new(workforce_field_double(fields, "val_double"))
+                .expect("workforce-v2 double is valid"),
+        )
+        .expect("workforce-v2 val_double is valid"),
+        ValDuration::new(
+            Duration::try_new(workforce_field_string(fields, "val_duration", "duration"))
+                .expect("workforce-v2 duration is valid"),
+        )
+        .expect("workforce-v2 val_duration is valid"),
+    )
+    .expect("workforce-v2 PersonCreate is valid")
+}
+
+fn workforce_v2_assert_person(person: &Person, record: &Value) {
+    let fields = &record["fields"];
+    assert_eq!(
+        person.identifier().value(),
+        &workforce_field_string(fields, "identifier", "string")
+    );
+    let mut aliases = person
+        .aliases()
+        .iter()
+        .map(|value| value.value().clone())
+        .collect::<Vec<_>>();
+    aliases.sort();
+    let mut expected_aliases = workforce_aliases(fields);
+    expected_aliases.sort();
+    assert_eq!(aliases, expected_aliases);
+    assert_eq!(
+        person.nickname().map(|value| value.value().as_str()),
+        fields
+            .get("nickname")
+            .map(|value| { workforce_string(&value["value"], "workforce-v2 nickname value") })
+    );
+    assert_eq!(person.foo__bar(), None);
+    assert_eq!(
+        person.score().value(),
+        &workforce_field_long(fields, "score")
+    );
+    assert_eq!(
+        person.score__gte().map(ScoreGte::value),
+        Some(&workforce_field_long(fields, "score__gte"))
+    );
+    assert_eq!(
+        person.val_bool().value(),
+        &workforce_typed_field(fields, "val_bool", "boolean")["value"]
+            .as_bool()
+            .expect("workforce-v2 boolean is valid")
+    );
+    assert_eq!(
+        person.val_constrained().value(),
+        &workforce_field_long(fields, "val_constrained")
+    );
+    assert_eq!(
+        person.val_date().value().as_str(),
+        workforce_field_string(fields, "val_date", "date")
+    );
+    assert_eq!(
+        person.val_datetime().value().as_str(),
+        workforce_field_string(fields, "val_datetime", "datetime")
+    );
+    assert_eq!(
+        person.val_datetime_tz().value().as_str(),
+        workforce_field_string(fields, "val_datetime_tz", "datetime_tz")
+    );
+    assert_eq!(
+        person.val_decimal().value().as_str(),
+        workforce_field_string(fields, "val_decimal", "decimal")
+    );
+    assert_eq!(
+        person.val_double().value().get().to_bits(),
+        workforce_field_double(fields, "val_double").to_bits()
+    );
+    assert_eq!(
+        person.val_duration().value().as_str(),
+        workforce_field_string(fields, "val_duration", "duration")
+    );
+}
+
+fn workforce_v2_model_observation(person: &Person, record: &Value) -> Value {
+    workforce_v2_assert_person(person, record);
+    let mut aliases = person
+        .aliases()
+        .iter()
+        .map(|value| value.value().clone())
+        .collect::<Vec<_>>();
+    aliases.sort();
+    let reference = person.reference();
+    let key = reference
+        .identifier()
+        .expect("workforce-v2 person reference carries its key")
+        .value();
+    let mut scalar_domains = vec![
+        workforce_v2_scalar_domain(person.val_bool().value()),
+        workforce_v2_scalar_domain(person.val_date().value()),
+        workforce_v2_scalar_domain(person.val_datetime().value()),
+        workforce_v2_scalar_domain(person.val_datetime_tz().value()),
+        workforce_v2_scalar_domain(person.val_decimal().value()),
+        workforce_v2_scalar_domain(person.val_double().value()),
+        workforce_v2_scalar_domain(person.val_duration().value()),
+        workforce_v2_scalar_domain(person.score().value()),
+        workforce_v2_scalar_domain(person.identifier().value()),
+    ];
+    scalar_domains.sort_unstable();
+    scalar_domains.dedup();
+    json!({
+        "aliases": aliases,
+        "key": person.identifier().value(),
+        "model": workforce_v2_type_label(PersonType::TOKEN.type_id_json()),
+        "nickname": person.nickname().expect("workforce-v2 Ada nickname is present").value(),
+        "reference": {
+            "key": key,
+            "model": workforce_v2_type_label(PersonType::TOKEN.type_id_json()),
+        },
+        "scalar_domains": scalar_domains,
+    })
+}
+
+fn workforce_v2_scalar_domain(value: &impl IntoEncodedScalar) -> &'static str {
+    match value.into_encoded_scalar() {
+        EncodedScalar::String(_) => "string",
+        EncodedScalar::Long(_) => "long",
+        EncodedScalar::Double(_) => "double",
+        EncodedScalar::Decimal(_) => "decimal",
+        EncodedScalar::Boolean(_) => "boolean",
+        EncodedScalar::Date(_) => "date",
+        EncodedScalar::DateTime(_) => "datetime",
+        EncodedScalar::DateTimeTz(_) => "datetime_tz",
+        EncodedScalar::Duration(_) => "duration",
+    }
+}
+
+fn workforce_v2_type_label(type_id_json: &str) -> String {
+    serde_json::from_str::<Value>(type_id_json)
+        .expect("generated workforce-v2 type identity is JSON")["label"]
+        .as_str()
+        .expect("generated workforce-v2 type identity carries a label")
+        .to_owned()
+}
+
+fn workforce_v2_field_label(owns_id_json: &str) -> String {
+    serde_json::from_str::<Value>(owns_id_json)
+        .expect("generated workforce-v2 field identity is JSON")["attribute"]
+        .as_str()
+        .expect("generated workforce-v2 field identity carries an attribute label")
+        .to_owned()
+}
+
+fn workforce_v2_role_label(role_id_json: &str) -> String {
+    serde_json::from_str::<Value>(role_id_json)
+        .expect("generated workforce-v2 role identity is JSON")["label"]
+        .as_str()
+        .expect("generated workforce-v2 role identity carries a label")
+        .to_owned()
+}
+
+fn workforce_v2_network_player_key(player: &NetworkLinkParticipantPlayer) -> &str {
+    match player {
+        NetworkLinkParticipantPlayer::Person(reference) => reference
+            .identifier()
+            .expect("workforce-v2 network participant carries its key")
+            .value(),
+    }
+}
+
+fn workforce_v2_network_origin_key(player: &NetworkLinkOriginPlayer) -> &str {
+    match player {
+        NetworkLinkOriginPlayer::Person(reference) => reference
+            .identifier()
+            .expect("workforce-v2 network origin carries its key")
+            .value(),
+    }
+}
+
+fn workforce_v2_network_destination_key(player: &NetworkLinkDestinationPlayer) -> &str {
+    match player {
+        NetworkLinkDestinationPlayer::Person(reference) => reference
+            .identifier()
+            .expect("workforce-v2 network destination carries its key")
+            .value(),
+    }
+}
+
+fn workforce_v2_query_category(error: &Error) -> Option<&'static str> {
+    error.details()?.values().find_map(|value| match value {
+        ErrorDetail::QueryCategory(QueryDiagnosticCategory::InvalidPlan) => Some("invalid_plan"),
+        ErrorDetail::QueryCategory(QueryDiagnosticCategory::Cardinality) => Some("cardinality"),
+        ErrorDetail::QueryCategory(QueryDiagnosticCategory::UnsupportedCapability) => {
+            Some("unsupported_capability")
+        }
+        ErrorDetail::QueryCategory(QueryDiagnosticCategory::StaleSchema) => Some("stale_schema"),
+        ErrorDetail::QueryCategory(QueryDiagnosticCategory::ResourceLimit) => {
+            Some("resource_limit")
+        }
+        ErrorDetail::QueryCategory(QueryDiagnosticCategory::Cancelled) => Some("cancelled"),
+        ErrorDetail::QueryCategory(QueryDiagnosticCategory::Provider) => Some("provider"),
+        ErrorDetail::QueryCategory(QueryDiagnosticCategory::ResultDecode) => Some("result_decode"),
+        _ => None,
+    })
+}
+
+fn workforce_v2_diagnostic_path(error: &Error) -> Vec<Value> {
+    error
+        .diagnostic_path()
+        .expect("workforce-v2 query error carries a typed path")
+        .iter()
+        .map(|segment| match segment {
+            ErrorPathSegment::Field(value) => json!({"kind": "field", "value": value}),
+            ErrorPathSegment::Index(value) => json!({"kind": "index", "value": value}),
+            ErrorPathSegment::Identifier(value) => {
+                json!({"kind": "identity", "value": value})
+            }
+            ErrorPathSegment::Query(QueryDiagnosticPathKind::Request) => {
+                json!({"kind": "request"})
+            }
+            ErrorPathSegment::Query(QueryDiagnosticPathKind::Plan) => json!({"kind": "plan"}),
+            ErrorPathSegment::Query(QueryDiagnosticPathKind::Operation) => {
+                json!({"kind": "operation"})
+            }
+            ErrorPathSegment::Query(QueryDiagnosticPathKind::Predicate) => {
+                json!({"kind": "predicate"})
+            }
+            ErrorPathSegment::Query(QueryDiagnosticPathKind::Output) => {
+                json!({"kind": "output"})
+            }
+            ErrorPathSegment::Query(QueryDiagnosticPathKind::ProviderEvidence) => {
+                json!({"kind": "provider_evidence"})
+            }
+            ErrorPathSegment::Query(QueryDiagnosticPathKind::Result) => {
+                json!({"kind": "result"})
+            }
+            ErrorPathSegment::QueryBinding(value) => {
+                json!({"kind": "query_binding", "value": value})
+            }
+            ErrorPathSegment::QueryField { owner, name } => {
+                json!({"kind": "query_field", "owner": owner, "name": name})
+            }
+            ErrorPathSegment::QueryRole { owner, name } => {
+                json!({"kind": "query_role", "owner": owner, "name": name})
+            }
+            ErrorPathSegment::QueryRoleEdge(value) => {
+                json!({"kind": "query_role_edge", "value": value})
+            }
+            ErrorPathSegment::QueryOutputSlot(value) => {
+                json!({"kind": "query_output_slot", "value": value})
+            }
+            ErrorPathSegment::QueryOutputName(value) => {
+                json!({"kind": "query_output_name", "value": value})
+            }
+            ErrorPathSegment::ContractField(value) => {
+                json!({"kind": "contract_field", "value": value})
+            }
+            ErrorPathSegment::ContractIdentity(value) => {
+                json!({"kind": "contract_identity", "value": value})
+            }
+            _ => panic!("workforce-v2 received an unsupported diagnostic path segment"),
+        })
+        .collect()
+}
+
+fn workforce_v2_diagnostic_details(error: &Error) -> Value {
+    let mut details = serde_json::Map::new();
+    for (name, value) in error
+        .details()
+        .expect("workforce-v2 query error carries typed details")
+    {
+        if matches!(value, ErrorDetail::QueryCategory(_)) {
+            continue;
+        }
+        let normalized = match value {
+            ErrorDetail::Text(value) => json!({"kind": "text", "value": value}),
+            ErrorDetail::Long(value) if name == "actual" => {
+                json!({"kind": "count", "value": value.to_string()})
+            }
+            ErrorDetail::Long(value) => json!({"kind": "signed", "value": value.to_string()}),
+            ErrorDetail::Boolean(value) => json!({"kind": "boolean", "value": value}),
+            ErrorDetail::TextList(value) => json!({"kind": "text_list", "value": value}),
+            ErrorDetail::QueryIdentity(value) => {
+                json!({"kind": "query_identity", "value": value})
+            }
+            ErrorDetail::QueryIdentityList(value) => {
+                json!({"kind": "query_identity_list", "value": value})
+            }
+            ErrorDetail::QueryCategory(_) => unreachable!(),
+            _ => panic!("workforce-v2 received an unsupported diagnostic detail"),
+        };
+        assert!(
+            details.insert(name.clone(), normalized).is_none(),
+            "workforce-v2 diagnostic detail names are unique"
+        );
+    }
+    Value::Object(details)
+}
+
+fn workforce_v2_diagnostic(
+    error: &Error,
+    claim_consumed: Option<bool>,
+    forbidden_values: &[&str],
+) -> Value {
+    let query_category = workforce_v2_query_category(error)
+        .expect("workforce-v2 query error carries a query category");
+    let category = match (error.category(), query_category) {
+        (ErrorCategory::ModelValidation, "cardinality") => "invalid_input",
+        (ErrorCategory::ModelValidation, "result_decode") => "integrity",
+        (category, _) => category.as_str(),
+    };
+    let path = workforce_v2_diagnostic_path(error);
+    let details = workforce_v2_diagnostic_details(error);
+    let rendered = format!("{}{:?}{:?}", error.message(), path, details);
+    let redacted = !forbidden_values
+        .iter()
+        .any(|secret| !secret.is_empty() && rendered.contains(secret));
+    let mut observation = json!({
+        "category": category,
+        "query_category": query_category,
+        "code": error.code().expect("workforce-v2 query error carries a stable code"),
+        "message": error.message(),
+        "path": path,
+        "details": details,
+        "redacted": redacted,
+    });
+    if let Some(claim_consumed) = claim_consumed {
+        observation["claim_consumed"] = Value::Bool(claim_consumed);
+    }
+    observation
+}
+
+fn workforce_v2_keys(people: &[Person]) -> Vec<String> {
+    people
+        .iter()
+        .map(|person| person.identifier().value().clone())
+        .collect()
+}
+
+fn workforce_v2_common_key_prefix(keys: &[String]) -> String {
+    let mut prefix = keys
+        .first()
+        .expect("workforce-v2 keyed records are present")
+        .clone();
+    while keys.iter().any(|key| !key.starts_with(&prefix)) {
+        assert!(
+            prefix.pop().is_some(),
+            "workforce-v2 keyed records require a shared namespace"
+        );
+    }
+    assert!(
+        !prefix.is_empty(),
+        "workforce-v2 keyed records require a nonempty shared namespace"
+    );
+    prefix
+}
+
+fn workforce_v2_family_identity(value: &EmployeeFamily) -> Value {
+    match value {
+        EmployeeFamily::Employee(employee) => {
+            json!({
+                "model": workforce_v2_type_label(EmployeeType::TOKEN.type_id_json()),
+                "key": employee.identifier().value(),
+            })
+        }
+        EmployeeFamily::Manager(manager) => {
+            json!({
+                "model": workforce_v2_type_label(ManagerType::TOKEN.type_id_json()),
+                "key": manager.identifier().value(),
+            })
+        }
+    }
+}
+
+async fn workforce_v2_query_observations(
+    session: &mut QuerySession<'_, AppSchema>,
+    records: &Value,
+    person_iids: &[String; 2],
+    exchange_count: Option<&Arc<AtomicUsize>>,
+) -> BTreeMap<String, Value> {
+    let people_records = records["people"]
+        .as_array()
+        .expect("workforce-v2 people records must be an array");
+    assert_eq!(people_records.len(), 2, "workforce-v2 requires two people");
+    let ada_key = workforce_field_string(&people_records[0]["fields"], "identifier", "string");
+    let dana_key = workforce_field_string(&people_records[1]["fields"], "identifier", "string");
+    let employee_key =
+        workforce_field_string(&records["employee"]["fields"], "identifier", "string");
+    let manager_key = workforce_field_string(&records["manager"]["fields"], "identifier", "string");
+    let network_key =
+        workforce_field_string(&records["network_link"]["fields"], "identifier", "string");
+    let scalar_operand = workforce_field_long(&people_records[0]["fields"], "score__gte");
+    assert!(
+        people_records
+            .iter()
+            .all(|record| workforce_field_long(&record["fields"], "score__gte") == scalar_operand),
+        "workforce-v2 scalar comparison operand must be shared by the fixture rows"
+    );
+
+    let person = session
+        .exact::<Person>()
+        .expect("workforce-v2 person binding");
+    let grouped_person = session
+        .exact::<Person>()
+        .expect("workforce-v2 grouped person binding");
+    let employee = session
+        .exact::<Employee>()
+        .expect("workforce-v2 exact employee binding");
+    let employee_family = session
+        .subtypes::<Employee>()
+        .expect("workforce-v2 employee subtype binding");
+    let membership = session
+        .exact::<Membership>()
+        .expect("workforce-v2 membership binding");
+    let membership_person = session
+        .exact::<Person>()
+        .expect("workforce-v2 membership person binding");
+    let network = session
+        .exact::<NetworkLink>()
+        .expect("workforce-v2 network binding");
+    let network_origin = session
+        .exact::<Person>()
+        .expect("workforce-v2 network origin binding");
+    let network_destination = session
+        .exact::<Person>()
+        .expect("workforce-v2 network destination binding");
+    let network_participant = session
+        .exact::<Person>()
+        .expect("workforce-v2 network participant binding");
+    let source = session
+        .exact::<Person>()
+        .expect("workforce-v2 topology source binding");
+    let target = session
+        .exact::<Person>()
+        .expect("workforce-v2 topology target binding");
+    let cross_left = session
+        .exact::<Person>()
+        .expect("workforce-v2 cross-left binding");
+    let cross_right = session
+        .exact::<Person>()
+        .expect("workforce-v2 cross-right binding");
+    let shape_link = session
+        .exact::<NetworkLink>()
+        .expect("workforce-v2 shape network binding");
+    let shape_origin = session
+        .exact::<Person>()
+        .expect("workforce-v2 shape origin binding");
+    let shape_participant = session
+        .exact::<Person>()
+        .expect("workforce-v2 shape participant binding");
+    let identifier = person.field(PersonType::identifier);
+    let grouped_identifier = grouped_person.field(PersonType::identifier);
+    let score = person.field(PersonType::score);
+    let score_gte = person.field(PersonType::score__gte);
+    let scope = identifier.eq(Identifier::new(ada_key.clone()).expect("workforce-v2 Ada key"))
+        | identifier.eq(Identifier::new(dana_key.clone()).expect("workforce-v2 Dana key"));
+    let people_query = session
+        .query(person)
+        .expect("workforce-v2 people selection")
+        .where_(scope.clone())
+        .expect("workforce-v2 people scope");
+
+    let one_terminal = stringify!(one);
+    let exchanges_before_one = exchange_count.map(|count| count.load(Ordering::SeqCst));
+    let ada = people_query
+        .where_(identifier.eq(Identifier::new(ada_key.clone()).expect("workforce-v2 Ada key")))
+        .expect("workforce-v2 Ada predicate")
+        .one()
+        .await
+        .expect("workforce-v2 Ada terminal");
+    let exchanges_after_one = exchange_count.map(|count| count.load(Ordering::SeqCst));
+    workforce_v2_assert_person(&ada, &people_records[0]);
+    let model_values = workforce_v2_model_observation(&ada, &people_records[0]);
+
+    let owner_keys = workforce_v2_keys(
+        &people_query
+            .where_(score.is_present())
+            .expect("workforce-v2 score owner predicate")
+            .rows(RowsOptions::new(2).order_by(identifier.asc()))
+            .await
+            .expect("workforce-v2 score owner rows"),
+    );
+    let optional_present_keys = workforce_v2_keys(
+        &people_query
+            .where_(person.field(PersonType::nickname).is_present())
+            .expect("workforce-v2 nickname presence predicate")
+            .rows(RowsOptions::new(2).order_by(identifier.asc()))
+            .await
+            .expect("workforce-v2 nickname presence rows"),
+    );
+    let iid_set_keys = workforce_v2_keys(
+        &session
+            .query(person)
+            .expect("workforce-v2 IID-set query")
+            .where_(person.iid_in([person_iids[0].as_str(), person_iids[1].as_str()]))
+            .expect("workforce-v2 IID-set predicate")
+            .rows(RowsOptions::new(2).order_by(identifier.asc()))
+            .await
+            .expect("workforce-v2 IID-set rows"),
+    );
+    let owner_iid_set = json!({
+        "owner_field": workforce_v2_field_label(PersonType::score.owns_id_json()),
+        "owner_keys": owner_keys,
+        "optional_field": workforce_v2_field_label(PersonType::nickname.owns_id_json()),
+        "optional_present_keys": optional_present_keys,
+        "iid_set_keys": iid_set_keys,
+    });
+
+    let employee_identifier = employee.field(EmployeeType::identifier);
+    let exact_employees = session
+        .query(employee)
+        .expect("workforce-v2 exact employee query")
+        .where_(
+            employee_identifier
+                .eq(Identifier::new(employee_key.clone()).expect("workforce-v2 employee key")),
+        )
+        .expect("workforce-v2 exact employee predicate")
+        .rows(RowsOptions::new(2).order_by(employee_identifier.asc()))
+        .await
+        .expect("workforce-v2 exact employee rows");
+    let exact = exact_employees
+        .iter()
+        .map(|employee| {
+            json!({
+                "model": workforce_v2_type_label(EmployeeType::TOKEN.type_id_json()),
+                "key": employee.identifier().value(),
+            })
+        })
+        .collect::<Vec<_>>();
+    let family_identifier = employee_family.field(EmployeeType::identifier);
+    let employee_scope = family_identifier
+        .eq(Identifier::new(employee_key.clone()).expect("workforce-v2 employee key"))
+        | family_identifier
+            .eq(Identifier::new(manager_key.clone()).expect("workforce-v2 manager key"));
+    let subtypes = session
+        .query(employee_family)
+        .expect("workforce-v2 employee subtype query")
+        .where_(employee_scope)
+        .expect("workforce-v2 employee subtype scope")
+        .rows(RowsOptions::new(2).order_by(family_identifier.asc()))
+        .await
+        .expect("workforce-v2 employee subtype rows")
+        .iter()
+        .map(workforce_v2_family_identity)
+        .collect::<Vec<_>>();
+    let exact_subtypes = json!({
+        "declared_model": workforce_v2_type_label(EmployeeType::TOKEN.type_id_json()),
+        "exact": exact,
+        "subtypes": subtypes,
+    });
+
+    let and_keys = workforce_v2_keys(
+        &people_query
+            .where_(
+                score.ge(scalar_operand)
+                    & person
+                        .field(PersonType::val_bool)
+                        .eq(ValBool::new(true).expect("workforce-v2 true value")),
+            )
+            .expect("workforce-v2 conjunction")
+            .rows(RowsOptions::new(2).order_by(identifier.asc()))
+            .await
+            .expect("workforce-v2 conjunction rows"),
+    );
+    let or_keys = workforce_v2_keys(
+        &session
+            .query(person)
+            .expect("workforce-v2 disjunction query")
+            .where_(
+                identifier.eq(Identifier::new(ada_key.clone()).expect("workforce-v2 Ada key"))
+                    | identifier
+                        .eq(Identifier::new(dana_key.clone()).expect("workforce-v2 Dana key")),
+            )
+            .expect("workforce-v2 disjunction")
+            .rows(RowsOptions::new(2).order_by(identifier.asc()))
+            .await
+            .expect("workforce-v2 disjunction rows"),
+    );
+    let not_keys = workforce_v2_keys(
+        &people_query
+            .where_(!score.ge(scalar_operand))
+            .expect("workforce-v2 negation")
+            .rows(RowsOptions::new(2).order_by(identifier.asc()))
+            .await
+            .expect("workforce-v2 negation rows"),
+    );
+    let field_comparison_keys = workforce_v2_keys(
+        &people_query
+            .where_(score.ge_field(score_gte))
+            .expect("workforce-v2 field comparison")
+            .rows(RowsOptions::new(2).order_by(identifier.asc()))
+            .await
+            .expect("workforce-v2 field comparison rows"),
+    );
+    let scalar_boolean = json!({
+        "and_keys": and_keys,
+        "or_keys": or_keys,
+        "not_keys": not_keys,
+        "field_comparison_keys": field_comparison_keys,
+    });
+
+    let membership_person_identifier = membership_person.field(PersonType::identifier);
+    let (hydrated_membership, hydrated_member) = session
+        .query((membership, membership_person))
+        .expect("workforce-v2 membership selection")
+        .where_(
+            membership
+                .role(MembershipType::member)
+                .connects(membership_person)
+                & membership_person_identifier
+                    .eq(Identifier::new(ada_key.clone()).expect("workforce-v2 Ada key")),
+        )
+        .expect("workforce-v2 membership role predicate")
+        .one()
+        .await
+        .expect("workforce-v2 membership role result");
+    let membership_player_key = match hydrated_membership.member() {
+        MembershipMemberPlayer::Person(reference) => reference
+            .identifier()
+            .expect("workforce-v2 member carries its key")
+            .value()
+            .clone(),
+        MembershipMemberPlayer::Robot(_) => panic!("workforce-v2 member must be a person"),
+    };
+    assert_eq!(
+        membership_player_key,
+        hydrated_member.identifier().value().as_str()
+    );
+
+    let hydrated_network = session
+        .query(network)
+        .expect("workforce-v2 network query")
+        .match_(network_origin)
+        .expect("workforce-v2 attach network origin")
+        .match_(network_destination)
+        .expect("workforce-v2 attach network destination")
+        .match_(network_participant)
+        .expect("workforce-v2 attach network participant")
+        .where_(
+            network
+                .field(NetworkLinkType::identifier)
+                .eq(Identifier::new(network_key.clone()).expect("workforce-v2 network key"))
+                & network
+                    .role(NetworkLinkType::origin)
+                    .connects(network_origin)
+                & network
+                    .role(NetworkLinkType::destination)
+                    .connects(network_destination)
+                & network
+                    .role(NetworkLinkType::participant)
+                    .connects(network_participant),
+        )
+        .expect("workforce-v2 network role predicates")
+        .one()
+        .await
+        .expect("workforce-v2 network role result");
+    let mut participant_keys = hydrated_network
+        .participant()
+        .iter()
+        .map(workforce_v2_network_player_key)
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    participant_keys.sort();
+    let roles = json!({
+        "membership": {
+            "relation": workforce_v2_type_label(MembershipType::TOKEN.type_id_json()),
+            "role": workforce_v2_role_label(MembershipType::member.role_id_json()),
+            "players": [{
+                "model": workforce_v2_type_label(PersonType::TOKEN.type_id_json()),
+                "key": membership_player_key,
+            }],
+        },
+        "network_link": {
+            "relation": workforce_v2_type_label(NetworkLinkType::TOKEN.type_id_json()),
+            "origin": workforce_v2_network_origin_key(hydrated_network.origin()),
+            "destination": workforce_v2_network_destination_key(hydrated_network.destination()),
+            "participants": participant_keys,
+        },
+    });
+    let hydrated_result = json!({
+        "rows": [{
+            "model": workforce_v2_type_label(MembershipType::TOKEN.type_id_json()),
+            "roles": {workforce_v2_role_label(MembershipType::member.role_id_json()): [{
+                "model": workforce_v2_type_label(PersonType::TOKEN.type_id_json()),
+                "key": membership_player_key,
+            }]},
+        }],
+    });
+
+    let source_identifier = source.field(PersonType::identifier);
+    let target_identifier = target.field(PersonType::identifier);
+    let reachability_min_hops = 1;
+    let reachability_max_hops = 1;
+    let reachable = session
+        .reachable(
+            NetworkLinkType::TOKEN,
+            NetworkLinkType::origin,
+            NetworkLinkType::destination,
+            source,
+            target,
+            reachability_min_hops,
+            reachability_max_hops,
+        )
+        .expect("workforce-v2 one-hop reachability predicate");
+    let reachable_rows = session
+        .query((source, target))
+        .expect("workforce-v2 reachability query")
+        .where_(
+            reachable
+                & source_identifier
+                    .eq(Identifier::new(ada_key.clone()).expect("workforce-v2 Ada key"))
+                & target_identifier
+                    .eq(Identifier::new(dana_key.clone()).expect("workforce-v2 Dana key")),
+        )
+        .expect("workforce-v2 reachability filters")
+        .rows(
+            RowsOptions::new(2)
+                .order_by(source_identifier.asc())
+                .order_by(target_identifier.asc()),
+        )
+        .await
+        .expect("workforce-v2 reachability rows");
+    let reachable = reachable_rows
+        .iter()
+        .map(|(source, target)| {
+            json!({
+                "from": source.identifier().value(),
+                "to": target.identifier().value(),
+                "max_hops": reachability_max_hops,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let cross_left_identifier = cross_left.field(PersonType::identifier);
+    let cross_right_identifier = cross_right.field(PersonType::identifier);
+    let left_scope = cross_left_identifier
+        .eq(Identifier::new(ada_key.clone()).expect("workforce-v2 Ada key"))
+        | cross_left_identifier
+            .eq(Identifier::new(dana_key.clone()).expect("workforce-v2 Dana key"));
+    let right_scope = cross_right_identifier
+        .eq(Identifier::new(ada_key.clone()).expect("workforce-v2 Ada key"))
+        | cross_right_identifier
+            .eq(Identifier::new(dana_key.clone()).expect("workforce-v2 Dana key"));
+    let cross_join_pairs = session
+        .query((cross_left, cross_right))
+        .expect("workforce-v2 cross-join query")
+        .allow_cross_join(cross_left, cross_right)
+        .expect("workforce-v2 explicit cross join")
+        .where_(left_scope & right_scope)
+        .expect("workforce-v2 cross-join scope")
+        .rows(
+            RowsOptions::new(4)
+                .order_by(cross_left_identifier.asc())
+                .order_by(cross_right_identifier.asc()),
+        )
+        .await
+        .expect("workforce-v2 cross-join rows")
+        .iter()
+        .map(|(left, right)| json!([left.identifier().value(), right.identifier().value()]))
+        .collect::<Vec<_>>();
+    let topology = json!({
+        "reachable": reachable,
+        "cross_join_pairs": cross_join_pairs,
+    });
+
+    let shape_participant_identifier = shape_participant.field(PersonType::identifier);
+    let collected = shape_participant
+        .collect()
+        .distinct()
+        .order_by(shape_participant_identifier.asc())
+        .expect("workforce-v2 collection order");
+    let shape_predicate = shape_link
+        .field(NetworkLinkType::identifier)
+        .eq(Identifier::new(network_key).expect("workforce-v2 network key"))
+        & shape_link
+            .role(NetworkLinkType::origin)
+            .connects(shape_origin)
+        & shape_link
+            .role(NetworkLinkType::participant)
+            .connects(shape_participant);
+    let positional_page = session
+        .query((shape_origin, collected.clone()))
+        .expect("workforce-v2 positional selection")
+        .match_(shape_link)
+        .expect("workforce-v2 positional network match")
+        .where_(shape_predicate.clone())
+        .expect("workforce-v2 positional predicates")
+        .page_by(
+            shape_origin,
+            PageOptions::new(1).order_by(shape_origin.field(PersonType::identifier).asc()),
+        )
+        .await
+        .expect("workforce-v2 positional page");
+    let positional_rows = positional_page.items();
+    assert_eq!(
+        positional_rows.len(),
+        1,
+        "workforce-v2 positional row is unique"
+    );
+    let positional = json!([
+        positional_rows[0].0.identifier().value(),
+        workforce_v2_keys(&positional_rows[0].1),
+    ]);
+    let positional_distinct = positional_rows[0]
+        .1
+        .iter()
+        .map(Person::iid)
+        .collect::<BTreeSet<_>>()
+        .len()
+        == positional_rows[0].1.len();
+    let named_shape = WorkforceNetworkShape::select(shape_origin, collected)
+        .expect("workforce-v2 named selection shape");
+    let named_page = session
+        .query(named_shape)
+        .expect("workforce-v2 named selection")
+        .match_(shape_link)
+        .expect("workforce-v2 named network match")
+        .where_(shape_predicate)
+        .expect("workforce-v2 named predicates")
+        .page_by(
+            shape_origin,
+            PageOptions::new(1).order_by(shape_origin.field(PersonType::identifier).asc()),
+        )
+        .await
+        .expect("workforce-v2 named page");
+    let named_rows = named_page.items();
+    assert_eq!(named_rows.len(), 1, "workforce-v2 named row is unique");
+    let named = json!({
+        "origin": named_rows[0].origin.identifier().value(),
+        "participants": workforce_v2_keys(&named_rows[0].participants),
+    });
+    let named_distinct = named_rows[0]
+        .participants
+        .iter()
+        .map(Person::iid)
+        .collect::<BTreeSet<_>>()
+        .len()
+        == named_rows[0].participants.len();
+    assert_eq!(positional_distinct, named_distinct);
+    let selection_shapes = json!({
+        "positional": positional,
+        "named": named,
+        "collected_distinct": positional_distinct,
+        "collection_order": format!(
+            "{}_asc",
+            workforce_v2_field_label(PersonType::identifier.owns_id_json()),
+        ),
+    });
+
+    let one = people_query
+        .where_(identifier.eq(Identifier::new(dana_key).expect("workforce-v2 Dana key")))
+        .expect("workforce-v2 one predicate")
+        .one()
+        .await
+        .expect("workforce-v2 one terminal")
+        .identifier()
+        .value()
+        .clone();
+    let first = people_query
+        .first(identifier.asc())
+        .await
+        .expect("workforce-v2 first terminal")
+        .expect("workforce-v2 first row exists")
+        .identifier()
+        .value()
+        .clone();
+    let rows = workforce_v2_keys(
+        &people_query
+            .rows(RowsOptions::new(2).order_by(identifier.asc()))
+            .await
+            .expect("workforce-v2 rows terminal"),
+    );
+    let page = people_query
+        .page_by(
+            person,
+            PageOptions::new(1)
+                .include_total(true)
+                .order_by(identifier.asc()),
+        )
+        .await
+        .expect("workforce-v2 page terminal");
+    let page_items = workforce_v2_keys(page.items());
+    let count = people_query
+        .count()
+        .await
+        .expect("workforce-v2 count terminal");
+    let exists = people_query
+        .exists()
+        .await
+        .expect("workforce-v2 exists terminal");
+    let terminals = json!({
+        "one": one,
+        "first": first,
+        "rows": rows,
+        "page": {
+            "items": page_items,
+            "offset": page.offset(),
+            "limit": page.limit(),
+            "total": page.total().expect("workforce-v2 page total was requested"),
+        },
+        "count": count,
+        "exists": exists,
+    });
+
+    let reductions: (
+        u64,
+        i64,
+        Option<i64>,
+        Option<i64>,
+        Option<f64>,
+        Option<f64>,
+        Option<f64>,
+    ) = people_query
+        .aggregate((
+            aggregate::count(),
+            score.sum(),
+            score.min(),
+            score.max(),
+            score.mean(),
+            score.median(),
+            score.stddev(),
+        ))
+        .await
+        .expect("workforce-v2 reductions");
+    let mut binding_groups = people_query
+        .match_(grouped_person)
+        .expect("workforce-v2 grouped person match")
+        .where_(identifier.eq_field(grouped_identifier))
+        .expect("workforce-v2 grouped person identity join")
+        .group_by(grouped_person)
+        .expect("workforce-v2 binding groups")
+        .aggregate((aggregate::count(),))
+        .await
+        .expect("workforce-v2 binding-grouped reductions")
+        .into_iter()
+        .map(|(person, (count,))| {
+            json!({
+                "model": workforce_v2_type_label(PersonType::TOKEN.type_id_json()),
+                "key": person.identifier().value(),
+                "count": count,
+            })
+        })
+        .collect::<Vec<_>>();
+    binding_groups.sort_by(|left, right| left["key"].as_str().cmp(&right["key"].as_str()));
+    let mut field_groups = people_query
+        .group_by_field(score)
+        .expect("workforce-v2 score groups")
+        .aggregate((aggregate::count(),))
+        .await
+        .expect("workforce-v2 score-grouped reductions")
+        .into_iter()
+        .map(|(score, (count,))| json!({"key": score.value(), "count": count}))
+        .collect::<Vec<_>>();
+    field_groups.sort_by_key(|value| value["key"].as_i64());
+    let mut tuple_groups = people_query
+        .group_by_fields((score, score_gte))
+        .expect("workforce-v2 score tuple groups")
+        .aggregate((aggregate::count(),))
+        .await
+        .expect("workforce-v2 score tuple-grouped reductions")
+        .into_iter()
+        .map(|((score, score_gte), (count,))| {
+            json!({"key": [score.value(), score_gte.value()], "count": count})
+        })
+        .collect::<Vec<_>>();
+    tuple_groups.sort_by_key(|value| value["key"][0].as_i64());
+    let grouped_reducer = json!({
+        "reducers": {
+            "count": reductions.0,
+            "sum": reductions.1,
+            "min": reductions.2.expect("workforce-v2 minimum exists"),
+            "max": reductions.3.expect("workforce-v2 maximum exists"),
+            "mean_bits": format!("{:016x}", reductions.4.expect("workforce-v2 mean exists").to_bits()),
+            "median_bits": format!("{:016x}", reductions.5.expect("workforce-v2 median exists").to_bits()),
+            "std_bits": format!("{:016x}", reductions.6.expect("workforce-v2 std exists").to_bits()),
+        },
+        "groups": {
+            "binding": binding_groups,
+            "field": field_groups,
+            "field_tuple": tuple_groups,
+        },
+    });
+
+    let minimum_score = Score::new(30).expect("workforce-v2 authored function minimum");
+    let minimum: IntegerInput =
+        integer_input(session, &minimum_score).expect("workforce-v2 function input");
+    let call: IntegerCall =
+        qualifying_score(session, person, &minimum).expect("workforce-v2 function call");
+    let values = workforce_v2_keys(
+        &people_query
+            .where_(call.ge_field(score))
+            .expect("workforce-v2 function field predicate")
+            .rows(RowsOptions::new(2).order_by(identifier.asc()))
+            .await
+            .expect("workforce-v2 function field rows"),
+    );
+    let nested: IntegerCall =
+        qualifying_score(session, person, &call).expect("workforce-v2 nested function call");
+    let nested_people = people_query
+        .where_(
+            call.ge_call(&nested)
+                .expect("workforce-v2 nested function predicate"),
+        )
+        .expect("workforce-v2 nested function filter")
+        .rows(RowsOptions::new(2).order_by(identifier.asc()))
+        .await
+        .expect("workforce-v2 nested function rows");
+    let function_values = values
+        .iter()
+        .map(|key| {
+            [&ada, &nested_people[0], &nested_people[1]]
+                .into_iter()
+                .find(|person| person.identifier().value() == key)
+                .unwrap_or_else(|| panic!("workforce-v2 function result has unknown key: {key}"))
+                .score()
+                .value()
+        })
+        .copied()
+        .collect::<Vec<_>>();
+    let nested_values = nested_people
+        .iter()
+        .map(|person| *person.score().value())
+        .collect::<Vec<_>>();
+    let schema_function = json!({
+        "minimum": minimum_score.value(),
+        "values": function_values,
+        "nested_values": nested_values,
+    });
+
+    let scalar_keys = workforce_v2_keys(
+        &people_query
+            .where_(score.ge(scalar_operand))
+            .expect("workforce-v2 scalar predicate")
+            .rows(RowsOptions::new(2).order_by(identifier.asc()))
+            .await
+            .expect("workforce-v2 scalar rows"),
+    );
+    let scalar_domain = json!({
+        "domain": workforce_v2_scalar_domain(&scalar_operand),
+        "operator": "gte",
+        "operand": scalar_operand,
+        "keys": scalar_keys,
+    });
+
+    let mut observations = BTreeMap::from([
+        ("model_values_and_references".to_owned(), model_values),
+        ("owner_iid_set".to_owned(), owner_iid_set),
+        ("exact_subtypes".to_owned(), exact_subtypes),
+        ("scalar_boolean".to_owned(), scalar_boolean),
+        ("roles".to_owned(), roles),
+        ("topology".to_owned(), topology),
+        ("selection_shapes".to_owned(), selection_shapes),
+        ("terminals".to_owned(), terminals),
+        ("grouped_reducer".to_owned(), grouped_reducer),
+        ("hydrated_result".to_owned(), hydrated_result),
+        ("scalar_domain".to_owned(), scalar_domain),
+        ("schema_function".to_owned(), schema_function),
+    ]);
+    if let (Some(before), Some(after)) = (exchanges_before_one, exchanges_after_one) {
+        assert_eq!(
+            after - before,
+            1,
+            "workforce-v2 remote one performs one exchange"
+        );
+        observations.insert(
+            "remote_one_exchange".to_owned(),
+            json!({"exchange_count": after - before, "terminal": one_terminal}),
+        );
+    }
+    observations
+}
+
+fn workforce_v2_cancellation_error(error: &Error, partial_result: bool) -> Value {
+    json!({
+        "category": error.category().as_str(),
+        "code": error.code().expect("workforce-v2 cancellation has a stable code"),
+        "partial_result": partial_result,
+    })
+}
+
+async fn workforce_v2_remote_cancellation(
+    remote: &RemoteDatabase<AppSchema>,
+    exchange_count: &Arc<AtomicUsize>,
+    remote_url: &str,
+) -> Value {
+    let before_cancellation = AnswerCancellation::default();
+    before_cancellation.cancel();
+    let exchanges_before = exchange_count.load(Ordering::SeqCst);
+    let mut before_session = remote
+        .query_with_resources(QueryExecutionResourceLimits::default(), before_cancellation)
+        .expect("workforce-v2 cancelled remote session");
+    let before_person = before_session
+        .exact::<Person>()
+        .expect("workforce-v2 cancelled remote binding");
+    let before_result = before_session
+        .query(before_person)
+        .expect("workforce-v2 cancelled remote query")
+        .count()
+        .await;
+    let before_partial_result = before_result.is_ok();
+    let before_error =
+        before_result.expect_err("workforce-v2 pre-cancelled remote query must fail");
+    let exchanges_after = exchange_count.load(Ordering::SeqCst);
+    assert_eq!(before_error.category(), ErrorCategory::Cancelled);
+    assert_eq!(before_error.code(), Some("provider_cancelled"));
+    let mut before_exchange = workforce_v2_cancellation_error(&before_error, before_partial_result);
+    before_exchange["exchange_count"] = json!(exchanges_after - exchanges_before);
+
+    let decode_cancellation = AnswerCancellation::default();
+    let decode_exchange_count = Arc::new(AtomicUsize::new(0));
+    let response_completed = Arc::new(AtomicBool::new(false));
+    let decode_remote: RemoteDatabase<AppSchema> =
+        RemoteDatabase::connect(RemoteConnectionOptions::generated(
+            QueryExecutionResourceLimits::default(),
+            CancelBeforeDecodeTransport {
+                inner: HttpTransport::recording(
+                    remote_url.to_owned(),
+                    Arc::clone(&decode_exchange_count),
+                ),
+                cancellation: decode_cancellation.clone(),
+                response_completed: Arc::clone(&response_completed),
+            },
+        ))
+        .await
+        .expect("workforce-v2 decode-cancel remote connects")
+        .with_schema(SCHEMA)
+        .expect("workforce-v2 decode-cancel remote schema binds");
+    let mut decode_session = decode_remote
+        .query_with_resources(QueryExecutionResourceLimits::default(), decode_cancellation)
+        .expect("workforce-v2 decode-cancel session");
+    let decode_person = decode_session
+        .exact::<Person>()
+        .expect("workforce-v2 decode-cancel binding");
+    let decode_result = decode_session
+        .query(decode_person)
+        .expect("workforce-v2 decode-cancel query")
+        .count()
+        .await;
+    let decode_partial_result = decode_result.is_ok();
+    let decode_error =
+        decode_result.expect_err("workforce-v2 remote decode cancellation must fail");
+    assert_eq!(decode_error.category(), ErrorCategory::Cancelled);
+    assert_eq!(decode_error.code(), Some("provider_cancelled"));
+    let mut during_decode = workforce_v2_cancellation_error(&decode_error, decode_partial_result);
+    during_decode["exchange_count"] = json!(decode_exchange_count.load(Ordering::SeqCst));
+
+    let abort_signal = AnswerCancellation::default();
+    let abort_transport = CallerAbortProbeTransport {
+        cancellation: abort_signal.clone(),
+    };
+    let abort_future = abort_transport.exchange(b"workforce-v2-caller-abort-probe");
+    abort_signal.cancel();
+    let abort_error = abort_future
+        .await
+        .expect_err("workforce-v2 caller transport abort probe must stop");
+    let caller_transport_abort_supported = abort_error.category() == ErrorCategory::Remote
+        && abort_error.code() == Some("caller_transport_aborted");
+
+    json!({
+        "before_exchange": before_exchange,
+        "during_decode": during_decode,
+        "caller_transport_abort_supported": caller_transport_abort_supported,
+        "server_exchange_cancelled_after_send": !response_completed.load(Ordering::SeqCst),
+    })
+}
+
+fn workforce_v2_resource_limit_base() -> Value {
+    let hard = QueryExecutionResourceLimits::default();
+    let plus_one = QueryExecutionResourceLimits::tightened(
+        hard.timeout_milliseconds.saturating_add(1),
+        hard.items.saturating_add(1),
+        hard.bytes.saturating_add(1),
+        hard.graph_nodes.saturating_add(1),
+        hard.attribute_values.saturating_add(1),
+        hard.collection_members.saturating_add(1),
+        hard.role_players.saturating_add(1),
+        hard.statements.saturating_add(1),
+    );
+    let zero = QueryExecutionResourceLimits::tightened(0, 0, 0, 0, 0, 0, 0, 0);
+    let plus_one_clamped_all = plus_one == hard;
+    let zero_tightening_all = zero.timeout_milliseconds == 0
+        && zero.items == 0
+        && zero.bytes == 0
+        && zero.graph_nodes == 0
+        && zero.attribute_values == 0
+        && zero.collection_members == 0
+        && zero.role_players == 0
+        && zero.statements == 0;
+    json!({
+        "hard_maxima": {
+            "timeout_milliseconds": hard.timeout_milliseconds,
+            "items": hard.items,
+            "bytes": hard.bytes,
+            "graph_nodes": hard.graph_nodes,
+            "attribute_values": hard.attribute_values,
+            "collection_members": hard.collection_members,
+            "role_players": hard.role_players,
+            "statements": hard.statements,
+        },
+        "plus_one_clamped_all": plus_one_clamped_all,
+        "zero_tightening_all": zero_tightening_all,
+    })
+}
+
+async fn workforce_v2_enforced_role_player_limit(
+    session: &mut QuerySession<'_, AppSchema>,
+    ada_key: &str,
+    dimension: &str,
+) -> Value {
+    let membership = session
+        .exact::<Membership>()
+        .expect("workforce-v2 limited membership binding");
+    let person = session
+        .exact::<Person>()
+        .expect("workforce-v2 limited person binding");
+    let result = session
+        .query(membership)
+        .expect("workforce-v2 limited membership query")
+        .match_(person)
+        .expect("workforce-v2 limited member match")
+        .where_(
+            membership.role(MembershipType::member).connects(person)
+                & person
+                    .field(PersonType::identifier)
+                    .eq(Identifier::new(ada_key.to_owned()).expect("workforce-v2 limited Ada key")),
+        )
+        .expect("workforce-v2 limited membership predicate")
+        .one()
+        .await;
+    let no_partial_result = result.is_err();
+    let error = result.expect_err("workforce-v2 zero role-player limit must reject hydration");
+    assert_eq!(error.category(), ErrorCategory::ResourceLimit);
+    json!({
+        "dimension": dimension,
+        "category": error.category().as_str(),
+        "code": error.code().expect("workforce-v2 resource limit has a stable code"),
+        "no_partial_result": no_partial_result,
+    })
+}
+
+async fn workforce_v2_lifecycle_lane(
+    session: &mut QuerySession<'_, AppSchema>,
+    key: &str,
+    exchange_count: Option<&Arc<AtomicUsize>>,
+) -> (Value, bool) {
+    let person = session
+        .exact::<Person>()
+        .expect("workforce-v2 lifecycle person binding");
+    let identifier = person.field(PersonType::identifier);
+    let key_predicate =
+        identifier.eq(Identifier::new(key.to_owned()).expect("workforce-v2 lifecycle key"));
+    let ancestor = session
+        .query(person)
+        .expect("workforce-v2 lifecycle ancestor")
+        .where_(key_predicate)
+        .expect("workforce-v2 lifecycle ancestor predicate");
+    let descendant = ancestor
+        .where_(person.field(PersonType::score).is_present())
+        .expect("workforce-v2 lifecycle descendant");
+    let sibling = ancestor
+        .where_(person.field(PersonType::val_bool).is_present())
+        .expect("workforce-v2 lifecycle sibling");
+
+    descendant.close();
+    let ancestor_usable_after_descendant_close =
+        ancestor.count().await.is_ok_and(|count| count == 1);
+
+    let descendant_after_ancestor = ancestor
+        .where_(person.field(PersonType::aliases).is_present())
+        .expect("workforce-v2 descendant retained before ancestor close");
+    ancestor.close();
+    ancestor.close();
+    let close_idempotent = ancestor.is_closed();
+    let descendant_usable_after_ancestor_close = descendant_after_ancestor
+        .count()
+        .await
+        .is_ok_and(|count| count == 1);
+
+    let exchanges_before = exchange_count.map(|count| count.load(Ordering::SeqCst));
+    let post_close_error = ancestor
+        .count()
+        .await
+        .expect_err("workforce-v2 closed query must reject");
+    let exchanges_after = exchange_count.map(|count| count.load(Ordering::SeqCst));
+    let post_close_io_count = exchanges_before
+        .zip(exchanges_after)
+        .map_or(0, |(before, after)| after - before);
+    let post_close_rejected = post_close_error.code() == Some("query_resource_closed");
+
+    let sibling_usable = sibling.count().await.is_ok_and(|count| count == 1);
+    let session_query = session
+        .query(person)
+        .expect("workforce-v2 session remains usable")
+        .where_(identifier.eq(Identifier::new(key.to_owned()).expect("workforce-v2 session key")))
+        .expect("workforce-v2 session query predicate");
+    let session_usable_after_query_close =
+        session_query.count().await.is_ok_and(|count| count == 1);
+
+    let result_query = session
+        .query(person)
+        .expect("workforce-v2 result lifecycle query")
+        .where_(
+            identifier
+                .eq(Identifier::new(key.to_owned()).expect("workforce-v2 result lifecycle key")),
+        )
+        .expect("workforce-v2 result lifecycle predicate");
+    let result = result_query
+        .one()
+        .await
+        .expect("workforce-v2 lifecycle result");
+    result_query.close();
+    let result_usable_after_query_close = result.identifier().value() == key;
+
+    (
+        json!({
+            "ancestor_usable_after_descendant_close": ancestor_usable_after_descendant_close,
+            "close_idempotent": close_idempotent,
+            "descendant_usable_after_ancestor_close": descendant_usable_after_ancestor_close,
+            "handle_invalidated": ancestor.is_closed(),
+            "post_close_io_count": post_close_io_count,
+            "post_close_rejected": post_close_rejected,
+            "session_usable_after_query_close": session_usable_after_query_close,
+            "sibling_usable": sibling_usable,
+        }),
+        result_usable_after_query_close,
+    )
+}
+
+async fn run_workforce_journey(db: &Database<AppSchema>) {
+    let report_path = workforce_env_path("TYPE_BRIDGE_WORKFORCE_REPORT");
+    validate_workforce_report_path(&report_path);
+    require_workforce_server_version().await;
+    let manifest_bytes = fs::read(workforce_env_path("TYPE_BRIDGE_WORKFORCE_MANIFEST"))
+        .expect("staged workforce manifest is readable");
+    let catalog_bytes = fs::read(workforce_env_path("TYPE_BRIDGE_WORKFORCE_CATALOG"))
+        .expect("staged workforce catalog is readable");
+    let journey_bytes = fs::read(workforce_env_path("TYPE_BRIDGE_WORKFORCE_JOURNEY"))
+        .expect("staged workforce journey is readable");
+    let schema_bytes = fs::read(workforce_env_path("TYPE_BRIDGE_WORKFORCE_SCHEMA"))
+        .expect("staged workforce schema is readable");
+    let provider_schema_bytes =
+        fs::read(workforce_env_path("TYPE_BRIDGE_WORKFORCE_PROVIDER_SCHEMA"))
+            .expect("staged workforce provider schema is readable");
+    let catalog: Value =
+        serde_json::from_slice(&catalog_bytes).expect("workforce catalog is valid JSON");
+    let journey: Value =
+        serde_json::from_slice(&journey_bytes).expect("workforce journey is valid JSON");
+
+    assert_eq!(
+        workforce_string(&journey["format"], "workforce journey format"),
+        "typebridge.workforce-journey/v1"
+    );
+    assert_eq!(
+        workforce_string(&journey["semantic_profile"], "workforce semantic profile"),
+        WORKFORCE_PROFILE
+    );
+    assert_eq!(
+        env::var("TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE")
+            .expect("generated live semantic profile is configured"),
+        WORKFORCE_PROFILE
+    );
+    assert_eq!(
+        workforce_string(&catalog["fixture"]["schema_path"], "workforce schema path"),
+        WORKFORCE_SCHEMA_PATH
+    );
+    assert_eq!(
+        workforce_string(
+            &catalog["fixture"]["provider_schema_path"],
+            "workforce provider schema path",
+        ),
+        WORKFORCE_PROVIDER_SCHEMA_PATH
+    );
+    assert_eq!(
+        workforce_string(&catalog["journey_path"], "workforce journey path"),
+        WORKFORCE_JOURNEY_PATH
+    );
+    let projection_target = workforce_string(
+        &catalog["projection_targets"]["rust"],
+        "workforce Rust projection target",
+    );
+    assert_eq!(projection_target, "rust");
+    let operation_order = journey["operation_order"]
+        .as_array()
+        .expect("workforce operation order must be an array")
+        .iter()
+        .map(|value| workforce_string(value, "workforce operation").to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        operation_order,
+        [
+            "insert_person",
+            "read_person",
+            "update_person",
+            "insert_membership",
+            "read_membership",
+            "direct_role_query_one",
+            "remote_role_query_one",
+            "delete_membership",
+            "delete_person",
+        ]
+    );
+
+    let person_record = &journey["records"]["person"];
+    let fields = &person_record["fields"];
+    let person_model = workforce_string(&person_record["model"], "workforce person model");
+    assert_eq!(person_model, "person");
+    let initial_nickname = workforce_string(
+        &workforce_typed_field(fields, "nickname", "string")["value"],
+        "workforce initial nickname",
+    );
+    let updated_nickname = workforce_string(
+        &person_record["update"]["nickname"]["value"],
+        "workforce updated nickname",
+    );
+    assert_eq!(
+        workforce_string(
+            &person_record["update"]["nickname"]["kind"],
+            "workforce updated nickname kind",
+        ),
+        "string"
+    );
+    let membership_record = &journey["records"]["membership"];
+    assert_eq!(
+        workforce_string(
+            &membership_record["player"]["key"],
+            "workforce membership player key",
+        ),
+        workforce_field_string(fields, "identifier", "string")
+    );
+
+    let person_baseline = db
+        .entities::<Person>()
+        .count()
+        .await
+        .expect("workforce person baseline count");
+    let membership_baseline = db
+        .relations::<Membership>()
+        .count()
+        .await
+        .expect("workforce membership baseline count");
+
+    let inserted_person = db
+        .entities::<Person>()
+        .insert(workforce_person_create(fields, initial_nickname))
+        .await
+        .expect("workforce person insert");
+    assert_workforce_person(&inserted_person, fields, initial_nickname);
+    let person_iid = inserted_person.iid().to_owned();
+    let read_person = db
+        .entities::<Person>()
+        .get_by_iid(&person_iid)
+        .await
+        .expect("workforce person read")
+        .expect("workforce person exists after insert");
+    assert_workforce_person(&read_person, fields, initial_nickname);
+    let updated_person = db
+        .entities::<Person>()
+        .update(
+            &person_iid,
+            workforce_person_create(fields, updated_nickname),
+        )
+        .await
+        .expect("workforce person update");
+    assert_workforce_person(&updated_person, fields, updated_nickname);
+    let updated_read = db
+        .entities::<Person>()
+        .get_by_iid(&person_iid)
+        .await
+        .expect("workforce updated person read")
+        .expect("workforce person exists after update");
+    let direct_model_observation =
+        workforce_model_observation(&updated_read, fields, person_model, updated_nickname);
+
+    let membership = db
+        .relations::<Membership>()
+        .insert(
+            MembershipCreate::new(MembershipMemberRef::Person(updated_read.reference()))
+                .expect("workforce membership create"),
+        )
+        .await
+        .expect("workforce membership insert");
+    let membership_iid = membership.iid().to_owned();
+    let membership_read = db
+        .relations::<Membership>()
+        .get_by_iid(&membership_iid)
+        .await
+        .expect("workforce membership read")
+        .expect("workforce membership exists after insert");
+    let _ = workforce_role_observations(&membership_read, &updated_read, membership_record);
+
+    let (direct_relation, direct_person) = {
+        let mut session = db.query().expect("workforce direct query session");
+        let relation = session
+            .exact::<Membership>()
+            .expect("workforce direct membership binding");
+        let person = session
+            .exact::<Person>()
+            .expect("workforce direct person binding");
+        session
+            .query((relation, person))
+            .expect("workforce direct selection")
+            .where_(
+                relation.role(MembershipType::member).connects(person)
+                    & person.field(PersonType::identifier).eq(Identifier::new(
+                        workforce_field_string(fields, "identifier", "string"),
+                    )
+                    .expect("workforce direct person key")),
+            )
+            .expect("workforce direct role predicate")
+            .one()
+            .await
+            .expect("workforce direct role result")
+    };
+    let (direct_hydration, direct_role) =
+        workforce_role_observations(&direct_relation, &direct_person, membership_record);
+    let direct_query_model_observation =
+        workforce_model_observation(&direct_person, fields, person_model, updated_nickname);
+    assert_eq!(direct_query_model_observation, direct_model_observation);
+
+    let exchange_count = Arc::new(AtomicUsize::new(0));
+    let remote_url = env::var("TYPE_BRIDGE_REMOTE_URL").expect("workforce remote server URL");
+    let remote: RemoteDatabase<AppSchema> =
+        RemoteDatabase::connect(RemoteConnectionOptions::generated(
+            RemoteQueryLimits::new(100, 8 << 20, 1000, 1000, 1000, 1000).deadline_ms(30_000),
+            HttpTransport::recording(remote_url, Arc::clone(&exchange_count)),
+        ))
+        .await
+        .expect("workforce remote database connects")
+        .with_schema(SCHEMA)
+        .expect("workforce remote schema authority binds");
+    assert_eq!(exchange_count.load(Ordering::SeqCst), 0);
+    let (remote_relation, remote_person) = {
+        let mut session = remote.query().expect("workforce remote query session");
+        let relation = session
+            .exact::<Membership>()
+            .expect("workforce remote membership binding");
+        let person = session
+            .exact::<Person>()
+            .expect("workforce remote person binding");
+        session
+            .query((relation, person))
+            .expect("workforce remote selection")
+            .where_(
+                relation.role(MembershipType::member).connects(person)
+                    & person.field(PersonType::identifier).eq(Identifier::new(
+                        workforce_field_string(fields, "identifier", "string"),
+                    )
+                    .expect("workforce remote person key")),
+            )
+            .expect("workforce remote role predicate")
+            .one()
+            .await
+            .expect("workforce remote role result")
+    };
+    let observed_exchange_count = exchange_count.load(Ordering::SeqCst);
+    assert_eq!(
+        observed_exchange_count, 1,
+        "workforce remote terminal must perform exactly one caller-owned exchange"
+    );
+    let (remote_hydration, remote_role) =
+        workforce_role_observations(&remote_relation, &remote_person, membership_record);
+    let remote_model_observation =
+        workforce_model_observation(&remote_person, fields, person_model, updated_nickname);
+
+    assert_eq!(remote_model_observation, direct_model_observation);
+    assert_eq!(remote_hydration, direct_hydration);
+    assert_eq!(remote_role, direct_role);
+
+    db.relations::<Membership>()
+        .delete(&membership_iid)
+        .await
+        .expect("workforce membership delete");
+    assert!(
+        db.relations::<Membership>()
+            .get_by_iid(&membership_iid)
+            .await
+            .expect("workforce deleted membership read")
+            .is_none()
+    );
+    db.entities::<Person>()
+        .delete(&person_iid)
+        .await
+        .expect("workforce person delete");
+    assert!(
+        db.entities::<Person>()
+            .get_by_iid(&person_iid)
+            .await
+            .expect("workforce deleted person read")
+            .is_none()
+    );
+    assert_eq!(
+        db.relations::<Membership>()
+            .count()
+            .await
+            .expect("workforce membership cleanup count"),
+        membership_baseline
+    );
+    assert_eq!(
+        db.entities::<Person>()
+            .count()
+            .await
+            .expect("workforce person cleanup count"),
+        person_baseline
+    );
+
+    let entity_lifecycle = json!({
+        "created": true,
+        "deleted": true,
+        "key": workforce_field_string(fields, "identifier", "string"),
+        "model": person_model,
+        "nickname_after_update": updated_nickname,
+        "read_after_update": true,
+    });
+    let relation_lifecycle = json!({
+        "created": true,
+        "deleted": true,
+        "model": workforce_string(&membership_record["model"], "workforce relation model"),
+        "player_key": workforce_field_string(fields, "identifier", "string"),
+        "role": workforce_string(&membership_record["role"], "workforce relation role"),
+    });
+    let remote_one_exchange = json!({"exchange_count": observed_exchange_count, "terminal": "one"});
+    let actual_observations = BTreeMap::from([
+        ("entity_lifecycle".to_owned(), entity_lifecycle),
+        ("hydrated_role_result".to_owned(), direct_hydration),
+        (
+            "model_values_and_references".to_owned(),
+            direct_model_observation,
+        ),
+        ("relation_lifecycle".to_owned(), relation_lifecycle),
+        ("remote_one_exchange".to_owned(), remote_one_exchange),
+        ("role_traversal".to_owned(), direct_role),
+    ]);
+    let expected_observations = journey["expected_observations"]
+        .as_object()
+        .expect("workforce expected observations must be an object");
+    assert_eq!(actual_observations.len(), expected_observations.len());
+    for (name, actual) in &actual_observations {
+        assert_eq!(
+            actual,
+            expected_observations
+                .get(name)
+                .unwrap_or_else(|| panic!("workforce expected observation is missing: {name}")),
+            "workforce observation diverged: {name}"
+        );
+    }
+
+    let semantic_fingerprint: Value = serde_json::from_str(SEMANTIC_SCHEMA_FINGERPRINT_JSON)
+        .expect("generated semantic fingerprint is valid JSON");
+    let projection_fingerprint: Value = serde_json::from_str(PROJECTION_FINGERPRINT_JSON)
+        .expect("generated projection fingerprint is valid JSON");
+    assert_eq!(
+        workforce_string(
+            &semantic_fingerprint["semantic_profile"],
+            "semantic fingerprint profile",
+        ),
+        WORKFORCE_PROFILE
+    );
+    assert_eq!(
+        workforce_string(
+            &projection_fingerprint["semantic_profile"],
+            "projection fingerprint profile",
+        ),
+        WORKFORCE_PROFILE
+    );
+    let report = json!({
+        "format": "typebridge.sdk-conformance-report/v1",
+        "binding": "rust",
+        "manifest": workforce_source_identity(WORKFORCE_MANIFEST_PATH, &manifest_bytes),
+        "catalog": workforce_source_identity(WORKFORCE_CATALOG_PATH, &catalog_bytes),
+        "fixture": {
+            "id": workforce_string(&journey["fixture_id"], "workforce fixture ID"),
+            "version": journey["version"].clone(),
+            "semantic_profile": WORKFORCE_PROFILE,
+            "schema": workforce_source_identity(WORKFORCE_SCHEMA_PATH, &schema_bytes),
+            "provider_schema": workforce_source_identity(
+                WORKFORCE_PROVIDER_SCHEMA_PATH,
+                &provider_schema_bytes,
+            ),
+            "journey": workforce_source_identity(WORKFORCE_JOURNEY_PATH, &journey_bytes),
+            "semantic_fingerprint": semantic_fingerprint,
+            "projection_target": projection_target,
+            "projection_fingerprint": projection_fingerprint,
+        },
+        "results": workforce_results(&catalog, &actual_observations),
+    });
+    publish_workforce_report(&report_path, report);
+}
+
+async fn run_workforce_v2_journey_inner(db: &Database<AppSchema>) {
+    let report_path = workforce_env_path("TYPE_BRIDGE_WORKFORCE_REPORT_V2");
+    validate_workforce_report_path(&report_path);
+    require_workforce_server_version().await;
+    let manifest_bytes = fs::read(workforce_env_path("TYPE_BRIDGE_WORKFORCE_MANIFEST_V2"))
+        .expect("staged workforce-v2 manifest is readable");
+    let catalog_bytes = fs::read(workforce_env_path("TYPE_BRIDGE_WORKFORCE_CATALOG_V2"))
+        .expect("staged workforce-v2 catalog is readable");
+    let journey_bytes = fs::read(workforce_env_path("TYPE_BRIDGE_WORKFORCE_JOURNEY_V2"))
+        .expect("staged workforce-v2 journey is readable");
+    let schema_bytes = fs::read(workforce_env_path("TYPE_BRIDGE_WORKFORCE_SCHEMA_V2"))
+        .expect("staged workforce-v2 schema is readable");
+    let provider_schema_bytes = fs::read(workforce_env_path(
+        "TYPE_BRIDGE_WORKFORCE_PROVIDER_SCHEMA_V2",
+    ))
+    .expect("staged workforce-v2 provider schema is readable");
+    let catalog: Value =
+        serde_json::from_slice(&catalog_bytes).expect("workforce-v2 catalog is valid JSON");
+    let journey: Value =
+        serde_json::from_slice(&journey_bytes).expect("workforce-v2 journey is valid JSON");
+    assert_eq!(
+        workforce_string(&journey["format"], "workforce-v2 journey format"),
+        "typebridge.workforce-journey/v2"
+    );
+    assert_eq!(journey["fixture_id"], "workforce-v2");
+    assert_eq!(journey["version"], 2);
+    assert_eq!(
+        workforce_string(
+            &journey["semantic_profile"],
+            "workforce-v2 semantic profile"
+        ),
+        WORKFORCE_PROFILE
+    );
+    assert_eq!(
+        env::var("TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE")
+            .expect("generated live semantic profile is configured"),
+        WORKFORCE_PROFILE
+    );
+    assert_eq!(
+        workforce_string(
+            &catalog["fixture"]["schema_path"],
+            "workforce-v2 schema path",
+        ),
+        WORKFORCE_SCHEMA_PATH
+    );
+    assert_eq!(
+        workforce_string(
+            &catalog["fixture"]["provider_schema_path"],
+            "workforce-v2 provider schema path",
+        ),
+        WORKFORCE_PROVIDER_SCHEMA_PATH
+    );
+    assert_eq!(
+        workforce_string(&catalog["journey_path"], "workforce-v2 journey path"),
+        WORKFORCE_V2_JOURNEY_PATH
+    );
+    let projection_target = workforce_string(
+        &catalog["projection_targets"]["rust"],
+        "workforce-v2 Rust projection target",
+    );
+    assert_eq!(projection_target, "rust");
+
+    let proof_observations = workforce_v2_provider_proofs();
+
+    let records = &journey["records"];
+    let people_records = records["people"]
+        .as_array()
+        .expect("workforce-v2 people records are an array");
+    assert_eq!(people_records.len(), 2);
+    let ada_key = workforce_field_string(&people_records[0]["fields"], "identifier", "string");
+    let dana_key = workforce_field_string(&people_records[1]["fields"], "identifier", "string");
+    let employee_fields = &records["employee"]["fields"];
+    let manager_fields = &records["manager"]["fields"];
+    let network_fields = &records["network_link"]["fields"];
+
+    let person_baseline = db
+        .entities::<Person>()
+        .count()
+        .await
+        .expect("workforce-v2 person baseline");
+    let employee_baseline = db
+        .entities::<Employee>()
+        .count()
+        .await
+        .expect("workforce-v2 employee baseline");
+    let manager_baseline = db
+        .entities::<Manager>()
+        .count()
+        .await
+        .expect("workforce-v2 manager baseline");
+    let membership_baseline = db
+        .relations::<Membership>()
+        .count()
+        .await
+        .expect("workforce-v2 membership baseline");
+    let network_baseline = db
+        .relations::<NetworkLink>()
+        .count()
+        .await
+        .expect("workforce-v2 network baseline");
+
+    let people = db
+        .entities::<Person>()
+        .insert_many(
+            people_records
+                .iter()
+                .map(workforce_v2_person_create)
+                .collect(),
+        )
+        .await
+        .expect("workforce-v2 people insert");
+    assert_eq!(people.len(), 2);
+    workforce_v2_assert_person(&people[0], &people_records[0]);
+    workforce_v2_assert_person(&people[1], &people_records[1]);
+    let person_iids = [people[0].iid().to_owned(), people[1].iid().to_owned()];
+    let read_after_create = db
+        .entities::<Person>()
+        .get_by_iid(&person_iids[0])
+        .await
+        .expect("workforce-v2 person read after create")
+        .is_some();
+
+    let employee = db
+        .entities::<Employee>()
+        .insert(
+            EmployeeCreate::try_new(
+                Identifier::new(workforce_field_string(
+                    employee_fields,
+                    "identifier",
+                    "string",
+                ))
+                .expect("workforce-v2 employee identifier"),
+                PartyName::new(workforce_field_string(
+                    employee_fields,
+                    "party_name",
+                    "string",
+                ))
+                .expect("workforce-v2 employee party name"),
+                Rank::new(workforce_field_long(employee_fields, "rank"))
+                    .expect("workforce-v2 employee rank"),
+            )
+            .expect("workforce-v2 employee create"),
+        )
+        .await
+        .expect("workforce-v2 employee insert");
+    let employee_iid = employee.iid().to_owned();
+    let manager = db
+        .entities::<Manager>()
+        .insert(
+            ManagerCreate::try_new(
+                Identifier::new(workforce_field_string(
+                    manager_fields,
+                    "identifier",
+                    "string",
+                ))
+                .expect("workforce-v2 manager identifier"),
+                ManagerNote::new(workforce_field_string(
+                    manager_fields,
+                    "manager_note",
+                    "string",
+                ))
+                .expect("workforce-v2 manager note"),
+                PartyName::new(workforce_field_string(
+                    manager_fields,
+                    "party_name",
+                    "string",
+                ))
+                .expect("workforce-v2 manager party name"),
+                Rank::new(workforce_field_long(manager_fields, "rank"))
+                    .expect("workforce-v2 manager rank"),
+            )
+            .expect("workforce-v2 manager create"),
+        )
+        .await
+        .expect("workforce-v2 manager insert");
+    let manager_iid = manager.iid().to_owned();
+    let membership = db
+        .relations::<Membership>()
+        .insert(
+            MembershipCreate::new(MembershipMemberRef::Person(people[0].reference()))
+                .expect("workforce-v2 membership create"),
+        )
+        .await
+        .expect("workforce-v2 membership insert");
+    let membership_iid = membership.iid().to_owned();
+    let membership_read_after_create = db
+        .relations::<Membership>()
+        .get_by_iid(&membership_iid)
+        .await
+        .expect("workforce-v2 membership read after create")
+        .is_some();
+    let network = db
+        .relations::<NetworkLink>()
+        .insert(
+            NetworkLinkCreate::new(
+                Identifier::new(workforce_field_string(
+                    network_fields,
+                    "identifier",
+                    "string",
+                ))
+                .expect("workforce-v2 network identifier"),
+                Some(
+                    Nickname::new(workforce_field_string(network_fields, "nickname", "string"))
+                        .expect("workforce-v2 network nickname"),
+                ),
+                people[1].reference(),
+                people[0].reference(),
+                vec![people[0].reference(), people[1].reference()],
+            )
+            .expect("workforce-v2 network create"),
+        )
+        .await
+        .expect("workforce-v2 network insert");
+    let network_iid = network.iid().to_owned();
+    let keyed_create_order = [
+        people[0].identifier().value().clone(),
+        people[1].identifier().value().clone(),
+        employee.identifier().value().clone(),
+        manager.identifier().value().clone(),
+        network.identifier().value().clone(),
+    ];
+    let membership_order_key = format!(
+        "{}{}",
+        workforce_v2_common_key_prefix(&keyed_create_order),
+        workforce_v2_type_label(MembershipType::TOKEN.type_id_json()),
+    );
+    let actual_create_order = [
+        keyed_create_order[0].clone(),
+        keyed_create_order[1].clone(),
+        keyed_create_order[2].clone(),
+        keyed_create_order[3].clone(),
+        membership_order_key.clone(),
+        keyed_create_order[4].clone(),
+    ];
+    assert_eq!(
+        journey["create_order"],
+        json!(actual_create_order),
+        "workforce-v2 public create operations diverged from journey order"
+    );
+
+    let mut direct_session = db.query().expect("workforce-v2 direct query session");
+    let direct_observations =
+        workforce_v2_query_observations(&mut direct_session, records, &person_iids, None).await;
+
+    let remote_url = env::var("TYPE_BRIDGE_REMOTE_URL").expect("workforce-v2 remote URL");
+    let exchange_count = Arc::new(AtomicUsize::new(0));
+    let remote: RemoteDatabase<AppSchema> =
+        RemoteDatabase::connect(RemoteConnectionOptions::generated(
+            QueryExecutionResourceLimits::default(),
+            HttpTransport::recording(remote_url.clone(), Arc::clone(&exchange_count)),
+        ))
+        .await
+        .expect("workforce-v2 remote database connects")
+        .with_schema(SCHEMA)
+        .expect("workforce-v2 remote schema binds");
+    let mut remote_session = remote.query().expect("workforce-v2 remote query session");
+    let remote_observations = workforce_v2_query_observations(
+        &mut remote_session,
+        records,
+        &person_iids,
+        Some(&exchange_count),
+    )
+    .await;
+    for name in [
+        "model_values_and_references",
+        "owner_iid_set",
+        "exact_subtypes",
+        "scalar_boolean",
+        "roles",
+        "topology",
+        "selection_shapes",
+        "terminals",
+        "grouped_reducer",
+        "hydrated_result",
+        "scalar_domain",
+        "schema_function",
+    ] {
+        assert_eq!(
+            direct_observations.get(name),
+            remote_observations.get(name),
+            "workforce-v2 direct/remote observation differs: {name}"
+        );
+    }
+
+    let structured_query_diagnostic = {
+        let mut session = db
+            .query()
+            .expect("workforce-v2 structured diagnostic session");
+        let person = session
+            .exact::<Person>()
+            .expect("workforce-v2 structured diagnostic binding");
+        let identifier = person.field(PersonType::identifier);
+        let error = session
+            .query(person)
+            .expect("workforce-v2 structured diagnostic query")
+            .where_(
+                identifier.eq(Identifier::new(ada_key.clone()).expect("workforce-v2 Ada key"))
+                    | identifier
+                        .eq(Identifier::new(dana_key.clone()).expect("workforce-v2 Dana key")),
+            )
+            .expect("workforce-v2 structured diagnostic scope")
+            .one()
+            .await
+            .expect_err("workforce-v2 two-row exact-one must fail");
+        workforce_v2_diagnostic(
+            &error,
+            None,
+            &[
+                ada_key.as_str(),
+                dana_key.as_str(),
+                person_iids[0].as_str(),
+                person_iids[1].as_str(),
+            ],
+        )
+    };
+
+    let cancellation_remote =
+        workforce_v2_remote_cancellation(&remote, &exchange_count, &remote_url).await;
+    let deterministic_cancellation_remote =
+        &proof_observations[&workforce_v2_observation_key("cancellation_remote", "remote_runtime")];
+    assert_eq!(
+        &cancellation_remote, deterministic_cancellation_remote,
+        "workforce-v2 live and deterministic public remote cancellation observations differ"
+    );
+
+    let limited_dimension = "role_players";
+    let limited = QueryExecutionResourceLimits {
+        role_players: 0,
+        ..QueryExecutionResourceLimits::default()
+    };
+    let direct_enforced = {
+        let mut session = db
+            .query_with_resources(limited, AnswerCancellation::default())
+            .expect("workforce-v2 direct limited session");
+        workforce_v2_enforced_role_player_limit(&mut session, &ada_key, limited_dimension).await
+    };
+    let remote_enforced = {
+        let mut session = remote
+            .query_with_resources(limited, AnswerCancellation::default())
+            .expect("workforce-v2 remote limited session");
+        workforce_v2_enforced_role_player_limit(&mut session, &ada_key, limited_dimension).await
+    };
+    assert_eq!(direct_enforced, remote_enforced);
+    let mut direct_limits = workforce_v2_resource_limit_base();
+    direct_limits["enforced"] = direct_enforced;
+    let mut remote_limits = workforce_v2_resource_limit_base();
+    remote_limits["enforced"] = remote_enforced;
+
+    let direct_lane = "direct";
+    let (direct_lifecycle, direct_result_survives) = {
+        let mut session = db.query().expect("workforce-v2 direct lifecycle session");
+        workforce_v2_lifecycle_lane(&mut session, &ada_key, None).await
+    };
+    let remote_lane = "remote";
+    let (remote_lifecycle, remote_result_survives) = {
+        let mut session = remote
+            .query()
+            .expect("workforce-v2 remote lifecycle session");
+        workforce_v2_lifecycle_lane(&mut session, &ada_key, Some(&exchange_count)).await
+    };
+    assert_eq!(direct_lifecycle, remote_lifecycle);
+    assert_eq!(direct_result_survives, remote_result_survives);
+    let query_resource_lifecycle = json!({
+        "lanes": [direct_lane, remote_lane],
+        "query": direct_lifecycle,
+        "result_usable_after_query_close": direct_result_survives,
+    });
+
+    let mut actual_cleanup_order = Vec::new();
+    db.relations::<NetworkLink>()
+        .delete(&network_iid)
+        .await
+        .expect("workforce-v2 network cleanup");
+    actual_cleanup_order.push(keyed_create_order[4].clone());
+    let network_deleted = db
+        .relations::<NetworkLink>()
+        .get_by_iid(&network_iid)
+        .await
+        .expect("workforce-v2 network cleanup read")
+        .is_none();
+    db.relations::<Membership>()
+        .delete(&membership_iid)
+        .await
+        .expect("workforce-v2 membership cleanup");
+    actual_cleanup_order.push(membership_order_key);
+    let membership_deleted = db
+        .relations::<Membership>()
+        .get_by_iid(&membership_iid)
+        .await
+        .expect("workforce-v2 membership cleanup read")
+        .is_none();
+    db.entities::<Manager>()
+        .delete(&manager_iid)
+        .await
+        .expect("workforce-v2 manager cleanup");
+    actual_cleanup_order.push(keyed_create_order[3].clone());
+    db.entities::<Employee>()
+        .delete(&employee_iid)
+        .await
+        .expect("workforce-v2 employee cleanup");
+    actual_cleanup_order.push(keyed_create_order[2].clone());
+    db.entities::<Person>()
+        .delete(&person_iids[1])
+        .await
+        .expect("workforce-v2 Dana cleanup");
+    actual_cleanup_order.push(keyed_create_order[1].clone());
+    db.entities::<Person>()
+        .delete(&person_iids[0])
+        .await
+        .expect("workforce-v2 Ada cleanup");
+    actual_cleanup_order.push(keyed_create_order[0].clone());
+    let people_deleted = db
+        .entities::<Person>()
+        .get_by_iid(&person_iids[0])
+        .await
+        .expect("workforce-v2 Ada cleanup read")
+        .is_none()
+        && db
+            .entities::<Person>()
+            .get_by_iid(&person_iids[1])
+            .await
+            .expect("workforce-v2 Dana cleanup read")
+            .is_none();
+    assert!(network_deleted && membership_deleted && people_deleted);
+    assert_eq!(
+        journey["cleanup_order"],
+        json!(actual_cleanup_order),
+        "workforce-v2 public cleanup operations diverged from journey order"
+    );
+    assert_eq!(
+        db.relations::<NetworkLink>()
+            .count()
+            .await
+            .expect("workforce-v2 network cleanup count"),
+        network_baseline
+    );
+    assert_eq!(
+        db.relations::<Membership>()
+            .count()
+            .await
+            .expect("workforce-v2 membership cleanup count"),
+        membership_baseline
+    );
+    assert_eq!(
+        db.entities::<Manager>()
+            .count()
+            .await
+            .expect("workforce-v2 manager cleanup count"),
+        manager_baseline
+    );
+    assert_eq!(
+        db.entities::<Employee>()
+            .count()
+            .await
+            .expect("workforce-v2 employee cleanup count"),
+        employee_baseline
+    );
+    assert_eq!(
+        db.entities::<Person>()
+            .count()
+            .await
+            .expect("workforce-v2 person cleanup count"),
+        person_baseline
+    );
+
+    let entity_lifecycle = json!({
+        "created": !person_iids[0].is_empty(),
+        "deleted": people_deleted,
+        "key": ada_key,
+        "model": workforce_v2_type_label(PersonType::TOKEN.type_id_json()),
+        "read_after_create": read_after_create,
+    });
+    let membership_player_key = match membership.member() {
+        MembershipMemberPlayer::Person(reference) => reference
+            .identifier()
+            .expect("workforce-v2 inserted membership player carries its key")
+            .value()
+            .clone(),
+        MembershipMemberPlayer::Robot(_) => {
+            panic!("workforce-v2 inserted membership player must be a person")
+        }
+    };
+    let relation_lifecycle = json!({
+        "created": !membership_iid.is_empty() && membership_read_after_create,
+        "deleted": membership_deleted,
+        "model": workforce_v2_type_label(MembershipType::TOKEN.type_id_json()),
+        "player_key": membership_player_key,
+        "role": workforce_v2_role_label(MembershipType::member.role_id_json()),
+    });
+
+    let mut actual = BTreeMap::new();
+    let mut insert = |observation_ref: &str, proof_kind: &str, observation: Value| {
+        let key = workforce_v2_observation_key(observation_ref, proof_kind);
+        assert!(
+            actual.insert(key.clone(), observation).is_none(),
+            "workforce-v2 producer duplicated an observation lane: {key:?}"
+        );
+    };
+    insert("entity_lifecycle", "direct_runtime", entity_lifecycle);
+    insert("relation_lifecycle", "direct_runtime", relation_lifecycle);
+    insert(
+        "structured_query_diagnostic",
+        "diagnostic",
+        structured_query_diagnostic,
+    );
+    insert(
+        "remote_structured_diagnostic",
+        "diagnostic",
+        proof_observations
+            [&workforce_v2_observation_key("remote_structured_diagnostic", "diagnostic")]
+            .clone(),
+    );
+    for name in [
+        "model_values_and_references",
+        "exact_subtypes",
+        "owner_iid_set",
+        "grouped_reducer",
+        "hydrated_result",
+        "roles",
+        "scalar_boolean",
+        "schema_function",
+        "selection_shapes",
+        "terminals",
+        "topology",
+        "scalar_domain",
+    ] {
+        insert(
+            name,
+            "direct_runtime",
+            direct_observations
+                .get(name)
+                .unwrap_or_else(|| panic!("workforce-v2 direct observation is absent: {name}"))
+                .clone(),
+        );
+        insert(
+            name,
+            "remote_runtime",
+            remote_observations
+                .get(name)
+                .unwrap_or_else(|| panic!("workforce-v2 remote observation is absent: {name}"))
+                .clone(),
+        );
+    }
+    insert(
+        "remote_one_exchange",
+        "remote_runtime",
+        remote_observations["remote_one_exchange"].clone(),
+    );
+    insert(
+        "cancellation_direct",
+        "direct_runtime",
+        proof_observations[&workforce_v2_observation_key("cancellation_direct", "direct_runtime")]
+            .clone(),
+    );
+    insert(
+        "cancellation_remote",
+        "remote_runtime",
+        deterministic_cancellation_remote.clone(),
+    );
+    insert(
+        "query_resource_lifecycle",
+        "lifecycle",
+        query_resource_lifecycle,
+    );
+    insert("resource_limits", "direct_runtime", direct_limits);
+    insert("resource_limits", "remote_runtime", remote_limits);
+    drop(insert);
+    assert_eq!(actual.len(), 34, "workforce-v2 producer requires 34 rows");
+
+    let expected_observations = journey["expected_observations"]
+        .as_object()
+        .expect("workforce-v2 expected observations must be an object");
+    let actual_observation_refs = actual
+        .keys()
+        .map(|(observation_ref, _)| observation_ref.as_str())
+        .collect::<BTreeSet<_>>();
+    let expected_observation_refs = expected_observations
+        .keys()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        actual_observation_refs, expected_observation_refs,
+        "workforce-v2 actual and journey observation coverage differs"
+    );
+    for ((observation_ref, proof_kind), observation) in &actual {
+        assert_eq!(
+            observation,
+            expected_observations
+                .get(observation_ref)
+                .unwrap_or_else(|| {
+                    panic!("workforce-v2 expected observation is absent: {observation_ref}")
+                }),
+            "workforce-v2 actual observation diverged: {observation_ref}/{proof_kind}"
+        );
+    }
+
+    let semantic_fingerprint: Value = serde_json::from_str(SEMANTIC_SCHEMA_FINGERPRINT_JSON)
+        .expect("generated workforce-v2 semantic fingerprint is valid JSON");
+    let projection_fingerprint: Value = serde_json::from_str(PROJECTION_FINGERPRINT_JSON)
+        .expect("generated workforce-v2 projection fingerprint is valid JSON");
+    assert_eq!(
+        semantic_fingerprint,
+        catalog["expected_fingerprints"]["semantic"]
+    );
+    assert_eq!(
+        projection_fingerprint,
+        catalog["expected_fingerprints"]["projections"]["rust"]
+    );
+    let report = json!({
+        "format": "typebridge.sdk-conformance-report/v2",
+        "binding": "rust",
+        "manifest": workforce_source_identity(WORKFORCE_MANIFEST_PATH, &manifest_bytes),
+        "catalog": workforce_source_identity(WORKFORCE_V2_CATALOG_PATH, &catalog_bytes),
+        "fixture": {
+            "id": workforce_string(&journey["fixture_id"], "workforce-v2 fixture ID"),
+            "version": journey["version"].clone(),
+            "semantic_profile": WORKFORCE_PROFILE,
+            "schema": workforce_source_identity(WORKFORCE_SCHEMA_PATH, &schema_bytes),
+            "provider_schema": workforce_source_identity(
+                WORKFORCE_PROVIDER_SCHEMA_PATH,
+                &provider_schema_bytes,
+            ),
+            "journey": workforce_source_identity(WORKFORCE_V2_JOURNEY_PATH, &journey_bytes),
+            "semantic_fingerprint": semantic_fingerprint,
+            "projection_target": projection_target,
+            "projection_fingerprint": projection_fingerprint,
+        },
+        "results": workforce_v2_results(&catalog, &actual),
+    });
+    publish_workforce_report(&report_path, report);
+}
+
+#[tokio::test]
+async fn generated_workforce_report_journeys() {
+    let workforce_v1_requested = env::var_os("TYPE_BRIDGE_WORKFORCE_REPORT").is_some();
+    let workforce_v2_requested = env::var_os("TYPE_BRIDGE_WORKFORCE_REPORT_V2").is_some();
+    if workforce_v1_requested || workforce_v2_requested {
+        let db = database().await;
+        if workforce_v1_requested {
+            run_workforce_journey(&db).await;
+        }
+        if workforce_v2_requested {
+            run_workforce_v2_journey_inner(&db).await;
+        }
+    }
+    println!("generated workforce report journeys: passed");
 }
 
 #[tokio::test]
@@ -1895,16 +5013,15 @@ async fn generated_relation_query_and_remote_lifecycle() {
     }
 
     let remote_url = env::var("TYPE_BRIDGE_REMOTE_URL").expect("F4 remote server URL");
-    let remote: RemoteDatabase<AppSchema> = RemoteDatabase::connect(
-        RemoteConnectionOptions::generated(
-        RemoteQueryLimits::new(100, 8 << 20, 1000, 1000, 1000, 1000).deadline_ms(30_000),
-        HttpTransport::new(remote_url),
-        ),
-    )
-    .await
-    .expect("F4 remote database connects")
-    .with_schema(SCHEMA)
-    .expect("F4 remote schema authority binds");
+    let remote: RemoteDatabase<AppSchema> =
+        RemoteDatabase::connect(RemoteConnectionOptions::generated(
+            RemoteQueryLimits::new(100, 8 << 20, 1000, 1000, 1000, 1000).deadline_ms(30_000),
+            HttpTransport::new(remote_url),
+        ))
+        .await
+        .expect("F4 remote database connects")
+        .with_schema(SCHEMA)
+        .expect("F4 remote schema authority binds");
     let mut session = remote.query().expect("F4 remote query session");
     let person_binding = session.exact::<Person>().expect("F4 remote person binding");
     let member_binding = session.exact::<Person>().expect("F4 remote member binding");
@@ -1953,6 +5070,96 @@ async fn generated_relation_query_and_remote_lifecycle() {
         .collect::<Vec<_>>();
     assert_eq!(remote_page.total(), Some(4));
     assert_eq!(observed_page, expected_page);
+
+    let remote_score = person_binding.field(PersonType::score);
+    let remote_val_bool = person_binding.field(PersonType::val_bool);
+    let remote_worker_predicate =
+        identifier.starts_with(Text::new("p-2").expect("F4 remote aggregate worker prefix"));
+    let remote_worker_query = session
+        .query(person_binding)
+        .expect("F4 remote aggregate query")
+        .where_(remote_worker_predicate.clone())
+        .expect("F4 remote aggregate predicate");
+    let remote_stats: (
+        u64,
+        i64,
+        Option<i64>,
+        Option<i64>,
+        Option<f64>,
+        Option<f64>,
+        Option<f64>,
+    ) = remote_worker_query
+        .aggregate((
+            aggregate::count(),
+            remote_score.sum(),
+            remote_score.min(),
+            remote_score.max(),
+            remote_score.mean(),
+            remote_score.median(),
+            remote_score.stddev(),
+        ))
+        .await
+        .expect("F4 remote aggregate");
+    assert_eq!(
+        remote_stats,
+        (
+            4,
+            280,
+            Some(70),
+            Some(70),
+            Some(70.0),
+            Some(70.0),
+            Some(0.0),
+        )
+    );
+    let remote_field_grouped = remote_worker_query
+        .group_by_field(remote_val_bool)
+        .expect("F4 remote field group")
+        .aggregate((aggregate::count(), remote_score.sum()))
+        .await
+        .expect("F4 remote field-grouped aggregate");
+    assert_eq!(remote_field_grouped.len(), 1);
+    assert_eq!(remote_field_grouped[0].0.value(), &true);
+    assert_eq!(remote_field_grouped[0].1, (4, 280));
+    let remote_tuple_grouped = remote_worker_query
+        .group_by_fields((remote_val_bool, remote_score))
+        .expect("F4 remote tuple group")
+        .aggregate((aggregate::count(), remote_score.sum()))
+        .await
+        .expect("F4 remote tuple-field-grouped aggregate");
+    assert_eq!(remote_tuple_grouped.len(), 1);
+    assert_eq!(remote_tuple_grouped[0].0.0.value(), &true);
+    assert_eq!(remote_tuple_grouped[0].0.1.value(), &70);
+    assert_eq!(remote_tuple_grouped[0].1, (4, 280));
+
+    let remote_employment = session
+        .exact::<Employment>()
+        .expect("F4 remote employment binding");
+    let remote_employee_role = remote_employment.role(EmploymentType::employee);
+    let remote_binding_grouped = session
+        .query(remote_employment)
+        .expect("F4 remote employment aggregate query")
+        .where_(remote_employee_role.connects(person_binding) & remote_worker_predicate)
+        .expect("F4 remote employment aggregate predicate")
+        .group_by(person_binding)
+        .expect("F4 remote binding group")
+        .aggregate((aggregate::count(), remote_score.mean()))
+        .await
+        .expect("F4 remote binding-grouped aggregate");
+    let mut remote_binding_grouped = remote_binding_grouped
+        .into_iter()
+        .map(|(person, values)| (person.identifier().value().clone(), values))
+        .collect::<Vec<_>>();
+    remote_binding_grouped.sort_by(|left, right| left.0.cmp(&right.0));
+    assert_eq!(
+        remote_binding_grouped,
+        vec![
+            ("p-200".to_owned(), (1, Some(70.0))),
+            ("p-201".to_owned(), (1, Some(70.0))),
+            ("p-202".to_owned(), (1, Some(70.0))),
+        ]
+    );
+
     let remote_worker_by_iid = session
         .query(person_binding)
         .expect("F4 remote worker IID query")

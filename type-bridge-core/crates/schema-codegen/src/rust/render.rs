@@ -92,6 +92,7 @@ const FIXED_PUBLIC_NAMES: &[&str] = &[
     "ModelFamily",
     "EncodedScalar",
     "EncodedReference",
+    "ReferenceOrigin",
     "EncodedCreate",
     "HydratedRow",
     "HydratedPlayer",
@@ -663,12 +664,21 @@ fn render_read(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
             let members = read_members(projection, model)?;
             let _ = writeln!(
                 output,
-                "#[derive(Clone, Debug, PartialEq)]\npub struct {name} {{"
+                "#[derive(Clone, PartialEq)]\npub struct {name} {{\n  __tb_origin: ReferenceOrigin,"
             );
             for member in &members {
                 let _ = writeln!(output, "  {}: {},", member.name, member.stored_type());
             }
-            output.push_str("}\n\nimpl ");
+            output.push_str("}\n\n");
+            let _ = writeln!(
+                output,
+                "impl core::fmt::Debug for {name} {{\n  fn fmt(&self, __tb_formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {{\n    let mut __tb_debug = __tb_formatter.debug_struct({name:?});"
+            );
+            for member in &members {
+                let mname = &member.name;
+                let _ = writeln!(output, "    __tb_debug.field({mname:?}, &self.{mname});");
+            }
+            output.push_str("    __tb_debug.finish()\n  }\n}\n\nimpl ");
             output.push_str(name);
             output.push_str(" {\n");
             for member in &members {
@@ -769,7 +779,7 @@ fn render_read(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
                     }
                 }
             }
-            output.push_str("    Ok(Self {\n      iid: __tb_iid,\n");
+            output.push_str("    Ok(Self {\n      __tb_origin: __tb_row.origin().clone(),\n      iid: __tb_iid,\n");
             for member in &members {
                 if member.name == "iid" {
                     continue;
@@ -796,7 +806,10 @@ fn render_read(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
 
             if let Some(reference_name) = model.reference_read().target_name() {
                 let ref_name = reference_name.as_str();
-                let mut ref_args = vec!["Some(self.iid().to_owned())".to_owned()];
+                let mut ref_args = vec![
+                    "self.__tb_origin.clone()".to_owned(),
+                    "Some(self.iid().to_owned())".to_owned(),
+                ];
                 for key in model.reference_read().key_fields() {
                     let token = model
                         .query_tokens()
@@ -856,24 +869,33 @@ fn render_reference(projection: &RuntimeProjection) -> Result<String, Diagnostic
 
         let _ = writeln!(
             output,
-            "#[derive(Clone, Debug, PartialEq)]\npub struct {name} {{\n  iid: Option<String>,"
+            "#[derive(Clone, PartialEq)]\npub struct {name} {{\n  __tb_origin: ReferenceOrigin,\n  iid: Option<String>,"
         );
         for member in &members {
             let _ = writeln!(output, "  {}: Option<{}>,", member.name, member.value);
         }
-        output.push_str("}\n\nimpl ");
+        output.push_str("}\n\n");
+        let _ = writeln!(
+            output,
+            "impl core::fmt::Debug for {name} {{\n  fn fmt(&self, __tb_formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {{\n    let mut __tb_debug = __tb_formatter.debug_struct({name:?});\n    __tb_debug.field(\"iid\", &self.iid);"
+        );
+        for member in &members {
+            let mname = &member.name;
+            let _ = writeln!(output, "    __tb_debug.field({mname:?}, &self.{mname});");
+        }
+        output.push_str("    __tb_debug.finish()\n  }\n}\n\nimpl ");
         output.push_str(name);
-        output.push_str(" {\n  pub(crate) fn __tb_from_parts(iid: Option<String>, ");
+        output.push_str(" {\n  pub(crate) fn __tb_from_parts(__tb_origin: ReferenceOrigin, iid: Option<String>, ");
         for member in &members {
             let _ = write!(output, "{}: Option<{}>, ", member.name, member.value);
         }
-        output.push_str(") -> Self {\n    Self { iid, ");
+        output.push_str(") -> Self {\n    Self { __tb_origin, iid, ");
         for member in &members {
             let _ = write!(output, "{}, ", member.name);
         }
         output.push_str("}\n  }\n\n");
 
-        output.push_str("  pub fn from_iid(iid: impl Into<String>) -> Result<Self, ValidationError> {\n    let iid = iid.into();\n    if iid.trim().is_empty() { return Err(ValidationError::new(\"iid\", \"empty_iid\")); }\n    Ok(Self { iid: Some(iid),\n");
+        output.push_str("  pub fn from_iid(iid: impl Into<String>) -> Result<Self, ValidationError> {\n    let iid = iid.into();\n    if iid.trim().is_empty() { return Err(ValidationError::new(\"iid\", \"empty_iid\")); }\n    Ok(Self { __tb_origin: ReferenceOrigin::default(), iid: Some(iid),\n");
         for member in &members {
             let _ = writeln!(output, "      {}: None,", member.name);
         }
@@ -888,7 +910,7 @@ fn render_reference(projection: &RuntimeProjection) -> Result<String, Diagnostic
                 let mtype = &member.value;
                 let _ = writeln!(
                     output,
-                    "  pub fn from_key({mname}: {mtype}) -> Result<Self, ValidationError> {{\n    Ok(Self {{ iid: None, {mname}: Some({mname}) }})\n  }}\n"
+                    "  pub fn from_key({mname}: {mtype}) -> Result<Self, ValidationError> {{\n    Ok(Self {{ __tb_origin: ReferenceOrigin::default(), iid: None, {mname}: Some({mname}) }})\n  }}\n"
                 );
             } else {
                 for member in &members {
@@ -897,7 +919,7 @@ fn render_reference(projection: &RuntimeProjection) -> Result<String, Diagnostic
                     let fn_name = format!("from_{mname}");
                     let _ = write!(
                         output,
-                        "  pub fn {fn_name}({mname}: {mtype}) -> Result<Self, ValidationError> {{\n    Ok(Self {{ iid: None,\n"
+                        "  pub fn {fn_name}({mname}: {mtype}) -> Result<Self, ValidationError> {{\n    Ok(Self {{ __tb_origin: ReferenceOrigin::default(), iid: None,\n"
                     );
                     for other in &members {
                         if other.name == member.name {
@@ -957,7 +979,7 @@ fn render_reference(projection: &RuntimeProjection) -> Result<String, Diagnostic
                 "    let {mname} = if let Some((_, __tb_scalar)) = __tb_player.keys().iter().find(|(__tb_key, _)| __tb_key.as_str() == {token_str:?}) {{\n      let __tb_member_path = __tb_path.join({mname:?});\n      Some({decode_expr})\n    }} else {{ None }};"
             );
         }
-        output.push_str("    Ok(Self { iid: __tb_iid, ");
+        output.push_str("    Ok(Self { __tb_origin: __tb_player.origin().clone(), iid: __tb_iid, ");
         for member in &members {
             let _ = write!(output, "{}, ", member.name);
         }
@@ -975,7 +997,7 @@ fn render_reference(projection: &RuntimeProjection) -> Result<String, Diagnostic
 
         let _ = writeln!(
             output,
-            "impl IntoEncodedReference for {name} {{\n  fn into_encoded_reference(self) -> Result<EncodedReference, ValidationError> {{\n    let mut __tb_keys = Vec::new();\n{enc_keys_code}    EncodedReference::try_new({read_name}::TYPE_ID_JSON, self.iid, __tb_keys, &ValidationPath::root())\n  }}\n}}\n"
+            "impl IntoEncodedReference for {name} {{\n  fn into_encoded_reference(self) -> Result<EncodedReference, ValidationError> {{\n    let mut __tb_keys = Vec::new();\n{enc_keys_code}    EncodedReference::try_new_with_origin({read_name}::TYPE_ID_JSON, self.iid, __tb_keys, self.__tb_origin, &ValidationPath::root())\n  }}\n}}\n"
         );
     }
     Ok(output)
@@ -1466,6 +1488,8 @@ fn render_structs(projection: &RuntimeProjection) -> Result<String, Diagnostic> 
 fn render_functions(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
     let mut output = String::from(header());
     output.push_str("use crate::read::*;\nuse crate::reference::*;\nuse crate::runtime::*;\nuse crate::schema::AppSchema;\nuse crate::structs::*;\n\n");
+    let mut emitted_inputs = BTreeSet::new();
+    let mut emitted_calls = BTreeSet::new();
     for id in projection.emission().functions() {
         let function = projection
             .functions()
@@ -1479,18 +1503,154 @@ fn render_functions(projection: &RuntimeProjection) -> Result<String, Diagnostic
                 .collect::<Result<Vec<_>, _>>()?,
         );
         let returns = function_return_type(projection, function.returns())?;
+        let supported_return = match function.returns() {
+            FunctionReturnProjection::Scalar(element) if !element.optional() => {
+                if let ProjectedTypeRef::Scalar(domain) = element.type_ref() {
+                    Some(*domain)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+        let supported = supported_return.is_some()
+            && function.parameters().iter().all(|parameter| {
+                matches!(
+                    parameter.type_ref(),
+                    ProjectedTypeRef::Model(_) | ProjectedTypeRef::Scalar(_)
+                )
+            });
+        let token_name = if supported {
+            format!("__tb_{}_token", function.target_name().as_str())
+        } else {
+            function.target_name().as_str().to_owned()
+        };
         if let Some(documentation) = documentation_annotation(function.annotations()) {
             render_rustdoc(&mut output, documentation);
         }
         let _ = writeln!(
             output,
-            "#[allow(non_upper_case_globals)]\npub const {}: FunctionToken<AppSchema, {arguments}, {returns}> = FunctionToken::new({}, {});\n",
-            function.target_name().as_str(),
+            "#[allow(non_upper_case_globals)]\n{}const {token_name}: FunctionToken<AppSchema, {arguments}, {returns}> = FunctionToken::new({}, {});\n",
+            if supported { "" } else { "pub " },
             rust_literal(function.id().label().as_str()),
             rust_literal(&canonical_text!(function)),
         );
+
+        let Some(return_domain) = supported_return.filter(|_| supported) else {
+            continue;
+        };
+
+        let call_domain = scalar_type(return_domain);
+        let call_alias = format!("{}Call", scalar_domain_name(return_domain));
+        let input_domains = function
+            .parameters()
+            .iter()
+            .filter_map(|parameter| match parameter.type_ref() {
+                ProjectedTypeRef::Scalar(domain) => Some(*domain),
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>();
+        for domain in input_domains {
+            let alias = format!("{}Input", scalar_domain_name(domain));
+            let scalar = scalar_type(domain);
+            if emitted_inputs.insert(alias.clone()) {
+                let constructor = format!("{}_input", scalar_domain_function_name(domain));
+                let _ = writeln!(
+                    output,
+                    "pub type {alias} = FunctionInput<AppSchema, {scalar}>;\n\npub fn {constructor}<Value>(session: &QuerySession<'_, AppSchema>, value: &Value) -> type_bridge::Result<{alias}>\nwhere\n    Value: Model<Schema = AppSchema> + QueryValued<Domain = {scalar}>,\n{{\n    session.__function_input(value)\n}}"
+                );
+            }
+        }
+        if emitted_calls.insert(call_alias.clone()) {
+            let _ = writeln!(
+                output,
+                "pub type {call_alias} = FunctionCall<AppSchema, {call_domain}>;"
+            );
+        }
+
+        let mut generics = Vec::new();
+        let mut parameters = Vec::new();
+        let mut where_bounds = Vec::new();
+        let mut arguments_expr = Vec::new();
+        for (index, parameter) in function.parameters().iter().enumerate() {
+            let parameter_name = parameter.target_name().as_str();
+            match parameter.type_ref() {
+                ProjectedTypeRef::Model(model_use) => {
+                    let model_name = model(projection, model_use.id())?.target_name().as_str();
+                    let model_generic = format!("M{index}");
+                    let mode_generic = format!("Mode{index}");
+                    generics.push(model_generic.clone());
+                    generics.push(mode_generic.clone());
+                    parameters.push(format!(
+                        "{parameter_name}: type_bridge::Binding<AppSchema, {model_generic}, {mode_generic}>"
+                    ));
+                    where_bounds.push(format!(
+                        "{model_generic}: ThingModel<Schema = AppSchema> + NominalUpcast<{model_name}>"
+                    ));
+                    where_bounds.push(format!("{mode_generic}: type_bridge::SelectionMode"));
+                    arguments_expr.push(format!("{parameter_name}.__function_argument()"));
+                }
+                ProjectedTypeRef::Scalar(domain) => {
+                    let argument_generic = format!("Argument{index}");
+                    generics.push(argument_generic.clone());
+                    parameters.push(format!("{parameter_name}: &{argument_generic}"));
+                    where_bounds.push(format!(
+                        "{argument_generic}: FunctionScalarArgument<AppSchema, {}>",
+                        scalar_type(*domain)
+                    ));
+                    arguments_expr.push(format!("{parameter_name}.__function_argument()"));
+                }
+                ProjectedTypeRef::Struct(_) => unreachable!("struct parameters were filtered"),
+            }
+        }
+        let generic_clause = if generics.is_empty() {
+            String::new()
+        } else {
+            format!("<{}>", generics.join(", "))
+        };
+        let where_clause = if where_bounds.is_empty() {
+            String::new()
+        } else {
+            format!("\nwhere\n    {},", where_bounds.join(",\n    "))
+        };
+        let _ = writeln!(
+            output,
+            "pub fn {}{generic_clause}(session: &QuerySession<'_, AppSchema>, {}) -> type_bridge::Result<{call_alias}>{where_clause}\n{{\n    session.__call_function({}, [{}])\n}}\n",
+            function.target_name().as_str(),
+            parameters.join(", "),
+            token_name,
+            arguments_expr.join(", "),
+        );
     }
     Ok(output)
+}
+
+fn scalar_domain_name(tag: ValueTypeTag) -> &'static str {
+    match tag {
+        ValueTypeTag::String => "String",
+        ValueTypeTag::Long => "Integer",
+        ValueTypeTag::Double => "Double",
+        ValueTypeTag::Boolean => "Boolean",
+        ValueTypeTag::Date => "Date",
+        ValueTypeTag::DateTime => "DateTime",
+        ValueTypeTag::DateTimeTz => "DateTimeTz",
+        ValueTypeTag::Decimal => "Decimal",
+        ValueTypeTag::Duration => "Duration",
+    }
+}
+
+fn scalar_domain_function_name(tag: ValueTypeTag) -> &'static str {
+    match tag {
+        ValueTypeTag::String => "string",
+        ValueTypeTag::Long => "integer",
+        ValueTypeTag::Double => "double",
+        ValueTypeTag::Boolean => "boolean",
+        ValueTypeTag::Date => "date",
+        ValueTypeTag::DateTime => "date_time",
+        ValueTypeTag::DateTimeTz => "date_time_tz",
+        ValueTypeTag::Decimal => "decimal",
+        ValueTypeTag::Duration => "duration",
+    }
 }
 
 fn render_schema(

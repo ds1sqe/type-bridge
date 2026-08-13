@@ -8,7 +8,7 @@ use type_bridge_contract::id::{
 };
 use type_bridge_contract::limits::CANONICAL_CODEC_LIMITS;
 use type_bridge_contract::schema::{
-    AnnotationFact, AnnotationFactId, AnnotationKindId, AnnotationSubjectId,
+    AnnotationFact, AnnotationFactId, AnnotationKindId, AnnotationSubjectId, CollectionMode,
     DeclaredIdentityFingerprint, DeclaredSchema, DocText, DocumentId, FunctionBody, FunctionFact,
     FunctionReturnElement, FunctionReturnMode, FunctionSignature,
     ManagedDeclaredIdentityFingerprint, ManagedFactSelection, ManagedSchemaState,
@@ -311,6 +311,72 @@ fn capabilities_are_derived_from_both_states_and_the_transition_table() {
             .map(CapabilityId::as_str)
             .collect::<Vec<_>>(),
         vec!["schema.redefine", "schema.source", "schema.target"],
+    );
+}
+
+#[test]
+fn collection_mode_redefines_under_one_fact_id_and_distinct_stays_independent() {
+    let person = type_id(TypeKind::Entity, "ordered-person");
+    let owns_id = OwnsFactId::new(person, AttributeId::new("ordered-name").unwrap()).unwrap();
+    let unordered = SchemaFact::Owns(OwnsFact::new(owns_id.clone()));
+    let ordered = SchemaFact::Owns(OwnsFact::new_with_collection_mode(
+        owns_id.clone(),
+        CollectionMode::OrderedList,
+    ));
+    let operation = SchemaOperation::redefine(unordered.clone(), ordered.clone()).unwrap();
+    assert_eq!(operation.affected_ids(), vec![unordered.id()]);
+    assert_eq!(operation.expected_fact(), Some(&unordered));
+    assert_eq!(operation.replacement_fact(), Some(&ordered));
+
+    let selection = ManagedFactSelection::new([unordered.id()]).unwrap();
+    let scope =
+        ManagedScopeBinding::exclusive(ManagedScopeId::new("ordered-mode-scope").unwrap()).unwrap();
+    let source = state(
+        scope.clone(),
+        selection.clone(),
+        "ordered-mode-source",
+        "typedb-3.12.1/v1",
+        CapabilitySet::new(),
+    );
+    let target = state(
+        scope,
+        selection,
+        "ordered-mode-target",
+        "typedb-3.12.1/v1",
+        CapabilitySet::new(),
+    );
+    let delta = SchemaDelta::new(PatchFormatVersion::V1, source, target, vec![operation]).unwrap();
+    let bytes = encode_schema_delta(&delta).unwrap();
+    assert_eq!(decode_schema_delta(&bytes).unwrap(), delta);
+    let value: Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(
+        value["operations"][0]["expected"]["value"]
+            .get("collection_mode")
+            .is_none()
+    );
+    assert_eq!(
+        value["operations"][0]["replacement"]["value"]["collection_mode"],
+        "ordered_list",
+    );
+
+    let distinct = SchemaFact::Annotation(
+        AnnotationFact::new(
+            AnnotationFactId::new(
+                AnnotationSubjectId::Owns(owns_id),
+                AnnotationKindId::Distinct,
+            ),
+            SchemaAnnotationValue::Presence,
+        )
+        .unwrap(),
+    );
+    let define = SchemaOperation::define(vec![distinct.clone()]).unwrap();
+    assert_eq!(define.defined_facts(), Some([distinct.clone()].as_slice()));
+    assert_eq!(define.inverse()[0].undefined_fact(), Some(&distinct));
+    let undefine = SchemaOperation::undefine(distinct.clone());
+    assert_eq!(undefine.undefined_fact(), Some(&distinct));
+    assert_eq!(
+        undefine.inverse()[0].defined_facts(),
+        Some([distinct].as_slice())
     );
 }
 

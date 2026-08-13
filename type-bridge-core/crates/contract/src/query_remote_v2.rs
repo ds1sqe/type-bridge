@@ -31,7 +31,7 @@ use crate::limits::{
 use crate::migration_assertion::BindingId;
 use crate::query_plan::{
     CompatibilityValueV2, InputRow, QueryInvocation, QueryOperation, QueryOutput, QueryPlan,
-    QueryPlanFingerprint, decode_query_plan,
+    QueryPlanFingerprint, QueryReductionGroupV2, QueryReductionTermV2, decode_query_plan,
 };
 use crate::query_remote::{
     DEFAULT_REMOTE_DEADLINE_MS, MAX_REMOTE_CLOCK_SKEW_MS, MAX_REMOTE_DEADLINE_MS,
@@ -59,6 +59,11 @@ pub const CAP_QUERY_REMOTE_STRUCTURED_DIAGNOSTIC: &str = "query.remote.structure
 pub const CAP_QUERY_OUTPUT_HYDRATED: &str = "query.output.hydrated";
 /// Same-snapshot hydration admission capability.
 pub const CAP_QUERY_SAME_SNAPSHOT_HYDRATION: &str = "query.execution.same-snapshot-hydration";
+/// Admission capability for an explicitly tightened remote statement budget.
+pub const CAP_QUERY_REMOTE_STATEMENT_LIMIT: &str = "query.execution.statement-limit";
+
+/// Backward-compatible statement ceiling used when the V2 wire member is omitted.
+pub const DEFAULT_REMOTE_MAX_STATEMENTS_V2: u32 = 3;
 
 const NONCE_MIN_BYTES: usize = 16;
 const NONCE_MAX_BYTES: usize = 128;
@@ -110,14 +115,18 @@ pub enum RemoteResultKindV2 {
     DistinctCount,
     /// Model-oriented distinct-root existence.
     DistinctExists,
+    /// Model-oriented typed reduction rows.
+    ModelReduction,
 }
 
 impl RemoteResultKindV2 {
     const fn operation(self) -> QueryOperation {
         match self {
-            Self::Rows | Self::Documents | Self::HydratedRows | Self::HydratedPage => {
-                QueryOperation::Rows
-            }
+            Self::Rows
+            | Self::Documents
+            | Self::HydratedRows
+            | Self::HydratedPage
+            | Self::ModelReduction => QueryOperation::Rows,
             Self::Count | Self::DistinctCount => QueryOperation::Count,
             Self::Exists | Self::DistinctExists => QueryOperation::Exists,
         }
@@ -126,12 +135,19 @@ impl RemoteResultKindV2 {
     const fn compatibility_terminal(self) -> bool {
         matches!(
             self,
-            Self::HydratedRows | Self::HydratedPage | Self::DistinctCount | Self::DistinctExists
+            Self::HydratedRows
+                | Self::HydratedPage
+                | Self::DistinctCount
+                | Self::DistinctExists
+                | Self::ModelReduction
         )
     }
 
     const fn carries_hydration_graph(self) -> bool {
-        matches!(self, Self::HydratedRows | Self::HydratedPage)
+        matches!(
+            self,
+            Self::HydratedRows | Self::HydratedPage | Self::ModelReduction
+        )
     }
 }
 
@@ -156,6 +172,23 @@ pub struct RemoteLimitsV2 {
     pub max_attribute_values: u64,
     /// Maximum aggregate hydration role-player references.
     pub max_role_players: u64,
+    /// Maximum provider statements for this terminal.
+    ///
+    /// The value three is omitted on encode and reconstructed on decode so
+    /// request bytes emitted before this additive member remain canonical.
+    #[serde(
+        default = "default_remote_max_statements_v2",
+        skip_serializing_if = "is_default_remote_max_statements_v2"
+    )]
+    pub max_statements: u32,
+}
+
+const fn default_remote_max_statements_v2() -> u32 {
+    DEFAULT_REMOTE_MAX_STATEMENTS_V2
+}
+
+fn is_default_remote_max_statements_v2(value: &u32) -> bool {
+    *value == DEFAULT_REMOTE_MAX_STATEMENTS_V2
 }
 
 /// One complete V2 remote invocation of a reusable V2 plan.
@@ -202,6 +235,9 @@ impl RemoteQueryRequestV2 {
         }
         for capability in query_remote_v2_required_capabilities(result.carries_hydration_graph()) {
             required.insert(capability);
+        }
+        if limits.max_statements != DEFAULT_REMOTE_MAX_STATEMENTS_V2 {
+            required.insert(static_capability(CAP_QUERY_REMOTE_STATEMENT_LIMIT));
         }
         required.ensure_supported_by(advertisement.capabilities())?;
 
@@ -362,6 +398,9 @@ impl RemoteQueryRequestV2 {
             query_remote_v2_required_capabilities(self.result.carries_hydration_graph())
         {
             required.insert(capability);
+        }
+        if self.limits.max_statements != DEFAULT_REMOTE_MAX_STATEMENTS_V2 {
+            required.insert(static_capability(CAP_QUERY_REMOTE_STATEMENT_LIMIT));
         }
         required.ensure_supported_by(advertisement.capabilities())
     }
@@ -905,6 +944,99 @@ impl HydratedRowV2 {
     }
 }
 
+/// One typed group key in a model-compatible reduction row.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum RemoteReductionGroupV2 {
+    /// One attached thing identity and its complete graph projection.
+    Thing {
+        /// Declared-to-concrete graph reference.
+        value: HydrationReferenceV2,
+    },
+    /// One scalar field value.
+    Field {
+        /// Exact compatibility scalar.
+        value: CompatibilityValueV2,
+    },
+    /// One ordered Cartesian field-value tuple.
+    Fields {
+        /// Exact compatibility scalars in request field order.
+        values: Vec<CompatibilityValueV2>,
+    },
+}
+
+impl RemoteReductionGroupV2 {
+    /// Construct a thing group key.
+    #[must_use]
+    pub const fn thing(value: HydrationReferenceV2) -> Self {
+        Self::Thing { value }
+    }
+
+    /// Construct a field group key.
+    #[must_use]
+    pub const fn field(value: CompatibilityValueV2) -> Self {
+        Self::Field { value }
+    }
+
+    /// Construct a tuple-field group key.
+    #[must_use]
+    pub const fn fields(values: Vec<CompatibilityValueV2>) -> Self {
+        Self::Fields { values }
+    }
+}
+
+/// One exact typed reducer cell.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum RemoteReducedValueV2 {
+    /// Lossless distinct-root count.
+    Count {
+        /// Exact unsigned count.
+        value: u64,
+    },
+    /// Optional long-domain reducer result.
+    Long {
+        /// `None` for reducers undefined on the observed stream.
+        value: Option<i64>,
+    },
+    /// Optional finite double-domain reducer result with exact IEEE bits.
+    DoubleBits {
+        /// `None` for reducers undefined on the observed stream.
+        value: Option<u64>,
+    },
+}
+
+/// One ordered typed reduction row.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RemoteReductionRowV2 {
+    group: Option<RemoteReductionGroupV2>,
+    values: Vec<RemoteReducedValueV2>,
+}
+
+impl RemoteReductionRowV2 {
+    /// Construct one reduction row.
+    #[must_use]
+    pub const fn new(
+        group: Option<RemoteReductionGroupV2>,
+        values: Vec<RemoteReducedValueV2>,
+    ) -> Self {
+        Self { group, values }
+    }
+
+    /// Return the optional typed group key.
+    #[must_use]
+    pub const fn group(&self) -> Option<&RemoteReductionGroupV2> {
+        self.group.as_ref()
+    }
+
+    /// Return reducer cells in exact request order.
+    #[must_use]
+    pub fn values(&self) -> &[RemoteReducedValueV2] {
+        &self.values
+    }
+}
+
 /// The typed terminal outcome of one V2 remote invocation.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -967,6 +1099,20 @@ pub enum RemoteOutcomeV2 {
         root: BindingId,
         /// Exact existence verdict.
         value: bool,
+    },
+    /// Model-oriented typed reduction rows and optional group hydration.
+    ModelReduction {
+        /// Dense graph rooted only by thing-group keys.
+        graph: HydrationGraphV2,
+        /// Exact reduced root binding echoed from the model terminal.
+        #[serde(deserialize_with = "deserialize_binding_id_v2")]
+        root: BindingId,
+        /// Exact grouping contract echoed from the model terminal.
+        group: Option<QueryReductionGroupV2>,
+        /// Exact reducer contract echoed from the model terminal.
+        reducers: Vec<QueryReductionTermV2>,
+        /// Deterministically ordered typed reduction rows.
+        rows: Vec<RemoteReductionRowV2>,
     },
 }
 
@@ -1118,6 +1264,32 @@ impl RemoteQueryResponseV2 {
             RemoteResultKindV2::DistinctExists => {
                 RemoteOutcomeV2::DistinctExists { root, value: true }
             }
+            RemoteResultKindV2::ModelReduction => {
+                let (root, group, reducers) = plan
+                    .v2_compatibility()
+                    .and_then(|compatibility| compatibility.model_query())
+                    .and_then(|model| match model {
+                        crate::query_plan::ModelQueryV2::Reduction {
+                            root,
+                            group,
+                            reducers,
+                            ..
+                        } => Some((*root, group.clone(), reducers.clone())),
+                        _ => None,
+                    })
+                    .ok_or_else(|| {
+                        remote_evidence_mismatch_v2(
+                            "model reduction framing lacks its exact terminal contract",
+                        )
+                    })?;
+                RemoteOutcomeV2::ModelReduction {
+                    graph: HydrationGraphV2 { nodes: Vec::new() },
+                    root,
+                    group,
+                    reducers,
+                    rows: Vec::new(),
+                }
+            }
         };
         let response = Self {
             format: QUERY_REMOTE_RESPONSE_FORMAT_V2.to_owned(),
@@ -1150,7 +1322,8 @@ impl RemoteQueryResponseV2 {
             RemoteResultKindV2::Count
             | RemoteResultKindV2::Exists
             | RemoteResultKindV2::DistinctCount
-            | RemoteResultKindV2::DistinctExists => None,
+            | RemoteResultKindV2::DistinctExists
+            | RemoteResultKindV2::ModelReduction => None,
         };
         preflight_response_evidence_v2(bytes, expected_result, output_width, limits)?;
         let response =
@@ -1616,6 +1789,9 @@ fn validate_v2_plan_and_result(
             ) | (
                 RemoteResultKindV2::DistinctExists,
                 crate::query_plan::ModelQueryV2::DistinctExists { .. }
+            ) | (
+                RemoteResultKindV2::ModelReduction,
+                crate::query_plan::ModelQueryV2::Reduction { .. }
             )
         );
         if !matches {
@@ -1667,6 +1843,13 @@ fn validate_remote_limits_v2(limits: RemoteLimitsV2) -> Result<(), Diagnostic> {
             DiagnosticCategory::ResourceLimit,
             "query_remote_v2_deadline_limit",
             "V2 remote deadline exceeds the maximum supported duration",
+        ));
+    }
+    if limits.max_statements > DEFAULT_REMOTE_MAX_STATEMENTS_V2 {
+        return Err(remote_v2_failure(
+            DiagnosticCategory::ResourceLimit,
+            "query_remote_v2_statement_limit",
+            "V2 remote statement budget exceeds the canonical ceiling",
         ));
     }
     Ok(())
@@ -1861,6 +2044,7 @@ fn validate_outcome_kind_v2(
         RemoteOutcomeV2::HydratedPage { .. } => RemoteResultKindV2::HydratedPage,
         RemoteOutcomeV2::DistinctCount { .. } => RemoteResultKindV2::DistinctCount,
         RemoteOutcomeV2::DistinctExists { .. } => RemoteResultKindV2::DistinctExists,
+        RemoteOutcomeV2::ModelReduction { .. } => RemoteResultKindV2::ModelReduction,
     };
     if actual == expected {
         Ok(())
@@ -1985,8 +2169,228 @@ fn validate_outcome_evidence_v2(
                 return Err(remote_item_limit_v2());
             }
         }
+        RemoteOutcomeV2::ModelReduction {
+            graph,
+            root,
+            group,
+            reducers,
+            rows,
+        } => validate_model_reduction(graph, *root, group, reducers, rows, limits, plan, expected)?,
     }
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_model_reduction(
+    graph: &HydrationGraphV2,
+    root: BindingId,
+    group: &Option<QueryReductionGroupV2>,
+    reducers: &[QueryReductionTermV2],
+    rows: &[RemoteReductionRowV2],
+    limits: RemoteReplyDecodeLimitsV2,
+    plan: Option<&QueryPlan>,
+    expected: RemoteResultKindV2,
+) -> Result<(), Diagnostic> {
+    if expected != RemoteResultKindV2::ModelReduction {
+        return Err(remote_evidence_mismatch_v2(
+            "typed reduction outcome has the wrong terminal family",
+        ));
+    }
+    let Some(crate::query_plan::ModelQueryV2::Reduction {
+        hydration,
+        root: expected_root,
+        group: expected_group,
+        reducers: expected_reducers,
+    }) = plan
+        .and_then(QueryPlan::v2_compatibility)
+        .and_then(|compatibility| compatibility.model_query())
+    else {
+        return Err(remote_evidence_mismatch_v2(
+            "typed reduction outcome has no request-bound terminal contract",
+        ));
+    };
+    if root != *expected_root || group != expected_group || reducers != expected_reducers {
+        return Err(remote_evidence_mismatch_v2(
+            "typed reduction outcome does not echo its exact root, group, and reducer contract",
+        ));
+    }
+    check_sequence_item_budget(rows.len(), limits.max_items)?;
+    if group.is_none() && rows.len() != 1 {
+        return Err(remote_evidence_mismatch_v2(
+            "ungrouped reduction must carry exactly one total row",
+        ));
+    }
+    let mut cells = 0_u64;
+    for row in rows {
+        let group_cells = match (group.as_ref(), row.group()) {
+            (None, None) => 0,
+            (
+                Some(QueryReductionGroupV2::Binding { .. }),
+                Some(RemoteReductionGroupV2::Thing { .. }),
+            )
+            | (
+                Some(QueryReductionGroupV2::Field { .. }),
+                Some(RemoteReductionGroupV2::Field { .. }),
+            ) => 1,
+            (
+                Some(QueryReductionGroupV2::Fields { fields }),
+                Some(RemoteReductionGroupV2::Fields { values }),
+            ) if fields.len() == values.len() => u64::try_from(values.len()).unwrap_or(u64::MAX),
+            _ => {
+                return Err(remote_evidence_mismatch_v2(
+                    "typed reduction row group shape contradicts its exact contract",
+                ));
+            }
+        };
+        if row.values().len() != reducers.len() {
+            return Err(remote_evidence_mismatch_v2(
+                "typed reduction row width contradicts its exact reducer contract",
+            ));
+        }
+        cells = cells
+            .checked_add(group_cells)
+            .and_then(|value| {
+                value.checked_add(u64::try_from(row.values().len()).unwrap_or(u64::MAX))
+            })
+            .ok_or_else(remote_collection_limit_v2)?;
+        if cells > limits.max_collection_members {
+            return Err(remote_collection_limit_v2());
+        }
+        validate_reduction_group_value(group.as_ref(), row.group())?;
+        for (term, value) in reducers.iter().zip(row.values()) {
+            validate_reduced_value(term, value, limits.max_items)?;
+        }
+    }
+    validate_reduction_group_order(rows)?;
+    validate_hydration_graph_budget(graph, limits)?;
+    validate_reduction_graph(graph, rows, group.as_ref(), hydration)
+}
+
+fn validate_reduction_group_value(
+    contract: Option<&QueryReductionGroupV2>,
+    value: Option<&RemoteReductionGroupV2>,
+) -> Result<(), Diagnostic> {
+    match (contract, value) {
+        (None, None)
+        | (
+            Some(QueryReductionGroupV2::Binding { .. }),
+            Some(RemoteReductionGroupV2::Thing { .. }),
+        ) => Ok(()),
+        (
+            Some(QueryReductionGroupV2::Field { field }),
+            Some(RemoteReductionGroupV2::Field { value }),
+        ) if value.value_type() == field.value_type() => validate_reduction_group_scalar(value),
+        (
+            Some(QueryReductionGroupV2::Fields { fields }),
+            Some(RemoteReductionGroupV2::Fields { values }),
+        ) if fields.len() == values.len()
+            && fields
+                .iter()
+                .zip(values)
+                .all(|(field, value)| field.value_type() == value.value_type()) =>
+        {
+            for value in values {
+                validate_reduction_group_scalar(value)?;
+            }
+            Ok(())
+        }
+        _ => Err(remote_evidence_mismatch_v2(
+            "typed reduction group value contradicts its exact scalar domain",
+        )),
+    }
+}
+
+fn validate_reduction_group_scalar(value: &CompatibilityValueV2) -> Result<(), Diagnostic> {
+    if matches!(
+        value.canonical_value(),
+        Some(crate::value::CanonicalValue::Double(value))
+            if value.bits() == (-0.0_f64).to_bits()
+    ) {
+        return Err(remote_evidence_mismatch_v2(
+            "typed double zero reduction groups must use the canonical positive-zero representative",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_reduced_value(
+    term: &QueryReductionTermV2,
+    value: &RemoteReducedValueV2,
+    max_items: u64,
+) -> Result<(), Diagnostic> {
+    let valid = match (term.reduction(), term.input(), value) {
+        (
+            crate::query_plan::QueryReductionKindV2::Count,
+            _,
+            RemoteReducedValueV2::Count { value },
+        ) => {
+            if *value > max_items {
+                return Err(remote_item_limit_v2());
+            }
+            true
+        }
+        (reduction, Some(field), RemoteReducedValueV2::Long { .. }) => {
+            field.value_type() == crate::value::ValueTypeTag::Long && !reduction.widens_to_double()
+        }
+        (reduction, Some(field), RemoteReducedValueV2::DoubleBits { value }) => {
+            if value.is_some_and(|bits| !f64::from_bits(bits).is_finite()) {
+                return Err(remote_evidence_mismatch_v2(
+                    "typed double reducer bits must encode a finite IEEE value",
+                ));
+            }
+            field.value_type() == crate::value::ValueTypeTag::Double || reduction.widens_to_double()
+        }
+        _ => false,
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err(remote_evidence_mismatch_v2(
+            "typed reducer value contradicts its exact operation and scalar domain",
+        ))
+    }
+}
+
+fn validate_reduction_group_order(rows: &[RemoteReductionRowV2]) -> Result<(), Diagnostic> {
+    for pair in rows.windows(2) {
+        let ordered = match (pair[0].group(), pair[1].group()) {
+            (None, None) => false,
+            (
+                Some(RemoteReductionGroupV2::Thing { value: left }),
+                Some(RemoteReductionGroupV2::Thing { value: right }),
+            ) => left.node() < right.node(),
+            (
+                Some(RemoteReductionGroupV2::Field { value: left }),
+                Some(RemoteReductionGroupV2::Field { value: right }),
+            ) => left.semantic_cmp_same_domain(right) == Some(Ordering::Less),
+            (
+                Some(RemoteReductionGroupV2::Fields { values: left }),
+                Some(RemoteReductionGroupV2::Fields { values: right }),
+            ) => semantic_tuple_cmp(left, right)? == Ordering::Less,
+            _ => false,
+        };
+        if !ordered {
+            return Err(remote_evidence_mismatch_v2(
+                "typed reduction groups must be semantically sorted and unique",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn semantic_tuple_cmp(
+    left: &[CompatibilityValueV2],
+    right: &[CompatibilityValueV2],
+) -> Result<Ordering, Diagnostic> {
+    for (left, right) in left.iter().zip(right) {
+        let ordering = left.semantic_cmp_same_domain(right).ok_or_else(|| {
+            remote_evidence_mismatch_v2("tuple reduction groups are not comparable")
+        })?;
+        if ordering != Ordering::Equal {
+            return Ok(ordering);
+        }
+    }
+    Ok(left.len().cmp(&right.len()))
 }
 
 fn low_level_output_width(plan: &QueryPlan) -> Option<usize> {
@@ -2360,7 +2764,26 @@ impl<'de> Visitor<'de> for OutcomeScanVisitor<'_> {
                         state: self.state,
                     })?;
                 }
-                ("graph", RemoteResultKindV2::HydratedRows | RemoteResultKindV2::HydratedPage) => {
+                ("rows", RemoteResultKindV2::ModelReduction) => {
+                    map.next_value_seed(SequenceScanSeed {
+                        child: ScanChild::ReductionRow,
+                        counter: Some((
+                            StreamingCounter::Items,
+                            sequence_item_limit(self.limits.max_items),
+                            StreamingPreflightFailure::Items,
+                        )),
+                        limits: self.limits,
+                        local_maximum: None,
+                        output_width: self.output_width,
+                        state: self.state,
+                    })?;
+                }
+                (
+                    "graph",
+                    RemoteResultKindV2::HydratedRows
+                    | RemoteResultKindV2::HydratedPage
+                    | RemoteResultKindV2::ModelReduction,
+                ) => {
                     map.next_value_seed(ObjectScanSeed {
                         kind: ScanObject::Graph,
                         limits: self.limits,
@@ -2394,6 +2817,7 @@ impl<'de> Visitor<'de> for OutcomeScanVisitor<'_> {
             RemoteResultKindV2::HydratedPage => "hydrated_page",
             RemoteResultKindV2::DistinctCount => "distinct_count",
             RemoteResultKindV2::DistinctExists => "distinct_exists",
+            RemoteResultKindV2::ModelReduction => "model_reduction",
         };
         if kind.as_deref() != Some(expected) {
             self.state.failure = Some(StreamingPreflightFailure::Outcome);
@@ -2414,6 +2838,7 @@ enum ScanChild {
     Ignored,
     Row,
     Role,
+    ReductionRow,
 }
 
 struct SequenceScanSeed<'scan> {
@@ -2492,7 +2917,8 @@ impl<'de> Visitor<'de> for SequenceScanVisitor<'_> {
                 | ScanChild::GraphNode
                 | ScanChild::HydratedRow
                 | ScanChild::HydratedSlot
-                | ScanChild::Role => {
+                | ScanChild::Role
+                | ScanChild::ReductionRow => {
                     let kind = match self.child {
                         ScanChild::Attribute => ScanObject::Attribute,
                         ScanChild::DocumentField => ScanObject::DocumentField,
@@ -2500,6 +2926,7 @@ impl<'de> Visitor<'de> for SequenceScanVisitor<'_> {
                         ScanChild::HydratedRow => ScanObject::HydratedRow,
                         ScanChild::HydratedSlot => ScanObject::HydratedSlot,
                         ScanChild::Role => ScanObject::Role,
+                        ScanChild::ReductionRow => ScanObject::ReductionRow,
                         ScanChild::Document | ScanChild::Ignored | ScanChild::Row => {
                             return Err(serde::de::Error::custom(
                                 "invalid V2 response preflight state",
@@ -2547,6 +2974,8 @@ enum ScanObject {
     HydratedRow,
     HydratedSlot,
     Role,
+    ReductionGroup,
+    ReductionRow,
 }
 
 struct ObjectScanSeed<'scan> {
@@ -2591,6 +3020,26 @@ impl<'de> Visitor<'de> for ObjectScanVisitor<'_> {
         M: MapAccess<'de>,
     {
         while let Some(field) = map.next_key::<String>()? {
+            if self.kind == ScanObject::ReductionRow && field == "group" {
+                map.next_value_seed(OptionalObjectScanSeed {
+                    kind: ScanObject::ReductionGroup,
+                    limits: self.limits,
+                    output_width: self.output_width,
+                    state: self.state,
+                })?;
+                continue;
+            }
+            if self.kind == ScanObject::ReductionGroup && field == "value" {
+                self.state
+                    .increment(
+                        StreamingCounter::CollectionMembers,
+                        self.limits.max_collection_members,
+                        StreamingPreflightFailure::CollectionMembers,
+                    )
+                    .map_err(serde::de::Error::custom)?;
+                map.next_value::<IgnoredAny>()?;
+                continue;
+            }
             let scan = match (self.kind, field.as_str()) {
                 (ScanObject::DocumentField | ScanObject::HydratedSlot, "values") => Some((
                     ScanChild::Ignored,
@@ -2627,6 +3076,14 @@ impl<'de> Visitor<'de> for ObjectScanVisitor<'_> {
                     )),
                 )),
                 (ScanObject::HydratedRow, "slots") => Some((ScanChild::HydratedSlot, None)),
+                (ScanObject::ReductionRow | ScanObject::ReductionGroup, "values") => Some((
+                    ScanChild::Ignored,
+                    Some((
+                        StreamingCounter::CollectionMembers,
+                        self.limits.max_collection_members,
+                        StreamingPreflightFailure::CollectionMembers,
+                    )),
+                )),
                 _ => None,
             };
             if let Some((child, counter)) = scan {
@@ -2647,6 +3104,57 @@ impl<'de> Visitor<'de> for ObjectScanVisitor<'_> {
             }
         }
         Ok(())
+    }
+}
+
+struct OptionalObjectScanSeed<'scan> {
+    kind: ScanObject,
+    limits: RemoteReplyDecodeLimitsV2,
+    output_width: Option<usize>,
+    state: &'scan mut StreamingPreflightState,
+}
+
+impl<'de> DeserializeSeed<'de> for OptionalObjectScanSeed<'_> {
+    type Value = ();
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_option(OptionalObjectScanVisitor { seed: self })
+    }
+}
+
+struct OptionalObjectScanVisitor<'scan> {
+    seed: OptionalObjectScanSeed<'scan>,
+}
+
+impl<'de> Visitor<'de> for OptionalObjectScanVisitor<'_> {
+    type Value = ();
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("an optional V2 evidence object")
+    }
+
+    fn visit_none<E>(self) -> Result<Self::Value, E> {
+        Ok(())
+    }
+
+    fn visit_unit<E>(self) -> Result<Self::Value, E> {
+        Ok(())
+    }
+
+    fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        ObjectScanSeed {
+            kind: self.seed.kind,
+            limits: self.seed.limits,
+            output_width: self.seed.output_width,
+            state: self.seed.state,
+        }
+        .deserialize(deserializer)
     }
 }
 
@@ -2859,6 +3367,92 @@ fn validate_graph_against_model_plan(
     if referenced.len() != graph.nodes.len() {
         return Err(remote_evidence_mismatch_v2(
             "hydration graph contains unreferenced provider identities",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_reduction_graph(
+    graph: &HydrationGraphV2,
+    rows: &[RemoteReductionRowV2],
+    group: Option<&QueryReductionGroupV2>,
+    hydration: &crate::query_plan::HydrationProjectionV2,
+) -> Result<(), Diagnostic> {
+    let Some(QueryReductionGroupV2::Binding { binding }) = group else {
+        return if graph.nodes().is_empty() {
+            Ok(())
+        } else {
+            Err(remote_evidence_mismatch_v2(
+                "non-thing reduction groups must not carry a hydration graph",
+            ))
+        };
+    };
+    let authority = hydration
+        .bindings()
+        .iter()
+        .find(|authority| authority.binding() == *binding)
+        .ok_or_else(|| {
+            remote_evidence_mismatch_v2(
+                "thing reduction group lacks request-bound descriptor authority",
+            )
+        })?;
+    let descriptors = hydration
+        .descriptors()
+        .iter()
+        .map(|descriptor| (descriptor.descriptor(), descriptor))
+        .collect::<BTreeMap<_, _>>();
+    let mut full_nodes = BTreeSet::new();
+    let mut frontier = Vec::new();
+    for row in rows {
+        let Some(RemoteReductionGroupV2::Thing { value }) = row.group() else {
+            return Err(remote_evidence_mismatch_v2(
+                "thing reduction row lacks its graph reference",
+            ));
+        };
+        let index = usize::try_from(value.node().get()).map_err(|_| {
+            remote_evidence_mismatch_v2("thing reduction group references an unknown node")
+        })?;
+        let node = graph.nodes().get(index).ok_or_else(|| {
+            remote_evidence_mismatch_v2("thing reduction group references an unknown node")
+        })?;
+        if value.declared() != authority.declared_descriptor()
+            || !authority.concrete_descriptors().contains(node.concrete())
+        {
+            return Err(remote_evidence_mismatch_v2(
+                "thing reduction group violates declared-to-concrete authority",
+            ));
+        }
+        full_nodes.insert(value.node());
+        frontier.push(value.node());
+    }
+    for node in graph.nodes() {
+        let projection = descriptors.get(node.concrete()).ok_or_else(|| {
+            remote_evidence_mismatch_v2(
+                "reduction hydration node is outside the request projection",
+            )
+        })?;
+        validate_node_projection(graph, node, projection, full_nodes.contains(&node.id()))?;
+    }
+    let mut referenced = BTreeSet::new();
+    while let Some(node_id) = frontier.pop() {
+        if !referenced.insert(node_id) {
+            continue;
+        }
+        let index = usize::try_from(node_id.get()).map_err(|_| {
+            remote_evidence_mismatch_v2("reduction graph traversal reached an unknown node")
+        })?;
+        let node = graph.nodes().get(index).ok_or_else(|| {
+            remote_evidence_mismatch_v2("reduction graph traversal reached an unknown node")
+        })?;
+        if full_nodes.contains(&node_id) {
+            for role in node.roles() {
+                frontier.extend(role.players().iter().map(HydrationReferenceV2::node));
+            }
+        }
+    }
+    if referenced.len() != graph.nodes().len() {
+        return Err(remote_evidence_mismatch_v2(
+            "reduction hydration graph contains unreferenced provider identities",
         ));
     }
     Ok(())

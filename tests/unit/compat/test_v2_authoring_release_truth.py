@@ -83,13 +83,13 @@ def test_binding_smokes_pin_one_advanced_cross_language_authored_identity() -> N
     assert len(identities[0]) == 2
 
 
-def test_typed_query_guide_is_projection_scoped_and_names_remote_failure() -> None:
+def test_typed_query_guide_is_projection_scoped_and_names_remote_reducers() -> None:
     text = (ROOT / "docs/guide/typed-queries.md").read_text(encoding="utf-8")
     normalized = " ".join(text.split())
     assert text.startswith("# Immutable generated queries")
     assert "verified projection" in normalized
     assert "Only exact registered generated classes and tokens are accepted." in text
-    assert "query_remote_v2_native_only_operation" in text
+    assert "typed `aggregate`/`group_by`" in text
     assert "TypeDBType" not in text
     assert "type_bridge.typed" not in text
 
@@ -130,5 +130,8 @@ def test_documented_remote_contract_has_runtime_acceptance() -> None:
     for terminal in ("rows", "page_by", "count_by", "exists_by"):
         assert f"`{terminal}`" in guide
         assert f".{terminal}(" in runtime
-    assert "query_remote_v2_native_only_operation" in guide
-    assert "query_remote_v2_native_only_operation" in live
+    for terminal in ("aggregate", "group_by"):
+        assert f"`{terminal}`" in guide
+        assert f".{terminal}(" in live
+    assert "query_remote_v2_native_only_operation" not in guide
+    assert "query_remote_v2_native_only_operation" not in live

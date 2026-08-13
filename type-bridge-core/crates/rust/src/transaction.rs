@@ -10,7 +10,10 @@ use type_bridge_orm::_manager::{DynamicEntityManager, DynamicRelationManager};
 use type_bridge_orm::_registry::DescriptorRegistry;
 use type_bridge_orm::session::backend::TxType;
 use type_bridge_orm::session::context::TransactionContext;
-use type_bridge_orm::{DynamicAttributeMap, DynamicRolePlayerInput, InstalledRuntimeProjection};
+use type_bridge_orm::{
+    AnswerCancellation, DynamicAttributeMap, DynamicRolePlayerInput, InstalledRuntimeProjection,
+    ProjectedCrudExecutor, QueryExecutionResourceLimits,
+};
 
 use crate::__codegen::{CompleteModel, EntityModel, HydrationCapability, RelationModel};
 use crate::entity_codec::{
@@ -18,8 +21,10 @@ use crate::entity_codec::{
 };
 use crate::entity_manager::rehydrate_written_entity;
 use crate::error::{Error, ModelValidationPhase};
+use crate::hooks::{CrudOperation, ModelKind};
+use crate::projected_codec::{materialize_projected, project_create};
 use crate::relation_codec::{hydrate_relation, lower_relation_create, resolve_relation_authority};
-use crate::relation_manager::{one_coalesced_row, rehydrate_written_relation};
+use crate::relation_manager::rehydrate_written_relation;
 use crate::schema::Schema;
 use crate::{Database, Result};
 
@@ -87,7 +92,27 @@ impl<'db, S: Schema> ReadTransaction<'db, S> {
     /// Start one owner-branded query session borrowing this read context.
     #[must_use]
     pub fn query(&self) -> crate::query::QuerySession<'_, S> {
-        crate::query::QuerySession::borrowed(&self.installed, Arc::clone(&self.registry), &self.tx)
+        self.query_with_resources(
+            QueryExecutionResourceLimits::default(),
+            AnswerCancellation::default(),
+        )
+    }
+
+    /// Start one borrowed query session with one common tighten-only resource
+    /// policy and caller-owned cooperative cancellation signal.
+    #[must_use]
+    pub fn query_with_resources(
+        &self,
+        resources: QueryExecutionResourceLimits,
+        cancellation: AnswerCancellation,
+    ) -> crate::query::QuerySession<'_, S> {
+        crate::query::QuerySession::borrowed(
+            &self.installed,
+            Arc::clone(&self.registry),
+            &self.tx,
+            resources,
+            cancellation,
+        )
     }
 
     /// Close this read transaction without committing.
@@ -214,23 +239,30 @@ where
     /// Inserts one exact entity in the open transaction and returns its
     /// complete freshly hydrated model without committing.
     pub async fn insert(&self, input: M::Create) -> Result<M> {
-        let (id, installed, manager) = self.exact()?;
-        let attributes = lower_entity_create(input, &id, installed)?;
-        let iid = manager.insert(&attributes).await.map_err(Error::from_orm)?;
-        rehydrate_written_entity(&manager, &iid, &id, installed).await
+        let (id, installed, _manager) = self.exact()?;
+        let create = project_create(input, &id, installed)?;
+        let projected = ProjectedCrudExecutor::new(installed)
+            .insert_entity_in_transaction_with_compatibility(&self.transaction.tx, &create)
+            .await
+            .map_err(|error| {
+                Error::from_projected_crud(error, ModelKind::Entity, Some(CrudOperation::Insert))
+            })?;
+        materialize_projected(projected, installed)
     }
 
     /// Applies the exact key-or-insert put rule in the open transaction,
     /// including complete replacement of non-key ownership for an existing
     /// exact row, without committing.
     pub async fn put(&self, input: M::Create) -> Result<M> {
-        let (id, installed, manager) = self.exact()?;
-        let attributes = lower_entity_create(input, &id, installed)?;
-        let iid = manager
-            .put_exact(&attributes)
+        let (id, installed, _manager) = self.exact()?;
+        let create = project_create(input, &id, installed)?;
+        let projected = ProjectedCrudExecutor::new(installed)
+            .put_entity_in_transaction_with_compatibility(&self.transaction.tx, &create)
             .await
-            .map_err(Error::from_orm)?;
-        rehydrate_written_entity(&manager, &iid, &id, installed).await
+            .map_err(|error| {
+                Error::from_projected_crud(error, ModelKind::Entity, Some(CrudOperation::Put))
+            })?;
+        materialize_projected(projected, installed)
     }
 
     /// Inserts each item in input order in the open transaction, returning
@@ -283,13 +315,15 @@ where
         if !is_canonical_thing_iid(iid) {
             return Err(invalid_iid());
         }
-        let (id, installed, manager) = self.exact()?;
-        let attributes = lower_entity_create(input, &id, installed)?;
-        manager
-            .update_exact(iid, &attributes)
+        let (id, installed, _manager) = self.exact()?;
+        let create = project_create(input, &id, installed)?;
+        let projected = ProjectedCrudExecutor::new(installed)
+            .update_entity_in_transaction_with_compatibility(&self.transaction.tx, iid, &create)
             .await
-            .map_err(Error::from_orm)?;
-        rehydrate_written_entity(&manager, iid, &id, installed).await
+            .map_err(|error| {
+                Error::from_projected_crud(error, ModelKind::Entity, Some(CrudOperation::Update))
+            })?;
+        materialize_projected(projected, installed)
     }
 
     /// Deletes only the exact model at canonical `iid` in the open
@@ -298,11 +332,13 @@ where
         if !is_canonical_thing_iid(iid) {
             return Err(invalid_iid());
         }
-        let (_id, _installed, manager) = self.exact()?;
-        manager
-            .delete_by_iid_exact(iid)
+        let (id, installed, _manager) = self.exact()?;
+        ProjectedCrudExecutor::new(installed)
+            .delete_entity_by_iid_in_transaction_with_compatibility(&self.transaction.tx, &id, iid)
             .await
-            .map_err(Error::from_orm)
+            .map_err(|error| {
+                Error::from_projected_crud(error, ModelKind::Entity, Some(CrudOperation::Delete))
+            })
     }
 
     /// Reads one exact model by canonical IID through the open transaction,
@@ -311,20 +347,13 @@ where
         if !is_canonical_thing_iid(iid) {
             return Err(invalid_iid());
         }
-        let (id, installed, manager) = self.exact()?;
-        match manager
-            .get_by_iid_exact(iid)
+        let (id, installed, _manager) = self.exact()?;
+        ProjectedCrudExecutor::new(installed)
+            .get_entity_by_iid_in_transaction_with_compatibility(&self.transaction.tx, &id, iid)
             .await
-            .map_err(Error::from_orm)?
-        {
-            None => Ok(None),
-            Some(row) => {
-                let hydrated = hydrate_entity(row, &id, installed)?;
-                M::materialize(&hydrated, &HydrationCapability::new())
-                    .map(Some)
-                    .map_err(|error| map_validation_error(error, ModelValidationPhase::Hydration))
-            }
-        }
+            .map_err(|error| Error::from_projected_crud(error, ModelKind::Entity, None))?
+            .map(|projected| materialize_projected(projected, installed))
+            .transpose()
     }
 
     /// Reads all exact models through the open transaction, observing this
@@ -343,8 +372,11 @@ where
 
     /// Counts only exact models through the open transaction.
     pub async fn count(&self) -> Result<u64> {
-        let (_id, _installed, manager) = self.exact()?;
-        manager.count_exact().await.map_err(Error::from_orm)
+        let (id, installed, _manager) = self.exact()?;
+        ProjectedCrudExecutor::new(installed)
+            .count_entities_in_transaction_with_compatibility(&self.transaction.tx, &id)
+            .await
+            .map_err(|error| Error::from_projected_crud(error, ModelKind::Entity, None))
     }
 }
 
@@ -394,26 +426,30 @@ where
     /// open transaction and returns its complete freshly hydrated model
     /// without committing.
     pub async fn insert(&self, input: M::Create) -> Result<M> {
-        let (id, installed, manager) = self.exact()?;
-        let prepared = lower_relation_create(input, &id, installed)?;
-        let iid = manager
-            .insert(&prepared.attributes, &prepared.role_players)
+        let (id, installed, _manager) = self.exact()?;
+        let create = project_create(input, &id, installed)?;
+        let projected = ProjectedCrudExecutor::new(installed)
+            .insert_relation_in_transaction_with_compatibility(&self.transaction.tx, &create)
             .await
-            .map_err(Error::from_orm)?;
-        rehydrate_written_relation(&manager, &iid, &id, installed).await
+            .map_err(|error| {
+                Error::from_projected_crud(error, ModelKind::Relation, Some(CrudOperation::Insert))
+            })?;
+        materialize_projected(projected, installed)
     }
 
     /// Applies the exact key-or-insert put rule in the open transaction,
     /// including complete replacement of non-key ownership and active role
     /// players for an existing exact row, without committing.
     pub async fn put(&self, input: M::Create) -> Result<M> {
-        let (id, installed, manager) = self.exact()?;
-        let prepared = lower_relation_create(input, &id, installed)?;
-        let iid = manager
-            .put_exact(&prepared.attributes, &prepared.role_players)
+        let (id, installed, _manager) = self.exact()?;
+        let create = project_create(input, &id, installed)?;
+        let projected = ProjectedCrudExecutor::new(installed)
+            .put_relation_in_transaction_with_compatibility(&self.transaction.tx, &create)
             .await
-            .map_err(Error::from_orm)?;
-        rehydrate_written_relation(&manager, &iid, &id, installed).await
+            .map_err(|error| {
+                Error::from_projected_crud(error, ModelKind::Relation, Some(CrudOperation::Put))
+            })?;
+        materialize_projected(projected, installed)
     }
 
     /// Inserts each item in input order in the open transaction, returning
@@ -469,13 +505,15 @@ where
         if !is_canonical_thing_iid(iid) {
             return Err(invalid_iid());
         }
-        let (id, installed, manager) = self.exact()?;
-        let prepared = lower_relation_create(input, &id, installed)?;
-        manager
-            .update_exact(iid, &prepared.attributes, &prepared.role_players)
+        let (id, installed, _manager) = self.exact()?;
+        let create = project_create(input, &id, installed)?;
+        let projected = ProjectedCrudExecutor::new(installed)
+            .update_relation_in_transaction_with_compatibility(&self.transaction.tx, iid, &create)
             .await
-            .map_err(Error::from_orm)?;
-        rehydrate_written_relation(&manager, iid, &id, installed).await
+            .map_err(|error| {
+                Error::from_projected_crud(error, ModelKind::Relation, Some(CrudOperation::Update))
+            })?;
+        materialize_projected(projected, installed)
     }
 
     /// Deletes only the exact relation at canonical `iid` in the open
@@ -484,11 +522,17 @@ where
         if !is_canonical_thing_iid(iid) {
             return Err(invalid_iid());
         }
-        let (_id, _installed, manager) = self.exact()?;
-        manager
-            .delete_by_iid_exact(iid)
+        let (id, installed, _manager) = self.exact()?;
+        ProjectedCrudExecutor::new(installed)
+            .delete_relation_by_iid_in_transaction_with_compatibility(
+                &self.transaction.tx,
+                &id,
+                iid,
+            )
             .await
-            .map_err(Error::from_orm)
+            .map_err(|error| {
+                Error::from_projected_crud(error, ModelKind::Relation, Some(CrudOperation::Delete))
+            })
     }
 
     /// Reads one exact coalesced relation by canonical IID through the open
@@ -497,20 +541,13 @@ where
         if !is_canonical_thing_iid(iid) {
             return Err(invalid_iid());
         }
-        let (id, installed, manager) = self.exact()?;
-        let rows = manager
-            .get_by_iid_exact(iid)
+        let (id, installed, _manager) = self.exact()?;
+        ProjectedCrudExecutor::new(installed)
+            .get_relation_by_iid_in_transaction_with_compatibility(&self.transaction.tx, &id, iid)
             .await
-            .map_err(Error::from_orm)?;
-        match one_coalesced_row(rows)? {
-            None => Ok(None),
-            Some(row) => {
-                let hydrated = hydrate_relation(row, &id, installed)?;
-                M::materialize(&hydrated, &HydrationCapability::new())
-                    .map(Some)
-                    .map_err(|error| map_validation_error(error, ModelValidationPhase::Hydration))
-            }
-        }
+            .map_err(|error| Error::from_projected_crud(error, ModelKind::Relation, None))?
+            .map(|projected| materialize_projected(projected, installed))
+            .transpose()
     }
 
     /// Reads all exact coalesced relations through the open transaction,
@@ -529,7 +566,10 @@ where
 
     /// Counts only exact relations through the open transaction.
     pub async fn count(&self) -> Result<u64> {
-        let (_id, _installed, manager) = self.exact()?;
-        manager.count_exact().await.map_err(Error::from_orm)
+        let (id, installed, _manager) = self.exact()?;
+        ProjectedCrudExecutor::new(installed)
+            .count_relations_in_transaction_with_compatibility(&self.transaction.tx, &id)
+            .await
+            .map_err(|error| Error::from_projected_crud(error, ModelKind::Relation, None))
     }
 }

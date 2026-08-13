@@ -457,6 +457,8 @@ pub enum AnnotationKindId {
     Key,
     /// `@unique`.
     Unique,
+    /// `@distinct` on an ordered ownership or related-role collection.
+    Distinct,
     /// `@card`.
     Card,
     /// `@regex`.
@@ -916,21 +918,62 @@ impl ValueFact {
     }
 }
 
+/// The closed collection semantics of an ownership or related-role fact.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CollectionMode {
+    /// Multiplicity is retained, but member order is not semantic.
+    #[default]
+    Unordered,
+    /// Members form a semantic ordered list, including at scalar cardinality.
+    OrderedList,
+}
+
+impl CollectionMode {
+    /// Report whether this is the compatibility-default unordered mode.
+    #[must_use]
+    pub const fn is_unordered(&self) -> bool {
+        matches!(self, Self::Unordered)
+    }
+}
+
 /// A direct ownership fact.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct OwnsFact {
     id: OwnsFactId,
+    #[serde(skip_serializing_if = "CollectionMode::is_unordered")]
+    collection_mode: CollectionMode,
 }
 
 impl OwnsFact {
-    /// Construct an ownership fact.
+    /// Construct an unordered ownership fact.
     pub const fn new(id: OwnsFactId) -> Self {
-        Self { id }
+        Self::new_with_collection_mode(id, CollectionMode::Unordered)
+    }
+
+    /// Construct an ownership fact with explicit collection semantics.
+    pub const fn new_with_collection_mode(id: OwnsFactId, collection_mode: CollectionMode) -> Self {
+        Self {
+            id,
+            collection_mode,
+        }
+    }
+
+    /// Replace this fact's collection semantics without changing its identity.
+    #[must_use]
+    pub const fn with_collection_mode(mut self, collection_mode: CollectionMode) -> Self {
+        self.collection_mode = collection_mode;
+        self
     }
 
     /// Return the fact identity.
     pub const fn id(&self) -> &OwnsFactId {
         &self.id
+    }
+
+    /// Return the canonical collection semantics.
+    pub const fn collection_mode(&self) -> CollectionMode {
+        self.collection_mode
     }
 }
 
@@ -939,11 +982,22 @@ impl OwnsFact {
 pub struct RelatesFact {
     id: RelatesFactId,
     specializes: Option<RoleId>,
+    #[serde(skip_serializing_if = "CollectionMode::is_unordered")]
+    collection_mode: CollectionMode,
 }
 
 impl RelatesFact {
-    /// Construct a related-role fact.
+    /// Construct an unordered related-role fact.
     pub fn new(id: RelatesFactId, specializes: Option<RoleId>) -> Result<Self, Diagnostic> {
+        Self::new_with_collection_mode(id, specializes, CollectionMode::Unordered)
+    }
+
+    /// Construct a related-role fact with explicit collection semantics.
+    pub fn new_with_collection_mode(
+        id: RelatesFactId,
+        specializes: Option<RoleId>,
+        collection_mode: CollectionMode,
+    ) -> Result<Self, Diagnostic> {
         if specializes.as_ref().is_some_and(|role| role == id.role()) {
             return Err(schema_diagnostic(
                 DiagnosticCategory::InvalidContract,
@@ -951,7 +1005,18 @@ impl RelatesFact {
                 "a role cannot specialize itself",
             ));
         }
-        Ok(Self { id, specializes })
+        Ok(Self {
+            id,
+            specializes,
+            collection_mode,
+        })
+    }
+
+    /// Replace this fact's collection semantics without changing its identity.
+    #[must_use]
+    pub const fn with_collection_mode(mut self, collection_mode: CollectionMode) -> Self {
+        self.collection_mode = collection_mode;
+        self
     }
 
     /// Return the fact identity.
@@ -962,6 +1027,11 @@ impl RelatesFact {
     /// Return the specialized parent role, if any.
     pub const fn specializes(&self) -> Option<&RoleId> {
         self.specializes.as_ref()
+    }
+
+    /// Return the canonical collection semantics.
+    pub const fn collection_mode(&self) -> CollectionMode {
+        self.collection_mode
     }
 }
 
@@ -1662,7 +1732,8 @@ fn validate_annotation(
             AnnotationKindId::Abstract
                 | AnnotationKindId::Independent
                 | AnnotationKindId::Key
-                | AnnotationKindId::Unique,
+                | AnnotationKindId::Unique
+                | AnnotationKindId::Distinct,
             SchemaAnnotationValue::Presence
         ) | (
             AnnotationKindId::Card,
@@ -1703,6 +1774,10 @@ fn validate_annotation(
         AnnotationKindId::Key | AnnotationKindId::Unique => {
             matches!(subject, AnnotationSubjectId::Owns(_))
         }
+        AnnotationKindId::Distinct => matches!(
+            subject,
+            AnnotationSubjectId::Owns(_) | AnnotationSubjectId::Relates(_)
+        ),
         AnnotationKindId::Card => matches!(
             subject,
             AnnotationSubjectId::Owns(_)
@@ -1933,6 +2008,39 @@ fn validate_annotation_combinations(
         }
     }
     for (subject, kinds) in by_subject {
+        if kinds.contains(&AnnotationKindId::Distinct) {
+            let subject_id = subject_fact_id(&subject);
+            let ordered = match facts.get(&subject_id) {
+                Some(SchemaFact::Owns(fact)) => {
+                    fact.collection_mode() == CollectionMode::OrderedList
+                }
+                Some(SchemaFact::Relates(fact)) => {
+                    fact.collection_mode() == CollectionMode::OrderedList
+                }
+                _ => true,
+            };
+            if !ordered {
+                let distinct_id = SchemaFactId::Annotation(AnnotationFactId::new(
+                    subject.clone(),
+                    AnnotationKindId::Distinct,
+                ));
+                let mut diagnostic = SchemaDiagnostic::new(
+                    schema_diagnostic(
+                        DiagnosticCategory::InvalidContract,
+                        "distinct_requires_ordered_collection",
+                        "distinct applies only to an ordered ownership or related-role collection",
+                    ),
+                    provenance.get(&distinct_id).cloned(),
+                );
+                if let Some(subject_source) = provenance.get(&subject_id) {
+                    diagnostic = diagnostic.with_related(DiagnosticLabel::new(
+                        subject_source.clone(),
+                        "unordered collection fact is declared here",
+                    ));
+                }
+                diagnostics.push(diagnostic);
+            }
+        }
         if kinds.contains(&AnnotationKindId::Key)
             && (kinds.contains(&AnnotationKindId::Unique)
                 || kinds.contains(&AnnotationKindId::Card))

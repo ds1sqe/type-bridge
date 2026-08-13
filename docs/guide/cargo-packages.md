@@ -3,8 +3,8 @@
 TypeBridge 2.1 publishes 17 first-party Rust packages as one lockstep product.
 Two source-unmodified TypeDB compatibility packages remain public under their
 fixed versions. This page is the maintained index for those 19 public Cargo
-packages; private Python and Node native-binding crates are deliberately not
-part of the crates.io surface.
+packages; the private Python, Node, and in-development C native-binding crates
+are deliberately not part of the crates.io surface.
 
 Most application authors need only [`type-bridge`](#primary-entry-points).
 Generated Rust bindings depend on that SDK facade and should not assemble the
@@ -73,6 +73,35 @@ and fixed versions; they do not follow the TypeBridge 2.1 version line.
 | --- | --- | --- |
 | [`type-bridge-typedb-protocol-b8`](https://crates.io/crates/type-bridge-typedb-protocol-b8/3.11.0) · [rustdoc](https://docs.rs/type-bridge-typedb-protocol-b8/3.11.0) | 3.11.0 | Namespaced protocol package for the retained band-8 driver graph |
 | [`type-bridge-typedb-driver-b8`](https://crates.io/crates/type-bridge-typedb-driver-b8/3.11.5) · [rustdoc](https://docs.rs/type-bridge-typedb-driver-b8/3.11.5) | 3.11.5 | Namespaced TypeDB driver package for the retained band-8 runtime |
+
+## Private native-binding crates
+
+These workspace crates are tested from source but are not part of the public
+Cargo package index:
+
+| Package | Responsibility | Distribution status |
+| --- | --- | --- |
+| `type-bridge-core` | PyO3 native engine for the Python product | Private Cargo crate; shipped inside Python artifacts |
+| `type-bridge-node` | N-API native engine for the TypeScript/Node product | Private Cargo crate; shipped inside npm artifacts |
+| `type-bridge-c` | ABI 1.3 projected-value, provider-lifecycle, and typed-query foundation for generated C | Internal foundation under development; not published or packaged |
+
+The C entry is not a support claim. The internal ABI now covers verified schema
+packages, projected values/models, synchronous runtime, an exact-TypeDB-3.12.1
+database connection, distinct read/write transactions, cancellation, and
+classified commit outcomes, plus generated nominal exact single-entity and
+single-relation CRUD/count with closed typed role-player unions. ABI 1.3 also
+includes the internal generated nominal typed-query, reduction,
+schema-function, and caller-owned remote-transport facade, plus chunked
+schema-package resources and a streaming create builder so generated C objects
+remain within the hosted C11 portability floors. Multi-endpoint connection
+policy and the support/distribution contract remain incomplete before C can
+become a public SDK. The source workspace can emit the internal C schema package
+for development probes; that capability is not described as part of the linked
+2.1.0 crates.io artifact.
+
+The internal runtime CMake and pkg-config package version is `1.3.0`, the C ABI
+version. It is intentionally distinct from the TypeBridge product version
+reported by `type_bridge_runtime_version` (`2.1.0` in this source line).
 
 ## Release contract
 

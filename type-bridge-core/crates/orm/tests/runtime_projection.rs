@@ -1,6 +1,9 @@
 use type_bridge_contract::fingerprint::SemanticProfileId;
-use type_bridge_contract::id::{TypeId, TypeKind};
-use type_bridge_contract::projection::{BindingTarget, ProjectionConfig, ProjectionHandler};
+use type_bridge_contract::id::{FunctionId, TypeId, TypeKind};
+use type_bridge_contract::projection::{
+    BindingTarget, FunctionReturnProjection, ProjectedTokenIdentity, ProjectedTokenKind,
+    ProjectedTypeRef, ProjectionConfig, ProjectionHandler,
+};
 use type_bridge_contract::schema::DocumentId;
 use type_bridge_orm::_descriptor::TypeDescriptor;
 use type_bridge_orm::_manager::query_builder::{
@@ -32,6 +35,16 @@ plays:
   person:
     membership: [member]
     employment: [employee]
+functions:
+  alpha-score:
+    parameters: []
+    returns: { scalar: integer }
+    body: { typeql: "match let $score = 1; return first $score;" }
+  find-people:
+    parameters:
+      - { name: person, type: person }
+    returns: { stream: [person] }
+    body: { typeql: "match $person isa person; return { $person };" }
 "#,
     )])
     .unwrap();
@@ -87,7 +100,9 @@ fn installed_projection_derives_exact_provider_descriptors_without_registry_stat
 
 #[test]
 fn installed_projection_builds_its_exact_match_registry() {
-    let registry = installed().match_registry().unwrap();
+    let installed = installed();
+    let semantic_fingerprint = installed.projection().semantic_fingerprint().clone();
+    let registry = installed.match_registry().unwrap();
 
     assert_eq!(registry.snapshot().len(), 3);
     assert_eq!(registry.entity("person").unwrap().type_name, "person");
@@ -98,6 +113,67 @@ fn installed_projection_builds_its_exact_match_registry() {
             .parent_type
             .as_deref(),
         Some("membership")
+    );
+
+    let function = registry
+        .projected_function(&FunctionId::new("find-people").unwrap())
+        .expect("verified function signature is retained");
+    assert!(matches!(
+        function.parameters()[0].type_ref(),
+        ProjectedTypeRef::Model(model) if model.id().label().as_str() == "person"
+    ));
+    assert!(matches!(
+        function.returns(),
+        FunctionReturnProjection::Stream(elements)
+            if matches!(elements[0].type_ref(), ProjectedTypeRef::Model(model)
+                if model.id().label().as_str() == "person")
+    ));
+    assert_eq!(
+        registry.projected_function_schema_fingerprint(),
+        Some(&semantic_fingerprint)
+    );
+
+    let snapshot = registry.owned_registry_snapshot().unwrap();
+    assert_eq!(
+        snapshot.projected_function(&FunctionId::new("find-people").unwrap()),
+        Some(function)
+    );
+    assert!(
+        type_bridge_orm::_registry::DescriptorRegistry::new()
+            .projected_function(&FunctionId::new("find-people").unwrap())
+            .is_none()
+    );
+}
+
+#[test]
+fn installed_projection_retains_canonical_function_token_ordinals() {
+    let installed = installed();
+    let alpha = FunctionId::new("alpha-score").unwrap();
+    let function = FunctionId::new("find-people").unwrap();
+    let identity = ProjectedTokenIdentity::Function(function.clone());
+
+    assert_eq!(ProjectedTokenKind::Function.as_u32(), 4);
+    assert_eq!(
+        installed.projection().projected_token_ordinal(&identity),
+        Some(1)
+    );
+    assert_eq!(
+        installed
+            .projection()
+            .projected_token_identity(ProjectedTokenKind::Function, 0),
+        Some(ProjectedTokenIdentity::Function(alpha))
+    );
+    assert_eq!(
+        installed
+            .projection()
+            .projected_token_identity(ProjectedTokenKind::Function, 1),
+        Some(ProjectedTokenIdentity::Function(function))
+    );
+    assert_eq!(
+        installed
+            .projection()
+            .projected_token_identity(ProjectedTokenKind::Function, 2),
+        None
     );
 }
 

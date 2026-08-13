@@ -8,8 +8,12 @@ type NativeMatchReduction = "count" | "sum" | "min" | "max" | "mean" | "median" 
 declare const nativeMatchHandleKind: unique symbol;
 interface NativeMatchSessionHandle {
     readonly [nativeMatchHandleKind]: "session";
+    readonly isClosed: boolean;
+    close(): void;
     exact(typeName: string): NativeMatchBindingHandle;
     subtypes(typeName: string): NativeMatchBindingHandle;
+    functionById(functionId: string): NativeMatchFunctionHandle;
+    functionValueJson(attributeTypeKey: string, valueJson: string): NativeMatchFunctionValueHandle;
     reachable(relationType: string, roleFrom: string, roleTo: string, source: NativeMatchBindingHandle, target: NativeMatchBindingHandle, minDepth: number, maxDepth: number): NativeMatchPredicateHandle;
     positional(selections: NativeMatchSelectionHandle[]): NativeMatchShapeHandle;
     named(names: string[], selections: NativeMatchSelectionHandle[]): NativeMatchShapeHandle;
@@ -25,6 +29,25 @@ interface NativeMatchBindingHandle {
     roleOwnedBy(ownerType: string, roleName: string): NativeMatchRoleHandle;
     one(): NativeMatchSelectionHandle;
     collect(): NativeMatchSelectionHandle;
+    functionArgument(): NativeMatchFunctionArgumentHandle;
+}
+interface NativeMatchFunctionHandle {
+    readonly [nativeMatchHandleKind]: "function";
+    call(arguments_: NativeMatchFunctionArgumentHandle[]): NativeMatchFunctionCallHandle;
+}
+interface NativeMatchFunctionValueHandle {
+    readonly [nativeMatchHandleKind]: "function-value";
+    functionArgument(): NativeMatchFunctionArgumentHandle;
+}
+interface NativeMatchFunctionArgumentHandle {
+    readonly [nativeMatchHandleKind]: "function-argument";
+}
+interface NativeMatchFunctionCallHandle {
+    readonly [nativeMatchHandleKind]: "function-call";
+    functionArgument(): NativeMatchFunctionArgumentHandle;
+    compareField(comparison: NativeMatchComparison, field: NativeMatchFieldHandle): NativeMatchPredicateHandle;
+    compareValue(comparison: NativeMatchComparison, value: NativeMatchFunctionValueHandle): NativeMatchPredicateHandle;
+    compareCall(comparison: NativeMatchComparison, other: NativeMatchFunctionCallHandle): NativeMatchPredicateHandle;
 }
 interface NativeMatchFieldHandle {
     readonly [nativeMatchHandleKind]: "field";
@@ -56,6 +79,9 @@ interface NativeMatchShapeHandle {
 }
 interface NativeMatchQueryHandle {
     readonly [nativeMatchHandleKind]: "query";
+    readonly isClosed: boolean;
+    close(): void;
+    fork(): NativeMatchQueryHandle;
     addHidden(binding: NativeMatchBindingHandle): NativeMatchQueryHandle;
     wherePredicate(predicate: NativeMatchPredicateHandle): NativeMatchQueryHandle;
     allowCrossJoin(left: NativeMatchBindingHandle, right: NativeMatchBindingHandle): NativeMatchQueryHandle;
@@ -122,12 +148,31 @@ interface NativeValidatedThingHandle {
 }
 interface NativeRemoteModelQueryContext {
 }
+export interface NativeQueryExecutionResources {
+    readonly timeoutMilliseconds: bigint;
+    readonly items: bigint;
+    readonly bytes: bigint;
+    readonly graphNodes: bigint;
+    readonly attributeValues: bigint;
+    readonly collectionMembers: bigint;
+    readonly rolePlayers: bigint;
+    readonly statements: bigint;
+}
+export interface NativeQueryCancellation {
+    readonly isCancelled: boolean;
+    cancel(): void;
+}
 interface NativePendingRemoteModelQuery {
+    readonly isClosed: boolean;
+    close(): void;
     requestBytes(): Uint8Array;
     decodeReply(response: Uint8Array): Promise<NativeValidatedMatchResultHandle>;
 }
 interface NativeRemoteModelQueryModule {
+    NodeQueryExecutionResources: new (timeoutMilliseconds: bigint, items: bigint, bytes: bigint, graphNodes: bigint, attributeValues: bigint, collectionMembers: bigint, rolePlayers: bigint, statements: bigint) => NativeQueryExecutionResources;
+    NodeQueryCancellation: new () => NativeQueryCancellation;
     queryV2RemoteModelContext(authority: ReturnType<NativeModule["queryV2Authority"]>, advertisement: Uint8Array, maxItems: bigint, maxBytes: bigint, maxCollectionMembers: bigint, maxGraphNodes: bigint, maxAttributeValues: bigint, maxRolePlayers: bigint, deadlineMs?: bigint | null): NativeRemoteModelQueryContext;
+    queryV2RemoteModelContextWithResources(authority: ReturnType<NativeModule["queryV2Authority"]>, advertisement: Uint8Array, resources: NativeQueryExecutionResources, cancellation: NativeQueryCancellation): NativeRemoteModelQueryContext;
     queryV2PrepareRemoteModelRows(query: NativeMatchQueryHandle, context: NativeRemoteModelQueryContext, orders: NativeMatchOrderHandle[], offset: bigint, limit: bigint, cardinality: NativeMatchRowCardinality): NativePendingRemoteModelQuery;
     queryV2PrepareRemoteModelPage(query: NativeMatchQueryHandle, context: NativeRemoteModelQueryContext, root: NativeMatchBindingHandle, orders: NativeMatchOrderHandle[], offset: bigint, limit: bigint, includeTotal: boolean): NativePendingRemoteModelQuery;
     queryV2PrepareRemoteModelCount(query: NativeMatchQueryHandle, context: NativeRemoteModelQueryContext, root: NativeMatchBindingHandle): NativePendingRemoteModelQuery;
@@ -140,6 +185,7 @@ interface NativeRuntimeProjectionHandle {
     managerForDatabase(typeKey: string, database: NativeRustDatabase): NativeProjectedManager;
     managerForTransaction(typeKey: string, transaction: NativeRustTransactionContext): NativeProjectedManager;
     matchSession(): NativeMatchSessionHandle;
+    matchSessionWithResources(resources: NativeQueryExecutionResources, cancellation: NativeQueryCancellation): NativeMatchSessionHandle;
     matchModelType(typeKey: string): string;
     validateAttributeValueJson(typeKey: string, valueJson: string): void;
     validateFieldValueJson(typeKey: string, fieldName: string, valueJson: string): void;

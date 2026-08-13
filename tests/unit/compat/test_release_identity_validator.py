@@ -229,6 +229,7 @@ def test_repository_cargo_graph_is_complete_and_ordered() -> None:
     assert "type-bridge-typedb-driver-b8" not in validator.EXPECTED_NEW_CRATES
     assert not set(validator.PREEXISTING_CRATES) & set(validator.EXPECTED_NEW_CRATES)
     assert report["unpublished_crates"] == [
+        "type-bridge-c",
         "type-bridge-core",
         "type-bridge-node",
     ]
@@ -253,6 +254,7 @@ def test_repository_cargo_graph_is_complete_and_ordered() -> None:
     )
     assert set(cargo_packages) == {
         "type-bridge",
+        "type-bridge-c",
         "type-bridge-cli",
         "type-bridge-contract",
         "type-bridge-core",
@@ -306,6 +308,7 @@ def test_v2_crate_manifest_is_first_party_and_crates_io_publishable(
 @pytest.mark.parametrize(
     ("directory", "package_name"),
     [
+        ("c", "type-bridge-c"),
         ("python", "type-bridge-core"),
         ("node", "type-bridge-node"),
     ],

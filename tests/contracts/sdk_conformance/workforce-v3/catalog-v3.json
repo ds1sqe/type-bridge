@@ -1,0 +1,392 @@
+{
+  "format": "typebridge.workforce-catalog/v3",
+  "authority_state": "phase0_unfinalized",
+  "fixture": {
+    "id": "workforce-v3",
+    "version": 3,
+    "semantic_profile": "typedb-3.12.1/v1",
+    "schema_path": "type-bridge-core/crates/schema-codegen/tests/acceptance/schema.yaml",
+    "provider_schema_path": "type-bridge-core/crates/schema-codegen/tests/acceptance/provider-3.12.1.tql"
+  },
+  "journey_path": "tests/contracts/sdk_conformance/workforce-v3/journey-v3.json",
+  "report_schema_path": "tests/contracts/sdk_conformance/workforce-v3/report-schema-v3.json",
+  "report_bindings": [
+    "python",
+    "node",
+    "rust",
+    "c"
+  ],
+  "projection_targets": {
+    "python": "python",
+    "node": "typescript",
+    "rust": "rust",
+    "c": "c"
+  },
+  "report_producers": {
+    "python": {
+      "id": "python.generated-data-model-runtime-v3-live",
+      "test_id": "python.generated_data_model_runtime_v3_live"
+    },
+    "node": {
+      "id": "node.generated-data-model-runtime-v3-live",
+      "test_id": "node.generated_data_model_runtime_v3_live"
+    },
+    "rust": {
+      "id": "type-bridge-rust.generated-data-model-runtime-v3-live",
+      "test_id": "rust_projection_live::generated_data_model_runtime_v3_live"
+    },
+    "c": {
+      "id": "type-bridge-c.generated-data-model-runtime-v3-live",
+      "test_id": "c_projection_live::generated_data_model_runtime_v3_live"
+    }
+  },
+  "expected_fingerprints": null,
+  "manifest_transition_cases": [
+    "workforce.schema.generate.atomic",
+    "workforce.model.constraints",
+    "workforce.crud.entity-batch-insert-put",
+    "workforce.crud.relation-batch-insert-put",
+    "workforce.crud.entity-batch-update-delete",
+    "workforce.crud.relation-batch-update-delete",
+    "workforce.transaction.borrowed",
+    "workforce.manager.filter",
+    "workforce.projection.field-name-identity",
+    "workforce.model.integer-key-polymorphic-role",
+    "workforce.model.inherited-relation-role",
+    "workforce.crud.unkeyed-entity",
+    "workforce.crud.unkeyed-relation",
+    "workforce.projection.evidence-integrity",
+    "workforce.projection.token-package-fencing",
+    "workforce.schema.ordered-distinct",
+    "workforce.runtime.connection-policy"
+  ],
+  "selected_proofs": [
+    {
+      "case_id": "workforce.crud.entity-batch-insert-put",
+      "proof_kind": "direct_runtime",
+      "observation_ref": "entity_batch_insert_put"
+    },
+    {
+      "case_id": "workforce.crud.entity-batch-update-delete",
+      "proof_kind": "direct_runtime",
+      "observation_ref": "entity_batch_update_delete_atomic"
+    },
+    {
+      "case_id": "workforce.crud.relation-batch-insert-put",
+      "proof_kind": "direct_runtime",
+      "observation_ref": "relation_batch_insert_put"
+    },
+    {
+      "case_id": "workforce.crud.relation-batch-update-delete",
+      "proof_kind": "direct_runtime",
+      "observation_ref": "relation_batch_update_delete_atomic"
+    },
+    {
+      "case_id": "workforce.crud.unkeyed-entity",
+      "proof_kind": "direct_runtime",
+      "observation_ref": "unkeyed_entity_iid_lifecycle"
+    },
+    {
+      "case_id": "workforce.crud.unkeyed-relation",
+      "proof_kind": "direct_runtime",
+      "observation_ref": "unkeyed_relation_iid_lifecycle"
+    },
+    {
+      "case_id": "workforce.diagnostic.all-workflows",
+      "proof_kind": "diagnostic",
+      "observation_ref": "data_operation_structured_diagnostic"
+    },
+    {
+      "case_id": "workforce.manager.filter",
+      "proof_kind": "direct_runtime",
+      "observation_ref": "manager_field_token_filter"
+    },
+    {
+      "case_id": "workforce.model.constraints",
+      "proof_kind": "diagnostic",
+      "observation_ref": "projected_constraint_validation"
+    },
+    {
+      "case_id": "workforce.model.inherited-relation-role",
+      "proof_kind": "direct_runtime",
+      "observation_ref": "inherited_relation_role_lifecycle"
+    },
+    {
+      "case_id": "workforce.model.integer-key-polymorphic-role",
+      "proof_kind": "direct_runtime",
+      "observation_ref": "integer_key_polymorphic_role"
+    },
+    {
+      "case_id": "workforce.projection.evidence-integrity",
+      "proof_kind": "diagnostic",
+      "observation_ref": "projection_evidence_integrity"
+    },
+    {
+      "case_id": "workforce.projection.field-name-identity",
+      "proof_kind": "artifact",
+      "observation_ref": "field_name_identity"
+    },
+    {
+      "case_id": "workforce.projection.token-package-fencing",
+      "proof_kind": "diagnostic",
+      "observation_ref": "token_package_fencing"
+    },
+    {
+      "case_id": "workforce.runtime.cancellation",
+      "proof_kind": "direct_runtime",
+      "observation_ref": "data_operation_cancellation"
+    },
+    {
+      "case_id": "workforce.runtime.connection-policy",
+      "proof_kind": "direct_runtime",
+      "observation_ref": "complete_connection_policy"
+    },
+    {
+      "case_id": "workforce.runtime.explicit-close",
+      "proof_kind": "lifecycle",
+      "observation_ref": "data_resource_lifecycle"
+    },
+    {
+      "case_id": "workforce.runtime.timeout-resource-limits",
+      "proof_kind": "direct_runtime",
+      "observation_ref": "data_operation_resource_limits"
+    },
+    {
+      "case_id": "workforce.schema.generate.atomic",
+      "proof_kind": "artifact",
+      "observation_ref": "atomic_multibinding_generation"
+    },
+    {
+      "case_id": "workforce.schema.ordered-distinct",
+      "proof_kind": "direct_runtime",
+      "observation_ref": "ordered_distinct_collections"
+    },
+    {
+      "case_id": "workforce.transaction.borrowed",
+      "proof_kind": "lifecycle",
+      "observation_ref": "borrowed_transaction_lifecycle"
+    }
+  ],
+  "cases": [
+    {
+      "id": "workforce.schema.generate.atomic",
+      "capability_id": "schema.generate.atomic-multibinding",
+      "disposition": "shared_smoke"
+    },
+    {
+      "id": "workforce.model.values-and-references",
+      "capability_id": "model.generated-values-and-references",
+      "disposition": "retained_evidence"
+    },
+    {
+      "id": "workforce.model.constraints",
+      "capability_id": "model.projected-constraint-validation",
+      "disposition": "shared_smoke"
+    },
+    {
+      "id": "workforce.crud.entity-single",
+      "capability_id": "crud.entity.single",
+      "disposition": "retained_evidence"
+    },
+    {
+      "id": "workforce.crud.entity-batch-insert-put",
+      "capability_id": "crud.entity.batch-insert-put",
+      "disposition": "shared_smoke"
+    },
+    {
+      "id": "workforce.crud.relation-single",
+      "capability_id": "crud.relation.single",
+      "disposition": "retained_evidence"
+    },
+    {
+      "id": "workforce.crud.relation-batch-insert-put",
+      "capability_id": "crud.relation.batch-insert-put",
+      "disposition": "shared_smoke"
+    },
+    {
+      "id": "workforce.crud.entity-batch-update-delete",
+      "capability_id": "crud.entity.batch-update-delete-atomic",
+      "disposition": "shared_smoke"
+    },
+    {
+      "id": "workforce.crud.relation-batch-update-delete",
+      "capability_id": "crud.relation.batch-update-delete-atomic",
+      "disposition": "shared_smoke"
+    },
+    {
+      "id": "workforce.transaction.borrowed",
+      "capability_id": "transaction.borrowed-read-write-lifecycle",
+      "disposition": "shared_smoke"
+    },
+    {
+      "id": "workforce.manager.filter",
+      "capability_id": "manager.single-type-filter",
+      "disposition": "shared_smoke"
+    },
+    {
+      "id": "workforce.projection.field-name-identity",
+      "capability_id": "projection.field-name-identity",
+      "disposition": "shared_smoke"
+    },
+    {
+      "id": "workforce.query.owner-iid-set",
+      "capability_id": "query.owner-iid-set-predicates",
+      "disposition": "retained_evidence"
+    },
+    {
+      "id": "workforce.query.exact-subtypes",
+      "capability_id": "query.exact-subtype-hydration",
+      "disposition": "retained_evidence"
+    },
+    {
+      "id": "workforce.query.scalar-boolean-predicates",
+      "capability_id": "query.scalar-boolean-predicates",
+      "disposition": "retained_evidence"
+    },
+    {
+      "id": "workforce.query.roles",
+      "capability_id": "query.role-traversal-and-relation-references",
+      "disposition": "retained_evidence"
+    },
+    {
+      "id": "workforce.query.topology",
+      "capability_id": "query.reachability-and-explicit-cross-join",
+      "disposition": "retained_evidence"
+    },
+    {
+      "id": "workforce.query.selection-shapes",
+      "capability_id": "query.selected-output-shapes",
+      "disposition": "retained_evidence"
+    },
+    {
+      "id": "workforce.query.terminals",
+      "capability_id": "query.ordered-windowed-model-terminals",
+      "disposition": "retained_evidence"
+    },
+    {
+      "id": "workforce.query.reducers-direct",
+      "capability_id": "query.direct-reducers-and-grouping",
+      "disposition": "retained_evidence"
+    },
+    {
+      "id": "workforce.query.remote-one-exchange",
+      "capability_id": "query.remote-model-terminals-one-exchange",
+      "disposition": "retained_evidence"
+    },
+    {
+      "id": "workforce.query.remote-hydration",
+      "capability_id": "query.remote-reply-verification-and-hydration",
+      "disposition": "retained_evidence"
+    },
+    {
+      "id": "workforce.diagnostic.remote-structured",
+      "capability_id": "diagnostic.remote-structured",
+      "disposition": "retained_evidence"
+    },
+    {
+      "id": "workforce.model.integer-key-polymorphic-role",
+      "capability_id": "model.integer-key-polymorphic-role-optionality",
+      "disposition": "shared_smoke"
+    },
+    {
+      "id": "workforce.model.inherited-relation-role",
+      "capability_id": "model.inherited-relation-role-lifecycle",
+      "disposition": "shared_smoke"
+    },
+    {
+      "id": "workforce.crud.unkeyed-entity",
+      "capability_id": "crud.entity.unkeyed-iid-lifecycle",
+      "disposition": "shared_smoke"
+    },
+    {
+      "id": "workforce.crud.unkeyed-relation",
+      "capability_id": "crud.relation.unkeyed-iid-lifecycle",
+      "disposition": "shared_smoke"
+    },
+    {
+      "id": "workforce.value.scalar-domain-comparison",
+      "capability_id": "value.scalar-domain-comparison",
+      "disposition": "retained_evidence"
+    },
+    {
+      "id": "workforce.projection.evidence-integrity",
+      "capability_id": "projection.evidence-integrity",
+      "disposition": "shared_smoke"
+    },
+    {
+      "id": "workforce.projection.token-package-fencing",
+      "capability_id": "projection.token-package-fencing",
+      "disposition": "shared_smoke"
+    },
+    {
+      "id": "workforce.query.reducers-remote",
+      "capability_id": "query.remote-reducers-and-grouping",
+      "disposition": "retained_evidence"
+    },
+    {
+      "id": "workforce.schema.ordered-distinct",
+      "capability_id": "schema.ordered-distinct-collections",
+      "disposition": "shared_smoke"
+    },
+    {
+      "id": "workforce.query.schema-function",
+      "capability_id": "query.schema-function-invocation",
+      "disposition": "retained_evidence"
+    },
+    {
+      "id": "workforce.runtime.connection-policy",
+      "capability_id": "runtime.complete-connection-policy",
+      "disposition": "shared_smoke"
+    },
+    {
+      "id": "workforce.runtime.database-administration",
+      "capability_id": "runtime.database-administration",
+      "disposition": "retained_evidence"
+    },
+    {
+      "id": "workforce.runtime.cancellation",
+      "capability_id": "runtime.cancellation",
+      "disposition": "shared_smoke"
+    },
+    {
+      "id": "workforce.runtime.timeout-resource-limits",
+      "capability_id": "runtime.timeout-and-resource-limits",
+      "disposition": "shared_smoke"
+    },
+    {
+      "id": "workforce.model.serialization",
+      "capability_id": "model.canonical-serialization",
+      "disposition": "retained_evidence"
+    },
+    {
+      "id": "workforce.diagnostic.all-workflows",
+      "capability_id": "diagnostic.all-workflows-structured",
+      "disposition": "shared_smoke"
+    },
+    {
+      "id": "workforce.migration.rollback",
+      "capability_id": "migration.reverse-cli",
+      "disposition": "retained_evidence"
+    },
+    {
+      "id": "workforce.migration.backfill",
+      "capability_id": "migration.binding-neutral-backfill",
+      "disposition": "retained_evidence"
+    },
+    {
+      "id": "workforce.migration.runtime-facade",
+      "capability_id": "migration.sdk-runtime-facade",
+      "disposition": "retained_evidence"
+    },
+    {
+      "id": "workforce.distribution.standalone-cli",
+      "capability_id": "distribution.standalone-cli",
+      "disposition": "retained_evidence"
+    },
+    {
+      "id": "workforce.runtime.explicit-close",
+      "capability_id": "runtime.explicit-close",
+      "disposition": "shared_smoke"
+    }
+  ]
+}

@@ -8,10 +8,21 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
+use super::error::{MatchError, MatchErrorCategory, MatchErrorPathSegment};
 use super::model::{
     FetchShape, FetchSlot, MatchExpr, MatchMode, MatchOperation, MatchPlan, MatchRequest,
     RowCardinality, ThingKind,
 };
+
+pub(crate) fn schema_function_given_rows_unsupported() -> MatchError {
+    MatchError::new(
+        MatchErrorCategory::UnsupportedCapability,
+        "schema_function_given_rows_unsupported",
+        "schema-function execution requires native canonical given-row transport",
+    )
+    .at(MatchErrorPathSegment::Operation)
+    .with_detail("capability", "query.input.given-rows")
+}
 
 /// One provider behavior required by a validated match request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -57,11 +68,13 @@ pub enum Capability {
     BoundedReachability,
     /// Typed scalar reduction over the matched stream.
     TypedReduction,
+    /// Exact generated scalar schema-function calls with projected inputs.
+    SchemaFunctionCall,
 }
 
 impl Capability {
     /// Complete provider capability vocabulary for exhaustive implementations.
-    pub const ALL: [Self; 20] = [
+    pub const ALL: [Self; 21] = [
         Self::ResourceBoundedStreaming,
         Self::ExactEntityTarget,
         Self::ExactRelationTarget,
@@ -82,6 +95,7 @@ impl Capability {
         Self::StableCollectionOrder,
         Self::BoundedReachability,
         Self::TypedReduction,
+        Self::SchemaFunctionCall,
     ];
 }
 
@@ -202,6 +216,9 @@ fn add_expression_capabilities(expression: &MatchExpr, required: &mut Capability
         }
         MatchExpr::FieldComparison { .. } => {
             required.insert(Capability::FieldComparison);
+        }
+        MatchExpr::ScalarComparison { .. } => {
+            required.insert(Capability::SchemaFunctionCall);
         }
         MatchExpr::And { expressions } | MatchExpr::Or { expressions } => {
             required.insert(Capability::BooleanPattern);

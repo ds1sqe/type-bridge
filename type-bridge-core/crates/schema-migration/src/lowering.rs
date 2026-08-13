@@ -755,6 +755,7 @@ fn render_annotation_definition(
     catalog: &SchemaFactCatalog,
     defining: bool,
 ) -> Result<String, RenderFailure> {
+    reject_distinct_lowering(annotation.id().kind())?;
     let subject = render_annotation_subject(annotation.id().subject(), catalog, defining)?;
     Ok(format!("{subject} {};", render_annotation(annotation)))
 }
@@ -763,11 +764,22 @@ fn render_annotation_undefinition(
     annotation: &AnnotationFact,
     catalog: &SchemaFactCatalog,
 ) -> Result<String, RenderFailure> {
+    reject_distinct_lowering(annotation.id().kind())?;
     let subject = render_annotation_subject(annotation.id().subject(), catalog, false)?;
     Ok(format!(
         "{} from {subject};",
         render_annotation_selector(annotation.id().kind())
     ))
+}
+
+fn reject_distinct_lowering(kind: &AnnotationKindId) -> Result<(), RenderFailure> {
+    if kind == &AnnotationKindId::Distinct {
+        return Err(RenderFailure {
+            code: CODE_UNSUPPORTED,
+            message: "schema transition is unsupported by the TypeDB 3.12.1 lowering profile",
+        });
+    }
+    Ok(())
 }
 
 fn render_annotation_subject(
@@ -828,6 +840,9 @@ fn render_annotation(annotation: &AnnotationFact) -> String {
         (AnnotationKindId::Independent, SchemaAnnotationValue::Presence) => "@independent".into(),
         (AnnotationKindId::Key, SchemaAnnotationValue::Presence) => "@key".into(),
         (AnnotationKindId::Unique, SchemaAnnotationValue::Presence) => "@unique".into(),
+        (AnnotationKindId::Distinct, SchemaAnnotationValue::Presence) => {
+            unreachable!("distinct lowering rejects before annotation rendering")
+        }
         (AnnotationKindId::Card, SchemaAnnotationValue::Cardinality(cardinality)) => format!(
             "@card({}..{})",
             (*cardinality).min(),
@@ -868,6 +883,9 @@ fn render_annotation_selector(kind: &AnnotationKindId) -> String {
         AnnotationKindId::Independent => "@independent".into(),
         AnnotationKindId::Key => "@key".into(),
         AnnotationKindId::Unique => "@unique".into(),
+        AnnotationKindId::Distinct => {
+            unreachable!("distinct lowering rejects before annotation selector rendering")
+        }
         AnnotationKindId::Card => "@card".into(),
         AnnotationKindId::Regex => "@regex".into(),
         AnnotationKindId::Range => "@range".into(),
@@ -1487,6 +1505,52 @@ mod tests {
             output,
             include_str!("../tests/fixtures/lowering-rejections-v1.txt")
         );
+    }
+
+    #[test]
+    fn distinct_migration_lowering_is_explicitly_unsupported() {
+        let person = type_id(TypeKind::Entity, "ordered-person");
+        let owns = OwnsFactId::new(person, attribute_id("ordered-name")).unwrap();
+        let distinct = annotation(
+            AnnotationSubjectId::Owns(owns),
+            AnnotationKindId::Distinct,
+            SchemaAnnotationValue::Presence,
+        );
+        let operations = [
+            SchemaOperation::define(vec![distinct.clone()]).unwrap(),
+            SchemaOperation::undefine(distinct),
+        ];
+
+        for (index, operation) in operations.into_iter().enumerate() {
+            let error = lower_operation(
+                index,
+                &operation,
+                &SchemaFactCatalog::empty(),
+                &SchemaFactCatalog::empty(),
+                &full_binding(),
+                false,
+                false,
+            )
+            .unwrap_err();
+            assert_eq!(error.code(), CODE_UNSUPPORTED);
+            assert_eq!(
+                error.message(),
+                "schema transition is unsupported by the TypeDB 3.12.1 lowering profile",
+            );
+            assert_eq!(error.operation_index(), Some(index));
+            assert_eq!(error.safety(), Some(SafetyClass::Unsupported));
+            assert!(error.missing_capabilities().is_empty());
+
+            let render_error = render_operation(
+                index,
+                &operation,
+                &SchemaFactCatalog::empty(),
+                &SchemaFactCatalog::empty(),
+            )
+            .unwrap_err();
+            assert_eq!(render_error.code(), CODE_UNSUPPORTED);
+            assert_eq!(render_error.operation_index(), Some(index));
+        }
     }
 
     #[test]

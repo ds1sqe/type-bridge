@@ -3,15 +3,16 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::Serialize;
 use type_bridge_contract::capability::CapabilitySet;
 use type_bridge_contract::codec::{FormatVersion, to_canonical_json};
+use type_bridge_contract::diagnostic::DiagnosticCategory;
 use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::managed_scope::{
     ManagedScopeBinding, ManagedScopeId, SemanticProfileFingerprint,
 };
 use type_bridge_contract::schema::{
-    AnnotationFactId, AnnotationKindId, AnnotationSubjectId, DeclaredSchema, InterfaceKind,
-    ManagedDeclaredIdentityFingerprint, ManagedSemanticSchemaFingerprint, SchemaAnnotationValue,
-    SchemaDiagnostic, SchemaDiagnostics, SchemaFact, SchemaFactId, SemanticProfile,
-    SemanticSchemaFingerprint,
+    AnnotationFactId, AnnotationKindId, AnnotationSubjectId, CollectionMode, DeclaredSchema,
+    InterfaceKind, ManagedDeclaredIdentityFingerprint, ManagedSemanticSchemaFingerprint,
+    SchemaAnnotationValue, SchemaDiagnostic, SchemaDiagnostics, SchemaFact, SchemaFactId,
+    SemanticProfile, SemanticSchemaFingerprint,
 };
 use type_bridge_contract::value::Cardinality;
 
@@ -215,6 +216,7 @@ fn canonical_semantic_schema_bytes_for_scope(
 ) -> Result<Vec<u8>, SchemaDiagnostics> {
     let semantic_profile = SemanticProfile::resolve(profile)
         .map_err(|diagnostic| SchemaDiagnostics::one(SchemaDiagnostic::new(diagnostic, None)))?;
+    validate_collection_profile(declared, profile)?;
     let semantic_profile_fingerprint = scope
         .map(|_| semantic_profile.content_fingerprint())
         .transpose()
@@ -235,6 +237,31 @@ fn canonical_semantic_schema_bytes_for_scope(
     };
     to_canonical_json(&view)
         .map_err(|diagnostic| SchemaDiagnostics::one(SchemaDiagnostic::new(diagnostic, None)))
+}
+
+pub(crate) fn validate_collection_profile(
+    declared: &DeclaredSchema,
+    profile: &SemanticProfileId,
+) -> Result<(), SchemaDiagnostics> {
+    if profile.as_str() == "typedb-3.12.1/v1" {
+        return Ok(());
+    }
+    for fact in declared.facts() {
+        let ordered = match fact {
+            SchemaFact::Owns(fact) => fact.collection_mode() == CollectionMode::OrderedList,
+            SchemaFact::Relates(fact) => fact.collection_mode() == CollectionMode::OrderedList,
+            _ => false,
+        };
+        if ordered {
+            return Err(crate::yaml::diagnostic(
+                DiagnosticCategory::UnsupportedCapability,
+                "ordered_collection_profile_unsupported",
+                "ordered collection facts require the typedb-3.12.1/v1 semantic profile",
+                declared.source(&fact.id()).cloned(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn semantic_facts<'a>(

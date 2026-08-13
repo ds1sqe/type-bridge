@@ -54,6 +54,22 @@ pub(crate) struct DatabaseExecutionIdentity {
     database_name: String,
 }
 
+impl DatabaseExecutionIdentity {
+    #[cfg(test)]
+    pub(crate) fn isolated(database_name: impl Into<String>) -> Self {
+        Self {
+            connection_authority: DatabaseConnectionAuthority::isolated(),
+            database_name: database_name.into(),
+        }
+    }
+}
+
+impl fmt::Debug for DatabaseExecutionIdentity {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("DatabaseExecutionIdentity([REDACTED])")
+    }
+}
+
 /// Opaque authority proving that database handles target one provider endpoint.
 ///
 /// Real connections derive this private token from the TypeDB address only;
@@ -84,7 +100,7 @@ impl DatabaseConnectionAuthority {
     }
 
     fn for_typedb_address(address: &str) -> Self {
-        if !identity_safe_provider_address(address) {
+        if !is_identity_safe_provider_address(address) {
             // Released connection constructors continue to pass unusual
             // addresses to the driver unchanged. They simply cannot acquire a
             // reusable V2 migration authority because credential-free provider
@@ -100,7 +116,11 @@ impl DatabaseConnectionAuthority {
     }
 }
 
-fn identity_safe_provider_address(address: &str) -> bool {
+/// Return whether an address is a credential-free canonical provider endpoint
+/// or comma-delimited endpoint list suitable for stable authority derivation.
+#[doc(hidden)]
+#[must_use]
+pub fn is_identity_safe_provider_address(address: &str) -> bool {
     !address.is_empty() && address.split(',').all(identity_safe_provider_endpoint)
 }
 
@@ -349,6 +369,7 @@ impl Database {
             tx_type,
             capabilities,
             self.server_version(),
+            self.execution_identity(),
         ))
     }
 
@@ -645,5 +666,25 @@ mod tests {
         let isolated = DatabaseConnectionAuthority::isolated();
         assert_eq!(isolated, isolated.clone());
         assert_ne!(isolated, DatabaseConnectionAuthority::isolated());
+    }
+
+    #[test]
+    fn public_identity_safe_address_validator_reuses_authority_grammar() {
+        for valid in [
+            "provider.example:1729",
+            "provider.example:1729,backup.example:1730",
+            "[2001:db8::1]:1729",
+        ] {
+            assert!(is_identity_safe_provider_address(valid), "{valid}");
+        }
+        for invalid in [
+            "",
+            "typedb://provider.example:1729",
+            "admin@provider.example:1729",
+            " provider.example:1729",
+            "provider.example:0",
+        ] {
+            assert!(!is_identity_safe_provider_address(invalid), "{invalid}");
+        }
     }
 }

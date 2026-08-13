@@ -52,6 +52,8 @@ mod schema_delta_wire;
 /// Domain-safe schema fingerprint wrappers.
 pub mod schema_fingerprint;
 pub mod schema_lowering;
+/// Versioned in-memory diagnostics for binding-neutral SDK execution.
+pub mod sdk_diagnostic;
 /// Versioned server-semantic defaults shared by resolution and fingerprints.
 pub mod semantic_profile;
 /// Canonical temporal component values.

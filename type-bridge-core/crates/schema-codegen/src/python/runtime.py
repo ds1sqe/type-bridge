@@ -110,16 +110,39 @@ class RoleToken:
         self.fact = fact
 
 
+_FUNCTION_REF_BRAND = object()
+_function_refs: dict[FunctionRef, tuple[str, Mapping[str, object]]]
+
+
 class FunctionRef:
-    __slots__ = ("id", "signature")
+    __slots__ = ()
 
     def __init__(
         self,
+        brand: object,
         function_id: str,
         signature: Mapping[str, object],
     ) -> None:
-        self.id = function_id
-        self.signature = signature
+        if brand is not _FUNCTION_REF_BRAND:
+            raise TypeError("schema-function tokens can only be created by generated code")
+        _function_refs[self] = (function_id, signature)
+
+
+_function_refs = {}
+
+
+def function_ref_for_projection(
+    function_id: str,
+    signature: Mapping[str, object],
+) -> FunctionRef:
+    return FunctionRef(_FUNCTION_REF_BRAND, function_id, signature)
+
+
+def function_identity_for_query(function: FunctionRef) -> tuple[str, Mapping[str, object]]:
+    identity = _function_refs.get(function)
+    if type(function) is not FunctionRef or identity is None:
+        raise TypeError("schema-function token is not installed by this generated package")
+    return identity
 
 
 class ModelBase:

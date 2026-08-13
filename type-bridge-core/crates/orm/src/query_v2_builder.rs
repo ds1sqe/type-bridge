@@ -1346,6 +1346,7 @@ pub struct QueryPlanBuilder {
 /// incremental authoring.
 pub(crate) struct QueryCompatibilityPlanInput {
     bindings: Vec<AssertionBinding>,
+    inputs: Vec<InputColumn>,
     pipeline: Vec<ReadStage>,
     output: QueryOutput,
     compatibility: QueryPlanV2Compatibility,
@@ -1356,12 +1357,14 @@ impl QueryCompatibilityPlanInput {
     /// finalization.
     pub(crate) const fn new(
         bindings: Vec<AssertionBinding>,
+        inputs: Vec<InputColumn>,
         pipeline: Vec<ReadStage>,
         output: QueryOutput,
         compatibility: QueryPlanV2Compatibility,
     ) -> Self {
         Self {
             bindings,
+            inputs,
             pipeline,
             output,
             compatibility,
@@ -1426,7 +1429,7 @@ impl QueryPlanBuilder {
             QueryPlanComponents {
                 bindings: input.bindings,
                 functions: Vec::new(),
-                inputs: Vec::new(),
+                inputs: input.inputs,
                 pipeline: input.pipeline,
                 output: input.output,
                 compatibility: input.compatibility,
@@ -3453,7 +3456,8 @@ mod completeness_guard {
                     ..
                 }
                 | ModelQueryV2::DistinctCount { .. }
-                | ModelQueryV2::DistinctExists { .. } => {}
+                | ModelQueryV2::DistinctExists { .. }
+                | ModelQueryV2::Reduction { .. } => {}
             }
         }
         fn input_optionality(value: &InputColumn) {

@@ -10,22 +10,30 @@ use pyo3::exceptions::{PyIndexError, PyRuntimeError};
 use pyo3::prelude::*;
 use pythonize::pythonize;
 use type_bridge_orm::_registry::DescriptorRegistry;
+#[cfg(test)]
+use type_bridge_orm::QueryExecutionResourceLimits;
 use type_bridge_orm::{
-    AttributeValue, DescriptorId, FetchShape, HydratedAttribute, HydratedRole, HydratedRolePlayer,
-    HydratedThing, MatchOperation, MatchResult, MatchRow, ReducedValue, ReductionRow, SlotValue,
-    ThingKind, ValidatedMatchRequest, ValidatedMatchResult, Window,
+    AnswerCancellation, AttributeValue, DescriptorId, FetchShape, HydratedAttribute, HydratedRole,
+    HydratedRolePlayer, HydratedThing, MatchOperation, MatchResult, MatchRow,
+    QueryExecutionDeadline, ReducedValue, ReductionRow, SlotValue, ThingKind,
+    ValidatedMatchRequest, ValidatedMatchResult, Window,
 };
 
-use crate::match_runtime::py_match_error;
+use crate::match_runtime::{py_match_error, py_sdk_diagnostic};
 
 struct ValidatedResultProof {
     request: ValidatedMatchRequest,
     result: ValidatedMatchResult,
     registry: Arc<DescriptorRegistry>,
+    deadline: QueryExecutionDeadline,
+    cancellation: AnswerCancellation,
 }
 
 impl ValidatedResultProof {
     fn result(&self) -> PyResult<&MatchResult> {
+        self.deadline
+            .check(&self.cancellation)
+            .map_err(py_sdk_diagnostic)?;
         self.result
             .for_request(&self.request)
             .map_err(py_match_error)
@@ -317,16 +325,35 @@ pub(crate) struct PyValidatedMatchResultHandle {
 }
 
 impl PyValidatedMatchResultHandle {
+    #[cfg(test)]
     pub(crate) fn new(
         request: ValidatedMatchRequest,
         result: ValidatedMatchResult,
         registry: Arc<DescriptorRegistry>,
+    ) -> Self {
+        Self::new_with_budget(
+            request,
+            result,
+            registry,
+            QueryExecutionDeadline::for_limits(QueryExecutionResourceLimits::default()),
+            AnswerCancellation::default(),
+        )
+    }
+
+    pub(crate) fn new_with_budget(
+        request: ValidatedMatchRequest,
+        result: ValidatedMatchResult,
+        registry: Arc<DescriptorRegistry>,
+        deadline: QueryExecutionDeadline,
+        cancellation: AnswerCancellation,
     ) -> Self {
         Self {
             proof: Arc::new(ValidatedResultProof {
                 request,
                 result,
                 registry,
+                deadline,
+                cancellation,
             }),
         }
     }

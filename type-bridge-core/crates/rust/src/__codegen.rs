@@ -347,18 +347,71 @@ canonical_scalar!(
     }
 );
 
-canonical_scalar!(
-    DateTimeTz,
-    "A timezone-aware date-time in the shared canonical lexical form.",
-    "noncanonical_datetime_tz",
-    |s| {
-        if let Ok(dtz) = s.parse::<type_bridge_contract::temporal::CanonicalDateTimeTz>() {
-            dtz.to_string() == s
-        } else {
-            false
+/// A timezone-aware date-time in the shared canonical lexical form.
+///
+/// Named-zone values retain their provider-resolved effective offset in the
+/// private canonical value so both sides of a daylight-saving overlap survive
+/// generated-model hydration and later CRUD/query lowering.
+#[derive(Clone, Eq, PartialEq, Hash)]
+pub struct DateTimeTz {
+    spelling: String,
+    canonical: type_bridge_contract::temporal::CanonicalDateTimeTz,
+}
+
+impl std::fmt::Debug for DateTimeTz {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Preserve the released tuple-wrapper Debug shape.
+        formatter
+            .debug_tuple("DateTimeTz")
+            .field(&self.spelling)
+            .finish()
+    }
+}
+
+impl DateTimeTz {
+    /// Validate and wrap a canonical timezone-aware scalar spelling.
+    ///
+    /// # Errors
+    ///
+    /// Returns `noncanonical_datetime_tz` when the spelling is not the exact
+    /// canonical rendering under the frozen provider timezone policy.
+    pub fn try_new(value: impl Into<String>) -> Result<Self, ValidationError> {
+        let spelling = value.into();
+        if type_bridge_contract::value::CanonicalString::new(&spelling).is_err() {
+            return Err(ValidationError::new("", "string_limit_exceeded"));
+        }
+        let canonical = type_bridge_schema::parse_provider_datetime_tz(&spelling)
+            .map_err(|_| ValidationError::new("", "noncanonical_datetime_tz"))?;
+        if canonical.to_string() != spelling {
+            return Err(ValidationError::new("", "noncanonical_datetime_tz"));
+        }
+        Ok(Self {
+            spelling,
+            canonical,
+        })
+    }
+
+    #[must_use]
+    pub(crate) fn from_canonical(
+        canonical: type_bridge_contract::temporal::CanonicalDateTimeTz,
+    ) -> Self {
+        Self {
+            spelling: canonical.to_string(),
+            canonical,
         }
     }
-);
+
+    /// Return the canonical scalar spelling.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.spelling
+    }
+
+    #[must_use]
+    pub(crate) const fn canonical(&self) -> &type_bridge_contract::temporal::CanonicalDateTimeTz {
+        &self.canonical
+    }
+}
 
 canonical_scalar!(
     Duration,
@@ -680,13 +733,11 @@ impl EncodedScalar {
         }
     }
 
-    fn to_canonical_value(
+    pub(crate) fn to_canonical_value(
         &self,
         path: &ValidationPath,
     ) -> Result<type_bridge_contract::value::CanonicalValue, ValidationError> {
-        use type_bridge_contract::temporal::{
-            CanonicalDate, CanonicalDateTime, CanonicalDateTimeTz, CanonicalDuration,
-        };
+        use type_bridge_contract::temporal::{CanonicalDate, CanonicalDateTime, CanonicalDuration};
         use type_bridge_contract::value::{CanonicalDouble, CanonicalString, CanonicalValue};
         match self {
             Self::String(s) => CanonicalString::new(s)
@@ -716,11 +767,7 @@ impl EncodedScalar {
                 .parse::<CanonicalDateTime>()
                 .map(CanonicalValue::DateTime)
                 .map_err(|_| ValidationError::new(path.path(), "noncanonical_datetime")),
-            Self::DateTimeTz(dtz) => dtz
-                .as_str()
-                .parse::<CanonicalDateTimeTz>()
-                .map(CanonicalValue::DateTimeTz)
-                .map_err(|_| ValidationError::new(path.path(), "noncanonical_datetime_tz")),
+            Self::DateTimeTz(dtz) => Ok(CanonicalValue::DateTimeTz(dtz.canonical().clone())),
             Self::Duration(dur) => dur
                 .as_str()
                 .parse::<CanonicalDuration>()
@@ -846,6 +893,43 @@ impl ConstraintDescriptor {
     }
 }
 
+/// Opaque origin state retained by generated complete models and references.
+///
+/// The state is deliberately uninspectable, redacted in debug output, and
+/// ignored by value equality. User-authored references carry the unbound
+/// default; only runtime hydration can construct a bound origin.
+#[doc(hidden)]
+#[derive(Clone, Default)]
+pub struct ReferenceOrigin(Option<type_bridge_orm::ProjectedReferenceOrigin>);
+
+impl ReferenceOrigin {
+    #[must_use]
+    pub(crate) const fn from_projected(
+        origin: Option<type_bridge_orm::ProjectedReferenceOrigin>,
+    ) -> Self {
+        Self(origin)
+    }
+
+    #[must_use]
+    pub(crate) fn projected(&self) -> Option<type_bridge_orm::ProjectedReferenceOrigin> {
+        self.0.clone()
+    }
+}
+
+impl fmt::Debug for ReferenceOrigin {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ReferenceOrigin([REDACTED])")
+    }
+}
+
+impl PartialEq for ReferenceOrigin {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for ReferenceOrigin {}
+
 /// A transport-neutral encoded IID-or-typed-key reference.
 #[doc(hidden)]
 #[derive(Clone, Debug, PartialEq)]
@@ -853,6 +937,7 @@ pub struct EncodedReference {
     type_id_json: &'static str,
     iid: Option<String>,
     keys: Vec<(&'static str, EncodedScalar)>,
+    origin: ReferenceOrigin,
 }
 
 impl EncodedReference {
@@ -860,6 +945,17 @@ impl EncodedReference {
         type_id_json: &'static str,
         iid: Option<String>,
         keys: Vec<(&'static str, EncodedScalar)>,
+        path: &ValidationPath,
+    ) -> Result<Self, ValidationError> {
+        Self::try_new_with_origin(type_id_json, iid, keys, ReferenceOrigin::default(), path)
+    }
+
+    #[doc(hidden)]
+    pub fn try_new_with_origin(
+        type_id_json: &'static str,
+        iid: Option<String>,
+        keys: Vec<(&'static str, EncodedScalar)>,
+        origin: ReferenceOrigin,
         path: &ValidationPath,
     ) -> Result<Self, ValidationError> {
         if iid.as_deref().is_some_and(|value| value.trim().is_empty()) {
@@ -890,6 +986,7 @@ impl EncodedReference {
             type_id_json,
             iid,
             keys,
+            origin,
         })
     }
 
@@ -906,6 +1003,12 @@ impl EncodedReference {
     #[must_use]
     pub fn keys(&self) -> &[(&'static str, EncodedScalar)] {
         &self.keys
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn origin(&self) -> &ReferenceOrigin {
+        &self.origin
     }
 }
 
@@ -955,6 +1058,7 @@ pub struct HydratedPlayer {
     type_id_json: String,
     iid: Option<String>,
     keys: Vec<(String, EncodedScalar)>,
+    origin: ReferenceOrigin,
 }
 
 impl HydratedPlayer {
@@ -971,6 +1075,7 @@ impl HydratedPlayer {
                 .into_iter()
                 .map(|(identity, value)| (identity.to_owned(), value))
                 .collect(),
+            origin: ReferenceOrigin::default(),
         }
     }
 
@@ -985,6 +1090,22 @@ impl HydratedPlayer {
             type_id_json,
             iid,
             keys,
+            origin: ReferenceOrigin::default(),
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn from_owned_with_origin(
+        type_id_json: String,
+        iid: Option<String>,
+        keys: Vec<(String, EncodedScalar)>,
+        origin: ReferenceOrigin,
+    ) -> Self {
+        Self {
+            type_id_json,
+            iid,
+            keys,
+            origin,
         }
     }
 
@@ -1002,6 +1123,12 @@ impl HydratedPlayer {
     pub fn keys(&self) -> &[(String, EncodedScalar)] {
         &self.keys
     }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn origin(&self) -> &ReferenceOrigin {
+        &self.origin
+    }
 }
 
 /// A transport-neutral hydrated thing with exact concrete type identity, mandatory IID, owned-value evidence, and role-player evidence.
@@ -1012,6 +1139,7 @@ pub struct HydratedRow {
     iid: String,
     fields: Vec<(String, Vec<EncodedScalar>)>,
     roles: Vec<(String, Vec<HydratedPlayer>)>,
+    origin: ReferenceOrigin,
 }
 
 impl HydratedRow {
@@ -1033,6 +1161,7 @@ impl HydratedRow {
                 .into_iter()
                 .map(|(identity, players)| (identity.to_owned(), players))
                 .collect(),
+            origin: ReferenceOrigin::default(),
         }
     }
 
@@ -1049,6 +1178,24 @@ impl HydratedRow {
             iid,
             fields,
             roles,
+            origin: ReferenceOrigin::default(),
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn from_owned_with_origin(
+        type_id_json: String,
+        iid: String,
+        fields: Vec<(String, Vec<EncodedScalar>)>,
+        roles: Vec<(String, Vec<HydratedPlayer>)>,
+        origin: ReferenceOrigin,
+    ) -> Self {
+        Self {
+            type_id_json,
+            iid,
+            fields,
+            roles,
+            origin,
         }
     }
 
@@ -1070,6 +1217,12 @@ impl HydratedRow {
     #[must_use]
     pub fn roles(&self) -> &[(String, Vec<HydratedPlayer>)] {
         &self.roles
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn origin(&self) -> &ReferenceOrigin {
+        &self.origin
     }
 
     pub fn validate_shape(
@@ -1341,9 +1494,13 @@ impl<S: Schema, Arguments, Output> FunctionToken<S, Arguments, Output> {
         }
     }
 
-    /// Return the schema function identifier.
+    /// Return the schema function identifier to the generated query facade.
+    ///
+    /// Application code invokes the nominal generated function wrapper rather
+    /// than resolving a function by this provider-facing spelling.
+    #[doc(hidden)]
     #[must_use]
-    pub const fn function_id(self) -> &'static str {
+    pub const fn __function_id(self) -> &'static str {
         self.function_id
     }
 
@@ -1413,6 +1570,33 @@ mod tests {
 
         let dtz = DateTimeTz::try_new("2026-07-28T03:55:00Z").unwrap();
         assert_eq!(dtz.as_str(), "2026-07-28T03:55:00Z");
+        let named = DateTimeTz::try_new("2026-07-28T03:55:00[Europe/Amsterdam]").unwrap();
+        assert_eq!(named.as_str(), "2026-07-28T03:55:00[Europe/Amsterdam]");
+
+        let overlap_earlier = type_bridge_schema::parse_provider_datetime_tz_evidence(
+            "2024-10-27T01:30:00+01:00[Europe/London]",
+        )
+        .unwrap();
+        let overlap_later = type_bridge_schema::parse_provider_datetime_tz_evidence(
+            "2024-10-27T01:30:00Z[Europe/London]",
+        )
+        .unwrap();
+        let earlier = DateTimeTz::from_canonical(overlap_earlier.clone());
+        let later = DateTimeTz::from_canonical(overlap_later.clone());
+        assert_eq!(earlier.as_str(), later.as_str());
+        assert_ne!(earlier, later);
+        assert_eq!(
+            EncodedScalar::DateTimeTz(earlier)
+                .to_canonical_value(&path)
+                .unwrap(),
+            type_bridge_contract::value::CanonicalValue::DateTimeTz(overlap_earlier)
+        );
+        assert_eq!(
+            EncodedScalar::DateTimeTz(later)
+                .to_canonical_value(&path)
+                .unwrap(),
+            type_bridge_contract::value::CanonicalValue::DateTimeTz(overlap_later)
+        );
 
         let dur = Duration::try_new("P1D").unwrap();
         assert_eq!(dur.as_str(), "P1D");

@@ -19,16 +19,18 @@ mod runtime_projection;
 pub use contract_test_adapter::round_trip_contract_foundation;
 
 pub use match_runtime::{
-    NodeMatchBindingHandle, NodeMatchFieldHandle, NodeMatchOrderHandle, NodeMatchPredicateHandle,
-    NodeMatchQueryHandle, NodeMatchRoleHandle, NodeMatchSelectionHandle, NodeMatchSessionHandle,
-    NodeMatchShapeHandle, NodeValidatedMatchResultHandle, NodeValidatedThingHandle,
+    NodeMatchBindingHandle, NodeMatchFieldHandle, NodeMatchFunctionArgumentHandle,
+    NodeMatchFunctionCallHandle, NodeMatchFunctionHandle, NodeMatchFunctionValueHandle,
+    NodeMatchOrderHandle, NodeMatchPredicateHandle, NodeMatchQueryHandle, NodeMatchRoleHandle,
+    NodeMatchSelectionHandle, NodeMatchSessionHandle, NodeMatchShapeHandle, NodeQueryCancellation,
+    NodeQueryExecutionResources, NodeValidatedMatchResultHandle, NodeValidatedThingHandle,
 };
 pub use query_v2_model_remote_runtime::{
     NodePendingRemoteModelQuery, NodeRemoteModelQueryContext, query_v2_prepare_remote_model_count,
     query_v2_prepare_remote_model_exists, query_v2_prepare_remote_model_page,
     query_v2_prepare_remote_model_reduce, query_v2_prepare_remote_model_reduce_by_field,
     query_v2_prepare_remote_model_reduce_by_fields, query_v2_prepare_remote_model_rows,
-    query_v2_remote_model_context,
+    query_v2_remote_model_context, query_v2_remote_model_context_with_resources,
 };
 pub use runtime_projection::{NodeProjectedModelManager, NodeRuntimeProjection};
 

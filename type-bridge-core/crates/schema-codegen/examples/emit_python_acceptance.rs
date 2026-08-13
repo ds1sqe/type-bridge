@@ -34,8 +34,10 @@ fn main() {
     let profile = SemanticProfileId::new(&profile_name).expect("semantic profile is valid");
     let resolved = resolve(&declared, &profile).expect("acceptance schema resolves");
     let emitter = PythonEmitter::new();
-    let handlers = emitter.generator_handlers();
-    let resources = emitter.code_resources().expect("emitter resources hash");
+    let handlers = emitter.generator_handlers_for(&resolved);
+    let resources = emitter
+        .code_resources_for(&resolved)
+        .expect("emitter resources hash");
     let projection = project(
         &resolved,
         BindingTarget::Python,

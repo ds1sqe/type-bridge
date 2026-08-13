@@ -670,19 +670,6 @@ async fn dynamic_relation_update_exact_preflight_zero_io_table() {
         ],
         "employment: relation role employee violates cardinality",
     ));
-    let mut d = employment_descriptor();
-    d.roles[0].ordered = true;
-    role_cases.push((
-        d,
-        vec![
-            player("employee"),
-            DynamicRolePlayerInput {
-                iid: Some("0x3".into()),
-                ..player("employee")
-            },
-        ],
-        "employment: ordered relation role employee cannot contain multiple players",
-    ));
     role_cases.push((
         employment_descriptor(),
         vec![DynamicRolePlayerInput {
@@ -3010,14 +2997,6 @@ fn dynamic_relation_exact_put_builder_resolved_insert_inventory() {
         va(),
         r,
         "employment: relation role employer violates cardinality",
-    ));
-    let mut x = d.clone();
-    x.roles[0].ordered = true;
-    guards.push((
-        x,
-        va(),
-        vr(),
-        "employment: ordered relation role employee cannot contain multiple players",
     ));
     let mut a = va();
     a.retain(|(n, _)| n != "external_id");

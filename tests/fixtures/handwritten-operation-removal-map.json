@@ -179,7 +179,7 @@
         "ordered_windowed_one_first_rows_page_count_and_exists",
         "direct_reducers_and_grouping",
         "remote_rows_terminals_and_identical_materialization",
-        "remote_reducers_fail_uniformly_before_exchange"
+        "remote_reducers_and_grouping"
       ]
     },
     {

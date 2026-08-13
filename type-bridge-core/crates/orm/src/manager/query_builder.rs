@@ -5,6 +5,7 @@
 
 use std::collections::HashSet;
 
+use type_bridge_contract::id::TypeKind;
 use type_bridge_core_lib::ast::{
     Clause, Constraint, FetchItem, FunctionCallValue, Pattern, ReduceAssignment, RolePlayer,
     SortField, Statement, Value,
@@ -692,6 +693,50 @@ pub fn build_dynamic_relation_insert_with_iid(
     Ok(compiler.compile(&clauses))
 }
 
+/// Build the projected executor's one-query exact entity-player insert.
+///
+/// The released dynamic helper intentionally uses inclusive player matches.
+/// Projected references select exact concrete candidate types, so this private
+/// variant upgrades each validated player match to `isa!` without adding a
+/// separate resolution round trip.
+pub(crate) fn build_projected_relation_insert_with_iid(
+    descriptor: &RelationDescriptor,
+    attributes: &DynamicAttributeMap,
+    role_players: &[DynamicRolePlayerInput],
+) -> Result<String> {
+    const RELATION_VAR: &str = "$r";
+    for player in role_players {
+        // Reuse the released identity/label validation before compiling the
+        // same values into the combined insert query.
+        build_dynamic_relation_player_lookup(
+            &player.player_type_name,
+            player.iid.as_deref(),
+            player
+                .key
+                .as_ref()
+                .map(|(name, value)| (name.as_str(), value)),
+            "$p",
+        )?;
+    }
+    let mut clauses = crate::_dynamic::relation_insert_clauses(
+        descriptor,
+        attributes,
+        role_players,
+        RELATION_VAR,
+    );
+    if let Some(Clause::Match(patterns)) = clauses.first_mut() {
+        for pattern in patterns {
+            let Pattern::Entity { is_strict, .. } = pattern else {
+                return Err(OrmError::QueryExecution(
+                    "projected entity-player insert produced an unexpected match shape".into(),
+                ));
+            };
+            *is_strict = true;
+        }
+    }
+    Ok(QueryCompiler::new().compile(&clauses))
+}
+
 /// Build strict identity-only lookup using supplied relation key ownership.
 pub fn build_dynamic_relation_exact_key_lookup(
     descriptor: &RelationDescriptor,
@@ -714,6 +759,27 @@ pub fn build_dynamic_relation_insert_resolved_with_iid(
             descriptor, attributes, resolved, var,
         )?),
     )
+}
+
+/// Build the projected executor's kind-aware resolved-player relation insert.
+///
+/// Internal variable names are fixed here. Only validated projected labels and
+/// canonical IIDs can reach the raw exact-relation assertion.
+pub(crate) fn build_projected_relation_insert_resolved_with_iid(
+    descriptor: &RelationDescriptor,
+    attributes: &DynamicAttributeMap,
+    resolved: &[(type_bridge_contract::id::TypeId, String, String)],
+) -> Result<String> {
+    const RELATION_VAR: &str = "$r";
+    let legacy = projected_resolved_legacy(resolved)?;
+    let mut clauses = crate::_dynamic::relation_insert_resolved_clauses(
+        descriptor,
+        attributes,
+        &legacy,
+        RELATION_VAR,
+    )?;
+    replace_resolved_player_patterns(&mut clauses, resolved, 0)?;
+    Ok(QueryCompiler::new().compile(&clauses))
 }
 
 /// Build a put + fetch-IID query for a runtime relation descriptor.
@@ -818,6 +884,93 @@ pub fn build_dynamic_relation_player_lookup(
     Ok(QueryCompiler::new().compile(&clauses))
 }
 
+/// Build the projected executor's kind-aware exact role-player lookup.
+///
+/// The released public helper above remains entity-specific. Projected role
+/// domains can also contain relations, whose exact `isa!` assertion cannot be
+/// represented by the current relation AST node.
+pub(crate) fn build_projected_role_player_lookup(
+    player_type: &str,
+    player_kind: TypeKind,
+    iid: Option<&str>,
+    key: Option<(&str, &AttributeValue)>,
+) -> Result<String> {
+    const PLAYER_VAR: &str = "$p";
+    if player_kind == TypeKind::Entity {
+        return build_dynamic_relation_player_lookup(player_type, iid, key, PLAYER_VAR);
+    }
+    if player_kind != TypeKind::Relation {
+        return Err(OrmError::QueryExecution(
+            "role player must be an entity or relation".into(),
+        ));
+    }
+    validate_dynamic_relation_player_identity(player_type, iid, key)?;
+
+    // `player_type` is validated as a TypeQL label before entering Raw; IID
+    // and key values remain structured AST values and therefore keep normal
+    // compiler escaping.
+    let mut patterns = vec![Pattern::Raw(format!("{PLAYER_VAR} isa! {player_type}"))];
+    if let Some(iid) = iid {
+        patterns.push(Pattern::Iid {
+            variable: PLAYER_VAR.to_owned(),
+            iid: iid.to_owned(),
+        });
+    } else if let Some((name, value)) = key {
+        let attribute_var = "$p_identity".to_owned();
+        patterns.push(Pattern::Has {
+            thing_var: PLAYER_VAR.to_owned(),
+            attr_type: name.to_owned(),
+            attr_var: attribute_var.clone(),
+        });
+        patterns.push(Pattern::Attribute {
+            variable: attribute_var,
+            type_name: name.to_owned(),
+            value: Some(value.to_ast_value()),
+        });
+    }
+    Ok(QueryCompiler::new().compile(&[
+        Clause::Match(patterns),
+        Clause::Fetch(vec![FetchItem::Function {
+            key: "iid".into(),
+            func_name: "iid".into(),
+            var: PLAYER_VAR.into(),
+        }]),
+    ]))
+}
+
+fn validate_dynamic_relation_player_identity(
+    player_type: &str,
+    iid: Option<&str>,
+    key: Option<(&str, &AttributeValue)>,
+) -> Result<()> {
+    if !type_bridge_core_lib::compiler::is_valid_typeql_label(player_type)
+        || player_type.trim().is_empty()
+    {
+        return Err(OrmError::QueryExecution("unsafe player type label".into()));
+    }
+    if iid.is_some() == key.is_some() {
+        return Err(OrmError::QueryExecution(
+            "player identity must be exactly IID xor key".into(),
+        ));
+    }
+    if iid.is_some_and(|iid| !type_bridge_contract::id::is_canonical_thing_iid(iid)) {
+        return Err(OrmError::QueryExecution(
+            "player IID must be canonical".into(),
+        ));
+    }
+    if let Some((name, value)) = key {
+        if name.trim().is_empty() || !type_bridge_core_lib::compiler::is_valid_typeql_label(name) {
+            return Err(OrmError::QueryExecution("unsafe player key label".into()));
+        }
+        if crate::_dynamic::is_blank_key_value(value) {
+            return Err(OrmError::QueryExecution(
+                "player key value must be nonblank".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Build one strict exact relation role-clear query.
 pub fn build_dynamic_relation_clear_role(
     descriptor: &RelationDescriptor,
@@ -869,6 +1022,92 @@ pub fn build_dynamic_relation_attach(
             descriptor, iid, resolved, var,
         )?),
     )
+}
+
+/// Build the projected executor's kind-aware exact role attachment.
+pub(crate) fn build_projected_relation_attach(
+    descriptor: &RelationDescriptor,
+    iid: &str,
+    resolved: &[(type_bridge_contract::id::TypeId, String, String)],
+) -> Result<String> {
+    const RELATION_VAR: &str = "$r";
+    let legacy = projected_resolved_legacy(resolved)?;
+    let mut clauses =
+        crate::_dynamic::relation_attach_clauses(descriptor, iid, &legacy, RELATION_VAR)?;
+    // The first match pattern identifies the outer relation. Player patterns
+    // follow in the exact order of `resolved`.
+    replace_resolved_player_patterns(&mut clauses, resolved, 1)?;
+    Ok(QueryCompiler::new().compile(&clauses))
+}
+
+fn projected_resolved_legacy(
+    resolved: &[(type_bridge_contract::id::TypeId, String, String)],
+) -> Result<Vec<(String, String, String)>> {
+    resolved
+        .iter()
+        .map(|(type_id, iid, role)| {
+            if !matches!(type_id.kind(), TypeKind::Entity | TypeKind::Relation) {
+                return Err(OrmError::QueryExecution(
+                    "resolved role player must be an entity or relation".into(),
+                ));
+            }
+            Ok((
+                type_id.label().as_str().to_owned(),
+                iid.clone(),
+                role.clone(),
+            ))
+        })
+        .collect()
+}
+
+fn replace_resolved_player_patterns(
+    clauses: &mut [Clause],
+    resolved: &[(type_bridge_contract::id::TypeId, String, String)],
+    retained_prefix: usize,
+) -> Result<()> {
+    let Some(Clause::Match(patterns)) = clauses.first_mut() else {
+        return Err(OrmError::QueryExecution(
+            "resolved relation query omitted its match clause".into(),
+        ));
+    };
+    if patterns.len() != retained_prefix + resolved.len() {
+        return Err(OrmError::QueryExecution(
+            "resolved relation query produced an unexpected match shape".into(),
+        ));
+    }
+    let mut kind_aware = patterns.drain(..retained_prefix).collect::<Vec<_>>();
+    for (index, (type_id, iid, _)) in resolved.iter().enumerate() {
+        let variable = format!("$p{index}");
+        match type_id.kind() {
+            TypeKind::Entity => kind_aware.push(Pattern::Entity {
+                variable,
+                type_name: type_id.label().as_str().to_owned(),
+                constraints: vec![Constraint::Iid(iid.clone())],
+                is_strict: true,
+            }),
+            TypeKind::Relation => {
+                // The current AST relation node cannot express strict `isa!`
+                // without role bindings. The label is validated by the shared
+                // clause builder, the variable is generated here, and the IID
+                // remains a structured AST constraint.
+                kind_aware.push(Pattern::Raw(format!(
+                    "{variable} isa! {}",
+                    type_id.label().as_str()
+                )));
+                kind_aware.push(Pattern::Iid {
+                    variable,
+                    iid: iid.clone(),
+                });
+            }
+            _ => {
+                return Err(OrmError::QueryExecution(
+                    "resolved role player must be an entity or relation".into(),
+                ));
+            }
+        }
+    }
+    *patterns = kind_aware;
+    Ok(())
 }
 
 /// Build a polymorphic fetch query for a runtime relation descriptor.
@@ -1469,6 +1708,40 @@ mod tests {
     use crate::_attribute::ValueType;
     use crate::_entity::{Annotation, OwnedAttributeInfo};
     use crate::value::AttributeValue;
+
+    #[test]
+    fn projected_role_player_lookup_is_exact_for_each_thing_kind() {
+        let entity =
+            build_projected_role_player_lookup("person", TypeKind::Entity, Some("0x10"), None)
+                .unwrap();
+        assert_eq!(
+            entity,
+            "match\n$p isa! person, iid 0x10;\nfetch {\n  \"iid\": iid($p)\n};"
+        );
+
+        let relation =
+            build_projected_role_player_lookup("event", TypeKind::Relation, Some("0x20"), None)
+                .unwrap();
+        assert_eq!(
+            relation,
+            "match\n$p isa! event;\n$p iid 0x20;\nfetch {\n  \"iid\": iid($p)\n};"
+        );
+    }
+
+    #[test]
+    fn projected_relation_role_player_key_is_structurally_escaped() {
+        let relation = build_projected_role_player_lookup(
+            "event",
+            TypeKind::Relation,
+            None,
+            Some(("identifier", &AttributeValue::String("a\\\"b".into()))),
+        )
+        .unwrap();
+        assert_eq!(
+            relation,
+            "match\n$p isa! event;\n$p has identifier $p_identity;\n$p_identity isa identifier; $p_identity \"a\\\\\\\"b\";\nfetch {\n  \"iid\": iid($p)\n};"
+        );
+    }
 
     // Minimal test entity for query builder tests.
     struct TestPerson {

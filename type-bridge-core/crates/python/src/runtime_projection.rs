@@ -8,9 +8,9 @@ use pyo3::types::{PyAny, PyBool, PyDict, PyFloat, PyInt, PyList, PyString, PyTup
 use pythonize::pythonize;
 use type_bridge_contract::codec::to_canonical_json;
 use type_bridge_contract::id::{TypeId, TypeKind, is_canonical_thing_iid};
-use type_bridge_contract::projection::ProjectedModelForm;
 #[cfg(test)]
 use type_bridge_contract::projection::RuntimeProjection;
+use type_bridge_contract::projection::{BindingTarget, ProjectedModelForm};
 use type_bridge_contract::projection_wire::decode_runtime_projection_verified;
 use type_bridge_contract::value::ValueTypeTag;
 use type_bridge_core_lib::ast::{Clause, Constraint, Pattern, RolePlayer, Statement};
@@ -29,7 +29,9 @@ use type_bridge_orm::value::AttributeValue;
 use type_bridge_orm::{HydratedAttribute, HydratedRolePlayer, HydratedThing, ThingKind};
 use type_bridge_orm::{InstalledRuntimeProjection, ProviderRuntimeOwner};
 
-use crate::match_runtime::PyMatchSessionHandle;
+use crate::match_runtime::{
+    PyMatchSessionHandle, PyQueryCancellation, PyQueryExecutionResourceLimits,
+};
 use crate::orm_runtime::{PyRustDatabase, PyRustTransactionContext, provider_block_on};
 use crate::validated_result_runtime::PyValidatedMatchThingHandle;
 
@@ -39,7 +41,7 @@ struct RegisteredModel {
 }
 
 struct InstalledPackage {
-    projection: InstalledRuntimeProjection,
+    projection: Arc<InstalledRuntimeProjection>,
     models: BTreeMap<TypeId, RegisteredModel>,
     types_by_label: BTreeMap<String, TypeId>,
 }
@@ -421,7 +423,32 @@ impl PyRuntimeProjection {
             .projection
             .match_registry()
             .map_err(py_orm_error)?;
-        Ok(PyMatchSessionHandle::from_registry(Arc::new(registry)))
+        Ok(PyMatchSessionHandle::from_installed(
+            Arc::clone(&self.package.projection),
+            Arc::new(registry),
+            type_bridge_orm::QueryExecutionResourceLimits::default(),
+            type_bridge_orm::AnswerCancellation::default(),
+        ))
+    }
+
+    /// Build a match session with one common direct/remote resource policy
+    /// and caller-owned cooperative cancellation owner.
+    fn match_session_with_resources(
+        &self,
+        resources: PyRef<'_, PyQueryExecutionResourceLimits>,
+        cancellation: PyRef<'_, PyQueryCancellation>,
+    ) -> PyResult<PyMatchSessionHandle> {
+        let registry = self
+            .package
+            .projection
+            .match_registry()
+            .map_err(py_orm_error)?;
+        Ok(PyMatchSessionHandle::from_installed(
+            Arc::clone(&self.package.projection),
+            Arc::new(registry),
+            resources.inner(),
+            cancellation.inner(),
+        ))
     }
 
     /// Hydrate one proof-backed query result through this exact package projection.
@@ -1169,6 +1196,11 @@ fn install_projection(
         projection_fingerprint_json.as_bytes(),
     )
     .map_err(py_diagnostic)?;
+    if runtime.target() != BindingTarget::Python {
+        return Err(py_runtime_error(
+            "runtime projection does not target Python",
+        ));
+    }
     let mut expected = BTreeMap::new();
     let mut types_by_label = BTreeMap::new();
     for (id, model) in runtime.models() {
@@ -1228,7 +1260,7 @@ fn install_projection(
             "projection model registration coverage is incomplete",
         ));
     }
-    let installed = InstalledRuntimeProjection::try_new(runtime).map_err(py_orm_error)?;
+    let installed = Arc::new(InstalledRuntimeProjection::try_new(runtime).map_err(py_orm_error)?);
     Ok(Arc::new(InstalledPackage {
         projection: installed,
         models: registered,

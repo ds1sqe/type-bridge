@@ -16,6 +16,7 @@ mod entity_manager;
 pub mod error;
 pub mod hooks;
 pub mod model;
+mod projected_codec;
 mod query;
 #[allow(dead_code)]
 mod relation_codec;
@@ -29,16 +30,17 @@ pub mod value;
 pub use entity_manager::{EntityManager, EntitySubtypeManager};
 pub use error::{
     Error, ErrorCategory, ErrorDetail, ErrorDiagnostic, ErrorPathSegment, ModelValidationPhase,
-    Result,
+    QueryDiagnosticCategory, QueryDiagnosticPathKind, Result,
 };
 pub use hooks::{
     CrudOperation, HookContext, HookError, HookFuture, LifecycleHook, ModelKind, PreHookResult,
 };
 pub use query::{
-    Binding, BoundField, BoundRole, Collected, Exact, FieldGroupedQuery, GroupedQuery,
-    NamedSelection, Order, OrderedOperand, Page, PageOptions, Predicate, Query, QueryOperand,
-    QuerySession, RowsOptions, Selectable, SelectedRowSpec, SelectedShape, SelectedSlot,
-    SelectionMode, SingularSelectedShape, Subtypes,
+    Binding, BoundField, BoundRole, Collected, Exact, FieldGroupedQuery, FunctionArgument,
+    FunctionCall, FunctionInput, FunctionScalarArgument, GroupedQuery, NamedSelection, Order,
+    OrderedOperand, Page, PageOptions, Predicate, Query, QueryOperand, QuerySession, RowsOptions,
+    Selectable, SelectedRowSpec, SelectedShape, SelectedSlot, SelectionMode, SingularSelectedShape,
+    Subtypes,
 };
 pub use relation_manager::{RelationManager, RelationSubtypeManager};
 pub use remote::{
@@ -48,5 +50,10 @@ pub use schema::{Schema, SchemaPackage, Unbound};
 pub use session::{ConnectionOptions, Database};
 pub use transaction::{
     ReadTransaction, TransactionEntityManager, TransactionRelationManager, WriteTransaction,
+};
+pub use type_bridge_orm::{
+    AnswerCancellation, MAX_QUERY_ATTRIBUTE_VALUES, MAX_QUERY_BYTES, MAX_QUERY_COLLECTION_MEMBERS,
+    MAX_QUERY_GRAPH_NODES, MAX_QUERY_ITEMS, MAX_QUERY_ROLE_PLAYERS, MAX_QUERY_STATEMENTS,
+    MAX_QUERY_TIMEOUT_MILLISECONDS, QueryExecutionDeadline, QueryExecutionResourceLimits,
 };
 pub use type_bridge_orm_derive::SelectedRow;

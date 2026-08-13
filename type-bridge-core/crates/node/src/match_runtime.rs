@@ -6,68 +6,177 @@
 
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
-use serde::Serialize;
 use serde_json::{Value, json};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use type_bridge_contract::codec::to_canonical_json;
+use type_bridge_contract::id::{FunctionId, TypeId};
+use type_bridge_contract::sdk_diagnostic::{
+    SdkDiagnosticCategory, SdkDiagnosticDetailValue, SdkDiagnosticPathSegment,
+    SdkExecutionDiagnostic,
+};
 use type_bridge_orm::_registry::DescriptorRegistry;
 use type_bridge_orm::{
-    BindingHandle, ComparisonOp, DescriptorId, FieldHandle, HydratedAttribute, HydratedRole,
-    HydratedRolePlayer, HydratedThing, MatchError, MatchErrorCategory, MatchRequest, MatchResult,
-    MissingOrder, OrderHandle, PredicateHandle, QueryHandle, ReducedValue, Reduction, ReductionRow,
-    RoleHandle, RowCardinality, SelectionHandle, SessionHandle, ShapeHandle, SlotValue,
-    SortDirection, ThingKind, UnvalidatedMatchRequest, ValidatedMatchRequest, ValidatedMatchResult,
-    Window,
+    AnswerCancellation, BindingHandle, ComparisonOp, DescriptorId, FieldHandle,
+    FunctionArgumentHandle, FunctionCallHandle, FunctionHandle, FunctionValueHandle,
+    HydratedAttribute, HydratedRole, HydratedRolePlayer, HydratedThing, InstalledRuntimeProjection,
+    MatchError, MatchRequest, MatchResult, MissingOrder, OrderHandle, PredicateHandle,
+    ProjectedAttributeValue, QueryExecutionDeadline, QueryExecutionResourceLimits, QueryHandle,
+    ReducedValue, Reduction, ReductionRow, RoleHandle, RowCardinality, SelectionHandle,
+    SessionHandle, ShapeHandle, SlotValue, SortDirection, ThingKind, UnvalidatedMatchRequest,
+    ValidatedMatchRequest, ValidatedMatchResult, Window, lower_match_error,
+    query_resource_closed_diagnostic,
 };
 
 #[cfg(test)]
 use crate::NodeDescriptorRegistry;
 use crate::{NodeRustDatabase, NodeRustTransactionContext};
 
-/// Stable JSON payload placed in the reason of an N-API match error.
-#[derive(Serialize)]
-struct NativeMatchErrorPayload<'a> {
-    category: &'static str,
-    code: &'a str,
-    message: &'a str,
-    path: &'a type_bridge_orm::MatchErrorPath,
-    details: &'a std::collections::BTreeMap<String, type_bridge_orm::MatchErrorDetailValue>,
+pub(crate) fn napi_match_error(error: MatchError) -> napi::Error {
+    napi_sdk_diagnostic(lower_match_error(&error))
 }
 
-pub(crate) fn napi_match_error(error: MatchError) -> napi::Error {
-    let status = match error.category() {
-        MatchErrorCategory::InvalidPlan | MatchErrorCategory::ResourceLimit => Status::InvalidArg,
-        MatchErrorCategory::Cardinality
-        | MatchErrorCategory::UnsupportedCapability
-        | MatchErrorCategory::StaleSchema
-        | MatchErrorCategory::Provider
-        | MatchErrorCategory::ResultDecode => Status::GenericFailure,
+pub(crate) fn napi_sdk_diagnostic(diagnostic: SdkExecutionDiagnostic) -> napi::Error {
+    let status = match diagnostic.category() {
+        SdkDiagnosticCategory::InvalidInput | SdkDiagnosticCategory::ResourceLimit => {
+            Status::InvalidArg
+        }
+        SdkDiagnosticCategory::Cancelled => Status::Cancelled,
+        _ => Status::GenericFailure,
     };
-    let payload = NativeMatchErrorPayload {
-        category: error.category().as_str(),
-        code: error.code().as_str(),
-        message: error.message(),
-        path: error.path(),
-        details: error.details(),
-    };
-    let reason = serde_json::to_string(&payload)
-        .expect("structured match errors contain only JSON-safe canonical values");
+    let query_category = diagnostic
+        .details()
+        .values()
+        .find_map(|detail| match detail {
+            SdkDiagnosticDetailValue::QueryCategory(category) => Some(category.as_str()),
+            _ => None,
+        });
+    let path = diagnostic
+        .path()
+        .iter()
+        .map(sdk_path_json)
+        .collect::<Vec<_>>();
+    let details = diagnostic
+        .details()
+        .iter()
+        .filter(|(_, value)| !matches!(value, SdkDiagnosticDetailValue::QueryCategory(_)))
+        .map(|(name, value)| (name.as_str().to_owned(), sdk_detail_json(value)))
+        .collect::<serde_json::Map<_, _>>();
+    let reason = json!({
+        "category": query_category.unwrap_or_else(|| diagnostic.category().as_str()),
+        "sdkCategory": diagnostic.category().as_str(),
+        "queryCategory": query_category,
+        "code": diagnostic.code().as_str(),
+        "message": diagnostic.message().as_str(),
+        "path": path,
+        "details": details,
+    })
+    .to_string();
     Error::new(status, reason)
+}
+
+fn sdk_path_json(segment: &SdkDiagnosticPathSegment) -> Value {
+    match segment {
+        SdkDiagnosticPathSegment::Argument(name) => {
+            json!({"kind": "argument", "value": name.as_str()})
+        }
+        SdkDiagnosticPathSegment::Index(index) => json!({"kind": "index", "value": index}),
+        SdkDiagnosticPathSegment::Type(id) => json!({"kind": "type", "value": id}),
+        SdkDiagnosticPathSegment::Field(id) => json!({"kind": "field", "value": id}),
+        SdkDiagnosticPathSegment::Role(id) => json!({"kind": "role", "value": id}),
+        SdkDiagnosticPathSegment::Query(kind) => json!({"kind": kind.as_str()}),
+        SdkDiagnosticPathSegment::QueryBinding(binding) => {
+            json!({"kind": "binding", "value": binding})
+        }
+        SdkDiagnosticPathSegment::QueryField { owner, name } => json!({
+            "kind": "field",
+            "value": {"owner": owner.as_str(), "name": name.as_str()},
+        }),
+        SdkDiagnosticPathSegment::QueryRole { owner, name } => json!({
+            "kind": "role",
+            "value": {"owner": owner.as_str(), "name": name.as_str()},
+        }),
+        SdkDiagnosticPathSegment::QueryRoleEdge(edge) => {
+            json!({"kind": "role_edge", "value": edge})
+        }
+        SdkDiagnosticPathSegment::QueryOutputSlot(slot) => {
+            json!({"kind": "output_slot", "value": slot})
+        }
+        SdkDiagnosticPathSegment::QueryOutputName(name) => {
+            json!({"kind": "output_name", "value": name.as_str()})
+        }
+        SdkDiagnosticPathSegment::ContractField(name) => {
+            json!({"kind": "contract_field", "value": name.as_str()})
+        }
+        SdkDiagnosticPathSegment::ContractIdentity(name) => {
+            json!({"kind": "contract_identity", "value": name.as_str()})
+        }
+        _ => json!({"kind": "unknown"}),
+    }
+}
+
+fn sdk_detail_json(value: &SdkDiagnosticDetailValue) -> Value {
+    match value {
+        SdkDiagnosticDetailValue::Boolean(value) => json!({"kind": "boolean", "value": value}),
+        SdkDiagnosticDetailValue::Count(value) => {
+            json!({"kind": "count", "value": value.to_string()})
+        }
+        SdkDiagnosticDetailValue::ByteCount(value) => {
+            json!({"kind": "byte_count", "value": value.to_string()})
+        }
+        SdkDiagnosticDetailValue::Signed(value) => {
+            json!({"kind": "signed", "value": value.to_string()})
+        }
+        SdkDiagnosticDetailValue::QueryIdentity(value) => {
+            json!({"kind": "query_identity", "value": value.as_str()})
+        }
+        SdkDiagnosticDetailValue::QueryIdentityList(values) => json!({
+            "kind": "query_identity_list",
+            "value": values.iter().map(|value| value.as_str()).collect::<Vec<_>>(),
+        }),
+        SdkDiagnosticDetailValue::Capability(value) => {
+            json!({"kind": "text", "value": value.as_str()})
+        }
+        SdkDiagnosticDetailValue::ValueType(value) => {
+            json!({"kind": "text", "value": value.as_str()})
+        }
+        SdkDiagnosticDetailValue::Type(value) => json!({"kind": "text", "value": value}),
+        SdkDiagnosticDetailValue::Field(value) => json!({"kind": "text", "value": value}),
+        SdkDiagnosticDetailValue::Role(value) => json!({"kind": "text", "value": value}),
+        SdkDiagnosticDetailValue::Fingerprint(value) => {
+            json!({"kind": "text", "value": value})
+        }
+        SdkDiagnosticDetailValue::ProviderOperation(value) => {
+            json!({"kind": "text", "value": value.as_str()})
+        }
+        SdkDiagnosticDetailValue::CommitOutcome(value) => {
+            json!({"kind": "text", "value": value.as_str()})
+        }
+        SdkDiagnosticDetailValue::QueryCategory(value) => {
+            json!({"kind": "text", "value": value.as_str()})
+        }
+        _ => json!({"kind": "text", "value": "redacted"}),
+    }
 }
 
 fn invalid_arg(message: impl Into<String>) -> napi::Error {
     Error::new(Status::InvalidArg, message.into())
 }
 
-fn result_decode_error(code: &'static str, message: impl Into<String>) -> napi::Error {
-    let reason = json!({
-        "category": "result_decode",
-        "code": code,
-        "message": message.into(),
-        "path": [{ "kind": "result" }],
-        "details": {},
-    })
-    .to_string();
-    Error::new(Status::GenericFailure, reason)
+fn result_decode_error(code: &'static str, _message: impl Into<String>) -> napi::Error {
+    use type_bridge_contract::sdk_diagnostic::{
+        SdkDiagnosticCode, SdkQueryDiagnosticCategory, SdkQueryDiagnosticPathKind,
+    };
+
+    let diagnostic = SdkExecutionDiagnostic::query_failure(
+        SdkQueryDiagnosticCategory::ResultDecode,
+        SdkDiagnosticCode::new(code).expect("static result decode code is canonical"),
+    )
+    .try_at(SdkDiagnosticPathSegment::Query(
+        SdkQueryDiagnosticPathKind::Result,
+    ))
+    .unwrap_or_else(|_| SdkExecutionDiagnostic::internal_failure());
+    napi_sdk_diagnostic(diagnostic)
 }
 
 fn parse_comparison(value: &str) -> Result<ComparisonOp> {
@@ -217,16 +326,180 @@ pub(crate) fn revalidate_diagnostic(
         .map_err(|_| Error::new(Status::GenericFailure, "diagnostic JSON was not UTF-8"))
 }
 
+/// Canonical cross-binding generated-query execution budgets.
+#[napi]
+pub struct NodeQueryExecutionResources {
+    inner: QueryExecutionResourceLimits,
+}
+
+impl NodeQueryExecutionResources {
+    pub(crate) const fn inner(&self) -> QueryExecutionResourceLimits {
+        self.inner
+    }
+}
+
+#[napi]
+impl NodeQueryExecutionResources {
+    /// Construct a tighten-only resource policy. Every dimension is clamped
+    /// independently to the shared direct/remote hard ceiling; zero remains a
+    /// valid tightening.
+    #[napi(constructor)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the common policy has eight explicit dimensions"
+    )]
+    pub fn new(
+        timeout_milliseconds: BigInt,
+        items: BigInt,
+        bytes: BigInt,
+        graph_nodes: BigInt,
+        attribute_values: BigInt,
+        collection_members: BigInt,
+        role_players: BigInt,
+        statements: BigInt,
+    ) -> Result<Self> {
+        let statements = bigint_u64(&statements, "statements")?;
+        Ok(Self {
+            inner: QueryExecutionResourceLimits::tightened(
+                bigint_u64(&timeout_milliseconds, "timeoutMilliseconds")?,
+                bigint_u64(&items, "items")?,
+                bigint_u64(&bytes, "bytes")?,
+                bigint_u64(&graph_nodes, "graphNodes")?,
+                bigint_u64(&attribute_values, "attributeValues")?,
+                bigint_u64(&collection_members, "collectionMembers")?,
+                bigint_u64(&role_players, "rolePlayers")?,
+                u32::try_from(statements).unwrap_or(u32::MAX),
+            ),
+        })
+    }
+
+    #[napi(getter, js_name = "timeoutMilliseconds")]
+    pub fn timeout_milliseconds(&self) -> BigInt {
+        u64_bigint(self.inner.timeout_milliseconds)
+    }
+
+    #[napi(getter)]
+    pub fn items(&self) -> BigInt {
+        u64_bigint(self.inner.items)
+    }
+
+    #[napi(getter)]
+    pub fn bytes(&self) -> BigInt {
+        u64_bigint(self.inner.bytes)
+    }
+
+    #[napi(getter, js_name = "graphNodes")]
+    pub fn graph_nodes(&self) -> BigInt {
+        u64_bigint(self.inner.graph_nodes)
+    }
+
+    #[napi(getter, js_name = "attributeValues")]
+    pub fn attribute_values(&self) -> BigInt {
+        u64_bigint(self.inner.attribute_values)
+    }
+
+    #[napi(getter, js_name = "collectionMembers")]
+    pub fn collection_members(&self) -> BigInt {
+        u64_bigint(self.inner.collection_members)
+    }
+
+    #[napi(getter, js_name = "rolePlayers")]
+    pub fn role_players(&self) -> BigInt {
+        u64_bigint(self.inner.role_players)
+    }
+
+    #[napi(getter)]
+    pub fn statements(&self) -> BigInt {
+        u64_bigint(u64::from(self.inner.statements))
+    }
+}
+
+/// Caller-owned cooperative cancellation shared by direct execution, remote
+/// preparation/reconstruction, and generated result materialization.
+#[napi]
+pub struct NodeQueryCancellation {
+    inner: AnswerCancellation,
+}
+
+impl NodeQueryCancellation {
+    pub(crate) fn inner(&self) -> AnswerCancellation {
+        self.inner.clone()
+    }
+}
+
+#[napi]
+impl NodeQueryCancellation {
+    #[napi(constructor)]
+    pub fn new() -> Self {
+        Self {
+            inner: AnswerCancellation::default(),
+        }
+    }
+
+    #[napi]
+    pub fn cancel(&self) {
+        self.inner.cancel();
+    }
+
+    #[napi(getter, js_name = "isCancelled")]
+    pub fn is_cancelled(&self) -> bool {
+        self.inner.is_cancelled()
+    }
+}
+
+impl Default for NodeQueryCancellation {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Opaque owner of one native match-handle construction session.
 #[napi]
 pub struct NodeMatchSessionHandle {
     inner: SessionHandle,
+    installed: Option<Arc<InstalledRuntimeProjection>>,
+    resources: QueryExecutionResourceLimits,
+    cancellation: AnswerCancellation,
+    closed: Arc<AtomicBool>,
 }
 
 impl NodeMatchSessionHandle {
+    #[cfg(test)]
     pub(crate) fn from_registry(registry: Arc<DescriptorRegistry>) -> Self {
+        Self::from_registry_with_resources(
+            registry,
+            QueryExecutionResourceLimits::default(),
+            AnswerCancellation::default(),
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_registry_with_resources(
+        registry: Arc<DescriptorRegistry>,
+        resources: QueryExecutionResourceLimits,
+        cancellation: AnswerCancellation,
+    ) -> Self {
         Self {
             inner: SessionHandle::new(registry),
+            installed: None,
+            resources: resources.effective(),
+            cancellation,
+            closed: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    pub(crate) fn from_installed(
+        installed: Arc<InstalledRuntimeProjection>,
+        registry: Arc<DescriptorRegistry>,
+        resources: QueryExecutionResourceLimits,
+        cancellation: AnswerCancellation,
+    ) -> Self {
+        Self {
+            inner: SessionHandle::new(registry),
+            installed: Some(installed),
+            resources: resources.effective(),
+            cancellation,
+            closed: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -234,12 +507,30 @@ impl NodeMatchSessionHandle {
     pub(crate) fn new(registry: &NodeDescriptorRegistry) -> Self {
         Self::from_registry(registry.shared_registry())
     }
+
+    fn ensure_open(&self) -> Result<()> {
+        if self.closed.load(Ordering::Acquire) {
+            return Err(napi_sdk_diagnostic(query_resource_closed_diagnostic()));
+        }
+        Ok(())
+    }
 }
 
 #[napi]
 impl NodeMatchSessionHandle {
     #[napi]
+    pub fn close(&self) {
+        self.closed.store(true, Ordering::Release);
+    }
+
+    #[napi(getter, js_name = "isClosed")]
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Acquire)
+    }
+
+    #[napi]
     pub fn exact(&self, type_name: String) -> Result<NodeMatchBindingHandle> {
+        self.ensure_open()?;
         self.inner
             .exact(&type_name)
             .map(|inner| NodeMatchBindingHandle { inner })
@@ -248,9 +539,51 @@ impl NodeMatchSessionHandle {
 
     #[napi]
     pub fn subtypes(&self, type_name: String) -> Result<NodeMatchBindingHandle> {
+        self.ensure_open()?;
         self.inner
             .subtypes(&type_name)
             .map(|inner| NodeMatchBindingHandle { inner })
+            .map_err(crate::napi_orm_error)
+    }
+
+    #[napi(js_name = "functionById")]
+    pub fn function_by_id(&self, function_id: String) -> Result<NodeMatchFunctionHandle> {
+        self.ensure_open()?;
+        let id = FunctionId::new(function_id).map_err(|error| invalid_arg(error.to_string()))?;
+        self.inner
+            .function(&id)
+            .map(|inner| NodeMatchFunctionHandle { inner })
+            .map_err(crate::napi_orm_error)
+    }
+
+    #[napi(js_name = "functionValueJson")]
+    pub fn function_value_json(
+        &self,
+        attribute_type_key: String,
+        value_json: String,
+    ) -> Result<NodeMatchFunctionValueHandle> {
+        self.ensure_open()?;
+        let installed = self.installed.as_deref().ok_or_else(|| {
+            invalid_arg("this match session has no installed function projection authority")
+        })?;
+        let attribute_type: TypeId =
+            serde_json::from_str(&attribute_type_key).map_err(|error| {
+                invalid_arg(format!("invalid function attribute identity: {error}"))
+            })?;
+        let canonical =
+            to_canonical_json(&attribute_type).map_err(|error| invalid_arg(error.to_string()))?;
+        if canonical != attribute_type_key.as_bytes() {
+            return Err(invalid_arg("function attribute identity is not canonical"));
+        }
+        let value: Value = serde_json::from_str(&value_json)
+            .map_err(|error| invalid_arg(format!("invalid function scalar JSON: {error}")))?;
+        let value = crate::attribute_value_from_js(&value, None)?;
+        let projected =
+            ProjectedAttributeValue::try_from_attribute_value(installed, attribute_type, &value)
+                .map_err(napi_sdk_diagnostic)?;
+        self.inner
+            .function_value(&projected)
+            .map(|inner| NodeMatchFunctionValueHandle { inner })
             .map_err(crate::napi_orm_error)
     }
 
@@ -266,6 +599,7 @@ impl NodeMatchSessionHandle {
         min_depth: f64,
         max_depth: f64,
     ) -> Result<NodeMatchPredicateHandle> {
+        self.ensure_open()?;
         let min_depth = node_reachability_depth(min_depth, "minDepth")?;
         let max_depth = node_reachability_depth(max_depth, "maxDepth")?;
         self.inner
@@ -287,6 +621,7 @@ impl NodeMatchSessionHandle {
         &self,
         selections: Vec<Reference<NodeMatchSelectionHandle>>,
     ) -> Result<NodeMatchShapeHandle> {
+        self.ensure_open()?;
         let slots = selections.iter().map(|selection| selection.kind).collect();
         self.inner
             .positional(selections.iter().map(|selection| selection.inner.clone()))
@@ -303,6 +638,7 @@ impl NodeMatchSessionHandle {
         names: Vec<String>,
         selections: Vec<Reference<NodeMatchSelectionHandle>>,
     ) -> Result<NodeMatchShapeHandle> {
+        self.ensure_open()?;
         if names.len() != selections.len() {
             return Err(invalid_arg(
                 "named output names and selections must have equal length",
@@ -324,12 +660,17 @@ impl NodeMatchSessionHandle {
 
     #[napi]
     pub fn query(&self, shape: &NodeMatchShapeHandle) -> Result<NodeMatchQueryHandle> {
+        self.ensure_open()?;
         self.inner
             .query(shape.inner.clone())
             .map(|inner| NodeMatchQueryHandle {
                 inner,
                 output: Arc::clone(&shape.output),
                 lineage: Arc::new(()),
+                resources: self.resources,
+                cancellation: self.cancellation.clone(),
+                session_closed: Arc::clone(&self.closed),
+                closed: AtomicBool::new(false),
             })
             .map_err(crate::napi_orm_error)
     }
@@ -432,6 +773,107 @@ impl NodeMatchBindingHandle {
             inner: self.inner.collect(),
             kind: NodeOutputSlotKind::Many,
         }
+    }
+
+    #[napi(js_name = "functionArgument")]
+    pub fn function_argument(&self) -> NodeMatchFunctionArgumentHandle {
+        NodeMatchFunctionArgumentHandle {
+            inner: self.inner.function_argument(),
+        }
+    }
+}
+
+/// One exact installed scalar schema-function token.
+#[napi]
+pub struct NodeMatchFunctionHandle {
+    inner: FunctionHandle,
+}
+
+#[napi]
+impl NodeMatchFunctionHandle {
+    #[napi(js_name = "call")]
+    pub fn call(
+        &self,
+        arguments: Vec<Reference<NodeMatchFunctionArgumentHandle>>,
+    ) -> Result<NodeMatchFunctionCallHandle> {
+        self.inner
+            .call(arguments.iter().map(|argument| argument.inner.clone()))
+            .map(|inner| NodeMatchFunctionCallHandle { inner })
+            .map_err(crate::napi_orm_error)
+    }
+}
+
+/// One exact projection-branded scalar schema-function value.
+#[napi]
+pub struct NodeMatchFunctionValueHandle {
+    inner: FunctionValueHandle,
+}
+
+#[napi]
+impl NodeMatchFunctionValueHandle {
+    #[napi(js_name = "functionArgument")]
+    pub fn function_argument(&self) -> NodeMatchFunctionArgumentHandle {
+        NodeMatchFunctionArgumentHandle {
+            inner: self.inner.function_argument(),
+        }
+    }
+}
+
+/// One immutable session-branded schema-function argument.
+#[napi]
+pub struct NodeMatchFunctionArgumentHandle {
+    inner: FunctionArgumentHandle,
+}
+
+/// One immutable session-branded scalar schema-function call.
+#[napi]
+pub struct NodeMatchFunctionCallHandle {
+    inner: FunctionCallHandle,
+}
+
+#[napi]
+impl NodeMatchFunctionCallHandle {
+    #[napi(js_name = "functionArgument")]
+    pub fn function_argument(&self) -> NodeMatchFunctionArgumentHandle {
+        NodeMatchFunctionArgumentHandle {
+            inner: self.inner.function_argument(),
+        }
+    }
+
+    #[napi(js_name = "compareField")]
+    pub fn compare_field(
+        &self,
+        comparison: String,
+        field: &NodeMatchFieldHandle,
+    ) -> Result<NodeMatchPredicateHandle> {
+        self.inner
+            .compare_field(parse_comparison(&comparison)?, &field.inner)
+            .map(|inner| NodeMatchPredicateHandle { inner })
+            .map_err(crate::napi_orm_error)
+    }
+
+    #[napi(js_name = "compareValue")]
+    pub fn compare_value(
+        &self,
+        comparison: String,
+        value: &NodeMatchFunctionValueHandle,
+    ) -> Result<NodeMatchPredicateHandle> {
+        self.inner
+            .compare_value(parse_comparison(&comparison)?, &value.inner)
+            .map(|inner| NodeMatchPredicateHandle { inner })
+            .map_err(crate::napi_orm_error)
+    }
+
+    #[napi(js_name = "compareCall")]
+    pub fn compare_call(
+        &self,
+        comparison: String,
+        other: &NodeMatchFunctionCallHandle,
+    ) -> Result<NodeMatchPredicateHandle> {
+        self.inner
+            .compare_call(parse_comparison(&comparison)?, &other.inner)
+            .map(|inner| NodeMatchPredicateHandle { inner })
+            .map_err(crate::napi_orm_error)
     }
 }
 
@@ -632,6 +1074,10 @@ pub struct NodeMatchQueryHandle {
     inner: QueryHandle,
     output: Arc<NodeOutputShape>,
     lineage: Arc<()>,
+    resources: QueryExecutionResourceLimits,
+    cancellation: AnswerCancellation,
+    session_closed: Arc<AtomicBool>,
+    closed: AtomicBool,
 }
 
 impl NodeMatchQueryHandle {
@@ -639,11 +1085,34 @@ impl NodeMatchQueryHandle {
         &self.inner
     }
 
-    pub(crate) fn result_context(&self) -> NodeMatchResultContext {
+    pub(crate) fn begin_invocation(&self) -> Result<(QueryExecutionDeadline, AnswerCancellation)> {
+        self.ensure_open()?;
+        let deadline = QueryExecutionDeadline::for_limits(self.resources);
+        deadline
+            .check(&self.cancellation)
+            .map_err(napi_sdk_diagnostic)?;
+        Ok((deadline, self.cancellation.clone()))
+    }
+
+    pub(crate) fn result_context(
+        &self,
+        deadline: QueryExecutionDeadline,
+        cancellation: AnswerCancellation,
+    ) -> NodeMatchResultContext {
         NodeMatchResultContext {
             output: Arc::clone(&self.output),
             lineage: Arc::clone(&self.lineage),
+            deadline,
+            cancellation,
         }
+    }
+
+    fn direct_limits(
+        &self,
+        deadline: QueryExecutionDeadline,
+        cancellation: AnswerCancellation,
+    ) -> type_bridge_orm::MatchExecutionLimits {
+        self.resources.direct_with_deadline(cancellation, deadline)
     }
 
     fn derived(&self, inner: QueryHandle) -> Self {
@@ -651,14 +1120,43 @@ impl NodeMatchQueryHandle {
             inner,
             output: Arc::clone(&self.output),
             lineage: Arc::new(()),
+            resources: self.resources,
+            cancellation: self.cancellation.clone(),
+            session_closed: Arc::clone(&self.session_closed),
+            closed: AtomicBool::new(false),
         }
+    }
+
+    pub(crate) fn ensure_open(&self) -> Result<()> {
+        if self.closed.load(Ordering::Acquire) || self.session_closed.load(Ordering::Acquire) {
+            return Err(napi_sdk_diagnostic(query_resource_closed_diagnostic()));
+        }
+        Ok(())
     }
 }
 
 #[napi]
 impl NodeMatchQueryHandle {
+    #[napi]
+    pub fn close(&self) {
+        self.closed.store(true, Ordering::Release);
+    }
+
+    #[napi(getter, js_name = "isClosed")]
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Acquire) || self.session_closed.load(Ordering::Acquire)
+    }
+
+    /// Create an independently closable value-equivalent query handle.
+    #[napi]
+    pub fn fork(&self) -> Result<NodeMatchQueryHandle> {
+        self.ensure_open()?;
+        Ok(self.derived(self.inner.clone()))
+    }
+
     #[napi(js_name = "addHidden")]
     pub fn add_hidden(&self, binding: &NodeMatchBindingHandle) -> Result<NodeMatchQueryHandle> {
+        self.ensure_open()?;
         self.inner
             .add_hidden(binding.inner.clone())
             .map(|inner| self.derived(inner))
@@ -670,6 +1168,7 @@ impl NodeMatchQueryHandle {
         &self,
         predicate: &NodeMatchPredicateHandle,
     ) -> Result<NodeMatchQueryHandle> {
+        self.ensure_open()?;
         self.inner
             .where_predicate(predicate.inner.clone())
             .map(|inner| self.derived(inner))
@@ -682,6 +1181,7 @@ impl NodeMatchQueryHandle {
         left: &NodeMatchBindingHandle,
         right: &NodeMatchBindingHandle,
     ) -> Result<NodeMatchQueryHandle> {
+        self.ensure_open()?;
         self.inner
             .allow_cross_join(&left.inner, &right.inner)
             .map(|inner| self.derived(inner))
@@ -696,6 +1196,7 @@ impl NodeMatchQueryHandle {
         limit: BigInt,
         cardinality: String,
     ) -> Result<String> {
+        self.ensure_open()?;
         let request = self
             .inner
             .fetch_rows(
@@ -719,6 +1220,7 @@ impl NodeMatchQueryHandle {
         limit: BigInt,
         cardinality: String,
     ) -> Result<NodeValidatedMatchResultHandle> {
+        let (deadline, cancellation) = self.begin_invocation()?;
         let validated = self
             .inner
             .validate_fetch_rows(
@@ -733,13 +1235,19 @@ impl NodeMatchQueryHandle {
         let registry = self.inner.registry_arc();
         let (database, runtime) = database.handles();
         let inner = runtime
-            .block_on(database.execute_match(&registry, &validated))
+            .block_on(database.execute_match_with_limits(
+                &registry,
+                &validated,
+                self.direct_limits(deadline, cancellation.clone()),
+            ))
             .map_err(crate::napi_orm_error)?;
         Ok(NodeValidatedMatchResultHandle {
             inner,
             request: validated,
             output: Arc::clone(&self.output),
             lineage: Arc::clone(&self.lineage),
+            deadline,
+            cancellation,
         })
     }
 
@@ -752,6 +1260,7 @@ impl NodeMatchQueryHandle {
         limit: BigInt,
         cardinality: String,
     ) -> Result<NodeValidatedMatchResultHandle> {
+        let (deadline, cancellation) = self.begin_invocation()?;
         let validated = self
             .inner
             .validate_fetch_rows(
@@ -766,13 +1275,19 @@ impl NodeMatchQueryHandle {
         let registry = self.inner.registry_arc();
         let (transaction, runtime) = transaction.handles();
         let inner = runtime
-            .block_on(transaction.execute_match(&registry, &validated))
+            .block_on(transaction.execute_match_with_limits(
+                &registry,
+                &validated,
+                self.direct_limits(deadline, cancellation.clone()),
+            ))
             .map_err(crate::napi_orm_error)?;
         Ok(NodeValidatedMatchResultHandle {
             inner,
             request: validated,
             output: Arc::clone(&self.output),
             lineage: Arc::clone(&self.lineage),
+            deadline,
+            cancellation,
         })
     }
 
@@ -786,6 +1301,7 @@ impl NodeMatchQueryHandle {
         limit: BigInt,
         include_total: bool,
     ) -> Result<NodeValidatedMatchResultHandle> {
+        let (deadline, cancellation) = self.begin_invocation()?;
         let validated = self
             .inner
             .validate_page_by(
@@ -801,13 +1317,19 @@ impl NodeMatchQueryHandle {
         let registry = self.inner.registry_arc();
         let (database, runtime) = database.handles();
         let inner = runtime
-            .block_on(database.execute_match(&registry, &validated))
+            .block_on(database.execute_match_with_limits(
+                &registry,
+                &validated,
+                self.direct_limits(deadline, cancellation.clone()),
+            ))
             .map_err(crate::napi_orm_error)?;
         Ok(NodeValidatedMatchResultHandle {
             inner,
             request: validated,
             output: Arc::clone(&self.output),
             lineage: Arc::clone(&self.lineage),
+            deadline,
+            cancellation,
         })
     }
 
@@ -821,6 +1343,7 @@ impl NodeMatchQueryHandle {
         limit: BigInt,
         include_total: bool,
     ) -> Result<NodeValidatedMatchResultHandle> {
+        let (deadline, cancellation) = self.begin_invocation()?;
         let validated = self
             .inner
             .validate_page_by(
@@ -836,13 +1359,19 @@ impl NodeMatchQueryHandle {
         let registry = self.inner.registry_arc();
         let (transaction, runtime) = transaction.handles();
         let inner = runtime
-            .block_on(transaction.execute_match(&registry, &validated))
+            .block_on(transaction.execute_match_with_limits(
+                &registry,
+                &validated,
+                self.direct_limits(deadline, cancellation.clone()),
+            ))
             .map_err(crate::napi_orm_error)?;
         Ok(NodeValidatedMatchResultHandle {
             inner,
             request: validated,
             output: Arc::clone(&self.output),
             lineage: Arc::clone(&self.lineage),
+            deadline,
+            cancellation,
         })
     }
 
@@ -852,6 +1381,7 @@ impl NodeMatchQueryHandle {
         database: &NodeRustDatabase,
         root: &NodeMatchBindingHandle,
     ) -> Result<NodeValidatedMatchResultHandle> {
+        let (deadline, cancellation) = self.begin_invocation()?;
         let validated = self
             .inner
             .validate_count_by(&root.inner)
@@ -859,13 +1389,19 @@ impl NodeMatchQueryHandle {
         let registry = self.inner.registry_arc();
         let (database, runtime) = database.handles();
         let inner = runtime
-            .block_on(database.execute_match(&registry, &validated))
+            .block_on(database.execute_match_with_limits(
+                &registry,
+                &validated,
+                self.direct_limits(deadline, cancellation.clone()),
+            ))
             .map_err(crate::napi_orm_error)?;
         Ok(NodeValidatedMatchResultHandle {
             inner,
             request: validated,
             output: Arc::clone(&self.output),
             lineage: Arc::clone(&self.lineage),
+            deadline,
+            cancellation,
         })
     }
 
@@ -875,6 +1411,7 @@ impl NodeMatchQueryHandle {
         transaction: &NodeRustTransactionContext,
         root: &NodeMatchBindingHandle,
     ) -> Result<NodeValidatedMatchResultHandle> {
+        let (deadline, cancellation) = self.begin_invocation()?;
         let validated = self
             .inner
             .validate_count_by(&root.inner)
@@ -882,13 +1419,19 @@ impl NodeMatchQueryHandle {
         let registry = self.inner.registry_arc();
         let (transaction, runtime) = transaction.handles();
         let inner = runtime
-            .block_on(transaction.execute_match(&registry, &validated))
+            .block_on(transaction.execute_match_with_limits(
+                &registry,
+                &validated,
+                self.direct_limits(deadline, cancellation.clone()),
+            ))
             .map_err(crate::napi_orm_error)?;
         Ok(NodeValidatedMatchResultHandle {
             inner,
             request: validated,
             output: Arc::clone(&self.output),
             lineage: Arc::clone(&self.lineage),
+            deadline,
+            cancellation,
         })
     }
 
@@ -898,6 +1441,7 @@ impl NodeMatchQueryHandle {
         database: &NodeRustDatabase,
         root: &NodeMatchBindingHandle,
     ) -> Result<NodeValidatedMatchResultHandle> {
+        let (deadline, cancellation) = self.begin_invocation()?;
         let validated = self
             .inner
             .validate_exists_by(&root.inner)
@@ -905,13 +1449,19 @@ impl NodeMatchQueryHandle {
         let registry = self.inner.registry_arc();
         let (database, runtime) = database.handles();
         let inner = runtime
-            .block_on(database.execute_match(&registry, &validated))
+            .block_on(database.execute_match_with_limits(
+                &registry,
+                &validated,
+                self.direct_limits(deadline, cancellation.clone()),
+            ))
             .map_err(crate::napi_orm_error)?;
         Ok(NodeValidatedMatchResultHandle {
             inner,
             request: validated,
             output: Arc::clone(&self.output),
             lineage: Arc::clone(&self.lineage),
+            deadline,
+            cancellation,
         })
     }
 
@@ -921,6 +1471,7 @@ impl NodeMatchQueryHandle {
         transaction: &NodeRustTransactionContext,
         root: &NodeMatchBindingHandle,
     ) -> Result<NodeValidatedMatchResultHandle> {
+        let (deadline, cancellation) = self.begin_invocation()?;
         let validated = self
             .inner
             .validate_exists_by(&root.inner)
@@ -928,13 +1479,19 @@ impl NodeMatchQueryHandle {
         let registry = self.inner.registry_arc();
         let (transaction, runtime) = transaction.handles();
         let inner = runtime
-            .block_on(transaction.execute_match(&registry, &validated))
+            .block_on(transaction.execute_match_with_limits(
+                &registry,
+                &validated,
+                self.direct_limits(deadline, cancellation.clone()),
+            ))
             .map_err(crate::napi_orm_error)?;
         Ok(NodeValidatedMatchResultHandle {
             inner,
             request: validated,
             output: Arc::clone(&self.output),
             lineage: Arc::clone(&self.lineage),
+            deadline,
+            cancellation,
         })
     }
 
@@ -947,6 +1504,7 @@ impl NodeMatchQueryHandle {
         limit: BigInt,
         include_total: bool,
     ) -> Result<String> {
+        self.ensure_open()?;
         let request = self
             .inner
             .page_by(
@@ -964,6 +1522,7 @@ impl NodeMatchQueryHandle {
 
     #[napi(js_name = "countByDiagnostic")]
     pub fn count_by_diagnostic(&self, root: &NodeMatchBindingHandle) -> Result<String> {
+        self.ensure_open()?;
         diagnostic(
             self.inner
                 .count_by(&root.inner)
@@ -973,6 +1532,7 @@ impl NodeMatchQueryHandle {
 
     #[napi(js_name = "existsByDiagnostic")]
     pub fn exists_by_diagnostic(&self, root: &NodeMatchBindingHandle) -> Result<String> {
+        self.ensure_open()?;
         diagnostic(
             self.inner
                 .exists_by(&root.inner)
@@ -988,6 +1548,7 @@ impl NodeMatchQueryHandle {
         reducers: Vec<String>,
         inputs: Vec<Option<Reference<NodeMatchFieldHandle>>>,
     ) -> Result<String> {
+        self.ensure_open()?;
         let terms = reduce_terms(&reducers, &inputs)?;
         let terms = borrow_reduce_terms(&terms);
         diagnostic(
@@ -1006,6 +1567,7 @@ impl NodeMatchQueryHandle {
         reducers: Vec<String>,
         inputs: Vec<Option<Reference<NodeMatchFieldHandle>>>,
     ) -> Result<NodeValidatedMatchResultHandle> {
+        let (deadline, cancellation) = self.begin_invocation()?;
         let terms = reduce_terms(&reducers, &inputs)?;
         let terms = borrow_reduce_terms(&terms);
         let validated = self
@@ -1015,13 +1577,19 @@ impl NodeMatchQueryHandle {
         let registry = self.inner.registry_arc();
         let (database, runtime) = database.handles();
         let inner = runtime
-            .block_on(database.execute_match(&registry, &validated))
+            .block_on(database.execute_match_with_limits(
+                &registry,
+                &validated,
+                self.direct_limits(deadline, cancellation.clone()),
+            ))
             .map_err(crate::napi_orm_error)?;
         Ok(NodeValidatedMatchResultHandle {
             inner,
             request: validated,
             output: Arc::clone(&self.output),
             lineage: Arc::clone(&self.lineage),
+            deadline,
+            cancellation,
         })
     }
 
@@ -1034,6 +1602,7 @@ impl NodeMatchQueryHandle {
         reducers: Vec<String>,
         inputs: Vec<Option<Reference<NodeMatchFieldHandle>>>,
     ) -> Result<NodeValidatedMatchResultHandle> {
+        let (deadline, cancellation) = self.begin_invocation()?;
         let terms = reduce_terms(&reducers, &inputs)?;
         let terms = borrow_reduce_terms(&terms);
         let validated = self
@@ -1043,13 +1612,19 @@ impl NodeMatchQueryHandle {
         let registry = self.inner.registry_arc();
         let (transaction, runtime) = transaction.handles();
         let inner = runtime
-            .block_on(transaction.execute_match(&registry, &validated))
+            .block_on(transaction.execute_match_with_limits(
+                &registry,
+                &validated,
+                self.direct_limits(deadline, cancellation.clone()),
+            ))
             .map_err(crate::napi_orm_error)?;
         Ok(NodeValidatedMatchResultHandle {
             inner,
             request: validated,
             output: Arc::clone(&self.output),
             lineage: Arc::clone(&self.lineage),
+            deadline,
+            cancellation,
         })
     }
 
@@ -1061,6 +1636,7 @@ impl NodeMatchQueryHandle {
         reducers: Vec<String>,
         inputs: Vec<Option<Reference<NodeMatchFieldHandle>>>,
     ) -> Result<String> {
+        self.ensure_open()?;
         let terms = reduce_terms(&reducers, &inputs)?;
         let terms = borrow_reduce_terms(&terms);
         diagnostic(
@@ -1079,6 +1655,7 @@ impl NodeMatchQueryHandle {
         reducers: Vec<String>,
         inputs: Vec<Option<Reference<NodeMatchFieldHandle>>>,
     ) -> Result<NodeValidatedMatchResultHandle> {
+        let (deadline, cancellation) = self.begin_invocation()?;
         let terms = reduce_terms(&reducers, &inputs)?;
         let terms = borrow_reduce_terms(&terms);
         let validated = self
@@ -1088,13 +1665,19 @@ impl NodeMatchQueryHandle {
         let registry = self.inner.registry_arc();
         let (database, runtime) = database.handles();
         let inner = runtime
-            .block_on(database.execute_match(&registry, &validated))
+            .block_on(database.execute_match_with_limits(
+                &registry,
+                &validated,
+                self.direct_limits(deadline, cancellation.clone()),
+            ))
             .map_err(crate::napi_orm_error)?;
         Ok(NodeValidatedMatchResultHandle {
             inner,
             request: validated,
             output: Arc::clone(&self.output),
             lineage: Arc::clone(&self.lineage),
+            deadline,
+            cancellation,
         })
     }
 
@@ -1107,6 +1690,7 @@ impl NodeMatchQueryHandle {
         reducers: Vec<String>,
         inputs: Vec<Option<Reference<NodeMatchFieldHandle>>>,
     ) -> Result<NodeValidatedMatchResultHandle> {
+        let (deadline, cancellation) = self.begin_invocation()?;
         let terms = reduce_terms(&reducers, &inputs)?;
         let terms = borrow_reduce_terms(&terms);
         let validated = self
@@ -1116,13 +1700,19 @@ impl NodeMatchQueryHandle {
         let registry = self.inner.registry_arc();
         let (transaction, runtime) = transaction.handles();
         let inner = runtime
-            .block_on(transaction.execute_match(&registry, &validated))
+            .block_on(transaction.execute_match_with_limits(
+                &registry,
+                &validated,
+                self.direct_limits(deadline, cancellation.clone()),
+            ))
             .map_err(crate::napi_orm_error)?;
         Ok(NodeValidatedMatchResultHandle {
             inner,
             request: validated,
             output: Arc::clone(&self.output),
             lineage: Arc::clone(&self.lineage),
+            deadline,
+            cancellation,
         })
     }
 
@@ -1134,6 +1724,7 @@ impl NodeMatchQueryHandle {
         reducers: Vec<String>,
         inputs: Vec<Option<Reference<NodeMatchFieldHandle>>>,
     ) -> Result<String> {
+        self.ensure_open()?;
         let groups = groups.iter().map(|group| &group.inner).collect::<Vec<_>>();
         let terms = reduce_terms(&reducers, &inputs)?;
         let terms = borrow_reduce_terms(&terms);
@@ -1153,6 +1744,7 @@ impl NodeMatchQueryHandle {
         reducers: Vec<String>,
         inputs: Vec<Option<Reference<NodeMatchFieldHandle>>>,
     ) -> Result<NodeValidatedMatchResultHandle> {
+        let (deadline, cancellation) = self.begin_invocation()?;
         let groups = groups.iter().map(|group| &group.inner).collect::<Vec<_>>();
         let terms = reduce_terms(&reducers, &inputs)?;
         let terms = borrow_reduce_terms(&terms);
@@ -1163,13 +1755,19 @@ impl NodeMatchQueryHandle {
         let registry = self.inner.registry_arc();
         let (database, runtime) = database.handles();
         let inner = runtime
-            .block_on(database.execute_match(&registry, &validated))
+            .block_on(database.execute_match_with_limits(
+                &registry,
+                &validated,
+                self.direct_limits(deadline, cancellation.clone()),
+            ))
             .map_err(crate::napi_orm_error)?;
         Ok(NodeValidatedMatchResultHandle {
             inner,
             request: validated,
             output: Arc::clone(&self.output),
             lineage: Arc::clone(&self.lineage),
+            deadline,
+            cancellation,
         })
     }
 
@@ -1182,6 +1780,7 @@ impl NodeMatchQueryHandle {
         reducers: Vec<String>,
         inputs: Vec<Option<Reference<NodeMatchFieldHandle>>>,
     ) -> Result<NodeValidatedMatchResultHandle> {
+        let (deadline, cancellation) = self.begin_invocation()?;
         let groups = groups.iter().map(|group| &group.inner).collect::<Vec<_>>();
         let terms = reduce_terms(&reducers, &inputs)?;
         let terms = borrow_reduce_terms(&terms);
@@ -1192,13 +1791,19 @@ impl NodeMatchQueryHandle {
         let registry = self.inner.registry_arc();
         let (transaction, runtime) = transaction.handles();
         let inner = runtime
-            .block_on(transaction.execute_match(&registry, &validated))
+            .block_on(transaction.execute_match_with_limits(
+                &registry,
+                &validated,
+                self.direct_limits(deadline, cancellation.clone()),
+            ))
             .map_err(crate::napi_orm_error)?;
         Ok(NodeValidatedMatchResultHandle {
             inner,
             request: validated,
             output: Arc::clone(&self.output),
             lineage: Arc::clone(&self.lineage),
+            deadline,
+            cancellation,
         })
     }
 }
@@ -1213,6 +1818,8 @@ pub struct NodeValidatedMatchResultHandle {
     request: ValidatedMatchRequest,
     output: Arc<NodeOutputShape>,
     lineage: Arc<()>,
+    deadline: QueryExecutionDeadline,
+    cancellation: AnswerCancellation,
 }
 
 /// Immutable materialization metadata retained while a remote reply is decoded.
@@ -1220,6 +1827,8 @@ pub struct NodeValidatedMatchResultHandle {
 pub(crate) struct NodeMatchResultContext {
     output: Arc<NodeOutputShape>,
     lineage: Arc<()>,
+    deadline: QueryExecutionDeadline,
+    cancellation: AnswerCancellation,
 }
 
 impl NodeMatchResultContext {
@@ -1233,12 +1842,17 @@ impl NodeMatchResultContext {
             request,
             output: self.output,
             lineage: self.lineage,
+            deadline: self.deadline,
+            cancellation: self.cancellation,
         }
     }
 }
 
 impl NodeValidatedMatchResultHandle {
     fn result<'a>(&'a self, query: &NodeMatchQueryHandle) -> Result<&'a MatchResult> {
+        self.deadline
+            .check(&self.cancellation)
+            .map_err(napi_sdk_diagnostic)?;
         if !Arc::ptr_eq(&self.lineage, &query.lineage) || !Arc::ptr_eq(&self.output, &query.output)
         {
             return Err(result_decode_error(
@@ -1987,14 +2601,20 @@ impl NodeValidatedThingHandle {
 
 #[cfg(test)]
 mod tests {
+    use std::fs::{File, OpenOptions};
+    use std::io::{Read, Write};
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::AtomicUsize;
     use std::time::{Duration, Instant};
 
     use super::*;
+    use sha2::{Digest, Sha256};
+    use tokio::sync::Notify;
     use type_bridge_orm::session::backend::{
         AnswerCancellation, BoundedAnswerLimits, BoundedAnswerReader, BoxFuture, DriverBackend,
         TransactionOps, TxType,
     };
-    use type_bridge_orm::{CapabilitySet, Database, OrmError};
+    use type_bridge_orm::{CapabilitySet, Database, MatchExecutionLimits, OrmError};
 
     struct ProviderOpenFailureBackend;
 
@@ -2018,6 +2638,123 @@ mod tests {
         fn is_open(&self) -> bool {
             true
         }
+    }
+
+    struct BlockingOpenBackend {
+        opens: Arc<AtomicUsize>,
+        opened: Arc<Notify>,
+    }
+
+    impl DriverBackend for BlockingOpenBackend {
+        fn match_capabilities(&self) -> CapabilitySet {
+            CapabilitySet::all()
+        }
+
+        fn open_transaction(
+            &self,
+            _database: &str,
+            _tx_type: TxType,
+        ) -> BoxFuture<'_, std::result::Result<Box<dyn TransactionOps>, OrmError>> {
+            self.opens.fetch_add(1, Ordering::SeqCst);
+            self.opened.notify_one();
+            Box::pin(std::future::pending())
+        }
+
+        fn is_open(&self) -> bool {
+            true
+        }
+    }
+
+    fn source_identity(root: &Path, relative: &str) -> Value {
+        let path = root.join(relative);
+        let metadata = path
+            .symlink_metadata()
+            .unwrap_or_else(|error| panic!("proof source {relative} is not inspectable: {error}"));
+        assert!(metadata.is_file() && !metadata.file_type().is_symlink());
+        let mut source = File::open(&path)
+            .unwrap_or_else(|error| panic!("proof source {relative} is not readable: {error}"));
+        let mut bytes = Vec::new();
+        source.read_to_end(&mut bytes).unwrap();
+        json!({"path": relative, "sha256": format!("{:x}", Sha256::digest(bytes))})
+    }
+
+    fn emit_direct_cancellation_proof(observation: Value) {
+        let Ok(destination) = std::env::var("TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENT") else {
+            return;
+        };
+        let nonce = std::env::var("TYPE_BRIDGE_WORKFORCE_V2_PROOF_RUN_NONCE")
+            .expect("workforce-v2 proof fragment requires the same-run nonce");
+        assert!(
+            nonce.len() == 64
+                && nonce
+                    .bytes()
+                    .all(|value| value.is_ascii_digit() || (b'a'..=b'f').contains(&value)),
+            "workforce-v2 proof run nonce must be 64 lowercase hex characters"
+        );
+        let destination = PathBuf::from(destination);
+        assert!(destination.is_absolute());
+        let parent = destination
+            .parent()
+            .expect("proof fragment path has no parent");
+        let parent_metadata = parent
+            .symlink_metadata()
+            .expect("workforce-v2 proof fragment parent is not inspectable");
+        assert!(parent_metadata.is_dir() && !parent_metadata.file_type().is_symlink());
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let root = manifest
+            .ancestors()
+            .nth(3)
+            .expect("Node crate is not nested under the repository root");
+        let fragment = json!({
+            "binding": "node",
+            "contract": {
+                "allowlist": source_identity(
+                    root,
+                    "tests/contracts/sdk_conformance/workforce-v2/proof-fragment-allowlist-v1.json",
+                ),
+                "journey": source_identity(
+                    root,
+                    "tests/contracts/sdk_conformance/workforce-v2/journey-v2.json",
+                ),
+                "proof_schema": source_identity(
+                    root,
+                    "tests/contracts/sdk_conformance/workforce-v2/proof-fragment-schema-v1.json",
+                ),
+            },
+            "format": "typebridge.workforce-v2-proof-fragment/v1",
+            "producer": {
+                "id": "node.native_direct_cancellation",
+                "sources": [
+                    source_identity(
+                        root,
+                        "type-bridge-core/crates/node/src/match_runtime.rs",
+                    ),
+                    source_identity(
+                        root,
+                        "type-bridge-core/crates/orm/src/match_request/selected_result_executor.rs",
+                    ),
+                ],
+            },
+            "results": [{
+                "observation": observation,
+                "observation_ref": "cancellation_direct",
+                "outcome": "passed",
+                "proof_kind": "direct_runtime",
+                "test_id": "node.native_direct_cancellation",
+            }],
+            "run_nonce": nonce,
+            "semantic_profile": "typedb-3.12.1/v1",
+        });
+        let mut payload = serde_json::to_vec(&fragment).unwrap();
+        payload.push(b'\n');
+        assert!(payload.len() <= 64 * 1024);
+        let mut output = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(destination)
+            .expect("workforce-v2 proof fragment destination must not exist");
+        output.write_all(&payload).unwrap();
+        output.sync_all().unwrap();
     }
 
     fn assert_send_sync<T: Send + Sync>() {}
@@ -2142,9 +2879,108 @@ mod tests {
         assert_eq!(error.status, Status::InvalidArg);
         assert_eq!(payload["category"], "invalid_plan");
         assert_eq!(payload["code"], "unknown_descriptor");
-        assert!(payload["message"].as_str().unwrap().contains("missing"));
+        assert_eq!(
+            payload["message"],
+            "The typed query plan does not satisfy the generated query contract"
+        );
+        assert!(!error.reason.contains("missing"));
         assert!(payload["path"].is_array());
         assert!(payload["details"].is_object());
+    }
+
+    #[test]
+    fn common_resources_clamp_plus_one_and_preserve_zero_tightening() {
+        let wide = |value| BigInt {
+            sign_bit: false,
+            words: vec![value],
+        };
+        let resources = NodeQueryExecutionResources::new(
+            wide(type_bridge_orm::MAX_QUERY_TIMEOUT_MILLISECONDS + 1),
+            wide(type_bridge_orm::MAX_QUERY_ITEMS + 1),
+            wide(type_bridge_orm::MAX_QUERY_BYTES + 1),
+            wide(type_bridge_orm::MAX_QUERY_GRAPH_NODES + 1),
+            wide(type_bridge_orm::MAX_QUERY_ATTRIBUTE_VALUES + 1),
+            wide(type_bridge_orm::MAX_QUERY_COLLECTION_MEMBERS + 1),
+            wide(type_bridge_orm::MAX_QUERY_ROLE_PLAYERS + 1),
+            wide(u64::from(type_bridge_orm::MAX_QUERY_STATEMENTS) + 1),
+        )
+        .unwrap();
+        assert_eq!(resources.inner(), QueryExecutionResourceLimits::default());
+
+        let zero = || BigInt {
+            sign_bit: false,
+            words: vec![0],
+        };
+        let resources = NodeQueryExecutionResources::new(
+            zero(),
+            zero(),
+            zero(),
+            zero(),
+            zero(),
+            zero(),
+            zero(),
+            zero(),
+        )
+        .unwrap();
+        assert_eq!(
+            resources.inner(),
+            QueryExecutionResourceLimits::tightened(0, 0, 0, 0, 0, 0, 0, 0)
+        );
+    }
+
+    #[test]
+    fn query_and_session_close_preserve_persistent_handle_independence() {
+        let registry = registry();
+        let session = NodeMatchSessionHandle::new(&registry);
+        let person = session.inner.exact("person").unwrap();
+        let shape = session.inner.positional([person.one()]).unwrap();
+        let inner = session.inner.query(shape).unwrap();
+        let query = NodeMatchQueryHandle {
+            inner,
+            output: Arc::new(NodeOutputShape::Positional {
+                slots: vec![NodeOutputSlotKind::One],
+            }),
+            lineage: Arc::new(()),
+            resources: session.resources,
+            cancellation: session.cancellation.clone(),
+            session_closed: Arc::clone(&session.closed),
+            closed: AtomicBool::new(false),
+        };
+        let clone = query.fork().unwrap();
+        let derived = query
+            .where_predicate(&NodeMatchPredicateHandle {
+                inner: person.iid("0x1").unwrap(),
+            })
+            .unwrap();
+
+        query.close();
+        query.close();
+        assert!(query.is_closed());
+        assert!(!clone.is_closed());
+        assert!(!derived.is_closed());
+        assert!(
+            query
+                .fork()
+                .err()
+                .expect("closed query rejects fork")
+                .reason
+                .contains("query_resource_closed")
+        );
+        clone.fork().expect("independent clone remains composable");
+        derived.close();
+        assert!(!clone.is_closed());
+
+        session.close();
+        session.close();
+        assert!(session.is_closed());
+        assert!(clone.is_closed());
+        assert!(
+            clone
+                .begin_invocation()
+                .unwrap_err()
+                .reason
+                .contains("query_resource_closed")
+        );
     }
 
     #[test]
@@ -2182,8 +3018,8 @@ mod tests {
         for (error, status, category, code) in [
             (
                 cancelled,
-                Status::InvalidArg,
-                "resource_limit",
+                Status::Cancelled,
+                "cancelled",
                 "provider_cancelled",
             ),
             (
@@ -2333,6 +3169,8 @@ mod tests {
             request: validated,
             output: Arc::clone(&query.output),
             lineage: Arc::clone(&query.lineage),
+            deadline: QueryExecutionDeadline::from_timeout_milliseconds(30_000),
+            cancellation: AnswerCancellation::default(),
         };
 
         assert_eq!(result.row_count(&query).unwrap(), 0);
@@ -2385,6 +3223,8 @@ mod tests {
             request: page_request,
             output: Arc::clone(&query.output),
             lineage: Arc::clone(&query.lineage),
+            deadline: QueryExecutionDeadline::from_timeout_milliseconds(30_000),
+            cancellation: AnswerCancellation::default(),
         };
         assert_eq!(page.page_entry_count(&query).unwrap(), 0);
         assert_eq!(page.output_slot_count(&query).unwrap(), 1);
@@ -2415,6 +3255,8 @@ mod tests {
             request: count_request,
             output: Arc::clone(&query.output),
             lineage: Arc::clone(&query.lineage),
+            deadline: QueryExecutionDeadline::from_timeout_milliseconds(30_000),
+            cancellation: AnswerCancellation::default(),
         };
         assert_eq!(
             bigint_u64(&count.count_value(&query).unwrap(), "count").unwrap(),
@@ -2431,6 +3273,8 @@ mod tests {
             request: exists_request,
             output: Arc::clone(&query.output),
             lineage: Arc::clone(&query.lineage),
+            deadline: QueryExecutionDeadline::from_timeout_milliseconds(30_000),
+            cancellation: AnswerCancellation::default(),
         };
         assert!(exists.exists_value(&query).unwrap());
 
@@ -2445,6 +3289,8 @@ mod tests {
             request: foreign_request,
             output: Arc::clone(&query.output),
             lineage: Arc::clone(&query.lineage),
+            deadline: QueryExecutionDeadline::from_timeout_milliseconds(30_000),
+            cancellation: AnswerCancellation::default(),
         };
         let error = mismatched.count_value(&query).unwrap_err();
         let payload: Value = serde_json::from_str(&error.reason).unwrap();
@@ -2540,6 +3386,8 @@ mod tests {
             request: validated,
             output: Arc::clone(&query.output),
             lineage: Arc::clone(&query.lineage),
+            deadline: QueryExecutionDeadline::from_timeout_milliseconds(30_000),
+            cancellation: AnswerCancellation::default(),
         };
 
         assert_eq!(result.reduction_row_count(&query).unwrap(), 1);
@@ -2625,11 +3473,124 @@ mod tests {
             request: validated,
             output: Arc::clone(&query.output),
             lineage: Arc::clone(&query.lineage),
+            deadline: QueryExecutionDeadline::from_timeout_milliseconds(30_000),
+            cancellation: AnswerCancellation::default(),
         };
 
         assert_eq!(result.reduction_row_count(&query).unwrap(), 0);
         let error = result.reduction_value_count(&query, 0).unwrap_err();
         let payload: Value = serde_json::from_str(&error.reason).unwrap();
         assert_eq!(payload["code"], "result_reduction_row_out_of_bounds");
+    }
+
+    #[test]
+    fn node_direct_cancellation_fragment_is_measured_from_owned_execution() {
+        let registry = registry().shared_registry();
+        let session = SessionHandle::new(Arc::clone(&registry));
+        let person = session.exact("person").unwrap();
+        let shape = session.positional([person.one()]).unwrap();
+        let validated = session
+            .query(shape)
+            .unwrap()
+            .validate_count_by(&person)
+            .unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+
+        let pre_dispatch_opens = Arc::new(AtomicUsize::new(0));
+        let pre_dispatch_database = Database::with_backend(
+            Box::new(BlockingOpenBackend {
+                opens: Arc::clone(&pre_dispatch_opens),
+                opened: Arc::new(Notify::new()),
+            }),
+            "test",
+        );
+        let pre_dispatch_cancellation = AnswerCancellation::default();
+        pre_dispatch_cancellation.cancel();
+        let pre_dispatch_error = runtime
+            .block_on(pre_dispatch_database.execute_match_with_limits(
+                &registry,
+                &validated,
+                MatchExecutionLimits::tightened(
+                    u64::MAX,
+                    u64::MAX,
+                    Duration::from_secs(30),
+                    pre_dispatch_cancellation,
+                ),
+            ))
+            .unwrap_err();
+        assert_eq!(pre_dispatch_opens.load(Ordering::SeqCst), 0);
+        let pre_dispatch_payload: Value =
+            serde_json::from_str(&crate::napi_orm_error(pre_dispatch_error).reason).unwrap();
+
+        let in_flight_opens = Arc::new(AtomicUsize::new(0));
+        let in_flight_opened = Arc::new(Notify::new());
+        let in_flight_database = Database::with_backend(
+            Box::new(BlockingOpenBackend {
+                opens: Arc::clone(&in_flight_opens),
+                opened: Arc::clone(&in_flight_opened),
+            }),
+            "test",
+        );
+        let in_flight_cancellation = AnswerCancellation::default();
+        let in_flight_limits = MatchExecutionLimits::tightened(
+            u64::MAX,
+            u64::MAX,
+            Duration::from_secs(30),
+            in_flight_cancellation.clone(),
+        );
+        let in_flight_error = runtime.block_on(async {
+            let opened = in_flight_opened.notified();
+            tokio::pin!(opened);
+            let execution = in_flight_database.execute_match_with_limits(
+                &registry,
+                &validated,
+                in_flight_limits,
+            );
+            tokio::pin!(execution);
+            tokio::select! {
+                () = &mut opened => {}
+                result = &mut execution => panic!("blocked provider returned before cancellation: {result:?}"),
+            }
+            assert_eq!(in_flight_opens.load(Ordering::SeqCst), 1);
+            in_flight_cancellation.cancel();
+            tokio::time::timeout(Duration::from_secs(1), execution)
+                .await
+                .expect("cancellation did not wake the in-flight provider await")
+                .unwrap_err()
+        });
+        let in_flight_payload: Value =
+            serde_json::from_str(&crate::napi_orm_error(in_flight_error).reason).unwrap();
+        let observation = json!({
+            "in_flight": {
+                "category": in_flight_payload["sdkCategory"],
+                "code": in_flight_payload["code"],
+                "partial_result": false,
+                "provider_await_woken": true,
+            },
+            "pre_dispatch": {
+                "category": pre_dispatch_payload["sdkCategory"],
+                "code": pre_dispatch_payload["code"],
+                "partial_result": false,
+                "provider_calls": pre_dispatch_opens.load(Ordering::SeqCst),
+            },
+        });
+        assert_eq!(
+            observation,
+            json!({
+                "in_flight": {
+                    "category": "cancelled",
+                    "code": "provider_cancelled",
+                    "partial_result": false,
+                    "provider_await_woken": true,
+                },
+                "pre_dispatch": {
+                    "category": "cancelled",
+                    "code": "provider_cancelled",
+                    "partial_result": false,
+                    "provider_calls": 0,
+                },
+            })
+        );
+        emit_direct_cancellation_proof(observation);
     }
 }

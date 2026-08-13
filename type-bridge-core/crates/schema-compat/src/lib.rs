@@ -28,10 +28,10 @@ pub use live_authority::{
 
 pub use descriptor::{
     GENERATED_DECLARED_DESCRIPTOR_PATH, GENERATED_DECLARED_DESCRIPTOR_V1,
-    GeneratedDeclaredDescriptorSetV1, attach_declared_descriptors,
-    empty_generated_declared_descriptors_json, generate_package_with_declared_descriptors,
-    generated_declared_descriptors_json, generated_descriptors_to_declared,
-    released_typeql_to_declared_lossless_projection,
+    GENERATED_DECLARED_DESCRIPTOR_V2, GeneratedDeclaredDescriptorSetV1,
+    attach_declared_descriptors, empty_generated_declared_descriptors_json,
+    generate_package_with_declared_descriptors, generated_declared_descriptors_json,
+    generated_descriptors_to_declared, released_typeql_to_declared_lossless_projection,
     released_typeql_to_declared_lossless_projection_with_references,
     released_typeql_to_declared_projection, released_typeql_to_declared_projection_with_references,
     typeql_to_generated_descriptors,
@@ -56,11 +56,11 @@ use type_bridge_contract::id::{
 use type_bridge_contract::limits::MAX_CANONICAL_COLLECTION_LEN;
 use type_bridge_contract::schema::{
     AnnotationFact, AnnotationFactId, AnnotationKindId, AnnotationSubjectId, CanonicalValueRange,
-    CanonicalValueSet, DeclaredSchema, DocText, DocumentId, FunctionBody, FunctionFact,
-    FunctionParameter, FunctionReturnElement, FunctionReturnMode, FunctionSignature, OwnsFact,
-    OwnsFactId, PlaysFactId, RegexPattern, RelatesFactId, SchemaAnnotationValue, SchemaDiagnostic,
-    SchemaDiagnostics, SchemaFact, SourceSpan, StructFact, StructField, SubFact, SubFactId,
-    TypeFact, TypeReference, ValueFact, ValueFactId,
+    CanonicalValueSet, CollectionMode, DeclaredSchema, DocText, DocumentId, FunctionBody,
+    FunctionFact, FunctionParameter, FunctionReturnElement, FunctionReturnMode, FunctionSignature,
+    OwnsFact, OwnsFactId, PlaysFactId, RegexPattern, RelatesFactId, SchemaAnnotationValue,
+    SchemaDiagnostic, SchemaDiagnostics, SchemaFact, SourceSpan, StructFact, StructField, SubFact,
+    SubFactId, TypeFact, TypeReference, ValueFact, ValueFactId,
 };
 use type_bridge_contract::value::{CanonicalString, CanonicalValue, Cardinality, ValueTypeTag};
 use type_bridge_schema::FactAssembler;
@@ -350,7 +350,7 @@ pub(crate) fn released_unresolved_capability_ranges(
                 }
             }
             CapabilityBase::Owns(owns) => {
-                if let Ok(attribute) = plain_type_ref(&owns.owned)
+                if let Ok((attribute, _)) = capability_type_ref(&owns.owned)
                     && !ids.contains_key(&attribute)
                 {
                     omitted.insert(indexed.start, indexed.end);
@@ -366,7 +366,7 @@ pub(crate) fn released_unresolved_capability_ranges(
         let CapabilityBase::Relates(relates) = &indexed.capability.base else {
             continue;
         };
-        let Ok(role) = plain_type_ref(&relates.related) else {
+        let Ok((role, _)) = capability_type_ref(&relates.related) else {
             continue;
         };
         let specializes = relates
@@ -1126,11 +1126,13 @@ fn released_object_capability_identity(
     capability: &Capability,
 ) -> Option<ReleasedObjectCapabilityIdentity> {
     match &capability.base {
-        CapabilityBase::Owns(owns) => plain_type_ref(&owns.owned)
+        CapabilityBase::Owns(owns) => capability_type_ref(&owns.owned)
             .ok()
+            .map(|(label, _)| label)
             .map(ReleasedObjectCapabilityIdentity::Owns),
-        CapabilityBase::Relates(relates) => plain_type_ref(&relates.related)
+        CapabilityBase::Relates(relates) => capability_type_ref(&relates.related)
             .ok()
+            .map(|(label, _)| label)
             .map(ReleasedObjectCapabilityIdentity::Relates),
         CapabilityBase::Plays(plays) => Some(ReleasedObjectCapabilityIdentity::Plays(
             typeql_label(&plays.role.scope),
@@ -1391,15 +1393,16 @@ fn insert_capability(
             AnnotationSubjectId::Value(id)
         }
         CapabilityBase::Owns(owns) => {
-            let attribute_label = plain_type_ref(&owns.owned).map_err(|message| {
-                at(
-                    document,
-                    source,
-                    owns.span,
-                    "unsupported_typeql_owns",
-                    message,
-                )
-            })?;
+            let (attribute_label, collection_mode) =
+                capability_type_ref(&owns.owned).map_err(|message| {
+                    at(
+                        document,
+                        source,
+                        owns.span,
+                        "unsupported_typeql_owns",
+                        message,
+                    )
+                })?;
             let attribute_type = ids.get(&attribute_label).ok_or_else(|| {
                 at(
                     document,
@@ -1422,19 +1425,26 @@ fn insert_capability(
                 .map_err(|diagnostic| contract(diagnostic, capability_span.clone()))?;
             let id = OwnsFactId::new(owner.clone(), attribute)
                 .map_err(|diagnostic| contract(diagnostic, capability_span.clone()))?;
-            assembler.insert_fact(SchemaFact::Owns(OwnsFact::new(id.clone())), capability_span)?;
+            assembler.insert_fact(
+                SchemaFact::Owns(OwnsFact::new_with_collection_mode(
+                    id.clone(),
+                    collection_mode,
+                )),
+                capability_span,
+            )?;
             AnnotationSubjectId::Owns(id)
         }
         CapabilityBase::Relates(relates) => {
-            let role_label = plain_type_ref(&relates.related).map_err(|message| {
-                at(
-                    document,
-                    source,
-                    relates.span,
-                    "unsupported_typeql_relates",
-                    message,
-                )
-            })?;
+            let (role_label, collection_mode) =
+                capability_type_ref(&relates.related).map_err(|message| {
+                    at(
+                        document,
+                        source,
+                        relates.span,
+                        "unsupported_typeql_relates",
+                        message,
+                    )
+                })?;
             let role = RoleId::new(owner.label().as_str(), &role_label)
                 .map_err(|diagnostic| contract(diagnostic, capability_span.clone()))?;
             let id = RelatesFactId::new(owner.clone(), role)
@@ -1461,7 +1471,12 @@ fn insert_capability(
                         })
                 })
                 .transpose()?;
-            assembler.insert_relates(id.clone(), specializes, capability_span)?;
+            assembler.insert_relates_with_collection_mode(
+                id.clone(),
+                specializes,
+                collection_mode,
+                capability_span,
+            )?;
             AnnotationSubjectId::Relates(id)
         }
         CapabilityBase::Plays(plays) => {
@@ -1752,6 +1767,9 @@ fn insert_released_annotations(
             ),
             Annotation::Key(_) => (AnnotationKindId::Key, SchemaAnnotationValue::Presence),
             Annotation::Unique(_) => (AnnotationKindId::Unique, SchemaAnnotationValue::Presence),
+            Annotation::Distinct(_) => {
+                (AnnotationKindId::Distinct, SchemaAnnotationValue::Presence)
+            }
             Annotation::Cardinality(cardinality) => {
                 let cardinality = match &cardinality.range {
                     CardinalityRange::Exact(exact) => {
@@ -1831,7 +1849,7 @@ fn insert_released_annotations(
                     SchemaAnnotationValue::Meta(CanonicalValue::String(value)),
                 )
             }
-            Annotation::Cascade(_) | Annotation::Distinct(_) | Annotation::Subkey(_) => {
+            Annotation::Cascade(_) | Annotation::Subkey(_) => {
                 return Err(error(
                     DiagnosticCategory::UnsupportedCapability,
                     "unsupported_typeql_annotation",
@@ -1912,6 +1930,7 @@ fn annotation_identity_kind(
         Annotation::Independent(_) => AnnotationKindId::Independent,
         Annotation::Key(_) => AnnotationKindId::Key,
         Annotation::Unique(_) => AnnotationKindId::Unique,
+        Annotation::Distinct(_) => AnnotationKindId::Distinct,
         Annotation::Cardinality(_) => AnnotationKindId::Card,
         Annotation::Regex(_) => AnnotationKindId::Regex,
         Annotation::Doc(_) => AnnotationKindId::Doc,
@@ -1930,7 +1949,7 @@ fn annotation_identity_kind(
             AnnotationKindId::meta(key)
                 .map_err(|diagnostic| contract(diagnostic, annotation_span))?
         }
-        Annotation::Cascade(_) | Annotation::Distinct(_) | Annotation::Subkey(_) => {
+        Annotation::Cascade(_) | Annotation::Subkey(_) => {
             return Err(error(
                 DiagnosticCategory::UnsupportedCapability,
                 "unsupported_typeql_annotation",
@@ -1999,6 +2018,29 @@ fn plain_type_ref(reference: &TypeRefAny) -> Result<String, String> {
             Err("type variables are not valid in schema declarations".to_owned())
         }
         TypeRefAny::List(_) => Err("list capability references are not live-pinned".to_owned()),
+    }
+}
+
+fn capability_type_ref(reference: &TypeRefAny) -> Result<(String, CollectionMode), String> {
+    match reference {
+        TypeRefAny::Type(inner) => {
+            plain_inner_type_ref(inner).map(|label| (label, CollectionMode::Unordered))
+        }
+        TypeRefAny::List(list) => {
+            plain_inner_type_ref(&list.inner).map(|label| (label, CollectionMode::OrderedList))
+        }
+    }
+}
+
+fn plain_inner_type_ref(reference: &TypeRef) -> Result<String, String> {
+    match reference {
+        TypeRef::Label(label) => Ok(typeql_label(label)),
+        TypeRef::Scoped(_) => {
+            Err("scoped type references are not valid in this capability".to_owned())
+        }
+        TypeRef::Variable(_) => {
+            Err("type variables are not valid in schema declarations".to_owned())
+        }
     }
 }
 

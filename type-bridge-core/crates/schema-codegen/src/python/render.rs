@@ -31,10 +31,14 @@ const PUBLIC_QUERY_NAMES: &[&str] = &[
     "BoundRole",
     "BoundVar",
     "Collected",
+    "FunctionCall",
+    "FunctionInput",
     "GroupedQuery",
     "Page",
     "Predicate",
     "Query",
+    "QueryCancellation",
+    "QueryExecutionResourceLimits",
     "QueryOrder",
     "QuerySession",
     "RemoteQuery",
@@ -144,10 +148,14 @@ fn render_init(projection: &RuntimeProjection, stub: bool) -> String {
          from ._query import BoundRole as BoundRole\n\
          from ._query import BoundVar as BoundVar\n\
          from ._query import Collected as Collected\n\
+         from ._query import FunctionCall as FunctionCall\n\
+         from ._query import FunctionInput as FunctionInput\n\
          from ._query import GroupedQuery as GroupedQuery\n\
          from ._query import Page as Page\n\
          from ._query import Predicate as Predicate\n\
          from ._query import Query as Query\n\
+         from ._query import QueryCancellation as QueryCancellation\n\
+         from ._query import QueryExecutionResourceLimits as QueryExecutionResourceLimits\n\
          from ._query import QueryOrder as QueryOrder\n\
          from ._query import QuerySession as QuerySession\n\
          from ._query import RemoteGroupedQuery as RemoteGroupedQuery\n\
@@ -197,6 +205,50 @@ fn render_init(projection: &RuntimeProjection, stub: bool) -> String {
         let name = projection.functions()[id].target_name().as_str();
         import(&mut output, name);
         exports.push(name.to_owned());
+    }
+    let mut generated_function_names = BTreeSet::new();
+    for id in projection.emission().functions() {
+        let function = &projection.functions()[id];
+        let return_domain = match function.returns() {
+            FunctionReturnProjection::Scalar(element) if !element.optional() => {
+                match element.type_ref() {
+                    ProjectedTypeRef::Scalar(domain) => Some(*domain),
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+        if return_domain.is_none()
+            || !function.parameters().iter().all(|parameter| {
+                matches!(
+                    parameter.type_ref(),
+                    ProjectedTypeRef::Model(_) | ProjectedTypeRef::Scalar(_)
+                )
+            })
+        {
+            continue;
+        }
+        generated_function_names.insert(format!(
+            "{}Call",
+            scalar_domain_name(return_domain.expect("checked scalar return"))
+        ));
+        for domain in
+            function
+                .parameters()
+                .iter()
+                .filter_map(|parameter| match parameter.type_ref() {
+                    ProjectedTypeRef::Scalar(domain) => Some(*domain),
+                    _ => None,
+                })
+        {
+            generated_function_names.insert(format!("{}Input", scalar_domain_name(domain)));
+            generated_function_names
+                .insert(format!("{}_input", scalar_domain_function_name(domain)));
+        }
+    }
+    for name in generated_function_names {
+        import(&mut output, &name);
+        exports.push(name);
     }
     exports.sort();
     output.push_str("\n__all__ = (\n");
@@ -296,8 +348,17 @@ fn render_models(projection: &RuntimeProjection, stub: bool) -> Result<String, D
         body.push_str("    ],\n)\n");
         body.push('\n');
     }
+    let mut emitted_inputs = BTreeSet::new();
+    let mut emitted_calls = BTreeSet::new();
     for id in projection.emission().functions() {
-        render_function(&mut body, projection, &projection.functions()[id], stub)?;
+        render_function(
+            &mut body,
+            projection,
+            &projection.functions()[id],
+            stub,
+            &mut emitted_inputs,
+            &mut emitted_calls,
+        )?;
     }
     let mut output = render_model_header(&body, stub);
     output.push_str(&body);
@@ -354,6 +415,9 @@ fn render_model_header(body: &str, stub: bool) -> String {
     if body.contains("FunctionRef") {
         runtime.push("FunctionRef");
     }
+    if body.contains("_function_ref_for_projection(") {
+        runtime.push("function_ref_for_projection as _function_ref_for_projection");
+    }
     if body.contains("(_Attribute)") {
         runtime.push("AttributeBase as _Attribute");
     }
@@ -405,10 +469,27 @@ fn render_model_header(body: &str, stub: bool) -> String {
     if !runtime.is_empty() {
         let _ = writeln!(output, "from ._runtime import {}", runtime.join(", "));
     }
-    if body.contains("_BoundVar[") || body.contains("_SubtypeBoundVar[") {
-        output.push_str(
-            "from ._query import BoundVar as _BoundVar, SubtypeBoundVar as _SubtypeBoundVar\n",
-        );
+    let mut query = Vec::new();
+    if body.contains("_BoundVar[") {
+        query.push("BoundVar as _BoundVar");
+    }
+    if body.contains("_SubtypeBoundVar[") {
+        query.push("SubtypeBoundVar as _SubtypeBoundVar");
+    }
+    if body.contains("_FunctionInput[") {
+        query.push("FunctionInput as _FunctionInput");
+    }
+    if body.contains("_FunctionCall[") {
+        query.push("FunctionCall as _FunctionCall");
+    }
+    if body.contains("_QuerySession") {
+        query.push("QuerySession as _QuerySession");
+    }
+    if body.contains("_RemoteQuerySession") {
+        query.push("RemoteQuerySession as _RemoteQuerySession");
+    }
+    if !query.is_empty() {
+        let _ = writeln!(output, "from ._query import {}", query.join(", "));
     }
     if body.contains("_install_runtime_projection(") {
         output.push_str(
@@ -799,6 +880,8 @@ fn render_function(
     projection: &RuntimeProjection,
     function: &type_bridge_contract::projection::FunctionProjection,
     stub: bool,
+    emitted_inputs: &mut BTreeSet<String>,
+    emitted_calls: &mut BTreeSet<String>,
 ) -> Result<(), Diagnostic> {
     let name = function.target_name().as_str();
     let parameters = function
@@ -808,25 +891,196 @@ fn render_function(
         .collect::<Result<Vec<_>, _>>()?
         .join(", ");
     let returns = function_return(projection, function.returns())?;
+    let supported_return = match function.returns() {
+        FunctionReturnProjection::Scalar(element) if !element.optional() => {
+            if let ProjectedTypeRef::Scalar(domain) = element.type_ref() {
+                Some(*domain)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    };
+    let supported = supported_return.is_some()
+        && function.parameters().iter().all(|parameter| {
+            matches!(
+                parameter.type_ref(),
+                ProjectedTypeRef::Model(_) | ProjectedTypeRef::Scalar(_)
+            )
+        });
     if let Some(documentation) = documentation_annotation(function.annotations()) {
         render_python_doc_comment(output, "", documentation);
     }
-    if stub {
+    if !supported && stub {
         let _ = writeln!(
             output,
             "{name}: Final[FunctionRef[[{parameters}], {returns}]]"
         );
-    } else {
-        let id = canonical_text!(function.id());
+    } else if !supported {
         let metadata = canonical_text!(function);
         let _ = writeln!(
             output,
-            "{name}: FunctionRef[[{parameters}], {returns}] = FunctionRef({}, _load_mapping({}))",
-            python_string(&id)?,
+            "{name} = _function_ref_for_projection({}, _load_mapping({}))",
+            python_string(function.id().label().as_str())?,
             python_string(&metadata)?
         );
+    } else {
+        let return_domain = supported_return.expect("supported scalar function has a domain");
+        let token_name = format!("__tb_{name}_token");
+        let metadata = canonical_text!(function);
+        if stub {
+            let _ = writeln!(
+                output,
+                "{token_name}: Final[FunctionRef[[{parameters}], {returns}]]"
+            );
+        } else {
+            let _ = writeln!(
+                output,
+                "{token_name} = _function_ref_for_projection({}, _load_mapping({}))",
+                python_string(function.id().label().as_str())?,
+                python_string(&metadata)?
+            );
+        }
+
+        let call_alias = format!("{}Call", scalar_domain_name(return_domain));
+        if emitted_calls.insert(call_alias.clone()) {
+            if stub {
+                let _ = writeln!(
+                    output,
+                    "type {call_alias} = _FunctionCall[{}]",
+                    scalar_type(return_domain)
+                );
+            } else {
+                let _ = writeln!(
+                    output,
+                    "{call_alias} = _FunctionCall[{}]",
+                    scalar_type(return_domain)
+                );
+            }
+        }
+        for domain in
+            function
+                .parameters()
+                .iter()
+                .filter_map(|parameter| match parameter.type_ref() {
+                    ProjectedTypeRef::Scalar(domain) => Some(*domain),
+                    _ => None,
+                })
+        {
+            let alias = format!("{}Input", scalar_domain_name(domain));
+            if emitted_inputs.insert(alias.clone()) {
+                let constructor = format!("{}_input", scalar_domain_function_name(domain));
+                if stub {
+                    let _ = writeln!(
+                        output,
+                        "type {alias} = _FunctionInput[{}]\ndef {constructor}(session: _QuerySession | _RemoteQuerySession, value: {}) -> {alias}: ...",
+                        scalar_type(domain),
+                        python_attribute_base(domain)
+                    );
+                } else {
+                    let _ = writeln!(
+                        output,
+                        "{alias} = _FunctionInput[{}]\ndef {constructor}(session: _QuerySession | _RemoteQuerySession, value: {}) -> {alias}:\n    return session._function_input(value, {})",
+                        scalar_type(domain),
+                        python_attribute_base(domain),
+                        scalar_type(domain)
+                    );
+                }
+            }
+        }
+
+        let function_parameters = function
+            .parameters()
+            .iter()
+            .map(|parameter| {
+                let value = match parameter.type_ref() {
+                    ProjectedTypeRef::Model(model_use) => {
+                        let model_name = projection
+                            .models()
+                            .get(model_use.id())
+                            .ok_or_else(|| {
+                                facet_error("function parameter references an absent model")
+                            })?
+                            .target_name()
+                            .as_str();
+                        format!("_BoundVar[{model_name}] | _SubtypeBoundVar[{model_name}]")
+                    }
+                    ProjectedTypeRef::Scalar(domain) => {
+                        format!(
+                            "{}Input | _FunctionCall[{}]",
+                            scalar_domain_name(*domain),
+                            scalar_type(*domain)
+                        )
+                    }
+                    ProjectedTypeRef::Struct(_) => {
+                        unreachable!("struct parameters were filtered")
+                    }
+                };
+                Ok(format!("{}: {value}", parameter.target_name().as_str()))
+            })
+            .collect::<Result<Vec<_>, Diagnostic>>()?;
+        let arguments = function
+            .parameters()
+            .iter()
+            .map(|parameter| parameter.target_name().as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let signature = std::iter::once("session: _QuerySession | _RemoteQuerySession".to_owned())
+            .chain(function_parameters)
+            .collect::<Vec<_>>()
+            .join(", ");
+        if stub {
+            let _ = writeln!(output, "def {name}({signature}) -> {call_alias}: ...");
+        } else {
+            let tuple = if function.parameters().len() == 1 {
+                format!("({arguments},)")
+            } else {
+                format!("({arguments})")
+            };
+            let _ = writeln!(
+                output,
+                "def {name}({signature}) -> {call_alias}:\n    return session._call_function({token_name}, {tuple}, {})",
+                scalar_type(return_domain)
+            );
+        }
     }
     Ok(())
+}
+
+fn scalar_domain_name(tag: ValueTypeTag) -> &'static str {
+    match tag {
+        ValueTypeTag::String => "String",
+        ValueTypeTag::Long => "Integer",
+        ValueTypeTag::Double => "Double",
+        ValueTypeTag::Boolean => "Boolean",
+        ValueTypeTag::Date => "Date",
+        ValueTypeTag::DateTime => "DateTime",
+        ValueTypeTag::DateTimeTz => "DateTimeTz",
+        ValueTypeTag::Decimal => "Decimal",
+        ValueTypeTag::Duration => "Duration",
+    }
+}
+
+fn scalar_domain_function_name(tag: ValueTypeTag) -> &'static str {
+    match tag {
+        ValueTypeTag::String => "string",
+        ValueTypeTag::Long => "integer",
+        ValueTypeTag::Double => "double",
+        ValueTypeTag::Boolean => "boolean",
+        ValueTypeTag::Date => "date",
+        ValueTypeTag::DateTime => "date_time",
+        ValueTypeTag::DateTimeTz => "date_time_tz",
+        ValueTypeTag::Decimal => "decimal",
+        ValueTypeTag::Duration => "duration",
+    }
+}
+
+fn python_attribute_base(tag: ValueTypeTag) -> &'static str {
+    match tag {
+        ValueTypeTag::Long => "_LongAttribute",
+        ValueTypeTag::Double => "_DoubleAttribute",
+        _ => "_Attribute",
+    }
 }
 
 fn function_return(

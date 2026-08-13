@@ -1,0 +1,86 @@
+{
+  "format": "typebridge.workforce-v2-proof-fragment-allowlist/v1",
+  "semantic_profile": "typedb-3.12.1/v1",
+  "bindings": {
+    "python": [
+      {
+        "id": "python.generated_remote_acceptance",
+        "sources": [
+          "type-bridge-core/crates/python/src/match_runtime.rs",
+          "type-bridge-core/crates/python/src/query_v2_model_remote_runtime.rs",
+          "type-bridge-core/crates/schema-codegen/src/python/query.py",
+          "type-bridge-core/crates/schema-codegen/tests/acceptance/runtime_check.py"
+        ],
+        "results": [
+          {"observation_ref": "cancellation_remote", "proof_kind": "remote_runtime", "test_id": "python.generated_remote_cancellation"},
+          {"observation_ref": "remote_structured_diagnostic", "proof_kind": "diagnostic", "test_id": "python.generated_remote_structured_diagnostic"}
+        ]
+      },
+      {
+        "id": "python.native_direct_cancellation",
+        "sources": [
+          "type-bridge-core/crates/orm/src/match_request/selected_result_executor.rs",
+          "type-bridge-core/crates/python/src/match_runtime.rs"
+        ],
+        "results": [
+          {"observation_ref": "cancellation_direct", "proof_kind": "direct_runtime", "test_id": "python.native_direct_cancellation"}
+        ]
+      }
+    ],
+    "node": [
+      {
+        "id": "node.generated_remote_acceptance",
+        "sources": [
+          "type-bridge-core/crates/node/src/match_runtime.rs",
+          "type-bridge-core/crates/node/src/query_v2_model_remote_runtime.rs",
+          "type-bridge-core/crates/node/typescript/native.ts",
+          "type-bridge-core/crates/node/typescript/runtime-projection.ts",
+          "type-bridge-core/crates/schema-codegen/src/typescript/runtime.ts",
+          "type-bridge-core/crates/schema-codegen/tests/typescript_acceptance/runtime_check.mjs"
+        ],
+        "results": [
+          {"observation_ref": "cancellation_remote", "proof_kind": "remote_runtime", "test_id": "node.generated_remote_cancellation"},
+          {"observation_ref": "remote_structured_diagnostic", "proof_kind": "diagnostic", "test_id": "node.generated_remote_structured_diagnostic"}
+        ]
+      },
+      {
+        "id": "node.native_direct_cancellation",
+        "sources": [
+          "type-bridge-core/crates/node/src/match_runtime.rs",
+          "type-bridge-core/crates/orm/src/match_request/selected_result_executor.rs"
+        ],
+        "results": [
+          {"observation_ref": "cancellation_direct", "proof_kind": "direct_runtime", "test_id": "node.native_direct_cancellation"}
+        ]
+      }
+    ],
+    "rust": [
+      {
+        "id": "type-bridge-rust.generated-query-proof",
+        "sources": [
+          "type-bridge-core/crates/rust/src/remote.rs"
+        ],
+        "results": [
+          {"observation_ref": "cancellation_direct", "proof_kind": "direct_runtime", "test_id": "remote::tests::workforce_v2_rust_deterministic_proof_fragment"},
+          {"observation_ref": "cancellation_remote", "proof_kind": "remote_runtime", "test_id": "remote::tests::workforce_v2_rust_deterministic_proof_fragment"},
+          {"observation_ref": "remote_structured_diagnostic", "proof_kind": "diagnostic", "test_id": "remote::tests::workforce_v2_rust_deterministic_proof_fragment"}
+        ]
+      }
+    ],
+    "c": [
+      {
+        "id": "type-bridge-c.query-native-proof",
+        "sources": [
+          "type-bridge-core/crates/c/include/typebridge/type_bridge.h",
+          "type-bridge-core/crates/c/src/lib.rs",
+          "type-bridge-core/crates/c/src/query.rs"
+        ],
+        "results": [
+          {"observation_ref": "cancellation_direct", "proof_kind": "direct_runtime", "test_id": "query::tests::workforce_v2_c_deterministic_proof_fragment"},
+          {"observation_ref": "cancellation_remote", "proof_kind": "remote_runtime", "test_id": "query::tests::workforce_v2_c_deterministic_proof_fragment"},
+          {"observation_ref": "remote_structured_diagnostic", "proof_kind": "diagnostic", "test_id": "query::tests::workforce_v2_c_deterministic_proof_fragment"}
+        ]
+      }
+    ]
+  }
+}

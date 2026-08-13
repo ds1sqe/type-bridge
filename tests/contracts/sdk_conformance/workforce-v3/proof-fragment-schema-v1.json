@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://type-bridge.dev/contracts/sdk-conformance/workforce-v3-proof-fragment-v1.schema.json",
+  "title": "TypeBridge workforce-v3 deterministic proof fragment v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "format",
+    "binding",
+    "semantic_profile",
+    "run_nonce",
+    "contract",
+    "producer",
+    "results"
+  ],
+  "properties": {
+    "format": {"const": "typebridge.workforce-v3-proof-fragment/v1"},
+    "binding": {"enum": ["python", "node", "rust", "c"]},
+    "semantic_profile": {"const": "typedb-3.12.1/v1"},
+    "run_nonce": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "contract": {"$ref": "#/$defs/contract"},
+    "producer": {"$ref": "#/$defs/producer"},
+    "results": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 4,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/result"}
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "portablePath": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]*$",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "sourceIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": {"$ref": "#/$defs/portablePath"},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["proof_schema", "allowlist", "journey"],
+      "properties": {
+        "proof_schema": {"$ref": "#/$defs/sourceIdentity"},
+        "allowlist": {"$ref": "#/$defs/sourceIdentity"},
+        "journey": {"$ref": "#/$defs/sourceIdentity"}
+      }
+    },
+    "producer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "sources"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._-]*$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "sources": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/sourceIdentity"}
+        }
+      }
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "observation_ref",
+        "proof_kind",
+        "test_id",
+        "outcome",
+        "observation"
+      ],
+      "properties": {
+        "observation_ref": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "minLength": 1,
+          "maxLength": 96
+        },
+        "proof_kind": {
+          "enum": ["direct_runtime", "diagnostic"]
+        },
+        "test_id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._:-]*$",
+          "minLength": 1,
+          "maxLength": 192
+        },
+        "outcome": {"const": "passed"},
+        "observation": {"type": "object"}
+      }
+    }
+  }
+}

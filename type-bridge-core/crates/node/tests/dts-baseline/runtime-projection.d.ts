@@ -1,9 +1,14 @@
 import { QueryV2Authority, type NativeRustDatabase, type NativeRustTransactionContext, type RustDatabase, type RustTransactionContext } from "./index.js";
 import { loadNative } from "./native.js";
+import type { NativeQueryCancellation, NativeQueryExecutionResources } from "./native.js";
 type NativeModule = ReturnType<typeof loadNative>;
 type NativeRuntimeProjection = InstanceType<NativeModule["NodeRuntimeProjection"]>;
 export type RuntimeProjectionMatchSession = ReturnType<NativeRuntimeProjection["matchSession"]>;
 export type RuntimeProjectionMatchBinding = ReturnType<RuntimeProjectionMatchSession["exact"]>;
+export type RuntimeProjectionMatchFunction = ReturnType<RuntimeProjectionMatchSession["functionById"]>;
+export type RuntimeProjectionMatchFunctionValue = ReturnType<RuntimeProjectionMatchSession["functionValueJson"]>;
+export type RuntimeProjectionMatchFunctionArgument = ReturnType<RuntimeProjectionMatchBinding["functionArgument"]>;
+export type RuntimeProjectionMatchFunctionCall = ReturnType<RuntimeProjectionMatchFunction["call"]>;
 export type RuntimeProjectionMatchField = ReturnType<RuntimeProjectionMatchBinding["field"]>;
 export type RuntimeProjectionMatchPredicate = ReturnType<RuntimeProjectionMatchField["compareValueJson"]>;
 export type RuntimeProjectionMatchOrder = ReturnType<RuntimeProjectionMatchField["order"]>;
@@ -40,8 +45,47 @@ export interface RuntimeProjectionRemoteLimits {
     readonly maxRolePlayers: bigint;
     readonly deadlineMs?: bigint | null;
 }
+/** Common tighten-only execution policy shared by direct and remote queries. */
+export interface QueryExecutionResourceLimitOptions {
+    readonly timeoutMilliseconds?: bigint;
+    readonly items?: bigint;
+    readonly bytes?: bigint;
+    readonly graphNodes?: bigint;
+    readonly attributeValues?: bigint;
+    readonly collectionMembers?: bigint;
+    readonly rolePlayers?: bigint;
+    readonly statements?: bigint;
+}
+/** Canonical common resource limits, clamped by the Rust semantic engine. */
+export declare class QueryExecutionResourceLimits {
+    #private;
+    constructor(options?: QueryExecutionResourceLimitOptions);
+    get timeoutMilliseconds(): bigint;
+    get items(): bigint;
+    get bytes(): bigint;
+    get graphNodes(): bigint;
+    get attributeValues(): bigint;
+    get collectionMembers(): bigint;
+    get rolePlayers(): bigint;
+    get statements(): bigint;
+    /** @internal Exact native policy owner. */
+    nativeHandle(): NativeQueryExecutionResources;
+}
+/** Caller-owned cooperative cancellation for one or more query sessions. */
+export declare class QueryCancellation {
+    #private;
+    constructor();
+    cancel(): void;
+    get isCancelled(): boolean;
+    /** @internal Exact native cancellation owner. */
+    nativeHandle(): NativeQueryCancellation;
+    /** @internal Resolve when caller-owned cancellation is first requested. */
+    cancelled(): Promise<void>;
+    /** @internal Attach an abort side effect without exposing mutable native state. */
+    onCancelled(listener: () => void): () => void;
+}
 /** One caller-owned request/response exchange. No retry is performed. */
-export type RuntimeProjectionRemoteExchange = (request: Uint8Array) => Promise<Uint8Array>;
+export type RuntimeProjectionRemoteExchange = (request: Uint8Array, signal?: AbortSignal) => Promise<Uint8Array>;
 /** Opaque verified remote terminal executor for one generated package. */
 export interface RuntimeProjectionRemote {
     rows(query: RuntimeProjectionMatchQuery, orders: RuntimeProjectionMatchOrder[], offset: bigint, limit: bigint, cardinality: "exactly_one" | "bounded_many"): Promise<RuntimeProjectionMatchResult>;
@@ -70,6 +114,7 @@ interface NativeProjectionHandle {
     managerForDatabase(typeKey: string, database: NativeRustDatabase): NativeProjectedManager;
     managerForTransaction(typeKey: string, transaction: NativeRustTransactionContext): NativeProjectedManager;
     matchSession(): RuntimeProjectionMatchSession;
+    matchSessionWithResources(resources: NativeQueryExecutionResources, cancellation: NativeQueryCancellation): RuntimeProjectionMatchSession;
     matchModelType(typeKey: string): string;
     validateAttributeValueJson(typeKey: string, valueJson: string): void;
     validateFieldValueJson(typeKey: string, fieldName: string, valueJson: string): void;
@@ -83,7 +128,7 @@ export declare class InstalledRuntimeProjection {
     /** @internal Bind one generated token without exposing its native handle. */
     manager(typeKey: string, connection: RuntimeProjectionConnection): NativeProjectedManager;
     /** @internal Create an opaque query session from verified projection evidence. */
-    matchSession(): RuntimeProjectionMatchSession;
+    matchSession(resources?: QueryExecutionResourceLimits, cancellation?: QueryCancellation): RuntimeProjectionMatchSession;
     /** @internal Resolve one exact generated model token to its provider label. */
     matchModelType(typeKey: string): string;
     /** @internal Validate one generated attribute scalar against projected constraints. */
@@ -109,7 +154,7 @@ export declare class InstalledRuntimeProjection {
     /** @internal Execute one typed reduction grouped by an owned-field tuple. */
     executeReduceByFields(query: RuntimeProjectionMatchQuery, connection: RuntimeProjectionConnection, root: RuntimeProjectionMatchBinding, groups: RuntimeProjectionMatchField[], reducers: RuntimeProjectionReduction[], inputs: (RuntimeProjectionMatchField | null)[]): RuntimeProjectionMatchResult;
     /** @internal Bind remote authority, executor epoch, budgets, and exchange once. */
-    remote(authority: QueryV2Authority, advertisement: Uint8Array, exchange: RuntimeProjectionRemoteExchange, limits: RuntimeProjectionRemoteLimits): RuntimeProjectionRemote;
+    remote(authority: QueryV2Authority, advertisement: Uint8Array, exchange: RuntimeProjectionRemoteExchange, limits: RuntimeProjectionRemoteLimits | QueryExecutionResourceLimits, cancellation?: QueryCancellation): RuntimeProjectionRemote;
 }
 /** Verify and install one generated package's exact projection evidence. */
 export declare function installRuntimeProjection(input: RuntimeProjectionInstall): InstalledRuntimeProjection;

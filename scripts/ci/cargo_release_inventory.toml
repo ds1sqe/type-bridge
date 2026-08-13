@@ -184,6 +184,14 @@ publish-order = 19
 docs-target = "lib"
 
 [[packages]]
+name = "type-bridge-c"
+manifest = "crates/c/Cargo.toml"
+classification = "private-binding"
+role = "binding"
+version-policy = "lockstep"
+docs-target = "none"
+
+[[packages]]
 name = "type-bridge-core"
 manifest = "crates/python/Cargo.toml"
 classification = "private-binding"

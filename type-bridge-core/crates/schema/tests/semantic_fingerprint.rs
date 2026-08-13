@@ -21,6 +21,33 @@ fn profile() -> SemanticProfileId {
 }
 
 #[test]
+fn ordered_semantic_bytes_reject_profiles_without_collection_semantics() {
+    let declared = normalize_documents(&document(
+        r#"format: typebridge.schema/v2
+attributes:
+  tag: { value: string }
+entities:
+  article:
+    owns:
+      tag: { ordered: true }
+"#,
+    ))
+    .expect("ordered schema normalizes");
+    canonical_semantic_schema_bytes(&declared, &profile())
+        .expect("3.12.1 semantic bytes preserve ordered collections");
+
+    let legacy = SemanticProfileId::new("typedb-3.11.5/v1").unwrap();
+    let error = canonical_semantic_schema_bytes(&declared, &legacy)
+        .expect_err("3.11.5 has no ordered collection semantics");
+    let diagnostic = error.iter().next().expect("one diagnostic");
+    assert_eq!(
+        diagnostic.diagnostic().code().as_str(),
+        "ordered_collection_profile_unsupported"
+    );
+    assert!(diagnostic.primary().is_some());
+}
+
+#[test]
 fn explicit_equal_cardinality_default_is_semantically_omitted() {
     let omitted = r#"format: typebridge.schema/v2
 attributes:

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Full source-tree test suite — Rust + Python + Node, unit + integration.
+# Full source-tree test suite — Rust + Python + Node + the internal C
+# foundation, unit + integration.
 #
 # Reproduces the CI unit/integration tiers locally. Exact wheel and npm release
 # artifact acceptance remains workflow-only; this script does not build or
@@ -66,7 +67,8 @@ usage() {
     cat <<'EOF'
 Usage: ./test.sh [--no-integration] [--proxy] [--tls] [--no-isolated] [-- <pytest args>]
 
-  --no-integration  Run only the offline tiers (Rust, Python unit, Node unit/dts).
+  --no-integration  Run only the offline tiers (Rust, Python unit, Node unit/dts,
+                    and the internal C foundation).
   --proxy           Additionally run the proxy integration suite (-m proxy).
   --tls             Additionally run dedicated TLS transport tests. In isolated
                     mode this starts a test-only TLS endpoint in front of TypeDB.
@@ -99,6 +101,22 @@ while [[ $# -gt 0 ]]; do
     esac
     shift
 done
+
+for runner_owned_workforce_variable in \
+    TYPE_BRIDGE_WORKFORCE_REPORT \
+    TYPE_BRIDGE_WORKFORCE_REPORT_V2 \
+    TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENT \
+    TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENTS \
+    TYPE_BRIDGE_WORKFORCE_V2_PROOF_RUN_NONCE \
+    TYPE_BRIDGE_WORKFORCE_V2_VALIDATED_OBSERVATIONS \
+    TYPE_BRIDGE_WORKFORCE_V2_VALIDATOR_PYTHON; do
+    if [[ ${!runner_owned_workforce_variable+x} == x ]]; then
+        printf "${RED}%s is runner-owned; unset it before invoking test.sh.${RESET}\n" \
+            "$runner_owned_workforce_variable" >&2
+        exit 2
+    fi
+done
+unset runner_owned_workforce_variable
 
 NODE_DIR=type-bridge-core/crates/node
 # TYPEDB_PORT and TYPEDB_HTTP_PORT are intentionally NOT defaulted here.
@@ -138,11 +156,98 @@ run_step() {
     fi
 }
 
+validate_canonical_json_files() {
+    local validator_python="$1"
+    shift
+    "$validator_python" -c '
+import json
+import sys
+from pathlib import Path
+
+for raw_path in sys.argv[1:]:
+    path = Path(raw_path)
+    raw = path.read_bytes()
+    if not raw:
+        raise SystemExit(f"empty JSON evidence: {path}")
+    value = json.loads(raw)
+    canonical = (
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        + "\n"
+    ).encode()
+    if raw != canonical:
+        raise SystemExit(f"noncanonical JSON evidence: {path}")
+' "$@"
+}
+
+write_workforce_summary() {
+    local summary="$1"
+    local validator_python="$2"
+    local staged
+    shift 2
+    if [[ "$summary" != /* || -e "$summary" ]]; then
+        printf "${RED}Workforce summary must be an absent absolute path: %s${RESET}\n" \
+            "$summary" >&2
+        return 1
+    fi
+    staged="$(mktemp "${summary}.tmp.XXXXXX")" || return 1
+    if ! "$@" > "$staged"; then
+        unlink -- "$staged"
+        return 1
+    fi
+    if ! validate_canonical_json_files "$validator_python" "$staged"; then
+        unlink -- "$staged"
+        return 1
+    fi
+    if ! ln -- "$staged" "$summary"; then
+        unlink -- "$staged"
+        return 1
+    fi
+    unlink -- "$staged"
+}
+
+log_workforce_evidence_sha256() {
+    local validator_python="$1"
+    local v2_summary="$2"
+    shift 2
+    validate_canonical_json_files "$validator_python" "$@"
+    "$validator_python" -c '
+import json
+import sys
+from pathlib import Path
+
+summary = json.loads(Path(sys.argv[1]).read_bytes())
+pending = summary.get("pending_manifest_promotions")
+if not isinstance(pending, list):
+    raise SystemExit("workforce-v2 summary has no pending_manifest_promotions list")
+print(
+    "workforce-v2 pending_manifest_promotions="
+    + json.dumps(pending, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+)
+' "$v2_summary"
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum -- "$@"
+    else
+        shasum -a 256 -- "$@"
+    fi
+}
+
 # ── TypeDB container lifecycle (isolated integration only) ───────────────────
 # One shared TypeDB serves the Rust, Python, and Node integration tiers — the CI shape,
 # reproduced locally. The proxy tier (--proxy) owns its own stack via proxy_lifecycle.py.
 compose=""
 typedb_started=0
+workforce_report_dir=""
+preserve_workforce_evidence="${TYPE_BRIDGE_PRESERVE_WORKFORCE_EVIDENCE:-0}"
+if [[ "$preserve_workforce_evidence" != 0 && "$preserve_workforce_evidence" != 1 ]]; then
+    printf "${RED}TYPE_BRIDGE_PRESERVE_WORKFORCE_EVIDENCE must be 0 or 1.${RESET}\n" >&2
+    exit 2
+fi
 
 detect_compose() {
     if [[ -n "${CONTAINER_TOOL:-}" ]]; then
@@ -206,8 +311,8 @@ start_typedb() {
         TYPEDB_HTTP_PORT="$(_discover_port typedb 8000)"
     fi
 
-    if [[ -z "$TYPEDB_PORT" ]]; then
-        printf "${RED}Could not discover TypeDB host port after up -d${RESET}\n" >&2
+    if [[ -z "$TYPEDB_PORT" || -z "$TYPEDB_HTTP_PORT" ]]; then
+        printf "${RED}Could not discover TypeDB gRPC and HTTP host ports after up -d${RESET}\n" >&2
         exit 1
     fi
 
@@ -215,17 +320,29 @@ start_typedb() {
 
     local typedb_ready=0
     for _ in {1..45}; do
-        if timeout 2 bash -c "</dev/tcp/127.0.0.1/${TYPEDB_PORT}" 2>/dev/null; then
+        if timeout 2 bash -c "</dev/tcp/127.0.0.1/${TYPEDB_PORT}" 2>/dev/null \
+            && timeout 3 python3 -c '
+import sys
+import urllib.request
+
+with urllib.request.urlopen(
+    f"http://127.0.0.1:{sys.argv[1]}/v1/version",
+    timeout=2,
+) as response:
+    if not response.read(1):
+        raise SystemExit(1)
+' "$TYPEDB_HTTP_PORT" >/dev/null 2>&1; then
             typedb_ready=1
             break
         fi
         sleep 2
     done
     if [[ "$typedb_ready" != 1 ]]; then
-        printf "${RED}TypeDB did not open port ${TYPEDB_PORT} in time${RESET}\n" >&2
+        printf "${RED}TypeDB gRPC and HTTP endpoints did not become ready in time${RESET}\n" >&2
         exit 1
     fi
-    printf "${GREEN}TypeDB ready on ${TYPEDB_PORT}${RESET}\n\n"
+    printf "${GREEN}TypeDB ready on gRPC %s and HTTP %s${RESET}\n\n" \
+        "$TYPEDB_PORT" "$TYPEDB_HTTP_PORT"
 
     if [[ "$tls" == 1 ]]; then
         TYPEDB_TLS_PORT="${CALLER_TYPEDB_TLS_PORT:-$(_discover_port typedb-tls 1729)}"
@@ -299,6 +416,32 @@ run_step "generated Rust projection acceptance on MSRV 1.88" \
     -p type-bridge-schema-codegen --test rust_acceptance \
     generated_rust_crate_compiles_rejects_invalid_types_and_runs -- --exact
 
+printf "${BOLD}━━━ C foundation (offline, internal) ━━━${RESET}\n\n"
+run_step "generated C package and strict installed-compiler checks" \
+    cargo test --locked --manifest-path type-bridge-core/Cargo.toml \
+    -p type-bridge-schema-codegen --test c_emitter
+run_step "generated C entity and relation CRUD strict C17 consumer" \
+    cargo test --locked --manifest-path type-bridge-core/Cargo.toml \
+    -p type-bridge-schema-codegen --test c_projection_live \
+    exact_live_consumer_is_strict_c17_against_the_shared_generated_schema -- --exact
+run_step "C runtime, transaction, and cancellation ABI" \
+    cargo test --locked --manifest-path type-bridge-core/Cargo.toml \
+    -p type-bridge-c --lib --test execution_abi
+run_step "C typed-query, diagnostic, function, and remote ABI" \
+    cargo test --locked --manifest-path type-bridge-core/Cargo.toml \
+    -p type-bridge-c \
+    --test query_abi \
+    --test query_diagnostic_abi \
+    --test query_function_abi \
+    --test query_remote_abi
+run_step "build the C ABI shared library" \
+    cargo build --locked --manifest-path type-bridge-core/Cargo.toml \
+    -p type-bridge-c --lib
+run_step "C schema-package ABI and standalone consumer" \
+    env TYPE_BRIDGE_C_REQUIRE_SHARED_CONSUMER=1 \
+    cargo test --locked --manifest-path type-bridge-core/Cargo.toml \
+    -p type-bridge-c --test schema_package_abi
+
 printf "${BOLD}━━━ Python (unit) ━━━${RESET}\n\n"
 run_step "pytest tests/unit/" \
     uv run pytest tests/unit/ --tb=short -q
@@ -321,12 +464,109 @@ if [[ "$integration" == 1 ]]; then
     TYPEDB_HTTP_PORT="${TYPEDB_HTTP_PORT:-8000}"
     TYPEDB_ADDRESS="${TYPEDB_ADDRESS:-localhost:${TYPEDB_PORT}}"
 
+    typedb_server_version="$(
+        uv run python -c \
+            'import sys; from type_bridge.typedb_driver import server_version; print(server_version(sys.argv[1], http_port=int(sys.argv[2])))' \
+            "$TYPEDB_ADDRESS" "$TYPEDB_HTTP_PORT"
+    )"
+    printf "${CYAN}Detected TypeDB %s${RESET}\n\n" "$typedb_server_version"
+
+    workforce_rust_env=()
+    workforce_python_env=()
+    workforce_node_env=()
+    workforce_c_env=()
+    # Forwarded pytest arguments may change collection and exclude the sole
+    # Python report producer. Keep targeted Python runs useful instead of
+    # allocating a fan-in that can never become complete; the unfiltered full
+    # suite remains the local conformance gate.
+    if [[ "$typedb_server_version" == "3.12.1" && ${#pytest_args[@]} -eq 0 ]]; then
+        workforce_report_dir="$(
+            mktemp -d "${TMPDIR:-/tmp}/typebridge-workforce.XXXXXXXXXX"
+        )"
+        workforce_report_dir="$(cd "$workforce_report_dir" && pwd -P)"
+        mkdir -p "$workforce_report_dir/v2"
+        workforce_validator_python="$(
+            uv run python -c 'import os, sys; print(os.path.realpath(sys.executable))'
+        )"
+        if [[ "$workforce_validator_python" != /* \
+            || ! -x "$workforce_validator_python" ]]; then
+            printf "${RED}Workforce validator Python must be an absolute executable path: %s${RESET}\n" \
+                "$workforce_validator_python" >&2
+            exit 2
+        fi
+        workforce_python_nonce="$(
+            "$workforce_validator_python" -c 'import secrets; print(secrets.token_hex(32))'
+        )"
+        workforce_node_nonce="$(
+            "$workforce_validator_python" -c 'import secrets; print(secrets.token_hex(32))'
+        )"
+        workforce_rust_nonce="$(
+            "$workforce_validator_python" -c 'import secrets; print(secrets.token_hex(32))'
+        )"
+        workforce_c_nonce="$(
+            "$workforce_validator_python" -c 'import secrets; print(secrets.token_hex(32))'
+        )"
+        declare -A workforce_nonce_set=()
+        for workforce_nonce in \
+            "$workforce_python_nonce" \
+            "$workforce_node_nonce" \
+            "$workforce_rust_nonce" \
+            "$workforce_c_nonce"; do
+            if [[ ! "$workforce_nonce" =~ ^[0-9a-f]{64}$ \
+                || ${workforce_nonce_set[$workforce_nonce]+x} == x ]]; then
+                printf "${RED}Workforce-v2 binding nonces must be distinct lowercase 64-hex values.${RESET}\n" >&2
+                exit 2
+            fi
+            workforce_nonce_set[$workforce_nonce]=1
+        done
+        unset workforce_nonce workforce_nonce_set
+
+        workforce_python_direct_fragment="$workforce_report_dir/v2/python-direct-proof.json"
+        workforce_python_remote_fragment="$workforce_report_dir/v2/python-remote-proof.json"
+        workforce_node_direct_fragment="$workforce_report_dir/v2/node-direct-proof.json"
+        workforce_node_remote_fragment="$workforce_report_dir/v2/node-remote-proof.json"
+        workforce_rust_fragment="$workforce_report_dir/v2/rust-proof.json"
+        workforce_c_fragment="$workforce_report_dir/v2/c-proof.json"
+        workforce_v1_summary="$workforce_report_dir/summary-v1.json"
+        workforce_v2_summary="$workforce_report_dir/summary-v2.json"
+        workforce_rust_env=(
+            "TYPE_BRIDGE_WORKFORCE_REPORT=$workforce_report_dir/rust.json"
+            "TYPE_BRIDGE_WORKFORCE_REPORT_V2=$workforce_report_dir/v2/rust.json"
+            "TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENTS=$workforce_rust_fragment"
+            "TYPE_BRIDGE_WORKFORCE_V2_PROOF_RUN_NONCE=$workforce_rust_nonce"
+            "TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE=typedb-3.12.1/v1"
+        )
+        workforce_python_env=(
+            "TYPE_BRIDGE_WORKFORCE_REPORT=$workforce_report_dir/python.json"
+            "TYPE_BRIDGE_WORKFORCE_REPORT_V2=$workforce_report_dir/v2/python.json"
+            "TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENTS=$workforce_python_direct_fragment:$workforce_python_remote_fragment"
+            "TYPE_BRIDGE_WORKFORCE_V2_PROOF_RUN_NONCE=$workforce_python_nonce"
+        )
+        workforce_node_env=(
+            "TYPE_BRIDGE_WORKFORCE_REPORT=$workforce_report_dir/node.json"
+            "TYPE_BRIDGE_WORKFORCE_REPORT_V2=$workforce_report_dir/v2/node.json"
+            "TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENTS=$workforce_node_direct_fragment:$workforce_node_remote_fragment"
+            "TYPE_BRIDGE_WORKFORCE_V2_PROOF_RUN_NONCE=$workforce_node_nonce"
+            "TYPE_BRIDGE_WORKFORCE_V2_VALIDATOR_PYTHON=$workforce_validator_python"
+            "TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE=typedb-3.12.1/v1"
+        )
+        workforce_c_env=(
+            "TYPE_BRIDGE_WORKFORCE_REPORT_V2=$workforce_report_dir/v2/c.json"
+            "TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENTS=$workforce_c_fragment"
+            "TYPE_BRIDGE_WORKFORCE_V2_PROOF_RUN_NONCE=$workforce_c_nonce"
+        )
+        printf "${CYAN}Workforce reports: %s${RESET}\n\n" "$workforce_report_dir"
+    elif [[ "$typedb_server_version" == "3.12.1" ]]; then
+        printf "${CYAN}Workforce report fan-in skipped because forwarded pytest arguments may change collection.${RESET}\n\n"
+    fi
+
     printf "${BOLD}━━━ Rust (integration) ━━━${RESET}\n\n"
     run_step "cargo test -p type-bridge-orm --features integration-tests --test integration" \
         timeout --foreground 15m \
         env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
         cargo test --manifest-path type-bridge-core/Cargo.toml \
-        -p type-bridge-orm --features integration-tests --test integration -- --nocapture
+        -p type-bridge-orm --features integration-tests --test integration -- \
+            --nocapture --test-threads=1
 
     printf "${BOLD}━━━ Production V2 server (integration) ━━━${RESET}\n\n"
     run_step "type-bridge-server V1 + V2 live smoke" \
@@ -339,15 +579,62 @@ if [[ "$integration" == 1 ]]; then
             --test v2_query_integration_tests
 
     printf "${BOLD}━━━ Generated Rust projection (integration) ━━━${RESET}\n\n"
+    if [[ -n "$workforce_report_dir" ]]; then
+        run_step "emit Rust workforce-v2 deterministic proof fragment" \
+            env TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENT="$workforce_rust_fragment" \
+                TYPE_BRIDGE_WORKFORCE_V2_PROOF_RUN_NONCE="$workforce_rust_nonce" \
+            cargo test --locked --manifest-path type-bridge-core/Cargo.toml \
+                -p type-bridge --lib \
+                remote::tests::workforce_v2_rust_deterministic_proof_fragment \
+                -- --exact
+    fi
     run_step "generated Rust application parity" \
         timeout --foreground 10m \
         env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
             TYPE_BRIDGE_RUST_PROJECTION_INTG_DATABASE="type_bridge_rust_projection_live_${$}" \
             ACCEPTANCE_TARGET_DIR="$ROOT/type-bridge-core/target/tmp_projection_live_target" \
+            "${workforce_rust_env[@]}" \
         bash scripts/ci/run_exact_ignored_rust_test.sh \
             generated_rust_projection_round_trips_exact_live_models \
             --manifest-path type-bridge-core/Cargo.toml \
             -p type-bridge-schema-codegen --test rust_projection_live
+
+    if [[ "$typedb_server_version" == "3.12.1" ]]; then
+        printf "${BOLD}━━━ C runtime transactions (integration) ━━━${RESET}\n\n"
+        run_step "compiled C17 runtime and transaction lifecycle" \
+            timeout --foreground 10m \
+            env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
+                TYPE_BRIDGE_C_REQUIRE_SHARED_CONSUMER=1 \
+                TYPE_BRIDGE_C_INTG_DATABASE="type_bridge_c_runtime_live_${$}" \
+            bash scripts/ci/run_exact_ignored_rust_test.sh \
+                live_c17_consumer_exercises_exact_3_12_1_transaction_lifecycle \
+                --manifest-path type-bridge-core/Cargo.toml --locked \
+                -p type-bridge-c --test schema_package_abi
+
+        printf "${BOLD}━━━ Generated C entity and relation CRUD (integration) ━━━${RESET}\n\n"
+        if [[ -n "$workforce_report_dir" ]]; then
+            run_step "emit C workforce-v2 deterministic proof fragment" \
+                env TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENT="$workforce_c_fragment" \
+                    TYPE_BRIDGE_WORKFORCE_V2_PROOF_RUN_NONCE="$workforce_c_nonce" \
+                cargo test --locked --manifest-path type-bridge-core/Cargo.toml \
+                    -p type-bridge-c --lib \
+                    query::tests::workforce_v2_c_deterministic_proof_fragment \
+                    -- --exact
+        fi
+        run_step "compiled generated C17 Person and Membership CRUD lifecycle" \
+            timeout --foreground 10m \
+            env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
+                TYPE_BRIDGE_C_PROJECTION_INTG_DATABASE="type_bridge_c_projection_live_${$}" \
+                ACCEPTANCE_TARGET_DIR="$ROOT/type-bridge-core/target/tmp_c_projection_live_target" \
+                "${workforce_c_env[@]}" \
+            bash scripts/ci/run_exact_ignored_rust_test.sh \
+                live_c17_generated_person_and_membership_crud_round_trips_exact_3_12_1 \
+                --manifest-path type-bridge-core/Cargo.toml --locked \
+                -p type-bridge-schema-codegen --test c_projection_live
+    else
+        printf "${CYAN}Generated C entity and relation CRUD live smoke is intentionally limited to exact TypeDB 3.12.1; skipping %s.${RESET}\n\n" \
+            "$typedb_server_version"
+    fi
 
     printf "${BOLD}━━━ CLI workspace lifecycle (integration) ━━━${RESET}\n\n"
     for cli_live_test in \
@@ -384,9 +671,24 @@ if [[ "$integration" == 1 ]]; then
             -p type-bridge-schema-migration-typedb --test live_store
 
     printf "${BOLD}━━━ Python (integration) ━━━${RESET}\n\n"
+    if [[ -n "$workforce_report_dir" ]]; then
+        run_step "emit Python direct-cancellation workforce-v2 proof fragment" \
+            env TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENT="$workforce_python_direct_fragment" \
+                TYPE_BRIDGE_WORKFORCE_V2_PROOF_RUN_NONCE="$workforce_python_nonce" \
+            cargo test --locked --manifest-path type-bridge-core/Cargo.toml \
+                -p type-bridge-core --lib \
+                match_runtime::tests::python_direct_cancellation_fragment_is_measured_from_owned_execution \
+                -- --exact
+        run_step "emit Python generated-remote workforce-v2 proof fragment" \
+            env TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENT="$workforce_python_remote_fragment" \
+                TYPE_BRIDGE_WORKFORCE_V2_PROOF_RUN_NONCE="$workforce_python_nonce" \
+            uv run python \
+                type-bridge-core/crates/schema-codegen/tests/acceptance/check.py
+    fi
     run_step "pytest -m integration" \
         timeout --foreground 20m \
         env USE_DOCKER=false TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
+            "${workforce_python_env[@]}" \
         uv run pytest -m integration --tb=short "${pytest_args[@]}"
 
     printf "${BOLD}━━━ Node (integration) ━━━${RESET}\n\n"
@@ -399,14 +701,64 @@ if [[ "$integration" == 1 ]]; then
         timeout --foreground 15m \
         bash -c "cd '$NODE_DIR' && TYPE_BRIDGE_NODE_NATIVE_PATH='$native' \
             USE_DOCKER=false TYPEDB_ADDRESS='$TYPEDB_ADDRESS' TYPEDB_HTTP_PORT='$TYPEDB_HTTP_PORT' \
+            TYPEDB_VERSION='$typedb_server_version' \
             npm run test:integration"
+    if [[ -n "$workforce_report_dir" ]]; then
+        run_step "emit Node direct-cancellation workforce-v2 proof fragment" \
+            env TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENT="$workforce_node_direct_fragment" \
+                TYPE_BRIDGE_WORKFORCE_V2_PROOF_RUN_NONCE="$workforce_node_nonce" \
+            cargo test --locked --manifest-path type-bridge-core/Cargo.toml \
+                -p type-bridge-node --lib \
+                match_runtime::tests::node_direct_cancellation_fragment_is_measured_from_owned_execution \
+                -- --exact
+        run_step "emit Node generated-remote workforce-v2 proof fragment" \
+            env TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENT="$workforce_node_remote_fragment" \
+                TYPE_BRIDGE_WORKFORCE_V2_PROOF_RUN_NONCE="$workforce_node_nonce" \
+            node type-bridge-core/crates/schema-codegen/tests/typescript_acceptance/check.mjs
+    fi
     run_step "npm run test:projection-integration" \
         timeout --foreground 15m \
         env TYPE_BRIDGE_NODE_NATIVE_PATH="$native" \
             USE_DOCKER=false TYPEDB_ADDRESS="$TYPEDB_ADDRESS" \
             TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
+            TYPEDB_VERSION="$typedb_server_version" \
             TYPE_BRIDGE_NODE_INTG_DATABASE="type_bridge_projection_live_${$}" \
+            "${workforce_node_env[@]}" \
         npm --prefix "$NODE_DIR" run test:projection-integration
+
+    if [[ -n "$workforce_report_dir" ]]; then
+        run_step "compare generated SDK workforce reports" \
+            write_workforce_summary \
+                "$workforce_v1_summary" \
+                "$workforce_validator_python" \
+                uv run python scripts/ci/compare_workforce_conformance.py \
+                "$workforce_report_dir/python.json" \
+                "$workforce_report_dir/node.json" \
+                "$workforce_report_dir/rust.json"
+        run_step "compare generated SDK workforce-v2 reports" \
+            write_workforce_summary \
+                "$workforce_v2_summary" \
+                "$workforce_validator_python" \
+                "$workforce_validator_python" \
+                scripts/ci/compare_workforce_conformance_v2.py \
+                "$workforce_report_dir/v2/python.json" \
+                "$workforce_report_dir/v2/node.json" \
+                "$workforce_report_dir/v2/rust.json" \
+                "$workforce_report_dir/v2/c.json"
+        run_step "validate and log workforce report and summary SHA-256 evidence" \
+            log_workforce_evidence_sha256 \
+                "$workforce_validator_python" \
+                "$workforce_v2_summary" \
+                "$workforce_report_dir/python.json" \
+                "$workforce_report_dir/node.json" \
+                "$workforce_report_dir/rust.json" \
+                "$workforce_v1_summary" \
+                "$workforce_report_dir/v2/python.json" \
+                "$workforce_report_dir/v2/node.json" \
+                "$workforce_report_dir/v2/rust.json" \
+                "$workforce_report_dir/v2/c.json" \
+                "$workforce_v2_summary"
+    fi
 fi
 
 # ── TLS transport tier (opt-in) ──────────────────────────────────────────────
@@ -566,6 +918,48 @@ if [[ "$proxy" == 1 ]]; then
 fi
 
 # ── Summary ──────────────────────────────────────────────────────────────────
+if [[ -n "$workforce_report_dir" ]]; then
+    if ((fail == 0)) && [[ "$preserve_workforce_evidence" == 0 ]]; then
+        rm -f -- \
+            "$workforce_report_dir/python.json" \
+            "$workforce_report_dir/node.json" \
+            "$workforce_report_dir/rust.json" \
+            "$workforce_report_dir/v2/python.json" \
+            "$workforce_report_dir/v2/node.json" \
+            "$workforce_report_dir/v2/rust.json" \
+            "$workforce_report_dir/v2/c.json" \
+            "$workforce_report_dir/v2/python-direct-proof.json" \
+            "$workforce_report_dir/v2/python-remote-proof.json" \
+            "$workforce_report_dir/v2/node-direct-proof.json" \
+            "$workforce_report_dir/v2/node-remote-proof.json" \
+            "$workforce_report_dir/v2/rust-proof.json" \
+            "$workforce_report_dir/v2/c-proof.json" \
+            "$workforce_report_dir/summary-v1.json" \
+            "$workforce_report_dir/summary-v2.json"
+        if ! rmdir -- "$workforce_report_dir/v2"; then
+            printf "${RED}Could not remove accepted workforce-v2 report directory: %s${RESET}\n\n" \
+                "$workforce_report_dir/v2" >&2
+            fail=$((fail + 1))
+            failures+=("remove accepted workforce-v2 report directory")
+        fi
+        if rmdir -- "$workforce_report_dir"; then
+            printf "${GREEN}Removed accepted workforce reports: %s${RESET}\n\n" \
+                "$workforce_report_dir"
+        else
+            printf "${RED}Could not remove accepted workforce report directory: %s${RESET}\n\n" \
+                "$workforce_report_dir" >&2
+            fail=$((fail + 1))
+            failures+=("remove accepted workforce report directory")
+        fi
+    elif ((fail > 0)); then
+        printf "${CYAN}Preserved workforce reports for diagnosis: %s${RESET}\n\n" \
+            "$workforce_report_dir"
+    else
+        printf "${CYAN}Preserved accepted workforce evidence by request: %s${RESET}\n\n" \
+            "$workforce_report_dir"
+    fi
+fi
+
 printf "${BOLD}━━━ Summary ━━━${RESET}\n"
 printf "${GREEN}  ✓ %d passed${RESET}\n" "$pass"
 if ((fail > 0)); then

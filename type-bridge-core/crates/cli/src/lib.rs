@@ -27,7 +27,7 @@ use type_bridge_workspace::{
     ConfigOrigin, ExtensionRegistryService, ExtensionRequirement, SecretReference,
     SecretReferenceService, TypeBridgeConfigSpec, TypeBridgeWorkspace, TypeBridgeWorkspaceServices,
     WorkspaceDirectoryAuthority, WorkspaceEnvironment, WorkspaceRoot, WorkspaceServiceError,
-    WorkspaceTransportPolicy,
+    WorkspaceTransportPolicy, c_symbol_prefix_for_app_label,
 };
 
 #[derive(Parser)]
@@ -397,9 +397,92 @@ fn sanitize_migration_execution_outcome(
 /// with schema authority last; files not produced by an emitter are never
 /// touched or deleted.
 fn run_schema_generate(workspace: &TypeBridgeWorkspace) -> Result<(), String> {
+    run_schema_generate_with(workspace, |target, resolved, authority| {
+        generate_binding_package(target, resolved, authority, workspace.config().app_label())
+    })
+}
+
+fn generate_binding_package(
+    target: type_bridge_contract::projection::BindingTarget,
+    resolved: &type_bridge_schema::ResolvedSchema,
+    authority: &type_bridge_schema::VerifiedSchemaAuthority,
+    app_label: &type_bridge_contract::migration::MigrationAppLabel,
+) -> Result<type_bridge_schema_codegen::GeneratedPackage, String> {
     use type_bridge_contract::projection::{BindingTarget, ProjectionConfig};
-    use type_bridge_schema::{build_schema_authority, encode_schema_authority, project};
-    use type_bridge_schema_codegen::{PythonEmitter, RustEmitter, TypeScriptEmitter};
+    use type_bridge_schema::project;
+    use type_bridge_schema_codegen::{CEmitter, PythonEmitter, RustEmitter, TypeScriptEmitter};
+
+    match target {
+        BindingTarget::Python => {
+            let emitter = PythonEmitter::new();
+            let handlers = emitter.generator_handlers_for(resolved);
+            let resources = emitter.code_resources_for(resolved).map_err(display)?;
+            let projection = project(
+                resolved,
+                BindingTarget::Python,
+                &ProjectionConfig::python(),
+                &handlers,
+                &resources,
+            )
+            .map_err(display)?;
+            emitter.emit(&projection, authority)
+        }
+        BindingTarget::TypeScript => {
+            let emitter = TypeScriptEmitter::new();
+            let handlers = emitter.generator_handlers_for(resolved);
+            let resources = emitter.code_resources_for(resolved).map_err(display)?;
+            let projection = project(
+                resolved,
+                BindingTarget::TypeScript,
+                &ProjectionConfig::typescript(),
+                &handlers,
+                &resources,
+            )
+            .map_err(display)?;
+            emitter.emit(&projection, authority)
+        }
+        BindingTarget::Rust => {
+            let emitter = RustEmitter::new();
+            let handlers = emitter.generator_handlers_for(resolved);
+            let resources = emitter.code_resources_for(resolved).map_err(display)?;
+            let projection = project(
+                resolved,
+                BindingTarget::Rust,
+                &ProjectionConfig::rust(),
+                &handlers,
+                &resources,
+            )
+            .map_err(display)?;
+            emitter.emit(&projection, authority)
+        }
+        BindingTarget::C => {
+            let emitter = CEmitter::new();
+            let handlers = emitter.generator_handlers_for(resolved);
+            let resources = emitter.code_resources_for(resolved).map_err(display)?;
+            let config = ProjectionConfig::c(c_symbol_prefix_for_app_label(app_label));
+            let projection = project(resolved, BindingTarget::C, &config, &handlers, &resources)
+                .map_err(display)?;
+            emitter.emit(&projection, authority)
+        }
+        _ => {
+            return Err(format!(
+                "schema generation does not support binding target {}",
+                target.as_str()
+            ));
+        }
+    }
+    .map_err(display)
+}
+
+fn run_schema_generate_with(
+    workspace: &TypeBridgeWorkspace,
+    mut generate: impl FnMut(
+        type_bridge_contract::projection::BindingTarget,
+        &type_bridge_schema::ResolvedSchema,
+        &type_bridge_schema::VerifiedSchemaAuthority,
+    ) -> Result<type_bridge_schema_codegen::GeneratedPackage, String>,
+) -> Result<(), String> {
+    use type_bridge_schema::{build_schema_authority, encode_schema_authority};
 
     let outputs = workspace.config().outputs();
     let authority_output = workspace.config().schema_authority_output();
@@ -425,45 +508,7 @@ fn run_schema_generate(workspace: &TypeBridgeWorkspace) -> Result<(), String> {
     // different semantic attempt.
     let mut packages = Vec::with_capacity(outputs.len());
     for (&target, directory) in outputs {
-        let package = match target {
-            BindingTarget::Python => {
-                let emitter = PythonEmitter::new();
-                let projection = project(
-                    resolved,
-                    BindingTarget::Python,
-                    &ProjectionConfig::python(),
-                    &emitter.generator_handlers(),
-                    &emitter.code_resources().map_err(display)?,
-                )
-                .map_err(display)?;
-                emitter.emit(&projection, &authority)
-            }
-            BindingTarget::TypeScript => {
-                let emitter = TypeScriptEmitter::new();
-                let projection = project(
-                    resolved,
-                    BindingTarget::TypeScript,
-                    &ProjectionConfig::typescript(),
-                    &emitter.generator_handlers(),
-                    &emitter.code_resources().map_err(display)?,
-                )
-                .map_err(display)?;
-                emitter.emit(&projection, &authority)
-            }
-            BindingTarget::Rust => {
-                let emitter = RustEmitter::new();
-                let projection = project(
-                    resolved,
-                    BindingTarget::Rust,
-                    &ProjectionConfig::rust(),
-                    &emitter.generator_handlers(),
-                    &emitter.code_resources().map_err(display)?,
-                )
-                .map_err(display)?;
-                emitter.emit(&projection, &authority)
-            }
-        }
-        .map_err(display)?;
+        let package = generate(target, resolved, &authority)?;
         packages.push((target, directory, package));
     }
 
@@ -507,11 +552,7 @@ fn run_schema_generate(workspace: &TypeBridgeWorkspace) -> Result<(), String> {
         println!(
             "generated {} file(s) for {} into {}",
             file_count,
-            match target {
-                BindingTarget::Python => "python",
-                BindingTarget::TypeScript => "typescript",
-                BindingTarget::Rust => "rust",
-            },
+            target.as_str(),
             display_root.display(),
         );
     }
@@ -523,6 +564,122 @@ fn run_schema_generate(workspace: &TypeBridgeWorkspace) -> Result<(), String> {
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod schema_generation_atomicity_tests {
+    use std::collections::BTreeMap;
+
+    use super::*;
+    use type_bridge_contract::projection::BindingTarget;
+
+    fn snapshot(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+        let mut files = BTreeMap::new();
+        let mut directories = vec![root.to_path_buf()];
+        while let Some(directory) = directories.pop() {
+            for entry in fs::read_dir(&directory).expect("generated directory reads") {
+                let path = entry.expect("generated entry reads").path();
+                if path.is_dir() {
+                    directories.push(path);
+                } else {
+                    files.insert(
+                        path.strip_prefix(root)
+                            .expect("generated path is beneath its root")
+                            .to_path_buf(),
+                        fs::read(path).expect("generated file reads"),
+                    );
+                }
+            }
+        }
+        files
+    }
+
+    fn write_workspace(root: &Path, source: &str) -> PathBuf {
+        fs::create_dir_all(root.join("schema/fragments")).expect("schema directory creates");
+        fs::create_dir_all(root.join("migrations/v2")).expect("migration directory creates");
+        fs::write(
+            root.join("typebridge.yaml"),
+            "format: typebridge.workspace/v1\n\
+             schema:\n  root: schema/schema.yaml\n  ownership: exclusive\n  managed-scope: ordered-atomic\n\
+             compatibility:\n  semantic-profile: typedb-3.12.1/v1\n\
+             migrations:\n  directory: migrations/v2\n  app-label: ordered_atomic\n\
+             bindings:\n  python:\n    output: generated/python\n  typescript:\n    output: generated/typescript\n  rust:\n    output: generated/rust\n  c:\n    output: generated/c\n\
+             artifacts:\n  schema-authority:\n    output: generated/schema-authority.json\n",
+        )
+        .expect("manifest writes");
+        fs::write(
+            root.join("schema/schema.yaml"),
+            "format: typebridge.schema-set/v1\nsources: [fragments/*.yaml]\n",
+        )
+        .expect("schema set writes");
+        fs::write(root.join("schema/fragments/model.yaml"), source).expect("schema writes");
+        root.join("typebridge.yaml")
+    }
+
+    #[test]
+    fn injected_c_emitter_failure_preserves_all_four_ordered_packages() {
+        let directory = tempfile::tempdir().expect("workspace directory");
+        let root = directory.path();
+        let manifest = write_workspace(
+            root,
+            "format: typebridge.schema/v2\n\
+             attributes:\n  identifier: { value: string }\n  tag: { value: string }\n\
+             entities:\n  person:\n    owns:\n      identifier: { key: true }\n      tag: { card: { min: 0, max: 3 }, ordered: true, distinct: true }\n\
+             relations:\n  group:\n    relates:\n      member: { card: { min: 0, max: 3 }, ordered: true, distinct: true }\n\
+             plays:\n  person:\n    group:\n      member: { card: { min: 0, max: 1 } }\n",
+        );
+        let accepted = load_workspace(&manifest).expect("ordered workspace loads");
+        run_schema_generate(&accepted).expect("ordered packages generate");
+
+        let accepted_trees = ["python", "typescript", "rust", "c"]
+            .map(|target| (target, snapshot(&root.join("generated").join(target))));
+        let accepted_authority =
+            fs::read(root.join("generated/schema-authority.json")).expect("authority reads");
+
+        fs::write(
+            root.join("schema/fragments/model.yaml"),
+            "format: typebridge.schema/v2\n\
+             attributes:\n  identifier: { value: string }\n  tag: { value: string }\n  title: { value: string }\n\
+             entities:\n  person:\n    owns:\n      identifier: { key: true }\n      tag: { card: { min: 0, max: 4 }, ordered: true, distinct: true }\n      title: { card: 1 }\n\
+             relations:\n  group:\n    relates:\n      member: { card: { min: 0, max: 4 }, ordered: true, distinct: true }\n\
+             plays:\n  person:\n    group:\n      member: { card: { min: 0, max: 1 } }\n",
+        )
+        .expect("changed schema writes");
+        let changed = load_workspace(&manifest).expect("changed ordered workspace loads");
+        let mut attempted = Vec::new();
+        let error = run_schema_generate_with(&changed, |target, resolved, authority| {
+            attempted.push(target);
+            if target == BindingTarget::C {
+                return Err("injected C emitter failure".to_owned());
+            }
+            generate_binding_package(target, resolved, authority, changed.config().app_label())
+        })
+        .expect_err("injected C emitter failure rejects the transaction");
+        assert_eq!(error, "injected C emitter failure");
+        assert_eq!(
+            attempted,
+            vec![
+                BindingTarget::Python,
+                BindingTarget::TypeScript,
+                BindingTarget::Rust,
+                BindingTarget::C,
+            ],
+            "the injected failure did not occur after the three earlier packages prepared",
+        );
+
+        for (target, accepted_tree) in accepted_trees {
+            assert_eq!(
+                snapshot(&root.join("generated").join(target)),
+                accepted_tree,
+                "{target} destination changed after the injected C emitter failure",
+            );
+        }
+        assert_eq!(
+            fs::read(root.join("generated/schema-authority.json")).expect("authority rereads"),
+            accepted_authority,
+            "schema authority changed after the injected C emitter failure",
+        );
+    }
 }
 
 /// Export canonical declared bytes for explicitly low-level V2 tooling.

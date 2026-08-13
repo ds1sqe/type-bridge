@@ -17,17 +17,18 @@ use type_bridge_contract::query_remote::{
 use type_bridge_contract::query_remote_v2::RemoteLimitsV2;
 use type_bridge_orm::_registry::DescriptorRegistry;
 use type_bridge_orm::{
-    OrderHandle, PendingRemoteModelQueryV2, RemoteModelQueryV2Error, Window,
-    prepare_remote_model_query_v2, validate_public_order_term_count,
+    AnswerCancellation, OrderHandle, PendingRemoteModelQueryV2, QueryExecutionDeadline,
+    QueryExecutionResourceLimits, RemoteModelQueryV2Error, Window, lower_remote_query_diagnostic,
+    prepare_remote_model_query_v2_with_budget, validate_public_order_term_count,
 };
 
 use crate::match_runtime::{
     PyMatchBindingHandle, PyMatchFieldHandle, PyMatchOrderHandle, PyMatchQueryHandle,
-    borrow_reduce_terms, order_handles, parse_cardinality, py_match_error, py_match_orm_error,
-    reduce_terms,
+    PyQueryCancellation, PyQueryExecutionResourceLimits, borrow_reduce_terms, order_handles,
+    parse_cardinality, py_match_error, py_match_orm_error, py_sdk_diagnostic, reduce_terms,
 };
 use crate::query_v2_runtime::{
-    PyQueryV2Authority, PythonBytes, python_limit, python_optional_limit, value_error,
+    PyQueryV2Authority, PythonBytes, python_limit, python_optional_limit,
 };
 use crate::validated_result_runtime::PyValidatedMatchResultHandle;
 
@@ -37,19 +38,39 @@ pub(crate) struct PyRemoteModelQueryContext {
     advertisement: Vec<u8>,
     authority: Arc<type_bridge_orm::query_v2_prepared::QueryAuthority>,
     limits: RemoteLimitsV2,
+    resources: QueryExecutionResourceLimits,
+    cancellation: AnswerCancellation,
 }
 
 /// One prepared model request with an atomic one-shot reply decoder.
 #[pyclass(name = "PendingRemoteModelQuery", frozen)]
 pub(crate) struct PyPendingRemoteModelQuery {
     pending: PendingRemoteModelQueryV2,
+    deadline: QueryExecutionDeadline,
+    cancellation: AnswerCancellation,
 }
 
 #[pymethods]
 impl PyPendingRemoteModelQuery {
     /// Return an owned copy of the exact request bytes for caller transport.
-    fn request_bytes(&self) -> Vec<u8> {
-        self.pending.request_bytes().to_vec()
+    fn request_bytes(&self) -> PyResult<Vec<u8>> {
+        if self.pending.is_closed() {
+            return Err(py_sdk_diagnostic(
+                type_bridge_orm::query_resource_closed_diagnostic(),
+            ));
+        }
+        Ok(self.pending.request_bytes().to_vec())
+    }
+
+    /// Close this pending request before its reply slot is claimed.
+    fn close(&self) {
+        self.pending.close();
+    }
+
+    /// Whether this request was explicitly closed before claim.
+    #[getter]
+    fn is_closed(&self) -> bool {
+        self.pending.is_closed()
     }
 
     /// Claim, snapshot, authenticate, and decode one response to the same
@@ -59,13 +80,25 @@ impl PyPendingRemoteModelQuery {
         py: Python<'_>,
         response: &Bound<'_, PyAny>,
     ) -> PyResult<PyValidatedMatchResultHandle> {
-        let claimed = self.pending.claim_reply().map_err(remote_model_error)?;
-        let response = PythonBytes::extract(response, "response")?
-            .bounded_snapshot(claimed.response_snapshot_limit());
-        let (request, result, registry) = py
-            .allow_threads(move || claimed.decode(&response))
+        // Python type validation and the bounded caller-owned snapshot happen
+        // before the semantic one-shot claim, so FFI mistakes remain retryable.
+        let snapshot_limit = MAX_REMOTE_ENVELOPE_BYTES.saturating_add(1);
+        let response = PythonBytes::extract(response, "response")?.bounded_snapshot(snapshot_limit);
+        let cancellation = self.cancellation.clone();
+        let claimed = self
+            .pending
+            .claim_reply_with_cancellation(&cancellation)
             .map_err(remote_model_error)?;
-        Ok(PyValidatedMatchResultHandle::new(request, result, registry))
+        let (request, result, registry) = py
+            .allow_threads(move || claimed.decode_with_cancellation(&response, &cancellation))
+            .map_err(remote_model_error)?;
+        Ok(PyValidatedMatchResultHandle::new_with_budget(
+            request,
+            result,
+            registry,
+            self.deadline,
+            self.cancellation.clone(),
+        ))
     }
 }
 
@@ -107,15 +140,56 @@ pub(crate) fn query_v2_remote_model_context(
         max_role_players,
         deadline_ms,
     )?;
+    let resources = QueryExecutionResourceLimits::tightened(
+        limits
+            .deadline_ms
+            .unwrap_or(type_bridge_orm::MAX_QUERY_TIMEOUT_MILLISECONDS),
+        limits.max_items,
+        limits.max_bytes,
+        limits.max_graph_nodes,
+        limits.max_attribute_values,
+        limits.max_collection_members,
+        limits.max_role_players,
+        limits.max_statements,
+    );
     py.allow_threads({
         let advertisement = &advertisement;
         move || RemoteCapabilities::decode(advertisement)
     })
-    .map_err(|diagnostic| value_error(&diagnostic))?;
+    .map_err(|diagnostic| py_sdk_diagnostic(lower_remote_query_diagnostic(diagnostic)))?;
     Ok(PyRemoteModelQueryContext {
         advertisement,
         authority: authority.authority(),
         limits,
+        resources,
+        cancellation: AnswerCancellation::default(),
+    })
+}
+
+/// Build the same remote context from the common direct/remote resource and
+/// cancellation owners.
+#[pyfunction]
+pub(crate) fn query_v2_remote_model_context_with_resources(
+    py: Python<'_>,
+    authority: &PyQueryV2Authority,
+    advertisement: &Bound<'_, PyAny>,
+    resources: PyRef<'_, PyQueryExecutionResourceLimits>,
+    cancellation: PyRef<'_, PyQueryCancellation>,
+) -> PyResult<PyRemoteModelQueryContext> {
+    let advertisement = PythonBytes::extract(advertisement, "advertisement")?
+        .bounded_snapshot(MAX_REMOTE_ENVELOPE_BYTES.saturating_add(1));
+    py.allow_threads({
+        let advertisement = &advertisement;
+        move || RemoteCapabilities::decode(advertisement)
+    })
+    .map_err(|diagnostic| py_sdk_diagnostic(lower_remote_query_diagnostic(diagnostic)))?;
+    let resources = resources.inner();
+    Ok(PyRemoteModelQueryContext {
+        advertisement,
+        authority: authority.authority(),
+        limits: resources.remote(),
+        resources,
+        cancellation: cancellation.inner(),
     })
 }
 
@@ -131,6 +205,7 @@ pub(crate) fn query_v2_prepare_remote_model_rows(
     limit: &Bound<'_, PyAny>,
     cardinality: &str,
 ) -> PyResult<PyPendingRemoteModelQuery> {
+    let (deadline, cancellation) = begin_remote_invocation(query, context)?;
     let offset = python_unsigned(offset)?;
     let limit = python_unsigned(limit)?;
     let query = query.inner().clone();
@@ -142,7 +217,7 @@ pub(crate) fn query_v2_prepare_remote_model_rows(
             query.validate_fetch_rows(&order, Window { offset, limit }, cardinality)
         })
         .map_err(py_match_orm_error)?;
-    prepare_pending(py, context, registry, request)
+    prepare_pending(py, context, registry, request, deadline, cancellation)
 }
 
 /// Prepare one distinct-root remote page.
@@ -162,6 +237,7 @@ pub(crate) fn query_v2_prepare_remote_model_page(
     limit: &Bound<'_, PyAny>,
     include_total: &Bound<'_, PyAny>,
 ) -> PyResult<PyPendingRemoteModelQuery> {
+    let (deadline, cancellation) = begin_remote_invocation(query, context)?;
     let offset = python_unsigned(offset)?;
     let limit = python_unsigned(limit)?;
     let include_total = python_bool(include_total, "include_total")?;
@@ -174,7 +250,7 @@ pub(crate) fn query_v2_prepare_remote_model_page(
             query.validate_page_by(&root, &order, Window { offset, limit }, include_total)
         })
         .map_err(py_match_orm_error)?;
-    prepare_pending(py, context, registry, request)
+    prepare_pending(py, context, registry, request, deadline, cancellation)
 }
 
 /// Prepare one lossless distinct-root remote count.
@@ -185,13 +261,14 @@ pub(crate) fn query_v2_prepare_remote_model_count(
     context: &PyRemoteModelQueryContext,
     root: &PyMatchBindingHandle,
 ) -> PyResult<PyPendingRemoteModelQuery> {
+    let (deadline, cancellation) = begin_remote_invocation(query, context)?;
     let query = query.inner().clone();
     let registry = query.registry_arc();
     let root = root.inner().clone();
     let request = py
         .allow_threads(move || query.validate_count_by(&root))
         .map_err(py_match_orm_error)?;
-    prepare_pending(py, context, registry, request)
+    prepare_pending(py, context, registry, request, deadline, cancellation)
 }
 
 /// Prepare one distinct-root remote existence query.
@@ -202,13 +279,14 @@ pub(crate) fn query_v2_prepare_remote_model_exists(
     context: &PyRemoteModelQueryContext,
     root: &PyMatchBindingHandle,
 ) -> PyResult<PyPendingRemoteModelQuery> {
+    let (deadline, cancellation) = begin_remote_invocation(query, context)?;
     let query = query.inner().clone();
     let registry = query.registry_arc();
     let root = root.inner().clone();
     let request = py
         .allow_threads(move || query.validate_exists_by(&root))
         .map_err(py_match_orm_error)?;
-    prepare_pending(py, context, registry, request)
+    prepare_pending(py, context, registry, request, deadline, cancellation)
 }
 
 /// Prepare one typed ungrouped or grouped reduction over a distinct root.
@@ -223,13 +301,21 @@ pub(crate) fn query_v2_prepare_remote_model_reduce(
     reducers: Vec<String>,
     inputs: Vec<Option<Py<PyMatchFieldHandle>>>,
 ) -> PyResult<PyPendingRemoteModelQuery> {
+    let (deadline, cancellation) = begin_remote_invocation(query, context)?;
     let terms = reduce_terms(py, &reducers, &inputs)?;
     let terms = borrow_reduce_terms(&terms);
     let request = query
         .inner()
         .validate_reduce_by(root.inner(), group.map(PyMatchBindingHandle::inner), &terms)
         .map_err(py_match_orm_error)?;
-    prepare_pending(py, context, query.inner().registry_arc(), request)
+    prepare_pending(
+        py,
+        context,
+        query.inner().registry_arc(),
+        request,
+        deadline,
+        cancellation,
+    )
 }
 
 /// Prepare one typed reduction grouped by a projected owned field.
@@ -244,13 +330,21 @@ pub(crate) fn query_v2_prepare_remote_model_reduce_by_field(
     reducers: Vec<String>,
     inputs: Vec<Option<Py<PyMatchFieldHandle>>>,
 ) -> PyResult<PyPendingRemoteModelQuery> {
+    let (deadline, cancellation) = begin_remote_invocation(query, context)?;
     let terms = reduce_terms(py, &reducers, &inputs)?;
     let terms = borrow_reduce_terms(&terms);
     let request = query
         .inner()
         .validate_reduce_by_field(root.inner(), group.inner(), &terms)
         .map_err(py_match_orm_error)?;
-    prepare_pending(py, context, query.inner().registry_arc(), request)
+    prepare_pending(
+        py,
+        context,
+        query.inner().registry_arc(),
+        request,
+        deadline,
+        cancellation,
+    )
 }
 
 /// Prepare one typed reduction grouped by an ordered tuple of projected owned fields.
@@ -265,6 +359,7 @@ pub(crate) fn query_v2_prepare_remote_model_reduce_by_fields(
     reducers: Vec<String>,
     inputs: Vec<Option<Py<PyMatchFieldHandle>>>,
 ) -> PyResult<PyPendingRemoteModelQuery> {
+    let (deadline, cancellation) = begin_remote_invocation(query, context)?;
     let groups = groups
         .iter()
         .map(|group| group.borrow(py).inner().clone())
@@ -276,7 +371,26 @@ pub(crate) fn query_v2_prepare_remote_model_reduce_by_fields(
         .inner()
         .validate_reduce_by_fields(root.inner(), &groups, &terms)
         .map_err(py_match_orm_error)?;
-    prepare_pending(py, context, query.inner().registry_arc(), request)
+    prepare_pending(
+        py,
+        context,
+        query.inner().registry_arc(),
+        request,
+        deadline,
+        cancellation,
+    )
+}
+
+fn begin_remote_invocation(
+    query: &PyMatchQueryHandle,
+    context: &PyRemoteModelQueryContext,
+) -> PyResult<(QueryExecutionDeadline, AnswerCancellation)> {
+    query.ensure_open()?;
+    let deadline = QueryExecutionDeadline::for_limits(context.resources);
+    deadline
+        .check(&context.cancellation)
+        .map_err(py_sdk_diagnostic)?;
+    Ok((deadline, context.cancellation.clone()))
 }
 
 fn prepare_pending(
@@ -284,16 +398,31 @@ fn prepare_pending(
     context: &PyRemoteModelQueryContext,
     registry: Arc<DescriptorRegistry>,
     request: type_bridge_orm::ValidatedMatchRequest,
+    deadline: QueryExecutionDeadline,
+    cancellation: AnswerCancellation,
 ) -> PyResult<PyPendingRemoteModelQuery> {
     let authority = Arc::clone(&context.authority);
     let advertisement = context.advertisement.clone();
     let limits = context.limits;
+    let execution_cancellation = cancellation.clone();
     let pending = py
         .allow_threads(move || {
-            prepare_remote_model_query_v2(&authority, &registry, request, &advertisement, limits)
+            prepare_remote_model_query_v2_with_budget(
+                &authority,
+                &registry,
+                request,
+                &advertisement,
+                limits,
+                deadline,
+                &execution_cancellation,
+            )
         })
         .map_err(remote_model_error)?;
-    Ok(PyPendingRemoteModelQuery { pending })
+    Ok(PyPendingRemoteModelQuery {
+        pending,
+        deadline,
+        cancellation,
+    })
 }
 
 fn remote_limits_v2(
@@ -314,21 +443,27 @@ fn remote_limits_v2(
             max_graph_nodes: checked_remote_limit(python_limit(max_graph_nodes)?)?,
             max_attribute_values: checked_remote_limit(python_limit(max_attribute_values)?)?,
             max_role_players: checked_remote_limit(python_limit(max_role_players)?)?,
+            max_statements: 3,
         })
     };
-    build().map_err(|diagnostic| value_error(&diagnostic))
+    build().map_err(|diagnostic| py_sdk_diagnostic(lower_remote_query_diagnostic(diagnostic)))
 }
 
 fn remote_model_error(error: RemoteModelQueryV2Error) -> PyErr {
     match error {
-        RemoteModelQueryV2Error::Diagnostic(diagnostic) => value_error(&diagnostic),
+        RemoteModelQueryV2Error::Diagnostic(diagnostic) => {
+            py_sdk_diagnostic(lower_remote_query_diagnostic(diagnostic))
+        }
         RemoteModelQueryV2Error::Match(error) => py_match_error(error),
     }
 }
 
 fn python_unsigned(value: &Bound<'_, PyAny>) -> PyResult<u64> {
-    checked_remote_limit(python_limit(value).map_err(|diagnostic| value_error(&diagnostic))?)
-        .map_err(|diagnostic| value_error(&diagnostic))
+    checked_remote_limit(
+        python_limit(value)
+            .map_err(|diagnostic| py_sdk_diagnostic(lower_remote_query_diagnostic(diagnostic)))?,
+    )
+    .map_err(|diagnostic| py_sdk_diagnostic(lower_remote_query_diagnostic(diagnostic)))
 }
 
 fn python_bool(value: &Bound<'_, PyAny>, argument: &'static str) -> PyResult<bool> {
@@ -353,6 +488,10 @@ pub fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyRemoteModelQueryContext>()?;
     module.add_class::<PyPendingRemoteModelQuery>()?;
     module.add_function(wrap_pyfunction!(query_v2_remote_model_context, module)?)?;
+    module.add_function(wrap_pyfunction!(
+        query_v2_remote_model_context_with_resources,
+        module
+    )?)?;
     module.add_function(wrap_pyfunction!(
         query_v2_prepare_remote_model_rows,
         module

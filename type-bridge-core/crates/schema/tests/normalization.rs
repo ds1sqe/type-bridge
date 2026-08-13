@@ -1,9 +1,12 @@
 use std::collections::BTreeSet;
 
-use type_bridge_contract::id::{FunctionId, RoleId, StructId, TypeId, TypeKind};
+use type_bridge_contract::id::{AttributeId, FunctionId, RoleId, StructId, TypeId, TypeKind};
 use type_bridge_contract::limits::MAX_CANONICAL_STRING_BYTES;
 use type_bridge_contract::schema::DocumentId;
-use type_bridge_contract::schema::{AnnotationSubjectId, RelatesFactId, SchemaFact, SchemaFactId};
+use type_bridge_contract::schema::{
+    AnnotationKindId, AnnotationSubjectId, CollectionMode, FunctionReturnMode, OwnsFactId,
+    RelatesFactId, SchemaFact, SchemaFactId,
+};
 use type_bridge_contract::value::ValueTypeTag;
 use type_bridge_schema::{SchemaDocumentSet, normalize_documents};
 
@@ -13,6 +16,140 @@ fn documents(source: &str) -> SchemaDocumentSet {
         source,
     )])
     .expect("fixture YAML parses")
+}
+
+#[test]
+fn ordered_and_distinct_owns_and_relates_normalize_as_independent_facts() {
+    let declared = normalize_documents(&documents(
+        r#"format: typebridge.schema/v2
+attributes:
+  tag: { value: string }
+entities:
+  article:
+    owns:
+      tag: { ordered: true, distinct: true }
+relations:
+  collection:
+    relates:
+      member: { ordered: true, distinct: true }
+"#,
+    ))
+    .expect("ordered collections normalize");
+
+    let owns_id = OwnsFactId::new(
+        TypeId::new(TypeKind::Entity, "article").unwrap(),
+        AttributeId::new("tag").unwrap(),
+    )
+    .unwrap();
+    let relates_id = RelatesFactId::new(
+        TypeId::new(TypeKind::Relation, "collection").unwrap(),
+        RoleId::new("collection", "member").unwrap(),
+    )
+    .unwrap();
+    let Some(SchemaFact::Owns(owns)) = declared.fact(&SchemaFactId::Owns(owns_id.clone())) else {
+        panic!("ordered owns fact exists");
+    };
+    let Some(SchemaFact::Relates(relates)) =
+        declared.fact(&SchemaFactId::Relates(relates_id.clone()))
+    else {
+        panic!("ordered relates fact exists");
+    };
+    assert_eq!(owns.collection_mode(), CollectionMode::OrderedList);
+    assert_eq!(relates.collection_mode(), CollectionMode::OrderedList);
+
+    for subject in [
+        AnnotationSubjectId::Owns(owns_id),
+        AnnotationSubjectId::Relates(relates_id),
+    ] {
+        assert!(declared.facts().any(|fact| matches!(
+            fact,
+            SchemaFact::Annotation(annotation)
+                if annotation.id().subject() == &subject
+                    && annotation.id().kind() == &AnnotationKindId::Distinct
+        )));
+    }
+}
+
+#[test]
+fn omitted_collection_flags_preserve_the_unordered_compatibility_default() {
+    let declared = normalize_documents(&documents(
+        r#"format: typebridge.schema/v2
+attributes:
+  tag: { value: string }
+entities:
+  article: { owns: [tag] }
+relations:
+  collection: { relates: [member] }
+"#,
+    ))
+    .expect("unordered collections normalize");
+
+    for fact in declared.facts() {
+        match fact {
+            SchemaFact::Owns(fact) => {
+                assert_eq!(fact.collection_mode(), CollectionMode::Unordered)
+            }
+            SchemaFact::Relates(fact) => {
+                assert_eq!(fact.collection_mode(), CollectionMode::Unordered)
+            }
+            _ => {}
+        }
+    }
+}
+
+#[test]
+fn collection_flags_reject_false_string_non_boolean_and_plays_forms() {
+    for (fragment, expected) in [
+        (
+            "entities:\n  article:\n    owns:\n      tag: { ordered: false }\n",
+            "false_presence_annotation",
+        ),
+        (
+            "entities:\n  article:\n    owns:\n      tag: { distinct: false }\n",
+            "false_presence_annotation",
+        ),
+        (
+            "entities:\n  article:\n    owns:\n      tag: { ordered: \"true\" }\n",
+            "invalid_schema_boolean",
+        ),
+        (
+            "entities:\n  article:\n    owns:\n      tag: { ordered: 1 }\n",
+            "invalid_schema_boolean",
+        ),
+        (
+            "entities:\n  article: {}\nrelations:\n  collection: { relates: [member] }\nplays:\n  article:\n    collection:\n      member: { ordered: true }\n",
+            "unknown_schema_document_key",
+        ),
+    ] {
+        let source = format!(
+            "format: typebridge.schema/v2\nattributes:\n  tag: {{ value: string }}\n{fragment}"
+        );
+        let error = normalize_documents(&documents(&source)).expect_err("invalid flag rejects");
+        let diagnostic = error.iter().next().expect("one diagnostic");
+        assert_eq!(diagnostic.diagnostic().code().as_str(), expected);
+        assert!(diagnostic.primary().is_some());
+    }
+}
+
+#[test]
+fn distinct_requires_an_explicit_ordered_collection() {
+    for fragment in [
+        "entities:\n  article:\n    owns:\n      tag: { distinct: true }\n",
+        "relations:\n  collection:\n    relates:\n      member: { distinct: true }\n",
+    ] {
+        let source = format!(
+            "format: typebridge.schema/v2\nattributes:\n  tag: {{ value: string }}\n{fragment}"
+        );
+        let error = normalize_documents(&documents(&source))
+            .expect_err("distinct unordered collection rejects");
+        let diagnostic = error.iter().next().expect("one diagnostic");
+        assert_eq!(
+            diagnostic.diagnostic().code().as_str(),
+            "distinct_requires_ordered_collection"
+        );
+        assert!(diagnostic.primary().is_some());
+        assert_eq!(diagnostic.related().len(), 1);
+    }
 }
 
 #[test]
@@ -551,6 +688,54 @@ functions:
         first.declared_identity_fingerprint(),
         second.declared_identity_fingerprint()
     );
+}
+
+#[test]
+fn normalizes_every_closed_function_return_shape_and_rejects_ambiguous_shapes() {
+    let source = r#"format: typebridge.schema/v2
+functions:
+  scalar-answer:
+    returns: { scalar: integer }
+    body: { typeql: "match let $x = 42; return first $x;" }
+  tuple-answer:
+    returns: { tuple: [integer, string] }
+    body: { typeql: "match let $x = 42; let $y = 'answer'; return first $x, $y;" }
+  stream-answer:
+    returns: { stream: [integer] }
+    body: { typeql: "match let $x = 42; return { $x };" }
+"#;
+    let declared = normalize_documents(&documents(source)).expect("return shapes normalize");
+    let function = |name: &str| {
+        let id = SchemaFactId::Function(FunctionId::new(name).unwrap());
+        let Some(SchemaFact::Function(function)) = declared.fact(&id) else {
+            panic!("function {name} exists")
+        };
+        function
+    };
+    assert!(matches!(
+        function("scalar-answer").signature().returns(),
+        FunctionReturnMode::Scalar(_)
+    ));
+    assert!(matches!(
+        function("tuple-answer").signature().returns(),
+        FunctionReturnMode::Tuple(elements) if elements.len() == 2
+    ));
+    assert!(matches!(
+        function("stream-answer").signature().returns(),
+        FunctionReturnMode::Stream(elements) if elements.len() == 1
+    ));
+
+    for returns in [
+        "{}",
+        "{ scalar: integer, stream: [integer] }",
+        "{ tuple: [integer] }",
+        "{ stream: [] }",
+    ] {
+        let source = format!(
+            "format: typebridge.schema/v2\nfunctions:\n  answer:\n    returns: {returns}\n    body: {{ typeql: \"match let $x = 42; return first $x;\" }}\n"
+        );
+        normalize_documents(&documents(&source)).expect_err("invalid return shape rejects");
+    }
 }
 
 #[test]

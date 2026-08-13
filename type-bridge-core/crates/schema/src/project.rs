@@ -1,17 +1,18 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory};
+use type_bridge_contract::fingerprint::{CanonicalizationVersion, Fingerprint, FingerprintDomain};
 use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind};
 use type_bridge_contract::projection::{
-    BindingTarget, CodeResourceDigest, CompleteReadProjection, CreateFieldProjection,
-    CreateProjection, CreateRoleProjection, DeclarationProjection, DeclaredRoleProjection,
-    DirectSubProjection, EmissionPlan, FieldTokenProjection, FunctionParameterProjection,
-    FunctionProjection, FunctionReturnElementProjection, FunctionReturnProjection, ModelProjection,
-    PlayingProjection, ProjectedAnnotation, ProjectedModelForm, ProjectedModelUse,
-    ProjectedMultiplicity, ProjectedTypeRef, ProjectionConfig, ProjectionHandler,
-    QueryTokenProjection, ReadFieldProjection, ReadRoleProjection, ReferenceReadProjection,
-    RoleTokenProjection, RuntimeProjection, RustCreatePolicy, StructFieldProjection,
-    StructProjection, TargetIdentifier,
+    BindingTarget, CNamingPolicy, CodeResourceDigest, CompleteReadProjection,
+    CreateFieldProjection, CreateProjection, CreateRoleProjection, DeclarationProjection,
+    DeclaredRoleProjection, DirectSubProjection, EmissionPlan, FieldTokenProjection,
+    FunctionParameterProjection, FunctionProjection, FunctionReturnElementProjection,
+    FunctionReturnProjection, ModelProjection, PlayingProjection, ProjectedAnnotation,
+    ProjectedModelForm, ProjectedModelUse, ProjectedMultiplicity, ProjectedTypeRef,
+    ProjectionConfig, ProjectionHandler, QueryTokenProjection, ReadFieldProjection,
+    ReadRoleProjection, ReferenceReadProjection, RoleTokenProjection, RuntimeProjection,
+    RustCreatePolicy, StructFieldProjection, StructProjection, TargetIdentifier,
 };
 use type_bridge_contract::schema::{
     AnnotationFactId, AnnotationKindId, AnnotationSubjectId, FunctionReturnMode, OwnsFactId,
@@ -20,6 +21,10 @@ use type_bridge_contract::schema::{
 };
 
 use crate::resolve::{EffectiveRelates, ResolvedSchema, ResolvedType};
+
+const C_MAX_TARGET_IDENTIFIER_BYTES: usize = 255;
+const C_IDENTIFIER_DIGEST_DOMAIN: &str = "typebridge.binding.c-identifier";
+const C_IDENTIFIER_CANONICALIZATION: &str = "typebridge.c-identifier/v1";
 
 fn no_source(error: Diagnostic) -> SchemaDiagnostics {
     SchemaDiagnostics::one(SchemaDiagnostic::new(error, None))
@@ -70,6 +75,43 @@ fn rust_member_name(label: &str) -> String {
     label.replace('-', "_").to_ascii_lowercase()
 }
 
+fn c_v1_escape(label: &str) -> String {
+    let mut escaped = String::with_capacity(label.len());
+    for byte in label.bytes() {
+        match byte {
+            b'a'..=b'y' | b'A'..=b'Z' | b'0'..=b'9' => escaped.push(char::from(byte)),
+            b'z' => escaped.push_str("zz"),
+            b'-' => escaped.push_str("zh"),
+            b'_' => escaped.push_str("zu"),
+            _ => escaped.push_str(&format!("zx{byte:02x}")),
+        }
+    }
+    escaped
+}
+
+fn c_identifier(value: String) -> Result<TargetIdentifier, SchemaDiagnostics> {
+    let bounded = if value.len() <= C_MAX_TARGET_IDENTIFIER_BYTES {
+        value
+    } else {
+        let digest = Fingerprint::compute(
+            FingerprintDomain::new(C_IDENTIFIER_DIGEST_DOMAIN)
+                .expect("the built-in C identifier fingerprint domain is valid"),
+            CanonicalizationVersion::new(C_IDENTIFIER_CANONICALIZATION)
+                .expect("the built-in C identifier canonicalization is valid"),
+            None,
+            value.as_bytes(),
+        )
+        .digest()
+        .to_hex();
+        let mut stem_bytes = C_MAX_TARGET_IDENTIFIER_BYTES - digest.len() - 1;
+        while value.as_bytes().get(stem_bytes - 1) == Some(&b'_') {
+            stem_bytes -= 1;
+        }
+        format!("{}_{}", &value[..stem_bytes], digest)
+    };
+    TargetIdentifier::c(bounded).map_err(no_source)
+}
+
 fn python_identifier(value: String) -> Result<TargetIdentifier, SchemaDiagnostics> {
     if matches!(value.as_str(), "iid" | "model_config" | "model_fields")
         || value.starts_with("__") && value.ends_with("__")
@@ -107,37 +149,181 @@ fn rust_identifier(value: String) -> Result<TargetIdentifier, SchemaDiagnostics>
     TargetIdentifier::rust(value).map_err(no_source)
 }
 
-fn class_identifier(
+struct ProjectionNamer<'a> {
     target: BindingTarget,
-    label: &str,
-) -> Result<TargetIdentifier, SchemaDiagnostics> {
-    let value = python_class_name(label);
-    match target {
-        BindingTarget::Python => python_identifier(value),
-        BindingTarget::TypeScript => typescript_identifier(value),
-        BindingTarget::Rust => rust_identifier(value),
-    }
+    c_symbol_prefix: Option<&'a str>,
 }
 
-fn member_identifier(
-    target: BindingTarget,
-    label: &str,
-) -> Result<TargetIdentifier, SchemaDiagnostics> {
-    match target {
-        BindingTarget::Python => python_identifier(python_member_name(label)),
-        BindingTarget::TypeScript => typescript_identifier(typescript_member_name(label)),
-        BindingTarget::Rust => rust_identifier(rust_member_name(label)),
+impl<'a> ProjectionNamer<'a> {
+    fn new(target: BindingTarget, config: &'a ProjectionConfig) -> Result<Self, SchemaDiagnostics> {
+        let c_symbol_prefix = if target == BindingTarget::C {
+            if config.c_naming_policy() != Some(CNamingPolicy::TypeBridgeV1) {
+                return Err(projection_error(
+                    "unsupported_c_naming_policy",
+                    "C projection does not recognize the configured naming policy",
+                ));
+            }
+            Some(
+                config
+                    .c_symbol_prefix()
+                    .ok_or_else(|| {
+                        projection_error(
+                            "missing_c_symbol_prefix",
+                            "C projection configuration omits its symbol prefix",
+                        )
+                    })?
+                    .as_str(),
+            )
+        } else {
+            None
+        };
+        Ok(Self {
+            target,
+            c_symbol_prefix,
+        })
     }
-}
 
-fn reference_identifier(
-    target: BindingTarget,
-    name: &TargetIdentifier,
-) -> Result<TargetIdentifier, SchemaDiagnostics> {
-    match target {
-        BindingTarget::Python => python_identifier(format!("{}Ref", name.as_str())),
-        BindingTarget::TypeScript => typescript_identifier(format!("{}Ref", name.as_str())),
-        BindingTarget::Rust => rust_identifier(format!("{}Ref", name.as_str())),
+    fn c_symbol_prefix(&self) -> &str {
+        self.c_symbol_prefix
+            .expect("C naming is only requested for a validated C configuration")
+    }
+
+    fn c_label_identifier(&self, label: &str) -> Result<TargetIdentifier, SchemaDiagnostics> {
+        c_identifier(format!("{}_{}", self.c_symbol_prefix(), c_v1_escape(label)))
+    }
+
+    fn class_identifier(&self, label: &str) -> Result<TargetIdentifier, SchemaDiagnostics> {
+        let value = python_class_name(label);
+        if self.target == BindingTarget::Python {
+            python_identifier(value)
+        } else if self.target == BindingTarget::TypeScript {
+            typescript_identifier(value)
+        } else if self.target == BindingTarget::Rust {
+            rust_identifier(value)
+        } else if self.target == BindingTarget::C {
+            self.c_label_identifier(label)
+        } else {
+            Err(projection_error(
+                "unsupported_binding_projection_target",
+                "schema projection does not support this binding target",
+            ))
+        }
+    }
+
+    fn member_identifier(&self, label: &str) -> Result<TargetIdentifier, SchemaDiagnostics> {
+        if self.target == BindingTarget::Python {
+            python_identifier(python_member_name(label))
+        } else if self.target == BindingTarget::TypeScript {
+            typescript_identifier(typescript_member_name(label))
+        } else if self.target == BindingTarget::Rust {
+            rust_identifier(rust_member_name(label))
+        } else if self.target == BindingTarget::C {
+            self.c_label_identifier(label)
+        } else {
+            Err(projection_error(
+                "unsupported_binding_projection_target",
+                "schema projection does not support this binding target",
+            ))
+        }
+    }
+
+    fn reference_identifier(
+        &self,
+        name: &TargetIdentifier,
+    ) -> Result<TargetIdentifier, SchemaDiagnostics> {
+        if self.target == BindingTarget::Python {
+            python_identifier(format!("{}Ref", name.as_str()))
+        } else if self.target == BindingTarget::TypeScript {
+            typescript_identifier(format!("{}Ref", name.as_str()))
+        } else if self.target == BindingTarget::Rust {
+            rust_identifier(format!("{}Ref", name.as_str()))
+        } else if self.target == BindingTarget::C {
+            c_identifier(format!("{}_ref", name.as_str()))
+        } else {
+            Err(projection_error(
+                "unsupported_binding_projection_target",
+                "schema projection does not support this binding target",
+            ))
+        }
+    }
+
+    fn query_token_identifier(
+        &self,
+        model_name: &TargetIdentifier,
+    ) -> Result<Option<TargetIdentifier>, SchemaDiagnostics> {
+        if self.target == BindingTarget::Rust {
+            rust_identifier(format!("{}Type", model_name.as_str())).map(Some)
+        } else if self.target == BindingTarget::C {
+            c_identifier(format!("{}_type", model_name.as_str())).map(Some)
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn player_union_identifier(
+        &self,
+        model_name: &TargetIdentifier,
+        role_label: &str,
+    ) -> Result<Option<TargetIdentifier>, SchemaDiagnostics> {
+        if self.target == BindingTarget::Rust {
+            rust_identifier(format!(
+                "{}{}Player",
+                model_name.as_str(),
+                python_class_name(role_label),
+            ))
+            .map(Some)
+        } else if self.target == BindingTarget::C {
+            c_identifier(format!(
+                "{}_{}_player",
+                model_name.as_str(),
+                c_v1_escape(role_label),
+            ))
+            .map(Some)
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn create_identifier(
+        &self,
+        model_name: &TargetIdentifier,
+    ) -> Result<Option<TargetIdentifier>, SchemaDiagnostics> {
+        if self.target == BindingTarget::Rust {
+            rust_identifier(format!("{}Create", model_name.as_str())).map(Some)
+        } else if self.target == BindingTarget::C {
+            c_identifier(format!("{}_create", model_name.as_str())).map(Some)
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn playing_identifier(
+        &self,
+        player_label: &str,
+        relation_label: &str,
+        role_label: &str,
+    ) -> Result<TargetIdentifier, SchemaDiagnostics> {
+        if self.target == BindingTarget::C {
+            c_identifier(format!(
+                "{}_plays_{}_relation_{}_role_{}",
+                self.c_symbol_prefix(),
+                c_v1_escape(player_label),
+                c_v1_escape(relation_label),
+                c_v1_escape(role_label),
+            ))
+        } else {
+            self.member_identifier(&format!(
+                "plays-{player_label}-{relation_label}-{role_label}"
+            ))
+        }
+    }
+
+    fn c_schema_package_identifier(&self) -> Result<Option<TargetIdentifier>, SchemaDiagnostics> {
+        if self.target == BindingTarget::C {
+            c_identifier(format!("{}_schema_package_open", self.c_symbol_prefix())).map(Some)
+        } else {
+            Ok(None)
+        }
     }
 }
 
@@ -437,22 +623,25 @@ pub fn project(
             "projection configuration belongs to a different target",
         ));
     }
+    let namer = ProjectionNamer::new(target, config)?;
     let mut names = NameRegistry::default();
+    if let Some(descriptor_name) = namer.c_schema_package_identifier()? {
+        names.insert("root", &descriptor_name, "runtime:c-schema-package-open")?;
+    }
     let mut models = BTreeMap::new();
     let mut playing_facts = BTreeMap::new();
 
     for (id, resolved_type) in resolved.types() {
-        let target_name = class_identifier(target, id.label().as_str())?;
+        let target_name = namer.class_identifier(id.label().as_str())?;
         names.insert("root", &target_name, format!("model:{id:?}"))?;
         let reference_name = if matches!(id.kind(), TypeKind::Entity | TypeKind::Relation) {
-            let reference = reference_identifier(target, &target_name)?;
+            let reference = namer.reference_identifier(&target_name)?;
             names.insert("root", &reference, format!("reference:{id:?}"))?;
             Some(reference)
         } else {
             None
         };
-        let query_token_name = if target == BindingTarget::Rust {
-            let name = rust_identifier(format!("{}Type", target_name.as_str()))?;
+        let query_token_name = if let Some(name) = namer.query_token_identifier(&target_name)? {
             names.insert("root", &name, format!("query-token:{id:?}"))?;
             Some(name)
         } else {
@@ -477,7 +666,7 @@ pub fn project(
                         "ordered ownership is absent from the effective ownership map",
                     )
                 })?;
-            let name = member_identifier(target, owns.id().attribute().label().as_str())?;
+            let name = namer.member_identifier(owns.id().attribute().label().as_str())?;
             names.insert(
                 format!("model:{id:?}"),
                 &name,
@@ -492,7 +681,8 @@ pub fn project(
                     ));
                 }
             };
-            let multiplicity = ProjectedMultiplicity::from_cardinality(owns.cardinality());
+            let multiplicity =
+                ProjectedMultiplicity::new(owns.cardinality(), owns.collection_mode());
             let token = FieldTokenProjection::new(
                 owns.id().clone(),
                 declaring_id,
@@ -543,7 +733,7 @@ pub fn project(
             if replaced.contains(role_id) {
                 continue;
             }
-            let name = member_identifier(target, role_id.label().as_str())?;
+            let name = namer.member_identifier(role_id.label().as_str())?;
             names.insert(format!("model:{id:?}"), &name, format!("role:{role_id:?}"))?;
             let resolved_role = resolved.roles().get(role_id).ok_or_else(|| {
                 projection_error(
@@ -552,13 +742,11 @@ pub fn project(
                 )
             })?;
             let specializes = immediate_specialization(resolved_type, relates)?;
-            let multiplicity = ProjectedMultiplicity::from_cardinality(relates.cardinality());
-            let player_union_name = if target == BindingTarget::Rust {
-                let name = rust_identifier(format!(
-                    "{}{}Player",
-                    target_name.as_str(),
-                    python_class_name(role_id.label().as_str()),
-                ))?;
+            let multiplicity =
+                ProjectedMultiplicity::new(relates.cardinality(), relates.collection_mode());
+            let player_union_name = if let Some(name) =
+                namer.player_union_identifier(&target_name, role_id.label().as_str())?
+            {
                 names.insert("root", &name, format!("player-union:{id:?}:{role_id:?}"))?;
                 Some(name)
             } else {
@@ -620,14 +808,10 @@ pub fn project(
             if plays.origin().is_direct() {
                 direct_plays.insert(plays.id().clone());
             }
-            let plays_name = member_identifier(
-                target,
-                &format!(
-                    "plays-{}-{}-{}",
-                    id.label(),
-                    plays.id().role().declaring_relation(),
-                    plays.id().role().label()
-                ),
+            let plays_name = namer.playing_identifier(
+                id.label().as_str(),
+                plays.id().role().declaring_relation().as_str(),
+                plays.id().role().label().as_str(),
             )?;
             names.insert("root", &plays_name, format!("plays:{:?}", plays.id()))?;
             let projected = PlayingProjection::new(
@@ -696,16 +880,21 @@ pub fn project(
         .map_err(no_source)?
         .with_value_annotations(value_annotations)
         .map_err(no_source)?;
-        let create_target_name = if target == BindingTarget::Rust && create_enabled {
-            if config.rust_create_policy() != Some(RustCreatePolicy::ValidatedInputV1) {
+        let create_target_name = if create_enabled {
+            if target == BindingTarget::Rust
+                && config.rust_create_policy() != Some(RustCreatePolicy::ValidatedInputV1)
+            {
                 return Err(projection_error(
                     "unsupported_rust_create_policy",
                     "Rust projection does not recognize the configured create policy",
                 ));
             }
-            let name = rust_identifier(format!("{}Create", target_name.as_str()))?;
-            names.insert("root", &name, format!("create:{id:?}"))?;
-            Some(name)
+            if let Some(name) = namer.create_identifier(&target_name)? {
+                names.insert("root", &name, format!("create:{id:?}"))?;
+                Some(name)
+            } else {
+                None
+            }
         } else {
             None
         };
@@ -762,11 +951,11 @@ pub fn project(
 
     let mut structs = BTreeMap::new();
     for (id, structure) in resolved.structs() {
-        let target_name = class_identifier(target, id.label().as_str())?;
+        let target_name = namer.class_identifier(id.label().as_str())?;
         names.insert("root", &target_name, format!("struct:{id:?}"))?;
         let mut fields = Vec::new();
         for field in structure.fields() {
-            let target_field = member_identifier(target, field.name().as_str())?;
+            let target_field = namer.member_identifier(field.name().as_str())?;
             names.insert(
                 format!("struct:{id:?}"),
                 &target_field,
@@ -787,11 +976,11 @@ pub fn project(
 
     let mut functions = BTreeMap::new();
     for (id, function) in resolved.functions() {
-        let target_name = member_identifier(target, id.label().as_str())?;
+        let target_name = namer.member_identifier(id.label().as_str())?;
         names.insert("root", &target_name, format!("function:{id:?}"))?;
         let mut parameters = Vec::new();
         for parameter in function.declaration().signature().parameters() {
-            let target_parameter = member_identifier(target, parameter.name().as_str())?;
+            let target_parameter = namer.member_identifier(parameter.name().as_str())?;
             names.insert(
                 format!("function:{id:?}"),
                 &target_parameter,

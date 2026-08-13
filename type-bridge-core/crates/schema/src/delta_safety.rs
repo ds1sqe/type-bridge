@@ -51,7 +51,7 @@ pub type DeltaSafety = SafetyClass;
 /// A malformed formal transition that cannot be assigned a safety class.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SafetyClassificationError {
-    /// A relates replacement retained the absence of a specialization.
+    /// A relates replacement changed neither specialization nor collection mode.
     UnchangedRelatesSpecialization,
     /// A redefinition changed the fact category under one identity.
     RedefinitionCategoryChanged,
@@ -62,7 +62,7 @@ impl SafetyClassificationError {
     pub const fn message(self) -> &'static str {
         match self {
             Self::UnchangedRelatesSpecialization => {
-                "relates redefinition does not change specialization"
+                "relates redefinition does not change specialization or collection mode"
             }
             Self::RedefinitionCategoryChanged => "schema redefinition changed fact category",
         }
@@ -142,9 +142,12 @@ fn classify_redefinition(
 ) -> Result<SafetyClass, SafetyClassificationError> {
     match (expected, replacement) {
         (SchemaFact::Relates(old), SchemaFact::Relates(new)) => {
-            match (old.specializes(), new.specializes()) {
-                (None, None) => Err(SafetyClassificationError::UnchangedRelatesSpecialization),
-                _ => Ok(SafetyClass::Conditional),
+            if old.collection_mode() != new.collection_mode() {
+                Ok(SafetyClass::Unsupported)
+            } else if old.specializes() != new.specializes() {
+                Ok(SafetyClass::Conditional)
+            } else {
+                Err(SafetyClassificationError::UnchangedRelatesSpecialization)
             }
         }
         (SchemaFact::Annotation(old), SchemaFact::Annotation(new)) => Ok(classify_annotation(
@@ -234,6 +237,7 @@ fn classify_annotation(
             AnnotationTransition::Remove => SafetyClass::Additive,
             AnnotationTransition::Change => SafetyClass::Unsupported,
         },
+        AnnotationKindId::Distinct => SafetyClass::Unsupported,
         AnnotationKindId::Card => SafetyClass::Conditional,
         AnnotationKindId::Regex | AnnotationKindId::Range | AnnotationKindId::Values => {
             match transition {
@@ -291,6 +295,7 @@ fn annotation_supported(subject: &AnnotationSubjectId, kind: &AnnotationKindId) 
             kind,
             AnnotationKindId::Key
                 | AnnotationKindId::Unique
+                | AnnotationKindId::Distinct
                 | AnnotationKindId::Card
                 | AnnotationKindId::Regex
                 | AnnotationKindId::Range
@@ -301,6 +306,7 @@ fn annotation_supported(subject: &AnnotationSubjectId, kind: &AnnotationKindId) 
         AnnotationSubjectId::Relates(_) => matches!(
             kind,
             AnnotationKindId::Abstract
+                | AnnotationKindId::Distinct
                 | AnnotationKindId::Card
                 | AnnotationKindId::Doc
                 | AnnotationKindId::Meta(_)

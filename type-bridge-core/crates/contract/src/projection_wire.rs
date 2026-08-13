@@ -4,25 +4,26 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::codec::from_canonical_json;
+use crate::codec::{from_canonical_json, to_canonical_json};
 use crate::diagnostic::{Diagnostic, DiagnosticCategory};
 use crate::fingerprint::Fingerprint;
 use crate::id::{AttributeId, FunctionId, Label, RoleId, StructId, TypeId};
 use crate::projection::{
-    BindingTarget, CodeResourceDigest, CompleteReadProjection, CreateFieldProjection,
-    CreateProjection, CreateRoleProjection, DeclarationProjection, DeclaredRoleProjection,
-    DirectSubProjection, EmissionPlan, FieldTokenProjection, FunctionParameterProjection,
-    FunctionProjection, FunctionReturnElementProjection, FunctionReturnProjection, ModelProjection,
-    PlayingProjection, ProjectedAnnotation, ProjectedContainer, ProjectedModelForm,
-    ProjectedModelUse, ProjectedMultiplicity, ProjectedTypeRef, ProjectionConfig,
-    ProjectionHandler, QueryTokenProjection, ReadFieldProjection, ReadRoleProjection,
-    ReferenceConstructionPolicy, ReferenceReadProjection, RoleTokenProjection, RuntimeProjection,
-    StructFieldProjection, StructProjection, TargetIdentifier,
+    BindingTarget, CSymbolPrefix, CodeResourceDigest, CompleteReadProjection,
+    CreateFieldProjection, CreateProjection, CreateRoleProjection, DeclarationProjection,
+    DeclaredRoleProjection, DirectSubProjection, EmissionPlan, FieldTokenProjection,
+    FunctionParameterProjection, FunctionProjection, FunctionReturnElementProjection,
+    FunctionReturnProjection, ModelProjection, PlayingProjection, ProjectedAnnotation,
+    ProjectedContainer, ProjectedModelForm, ProjectedModelUse, ProjectedMultiplicity,
+    ProjectedTypeRef, ProjectionConfig, ProjectionHandler, QueryTokenProjection,
+    ReadFieldProjection, ReadRoleProjection, ReferenceConstructionPolicy, ReferenceReadProjection,
+    RoleTokenProjection, RuntimeProjection, StructFieldProjection, StructProjection,
+    TargetIdentifier,
 };
 use crate::schema::{
     AnnotationFactId, AnnotationKindId, AnnotationSubjectId, CanonicalValueRange,
-    CanonicalValueSet, DocText, OwnsFactId, PlaysFactId, RegexPattern, RelatesFactId,
-    SchemaAnnotationValue, SchemaFactId, SubFactId, ValueFactId,
+    CanonicalValueSet, CollectionMode, DocText, OwnsFactId, PlaysFactId, RegexPattern,
+    RelatesFactId, SchemaAnnotationValue, SchemaFactId, SubFactId, ValueFactId,
 };
 use crate::schema_fingerprint::SemanticSchemaFingerprint;
 use crate::value::{CanonicalValue, Cardinality, ValueTypeTag};
@@ -51,6 +52,12 @@ pub fn decode_runtime_projection_verified(
             "runtime projection content does not match its embedded and detached binding fingerprints",
         ));
     }
+    if to_canonical_json(&rebuilt)? != projection {
+        return Err(invalid(
+            "non_canonical_runtime_projection",
+            "runtime projection bytes normalize after trusted reconstruction",
+        ));
+    }
     Ok(rebuilt)
 }
 
@@ -67,6 +74,7 @@ fn target_name(target: BindingTarget, value: String) -> Result<TargetIdentifier,
         BindingTarget::Python => TargetIdentifier::python(value),
         BindingTarget::TypeScript => TargetIdentifier::typescript(value),
         BindingTarget::Rust => TargetIdentifier::rust(value),
+        BindingTarget::C => TargetIdentifier::c(value),
     }
 }
 
@@ -97,6 +105,7 @@ enum BindingTargetWire {
     #[serde(rename = "typescript")]
     TypeScript,
     Rust,
+    C,
 }
 
 impl From<BindingTargetWire> for BindingTarget {
@@ -105,6 +114,7 @@ impl From<BindingTargetWire> for BindingTarget {
             BindingTargetWire::Python => Self::Python,
             BindingTargetWire::TypeScript => Self::TypeScript,
             BindingTargetWire::Rust => Self::Rust,
+            BindingTargetWire::C => Self::C,
         }
     }
 }
@@ -124,6 +134,11 @@ enum ProjectionConfigWire {
     Rust {
         naming_policy: RustNamingPolicyWire,
         create_policy: RustCreatePolicyWire,
+    },
+    #[serde(rename = "c")]
+    C {
+        naming_policy: CNamingPolicyWire,
+        symbol_prefix: String,
     },
 }
 
@@ -151,13 +166,22 @@ enum RustCreatePolicyWire {
     ValidatedInputV1,
 }
 
+#[derive(Deserialize, Serialize)]
+enum CNamingPolicyWire {
+    #[serde(rename = "typebridge.c/v1")]
+    TypeBridgeV1,
+}
+
 impl ProjectionConfigWire {
-    fn rebuild(self) -> ProjectionConfig {
-        match self {
+    fn rebuild(self) -> Result<ProjectionConfig, Diagnostic> {
+        Ok(match self {
             Self::Python { .. } => ProjectionConfig::python(),
             Self::TypeScript { .. } => ProjectionConfig::typescript(),
             Self::Rust { .. } => ProjectionConfig::rust(),
-        }
+            Self::C { symbol_prefix, .. } => {
+                ProjectionConfig::c(CSymbolPrefix::new(symbol_prefix)?)
+            }
+        })
     }
 }
 
@@ -273,6 +297,7 @@ enum AnnotationKindWire {
     Independent,
     Key,
     Unique,
+    Distinct,
     Card,
     Regex,
     Range,
@@ -288,6 +313,7 @@ impl AnnotationKindWire {
             Self::Independent => AnnotationKindId::Independent,
             Self::Key => AnnotationKindId::Key,
             Self::Unique => AnnotationKindId::Unique,
+            Self::Distinct => AnnotationKindId::Distinct,
             Self::Card => AnnotationKindId::Card,
             Self::Regex => AnnotationKindId::Regex,
             Self::Range => AnnotationKindId::Range,
@@ -432,17 +458,42 @@ enum ProjectedContainerWire {
     Sequence,
 }
 
+#[derive(Clone, Copy, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum CollectionModeWire {
+    #[default]
+    Unordered,
+    OrderedList,
+}
+
+impl CollectionModeWire {
+    const fn is_unordered(&self) -> bool {
+        matches!(self, Self::Unordered)
+    }
+}
+
+impl From<CollectionModeWire> for CollectionMode {
+    fn from(value: CollectionModeWire) -> Self {
+        match value {
+            CollectionModeWire::Unordered => Self::Unordered,
+            CollectionModeWire::OrderedList => Self::OrderedList,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct MultiplicityWire {
     cardinality: Cardinality,
     required: bool,
     container: ProjectedContainerWire,
+    #[serde(default, skip_serializing_if = "CollectionModeWire::is_unordered")]
+    collection_mode: CollectionModeWire,
 }
 
 impl MultiplicityWire {
     fn rebuild(self) -> Result<ProjectedMultiplicity, Diagnostic> {
-        let rebuilt = ProjectedMultiplicity::from_cardinality(self.cardinality);
+        let rebuilt = ProjectedMultiplicity::new(self.cardinality, self.collection_mode.into());
         let container = match rebuilt.container() {
             ProjectedContainer::Scalar => ProjectedContainerWire::Scalar,
             ProjectedContainer::Sequence => ProjectedContainerWire::Sequence,
@@ -1123,7 +1174,7 @@ impl RuntimeProjectionWire {
         )?;
         RuntimeProjection::try_new(
             target,
-            self.config.rebuild(),
+            self.config.rebuild()?,
             semantic,
             &handlers,
             &resources,

@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::__codegen::{
@@ -105,6 +106,36 @@ impl MaterializeModel for Record {
             &[],
             &__codegen::ValidationPath::root(),
         )?;
+        Ok(Self)
+    }
+}
+
+#[derive(Debug)]
+struct SlowRecord;
+impl sealed::Sealed for SlowRecord {}
+impl Model for SlowRecord {
+    type Schema = TestSchema;
+    const TYPE_ID_JSON: &'static str = RECORD_JSON;
+}
+impl ThingModel for SlowRecord {
+    fn thing_kind() -> __codegen::ThingKind {
+        __codegen::ThingKind::Entity
+    }
+}
+impl EntityModel for SlowRecord {}
+impl CompleteModel for SlowRecord {
+    type Create = RecordCreate;
+    fn iid(&self) -> &str {
+        unreachable!()
+    }
+}
+
+static SLOW_MATERIALIZATION_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+impl MaterializeModel for SlowRecord {
+    fn materialize(_: &HydratedRow, _: &HydrationCapability) -> Result<Self, ValidationError> {
+        SLOW_MATERIALIZATION_CALLS.fetch_add(1, Ordering::SeqCst);
+        std::thread::sleep(std::time::Duration::from_millis(25));
         Ok(Self)
     }
 }
@@ -317,6 +348,52 @@ fn query_session_allocates_fresh_copy_bindings_without_io() {
 }
 
 #[test]
+fn query_resources_close_idempotently_with_independent_persistent_lineages() {
+    let (db, state) = test_db();
+    let mut session = db.query().unwrap();
+    let record = session.exact::<Record>().unwrap();
+    let input = session.query(record).unwrap();
+    let cloned = input.clone();
+    let derived = input.where_(record.iid("0x01")).unwrap();
+    let sibling = session.query(record).unwrap();
+
+    derived.close();
+    derived.close();
+    assert!(derived.is_closed());
+    let derived_error = match derived.where_(record.iid("0x02")) {
+        Err(error) => error,
+        Ok(_) => panic!("closed derived query must reject composition"),
+    };
+    assert_eq!(derived_error.code(), Some("query_resource_closed"));
+    assert!(input.lineage().is_ok());
+    assert!(cloned.lineage().is_ok());
+    assert!(sibling.lineage().is_ok());
+
+    input.close();
+    input.close();
+    assert!(input.is_closed());
+    assert_eq!(
+        input.lineage().unwrap_err().code(),
+        Some("query_resource_closed")
+    );
+    assert!(cloned.lineage().is_ok());
+    assert!(sibling.lineage().is_ok());
+
+    session.close();
+    session.close();
+    assert!(session.is_closed());
+    assert_eq!(
+        sibling.lineage().unwrap_err().code(),
+        Some("query_resource_closed")
+    );
+    assert_eq!(
+        session.exact::<Record>().unwrap_err().code(),
+        Some("query_resource_closed")
+    );
+    assert_eq!(state.lock().unwrap().opened, 0);
+}
+
+#[test]
 fn query_session_rejects_cross_session_and_unprojected_handles() {
     let (db, state) = test_db();
     let mut session_a = db.query().unwrap();
@@ -331,7 +408,7 @@ fn query_session_rejects_cross_session_and_unprojected_handles() {
     );
     let ghost = session_a.exact::<Ghost>().unwrap_err();
     assert!(!matches!(ghost, crate::Error::ModelValidation { .. }));
-    assert!(ghost.to_string().contains("ghost"));
+    assert_eq!(ghost.code(), Some("unknown_descriptor"));
     assert_eq!(state.lock().unwrap().opened, 0);
 }
 
@@ -567,7 +644,7 @@ fn predicates_lower_operators_and_compose_by_domain() {
     let assignment = match assignment {
         Ok(binding) => binding,
         Err(error) => {
-            assert!(error.to_string().contains("assignment"));
+            assert_eq!(error.code(), Some("unknown_descriptor"));
             return;
         }
     };
@@ -617,7 +694,10 @@ async fn query_facade_builds_validated_requests_and_replays_recorded_results() {
         .unwrap();
     executor.push(RecordingMatchResponse::EmptyRows);
     let result = executor.execute(&rows_request).unwrap();
-    let outputs = query.outputs_from_rows(&rows_request, &result).unwrap();
+    let deadline = query.session.begin_invocation().unwrap();
+    let outputs = query
+        .outputs_from_rows(&rows_request, &result, deadline)
+        .unwrap();
     assert!(outputs.is_empty());
 
     let count_request = query.validated_count_by(record).unwrap();
@@ -908,7 +988,8 @@ async fn collected_named_shapes_validate_root_pages_and_owned_envelopes() {
     let mut executor = RecordingMatchExecutor::new(registry);
     executor.push(RecordingMatchResponse::EmptyPage { total: Some(3) });
     let result = executor.execute(&validated).unwrap();
-    let page = query.output_page(&validated, &result).unwrap();
+    let deadline = query.session.begin_invocation().unwrap();
+    let page = query.output_page(&validated, &result, deadline).unwrap();
     assert!(page.items().is_empty());
     assert_eq!(page.offset(), 3);
     assert_eq!(page.limit(), 5);
@@ -1031,6 +1112,94 @@ async fn query_facade_rejects_cross_owner_fields_and_zero_limits_before_io() {
         "zero_limit",
     );
     assert_eq!(state.lock().unwrap().opened, 0);
+}
+
+#[tokio::test]
+async fn query_terminal_budget_rejects_zero_timeout_and_precancellation_before_provider_io() {
+    let (db, state) = test_db();
+    let zero_timeout = type_bridge_orm::QueryExecutionResourceLimits {
+        timeout_milliseconds: 0,
+        ..type_bridge_orm::QueryExecutionResourceLimits::default()
+    };
+    let mut timed_session = db
+        .query_with_resources(zero_timeout, type_bridge_orm::AnswerCancellation::default())
+        .unwrap();
+    let timed_record = timed_session.exact::<Record>().unwrap();
+    let timed_error = timed_session
+        .query(timed_record)
+        .unwrap()
+        .count()
+        .await
+        .expect_err("zero timeout must fail before opening a transaction");
+    assert_eq!(timed_error.category(), crate::ErrorCategory::ResourceLimit);
+    assert_eq!(timed_error.code(), Some("transaction_deadline_exceeded"));
+    assert_eq!(
+        timed_error.diagnostic_path(),
+        Some(
+            &[crate::ErrorPathSegment::Query(
+                crate::QueryDiagnosticPathKind::ProviderEvidence
+            )][..]
+        )
+    );
+
+    let cancellation = type_bridge_orm::AnswerCancellation::default();
+    cancellation.cancel();
+    let mut cancelled_session = db
+        .query_with_resources(
+            type_bridge_orm::QueryExecutionResourceLimits::default(),
+            cancellation,
+        )
+        .unwrap();
+    let cancelled_record = cancelled_session.exact::<Record>().unwrap();
+    let cancelled_error = cancelled_session
+        .query(cancelled_record)
+        .unwrap()
+        .count()
+        .await
+        .expect_err("pre-cancellation must fail before opening a transaction");
+    assert_eq!(cancelled_error.category(), crate::ErrorCategory::Cancelled);
+    assert_eq!(cancelled_error.code(), Some("provider_cancelled"));
+    assert_eq!(state.lock().unwrap().opened, 0);
+}
+
+#[test]
+fn rust_generated_materialization_observes_the_same_absolute_deadline() {
+    use type_bridge_orm::match_request::MatchRow;
+
+    SLOW_MATERIALIZATION_CALLS.store(0, Ordering::SeqCst);
+    let (db, _state) = test_db();
+    let mut session = db.query().unwrap();
+    let record = session.exact::<SlowRecord>().unwrap();
+    let query = session.query(record).unwrap();
+    let thing = serde_json::json!({
+        "concept_id": "0x01",
+        "declared_descriptor": "entity:record",
+        "concrete_descriptor": "entity:record",
+        "kind": "entity",
+        "attributes": [
+            {
+                "field": {"owner": "entity:record", "name": "name"},
+                "values": [{"String": "Alice"}]
+            },
+            {
+                "field": {"owner": "entity:record", "name": "tally"},
+                "values": [{"Long": 1}]
+            }
+        ],
+        "roles": []
+    });
+    let row: MatchRow = serde_json::from_value(serde_json::json!({
+        "slots": [{"kind": "one", "value": thing}]
+    }))
+    .unwrap();
+    let deadline = type_bridge_orm::QueryExecutionDeadline::from_timeout_milliseconds(5);
+
+    let error = query
+        .materialize_rows(&[row], deadline)
+        .expect_err("expiry during generated-model construction must discard the partial output");
+    assert_eq!(SLOW_MATERIALIZATION_CALLS.load(Ordering::SeqCst), 1);
+    assert_eq!(error.category(), crate::ErrorCategory::ResourceLimit);
+    assert_eq!(error.code(), Some("transaction_deadline_exceeded"));
 }
 
 #[tokio::test]

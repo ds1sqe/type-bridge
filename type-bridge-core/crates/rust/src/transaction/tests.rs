@@ -21,6 +21,8 @@ struct TestSchema;
 impl sealed::Sealed for TestSchema {}
 impl Schema for TestSchema {}
 
+fn assert_send<T: Send>(_: T) {}
+
 const PERSON_JSON: &str = r#"{"kind":"entity","label":"person"}"#;
 const NAME_OWNS: &str = r#"{"attribute":"name","owner":{"kind":"entity","label":"person"}}"#;
 const ASSIGNMENT_JSON: &str = r#"{"kind":"relation","label":"assignment"}"#;
@@ -350,6 +352,21 @@ fn assert_model_error(
     assert_eq!(
         actual_path,
         path.iter().map(|v| (*v).to_owned()).collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
+async fn routed_borrowed_transaction_future_is_send() {
+    let (db, state) = test_db(Vec::new());
+    let tx = db.write().await.unwrap();
+    let manager = tx.entities::<Worker>();
+    assert_send(manager.insert(WorkerCreate {
+        name: "send-proof".into(),
+    }));
+    tx.rollback().await.unwrap();
+    assert_eq!(
+        state.lock().unwrap().events.as_slice(),
+        &[Event::Open(TxType::Write), Event::Rollback]
     );
 }
 

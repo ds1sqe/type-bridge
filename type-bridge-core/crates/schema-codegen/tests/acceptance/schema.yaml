@@ -131,6 +131,18 @@ structs:
       - { name: nickname, type: string, optional: true }
       - { name: wins, type: integer }
 functions:
+  qualifying-score:
+    parameters:
+      - { name: person, type: person }
+      - { name: minimum, type: integer }
+    returns: { scalar: integer }
+    body:
+      typeql: |-
+        match
+          $person has score $score-attribute;
+          let $score = $score-attribute;
+          $score >= $minimum;
+        return first $score;
   find-events:
     parameters:
       - { name: event, type: event }

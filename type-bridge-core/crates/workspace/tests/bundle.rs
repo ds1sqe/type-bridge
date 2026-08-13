@@ -11,7 +11,9 @@ use type_bridge_contract::fingerprint::{
 };
 use type_bridge_contract::managed_scope::{ManagedScopeBinding, ManagedScopeId};
 use type_bridge_contract::migration::MigrationAppLabel;
-use type_bridge_contract::projection::{BindingTarget, ProjectionConfig, ProjectionHandler};
+use type_bridge_contract::projection::{
+    BindingTarget, CSymbolPrefix, CodeResourceDigest, ProjectionConfig, ProjectionHandler,
+};
 use type_bridge_workspace::{
     BundleProjectionContext, BundleVerificationContext, ExtensionRegistryService,
     ExtensionRequirement, MAX_SCHEMA_BUNDLE_BYTES, MigrationV2Directory, OutputDirectory,
@@ -19,8 +21,8 @@ use type_bridge_workspace::{
     SchemaBundleErrorCode, SchemaSetPath, SecretReference, SecretReferenceService,
     TYPEBRIDGE_SCHEMA_BUNDLE_V1, TypeBridgeConfig, TypeBridgeConfigServices, TypeBridgeRuntime,
     TypeBridgeWorkspace, TypeBridgeWorkspaceServices, WorkspaceDirectoryAuthority, WorkspaceRoot,
-    WorkspaceServiceError, build_verified_schema_bundle, decode_verified_schema_bundle,
-    encode_verified_schema_bundle,
+    WorkspaceServiceError, build_verified_schema_bundle, c_symbol_prefix_for_app_label,
+    decode_verified_schema_bundle, encode_verified_schema_bundle,
 };
 
 static NEXT_TEMP_DIRECTORY: AtomicU64 = AtomicU64::new(0);
@@ -117,6 +119,10 @@ fn workspace(directory: &TempDirectory) -> TypeBridgeWorkspace {
             BindingTarget::Rust,
             OutputDirectory::new("generated/rust").unwrap(),
         )
+        .output(
+            BindingTarget::C,
+            OutputDirectory::new("generated/c").unwrap(),
+        )
         .build(&TypeBridgeConfigServices::new(
             &source,
             &secrets,
@@ -130,7 +136,23 @@ fn workspace(directory: &TempDirectory) -> TypeBridgeWorkspace {
     .unwrap()
 }
 
+fn ordered_workspace(directory: &TempDirectory) -> TypeBridgeWorkspace {
+    fs::write(
+        directory.0.join("schema.yaml"),
+        "format: typebridge.schema/v2\nattributes:\n  tag: { value: string }\n\
+         entities:\n  person:\n    owns:\n      tag: { card: { min: 0, max: 3 }, ordered: true, distinct: true }\n",
+    )
+    .unwrap();
+    workspace(directory)
+}
+
 fn context() -> BundleVerificationContext {
+    context_with_c_prefix(c_symbol_prefix_for_app_label(
+        &MigrationAppLabel::new("example").unwrap(),
+    ))
+}
+
+fn context_with_c_prefix(c_symbol_prefix: CSymbolPrefix) -> BundleVerificationContext {
     BundleVerificationContext::new(
         SemanticProfileId::new("typedb-3.12.1/v1").unwrap(),
         ManagedScopeBinding::exclusive(ManagedScopeId::new("example-schema").unwrap()).unwrap(),
@@ -152,9 +174,94 @@ fn context() -> BundleVerificationContext {
                 vec![ProjectionHandler::rust_v1()],
             )
             .unwrap(),
+            BundleProjectionContext::new(
+                ProjectionConfig::c(c_symbol_prefix),
+                vec![ProjectionHandler::c_v2()],
+            )
+            .unwrap(),
         ],
     )
     .unwrap()
+}
+
+fn resources(target: BindingTarget) -> Vec<CodeResourceDigest> {
+    let ids: &[&str] = match target {
+        BindingTarget::Python => &[
+            "typebridge.generator.python.py-typed",
+            "typebridge.generator.python.query-source",
+            "typebridge.generator.python.query-stub",
+            "typebridge.generator.python.runtime-source",
+            "typebridge.generator.python.runtime-stub",
+        ],
+        BindingTarget::TypeScript => &[
+            "typebridge.generator.typescript.package-json",
+            "typebridge.generator.typescript.runtime-source",
+            "typebridge.generator.typescript.tsconfig-json",
+        ],
+        BindingTarget::Rust => &[
+            "typebridge.generator.rust.cargo-toml",
+            "typebridge.generator.rust.runtime-source",
+        ],
+        BindingTarget::C => &[
+            "typebridge.generator.c.cmake-package-config-template",
+            "typebridge.generator.c.cmake-template",
+            "typebridge.generator.c.pkg-config-template",
+        ],
+        _ => panic!("test resource inventory does not support this binding target"),
+    };
+    ids.iter()
+        .map(|id| {
+            CodeResourceDigest::from_bytes(*id, format!("successor:{id}").as_bytes()).unwrap()
+        })
+        .collect()
+}
+
+fn ordered_context() -> BundleVerificationContext {
+    BundleVerificationContext::new(
+        SemanticProfileId::new("typedb-3.12.1/v1").unwrap(),
+        ManagedScopeBinding::exclusive(ManagedScopeId::new("example-schema").unwrap()).unwrap(),
+        capabilities(),
+        [extension()],
+        [
+            BundleProjectionContext::new_with_evidence(
+                ProjectionConfig::python(),
+                vec![ProjectionHandler::python_v2()],
+                resources(BindingTarget::Python),
+            )
+            .unwrap(),
+            BundleProjectionContext::new_with_evidence(
+                ProjectionConfig::typescript(),
+                vec![ProjectionHandler::typescript_v2()],
+                resources(BindingTarget::TypeScript),
+            )
+            .unwrap(),
+            BundleProjectionContext::new_with_evidence(
+                ProjectionConfig::rust(),
+                vec![ProjectionHandler::rust_v2()],
+                resources(BindingTarget::Rust),
+            )
+            .unwrap(),
+            BundleProjectionContext::new_with_evidence(
+                ProjectionConfig::c(c_symbol_prefix_for_app_label(
+                    &MigrationAppLabel::new("example").unwrap(),
+                )),
+                vec![ProjectionHandler::c_v3()],
+                resources(BindingTarget::C),
+            )
+            .unwrap(),
+        ],
+    )
+    .unwrap()
+}
+
+#[test]
+fn bundle_creation_rejects_a_c_prefix_not_derived_from_the_workspace_app_label() {
+    let directory = TempDirectory::new();
+    let workspace = workspace(&directory);
+    let context = context_with_c_prefix(CSymbolPrefix::new("foreign").unwrap());
+    let error = build_verified_schema_bundle(&workspace, &context)
+        .expect_err("a foreign C link namespace must not enter the workspace bundle");
+    assert_eq!(error.code(), SchemaBundleErrorCode::ContextMismatch);
 }
 
 fn bundle_value(bytes: &[u8]) -> Value {
@@ -206,7 +313,7 @@ fn build_twice_decode_roundtrip_and_source_free_runtime_are_exact() {
     assert_eq!(bytes, encode_verified_schema_bundle(&second));
     let decoded = decode_verified_schema_bundle(&bytes, &context).unwrap();
     assert_eq!(encode_verified_schema_bundle(&decoded), bytes);
-    assert_eq!(decoded.projections().len(), 3);
+    assert_eq!(decoded.projections().len(), 4);
 
     let runtime = TypeBridgeRuntime::from_bundle_bytes(&bytes, &context).unwrap();
     assert_eq!(runtime.bundle_fingerprint(), first.bundle_fingerprint());
@@ -223,11 +330,26 @@ fn build_twice_decode_roundtrip_and_source_free_runtime_are_exact() {
         BindingTarget::Python,
         BindingTarget::TypeScript,
         BindingTarget::Rust,
+        BindingTarget::C,
     ] {
         assert!(runtime.projection(target).is_some());
     }
 
+    let value = bundle_value(&bytes);
+    let c = value["content"]["projections"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["target"] == "c")
+        .expect("bundle wire retains the C projection target");
+    assert_eq!(c["config"]["binding"], "c");
+    assert_eq!(c["config"]["symbol_prefix"], "tb_example");
+
     let text = String::from_utf8(bytes).unwrap();
+    assert!(
+        !text.contains("resource_evidence"),
+        "the legacy unordered bundle wire gained successor resource evidence",
+    );
     assert!(!text.contains(directory.0.to_string_lossy().as_ref()));
     assert!(!text.contains("schema.yaml"));
     assert!(!text.contains("source-only"));
@@ -238,6 +360,58 @@ fn build_twice_decode_roundtrip_and_source_free_runtime_are_exact() {
     assert_eq!(
         source["document"],
         "__typebridge_compiled__/declared-schema-v1"
+    );
+}
+
+#[test]
+fn ordered_bundle_binds_successor_handlers_and_resources_exactly() {
+    let directory = TempDirectory::new();
+    let ordered = ordered_workspace(&directory);
+    let ordered_context = ordered_context();
+    let bundle = build_verified_schema_bundle(&ordered, &ordered_context).unwrap();
+    let bytes = encode_verified_schema_bundle(&bundle);
+    let decoded = decode_verified_schema_bundle(&bytes, &ordered_context).unwrap();
+    assert_eq!(encode_verified_schema_bundle(&decoded), bytes);
+
+    let value = bundle_value(&bytes);
+    for projection in value["content"]["projections"].as_array().unwrap() {
+        let expected_version = if projection["target"] == "c" { 3 } else { 2 };
+        assert_eq!(
+            projection["handler_evidence"][0]["version"],
+            expected_version
+        );
+        assert!(
+            !projection["resource_evidence"]
+                .as_array()
+                .unwrap()
+                .is_empty(),
+            "ordered projection omitted its successor resource ledger",
+        );
+    }
+
+    assert_eq!(
+        build_verified_schema_bundle(&ordered, &context())
+            .unwrap_err()
+            .code(),
+        SchemaBundleErrorCode::UnsupportedProjectionEvidence,
+    );
+    let unordered = TempDirectory::new();
+    assert_eq!(
+        build_verified_schema_bundle(&workspace(&unordered), &ordered_context)
+            .unwrap_err()
+            .code(),
+        SchemaBundleErrorCode::UnsupportedProjectionEvidence,
+    );
+
+    let mut tampered = value;
+    python_projection(&mut tampered)["resource_evidence"][0]["digest"] =
+        Value::String("0".repeat(64));
+    rehash_bundle(&mut tampered);
+    assert_eq!(
+        decode_verified_schema_bundle(&to_canonical_json(&tampered).unwrap(), &ordered_context)
+            .unwrap_err()
+            .code(),
+        SchemaBundleErrorCode::ContextMismatch,
     );
 }
 
@@ -413,6 +587,28 @@ fn projection_context_requires_the_exact_shipped_handler_set() {
     )
     .unwrap_err();
     assert_eq!(error.code(), SchemaBundleErrorCode::ContextMismatch);
+
+    let legacy_with_resources = BundleProjectionContext::new_with_evidence(
+        ProjectionConfig::rust(),
+        vec![ProjectionHandler::rust_v1()],
+        resources(BindingTarget::Rust),
+    )
+    .unwrap_err();
+    assert_eq!(
+        legacy_with_resources.code(),
+        SchemaBundleErrorCode::ContextMismatch
+    );
+
+    let successor_without_resources = BundleProjectionContext::new_with_evidence(
+        ProjectionConfig::rust(),
+        vec![ProjectionHandler::rust_v2()],
+        Vec::new(),
+    )
+    .unwrap_err();
+    assert_eq!(
+        successor_without_resources.code(),
+        SchemaBundleErrorCode::ContextMismatch
+    );
 }
 
 #[test]

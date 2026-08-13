@@ -29,9 +29,8 @@ pub struct OwnedAttributeDescriptor {
     pub is_optional: bool,
     /// Whether this ownership is declared as an ordered list (`owns name[]`).
     ///
-    /// Instance-level list semantics are engine-unimplemented (REP256); this field
-    /// is a schema-emission marker only. The `@distinct` annotation is valid only
-    /// when this is `true`.
+    /// Projected construction, write lowering, and hydration retain caller/provider
+    /// order. The `@distinct` annotation is valid only when this is `true`.
     #[serde(default)]
     pub is_ordered: bool,
     /// Optional `@doc("...")` documentation annotation on the ownership (TypeDB 3.12+).
@@ -95,8 +94,8 @@ pub struct RoleDescriptor {
     pub is_abstract: bool,
     /// Whether this role is declared as an ordered list (`relates name[]`).
     ///
-    /// Instance-level list semantics are engine-unimplemented (REP256); this field
-    /// is a schema-emission marker only.
+    /// Projected construction, write lowering, and hydration retain caller/provider
+    /// order.
     #[serde(default)]
     pub ordered: bool,
     /// Whether this role carries a schema-level `@distinct` annotation.

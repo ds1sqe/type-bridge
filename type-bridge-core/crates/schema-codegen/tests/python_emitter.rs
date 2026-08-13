@@ -474,9 +474,11 @@ fn emits_exact_deterministic_eleven_file_compound_package() {
                 .unwrap()
     );
     assert!(source.contains("class PlayerStats(_StructValue):"));
-    assert!(source.contains(
-        "find_employment: FunctionRef[[Person], Iterator[EmploymentRef]] = FunctionRef("
-    ));
+    let find_employment = source
+        .lines()
+        .find(|line| line.starts_with("find_employment = "))
+        .expect("function token assignment is emitted");
+    assert!(find_employment.contains("\"find-employment\""));
     assert!(source.contains("_install_runtime_projection("));
     assert!(source.contains("_initialize_attribute(self, value,"));
     assert!(stub.contains(

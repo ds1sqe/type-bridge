@@ -10,9 +10,13 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use regex::Regex;
 use type_bridge_contract::id::{TypeId, TypeKind};
-use type_bridge_contract::query_plan::{CompatibilityValueV2, ReleasedValueKindV2};
+use type_bridge_contract::query_plan::{
+    CompatibilityValueV2, QueryFieldV2, QueryReductionGroupV2, QueryReductionKindV2,
+    QueryReductionTermV2, ReleasedValueKindV2,
+};
 use type_bridge_contract::query_remote_v2::{
     HydrationGraphV2, HydrationNodeKindV2, HydrationReferenceV2, HydrationSlotV2, RemoteOutcomeV2,
+    RemoteReducedValueV2, RemoteReductionGroupV2, RemoteReductionRowV2,
 };
 use type_bridge_contract::temporal::{
     CanonicalDate, CanonicalDateTime, CanonicalDateTimeTz, CanonicalDuration,
@@ -31,12 +35,13 @@ use super::ids::{BindingId, BoundFieldId, DescriptorId, FieldId, RoleEdgeId, Rol
 use super::limits::MAX_SEMANTIC_ID_BYTES;
 use super::model::{
     ComparisonOp, FetchShape, FetchSlot, MatchBinding, MatchExpr, MatchMode, MatchOperation,
-    MatchOrder, MissingOrder, Reduction, RowCardinality, SortDirection, ThingKind, Window,
+    MatchOrder, MissingOrder, ReduceTerm, Reduction, RowCardinality, SortDirection, ThingKind,
+    Window,
 };
 use super::result::{
     ConceptId, HydratedAttribute, HydratedRole, HydratedRolePlayer, HydratedThing, MatchResult,
     MatchRow, ProviderResultEvidence, ProviderResultPayload, ProviderSolutionEvidence,
-    ReducedValue, SlotValue, ValidatedMatchResult,
+    ReducedValue, ReductionRow, SlotValue, ValidatedMatchResult,
 };
 use super::validation::{StableOrderSpec, ValidatedMatchRequest};
 
@@ -705,6 +710,22 @@ pub(crate) fn validated_match_result_from_v2(
                 value,
             }
         }
+        (
+            operation @ (MatchOperation::ReduceBy { .. }
+            | MatchOperation::ReduceByField { .. }
+            | MatchOperation::ReduceByFields { .. }),
+            RemoteOutcomeV2::ModelReduction {
+                graph,
+                root,
+                group,
+                reducers,
+                rows,
+            },
+        ) => {
+            return released_reduction_result(
+                registry, validated, operation, &graph, root, group, reducers, rows,
+            );
+        }
         _ => {
             return Err(result_error(
                 "result_operation_mismatch",
@@ -718,6 +739,218 @@ pub(crate) fn validated_match_result_from_v2(
         validated.shape_id().clone(),
         result,
     ))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn released_reduction_result(
+    registry: &DescriptorRegistry,
+    validated: &ValidatedMatchRequest,
+    operation: &MatchOperation,
+    graph: &HydrationGraphV2,
+    root: type_bridge_contract::migration_assertion::BindingId,
+    group: Option<QueryReductionGroupV2>,
+    reducers: Vec<QueryReductionTermV2>,
+    rows: Vec<RemoteReductionRowV2>,
+) -> Result<ValidatedMatchResult, MatchError> {
+    let actual_root = BindingId::new(root.get());
+    let echoed_reducers = reducers
+        .iter()
+        .map(|term| released_reducer(registry, term))
+        .collect::<Result<Vec<_>, _>>()?;
+    let evidence = match operation {
+        MatchOperation::ReduceBy {
+            root,
+            group: expected_group,
+            reducers,
+        } => {
+            require_root(*root, actual_root, "reduction_root_mismatch")?;
+            let actual_group = match group {
+                None => None,
+                Some(QueryReductionGroupV2::Binding { binding }) => {
+                    Some(BindingId::new(binding.get()))
+                }
+                Some(
+                    QueryReductionGroupV2::Field { .. } | QueryReductionGroupV2::Fields { .. },
+                ) => {
+                    return Err(result_error(
+                        "reduction_group_mismatch",
+                        "remote reduction echoed the wrong group contract kind",
+                    ));
+                }
+            };
+            if actual_group != *expected_group || &echoed_reducers != reducers {
+                return Err(result_error(
+                    "reduction_contract_mismatch",
+                    "remote reduction did not echo the exact validated group and reducer contract",
+                ));
+            }
+            ProviderResultEvidence::reduction(
+                validated.request_token(),
+                validated.shape_id().clone(),
+                *root,
+                *expected_group,
+                released_reduction_rows(registry, graph, rows)?,
+            )
+        }
+        MatchOperation::ReduceByField {
+            root,
+            group: expected_group,
+            reducers,
+        } => {
+            require_root(*root, actual_root, "field_reduction_root_mismatch")?;
+            let Some(QueryReductionGroupV2::Field { field }) = group else {
+                return Err(result_error(
+                    "field_reduction_group_mismatch",
+                    "remote reduction echoed the wrong field group contract kind",
+                ));
+            };
+            let actual_group = released_query_field(registry, &field)?;
+            if &actual_group != expected_group || &echoed_reducers != reducers {
+                return Err(result_error(
+                    "field_reduction_contract_mismatch",
+                    "remote reduction did not echo the exact validated field group and reducer contract",
+                ));
+            }
+            ProviderResultEvidence::field_reduction(
+                validated.request_token(),
+                validated.shape_id().clone(),
+                *root,
+                expected_group.clone(),
+                released_reduction_rows(registry, graph, rows)?,
+            )
+        }
+        MatchOperation::ReduceByFields {
+            root,
+            groups: expected_groups,
+            reducers,
+        } => {
+            require_root(*root, actual_root, "field_tuple_reduction_root_mismatch")?;
+            let Some(QueryReductionGroupV2::Fields { fields }) = group else {
+                return Err(result_error(
+                    "field_tuple_reduction_groups_mismatch",
+                    "remote reduction echoed the wrong tuple-field group contract kind",
+                ));
+            };
+            let actual_groups = fields
+                .iter()
+                .map(|field| released_query_field(registry, field))
+                .collect::<Result<Vec<_>, _>>()?;
+            if &actual_groups != expected_groups || &echoed_reducers != reducers {
+                return Err(result_error(
+                    "field_tuple_reduction_contract_mismatch",
+                    "remote reduction did not echo the exact validated tuple group and reducer contract",
+                ));
+            }
+            ProviderResultEvidence::field_tuple_reduction(
+                validated.request_token(),
+                validated.shape_id().clone(),
+                *root,
+                expected_groups.clone(),
+                released_reduction_rows(registry, graph, rows)?,
+            )
+        }
+        _ => {
+            return Err(result_error(
+                "result_operation_mismatch",
+                "remote reduction does not match a validated reduction operation",
+            ));
+        }
+    };
+    validate_provider_result(registry, validated, evidence)
+}
+
+fn released_reducer(
+    registry: &DescriptorRegistry,
+    term: &QueryReductionTermV2,
+) -> Result<ReduceTerm, MatchError> {
+    let reduction = match term.reduction() {
+        QueryReductionKindV2::Count => Reduction::Count,
+        QueryReductionKindV2::Sum => Reduction::Sum,
+        QueryReductionKindV2::Min => Reduction::Min,
+        QueryReductionKindV2::Max => Reduction::Max,
+        QueryReductionKindV2::Mean => Reduction::Mean,
+        QueryReductionKindV2::Median => Reduction::Median,
+        QueryReductionKindV2::Std => Reduction::Std,
+    };
+    Ok(ReduceTerm {
+        reduction,
+        input: term
+            .input()
+            .map(|field| released_query_field(registry, field))
+            .transpose()?,
+    })
+}
+
+fn released_query_field(
+    registry: &DescriptorRegistry,
+    field: &QueryFieldV2,
+) -> Result<BoundFieldId, MatchError> {
+    let owner = released_descriptor(registry, field.descriptor())?;
+    let field_id = registry
+        .field_id(&owner, field.attribute().label().as_str())
+        .ok_or_else(|| {
+            result_error(
+                "reduction_contract_field_unknown",
+                "remote reduction echoed a field outside the current registry",
+            )
+        })?;
+    Ok(BoundFieldId::new(
+        BindingId::new(field.binding().get()),
+        field_id,
+    ))
+}
+
+fn released_reduction_rows(
+    registry: &DescriptorRegistry,
+    graph: &HydrationGraphV2,
+    rows: Vec<RemoteReductionRowV2>,
+) -> Result<Vec<ReductionRow>, MatchError> {
+    rows.into_iter()
+        .map(|row| {
+            let values = row
+                .values()
+                .iter()
+                .map(released_reduced_value)
+                .collect::<Result<Vec<_>, _>>()?;
+            match row.group() {
+                None => Ok(ReductionRow::new(None, values)),
+                Some(RemoteReductionGroupV2::Thing { value }) => Ok(ReductionRow::new(
+                    Some(released_thing(registry, graph, value)?),
+                    values,
+                )),
+                Some(RemoteReductionGroupV2::Field { value }) => Ok(ReductionRow::new_field(
+                    released_attribute_value(value)?,
+                    values,
+                )),
+                Some(RemoteReductionGroupV2::Fields { values: group }) => {
+                    Ok(ReductionRow::new_fields(
+                        group
+                            .iter()
+                            .map(released_attribute_value)
+                            .collect::<Result<Vec<_>, _>>()?,
+                        values,
+                    ))
+                }
+            }
+        })
+        .collect()
+}
+
+fn released_reduced_value(value: &RemoteReducedValueV2) -> Result<ReducedValue, MatchError> {
+    Ok(match value {
+        RemoteReducedValueV2::Count { value } => ReducedValue::Count(*value),
+        RemoteReducedValueV2::Long { value } => ReducedValue::Long(*value),
+        RemoteReducedValueV2::DoubleBits { value } => {
+            let value = value.map(f64::from_bits);
+            if value.is_some_and(|value| !value.is_finite()) {
+                return Err(result_error(
+                    "reduction_value_nonfinite",
+                    "remote reduction double bits are outside the finite domain",
+                ));
+            }
+            ReducedValue::Double(value)
+        }
+    })
 }
 
 fn released_row(
@@ -916,7 +1149,9 @@ fn released_attributes(
         .collect()
 }
 
-fn released_attribute_value(value: &CompatibilityValueV2) -> Result<AttributeValue, MatchError> {
+pub(crate) fn released_attribute_value(
+    value: &CompatibilityValueV2,
+) -> Result<AttributeValue, MatchError> {
     let value = if let Some(value) = value.canonical_value() {
         match value {
             CanonicalValue::String(value) => AttributeValue::String(value.as_str().to_owned()),
@@ -1934,6 +2169,7 @@ fn collect_role_edge_ids(expression: &MatchExpr, edges: &mut BTreeSet<RoleEdgeId
         MatchExpr::Not { expression } => collect_role_edge_ids(expression, edges),
         MatchExpr::FieldValue { .. }
         | MatchExpr::FieldComparison { .. }
+        | MatchExpr::ScalarComparison { .. }
         | MatchExpr::FieldPresence { .. }
         | MatchExpr::BindingIid { .. }
         | MatchExpr::Reachable { .. } => {}
@@ -1950,6 +2186,7 @@ fn find_role_edge(expression: Option<&MatchExpr>, id: RoleEdgeId) -> Option<&Mat
         MatchExpr::Not { expression } => find_role_edge(Some(expression), id),
         MatchExpr::FieldValue { .. }
         | MatchExpr::FieldComparison { .. }
+        | MatchExpr::ScalarComparison { .. }
         | MatchExpr::FieldPresence { .. }
         | MatchExpr::BindingIid { .. }
         | MatchExpr::RoleEdge { .. }
@@ -2043,6 +2280,14 @@ fn evaluate_expression(
                 }
             }
             Ok(false)
+        }
+        MatchExpr::ScalarComparison { .. } => {
+            // Function result bindings are provider-local proof variables and
+            // are intentionally absent from hydrated public evidence. The
+            // validated, provider-executed predicate is therefore trusted at
+            // this post-provider claim boundary just like positive
+            // reachability paths.
+            Ok(true)
         }
         MatchExpr::FieldPresence { field, present } => {
             Ok(field_values(bindings, field).is_empty() != *present)
@@ -2189,7 +2434,7 @@ fn unicode_case_fold_contains(left: &str, right: &str) -> bool {
         .contains(&UniCase::new(right).to_folded_case())
 }
 
-fn value_order(left: &AttributeValue, right: &AttributeValue) -> Option<Ordering> {
+pub(crate) fn value_order(left: &AttributeValue, right: &AttributeValue) -> Option<Ordering> {
     match (left, right) {
         (AttributeValue::String(left), AttributeValue::String(right)) => Some(left.cmp(right)),
         (AttributeValue::Long(left), AttributeValue::Long(right)) => Some(left.cmp(right)),

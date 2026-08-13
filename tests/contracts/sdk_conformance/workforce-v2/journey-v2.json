@@ -1,0 +1,327 @@
+{
+  "format": "typebridge.workforce-journey/v2",
+  "fixture_id": "workforce-v2",
+  "version": 2,
+  "semantic_profile": "typedb-3.12.1/v1",
+  "records": {
+    "people": [
+      {
+        "model": "person",
+        "fields": {
+          "identifier": {"kind": "string", "value": "query-ada"},
+          "nickname": {"kind": "string", "value": "Ada"},
+          "aliases": [{"kind": "string", "value": "analyst"}],
+          "score": {"kind": "long", "value": "38"},
+          "score__gte": {"kind": "long", "value": "40"},
+          "val_double": {"kind": "double", "bits": "4043000000000000"},
+          "val_decimal": {"kind": "decimal", "value": "38.5"},
+          "val_bool": {"kind": "boolean", "value": false},
+          "val_date": {"kind": "date", "value": "2026-08-12"},
+          "val_datetime": {"kind": "datetime", "value": "2026-08-12T09:30:00"},
+          "val_datetime_tz": {"kind": "datetime_tz", "value": "2026-08-12T09:30:00Z"},
+          "val_duration": {"kind": "duration", "value": "PT38S"},
+          "val_constrained": {"kind": "long", "value": "38"}
+        }
+      },
+      {
+        "model": "person",
+        "fields": {
+          "identifier": {"kind": "string", "value": "query-dana"},
+          "aliases": [{"kind": "string", "value": "engineer"}],
+          "score": {"kind": "long", "value": "45"},
+          "score__gte": {"kind": "long", "value": "40"},
+          "val_double": {"kind": "double", "bits": "4046800000000000"},
+          "val_decimal": {"kind": "decimal", "value": "45.5"},
+          "val_bool": {"kind": "boolean", "value": true},
+          "val_date": {"kind": "date", "value": "2026-08-13"},
+          "val_datetime": {"kind": "datetime", "value": "2026-08-13T10:45:00"},
+          "val_datetime_tz": {"kind": "datetime_tz", "value": "2026-08-13T10:45:00Z"},
+          "val_duration": {"kind": "duration", "value": "PT45S"},
+          "val_constrained": {"kind": "long", "value": "45"}
+        }
+      }
+    ],
+    "employee": {
+      "model": "employee",
+      "fields": {
+        "identifier": {"kind": "string", "value": "query-employee"},
+        "party_name": {"kind": "string", "value": "Query Employee"},
+        "rank": {"kind": "long", "value": "3"}
+      }
+    },
+    "manager": {
+      "model": "manager",
+      "fields": {
+        "identifier": {"kind": "string", "value": "query-manager"},
+        "party_name": {"kind": "string", "value": "Query Manager"},
+        "rank": {"kind": "long", "value": "5"},
+        "manager_note": {"kind": "string", "value": "query lead"}
+      }
+    },
+    "membership": {
+      "model": "membership",
+      "roles": {
+        "member": [{"model": "person", "key": "query-ada"}]
+      }
+    },
+    "network_link": {
+      "model": "network-link",
+      "fields": {
+        "identifier": {"kind": "string", "value": "query-link"},
+        "nickname": {"kind": "string", "value": "query route"}
+      },
+      "roles": {
+        "origin": [{"model": "person", "key": "query-ada"}],
+        "destination": [{"model": "person", "key": "query-dana"}],
+        "participant": [
+          {"model": "person", "key": "query-ada"},
+          {"model": "person", "key": "query-dana"}
+        ]
+      }
+    }
+  },
+  "create_order": [
+    "query-ada",
+    "query-dana",
+    "query-employee",
+    "query-manager",
+    "query-membership",
+    "query-link"
+  ],
+  "cleanup_order": [
+    "query-link",
+    "query-membership",
+    "query-manager",
+    "query-employee",
+    "query-dana",
+    "query-ada"
+  ],
+  "expected_observations": {
+    "entity_lifecycle": {
+      "created": true,
+      "deleted": true,
+      "key": "query-ada",
+      "model": "person",
+      "read_after_create": true
+    },
+    "relation_lifecycle": {
+      "created": true,
+      "deleted": true,
+      "model": "membership",
+      "player_key": "query-ada",
+      "role": "member"
+    },
+    "model_values_and_references": {
+      "aliases": ["analyst"],
+      "key": "query-ada",
+      "model": "person",
+      "nickname": "Ada",
+      "reference": {"key": "query-ada", "model": "person"},
+      "scalar_domains": [
+        "boolean",
+        "date",
+        "datetime",
+        "datetime_tz",
+        "decimal",
+        "double",
+        "duration",
+        "long",
+        "string"
+      ]
+    },
+    "owner_iid_set": {
+      "owner_field": "score",
+      "owner_keys": ["query-ada", "query-dana"],
+      "optional_field": "nickname",
+      "optional_present_keys": ["query-ada"],
+      "iid_set_keys": ["query-ada", "query-dana"]
+    },
+    "exact_subtypes": {
+      "declared_model": "employee",
+      "exact": [{"model": "employee", "key": "query-employee"}],
+      "subtypes": [
+        {"model": "employee", "key": "query-employee"},
+        {"model": "manager", "key": "query-manager"}
+      ]
+    },
+    "scalar_boolean": {
+      "and_keys": ["query-dana"],
+      "or_keys": ["query-ada", "query-dana"],
+      "not_keys": ["query-ada"],
+      "field_comparison_keys": ["query-dana"]
+    },
+    "roles": {
+      "membership": {
+        "relation": "membership",
+        "role": "member",
+        "players": [{"model": "person", "key": "query-ada"}]
+      },
+      "network_link": {
+        "relation": "network-link",
+        "origin": "query-ada",
+        "destination": "query-dana",
+        "participants": ["query-ada", "query-dana"]
+      }
+    },
+    "topology": {
+      "reachable": [{"from": "query-ada", "to": "query-dana", "max_hops": 1}],
+      "cross_join_pairs": [
+        ["query-ada", "query-ada"],
+        ["query-ada", "query-dana"],
+        ["query-dana", "query-ada"],
+        ["query-dana", "query-dana"]
+      ]
+    },
+    "selection_shapes": {
+      "positional": ["query-ada", ["query-ada", "query-dana"]],
+      "named": {"origin": "query-ada", "participants": ["query-ada", "query-dana"]},
+      "collected_distinct": true,
+      "collection_order": "identifier_asc"
+    },
+    "terminals": {
+      "one": "query-dana",
+      "first": "query-ada",
+      "rows": ["query-ada", "query-dana"],
+      "page": {"items": ["query-ada"], "offset": 0, "limit": 1, "total": 2},
+      "count": 2,
+      "exists": true
+    },
+    "grouped_reducer": {
+      "reducers": {
+        "count": 2,
+        "sum": 83,
+        "min": 38,
+        "max": 45,
+        "mean_bits": "4044c00000000000",
+        "median_bits": "4044c00000000000",
+        "std_bits": "4013cc8a99af5453"
+      },
+      "groups": {
+        "binding": [
+          {"model": "person", "key": "query-ada", "count": 1},
+          {"model": "person", "key": "query-dana", "count": 1}
+        ],
+        "field": [
+          {"key": 38, "count": 1},
+          {"key": 45, "count": 1}
+        ],
+        "field_tuple": [
+          {"key": [38, 40], "count": 1},
+          {"key": [45, 40], "count": 1}
+        ]
+      }
+    },
+    "remote_one_exchange": {"exchange_count": 1, "terminal": "one"},
+    "hydrated_result": {
+      "rows": [
+        {
+          "model": "membership",
+          "roles": {"member": [{"model": "person", "key": "query-ada"}]}
+        }
+      ]
+    },
+    "scalar_domain": {
+      "domain": "long",
+      "operator": "gte",
+      "operand": 40,
+      "keys": ["query-dana"]
+    },
+    "schema_function": {
+      "minimum": 30,
+      "values": [38, 45],
+      "nested_values": [38, 45]
+    },
+    "cancellation_direct": {
+      "in_flight": {
+        "category": "cancelled",
+        "code": "provider_cancelled",
+        "partial_result": false,
+        "provider_await_woken": true
+      },
+      "pre_dispatch": {
+        "category": "cancelled",
+        "code": "provider_cancelled",
+        "partial_result": false,
+        "provider_calls": 0
+      }
+    },
+    "cancellation_remote": {
+      "before_exchange": {
+        "category": "cancelled",
+        "code": "provider_cancelled",
+        "exchange_count": 0,
+        "partial_result": false
+      },
+      "during_decode": {
+        "category": "cancelled",
+        "code": "provider_cancelled",
+        "exchange_count": 1,
+        "partial_result": false
+      },
+      "caller_transport_abort_supported": true,
+      "server_exchange_cancelled_after_send": false
+    },
+    "resource_limits": {
+      "hard_maxima": {
+        "timeout_milliseconds": 30000,
+        "items": 65536,
+        "bytes": 33554432,
+        "graph_nodes": 65536,
+        "attribute_values": 65536,
+        "collection_members": 65536,
+        "role_players": 65536,
+        "statements": 3
+      },
+      "plus_one_clamped_all": true,
+      "zero_tightening_all": true,
+      "enforced": {
+        "dimension": "role_players",
+        "category": "resource_limit",
+        "code": "hydrated_role_player_limit",
+        "no_partial_result": true
+      }
+    },
+    "structured_query_diagnostic": {
+      "category": "invalid_input",
+      "query_category": "cardinality",
+      "code": "not_unique",
+      "message": "The typed query result does not satisfy the requested cardinality",
+      "path": [{"kind": "result"}],
+      "details": {"actual": {"kind": "count", "value": "2"}},
+      "redacted": true
+    },
+    "remote_structured_diagnostic": {
+      "category": "integrity",
+      "query_category": "result_decode",
+      "code": "remote_application_failure",
+      "message": "Typed query evidence does not match the validated request invocation",
+      "path": [
+        {"kind": "contract_field", "value": "plan"},
+        {"kind": "index", "value": 2},
+        {"kind": "contract_identity", "value": "person"}
+      ],
+      "details": {
+        "attempt": {"kind": "signed", "value": "-7"},
+        "expected": {"kind": "query_identity_list", "value": ["person", "employee"]},
+        "retryable": {"kind": "boolean", "value": false},
+        "subject": {"kind": "query_identity", "value": "person"}
+      },
+      "redacted": true,
+      "claim_consumed": true
+    },
+    "query_resource_lifecycle": {
+      "lanes": ["direct", "remote"],
+      "query": {
+        "ancestor_usable_after_descendant_close": true,
+        "close_idempotent": true,
+        "descendant_usable_after_ancestor_close": true,
+        "handle_invalidated": true,
+        "post_close_io_count": 0,
+        "post_close_rejected": true,
+        "session_usable_after_query_close": true,
+        "sibling_usable": true
+      },
+      "result_usable_after_query_close": true
+    }
+  }
+}

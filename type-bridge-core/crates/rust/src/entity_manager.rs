@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use type_bridge_contract::id::is_canonical_thing_iid;
 use type_bridge_orm::_manager::DynamicEntityManager;
+use type_bridge_orm::ProjectedCrudExecutor;
 use type_bridge_orm::session::backend::TxType;
 
 use crate::__codegen::{
@@ -17,6 +18,7 @@ use crate::entity_codec::{
 };
 use crate::error::{Error, ModelValidationPhase};
 use crate::hooks::{CrudOperation, HookRunner, LifecycleHook, ModelKind};
+use crate::projected_codec::{materialize_projected, project_create};
 use crate::schema::Schema;
 use crate::{Database, Result};
 
@@ -340,7 +342,9 @@ where
     /// be input/schema validation, database/transaction/close, or model hydration errors.
     pub async fn insert(&self, input: M::Create) -> Result<M> {
         if !self.hooks.has_hooks() {
-            return self.write(input, false).await;
+            return self
+                .projected_write(input, CrudOperation::Insert, None)
+                .await;
         }
         let encoded = Self::encode_hook_input(&input)?;
         let metadata = self
@@ -372,7 +376,7 @@ where
     /// never reuses a subtype instance, and returns a complete freshly hydrated model.
     pub async fn put(&self, input: M::Create) -> Result<M> {
         if !self.hooks.has_hooks() {
-            return self.write(input, true).await;
+            return self.projected_write(input, CrudOperation::Put, None).await;
         }
         let encoded = Self::encode_hook_input(&input)?;
         let metadata = self
@@ -491,7 +495,9 @@ where
             return Err(invalid_iid());
         }
         if !self.hooks.has_hooks() {
-            return self.update_write(iid, input).await;
+            return self
+                .projected_write(input, CrudOperation::Update, Some(iid))
+                .await;
         }
         let encoded = Self::encode_hook_input(&input)?;
         let state = self
@@ -581,7 +587,7 @@ where
             return Err(invalid_iid());
         }
         if !self.hooks.has_hooks() {
-            return self.delete_write(iid).await;
+            return self.projected_delete(iid).await;
         }
         let state = self
             .hooks
@@ -784,6 +790,98 @@ where
         Ok(())
     }
 
+    async fn projected_write(
+        &self,
+        input: M::Create,
+        operation: CrudOperation,
+        iid: Option<&str>,
+    ) -> Result<M> {
+        let installed = self.db.installed_schema().ok_or_else(schema_not_bound)?;
+        let (id, _descriptor) = resolve_entity_authority(
+            M::TYPE_ID_JSON,
+            installed,
+            ModelValidationPhase::Input,
+            true,
+        )?;
+        let create = project_create(input, &id, installed)?;
+        let tx = self
+            .db
+            .inner_orm()
+            .transaction_context(TxType::Write)
+            .await
+            .map_err(Error::from_orm)?;
+        let executor = ProjectedCrudExecutor::new(installed);
+        let projected = match operation {
+            CrudOperation::Insert => {
+                executor
+                    .insert_entity_in_transaction_with_compatibility(&tx, &create)
+                    .await
+            }
+            CrudOperation::Put => {
+                executor
+                    .put_entity_in_transaction_with_compatibility(&tx, &create)
+                    .await
+            }
+            CrudOperation::Update => {
+                executor
+                    .update_entity_in_transaction_with_compatibility(
+                        &tx,
+                        iid.expect("projected entity update requires a checked IID"),
+                        &create,
+                    )
+                    .await
+            }
+            CrudOperation::Delete => unreachable!("delete has no generated create payload"),
+        };
+        let projected = match projected {
+            Ok(value) => value,
+            Err(error) => {
+                let mapped = Error::from_projected_crud(error, ModelKind::Entity, Some(operation));
+                let _ = tx.rollback().await;
+                return Err(mapped);
+            }
+        };
+        let value = match materialize_projected(projected, installed) {
+            Ok(value) => value,
+            Err(error) => {
+                let _ = tx.rollback().await;
+                return Err(error);
+            }
+        };
+        tx.commit_classified()
+            .await
+            .map_err(|error| Error::from_orm(error.into_orm_error()))?;
+        Ok(value)
+    }
+
+    async fn projected_delete(&self, iid: &str) -> Result<()> {
+        let installed = self.db.installed_schema().ok_or_else(schema_not_bound)?;
+        let (id, _descriptor) = resolve_entity_authority(
+            M::TYPE_ID_JSON,
+            installed,
+            ModelValidationPhase::Input,
+            true,
+        )?;
+        let tx = self
+            .db
+            .inner_orm()
+            .transaction_context(TxType::Write)
+            .await
+            .map_err(Error::from_orm)?;
+        let result = ProjectedCrudExecutor::new(installed)
+            .delete_entity_by_iid_in_transaction_with_compatibility(&tx, &id, iid)
+            .await;
+        if let Err(error) = result {
+            let mapped =
+                Error::from_projected_crud(error, ModelKind::Entity, Some(CrudOperation::Delete));
+            let _ = tx.rollback().await;
+            return Err(mapped);
+        }
+        tx.commit_classified()
+            .await
+            .map_err(|error| Error::from_orm(error.into_orm_error()))
+    }
+
     async fn write(&self, input: M::Create, put: bool) -> Result<M> {
         let installed = self.db.installed_schema().ok_or_else(schema_not_bound)?;
         let (id, descriptor) = resolve_entity_authority(
@@ -933,16 +1031,16 @@ where
     /// Counts only exact models, excluding subtypes.
     pub async fn count(&self) -> Result<u64> {
         let installed = self.db.installed_schema().ok_or_else(schema_not_bound)?;
-        let (_id, descriptor) = resolve_entity_authority(
+        let (id, _descriptor) = resolve_entity_authority(
             M::TYPE_ID_JSON,
             installed,
             ModelValidationPhase::Input,
             true,
         )?;
-        DynamicEntityManager::new_canonical(self.db.inner_orm(), Arc::new(descriptor.clone()))
-            .count_exact()
+        ProjectedCrudExecutor::new(installed)
+            .count_entities_with_compatibility(self.db.inner_orm(), &id)
             .await
-            .map_err(Error::from_orm)
+            .map_err(|error| Error::from_projected_crud(error, ModelKind::Entity, None))
     }
 
     /// Reads one exact model by canonical IID; invalid IIDs are rejected before I/O and a
@@ -952,26 +1050,18 @@ where
             return Err(invalid_iid());
         }
         let installed = self.db.installed_schema().ok_or_else(schema_not_bound)?;
-        let (id, descriptor) = resolve_entity_authority(
+        let (id, _descriptor) = resolve_entity_authority(
             M::TYPE_ID_JSON,
             installed,
             ModelValidationPhase::Input,
             true,
         )?;
-        let row =
-            DynamicEntityManager::new_canonical(self.db.inner_orm(), Arc::new(descriptor.clone()))
-                .get_by_iid_exact(iid)
-                .await
-                .map_err(Error::from_orm)?;
-        match row {
-            None => Ok(None),
-            Some(r) => {
-                let h = hydrate_entity(r, &id, installed)?;
-                let value = M::materialize(&h, &HydrationCapability::new())
-                    .map_err(|e| map_validation_error(e, ModelValidationPhase::Hydration))?;
-                Ok(Some(value))
-            }
-        }
+        ProjectedCrudExecutor::new(installed)
+            .get_entity_by_iid_with_compatibility(self.db.inner_orm(), &id, iid)
+            .await
+            .map_err(|error| Error::from_projected_crud(error, ModelKind::Entity, None))?
+            .map(|projected| materialize_projected(projected, installed))
+            .transpose()
     }
 
     /// Reads all exact models in application result order, excluding subtypes; each result is

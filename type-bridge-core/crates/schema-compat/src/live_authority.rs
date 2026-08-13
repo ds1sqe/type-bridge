@@ -73,8 +73,8 @@ pub enum LiveQueryControlPresence {
     Absent,
     /// The complete frozen managed fence schema is installed.
     ManagedFence,
-    /// The frozen core is present, but one of its facts carries released-only
-    /// list or annotation semantics absent from the portable V2 fact graph.
+    /// The frozen core is present, but one of its facts carries a released-only
+    /// annotation absent from the canonical fact graph.
     ManagedFenceWithExtensions,
 }
 
@@ -85,8 +85,8 @@ pub enum LiveLegacyLedgerPresence {
     Absent,
     /// Every frozen V1 ledger fact is installed with its exact shape.
     FrozenLedger,
-    /// Every portable frozen fact is installed, but one of those facts carries
-    /// released-only list or annotation semantics.
+    /// Every canonical frozen fact is installed, but one of those facts carries
+    /// a released-only annotation.
     FrozenLedgerWithExtensions,
 }
 
@@ -1049,21 +1049,31 @@ mod tests {
     }
 
     #[test]
-    fn live_authority_refuses_lossy_released_projection() {
+    fn live_authority_preserves_ordered_capabilities_and_rejects_invalid_distinct() {
         let declared = declared("define attribute tag, value string; entity person, owns tag;");
-        for export in [
-            "define attribute tag, value string; entity person, owns tag[];",
+        let ordered = rebuild_live_query_authority_state(
+            DocumentId::new("query-live-authority-ordered.typeql").expect("document"),
+            "define attribute tag, value string; entity person, owns tag[] @distinct;",
+            &declared,
+            &context(),
+        )
+        .expect("ordered live semantics are canonical authority");
+        assert_ne!(
+            ordered.declared_identity(),
+            managed_schema_state(&declared, &context())
+                .expect("unordered state")
+                .declared_identity(),
+            "ordered mode and distinct must not be projected away",
+        );
+
+        let error = rebuild_live_query_authority_state(
+            DocumentId::new("query-live-authority-invalid-distinct.typeql").expect("document"),
             "define attribute tag, value string; entity person, owns tag @distinct;",
-        ] {
-            let error = rebuild_live_query_authority_state(
-                DocumentId::new("query-live-authority-lossy.typeql").expect("document"),
-                export,
-                &declared,
-                &context(),
-            )
-            .expect_err("unrepresentable live semantics must never be projected away");
-            assert_eq!(error.code().as_str(), "migration_typedb_export_invalid");
-        }
+            &declared,
+            &context(),
+        )
+        .expect_err("distinct on an unordered capability is invalid");
+        assert_eq!(error.code().as_str(), "migration_typedb_export_invalid");
     }
 
     #[test]
@@ -1329,7 +1339,7 @@ entity typebridge-internal-v2-legacy-cutover;
     fn writer_presence_reports_extensions_only_on_frozen_partition_facts() {
         let managed_extended = MANAGED_FENCE_SCHEMA_TYPEQL.replace(
             "owns typebridge-internal-v2-lease-holder @card(0..1)",
-            "owns typebridge-internal-v2-lease-holder[] @distinct @card(0..1)",
+            "owns typebridge-internal-v2-lease-holder @cascade @card(0..1)",
         );
         assert_eq!(
             managed_fence_schema_presence(&managed_extended)
@@ -1339,7 +1349,7 @@ entity typebridge-internal-v2-legacy-cutover;
 
         let ledger_extended = LEGACY_LEDGER_SCHEMA_TYPEQL.replacen(
             "owns migration_checksum;",
-            "owns migration_checksum[] @distinct;",
+            "owns migration_checksum @cascade;",
             1,
         );
         assert_eq!(
@@ -1359,6 +1369,17 @@ entity typebridge-internal-v2-legacy-cutover;
         assert_eq!(
             legacy_ledger_schema_presence(&user_extended).expect("user extension is unrelated"),
             LiveLegacyLedgerPresence::FrozenLedger
+        );
+
+        let canonical_drift = MANAGED_FENCE_SCHEMA_TYPEQL.replace(
+            "owns typebridge-internal-v2-lease-holder @card(0..1)",
+            "owns typebridge-internal-v2-lease-holder[] @distinct @card(0..1)",
+        );
+        let error = managed_fence_schema_presence(&canonical_drift)
+            .expect_err("ordered mode changes the canonical frozen fact");
+        assert_eq!(
+            error.code().as_str(),
+            "migration_typedb_control_schema_mismatch"
         );
 
         let extra_reserved_extended = format!(

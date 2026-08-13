@@ -399,9 +399,6 @@ fn adapt(
         MatchRequestAdaptation::LegacyRequired(reason) => panic!(
             "small adapter fixture unexpectedly requires the V1 resource fallback: {reason:?}"
         ),
-        MatchRequestAdaptation::NativeOnly => {
-            panic!("small adapter fixture unexpectedly declared a native-only operation")
-        }
     }
 }
 
@@ -412,8 +409,14 @@ fn assert_provider_ast_parity(
 ) {
     let direct =
         lower_match_execution(registry, validated).expect("released typed lowering succeeds");
+    let invocation = QueryInvocation::new(
+        adapted.validated().plan(),
+        adapted.operation(),
+        adapted.inputs().to_vec(),
+    )
+    .expect("adapted invocation");
     let compatibility =
-        lower_validated_compatibility_query(adapted.validated(), adapted.operation())
+        lower_validated_compatibility_query(adapted.validated(), &invocation, adapted.operation())
             .expect("compatibility lowering succeeds")
             .expect("adapter-authored plan has one compatibility provider plan");
     match (direct, compatibility.provider_plan()) {

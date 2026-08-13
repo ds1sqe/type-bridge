@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use type_bridge_contract::value::CanonicalValue;
 
 /// A value expression in TypeQL.
 ///
@@ -467,6 +468,17 @@ pub enum TypedMatchPredicate {
         /// Right field-binding ordinal.
         right: u16,
     },
+    /// Compare scalar operands after evaluating exact schema-function calls.
+    FunctionComparison {
+        /// Function calls in dependency-first order.
+        calls: Vec<TypedFunctionCall>,
+        /// Left scalar operand.
+        left: TypedScalarOperand,
+        /// Typed comparison operator.
+        operator: TypedComparisonOperator,
+        /// Right scalar operand.
+        right: TypedScalarOperand,
+    },
     /// Require an owner-qualified field to be present or absent.
     FieldPresence {
         /// Field-binding ordinal.
@@ -523,6 +535,59 @@ pub enum TypedMatchPredicate {
     Not {
         /// Negated predicate.
         expression: Box<TypedMatchPredicate>,
+    },
+}
+
+/// One typed schema-function argument after call dependencies are flattened.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum TypedFunctionArgument {
+    /// One existing thing binding.
+    Binding {
+        /// Existing thing-binding ordinal.
+        binding: u16,
+    },
+    /// One canonical scalar supplied through `given`.
+    Value {
+        /// Exact canonical scalar value.
+        value: CanonicalValue,
+    },
+    /// One prior call result in this predicate.
+    CallResult {
+        /// Prior call-result ordinal.
+        call: u16,
+    },
+}
+
+/// One exact scalar schema-function call.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TypedFunctionCall {
+    /// Dense predicate-local result ordinal.
+    pub result: u16,
+    /// Validated schema function label.
+    pub function: String,
+    /// Ordered exact-signature arguments.
+    pub arguments: Vec<TypedFunctionArgument>,
+}
+
+/// One operand in a schema-function scalar comparison.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum TypedScalarOperand {
+    /// One bound owner-qualified field.
+    Field {
+        /// Bound-field ordinal.
+        field: u16,
+    },
+    /// One canonical scalar supplied through `given`.
+    Value {
+        /// Exact canonical scalar value.
+        value: CanonicalValue,
+    },
+    /// One function call result.
+    CallResult {
+        /// Call-result ordinal.
+        call: u16,
     },
 }
 

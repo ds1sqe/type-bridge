@@ -7,6 +7,8 @@
 use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
+use type_bridge_contract::id::FunctionId;
+use type_bridge_contract::value::CanonicalValue;
 
 use super::ids::{BindingId, BoundFieldId, DescriptorId, RoleEdgeId, RoleId};
 use crate::value::AttributeValue;
@@ -174,6 +176,19 @@ pub enum MatchExpr {
         /// Right-hand bound field.
         right: BoundFieldId,
     },
+    /// Compare scalar operands where at least one operand is the result of an
+    /// exact generated schema-function call.
+    ///
+    /// Function calls are admitted only in the root conjunction. Values are
+    /// canonical projected inputs rather than untyped literals.
+    ScalarComparison {
+        /// Left scalar operand.
+        left: MatchScalarOperand,
+        /// Typed comparison operator.
+        operator: ComparisonOp,
+        /// Right scalar operand.
+        right: MatchScalarOperand,
+    },
     /// Require a bound field to have at least one value or no values.
     FieldPresence {
         /// Bound field being tested.
@@ -234,6 +249,57 @@ pub enum MatchExpr {
     Not {
         /// Negated expression.
         expression: Box<MatchExpr>,
+    },
+}
+
+/// One argument to an exact generated schema-function call.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MatchFunctionArgument {
+    /// One attached model binding.
+    Binding {
+        /// Plan-local thing binding.
+        binding: BindingId,
+    },
+    /// One exact projected canonical scalar input.
+    Value {
+        /// Domain-tagged canonical value.
+        value: CanonicalValue,
+    },
+    /// One prior scalar call whose result feeds this call.
+    Call {
+        /// Nested immutable call expression.
+        call: Box<MatchFunctionCall>,
+    },
+}
+
+/// One exact generated schema-function call.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MatchFunctionCall {
+    /// Exact function token identity retained from the generated projection.
+    pub function: FunctionId,
+    /// Ordered signature arguments.
+    pub arguments: Vec<MatchFunctionArgument>,
+}
+
+/// One scalar operand in a function-result comparison.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MatchScalarOperand {
+    /// One owner-qualified bound scalar field.
+    Field {
+        /// Bound field being read.
+        field: BoundFieldId,
+    },
+    /// One projected canonical scalar value.
+    Value {
+        /// Domain-tagged canonical value.
+        value: CanonicalValue,
+    },
+    /// One exact generated scalar function call.
+    Function {
+        /// Immutable call expression.
+        call: MatchFunctionCall,
     },
 }
 

@@ -48,9 +48,7 @@ fn collections_have_page_terminals_only(
     let _ = query.rows(type_bridge::RowsOptions::new(10));
 }
 
-async fn active_read_borrow_prevents_close(
-    read: type_bridge::ReadTransaction<'_, AppSchema>,
-) {
+async fn active_read_borrow_prevents_close(read: type_bridge::ReadTransaction<'_, AppSchema>) {
     let mut session = read.query();
     let person = session.exact::<Person>().unwrap();
     let query = session.query(person).unwrap();
@@ -86,6 +84,14 @@ fn reachability_endpoint_roles_are_static(
 
 fn required_create_inputs_are_static() {
     let _ = EventCreate::try_new();
+}
+
+fn function_call_domain_is_static(
+    session: &type_bridge::QuerySession<'_, AppSchema>,
+    person: type_bridge::Binding<AppSchema, Person>,
+    wrong_domain: &type_bridge::FunctionCall<AppSchema, bool>,
+) {
+    let _ = qualifying_score(session, person, wrong_domain);
 }
 
 fn main() {}

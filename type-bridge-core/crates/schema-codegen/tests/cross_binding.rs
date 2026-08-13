@@ -5,14 +5,16 @@ use type_bridge_contract::codec::to_canonical_json;
 use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::id::{FunctionId, RoleId, StructId, TypeId};
 use type_bridge_contract::projection::{
-    BindingTarget, CodeResourceDigest, ProjectionConfig, RuntimeProjection,
+    BindingTarget, CSymbolPrefix, CodeResourceDigest, ProjectionConfig, RuntimeProjection,
 };
 use type_bridge_contract::schema::{DocumentId, OwnsFactId, PlaysFactId};
 use type_bridge_schema::{
     SchemaDocumentSet, VerifiedSchemaAuthority, encode_schema_authority, normalize_documents,
     project, resolve,
 };
-use type_bridge_schema_codegen::{GeneratedPackage, PythonEmitter, RustEmitter, TypeScriptEmitter};
+use type_bridge_schema_codegen::{
+    CEmitter, GeneratedPackage, PythonEmitter, RustEmitter, TypeScriptEmitter,
+};
 
 mod support;
 
@@ -132,8 +134,8 @@ fn shared_schema_preserves_canonical_ids_and_target_specific_evidence() {
     let authority = support::authority(include_str!("acceptance/schema.yaml"));
 
     let python_emitter = PythonEmitter::new();
-    let python_handlers = python_emitter.generator_handlers();
-    let python_resources = python_emitter.code_resources().unwrap();
+    let python_handlers = python_emitter.generator_handlers_for(&resolved);
+    let python_resources = python_emitter.code_resources_for(&resolved).unwrap();
     let python = project(
         &resolved,
         BindingTarget::Python,
@@ -144,8 +146,8 @@ fn shared_schema_preserves_canonical_ids_and_target_specific_evidence() {
     .unwrap();
 
     let typescript_emitter = TypeScriptEmitter::new();
-    let typescript_handlers = typescript_emitter.generator_handlers();
-    let typescript_resources = typescript_emitter.code_resources().unwrap();
+    let typescript_handlers = typescript_emitter.generator_handlers_for(&resolved);
+    let typescript_resources = typescript_emitter.code_resources_for(&resolved).unwrap();
     let typescript = project(
         &resolved,
         BindingTarget::TypeScript,
@@ -156,8 +158,8 @@ fn shared_schema_preserves_canonical_ids_and_target_specific_evidence() {
     .unwrap();
 
     let rust_emitter = RustEmitter::new();
-    let rust_handlers = rust_emitter.generator_handlers();
-    let rust_resources = rust_emitter.code_resources().unwrap();
+    let rust_handlers = rust_emitter.generator_handlers_for(&resolved);
+    let rust_resources = rust_emitter.code_resources_for(&resolved).unwrap();
     let rust = project(
         &resolved,
         BindingTarget::Rust,
@@ -167,14 +169,28 @@ fn shared_schema_preserves_canonical_ids_and_target_specific_evidence() {
     )
     .unwrap();
 
+    let c_emitter = CEmitter::new();
+    let c_handlers = c_emitter.generator_handlers_for(&resolved);
+    let c_resources = c_emitter.code_resources_for(&resolved).unwrap();
+    let c = project(
+        &resolved,
+        BindingTarget::C,
+        &ProjectionConfig::c(CSymbolPrefix::new("cross_binding").unwrap()),
+        &c_handlers,
+        &c_resources,
+    )
+    .unwrap();
+
     let python_ids = canonical_ids(&python);
     assert_eq!(python_ids, canonical_ids(&typescript));
     assert_eq!(python_ids, canonical_ids(&rust));
+    assert_eq!(python_ids, canonical_ids(&c));
     assert_eq!(
         python.semantic_fingerprint(),
         typescript.semantic_fingerprint()
     );
     assert_eq!(python.semantic_fingerprint(), rust.semantic_fingerprint());
+    assert_eq!(python.semantic_fingerprint(), c.semantic_fingerprint());
     assert_ne!(
         python.projection_fingerprint(),
         typescript.projection_fingerprint()
@@ -187,16 +203,22 @@ fn shared_schema_preserves_canonical_ids_and_target_specific_evidence() {
         typescript.projection_fingerprint(),
         rust.projection_fingerprint()
     );
+    for other in [&python, &typescript, &rust] {
+        assert_ne!(other.projection_fingerprint(), c.projection_fingerprint());
+    }
 
     let python_package = python_emitter.emit(&python, &authority).unwrap();
     let typescript_package = typescript_emitter.emit(&typescript, &authority).unwrap();
     let rust_package = rust_emitter.emit(&rust, &authority).unwrap();
+    let c_package = c_emitter.emit(&c, &authority).unwrap();
     assert_embeds_fingerprints(&python_package, "_schema.py", &python);
     assert_embeds_fingerprints(&typescript_package, "src/schema.ts", &typescript);
     assert_embeds_fingerprints(&rust_package, "src/schema.rs", &rust);
     assert_embeds_authority(&python_package, "_authority.py", &authority);
     assert_embeds_authority(&typescript_package, "src/authority.ts", &authority);
     assert_embeds_authority(&rust_package, "src/schema.rs", &authority);
+    assert!(c_package.get("include/cross_binding/models.h").is_some());
+    assert!(c_package.get("src/models.c").is_some());
 
     let foreign_authority =
         support::authority("format: typebridge.schema/v2\nentities:\n  foreign-workspace: {}\n");
@@ -208,6 +230,7 @@ fn shared_schema_preserves_canonical_ids_and_target_specific_evidence() {
             .emit(&typescript, &foreign_authority)
             .unwrap_err(),
         rust_emitter.emit(&rust, &foreign_authority).unwrap_err(),
+        c_emitter.emit(&c, &foreign_authority).unwrap_err(),
     ] {
         assert_eq!(error.code().as_str(), "schema_codegen_authority_mismatch");
     }
@@ -277,6 +300,28 @@ fn shared_schema_preserves_canonical_ids_and_target_specific_evidence() {
             "rust_emitter_evidence_mismatch",
         );
     }
+
+    for resources in [
+        missing_resource(&c_resources),
+        mutated_resource(&c_resources),
+    ] {
+        let invalid = project(
+            &resolved,
+            BindingTarget::C,
+            &ProjectionConfig::c(CSymbolPrefix::new("cross_binding").unwrap()),
+            &c_handlers,
+            &resources,
+        )
+        .unwrap();
+        assert_eq!(
+            c_emitter
+                .emit(&invalid, &authority)
+                .unwrap_err()
+                .code()
+                .as_str(),
+            "c_emitter_evidence_mismatch",
+        );
+    }
 }
 
 #[test]
@@ -294,8 +339,8 @@ fn exact_split_yaml_docs_fixture_emits_every_binding_target() {
         &resolved,
         BindingTarget::Python,
         &ProjectionConfig::python(),
-        &python_emitter.generator_handlers(),
-        &python_emitter.code_resources().unwrap(),
+        &python_emitter.generator_handlers_for(&resolved),
+        &python_emitter.code_resources_for(&resolved).unwrap(),
     )
     .unwrap();
     let python_package = python_emitter.emit(&python, &authority).unwrap();
@@ -306,8 +351,8 @@ fn exact_split_yaml_docs_fixture_emits_every_binding_target() {
         &resolved,
         BindingTarget::TypeScript,
         &ProjectionConfig::typescript(),
-        &typescript_emitter.generator_handlers(),
-        &typescript_emitter.code_resources().unwrap(),
+        &typescript_emitter.generator_handlers_for(&resolved),
+        &typescript_emitter.code_resources_for(&resolved).unwrap(),
     )
     .unwrap();
     let typescript_package = typescript_emitter.emit(&typescript, &authority).unwrap();
@@ -318,12 +363,25 @@ fn exact_split_yaml_docs_fixture_emits_every_binding_target() {
         &resolved,
         BindingTarget::Rust,
         &ProjectionConfig::rust(),
-        &rust_emitter.generator_handlers(),
-        &rust_emitter.code_resources().unwrap(),
+        &rust_emitter.generator_handlers_for(&resolved),
+        &rust_emitter.code_resources_for(&resolved).unwrap(),
     )
     .unwrap();
     let rust_package = rust_emitter.emit(&rust, &authority).unwrap();
     let rust_read = str::from_utf8(rust_package.get("src/read.rs").unwrap()).unwrap();
     assert!(rust_read.contains("pub enum IdentifierFamily"));
     assert!(rust_read.contains("pub fn value(&self) -> &String"));
+
+    let c_emitter = CEmitter::new();
+    let c = project(
+        &resolved,
+        BindingTarget::C,
+        &ProjectionConfig::c(CSymbolPrefix::new("docs_fixture").unwrap()),
+        &c_emitter.generator_handlers_for(&resolved),
+        &c_emitter.code_resources_for(&resolved).unwrap(),
+    )
+    .unwrap();
+    let c_package = c_emitter.emit(&c, &authority).unwrap();
+    assert!(c_package.get("include/docs_fixture/models.h").is_some());
+    assert!(c_package.get("src/models.c").is_some());
 }

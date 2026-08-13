@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
+use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::task::Poll;
 use std::time::{Duration, Instant};
 
@@ -17,29 +18,33 @@ use type_bridge_core_lib::ast::{
     TypedHydrationRole, TypedHydrationTarget, TypedPageRematch, TypedRootScan, TypedThingKind,
 };
 
-use super::capability::CapabilitySet;
+use super::capability::{Capability, CapabilitySet};
 use super::error::{MatchError, MatchErrorCategory, MatchErrorPath, MatchErrorPathSegment};
 use super::ids::{BindingId, DescriptorId, FieldId, RoleEdgeId, RoleId};
 use super::lowering::{
-    LoweredMatchExecution, LoweredReduceGroup, LoweredReduceInput, LoweredReduceTerm, ReduceDomain,
-    lower_match_execution, preflight_released_match_execution,
+    LoweredMatchExecution, LoweredReduceGroup, LoweredReduceTerm, lower_match_execution,
+    preflight_released_match_execution,
 };
 use super::model::{
-    FetchShape, FetchSlot, MatchExpr, MatchOperation, Reduction, RowCardinality, ThingKind, Window,
+    FetchShape, FetchSlot, MatchExpr, MatchOperation, RowCardinality, ThingKind, Window,
 };
+use super::reducer::{reduce_rows, reduction_evidence};
 use super::result::{
     BoundConceptEvidence, ConceptId, HydratedAttribute, HydratedRole, HydratedRolePlayer,
-    HydratedThing, ProviderResultEvidence, ProviderSolutionEvidence, ReducedValue, ReductionRow,
-    ValidatedMatchResult,
+    HydratedThing, ProviderResultEvidence, ProviderSolutionEvidence, ValidatedMatchResult,
 };
 use super::result_validation::{
+    MAX_COLLECTED_CONCEPTS, MAX_HYDRATED_ATTRIBUTE_VALUES, MAX_HYDRATED_THINGS,
     ResultValidationLimits, canonicalize_provider_attribute_value, exactly_one_cardinality_error,
     validate_provider_result_with_limits, validated_match_result_from_v2,
 };
 use super::validation::ValidatedMatchRequest;
+#[cfg(test)]
+use super::{ReducedValue, Reduction};
 use crate::_descriptor::{TypeDescriptor, TypeDescriptorRef};
 use crate::_registry::DescriptorRegistry;
 use crate::error::OrmError;
+use crate::query_execution_limits::QueryExecutionDeadline;
 use crate::query_v2::{
     QueryV2ExecutionError, execute_validated_model_query_borrowed,
     execute_validated_model_query_with_statement_limit,
@@ -72,10 +77,12 @@ pub struct MatchExecutionLimits {
     max_items: u64,
     max_bytes: u64,
     timeout: Duration,
+    absolute_deadline: Option<QueryExecutionDeadline>,
     cancellation: AnswerCancellation,
     max_hydrated_things: u64,
     max_attribute_values: u64,
     max_collected_concepts: u64,
+    max_role_players: u64,
     max_statements: u8,
 }
 
@@ -92,12 +99,32 @@ impl MatchExecutionLimits {
             max_items,
             max_bytes: max_bytes.min(MAX_RESPONSE_BYTES),
             timeout: timeout.min(MAX_TRANSACTION_DURATION),
+            absolute_deadline: None,
             cancellation,
-            max_hydrated_things: max_items,
-            max_attribute_values: max_items,
-            max_collected_concepts: max_items,
+            max_hydrated_things: u64::try_from(MAX_HYDRATED_THINGS).unwrap_or(u64::MAX),
+            max_attribute_values: u64::try_from(MAX_HYDRATED_ATTRIBUTE_VALUES).unwrap_or(u64::MAX),
+            max_collected_concepts: u64::try_from(MAX_COLLECTED_CONCEPTS).unwrap_or(u64::MAX),
+            max_role_players: u64::try_from(MAX_HYDRATED_THINGS).unwrap_or(u64::MAX),
             max_statements: MAX_STATEMENTS,
         }
+    }
+
+    /// Bind execution to one deadline captured before semantic construction.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_absolute_deadline(mut self, deadline: QueryExecutionDeadline) -> Self {
+        self.absolute_deadline = Some(deadline);
+        self
+    }
+
+    fn deadline(&self) -> Option<Instant> {
+        self.absolute_deadline
+            .map(QueryExecutionDeadline::instant)
+            .or_else(|| {
+                tokio::time::Instant::now()
+                    .checked_add(self.timeout)
+                    .map(tokio::time::Instant::into_std)
+            })
     }
 
     /// Further tighten the hydrated-thing ceiling, including nested role players.
@@ -115,6 +142,12 @@ impl MatchExecutionLimits {
     /// Further tighten the page collection-concept ceiling.
     pub fn with_max_collected_concepts(mut self, max_collected_concepts: u64) -> Self {
         self.max_collected_concepts = max_collected_concepts.min(self.max_collected_concepts);
+        self
+    }
+
+    /// Further tighten the hydrated relation-role-player reference ceiling.
+    pub fn with_max_role_players(mut self, max_role_players: u64) -> Self {
+        self.max_role_players = max_role_players.min(self.max_role_players);
         self
     }
 
@@ -140,7 +173,19 @@ impl MatchExecutionLimits {
             hydrated_things: self.max_hydrated_things,
             attribute_values: self.max_attribute_values,
             collected_concepts: self.max_collected_concepts,
+            role_players: self.max_role_players,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn resource_dimensions(&self) -> (u64, u64, u64, u64, u8) {
+        (
+            self.max_hydrated_things,
+            self.max_attribute_values,
+            self.max_collected_concepts,
+            self.max_role_players,
+            self.max_statements,
+        )
     }
 }
 
@@ -245,7 +290,7 @@ impl ExecutionBudget {
 
     fn check_before_await(&self) -> Result<(), OrmError> {
         if self.cancellation.is_cancelled() {
-            return Err(resource_error(
+            return Err(cancelled_error(
                 "provider_cancelled",
                 "provider answer processing was cancelled",
             ));
@@ -294,7 +339,7 @@ impl ExecutionBudget {
             tokio::select! {
                 biased;
                 result = &mut future => result,
-                () = &mut cancellation => Err(resource_error(
+                () = &mut cancellation => Err(cancelled_error(
                     "provider_cancelled",
                     "provider answer processing was cancelled",
                 )),
@@ -307,7 +352,7 @@ impl ExecutionBudget {
             tokio::select! {
                 biased;
                 result = &mut future => result,
-                () = &mut cancellation => Err(resource_error(
+                () = &mut cancellation => Err(cancelled_error(
                     "provider_cancelled",
                     "provider answer processing was cancelled",
                 )),
@@ -347,6 +392,31 @@ async fn dispatch_failed_execution_close(
         });
     }
     immediate
+}
+
+async fn catch_execution_unwind<F>(future: F) -> std::thread::Result<F::Output>
+where
+    F: Future,
+{
+    let mut future = Box::pin(future);
+    std::future::poll_fn(|context| {
+        match catch_unwind(AssertUnwindSafe(|| future.as_mut().poll(context))) {
+            Ok(Poll::Ready(output)) => Poll::Ready(Ok(output)),
+            Ok(Poll::Pending) => Poll::Pending,
+            Err(payload) => Poll::Ready(Err(payload)),
+        }
+    })
+    .await
+}
+
+async fn close_after_execution_panic(transaction: Transaction) {
+    match catch_execution_unwind(dispatch_failed_execution_close(transaction)).await {
+        Ok(Some(Err(error))) => {
+            tracing::warn!(%error, "owned match transaction cleanup failed after panic")
+        }
+        Err(_) => tracing::warn!("owned match transaction cleanup panicked after execution panic"),
+        Ok(Some(Ok(())) | None) => {}
+    }
 }
 
 impl Default for MatchExecutionLimits {
@@ -391,7 +461,9 @@ impl<'a> SelectedResultExecutor<'a> {
         database: &Database,
         validated: &ValidatedMatchRequest,
     ) -> Result<ValidatedMatchResult, OrmError> {
+        self.check_lifecycle_budget()?;
         let registry = self.registry.owned_registry_snapshot()?;
+        self.check_lifecycle_budget()?;
         let fenced = self.with_registry(&registry);
         fenced
             .execute_compatible_owned_fenced(database, validated)
@@ -403,12 +475,26 @@ impl<'a> SelectedResultExecutor<'a> {
         database: &Database,
         validated: &ValidatedMatchRequest,
     ) -> Result<ValidatedMatchResult, OrmError> {
+        self.check_lifecycle_budget()?;
+        validated.recheck_schema(self.registry)?;
+        if validated
+            .capabilities()
+            .contains(Capability::SchemaFunctionCall)
+            && (!self
+                .available_capabilities
+                .contains(Capability::SchemaFunctionCall)
+                || !database.supports_given_stage())
+        {
+            return Err(super::capability::schema_function_given_rows_unsupported().into());
+        }
         self.preflight_compatibility(validated)?;
+        self.check_lifecycle_budget()?;
         if self.registry.uses_installed_projection_native_execution() {
             return self.execute_owned(database, validated).await;
         }
         let authority = MatchRequestAdapterAuthority::from_registry(self.registry)
             .map_err(adapter_diagnostic)?;
+        self.check_lifecycle_budget()?;
         match adapt_match_request(
             validated,
             self.registry,
@@ -421,7 +507,7 @@ impl<'a> SelectedResultExecutor<'a> {
                 self.execute_adapted_owned(database, validated, &adapted)
                     .await
             }
-            MatchRequestAdaptation::LegacyRequired(_) | MatchRequestAdaptation::NativeOnly => {
+            MatchRequestAdaptation::LegacyRequired(_) => {
                 self.execute_owned(database, validated).await
             }
         }
@@ -433,7 +519,9 @@ impl<'a> SelectedResultExecutor<'a> {
         context: &TransactionContext,
         validated: &ValidatedMatchRequest,
     ) -> Result<ValidatedMatchResult, OrmError> {
+        self.check_lifecycle_budget()?;
         let registry = self.registry.owned_registry_snapshot()?;
+        self.check_lifecycle_budget()?;
         let fenced = self.with_registry(&registry);
         fenced
             .execute_compatible_borrowed_fenced(context, validated)
@@ -445,7 +533,20 @@ impl<'a> SelectedResultExecutor<'a> {
         context: &TransactionContext,
         validated: &ValidatedMatchRequest,
     ) -> Result<ValidatedMatchResult, OrmError> {
+        self.check_lifecycle_budget()?;
+        validated.recheck_schema(self.registry)?;
+        if validated
+            .capabilities()
+            .contains(Capability::SchemaFunctionCall)
+            && (!self
+                .available_capabilities
+                .contains(Capability::SchemaFunctionCall)
+                || !context.supports_given_stage().await?)
+        {
+            return Err(super::capability::schema_function_given_rows_unsupported().into());
+        }
         self.preflight_compatibility(validated)?;
+        self.check_lifecycle_budget()?;
         if context.tx_type() != TxType::Read {
             return Err(MatchError::new(
                 MatchErrorCategory::InvalidPlan,
@@ -460,6 +561,7 @@ impl<'a> SelectedResultExecutor<'a> {
         }
         let authority = MatchRequestAdapterAuthority::from_registry(self.registry)
             .map_err(adapter_diagnostic)?;
+        self.check_lifecycle_budget()?;
         match adapt_match_request(
             validated,
             self.registry,
@@ -472,7 +574,7 @@ impl<'a> SelectedResultExecutor<'a> {
                 self.execute_adapted_borrowed(context, validated, &adapted)
                     .await
             }
-            MatchRequestAdaptation::LegacyRequired(_) | MatchRequestAdaptation::NativeOnly => {
+            MatchRequestAdaptation::LegacyRequired(_) => {
                 self.execute_borrowed(context, validated).await
             }
         }
@@ -482,6 +584,32 @@ impl<'a> SelectedResultExecutor<'a> {
         validated.recheck_schema(self.registry)?;
         validated.require_capabilities(&self.available_capabilities)?;
         preflight_released_match_execution(self.registry, validated)?;
+        Ok(())
+    }
+
+    fn check_lifecycle_budget(&self) -> Result<(), OrmError> {
+        if self.limits.cancellation.is_cancelled() {
+            return Err(cancelled_error(
+                "provider_cancelled",
+                "provider answer processing was cancelled",
+            ));
+        }
+        if self
+            .limits
+            .absolute_deadline
+            .is_some_and(QueryExecutionDeadline::is_expired)
+        {
+            return Err(resource_error(
+                "transaction_deadline_exceeded",
+                "provider transaction deadline expired",
+            ));
+        }
+        if self.limits.max_statements == 0 {
+            return Err(resource_error(
+                "statement_count_limit",
+                "match execution requires at least one provider statement",
+            ));
+        }
         Ok(())
     }
 
@@ -502,9 +630,7 @@ impl<'a> SelectedResultExecutor<'a> {
         released: &ValidatedMatchRequest,
         adapted: &AdaptedMatchRequest,
     ) -> Result<ValidatedMatchResult, OrmError> {
-        let deadline = tokio::time::Instant::now()
-            .checked_add(self.limits.timeout)
-            .map(tokio::time::Instant::into_std);
+        let deadline = self.limits.deadline();
         let lifecycle = ExecutionBudget::new(&self.limits, deadline);
         let mut transaction = lifecycle
             .await_provider(async {
@@ -514,11 +640,19 @@ impl<'a> SelectedResultExecutor<'a> {
                     .map_err(provider_transaction_open_error)
             })
             .await?;
-        let execution = self
-            .execute_adapted_transaction(&mut transaction, released, adapted, deadline)
-            .await;
+        let execution = catch_execution_unwind(self.execute_adapted_transaction(
+            &mut transaction,
+            released,
+            adapted,
+            deadline,
+        ))
+        .await;
         let result = match execution {
-            Err(error) => {
+            Err(payload) => {
+                close_after_execution_panic(transaction).await;
+                resume_unwind(payload);
+            }
+            Ok(Err(error)) => {
                 if let Some(Err(close_error)) = dispatch_failed_execution_close(transaction).await {
                     tracing::warn!(
                         %close_error,
@@ -528,7 +662,7 @@ impl<'a> SelectedResultExecutor<'a> {
                 }
                 return Err(error);
             }
-            Ok(result) => result,
+            Ok(Ok(result)) => result,
         };
         let close = lifecycle
             .await_cleanup(async {
@@ -551,9 +685,12 @@ impl<'a> SelectedResultExecutor<'a> {
         adapted: &AdaptedMatchRequest,
         deadline: Option<Instant>,
     ) -> Result<ValidatedMatchResult, OrmError> {
-        let invocation =
-            QueryInvocation::new(adapted.validated().plan(), adapted.operation(), Vec::new())
-                .map_err(adapter_diagnostic)?;
+        let invocation = QueryInvocation::new(
+            adapted.validated().plan(),
+            adapted.operation(),
+            adapted.inputs().to_vec(),
+        )
+        .map_err(adapter_diagnostic)?;
         let (limits, reply_limits) = self.compatibility_limits(deadline);
         let outcome = execute_validated_model_query_with_statement_limit(
             transaction,
@@ -574,12 +711,13 @@ impl<'a> SelectedResultExecutor<'a> {
         released: &ValidatedMatchRequest,
         adapted: &AdaptedMatchRequest,
     ) -> Result<ValidatedMatchResult, OrmError> {
-        let deadline = tokio::time::Instant::now()
-            .checked_add(self.limits.timeout)
-            .map(tokio::time::Instant::into_std);
-        let invocation =
-            QueryInvocation::new(adapted.validated().plan(), adapted.operation(), Vec::new())
-                .map_err(adapter_diagnostic)?;
+        let deadline = self.limits.deadline();
+        let invocation = QueryInvocation::new(
+            adapted.validated().plan(),
+            adapted.operation(),
+            adapted.inputs().to_vec(),
+        )
+        .map_err(adapter_diagnostic)?;
         let (limits, reply_limits) = self.compatibility_limits(deadline);
         let outcome = execute_validated_model_query_borrowed(
             context,
@@ -614,7 +752,7 @@ impl<'a> SelectedResultExecutor<'a> {
                 max_collection_members: self.limits.max_collected_concepts,
                 max_graph_nodes: self.limits.max_hydrated_things,
                 max_attribute_values: self.limits.max_attribute_values,
-                max_role_players: self.limits.max_hydrated_things,
+                max_role_players: self.limits.max_role_players,
             },
         )
     }
@@ -624,11 +762,11 @@ impl<'a> SelectedResultExecutor<'a> {
         database: &Database,
         validated: &ValidatedMatchRequest,
     ) -> Result<ValidatedMatchResult, OrmError> {
+        self.check_lifecycle_budget()?;
         let statement = self.preflight(validated)?;
+        self.check_lifecycle_budget()?;
         let exactly_one_selection = exactly_one_tuple_proof_selection(&statement);
-        let deadline = tokio::time::Instant::now()
-            .checked_add(self.limits.timeout)
-            .map(tokio::time::Instant::into_std);
+        let deadline = self.limits.deadline();
         let mut budget = ExecutionBudget::new(&self.limits, deadline);
         let mut transaction = budget
             .await_provider(async {
@@ -638,7 +776,7 @@ impl<'a> SelectedResultExecutor<'a> {
                     .map_err(provider_transaction_open_error)
             })
             .await?;
-        let execution = async {
+        let execution = catch_execution_unwind(async {
             let evidence = self
                 .collect_from_transaction(&mut transaction, validated, statement, &mut budget)
                 .await?;
@@ -648,10 +786,14 @@ impl<'a> SelectedResultExecutor<'a> {
                     .await?;
             }
             Ok(result)
-        }
+        })
         .await;
         let result = match execution {
-            Err(error) => {
+            Err(payload) => {
+                close_after_execution_panic(transaction).await;
+                resume_unwind(payload);
+            }
+            Ok(Err(error)) => {
                 if let Some(Err(close_error)) = dispatch_failed_execution_close(transaction).await {
                     tracing::warn!(
                         %close_error,
@@ -661,7 +803,7 @@ impl<'a> SelectedResultExecutor<'a> {
                 }
                 return Err(error);
             }
-            Ok(result) => result,
+            Ok(Ok(result)) => result,
         };
         // Released V1 callers observe close errors, cancellation, and the
         // original transaction deadline after successful execution.
@@ -684,7 +826,9 @@ impl<'a> SelectedResultExecutor<'a> {
         context: &TransactionContext,
         validated: &ValidatedMatchRequest,
     ) -> Result<ValidatedMatchResult, OrmError> {
+        self.check_lifecycle_budget()?;
         let statement = self.preflight(validated)?;
+        self.check_lifecycle_budget()?;
         let exactly_one_selection = exactly_one_tuple_proof_selection(&statement);
         if context.tx_type() != TxType::Read {
             return Err(MatchError::new(
@@ -695,9 +839,7 @@ impl<'a> SelectedResultExecutor<'a> {
             .at(MatchErrorPathSegment::Operation)
             .into());
         }
-        let deadline = tokio::time::Instant::now()
-            .checked_add(self.limits.timeout)
-            .map(tokio::time::Instant::into_std);
+        let deadline = self.limits.deadline();
         let mut budget = ExecutionBudget::new(&self.limits, deadline);
         let evidence = self
             .collect_from_context(context, validated, statement, &mut budget)
@@ -1238,6 +1380,7 @@ impl<'a> SelectedResultExecutor<'a> {
             &roots,
             &solutions,
             usize::try_from(self.limits.max_items).unwrap_or(usize::MAX),
+            usize::try_from(self.limits.max_collected_concepts).unwrap_or(usize::MAX),
         )?;
         Ok(reduction_evidence(validated, root, group, rows))
     }
@@ -1295,6 +1438,7 @@ impl<'a> SelectedResultExecutor<'a> {
             &roots,
             &solutions,
             usize::try_from(self.limits.max_items).unwrap_or(usize::MAX),
+            usize::try_from(self.limits.max_collected_concepts).unwrap_or(usize::MAX),
         )?;
         Ok(reduction_evidence(validated, root, group, rows))
     }
@@ -1580,523 +1724,6 @@ fn require_selected_solution_scan_proof(
     Ok(())
 }
 
-#[derive(Debug, Clone, PartialEq)]
-enum CollectedInputs {
-    Long(Vec<i64>),
-    Double(Vec<f64>),
-}
-
-impl CollectedInputs {
-    fn new(domain: ReduceDomain) -> Self {
-        match domain {
-            ReduceDomain::Long => Self::Long(Vec::new()),
-            ReduceDomain::Double => Self::Double(Vec::new()),
-        }
-    }
-
-    fn push(&mut self, value: &AttributeValue) -> Result<(), OrmError> {
-        match (self, value) {
-            (Self::Long(values), AttributeValue::Long(value)) => {
-                values.push(*value);
-                Ok(())
-            }
-            (Self::Double(values), AttributeValue::Double(value)) => {
-                if !value.is_finite() {
-                    return Err(decode_error(
-                        "reduction_input_not_finite",
-                        "provider reducer input is not a finite double",
-                    ));
-                }
-                values.push(*value);
-                Ok(())
-            }
-            _ => Err(decode_error(
-                "reduction_input_domain",
-                "provider reducer input does not match its validated domain",
-            )),
-        }
-    }
-
-    fn as_doubles(&self) -> Vec<f64> {
-        match self {
-            Self::Long(values) => values.iter().map(|value| *value as f64).collect(),
-            Self::Double(values) => values.clone(),
-        }
-    }
-}
-
-fn finite_reduction_double(value: f64) -> Result<ReducedValue, OrmError> {
-    if !value.is_finite() {
-        return Err(resource_error(
-            "reduction_overflow",
-            "reduction result left the finite double domain",
-        ));
-    }
-    Ok(ReducedValue::Double(Some(value)))
-}
-
-/// Reduce one collected input stream with canonical semantics: sums stay
-/// total (zero on empty), extrema and statistical reducers are absent on
-/// empty streams, sample standard deviation requires two values, and all
-/// double results must remain finite.
-fn reduce_collected(
-    reduction: Reduction,
-    collected: &CollectedInputs,
-) -> Result<ReducedValue, OrmError> {
-    match reduction {
-        Reduction::Count => Err(decode_error(
-            "reduction_input_domain",
-            "count consumes the distinct root stream, not a field input",
-        )),
-        Reduction::Sum => match collected {
-            CollectedInputs::Long(values) => {
-                let mut total = 0_i64;
-                for value in values {
-                    total = total.checked_add(*value).ok_or_else(|| {
-                        resource_error(
-                            "reduction_overflow",
-                            "integer sum left the canonical long domain",
-                        )
-                    })?;
-                }
-                Ok(ReducedValue::Long(Some(total)))
-            }
-            CollectedInputs::Double(values) => finite_reduction_double(values.iter().sum::<f64>()),
-        },
-        Reduction::Min | Reduction::Max => match collected {
-            CollectedInputs::Long(values) => {
-                let extreme = if reduction == Reduction::Min {
-                    values.iter().min()
-                } else {
-                    values.iter().max()
-                };
-                Ok(ReducedValue::Long(extreme.copied()))
-            }
-            CollectedInputs::Double(values) => {
-                let mut extreme: Option<f64> = None;
-                for value in values {
-                    extreme = Some(match extreme {
-                        None => *value,
-                        Some(current) if reduction == Reduction::Min => current.min(*value),
-                        Some(current) => current.max(*value),
-                    });
-                }
-                Ok(ReducedValue::Double(extreme))
-            }
-        },
-        Reduction::Mean => {
-            let values = collected.as_doubles();
-            if values.is_empty() {
-                return Ok(ReducedValue::Double(None));
-            }
-            finite_reduction_double(values.iter().sum::<f64>() / values.len() as f64)
-        }
-        Reduction::Median => {
-            let mut values = collected.as_doubles();
-            if values.is_empty() {
-                return Ok(ReducedValue::Double(None));
-            }
-            values
-                .sort_by(|left, right| left.partial_cmp(right).expect("reducer inputs are finite"));
-            let middle = values.len() / 2;
-            let median = if values.len() % 2 == 1 {
-                values[middle]
-            } else {
-                (values[middle - 1] + values[middle]) / 2.0
-            };
-            finite_reduction_double(median)
-        }
-        Reduction::Std => {
-            let values = collected.as_doubles();
-            if values.len() < 2 {
-                return Ok(ReducedValue::Double(None));
-            }
-            let mean = values.iter().sum::<f64>() / values.len() as f64;
-            let variance = values
-                .iter()
-                .map(|value| {
-                    let delta = value - mean;
-                    delta * delta
-                })
-                .sum::<f64>()
-                / (values.len() - 1) as f64;
-            finite_reduction_double(variance.sqrt())
-        }
-    }
-}
-
-fn reduction_input_value<'a>(
-    solution: &'a ProviderSolutionEvidence,
-    input: &LoweredReduceInput,
-) -> Result<Option<&'a AttributeValue>, OrmError> {
-    let thing = solution
-        .bindings()
-        .iter()
-        .find(|bound| bound.binding() == input.binding)
-        .map(BoundConceptEvidence::thing)
-        .ok_or_else(|| {
-            decode_error(
-                "reduction_binding_missing",
-                "provider solution omitted a reducer input binding",
-            )
-        })?;
-    Ok(thing
-        .attributes()
-        .iter()
-        .find(|attribute| attribute.field() == &input.field)
-        .and_then(|attribute| attribute.values().first()))
-}
-
-fn reduction_evidence(
-    validated: &ValidatedMatchRequest,
-    root: BindingId,
-    group: Option<LoweredReduceGroup>,
-    rows: Vec<ReductionRow>,
-) -> ProviderResultEvidence {
-    match group {
-        None => ProviderResultEvidence::reduction(
-            validated.request_token(),
-            validated.shape_id().clone(),
-            root,
-            None,
-            rows,
-        ),
-        Some(LoweredReduceGroup::Binding(group)) => ProviderResultEvidence::reduction(
-            validated.request_token(),
-            validated.shape_id().clone(),
-            root,
-            Some(group),
-            rows,
-        ),
-        Some(LoweredReduceGroup::Field(group)) => ProviderResultEvidence::field_reduction(
-            validated.request_token(),
-            validated.shape_id().clone(),
-            root,
-            group,
-            rows,
-        ),
-        Some(LoweredReduceGroup::Fields(groups)) => ProviderResultEvidence::field_tuple_reduction(
-            validated.request_token(),
-            validated.shape_id().clone(),
-            root,
-            groups,
-            rows,
-        ),
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-enum AttributeGroupKey {
-    String(String),
-    Long(i64),
-    Double(u64),
-    Boolean(bool),
-    Date(String),
-    DateTime(String),
-    DateTimeTz(String),
-    Decimal(String),
-    Duration(String),
-}
-
-fn attribute_group_key(value: &AttributeValue) -> Result<AttributeGroupKey, OrmError> {
-    Ok(match value {
-        AttributeValue::String(value) => AttributeGroupKey::String(value.clone()),
-        AttributeValue::Long(value) => AttributeGroupKey::Long(*value),
-        AttributeValue::Double(value) if value.is_finite() => {
-            AttributeGroupKey::Double(if *value == 0.0 { 0 } else { value.to_bits() })
-        }
-        AttributeValue::Double(_) => {
-            return Err(decode_error(
-                "reduction_group_value_invalid",
-                "field-grouped reduction received a non-finite double",
-            ));
-        }
-        AttributeValue::Boolean(value) => AttributeGroupKey::Boolean(*value),
-        AttributeValue::Date(value) => AttributeGroupKey::Date(value.clone()),
-        AttributeValue::DateTime(value) => AttributeGroupKey::DateTime(value.clone()),
-        AttributeValue::DateTimeTZ(value) => AttributeGroupKey::DateTimeTz(value.clone()),
-        AttributeValue::Decimal(value) => AttributeGroupKey::Decimal(value.clone()),
-        AttributeValue::Duration(value) => AttributeGroupKey::Duration(value.clone()),
-    })
-}
-
-/// Assemble typed reduction rows over the distinct selected-identity stream.
-///
-/// The exhaustively proven root scan is authoritative for distinct root
-/// counting; solutions contribute each distinct (group, root) pair's input
-/// values exactly once, and grouped rows are deterministically ordered by
-/// group concept identity.
-fn reduce_rows(
-    root: BindingId,
-    group: Option<&LoweredReduceGroup>,
-    terms: &[LoweredReduceTerm],
-    roots: &[String],
-    solutions: &[ProviderSolutionEvidence],
-    max_group_rows: usize,
-) -> Result<Vec<ReductionRow>, OrmError> {
-    struct GroupAccumulator {
-        thing: HydratedThing,
-        roots: BTreeSet<String>,
-        inputs: Vec<Option<CollectedInputs>>,
-    }
-    struct FieldGroupAccumulator {
-        value: AttributeValue,
-        roots: BTreeSet<String>,
-        inputs: Vec<Option<CollectedInputs>>,
-    }
-    struct FieldTupleGroupAccumulator {
-        values: Vec<AttributeValue>,
-        roots: BTreeSet<String>,
-        inputs: Vec<Option<CollectedInputs>>,
-    }
-    let fresh_inputs = |terms: &[LoweredReduceTerm]| {
-        terms
-            .iter()
-            .map(|term| {
-                term.input
-                    .as_ref()
-                    .map(|input| CollectedInputs::new(input.domain))
-            })
-            .collect::<Vec<_>>()
-    };
-    let collect_solution = |accumulated: &mut Vec<Option<CollectedInputs>>,
-                            solution: &ProviderSolutionEvidence|
-     -> Result<(), OrmError> {
-        for (term, collected) in terms.iter().zip(accumulated.iter_mut()) {
-            let (Some(input), Some(collected)) = (&term.input, collected) else {
-                continue;
-            };
-            if let Some(value) = reduction_input_value(solution, input)? {
-                collected.push(value)?;
-            }
-        }
-        Ok(())
-    };
-    let finish = |root_count: usize,
-                  accumulated: &[Option<CollectedInputs>]|
-     -> Result<Vec<ReducedValue>, OrmError> {
-        terms
-            .iter()
-            .zip(accumulated)
-            .map(|(term, collected)| match collected {
-                None => Ok(ReducedValue::Count(root_count as u64)),
-                Some(collected) => reduce_collected(term.reduction, collected),
-            })
-            .collect()
-    };
-    let solution_root = |solution: &ProviderSolutionEvidence| -> Result<String, OrmError> {
-        solution
-            .bindings()
-            .iter()
-            .find(|bound| bound.binding() == root)
-            .map(|bound| bound.thing().concept_id().as_str().to_owned())
-            .ok_or_else(|| {
-                decode_error(
-                    "reduction_binding_missing",
-                    "provider solution omitted the reduced root binding",
-                )
-            })
-    };
-    match group {
-        None => {
-            let mut seen = BTreeSet::new();
-            let mut accumulated = fresh_inputs(terms);
-            for solution in solutions {
-                let root_id = solution_root(solution)?;
-                if seen.insert(root_id) {
-                    collect_solution(&mut accumulated, solution)?;
-                }
-            }
-            let values = finish(roots.len(), &accumulated)?;
-            Ok(vec![ReductionRow::new(None, values)])
-        }
-        Some(LoweredReduceGroup::Binding(group)) => {
-            let mut groups: BTreeMap<String, GroupAccumulator> = BTreeMap::new();
-            for solution in solutions {
-                let root_id = solution_root(solution)?;
-                let thing = solution
-                    .bindings()
-                    .iter()
-                    .find(|bound| bound.binding() == *group)
-                    .map(BoundConceptEvidence::thing)
-                    .ok_or_else(|| {
-                        decode_error(
-                            "reduction_binding_missing",
-                            "provider solution omitted the group binding",
-                        )
-                    })?;
-                let key = thing.concept_id().as_str().to_owned();
-                let entry = groups.entry(key).or_insert_with(|| GroupAccumulator {
-                    thing: thing.clone(),
-                    roots: BTreeSet::new(),
-                    inputs: fresh_inputs(terms),
-                });
-                if entry.roots.insert(root_id) {
-                    collect_solution(&mut entry.inputs, solution)?;
-                }
-            }
-            groups
-                .into_values()
-                .map(|accumulator| {
-                    let values = finish(accumulator.roots.len(), &accumulator.inputs)?;
-                    Ok(ReductionRow::new(Some(accumulator.thing), values))
-                })
-                .collect()
-        }
-        Some(LoweredReduceGroup::Field(group)) => {
-            let mut groups: BTreeMap<AttributeGroupKey, FieldGroupAccumulator> = BTreeMap::new();
-            for solution in solutions {
-                let root_id = solution_root(solution)?;
-                let thing = solution
-                    .bindings()
-                    .iter()
-                    .find(|bound| bound.binding() == group.binding)
-                    .map(BoundConceptEvidence::thing)
-                    .ok_or_else(|| {
-                        decode_error(
-                            "reduction_binding_missing",
-                            "provider solution omitted the field-group owner binding",
-                        )
-                    })?;
-                let Some(attribute) = thing
-                    .attributes()
-                    .iter()
-                    .find(|attribute| attribute.field() == &group.field)
-                else {
-                    continue;
-                };
-                for value in attribute.values() {
-                    let key = attribute_group_key(value)?;
-                    if !groups.contains_key(&key) && groups.len() >= max_group_rows {
-                        return Err(resource_error(
-                            "reduction_group_limit",
-                            "field-grouped reduction exceeded the result-row ceiling",
-                        ));
-                    }
-                    let entry = groups.entry(key).or_insert_with(|| FieldGroupAccumulator {
-                        value: value.clone(),
-                        roots: BTreeSet::new(),
-                        inputs: fresh_inputs(terms),
-                    });
-                    if entry.roots.insert(root_id.clone()) {
-                        collect_solution(&mut entry.inputs, solution)?;
-                    }
-                }
-            }
-            groups
-                .into_values()
-                .map(|accumulator| {
-                    let values = finish(accumulator.roots.len(), &accumulator.inputs)?;
-                    Ok(ReductionRow::new_field(accumulator.value, values))
-                })
-                .collect()
-        }
-        Some(LoweredReduceGroup::Fields(group_fields)) => {
-            let mut groups: BTreeMap<Vec<AttributeGroupKey>, FieldTupleGroupAccumulator> =
-                BTreeMap::new();
-            for solution in solutions {
-                let root_id = solution_root(solution)?;
-                let mut choices = Vec::with_capacity(group_fields.len());
-                let mut omitted = false;
-                for group in group_fields {
-                    let thing = solution
-                        .bindings()
-                        .iter()
-                        .find(|bound| bound.binding() == group.binding)
-                        .map(BoundConceptEvidence::thing)
-                        .ok_or_else(|| {
-                            decode_error(
-                                "reduction_binding_missing",
-                                "provider solution omitted a tuple-group field owner binding",
-                            )
-                        })?;
-                    let Some(attribute) = thing
-                        .attributes()
-                        .iter()
-                        .find(|attribute| attribute.field() == &group.field)
-                    else {
-                        omitted = true;
-                        break;
-                    };
-                    let mut distinct = BTreeMap::new();
-                    for value in attribute.values() {
-                        distinct
-                            .entry(attribute_group_key(value)?)
-                            .or_insert_with(|| value.clone());
-                    }
-                    if distinct.is_empty() {
-                        omitted = true;
-                        break;
-                    }
-                    choices.push(distinct.into_iter().collect::<Vec<_>>());
-                }
-                if omitted {
-                    continue;
-                }
-                let tuple_count = choices.iter().try_fold(1_usize, |count, values| {
-                    count.checked_mul(values.len()).ok_or_else(|| {
-                        resource_error(
-                            "reduction_group_limit",
-                            "tuple-field reduction group cardinality overflowed",
-                        )
-                    })
-                })?;
-                if tuple_count > max_group_rows {
-                    return Err(resource_error(
-                        "reduction_group_limit",
-                        "tuple-field reduction exceeded the result-row ceiling",
-                    ));
-                }
-                let mut tuples = vec![(Vec::new(), Vec::new())];
-                for values in choices {
-                    let capacity = tuples.len().checked_mul(values.len()).ok_or_else(|| {
-                        resource_error(
-                            "reduction_group_limit",
-                            "tuple-field reduction group cardinality overflowed",
-                        )
-                    })?;
-                    let mut expanded = Vec::with_capacity(capacity);
-                    for (keys, scalars) in &tuples {
-                        for (key, scalar) in &values {
-                            let mut next_keys = keys.clone();
-                            next_keys.push(key.clone());
-                            let mut next_scalars = scalars.clone();
-                            next_scalars.push(scalar.clone());
-                            expanded.push((next_keys, next_scalars));
-                        }
-                    }
-                    tuples = expanded;
-                }
-                for (key, values) in tuples {
-                    if !groups.contains_key(&key) && groups.len() >= max_group_rows {
-                        return Err(resource_error(
-                            "reduction_group_limit",
-                            "tuple-field reduction exceeded the result-row ceiling",
-                        ));
-                    }
-                    let entry = groups
-                        .entry(key)
-                        .or_insert_with(|| FieldTupleGroupAccumulator {
-                            values,
-                            roots: BTreeSet::new(),
-                            inputs: fresh_inputs(terms),
-                        });
-                    if entry.roots.insert(root_id.clone()) {
-                        collect_solution(&mut entry.inputs, solution)?;
-                    }
-                }
-            }
-            groups
-                .into_values()
-                .map(|accumulator| {
-                    let values = finish(accumulator.roots.len(), &accumulator.inputs)?;
-                    Ok(ReductionRow::new_fields(accumulator.values, values))
-                })
-                .collect()
-        }
-    }
-}
-
 fn require_solution_scan_proof(
     stats: crate::session::backend::BoundedAnswerStats,
     max_items: u64,
@@ -2286,6 +1913,7 @@ struct SemanticItemLimits {
     hydrated_things: u64,
     attribute_values: u64,
     collected_concepts: u64,
+    role_players: u64,
 }
 
 struct SemanticBudget {
@@ -2293,6 +1921,7 @@ struct SemanticBudget {
     hydrated_things: u64,
     attribute_values: u64,
     collected_concepts: u64,
+    role_players: u64,
 }
 
 impl SemanticBudget {
@@ -2302,11 +1931,12 @@ impl SemanticBudget {
             hydrated_things: 0,
             attribute_values: 0,
             collected_concepts: 0,
+            role_players: 0,
         }
     }
 
     fn charge_thing(&mut self, thing: &HydratedThing, multiplicity: u64) -> Result<(), OrmError> {
-        let (hydrated_things, attribute_values) = semantic_counts(thing)?;
+        let (hydrated_things, attribute_values, role_players) = semantic_counts(thing)?;
         let hydrated_things = hydrated_things.checked_mul(multiplicity).ok_or_else(|| {
             resource_error(
                 "hydrated_thing_limit",
@@ -2319,7 +1949,13 @@ impl SemanticBudget {
                 "hydrated attribute value multiplicity counter overflowed",
             )
         })?;
-        self.charge(hydrated_things, attribute_values, 0)
+        let role_players = role_players.checked_mul(multiplicity).ok_or_else(|| {
+            resource_error(
+                "hydrated_role_player_limit",
+                "hydrated role-player multiplicity counter overflowed",
+            )
+        })?;
+        self.charge(hydrated_things, attribute_values, 0, role_players)
     }
 
     fn charge_solution(
@@ -2329,8 +1965,9 @@ impl SemanticBudget {
     ) -> Result<(), OrmError> {
         let mut hydrated_things = 0_u64;
         let mut attribute_values = 0_u64;
+        let mut role_players = 0_u64;
         for thing in bindings.values() {
-            let (thing_count, value_count) = semantic_counts(thing)?;
+            let (thing_count, value_count, player_count) = semantic_counts(thing)?;
             hydrated_things = hydrated_things.checked_add(thing_count).ok_or_else(|| {
                 resource_error("hydrated_thing_limit", "hydrated thing counter overflowed")
             })?;
@@ -2340,8 +1977,19 @@ impl SemanticBudget {
                     "hydrated attribute value counter overflowed",
                 )
             })?;
+            role_players = role_players.checked_add(player_count).ok_or_else(|| {
+                resource_error(
+                    "hydrated_role_player_limit",
+                    "hydrated role-player counter overflowed",
+                )
+            })?;
         }
-        self.charge(hydrated_things, attribute_values, collected_concepts)
+        self.charge(
+            hydrated_things,
+            attribute_values,
+            collected_concepts,
+            role_players,
+        )
     }
 
     fn charge(
@@ -2349,6 +1997,7 @@ impl SemanticBudget {
         hydrated_things: u64,
         attribute_values: u64,
         collected_concepts: u64,
+        role_players: u64,
     ) -> Result<(), OrmError> {
         let next_hydrated = self
             .hydrated_things
@@ -2374,6 +2023,12 @@ impl SemanticBudget {
                     "collected concept counter overflowed",
                 )
             })?;
+        let next_role_players = self.role_players.checked_add(role_players).ok_or_else(|| {
+            resource_error(
+                "hydrated_role_player_limit",
+                "hydrated role-player counter overflowed",
+            )
+        })?;
         if next_hydrated > self.limits.hydrated_things {
             return Err(resource_error(
                 "hydrated_thing_limit",
@@ -2392,18 +2047,32 @@ impl SemanticBudget {
                 "page re-match exceeded the collected-concept ceiling",
             ));
         }
+        if next_role_players > self.limits.role_players {
+            return Err(resource_error(
+                "hydrated_role_player_limit",
+                "provider hydration exceeded the role-player reference ceiling",
+            ));
+        }
         self.hydrated_things = next_hydrated;
         self.attribute_values = next_attributes;
         self.collected_concepts = next_collected;
+        self.role_players = next_role_players;
         Ok(())
     }
 }
 
-fn semantic_counts(thing: &HydratedThing) -> Result<(u64, u64), OrmError> {
+fn semantic_counts(thing: &HydratedThing) -> Result<(u64, u64, u64), OrmError> {
     let mut hydrated_things = 1_u64;
     let mut attribute_values = count_attribute_values(thing.attributes())?;
+    let mut role_players = 0_u64;
     for role in thing.roles() {
         for player in role.players() {
+            role_players = role_players.checked_add(1).ok_or_else(|| {
+                resource_error(
+                    "hydrated_role_player_limit",
+                    "hydrated role-player counter overflowed",
+                )
+            })?;
             hydrated_things = hydrated_things.checked_add(1).ok_or_else(|| {
                 resource_error("hydrated_thing_limit", "hydrated thing counter overflowed")
             })?;
@@ -2417,7 +2086,7 @@ fn semantic_counts(thing: &HydratedThing) -> Result<(u64, u64), OrmError> {
                 })?;
         }
     }
-    Ok((hydrated_things, attribute_values))
+    Ok((hydrated_things, attribute_values, role_players))
 }
 
 fn count_attribute_values(attributes: &[HydratedAttribute]) -> Result<u64, OrmError> {
@@ -3842,6 +3511,7 @@ fn collect_role_edges<'a>(expression: &'a MatchExpr, edges: &mut Vec<RoleEdgeCon
         MatchExpr::Not { expression } => collect_role_edges(expression, edges),
         MatchExpr::FieldValue { .. }
         | MatchExpr::FieldComparison { .. }
+        | MatchExpr::ScalarComparison { .. }
         | MatchExpr::FieldPresence { .. }
         | MatchExpr::BindingIid { .. }
         | MatchExpr::Reachable { .. } => {}
@@ -4040,6 +3710,12 @@ fn resource_error(code: &'static str, message: &'static str) -> OrmError {
         .into()
 }
 
+fn cancelled_error(code: &'static str, message: &'static str) -> OrmError {
+    MatchError::new(MatchErrorCategory::Cancelled, code, message)
+        .at(MatchErrorPathSegment::ProviderEvidence)
+        .into()
+}
+
 fn provider_transaction_open_error(_error: OrmError) -> OrmError {
     canonical_provider_error(
         "provider_transaction_open_failed",
@@ -4077,6 +3753,7 @@ fn adapter_diagnostic(diagnostic: Diagnostic) -> OrmError {
         DiagnosticCategory::InvalidContract => MatchErrorCategory::InvalidPlan,
         DiagnosticCategory::UnsupportedCapability => MatchErrorCategory::UnsupportedCapability,
         DiagnosticCategory::ResourceLimit => MatchErrorCategory::ResourceLimit,
+        DiagnosticCategory::Cancelled => MatchErrorCategory::Cancelled,
         DiagnosticCategory::Integrity => MatchErrorCategory::ResultDecode,
     };
     MatchError::new(category, diagnostic.code().as_str(), diagnostic.message())
@@ -4087,54 +3764,55 @@ fn adapter_diagnostic(diagnostic: Diagnostic) -> OrmError {
 fn compatibility_execution_error(error: QueryV2ExecutionError) -> OrmError {
     match error {
         QueryV2ExecutionError::Provider(error) => provider_statement_error(error),
-        QueryV2ExecutionError::Validation(diagnostic)
-            if diagnostic.code().as_str() == "query_v2_model_exactly_one" =>
-        {
-            let actual = diagnostic
-                .details()
-                .get("actual")
-                .and_then(|value| match value {
-                    DiagnosticDetailValue::Long(value) => usize::try_from(*value).ok(),
-                    DiagnosticDetailValue::Text(_)
-                    | DiagnosticDetailValue::Boolean(_)
-                    | DiagnosticDetailValue::TextList(_) => None,
-                })
-                .unwrap_or(usize::MAX);
-            exactly_one_cardinality_error(actual)
-                .unwrap_or_else(|| {
-                    MatchError::new(
-                        MatchErrorCategory::ResultDecode,
-                        "result_operation_mismatch",
-                        "adapted exactly-one result lost its cardinality proof",
-                    )
-                    .at(MatchErrorPathSegment::Result)
-                })
-                .into()
-        }
         QueryV2ExecutionError::Validation(diagnostic) => {
-            let (category, code, mapped_message) = released_execution_diagnostic(&diagnostic);
-            let path = released_execution_path(&diagnostic);
-            let message = match (category, code, path.segments()) {
-                (
-                    MatchErrorCategory::ResultDecode,
-                    _,
-                    [MatchErrorPathSegment::ProviderEvidence],
-                ) => "provider evidence failed canonical typed match decoding",
-                (
-                    MatchErrorCategory::ResourceLimit,
-                    "processed_item_counter_overflow"
-                    | "processed_item_limit"
-                    | "answer_byte_counter_overflow"
-                    | "response_byte_limit",
-                    _,
-                ) => "provider resource limits prevented complete typed match evidence",
-                _ => mapped_message,
-            };
-            MatchError::new(category, code, message)
-                .with_path(path)
-                .into()
+            released_model_execution_error(&diagnostic).into()
         }
     }
+}
+
+/// Restore the released match-error surface for one internal V2 model executor diagnostic.
+///
+/// Direct execution and authenticated remote execution must both cross this
+/// compatibility map before a language binding observes the failure.
+pub(crate) fn released_model_execution_error(diagnostic: &Diagnostic) -> MatchError {
+    if diagnostic.code().as_str() == "query_v2_model_exactly_one" {
+        let actual = diagnostic
+            .details()
+            .get("actual")
+            .and_then(|value| match value {
+                DiagnosticDetailValue::Long(value) => usize::try_from(*value).ok(),
+                DiagnosticDetailValue::Text(_)
+                | DiagnosticDetailValue::Boolean(_)
+                | DiagnosticDetailValue::TextList(_) => None,
+            })
+            .unwrap_or(usize::MAX);
+        return exactly_one_cardinality_error(actual).unwrap_or_else(|| {
+            MatchError::new(
+                MatchErrorCategory::ResultDecode,
+                "result_operation_mismatch",
+                "adapted exactly-one result lost its cardinality proof",
+            )
+            .at(MatchErrorPathSegment::Result)
+        });
+    }
+
+    let (category, code, mapped_message) = released_execution_diagnostic(diagnostic);
+    let path = released_execution_path(diagnostic);
+    let message = match (category, code, path.segments()) {
+        (MatchErrorCategory::ResultDecode, _, [MatchErrorPathSegment::ProviderEvidence]) => {
+            "provider evidence failed canonical typed match decoding"
+        }
+        (
+            MatchErrorCategory::ResourceLimit,
+            "processed_item_counter_overflow"
+            | "processed_item_limit"
+            | "answer_byte_counter_overflow"
+            | "response_byte_limit",
+            _,
+        ) => "provider resource limits prevented complete typed match evidence",
+        _ => mapped_message,
+    };
+    MatchError::new(category, code, message).with_path(path)
 }
 
 fn released_execution_path(diagnostic: &Diagnostic) -> MatchErrorPath {
@@ -4189,7 +3867,7 @@ fn released_execution_diagnostic(
             "match execution exceeded its statement ceiling",
         ),
         "provider_cancelled" => (
-            MatchErrorCategory::ResourceLimit,
+            MatchErrorCategory::Cancelled,
             "provider_cancelled",
             "provider answer processing was cancelled",
         ),
@@ -4245,8 +3923,8 @@ fn released_execution_diagnostic(
         ),
         "query_v2_model_role_player_limit" => (
             MatchErrorCategory::ResourceLimit,
-            "hydrated_thing_limit",
-            "provider result exceeded the hydrated-thing ceiling",
+            "hydrated_role_player_limit",
+            "provider result exceeded the hydrated role-player ceiling",
         ),
         "query_v2_model_solution_limit" => (
             MatchErrorCategory::ResourceLimit,
@@ -4452,6 +4130,11 @@ fn released_execution_diagnostic(
             "malformed_hydration_document",
             "hydration document does not match the typed evidence shape",
         ),
+        "query_v2_model_reduction_descriptor" | "query_v2_model_reduction_group" => (
+            MatchErrorCategory::ResultDecode,
+            "malformed_reduction_row",
+            "provider reduction evidence references an unexpected concrete descriptor",
+        ),
         _ if diagnostic.code().as_str().starts_with("query_v2_model_") => (
             MatchErrorCategory::ResultDecode,
             "unmapped_model_execution_diagnostic",
@@ -4475,13 +4158,14 @@ fn sanitized_provider_statement_error(error: MatchError) -> Option<OrmError> {
         "answer_byte_counter_overflow",
         "collected_concept_limit",
         "hydrated_attribute_value_limit",
+        "hydrated_role_player_limit",
         "hydrated_thing_limit",
         "processed_item_counter_overflow",
         "processed_item_limit",
-        "provider_cancelled",
         "response_byte_limit",
         "transaction_deadline_exceeded",
     ];
+    const CANCELLED_CODES: &[&str] = &["provider_cancelled"];
     const RESULT_DECODE_CODES: &[&str] = &[
         "duplicate_hydrated_concept",
         "duplicate_provider_binding",
@@ -4527,6 +4211,10 @@ fn sanitized_provider_statement_error(error: MatchError) -> Option<OrmError> {
         MatchErrorCategory::ResourceLimit if RESOURCE_CODES.contains(&code) => (
             MatchErrorCategory::ResourceLimit,
             "provider resource limits prevented complete typed match evidence",
+        ),
+        MatchErrorCategory::Cancelled if CANCELLED_CODES.contains(&code) => (
+            MatchErrorCategory::Cancelled,
+            "provider cancellation prevented complete typed match evidence",
         ),
         MatchErrorCategory::ResultDecode if RESULT_DECODE_CODES.contains(&code) => (
             MatchErrorCategory::ResultDecode,
@@ -4671,7 +4359,13 @@ mod tests {
                 validation.attribute_values,
                 validation.collected_concepts,
             ),
-            (7, 7, 7, 7, 7)
+            (
+                7,
+                7,
+                MAX_HYDRATED_THINGS,
+                MAX_HYDRATED_ATTRIBUTE_VALUES,
+                MAX_COLLECTED_CONCEPTS,
+            )
         );
 
         let limits = limits
@@ -5650,6 +5344,7 @@ mod tests {
     enum PendingProviderPhase {
         Open,
         Statement,
+        StatementPanic,
         StatementThenClose,
         Close,
     }
@@ -5673,7 +5368,9 @@ mod tests {
                 closes: AtomicUsize::new(0),
                 pending_statement: AtomicBool::new(matches!(
                     phase,
-                    PendingProviderPhase::Statement | PendingProviderPhase::StatementThenClose
+                    PendingProviderPhase::Statement
+                        | PendingProviderPhase::StatementPanic
+                        | PendingProviderPhase::StatementThenClose
                 )),
             })
         }
@@ -5727,6 +5424,10 @@ mod tests {
             let state = Arc::clone(&self.state);
             Box::pin(async move {
                 state.statements.fetch_add(1, AtomicOrdering::SeqCst);
+                if state.phase == PendingProviderPhase::StatementPanic {
+                    state.entered.notify_one();
+                    panic!("provider panic after owned transaction open");
+                }
                 if state.pending_statement.swap(false, AtomicOrdering::SeqCst) {
                     state.entered.notify_one();
                     std::future::pending::<()>().await;
@@ -6201,6 +5902,20 @@ mod tests {
         assert_eq!(
             released_execution_diagnostic(&future).1,
             "unmapped_model_execution_diagnostic"
+        );
+
+        let role_players = crate::query_v2::failure(
+            DiagnosticCategory::ResourceLimit,
+            "query_v2_model_role_player_limit",
+            "mapping probe",
+        );
+        assert_eq!(
+            released_execution_diagnostic(&role_players),
+            (
+                MatchErrorCategory::ResourceLimit,
+                "hydrated_role_player_limit",
+                "provider result exceeded the hydrated role-player ceiling",
+            )
         );
     }
 
@@ -8038,9 +7753,10 @@ mod tests {
         assert_eq!(match_code(&error), "statement_count_limit");
         {
             let observed = events.lock().unwrap();
+            assert_eq!(observed.opens, 0);
             assert!(observed.solution_statements.is_empty());
             assert!(observed.tuple_statements.is_empty());
-            assert_eq!(observed.closes, 1);
+            assert_eq!(observed.closes, 0);
         }
 
         let (item_limited, events) = database(CapabilitySet::all(), vec![two_solutions()], vec![]);
@@ -9038,6 +8754,89 @@ mod tests {
         assert_eq!(match_code(&error), "transaction_deadline_exceeded");
         assert_eq!(state.opens.load(AtomicOrdering::SeqCst), 1);
         assert_eq!(state.closes.load(AtomicOrdering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn owned_cancellation_interrupts_pending_transaction_open() {
+        let registry = person_registry();
+        let validated = validate_match_request(
+            &registry,
+            person_root_request(&registry, |root| MatchOperation::CountBy { root }),
+        )
+        .unwrap();
+        let (database, state) = pending_provider_database(PendingProviderPhase::Open);
+        let cancellation = AnswerCancellation::default();
+        let trigger = cancellation.clone();
+        let execution = tokio::spawn(async move {
+            database
+                .execute_match_with_limits(
+                    &registry,
+                    &validated,
+                    MatchExecutionLimits::tightened(10, 4096, Duration::from_secs(5), cancellation),
+                )
+                .await
+        });
+
+        state.entered.notified().await;
+        trigger.cancel();
+        tokio::task::yield_now().await;
+        assert!(execution.is_finished());
+        let error = execution.await.unwrap().unwrap_err();
+        assert_eq!(match_code(&error), "provider_cancelled");
+        assert_eq!(
+            match_error(&error).category(),
+            MatchErrorCategory::Cancelled
+        );
+        assert_eq!(state.opens.load(AtomicOrdering::SeqCst), 1);
+        assert_eq!(state.closes.load(AtomicOrdering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn owned_compatible_execution_closes_once_then_resumes_provider_panic() {
+        let registry = person_registry();
+        let validated = validate_match_request(
+            &registry,
+            person_root_request(&registry, |root| MatchOperation::CountBy { root }),
+        )
+        .unwrap();
+        let (database, state) = pending_provider_database(PendingProviderPhase::StatementPanic);
+        let execution = tokio::spawn(async move {
+            database
+                .execute_match_with_limits(&registry, &validated, MatchExecutionLimits::default())
+                .await
+        });
+
+        state.entered.notified().await;
+        let panic = execution.await.expect_err("execution panic must resume");
+        assert!(panic.is_panic());
+        assert_eq!(state.statements.load(AtomicOrdering::SeqCst), 1);
+        assert_eq!(state.closes.load(AtomicOrdering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn owned_native_execution_closes_once_then_resumes_provider_panic() {
+        let registry = person_registry();
+        let validated = validate_match_request(
+            &registry,
+            person_root_request(&registry, |root| MatchOperation::CountBy { root }),
+        )
+        .unwrap();
+        let (database, state) = pending_provider_database(PendingProviderPhase::StatementPanic);
+        let execution = tokio::spawn(async move {
+            SelectedResultExecutor::new(
+                &registry,
+                CapabilitySet::all(),
+                MatchExecutionLimits::default(),
+            )
+            .execute_owned(&database, &validated)
+            .await
+        });
+
+        state.entered.notified().await;
+        let panic = execution.await.expect_err("execution panic must resume");
+        assert!(panic.is_panic());
+        assert_eq!(state.statements.load(AtomicOrdering::SeqCst), 1);
+        assert_eq!(state.closes.load(AtomicOrdering::SeqCst), 1);
     }
 
     #[tokio::test(start_paused = true)]

@@ -35,13 +35,13 @@ class RoleToken[OwnerT: ModelBase, PlayerT_co: ModelBase, CompatibleBindingT_con
     def _accepts_binding(self, binding: CompatibleBindingT_contra) -> None: ...
 
 class FunctionRef[**P, R_co]:
-    id: str
-    signature: Mapping[str, object]
-    def __init__(
-        self,
-        function_id: str,
-        signature: Mapping[str, object],
-    ) -> None: ...
+    def __new__(cls) -> Never: ...
+
+def function_identity_for_query(function: FunctionRef[..., object]) -> tuple[str, Mapping[str, object]]: ...
+def function_ref_for_projection(
+    function_id: str,
+    signature: Mapping[str, object],
+) -> FunctionRef[..., object]: ...
 
 class ModelBase:
     __projection__: Mapping[str, object]

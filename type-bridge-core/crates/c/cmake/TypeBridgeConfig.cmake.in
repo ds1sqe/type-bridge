@@ -1,0 +1,42 @@
+@PACKAGE_INIT@
+
+# CMake compatibility follows the native ABI, independently from the semantic
+# runtime version returned by type_bridge_runtime_version().
+set(TypeBridge_C_ABI_VERSION "@PROJECT_VERSION@")
+
+if(NOT TARGET TypeBridge::C)
+  add_library(TypeBridge::C SHARED IMPORTED)
+  set_target_properties(
+    TypeBridge::C
+    PROPERTIES
+      INTERFACE_INCLUDE_DIRECTORIES "${PACKAGE_PREFIX_DIR}/@CMAKE_INSTALL_INCLUDEDIR@"
+  )
+  if(WIN32)
+    set_target_properties(
+      TypeBridge::C
+      PROPERTIES
+        IMPORTED_LOCATION
+          "${PACKAGE_PREFIX_DIR}/@CMAKE_INSTALL_BINDIR@/@TYPE_BRIDGE_C_LIBRARY_FILENAME@"
+        IMPORTED_IMPLIB
+          "${PACKAGE_PREFIX_DIR}/@CMAKE_INSTALL_LIBDIR@/@TYPE_BRIDGE_C_INSTALLED_IMPORT_LIBRARY@"
+    )
+  else()
+    set_target_properties(
+      TypeBridge::C
+      PROPERTIES
+        IMPORTED_LOCATION
+          "${PACKAGE_PREFIX_DIR}/@CMAKE_INSTALL_LIBDIR@/@TYPE_BRIDGE_C_LIBRARY_FILENAME@"
+    )
+    if(UNIX AND NOT APPLE)
+      # Cargo's ELF cdylib currently has no DT_SONAME. Tell CMake explicitly so
+      # consumers record the portable library basename in DT_NEEDED instead of
+      # the absolute package-install path used at configure time.
+      set_target_properties(
+        TypeBridge::C
+        PROPERTIES IMPORTED_NO_SONAME TRUE
+      )
+    endif()
+  endif()
+endif()
+
+check_required_components(TypeBridge)

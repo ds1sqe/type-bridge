@@ -20,9 +20,9 @@ pub enum Annotation {
     Card(u32, Option<u32>),
     /// `@distinct` — unique values within a list attribute ownership.
     ///
-    /// Only valid on ordered ownerships (`owns name[]`). Instance-level list
-    /// semantics are engine-unimplemented (REP256); this variant is a schema-emission
-    /// marker only.
+    /// Only valid on ordered ownerships (`owns name[]`). Projected create and
+    /// hydration paths enforce canonical member uniqueness before provider I/O
+    /// or before returning hydrated output, respectively.
     Distinct,
 }
 

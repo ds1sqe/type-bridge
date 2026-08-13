@@ -12,7 +12,9 @@ use tokio::sync::watch;
 use type_bridge_core_lib::ast::{
     TypedFetchRows, TypedHydrateThings, TypedLiteral, TypedPageRematch, TypedRootScan,
 };
-use type_bridge_core_lib::compiler::{PreparedTypedStatement, QueryCompiler};
+use type_bridge_core_lib::compiler::{
+    PreparedTypedStatement, QueryCompiler, TypedQueryParameterValue,
+};
 
 use crate::error::{ClassifiedCommitError, OrmError};
 use crate::match_request::CapabilitySet;
@@ -113,7 +115,12 @@ impl AnswerCancellation {
         self.cancelled.clone()
     }
 
-    pub(crate) async fn cancelled(&self) {
+    /// Wait until cancellation is requested.
+    ///
+    /// This low-level waiter lets binding runtimes race their own transport
+    /// awaits against the same cancellation owner used by direct execution.
+    #[doc(hidden)]
+    pub async fn cancelled(&self) {
         let mut receiver = self.cancelled.subscribe();
         if *receiver.borrow_and_update() {
             return;
@@ -201,7 +208,7 @@ impl BoundedAnswerReader {
     /// Check cancellation and deadline before starting or requesting an item.
     pub fn check_before_read(&self) -> Result<(), OrmError> {
         if self.limits.cancellation.is_cancelled() {
-            return Err(resource_error(
+            return Err(cancelled_error(
                 "provider_cancelled",
                 "provider answer processing was cancelled",
             ));
@@ -375,7 +382,14 @@ impl TypedProviderStatement {
     }
 }
 
-fn given_value_from_typed(value: TypedLiteral) -> Result<GivenValue, OrmError> {
+fn given_value_from_typed(value: TypedQueryParameterValue) -> Result<GivenValue, OrmError> {
+    match value {
+        TypedQueryParameterValue::Literal(value) => given_value_from_literal(value),
+        TypedQueryParameterValue::Canonical(value) => given_value_from_canonical(value),
+    }
+}
+
+fn given_value_from_literal(value: TypedLiteral) -> Result<GivenValue, OrmError> {
     match value {
         TypedLiteral::String(value) => Ok(GivenValue::String(value)),
         TypedLiteral::Long(value) => Ok(GivenValue::Integer(value)),
@@ -389,6 +403,55 @@ fn given_value_from_typed(value: TypedLiteral) -> Result<GivenValue, OrmError> {
             "prepared typed statement contained a value that must remain inline".into(),
         )),
     }
+}
+
+fn given_value_from_canonical(
+    value: type_bridge_contract::value::CanonicalValue,
+) -> Result<GivenValue, OrmError> {
+    use type_bridge_contract::temporal::TimeZoneDesignator;
+    use type_bridge_contract::value::CanonicalValue;
+    Ok(match value {
+        CanonicalValue::String(value) => GivenValue::String(value.as_str().to_owned()),
+        CanonicalValue::Long(value) => GivenValue::Integer(value),
+        CanonicalValue::Double(value) => GivenValue::Double(value.get()),
+        CanonicalValue::Boolean(value) => GivenValue::Boolean(value),
+        CanonicalValue::Date(value) => GivenValue::Date(value.to_string()),
+        CanonicalValue::DateTime(value) => GivenValue::Datetime(value.to_string()),
+        CanonicalValue::DateTimeTz(value) => GivenValue::DatetimeTzExact {
+            local: value.local().to_string(),
+            named_zone: match value.zone() {
+                TimeZoneDesignator::Named(name) => Some(name.clone()),
+                TimeZoneDesignator::Utc | TimeZoneDesignator::OffsetSeconds(_) => None,
+            },
+            effective_offset_seconds: value.effective_offset_seconds(),
+        },
+        CanonicalValue::Decimal(value) => GivenValue::Decimal(value.as_str().to_owned()),
+        CanonicalValue::Duration(value) => {
+            let (negative, months, days, seconds, nanosecond) = value.components();
+            let months = u32::try_from(months).map_err(|_| {
+                OrmError::Compilation("canonical duration months exceed provider range".into())
+            })?;
+            let days = u32::try_from(days).map_err(|_| {
+                OrmError::Compilation("canonical duration days exceed provider range".into())
+            })?;
+            let nanos = seconds
+                .checked_mul(1_000_000_000)
+                .and_then(|seconds| seconds.checked_add(u64::from(nanosecond)))
+                .ok_or_else(|| {
+                    OrmError::Compilation("canonical duration nanos exceed provider range".into())
+                })?;
+            if negative {
+                return Err(OrmError::Compilation(
+                    "negative canonical duration has no provider given representation".into(),
+                ));
+            }
+            GivenValue::Duration {
+                months,
+                days,
+                nanos,
+            }
+        }
+    })
 }
 
 pub(crate) fn typed_fetch_provider_statement(
@@ -736,6 +799,12 @@ pub trait TransactionOps: Send {
 
 fn resource_error(code: &'static str, message: &'static str) -> OrmError {
     MatchError::new(MatchErrorCategory::ResourceLimit, code, message)
+        .at(MatchErrorPathSegment::ProviderEvidence)
+        .into()
+}
+
+fn cancelled_error(code: &'static str, message: &'static str) -> OrmError {
+    MatchError::new(MatchErrorCategory::Cancelled, code, message)
         .at(MatchErrorPathSegment::ProviderEvidence)
         .into()
 }

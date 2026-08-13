@@ -37,8 +37,9 @@ pub use v2::{
     HydrationPlayerV2, HydrationProjectionV2, HydrationRoleV2, ModelOutputV2, ModelQueryV2,
     QueryBindingPairV2, QueryComparatorV2, QueryFieldV2, QueryMissingOrderV2,
     QueryModelOutputSlotV2, QueryModelOutputV2, QueryNamedOutputSlotV2, QueryOrderDirectionV2,
-    QueryOrderTermV2, QueryPatternV2, QueryPlanV2Compatibility, QueryRowCardinalityV2,
-    QueryStableOrderV2, QueryWindowV2, ReleasedValueKindV2,
+    QueryOrderTermV2, QueryPatternV2, QueryPlanV2Compatibility, QueryReductionGroupV2,
+    QueryReductionKindV2, QueryReductionTermV2, QueryRowCardinalityV2, QueryStableOrderV2,
+    QueryWindowV2, ReleasedValueKindV2,
 };
 
 /// The exact wire discriminator for first-format query plans.
@@ -155,6 +156,7 @@ pub fn query_plan_v2_capability_vocabulary() -> CapabilitySet {
                 v2::CAP_STABLE_COLLECTION,
                 v2::CAP_SAME_SNAPSHOT_HYDRATION,
                 v2::CAP_BATCH_IDENTITY_REBIND,
+                CAP_INPUT_GIVEN_ROWS,
             ]
             .into_iter()
             .map(|value| {
@@ -166,13 +168,13 @@ pub fn query_plan_v2_capability_vocabulary() -> CapabilitySet {
 
 /// Return the transport capability exact `given` invocations require.
 ///
-/// Plans never require this capability — it is derived from the invocation's
-/// row count and values by [`QueryInvocation::transport_capabilities`], so it
-/// is not part of [`query_plan_capability_vocabulary`]. Batches, explicit
-/// absence, and datetime-tz values select this transport. Executors advertise
-/// it only when their provider can transport explicit input rows, which makes
-/// admission truthful at preflight instead of failing after a transaction
-/// exists.
+/// Batches, explicit absence, datetime-tz values, and every schema-function
+/// call select this transport. The first three are derived by
+/// [`QueryInvocation::transport_capabilities`]; the last is plan syntax and
+/// therefore appears in the plan's required capabilities even when its exact
+/// call graph has no scalar input cell. Executors advertise it only when their
+/// provider can transport explicit input rows, making request-level admission
+/// consistent across direct and remote execution.
 #[must_use]
 pub fn query_given_rows_capability() -> CapabilityId {
     CapabilityId::new(CAP_INPUT_GIVEN_ROWS).expect("static capability id is canonical")
@@ -2512,6 +2514,14 @@ fn derive_capabilities(
     if let Some(compatibility) = compatibility {
         insert_capability(&mut capabilities, v2::CAP_PLAN_V2)?;
         compatibility.add_capabilities(&mut capabilities)?;
+        if compatibility.model_query().is_some()
+            && pipeline.iter().any(|stage| {
+                matches!(stage, ReadStage::Match { patterns }
+                    if patterns.iter().any(pattern_contains_function))
+            })
+        {
+            insert_capability(&mut capabilities, CAP_INPUT_GIVEN_ROWS)?;
+        }
         let vocabulary = query_plan_v2_capability_vocabulary();
         let unknown = capabilities.missing_from(&vocabulary);
         if !unknown.is_empty() {
@@ -2569,6 +2579,21 @@ fn collect_pattern_capabilities(
         }
     }
     Ok(())
+}
+
+fn pattern_contains_function(pattern: &QueryPattern) -> bool {
+    match pattern {
+        QueryPattern::FunctionCall { .. } => true,
+        QueryPattern::Or { branches } => branches.iter().flatten().any(pattern_contains_function),
+        QueryPattern::Not { patterns } | QueryPattern::Try { patterns } => {
+            patterns.iter().any(pattern_contains_function)
+        }
+        QueryPattern::Isa { .. }
+        | QueryPattern::Has { .. }
+        | QueryPattern::Links { .. }
+        | QueryPattern::Value { .. }
+        | QueryPattern::Reachable { .. } => false,
+    }
 }
 
 pub(crate) fn insert_capability(

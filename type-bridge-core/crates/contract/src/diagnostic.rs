@@ -17,6 +17,8 @@ pub enum DiagnosticCategory {
     UnsupportedCapability,
     /// A canonical structural ceiling was exceeded.
     ResourceLimit,
+    /// Cooperative cancellation interrupted execution.
+    Cancelled,
     /// An integrity algorithm, digest, or canonicalization contract failed.
     Integrity,
 }
@@ -28,6 +30,7 @@ impl DiagnosticCategory {
             Self::InvalidContract => "invalid_contract",
             Self::UnsupportedCapability => "unsupported_capability",
             Self::ResourceLimit => "resource_limit",
+            Self::Cancelled => "cancelled",
             Self::Integrity => "integrity",
         }
     }

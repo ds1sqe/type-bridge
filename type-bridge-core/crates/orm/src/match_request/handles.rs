@@ -10,11 +10,17 @@ use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use type_bridge_contract::id::is_canonical_thing_iid;
+use type_bridge_contract::id::{FunctionId, TypeId, TypeKind, is_canonical_thing_iid};
+use type_bridge_contract::projection::{
+    FunctionProjection, FunctionReturnProjection, ProjectedTypeRef,
+};
+use type_bridge_contract::value::{CanonicalValue, ValueTypeTag};
 
+use crate::_attribute::ValueType;
 use crate::_descriptor::{RoleDescriptor, TypeDescriptorRef};
 use crate::_registry::DescriptorRegistry;
 use crate::error::{OrmError, Result};
+use crate::projected_model::ProjectedAttributeValue;
 use crate::value::AttributeValue;
 
 use super::error::{MatchError, MatchErrorCategory};
@@ -23,14 +29,18 @@ use super::ids::{
     SessionId,
 };
 use super::limits::{
-    MAX_BOOLEAN_TERMS, MAX_PREDICATE_DEPTH, MAX_PREDICATE_NODES, MAX_SELECTED_SLOTS,
+    MAX_BOOLEAN_TERMS, MAX_OUTPUT_NAME_BYTES, MAX_PREDICATE_DEPTH, MAX_PREDICATE_NODES,
+    MAX_SELECTED_SLOTS,
 };
 use super::model::{
-    BindingPair, ComparisonOp, FetchShape, FetchSlot, MatchBinding, MatchExpr, MatchMode,
-    MatchOperation, MatchOrder, MatchPlan, MatchRequest, MissingOrder, NamedFetchSlot, ReduceTerm,
-    Reduction, RowCardinality, SortDirection, ThingKind, Window,
+    BindingPair, ComparisonOp, FetchShape, FetchSlot, MatchBinding, MatchExpr,
+    MatchFunctionArgument, MatchFunctionCall, MatchMode, MatchOperation, MatchOrder, MatchPlan,
+    MatchRequest, MatchScalarOperand, MissingOrder, NamedFetchSlot, ReduceTerm, Reduction,
+    RowCardinality, SortDirection, ThingKind, Window,
 };
-use super::validation::{ValidatedMatchRequest, validate_match_request};
+use super::validation::{
+    ValidatedMatchRequest, validate_match_request, validate_public_function_argument_count,
+};
 
 static NEXT_LIVE_TOKEN: AtomicU64 = AtomicU64::new(1);
 
@@ -113,6 +123,101 @@ impl SessionHandle {
     /// Create a fresh subtype-inclusive binding for a registered descriptor.
     pub fn subtypes(&self, type_name: &str) -> Result<BindingHandle> {
         self.binding(type_name, MatchMode::Subtypes)
+    }
+
+    /// Resolve one exact generated schema-function token.
+    ///
+    /// Dynamic descriptor registries deliberately carry no function
+    /// authority. The first generated-query function vocabulary admits only
+    /// scalar, non-optional returns and model/scalar parameters.
+    #[doc(hidden)]
+    pub fn function(&self, id: &FunctionId) -> Result<FunctionHandle> {
+        let projection = self.0.registry.projected_function(id).ok_or_else(|| {
+            handle_error(
+                "unknown_projected_function",
+                "function token is not present in this generated projection",
+            )
+        })?;
+        validate_public_function_argument_count(projection.parameters().len())?;
+        let FunctionReturnProjection::Scalar(result) = projection.returns() else {
+            return Err(handle_error(
+                "function_return_shape_unsupported",
+                "generated match functions require one scalar return",
+            ));
+        };
+        if result.optional() {
+            return Err(handle_error(
+                "optional_function_return_unsupported",
+                "generated match functions require a non-optional scalar return",
+            ));
+        }
+        let ProjectedTypeRef::Scalar(return_type) = result.type_ref() else {
+            return Err(handle_error(
+                "function_return_domain_unsupported",
+                "generated match functions require a built-in scalar return",
+            ));
+        };
+        if projection
+            .parameters()
+            .iter()
+            .any(|parameter| matches!(parameter.type_ref(), ProjectedTypeRef::Struct(_)))
+        {
+            return Err(handle_error(
+                "function_parameter_domain_unsupported",
+                "generated match functions do not yet admit struct parameters",
+            ));
+        }
+        Ok(FunctionHandle(Arc::new(FunctionState {
+            session: Arc::clone(&self.0),
+            projection: projection.clone(),
+            return_type: *return_type,
+        })))
+    }
+
+    /// Admit one already branded projected scalar as a function input.
+    pub fn function_value(&self, value: &ProjectedAttributeValue) -> Result<FunctionValueHandle> {
+        let semantic = self
+            .0
+            .registry
+            .projected_function_schema_fingerprint()
+            .ok_or_else(|| {
+                handle_error(
+                    "function_authority_unavailable",
+                    "this session has no generated function authority",
+                )
+            })?;
+        if value.semantic_fingerprint() != semantic {
+            return Err(handle_error(
+                "function_value_semantic_brand_mismatch",
+                "projected function value belongs to a different semantic schema",
+            ));
+        }
+        let target = self
+            .0
+            .registry
+            .projected_function_binding_target()
+            .expect("function authority exposes its target");
+        if value.binding_target() != target {
+            return Err(handle_error(
+                "function_value_target_brand_mismatch",
+                "projected function value belongs to a different generated binding target",
+            ));
+        }
+        let projection = self
+            .0
+            .registry
+            .projected_function_projection_fingerprint()
+            .expect("function authority exposes its projection fingerprint");
+        if value.projection_fingerprint() != projection {
+            return Err(handle_error(
+                "function_value_projection_brand_mismatch",
+                "projected function value belongs to a different generated projection",
+            ));
+        }
+        Ok(FunctionValueHandle(Arc::new(FunctionValueState {
+            session: Arc::clone(&self.0),
+            value: value.value().clone(),
+        })))
     }
 
     /// Require a finite directed walk between two session-owned bindings.
@@ -218,6 +323,7 @@ impl SessionHandle {
         let mut names = BTreeSet::new();
         for (name, slot) in &slots {
             self.require_session(slot.session_id())?;
+            validate_output_name(name)?;
             if !names.insert(name.clone()) {
                 return Err(handle_error(
                     "duplicate_output_name",
@@ -258,6 +364,8 @@ impl SessionHandle {
             declarations.iter().zip(&slots)
         {
             self.require_session(selection.session_id())?;
+            validate_output_name(declared_name)?;
+            validate_output_name(actual_name)?;
             if declared_name != actual_name {
                 return Err(handle_error(
                     "named_declaration_name_mismatch",
@@ -329,6 +437,17 @@ impl SessionHandle {
                 "handles from different construction sessions cannot be combined",
             ))
         }
+    }
+}
+
+fn validate_output_name(name: &str) -> Result<()> {
+    if name.is_empty() || name.len() > MAX_OUTPUT_NAME_BYTES || name.chars().any(char::is_control) {
+        Err(handle_error(
+            "invalid_output_name",
+            "named output members must be non-empty and within the canonical byte ceiling",
+        ))
+    } else {
+        Ok(())
     }
 }
 
@@ -462,10 +581,11 @@ impl BindingHandle {
 
     /// Resolve a descriptor-owned scalar field.
     pub fn field(&self, field_name: &str) -> Result<FieldHandle> {
-        let field_id = self.resolve_field(&self.0.descriptor_id, field_name)?;
+        let (field_id, value_type) = self.resolve_field(&self.0.descriptor_id, field_name)?;
         Ok(FieldHandle(Arc::new(FieldState {
             binding: self.clone(),
             field_id,
+            value_type,
         })))
     }
 
@@ -534,7 +654,7 @@ impl BindingHandle {
     /// descriptor. Unrelated same-label fields and subtype shadows fail closed.
     pub fn field_owned_by(&self, owner_type: &str, field_name: &str) -> Result<FieldHandle> {
         let owner_id = self.reference_owner_id(owner_type, "field")?;
-        let field_id = self.resolve_field(&owner_id, field_name)?;
+        let (field_id, value_type) = self.resolve_field(&owner_id, field_name)?;
         if !self.0.session.registry.field_reference_is_compatible(
             &self.0.descriptor_id,
             &owner_id,
@@ -551,6 +671,7 @@ impl BindingHandle {
         Ok(FieldHandle(Arc::new(FieldState {
             binding: self.clone(),
             field_id,
+            value_type,
         })))
     }
 
@@ -672,8 +793,13 @@ impl BindingHandle {
             })
     }
 
-    fn resolve_field(&self, owner_id: &DescriptorId, field_name: &str) -> Result<FieldId> {
-        self.0
+    fn resolve_field(
+        &self,
+        owner_id: &DescriptorId,
+        field_name: &str,
+    ) -> Result<(FieldId, ValueTypeTag)> {
+        let field = self
+            .0
             .session
             .registry
             .field_id(owner_id, field_name)
@@ -682,7 +808,27 @@ impl BindingHandle {
                     "unknown_field",
                     format!("descriptor '{owner_id}' has no registered field '{field_name}'"),
                 )
-            })
+            })?;
+        let type_name = self
+            .0
+            .session
+            .registry
+            .descriptor_type_name(owner_id)
+            .ok_or_else(|| handle_error("unknown_descriptor", "field owner is not registered"))?;
+        let descriptor =
+            self.0.session.registry.get(&type_name).ok_or_else(|| {
+                handle_error("unknown_descriptor", "field owner is not registered")
+            })?;
+        let value_type = match descriptor {
+            TypeDescriptorRef::Entity(descriptor) => descriptor
+                .attribute(&field.name)
+                .map(|field| field.value_type),
+            TypeDescriptorRef::Relation(descriptor) => descriptor
+                .attribute(&field.name)
+                .map(|field| field.value_type),
+        }
+        .ok_or_else(|| handle_error("unknown_field", "field is absent from its owner"))?;
+        Ok((field, handle_value_type_tag(value_type)))
     }
 }
 
@@ -706,10 +852,284 @@ impl fmt::Debug for BindingHandle {
     }
 }
 
+impl BindingHandle {
+    /// Use this attached thing binding as one schema-function argument.
+    pub fn function_argument(&self) -> FunctionArgumentHandle {
+        FunctionArgumentHandle {
+            session_id: self.session_id(),
+            argument: FunctionArgumentExpr::Binding {
+                binding: self.token(),
+                descriptor: self.0.descriptor_id.clone(),
+            },
+        }
+    }
+}
+
+#[derive(Debug)]
+struct FunctionState {
+    session: Arc<SessionState>,
+    projection: FunctionProjection,
+    return_type: ValueTypeTag,
+}
+
+/// One exact generated scalar schema-function token.
+#[derive(Clone, Debug)]
+pub struct FunctionHandle(Arc<FunctionState>);
+
+impl FunctionHandle {
+    /// Construct one immutable typed call after checking the exact signature.
+    pub fn call(
+        &self,
+        arguments: impl IntoIterator<Item = FunctionArgumentHandle>,
+    ) -> Result<FunctionCallHandle> {
+        let arguments = arguments.into_iter().collect::<Vec<_>>();
+        if arguments.len() != self.0.projection.parameters().len() {
+            return Err(handle_error(
+                "function_argument_arity",
+                "function call argument count does not match the projected signature",
+            ));
+        }
+        for (argument, parameter) in arguments.iter().zip(self.0.projection.parameters()) {
+            require_same_session(self.0.session.id, argument.session_id)?;
+            require_function_argument_type(
+                &self.0.session.registry,
+                parameter.type_ref(),
+                argument,
+            )?;
+        }
+        Ok(FunctionCallHandle(Arc::new(FunctionCallState {
+            session: Arc::clone(&self.0.session),
+            call: FunctionCallExpr {
+                function: self.0.projection.id().clone(),
+                arguments: arguments
+                    .into_iter()
+                    .map(|argument| argument.argument)
+                    .collect(),
+                return_type: self.0.return_type,
+            },
+        })))
+    }
+}
+
+#[derive(Debug)]
+struct FunctionValueState {
+    session: Arc<SessionState>,
+    value: CanonicalValue,
+}
+
+/// One branded canonical scalar admitted as a function input.
+#[derive(Clone, Debug)]
+pub struct FunctionValueHandle(Arc<FunctionValueState>);
+
+impl FunctionValueHandle {
+    /// Use this projected scalar as one schema-function argument.
+    pub fn function_argument(&self) -> FunctionArgumentHandle {
+        FunctionArgumentHandle {
+            session_id: self.0.session.id,
+            argument: FunctionArgumentExpr::Value(self.0.value.clone()),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+enum FunctionArgumentExpr {
+    Binding {
+        binding: SessionBindingToken,
+        descriptor: DescriptorId,
+    },
+    Value(CanonicalValue),
+    Call(FunctionCallExpr),
+}
+
+/// One immutable, session-branded schema-function argument.
+#[derive(Clone, Debug)]
+pub struct FunctionArgumentHandle {
+    session_id: SessionId,
+    argument: FunctionArgumentExpr,
+}
+
+#[derive(Clone, Debug)]
+struct FunctionCallExpr {
+    function: FunctionId,
+    arguments: Vec<FunctionArgumentExpr>,
+    return_type: ValueTypeTag,
+}
+
+#[derive(Debug)]
+struct FunctionCallState {
+    session: Arc<SessionState>,
+    call: FunctionCallExpr,
+}
+
+/// One immutable generated scalar schema-function call.
+#[derive(Clone, Debug)]
+pub struct FunctionCallHandle(Arc<FunctionCallState>);
+
+impl FunctionCallHandle {
+    /// Use this call result as an argument to a later call.
+    pub fn function_argument(&self) -> FunctionArgumentHandle {
+        FunctionArgumentHandle {
+            session_id: self.0.session.id,
+            argument: FunctionArgumentExpr::Call(self.0.call.clone()),
+        }
+    }
+
+    /// Compare this call result with one bound scalar field.
+    pub fn compare_field(
+        &self,
+        operator: ComparisonOp,
+        field: &FieldHandle,
+    ) -> Result<PredicateHandle> {
+        require_same_session(self.0.session.id, field.session_id())?;
+        require_same_function_domain(self.0.call.return_type, field.0.value_type)?;
+        require_function_comparison_operator(operator, self.0.call.return_type)?;
+        Ok(PredicateHandle::new(
+            self.0.session.id,
+            HandleExpr::ScalarComparison {
+                left: HandleScalarOperand::Function(self.0.call.clone()),
+                operator,
+                right: HandleScalarOperand::Field {
+                    binding: field.binding_token(),
+                    field: field.0.field_id.clone(),
+                },
+            },
+        ))
+    }
+
+    /// Compare this call result with one branded projected scalar.
+    pub fn compare_value(
+        &self,
+        operator: ComparisonOp,
+        value: &FunctionValueHandle,
+    ) -> Result<PredicateHandle> {
+        require_same_session(self.0.session.id, value.0.session.id)?;
+        require_same_function_domain(self.0.call.return_type, value.0.value.value_type())?;
+        require_function_comparison_operator(operator, self.0.call.return_type)?;
+        Ok(PredicateHandle::new(
+            self.0.session.id,
+            HandleExpr::ScalarComparison {
+                left: HandleScalarOperand::Function(self.0.call.clone()),
+                operator,
+                right: HandleScalarOperand::Value(value.0.value.clone()),
+            },
+        ))
+    }
+
+    /// Compare this call result with another scalar call result.
+    pub fn compare_call(
+        &self,
+        operator: ComparisonOp,
+        other: &FunctionCallHandle,
+    ) -> Result<PredicateHandle> {
+        require_same_session(self.0.session.id, other.0.session.id)?;
+        require_same_function_domain(self.0.call.return_type, other.0.call.return_type)?;
+        require_function_comparison_operator(operator, self.0.call.return_type)?;
+        Ok(PredicateHandle::new(
+            self.0.session.id,
+            HandleExpr::ScalarComparison {
+                left: HandleScalarOperand::Function(self.0.call.clone()),
+                operator,
+                right: HandleScalarOperand::Function(other.0.call.clone()),
+            },
+        ))
+    }
+}
+
+fn require_function_argument_type(
+    registry: &DescriptorRegistry,
+    expected: &ProjectedTypeRef,
+    actual: &FunctionArgumentHandle,
+) -> Result<()> {
+    let valid = match (expected, &actual.argument) {
+        (ProjectedTypeRef::Scalar(expected), FunctionArgumentExpr::Value(value)) => {
+            *expected == value.value_type()
+        }
+        (ProjectedTypeRef::Scalar(expected), FunctionArgumentExpr::Call(call)) => {
+            *expected == call.return_type
+        }
+        (ProjectedTypeRef::Model(expected), FunctionArgumentExpr::Binding { descriptor, .. }) => {
+            let expected_descriptor = descriptor_id_from_type(expected.id());
+            expected_descriptor.is_some_and(|expected_descriptor| {
+                registry.is_same_or_subtype(descriptor, &expected_descriptor)
+            })
+        }
+        (ProjectedTypeRef::Struct(_), _) => false,
+        _ => false,
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err(handle_error(
+            "function_argument_type",
+            "function argument does not match the exact projected signature",
+        ))
+    }
+}
+
+fn require_same_function_domain(left: ValueTypeTag, right: ValueTypeTag) -> Result<()> {
+    if left == right {
+        Ok(())
+    } else {
+        Err(handle_error(
+            "function_comparison_type",
+            "schema-function comparison operands must have the same scalar domain",
+        ))
+    }
+}
+
+fn require_function_comparison_operator(
+    operator: ComparisonOp,
+    domain: ValueTypeTag,
+) -> Result<()> {
+    let scalar_operator = matches!(
+        operator,
+        ComparisonOp::Equal
+            | ComparisonOp::NotEqual
+            | ComparisonOp::LessThan
+            | ComparisonOp::LessThanOrEqual
+            | ComparisonOp::GreaterThan
+            | ComparisonOp::GreaterThanOrEqual
+    );
+    let domain_operator = domain != ValueTypeTag::Boolean
+        || matches!(operator, ComparisonOp::Equal | ComparisonOp::NotEqual);
+    if scalar_operator && domain_operator {
+        Ok(())
+    } else {
+        Err(handle_error(
+            "function_comparison_operator_unsupported",
+            "schema-function comparisons admit only equality and scalar ordering operators",
+        ))
+    }
+}
+
+const fn handle_value_type_tag(value: ValueType) -> ValueTypeTag {
+    match value {
+        ValueType::String => ValueTypeTag::String,
+        ValueType::Long => ValueTypeTag::Long,
+        ValueType::Double => ValueTypeTag::Double,
+        ValueType::Boolean => ValueTypeTag::Boolean,
+        ValueType::Date => ValueTypeTag::Date,
+        ValueType::DateTime => ValueTypeTag::DateTime,
+        ValueType::DateTimeTz => ValueTypeTag::DateTimeTz,
+        ValueType::Decimal => ValueTypeTag::Decimal,
+        ValueType::Duration => ValueTypeTag::Duration,
+    }
+}
+
+fn descriptor_id_from_type(id: &TypeId) -> Option<DescriptorId> {
+    let prefix = match id.kind() {
+        TypeKind::Entity => "entity",
+        TypeKind::Relation => "relation",
+        TypeKind::Attribute | TypeKind::Struct => return None,
+    };
+    Some(DescriptorId::new(format!("{prefix}:{}", id.label())))
+}
+
 #[derive(Debug)]
 struct FieldState {
     binding: BindingHandle,
     field_id: FieldId,
+    value_type: ValueTypeTag,
 }
 
 /// A scalar field resolved against one binding occurrence.
@@ -745,6 +1165,28 @@ impl FieldHandle {
                 operator,
                 right_binding: other.binding_token(),
                 right: other.0.field_id.clone(),
+            },
+        ))
+    }
+
+    /// Compare this field with an exact generated scalar function result.
+    pub fn compare_function(
+        &self,
+        operator: ComparisonOp,
+        function: &FunctionCallHandle,
+    ) -> Result<PredicateHandle> {
+        require_same_session(self.session_id(), function.0.session.id)?;
+        require_same_function_domain(self.0.value_type, function.0.call.return_type)?;
+        require_function_comparison_operator(operator, self.0.value_type)?;
+        Ok(PredicateHandle::new(
+            self.session_id(),
+            HandleExpr::ScalarComparison {
+                left: HandleScalarOperand::Field {
+                    binding: self.binding_token(),
+                    field: self.0.field_id.clone(),
+                },
+                operator,
+                right: HandleScalarOperand::Function(function.0.call.clone()),
             },
         ))
     }
@@ -833,6 +1275,11 @@ enum HandleExpr {
         right_binding: SessionBindingToken,
         right: FieldId,
     },
+    ScalarComparison {
+        left: HandleScalarOperand,
+        operator: ComparisonOp,
+        right: HandleScalarOperand,
+    },
     FieldPresence {
         binding: SessionBindingToken,
         field: FieldId,
@@ -859,6 +1306,16 @@ enum HandleExpr {
     And(Vec<Arc<HandleExpr>>),
     Or(Vec<Arc<HandleExpr>>),
     Not(Arc<HandleExpr>),
+}
+
+#[derive(Clone, Debug)]
+enum HandleScalarOperand {
+    Field {
+        binding: SessionBindingToken,
+        field: FieldId,
+    },
+    Value(CanonicalValue),
+    Function(FunctionCallExpr),
 }
 
 /// An immutable predicate tree over session-owned binding handles.
@@ -927,6 +1384,10 @@ fn collect_expr_bindings(expression: &HandleExpr, bindings: &mut BTreeSet<Sessio
             bindings.insert(*left_binding);
             bindings.insert(*right_binding);
         }
+        HandleExpr::ScalarComparison { left, right, .. } => {
+            collect_scalar_operand_bindings(left, bindings);
+            collect_scalar_operand_bindings(right, bindings);
+        }
         HandleExpr::FieldPresence { binding, .. } | HandleExpr::BindingIid { binding, .. } => {
             bindings.insert(*binding);
         }
@@ -946,6 +1407,31 @@ fn collect_expr_bindings(expression: &HandleExpr, bindings: &mut BTreeSet<Sessio
             }
         }
         HandleExpr::Not(expression) => collect_expr_bindings(expression, bindings),
+    }
+}
+
+fn collect_scalar_operand_bindings(
+    operand: &HandleScalarOperand,
+    bindings: &mut BTreeSet<SessionBindingToken>,
+) {
+    match operand {
+        HandleScalarOperand::Field { binding, .. } => {
+            bindings.insert(*binding);
+        }
+        HandleScalarOperand::Value(_) => {}
+        HandleScalarOperand::Function(call) => collect_call_bindings(call, bindings),
+    }
+}
+
+fn collect_call_bindings(call: &FunctionCallExpr, bindings: &mut BTreeSet<SessionBindingToken>) {
+    for argument in &call.arguments {
+        match argument {
+            FunctionArgumentExpr::Binding { binding, .. } => {
+                bindings.insert(*binding);
+            }
+            FunctionArgumentExpr::Value(_) => {}
+            FunctionArgumentExpr::Call(call) => collect_call_bindings(call, bindings),
+        }
     }
 }
 
@@ -1611,6 +2097,15 @@ fn lower_expression(
                 right.clone(),
             ),
         }),
+        HandleExpr::ScalarComparison {
+            left,
+            operator,
+            right,
+        } => Ok(MatchExpr::ScalarComparison {
+            left: lower_scalar_operand(left, binding_ids)?,
+            operator: *operator,
+            right: lower_scalar_operand(right, binding_ids)?,
+        }),
         HandleExpr::FieldPresence {
             binding,
             field,
@@ -1675,6 +2170,51 @@ fn lower_expression(
             expression: Box::new(lower_expression(expression, binding_ids, next_role_edge)?),
         }),
     }
+}
+
+fn lower_scalar_operand(
+    operand: &HandleScalarOperand,
+    binding_ids: &BTreeMap<SessionBindingToken, BindingId>,
+) -> Result<MatchScalarOperand> {
+    Ok(match operand {
+        HandleScalarOperand::Field { binding, field } => MatchScalarOperand::Field {
+            field: BoundFieldId::new(lookup_binding_id(*binding, binding_ids)?, field.clone()),
+        },
+        HandleScalarOperand::Value(value) => MatchScalarOperand::Value {
+            value: value.clone(),
+        },
+        HandleScalarOperand::Function(call) => MatchScalarOperand::Function {
+            call: lower_function_call(call, binding_ids)?,
+        },
+    })
+}
+
+fn lower_function_call(
+    call: &FunctionCallExpr,
+    binding_ids: &BTreeMap<SessionBindingToken, BindingId>,
+) -> Result<MatchFunctionCall> {
+    Ok(MatchFunctionCall {
+        function: call.function.clone(),
+        arguments: call
+            .arguments
+            .iter()
+            .map(|argument| {
+                Ok(match argument {
+                    FunctionArgumentExpr::Binding { binding, .. } => {
+                        MatchFunctionArgument::Binding {
+                            binding: lookup_binding_id(*binding, binding_ids)?,
+                        }
+                    }
+                    FunctionArgumentExpr::Value(value) => MatchFunctionArgument::Value {
+                        value: value.clone(),
+                    },
+                    FunctionArgumentExpr::Call(call) => MatchFunctionArgument::Call {
+                        call: Box::new(lower_function_call(call, binding_ids)?),
+                    },
+                })
+            })
+            .collect::<Result<Vec<_>>>()?,
+    })
 }
 
 fn lower_order(

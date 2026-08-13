@@ -2,15 +2,16 @@
 
 use crate::ast::{
     Clause, Constraint, FetchItem, LetAssignment, LiteralValue, Pattern, ReduceAssignment,
-    SortField, Statement, TypedComparisonOperator, TypedFetchRows, TypedHydrateThings,
-    TypedLiteral, TypedMatchPredicate, TypedMatchTarget, TypedMissingOrder, TypedPageRematch,
-    TypedRootScan, TypedSortDirection, Value,
+    SortField, Statement, TypedComparisonOperator, TypedFetchRows, TypedFunctionArgument,
+    TypedHydrateThings, TypedLiteral, TypedMatchPredicate, TypedMatchTarget, TypedMissingOrder,
+    TypedPageRematch, TypedRootScan, TypedScalarOperand, TypedSortDirection, Value,
 };
 use crate::decimal::parse_decimal;
 use crate::reserved_words::is_reserved_word;
 use std::sync::OnceLock;
 use type_bridge_contract::id::is_canonical_thing_iid;
 use type_bridge_contract::limits::{MAX_PREDICATE_DEPTH, MAX_PREDICATE_NODES};
+use type_bridge_contract::value::{CanonicalValue, ValueTypeTag};
 use unicode_ident::{is_xid_continue, is_xid_start};
 
 /// Return whether a string is one safe, non-reserved TypeQL label.
@@ -67,7 +68,16 @@ pub struct TypedQueryParameter {
     /// Deterministic variable name without the `$` sigil.
     pub name: String,
     /// Typed value supplied in the single prepared input row.
-    pub value: TypedLiteral,
+    pub value: TypedQueryParameterValue,
+}
+
+/// One compiler-owned `given` parameter value.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TypedQueryParameterValue {
+    /// A released typed literal parameter.
+    Literal(TypedLiteral),
+    /// An exact generated projected canonical value.
+    Canonical(CanonicalValue),
 }
 
 /// One prepared typed statement and its ordered `given`-row values.
@@ -108,8 +118,25 @@ impl TypedParameterMode {
             field_variable(field),
             comparison_token(operator)
         );
-        parameters.push(TypedQueryParameter { name, value });
+        parameters.push(TypedQueryParameter {
+            name,
+            value: TypedQueryParameterValue::Literal(value),
+        });
         comparison
+    }
+
+    fn canonical(&mut self, value: &CanonicalValue) -> Result<String, TypedCompileError> {
+        let Self::Prepared(parameters) = self else {
+            return Err(TypedCompileError::new(
+                "schema-function projected values require provider given-row support",
+            ));
+        };
+        let name = format!("g{}", parameters.len());
+        parameters.push(TypedQueryParameter {
+            name: name.clone(),
+            value: TypedQueryParameterValue::Canonical(value.clone()),
+        });
+        Ok(format!("${name}"))
     }
 
     fn finish(self, typeql: String) -> PreparedTypedStatement {
@@ -125,7 +152,7 @@ impl TypedParameterMode {
                     format!(
                         "${}: {}",
                         parameter.name,
-                        prepared_typed_value_type(&parameter.value)
+                        typed_parameter_value_type(&parameter.value)
                     )
                 })
                 .collect::<Vec<_>>()
@@ -712,6 +739,53 @@ impl QueryCompiler {
                     field_variable(right.id)
                 ))
             }
+            TypedMatchPredicate::FunctionComparison {
+                calls,
+                left,
+                operator,
+                right,
+            } => {
+                let mut rendered = Vec::with_capacity(calls.len().saturating_add(1));
+                let mut scalar_fields = std::collections::BTreeSet::new();
+                for operand in [left, right] {
+                    if let TypedScalarOperand::Field { field } = operand
+                        && scalar_fields.insert(*field)
+                    {
+                        let field = typed_field(fields, *field)?;
+                        rendered.push(format!(
+                            "{} has {} {}",
+                            binding_variable(field.owner),
+                            field.field_name,
+                            field_variable(field.id)
+                        ));
+                    }
+                }
+                for call in calls {
+                    let arguments = call
+                        .arguments
+                        .iter()
+                        .map(|argument| match argument {
+                            TypedFunctionArgument::Binding { binding } => {
+                                Ok(binding_variable(*binding))
+                            }
+                            TypedFunctionArgument::Value { value } => parameters.canonical(value),
+                            TypedFunctionArgument::CallResult { call } => {
+                                Ok(function_variable(*call))
+                            }
+                        })
+                        .collect::<Result<Vec<_>, TypedCompileError>>()?;
+                    rendered.push(format!(
+                        "let {} = {}({})",
+                        function_variable(call.result),
+                        call.function,
+                        arguments.join(", ")
+                    ));
+                }
+                let left = render_typed_scalar_operand(left, parameters)?;
+                let right = render_typed_scalar_operand(right, parameters)?;
+                rendered.push(format!("{left} {} {right}", comparison_token(*operator)));
+                Ok(rendered.join("; "))
+            }
             TypedMatchPredicate::FieldPresence { field, present } => {
                 let field = typed_field(fields, *field)?;
                 let has = format!(
@@ -1215,6 +1289,21 @@ fn field_variable(field: u16) -> String {
     format!("$f{field}")
 }
 
+fn function_variable(call: u16) -> String {
+    format!("$c{call}")
+}
+
+fn render_typed_scalar_operand(
+    operand: &TypedScalarOperand,
+    parameters: &mut TypedParameterMode,
+) -> Result<String, TypedCompileError> {
+    match operand {
+        TypedScalarOperand::Field { field } => Ok(field_variable(*field)),
+        TypedScalarOperand::Value { value } => parameters.canonical(value),
+        TypedScalarOperand::CallResult { call } => Ok(function_variable(*call)),
+    }
+}
+
 fn type_variable(binding: u16) -> String {
     format!("$t{binding}")
 }
@@ -1228,6 +1317,7 @@ fn contains_reachable(predicate: &TypedMatchPredicate) -> bool {
         TypedMatchPredicate::Not { expression } => contains_reachable(expression),
         TypedMatchPredicate::FieldValue { .. }
         | TypedMatchPredicate::FieldComparison { .. }
+        | TypedMatchPredicate::FunctionComparison { .. }
         | TypedMatchPredicate::FieldPresence { .. }
         | TypedMatchPredicate::BindingIid { .. }
         | TypedMatchPredicate::RoleEdge { .. } => false,
@@ -1567,6 +1657,7 @@ fn inspect_typed_predicate_structure(
         }
         TypedMatchPredicate::FieldValue { .. }
         | TypedMatchPredicate::FieldComparison { .. }
+        | TypedMatchPredicate::FunctionComparison { .. }
         | TypedMatchPredicate::FieldPresence { .. }
         | TypedMatchPredicate::BindingIid { .. }
         | TypedMatchPredicate::RoleEdge { .. } => {}
@@ -1593,6 +1684,58 @@ fn validate_typed_predicate_semantics(
             if !fields.contains(left) || !fields.contains(right) {
                 return Err(TypedCompileError::new(
                     "typed field comparison references an unknown field",
+                ));
+            }
+        }
+        TypedMatchPredicate::FunctionComparison {
+            calls, left, right, ..
+        } => {
+            let mut prior = std::collections::BTreeSet::new();
+            for (index, call) in calls.iter().enumerate() {
+                let expected = u16::try_from(index).map_err(|_| {
+                    TypedCompileError::new("typed function call ordinal exceeds u16")
+                })?;
+                if call.result != expected || !is_valid_typeql_label(&call.function) {
+                    return Err(TypedCompileError::new(
+                        "typed function calls require dense results and valid schema labels",
+                    ));
+                }
+                for argument in &call.arguments {
+                    match argument {
+                        TypedFunctionArgument::Binding { binding } => {
+                            if !targets.contains(binding) {
+                                return Err(TypedCompileError::new(
+                                    "typed function argument references an unknown binding",
+                                ));
+                            }
+                        }
+                        TypedFunctionArgument::Value { .. } => {}
+                        TypedFunctionArgument::CallResult { call } => {
+                            if !prior.contains(call) {
+                                return Err(TypedCompileError::new(
+                                    "typed function call dependency is not prior and acyclic",
+                                ));
+                            }
+                        }
+                    }
+                }
+                prior.insert(call.result);
+            }
+            let validate_operand = |operand: &TypedScalarOperand| match operand {
+                TypedScalarOperand::Field { field } if fields.contains(field) => Ok(()),
+                TypedScalarOperand::Value { .. } => Ok(()),
+                TypedScalarOperand::CallResult { call } if prior.contains(call) => Ok(()),
+                _ => Err(TypedCompileError::new(
+                    "typed function comparison references an unknown scalar operand",
+                )),
+            };
+            validate_operand(left)?;
+            validate_operand(right)?;
+            if !matches!(left, TypedScalarOperand::CallResult { .. })
+                && !matches!(right, TypedScalarOperand::CallResult { .. })
+            {
+                return Err(TypedCompileError::new(
+                    "typed function comparison must consume a function call result",
                 ));
             }
         }
@@ -1943,6 +2086,23 @@ fn prepared_typed_value_type(value: &TypedLiteral) -> &'static str {
     }
 }
 
+fn typed_parameter_value_type(value: &TypedQueryParameterValue) -> &'static str {
+    match value {
+        TypedQueryParameterValue::Literal(value) => prepared_typed_value_type(value),
+        TypedQueryParameterValue::Canonical(value) => match value.value_type() {
+            ValueTypeTag::String => "string",
+            ValueTypeTag::Long => "integer",
+            ValueTypeTag::Double => "double",
+            ValueTypeTag::Boolean => "boolean",
+            ValueTypeTag::Date => "date",
+            ValueTypeTag::DateTime => "datetime",
+            ValueTypeTag::DateTimeTz => "datetime-tz",
+            ValueTypeTag::Decimal => "decimal",
+            ValueTypeTag::Duration => "duration",
+        },
+    }
+}
+
 fn comparison_token(operator: TypedComparisonOperator) -> &'static str {
     match operator {
         TypedComparisonOperator::Equal => "==",
@@ -2049,6 +2209,50 @@ mod tests {
             offset: 0,
             limit: 1,
         }
+    }
+
+    #[test]
+    fn schema_function_calls_require_prepared_canonical_inputs_and_lower_in_dependency_order() {
+        let query = typed_predicate_query(TypedMatchPredicate::FunctionComparison {
+            calls: vec![
+                crate::ast::TypedFunctionCall {
+                    result: 0,
+                    function: "qualifying-score".into(),
+                    arguments: vec![
+                        TypedFunctionArgument::Binding { binding: 0 },
+                        TypedFunctionArgument::Value {
+                            value: CanonicalValue::Long(40),
+                        },
+                    ],
+                },
+                crate::ast::TypedFunctionCall {
+                    result: 1,
+                    function: "identity-score".into(),
+                    arguments: vec![TypedFunctionArgument::CallResult { call: 0 }],
+                },
+            ],
+            left: TypedScalarOperand::CallResult { call: 1 },
+            operator: TypedComparisonOperator::Equal,
+            right: TypedScalarOperand::Field { field: 0 },
+        });
+
+        assert!(
+            compiler().compile_typed_fetch_rows(&query).is_err(),
+            "projected values never fall back to inline TypeQL"
+        );
+        let prepared = compiler().prepare_typed_fetch_rows(&query).unwrap();
+        assert_eq!(
+            prepared.parameters,
+            vec![TypedQueryParameter {
+                name: "g0".into(),
+                value: TypedQueryParameterValue::Canonical(CanonicalValue::Long(40)),
+            }]
+        );
+        assert!(prepared.typeql.starts_with("given $g0: integer;\nmatch\n"));
+        assert!(prepared.typeql.contains("$b0 has score $f0"));
+        assert!(prepared.typeql.contains(
+            "let $c0 = qualifying-score($b0, $g0); let $c1 = identity-score($c0); $c1 == $f0"
+        ));
     }
 
     #[test]
@@ -3374,7 +3578,7 @@ mod tests {
                     ),
                     parameters: vec![TypedQueryParameter {
                         name: "g0".into(),
-                        value,
+                        value: TypedQueryParameterValue::Literal(value),
                     }],
                 }
             );
@@ -3445,7 +3649,7 @@ mod tests {
             prepared.parameters,
             vec![TypedQueryParameter {
                 name: "g0".into(),
-                value: TypedLiteral::String("50%_.*".into()),
+                value: TypedQueryParameterValue::Literal(TypedLiteral::String("50%_.*".into())),
             }]
         );
     }
@@ -3493,11 +3697,11 @@ mod tests {
             vec![
                 TypedQueryParameter {
                     name: "g0".into(),
-                    value: TypedLiteral::Long(42),
+                    value: TypedQueryParameterValue::Literal(TypedLiteral::Long(42)),
                 },
                 TypedQueryParameter {
                     name: "g1".into(),
-                    value: TypedLiteral::Boolean(true),
+                    value: TypedQueryParameterValue::Literal(TypedLiteral::Boolean(true)),
                 },
             ]
         );
@@ -3567,7 +3771,7 @@ mod tests {
             prepared_root.parameters,
             vec![TypedQueryParameter {
                 name: "g0".into(),
-                value: TypedLiteral::String("needle".into()),
+                value: TypedQueryParameterValue::Literal(TypedLiteral::String("needle".into())),
             }]
         );
 

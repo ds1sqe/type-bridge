@@ -184,12 +184,10 @@ const rows = await remote.query(person).rows({ limit: 50n });
 or be pinned out of band. `exchange` performs one authenticated request and
 returns the exact response bytes; TypeBridge does not choose an HTTP client,
 credential policy, or retry policy. Query composition performs no I/O; `one`,
-`first`, bounded `rows`, `pageBy`, `countBy`, or `existsBy` performs one
-exchange and hydrates the same generated classes as direct execution.
-
-Remote reductions/grouping fail before exchange with
-`query_remote_v2_native_only_operation`. Generated remote mutation APIs are not
-advertised.
+`first`, bounded `rows`, `pageBy`, `countBy`, `existsBy`, and typed
+`aggregate`/`groupBy` each perform one exchange and hydrate the same generated
+classes and scalar groups as direct execution. Generated remote mutation APIs
+are not advertised.
 
 ## Runtime boundary
 

@@ -304,13 +304,19 @@ fn selected_person_string_predicate_request(
     .expect("selected string-predicate request should validate")
 }
 
-fn adversarial_limits() -> Vec<(&'static str, MatchExecutionLimits, &'static str)> {
+fn adversarial_limits() -> Vec<(
+    &'static str,
+    MatchExecutionLimits,
+    MatchErrorCategory,
+    &'static str,
+)> {
     let cancellation = AnswerCancellation::default();
     cancellation.cancel();
     vec![
         (
             "pre-cancelled",
             MatchExecutionLimits::tightened(100, 64 * 1024, Duration::from_secs(5), cancellation),
+            MatchErrorCategory::Cancelled,
             "provider_cancelled",
         ),
         (
@@ -321,6 +327,7 @@ fn adversarial_limits() -> Vec<(&'static str, MatchExecutionLimits, &'static str
                 Duration::ZERO,
                 AnswerCancellation::default(),
             ),
+            MatchErrorCategory::ResourceLimit,
             "transaction_deadline_exceeded",
         ),
         (
@@ -331,16 +338,21 @@ fn adversarial_limits() -> Vec<(&'static str, MatchExecutionLimits, &'static str
                 Duration::from_secs(5),
                 AnswerCancellation::default(),
             ),
+            MatchErrorCategory::ResourceLimit,
             "response_byte_limit",
         ),
     ]
 }
 
-fn assert_resource_error(error: OrmError, expected_code: &str) {
+fn assert_bounded_execution_error(
+    error: OrmError,
+    expected_category: MatchErrorCategory,
+    expected_code: &str,
+) {
     let OrmError::Match(error) = error else {
         panic!("expected canonical match error, got {error}")
     };
-    assert_eq!(error.category(), MatchErrorCategory::ResourceLimit);
+    assert_eq!(error.category(), expected_category);
     assert_eq!(error.code().as_str(), expected_code);
     assert_eq!(
         error.path().segments(),
@@ -926,7 +938,7 @@ async fn selected_owned_execution_recovers_after_real_resource_failures() {
     let validated = selected_person_request(&registry, &schema);
     let (observed, lifecycle) = observed_database(db.database_name(), None).await;
 
-    for (case, limits, expected_code) in adversarial_limits() {
+    for (case, limits, expected_category, expected_code) in adversarial_limits() {
         let opens_before_failure = lifecycle.opens.load(Ordering::SeqCst);
         let closes_before_failure = lifecycle.closes.load(Ordering::SeqCst);
         let error = match observed
@@ -936,7 +948,7 @@ async fn selected_owned_execution_recovers_after_real_resource_failures() {
             Ok(_) => panic!("{case} execution must not expose a partial result"),
             Err(error) => error,
         };
-        assert_resource_error(error, expected_code);
+        assert_bounded_execution_error(error, expected_category, expected_code);
         let failure_transactions = usize::from(case == "response-byte-limit");
         assert_eq!(
             lifecycle.opens.load(Ordering::SeqCst),
@@ -986,7 +998,7 @@ async fn selected_borrowed_context_survives_real_resource_failures_until_caller_
         .await
         .expect("borrowed read context should open");
 
-    for (case, limits, expected_code) in adversarial_limits() {
+    for (case, limits, expected_category, expected_code) in adversarial_limits() {
         let error = match context
             .execute_match_with_limits(&registry, &validated, limits)
             .await
@@ -994,7 +1006,7 @@ async fn selected_borrowed_context_survives_real_resource_failures_until_caller_
             Ok(_) => panic!("borrowed {case} must not expose a partial result"),
             Err(error) => error,
         };
-        assert_resource_error(error, expected_code);
+        assert_bounded_execution_error(error, expected_category, expected_code);
 
         let fresh = context
             .execute_match(&registry, &validated)

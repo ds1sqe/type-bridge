@@ -44,6 +44,7 @@ use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 #[cfg(unix)]
 use cap_fs_ext::OpenOptionsSyncExt as _;
@@ -140,6 +141,12 @@ impl FromStr for Version {
 /// This is the single source of truth for the default; every binding that needs
 /// a per-call fallback references this constant rather than hard-coding `8000`.
 pub const DEFAULT_HTTP_PORT: u16 = 8000;
+
+// A version response is one tiny JSON object. Keep the network allocation
+// ceiling private so increasing it remains an explicit security review rather
+// than an accidental consequence of an HTTP-client default.
+const MAX_VERSION_RESPONSE_BYTES: usize = 4 * 1024;
+const VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
 // ---------------------------------------------------------------------------
 // Window constants (SSOT — declared exactly once, here)
@@ -1296,7 +1303,20 @@ fn tls_agent(roots: rustls::RootCertStore) -> Result<ureq::Agent, TlsConfigurati
     .map_err(|_| TlsConfigurationError::ClientConfiguration)?
     .with_root_certificates(roots)
     .with_no_client_auth();
-    Ok(ureq::builder().tls_config(Arc::new(config)).build())
+    Ok(ureq::builder()
+        .tls_config(Arc::new(config))
+        .redirects(0)
+        .try_proxy_from_env(false)
+        .build())
+}
+
+fn plaintext_agent() -> ureq::Agent {
+    // The returned version authorizes the matching gRPC endpoint. Redirects
+    // and ambient proxies could otherwise substitute a different authority.
+    ureq::builder()
+        .redirects(0)
+        .try_proxy_from_env(false)
+        .build()
 }
 
 /// Validate a custom root CA bundle without performing network I/O.
@@ -1364,20 +1384,41 @@ pub(crate) fn parse_version_response(json: &str) -> Result<Version, VersionError
 // ---------------------------------------------------------------------------
 
 fn server_version_request(request: ureq::Request, url: &str) -> Result<Version, VersionError> {
-    let response_body = request
-        .call()
-        .map_err(|e| {
-            VersionError::Probe(format!(
-                "could not reach TypeDB HTTP version endpoint at {url}; \
+    server_version_request_with_timeout(request, url, VERSION_PROBE_TIMEOUT)
+}
+
+fn server_version_request_with_timeout(
+    request: ureq::Request,
+    url: &str,
+    timeout: Duration,
+) -> Result<Version, VersionError> {
+    let response = request.timeout(timeout).call().map_err(|e| {
+        VersionError::Probe(format!(
+            "could not reach TypeDB HTTP version endpoint at {url}; \
                  ensure the TypeDB HTTP endpoint is reachable and that the port is correct: {e}"
-            ))
-        })?
-        .into_string()
+        ))
+    })?;
+    let mut response_body = Vec::with_capacity(MAX_VERSION_RESPONSE_BYTES + 1);
+    response
+        .into_reader()
+        .take((MAX_VERSION_RESPONSE_BYTES + 1) as u64)
+        .read_to_end(&mut response_body)
         .map_err(|e| {
             VersionError::Probe(format!("failed to read response body from {url}: {e}"))
         })?;
+    if response_body.len() > MAX_VERSION_RESPONSE_BYTES {
+        return Err(VersionError::Probe(format!(
+            "version response exceeds the {MAX_VERSION_RESPONSE_BYTES}-byte limit \
+             (endpoint: {url})"
+        )));
+    }
+    let response_body = std::str::from_utf8(&response_body).map_err(|_| {
+        VersionError::Probe(format!(
+            "version response is not valid UTF-8 (endpoint: {url})"
+        ))
+    })?;
 
-    parse_version_response(&response_body).map_err(|e| match e {
+    parse_version_response(response_body).map_err(|e| match e {
         VersionError::Probe(msg) => VersionError::Probe(format!("{msg} (endpoint: {url})")),
         other => other,
     })
@@ -1398,7 +1439,7 @@ pub fn server_version_plaintext(
     http_port: u16,
 ) -> Result<Version, VersionProbeError> {
     let url = version_endpoint(address, http_port, false);
-    server_version_request(ureq::get(&url), &url).map_err(VersionProbeError::Probe)
+    server_version_request(plaintext_agent().get(&url), &url).map_err(VersionProbeError::Probe)
 }
 
 /// Query the TypeDB HTTP API over HTTPS using native system trust roots.
@@ -2080,6 +2121,160 @@ mod tests {
         assert_eq!(
             version_endpoint("typedb://myhost:1729", 8000, false),
             "http://myhost:8000/v1/version"
+        );
+    }
+
+    fn spawn_chunked_version_endpoint(chunks: Vec<Vec<u8>>) -> (u16, std::thread::JoinHandle<()>) {
+        let listener =
+            std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind a local version endpoint");
+        let port = listener
+            .local_addr()
+            .expect("read the local version endpoint address")
+            .port();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept a version request");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .expect("bound local version request reads");
+            let mut request = Vec::with_capacity(1024);
+            let mut buffer = [0_u8; 512];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let count = stream.read(&mut buffer).expect("read version request");
+                assert_ne!(count, 0, "version request ended before its headers");
+                request.extend_from_slice(&buffer[..count]);
+                assert!(
+                    request.len() <= 16 * 1024,
+                    "version request headers exceeded the test ceiling"
+                );
+            }
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\n\
+                      Content-Type: application/json\r\n\
+                      Transfer-Encoding: chunked\r\n\
+                      Connection: close\r\n\r\n",
+                )
+                .expect("write version response headers");
+            for chunk in chunks {
+                write!(stream, "{:x}\r\n", chunk.len()).expect("write chunk length");
+                stream.write_all(&chunk).expect("write response chunk");
+                stream.write_all(b"\r\n").expect("terminate response chunk");
+            }
+            stream
+                .write_all(b"0\r\n\r\n")
+                .expect("terminate chunked response");
+        });
+        (port, server)
+    }
+
+    #[test]
+    fn chunked_version_response_within_the_frozen_bound_is_accepted() {
+        let body = br#"{"distribution":"TypeDB CE","version":"3.12.1"}"#;
+        let chunks = body.chunks(7).map(<[u8]>::to_vec).collect();
+        let (port, server) = spawn_chunked_version_endpoint(chunks);
+
+        let version = server_version_plaintext("127.0.0.1:1729", port)
+            .expect("a bounded chunked version response is accepted");
+        server.join().expect("local version endpoint completes");
+        assert_eq!(version, Version::new(3, 12, 1));
+    }
+
+    #[test]
+    fn oversized_chunked_version_response_is_rejected_at_cap_plus_one() {
+        const BODY_SENTINEL: &[u8] = b"private-provider-body-sentinel";
+        let mut body = Vec::with_capacity(MAX_VERSION_RESPONSE_BYTES + 1);
+        while body.len() <= MAX_VERSION_RESPONSE_BYTES {
+            body.extend_from_slice(BODY_SENTINEL);
+        }
+        body.truncate(MAX_VERSION_RESPONSE_BYTES + 1);
+        let chunks = body.chunks(127).map(<[u8]>::to_vec).collect();
+        let (port, server) = spawn_chunked_version_endpoint(chunks);
+
+        let error = server_version_plaintext("127.0.0.1:1729", port)
+            .expect_err("an oversized chunked response is rejected");
+        server.join().expect("local version endpoint completes");
+        let message = error.to_string();
+        assert!(
+            message.contains("4096-byte limit"),
+            "bounded failure is stable: {message}"
+        );
+        assert!(
+            !message.contains(std::str::from_utf8(BODY_SENTINEL).unwrap()),
+            "response contents must not enter the probe diagnostic: {message}"
+        );
+    }
+
+    #[test]
+    fn version_probe_applies_an_overall_timeout_to_response_reads() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0))
+            .expect("bind a stalled local version endpoint");
+        let port = listener
+            .local_addr()
+            .expect("read stalled version endpoint address")
+            .port();
+        let server = std::thread::spawn(move || {
+            let (_stream, _) = listener.accept().expect("accept a stalled version request");
+            std::thread::sleep(Duration::from_millis(250));
+        });
+        let url = format!("http://127.0.0.1:{port}/v1/version");
+        let started = std::time::Instant::now();
+
+        let error =
+            server_version_request_with_timeout(ureq::get(&url), &url, Duration::from_millis(25))
+                .expect_err("the response read must honor the overall request timeout");
+        let elapsed = started.elapsed();
+        server
+            .join()
+            .expect("stalled local version endpoint completes");
+        assert!(
+            matches!(error, VersionError::Probe(_)),
+            "the timeout stays in the stable probe category: {error:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "the bounded test request did not time out promptly: {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn plaintext_version_probe_rejects_redirected_authority() {
+        let target =
+            std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind a redirect target endpoint");
+        target
+            .set_nonblocking(true)
+            .expect("make redirect target observation nonblocking");
+        let target_port = target
+            .local_addr()
+            .expect("read redirect target address")
+            .port();
+        let redirect = std::net::TcpListener::bind(("127.0.0.1", 0))
+            .expect("bind a redirecting version endpoint");
+        let redirect_port = redirect
+            .local_addr()
+            .expect("read redirecting version endpoint address")
+            .port();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = redirect.accept().expect("accept redirected request");
+            let response = format!(
+                "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{target_port}/v1/version\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("write redirect response");
+        });
+
+        let error = server_version_plaintext("127.0.0.1:1729", redirect_port)
+            .expect_err("a redirect must not authorize the original provider endpoint");
+        server
+            .join()
+            .expect("redirecting version endpoint completes");
+        assert!(
+            matches!(error, VersionProbeError::Probe(VersionError::Probe(_))),
+            "the redirect stays in the stable probe category: {error:?}"
+        );
+        assert!(
+            matches!(target.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
+            "the version probe followed a redirect to another authority"
         );
     }
 

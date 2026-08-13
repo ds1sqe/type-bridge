@@ -592,8 +592,10 @@ fn render_structs(projection: &RuntimeProjection) -> Result<String, Diagnostic> 
 fn render_functions(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
     let mut output = String::from(header());
     output.push_str(
-        "import { defineFunctionToken, type FunctionToken } from \"./runtime.js\";\nimport type * as Models from \"./models.js\";\nimport type * as Structs from \"./structs.js\";\n\n",
+        "import { defineFunctionToken, type BoundVar, type FunctionCall, type FunctionInput, type FunctionToken, type QueryMatchMode, QuerySession, RemoteQuerySession } from \"./runtime.js\";\nimport type * as Models from \"./models.js\";\nimport type * as Structs from \"./structs.js\";\n\n",
     );
+    let mut emitted_inputs = BTreeSet::new();
+    let mut emitted_calls = BTreeSet::new();
     for id in projection.emission().functions() {
         let function = projection
             .functions()
@@ -626,17 +628,146 @@ fn render_functions(projection: &RuntimeProjection) -> Result<String, Diagnostic
             )
         };
         let returns = function_return(projection, function.returns())?;
+        let supported_return = match function.returns() {
+            FunctionReturnProjection::Scalar(element) if !element.optional() => {
+                if let ProjectedTypeRef::Scalar(domain) = element.type_ref() {
+                    Some(*domain)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+        let supported = supported_return.is_some()
+            && function.parameters().iter().all(|parameter| {
+                matches!(
+                    parameter.type_ref(),
+                    ProjectedTypeRef::Model(_) | ProjectedTypeRef::Scalar(_)
+                )
+            });
+        let token_name = if supported {
+            format!("__tb{}Token", upper_first(function.target_name().as_str()))
+        } else {
+            function.target_name().as_str().to_owned()
+        };
         if let Some(documentation) = documentation_annotation(function.annotations()) {
             render_jsdoc(&mut output, documentation);
         }
         let _ = writeln!(
             output,
-            "export const {name}: FunctionToken<{id}, {arguments}, {returns}> = defineFunctionToken({{\n  id: {id},\n  name: {},\n  metadata: {},\n}});\n",
+            "{}const {token_name}: FunctionToken<{id}, {arguments}, {returns}> = defineFunctionToken({{\n  id: {id},\n  name: {},\n  metadata: {},\n}});\n",
+            if supported { "" } else { "export " },
             js_string(name)?,
             canonical_text!(function)
         );
+
+        let Some(return_domain) = supported_return.filter(|_| supported) else {
+            continue;
+        };
+        let call_alias = format!("{}Call", scalar_domain_name(return_domain));
+        if emitted_calls.insert(call_alias.clone()) {
+            let _ = writeln!(
+                output,
+                "export type {call_alias} = FunctionCall<{}>;",
+                scalar_type(return_domain)
+            );
+        }
+        for domain in
+            function
+                .parameters()
+                .iter()
+                .filter_map(|parameter| match parameter.type_ref() {
+                    ProjectedTypeRef::Scalar(domain) => Some(*domain),
+                    _ => None,
+                })
+        {
+            let alias = format!("{}Input", scalar_domain_name(domain));
+            if emitted_inputs.insert(alias.clone()) {
+                let constructor = format!("{}Input", scalar_domain_function_name(domain));
+                let scalar = scalar_type(domain);
+                let _ = writeln!(
+                    output,
+                    "export type {alias} = FunctionInput<{scalar}>;\nexport function {constructor}<Value extends {{ readonly value: {scalar} }}>(session: QuerySession | RemoteQuerySession, value: Value): {alias} {{\n  return session.__functionInput(value);\n}}"
+                );
+            }
+        }
+
+        let mut generics = Vec::new();
+        let mut parameters = vec!["session: QuerySession | RemoteQuerySession".to_owned()];
+        let mut arguments_expr = Vec::new();
+        for (index, parameter) in function.parameters().iter().enumerate() {
+            let parameter_name = parameter.target_name().as_str();
+            match parameter.type_ref() {
+                ProjectedTypeRef::Model(model_use) => {
+                    let model_name = projection
+                        .models()
+                        .get(model_use.id())
+                        .ok_or_else(|| facet_error("function parameter references absent model"))?
+                        .target_name()
+                        .as_str();
+                    generics.push(format!("Model{index} extends Models.{model_name}"));
+                    generics.push(format!("Mode{index} extends QueryMatchMode"));
+                    parameters.push(format!(
+                        "{parameter_name}: BoundVar<Model{index}, Mode{index}>"
+                    ));
+                }
+                ProjectedTypeRef::Scalar(domain) => parameters.push(format!(
+                    "{parameter_name}: {}Input | FunctionCall<{}>",
+                    scalar_domain_name(*domain),
+                    scalar_type(*domain)
+                )),
+                ProjectedTypeRef::Struct(_) => unreachable!("struct parameters were filtered"),
+            }
+            arguments_expr.push(parameter_name.to_owned());
+        }
+        let generic_clause = if generics.is_empty() {
+            String::new()
+        } else {
+            format!("<{}>", generics.join(", "))
+        };
+        let _ = writeln!(
+            output,
+            "export function {name}{generic_clause}({}): {call_alias} {{\n  return session.__callFunction({token_name}, [{}]);\n}}\n",
+            parameters.join(", "),
+            arguments_expr.join(", "),
+        );
     }
     Ok(output)
+}
+
+fn scalar_domain_name(tag: ValueTypeTag) -> &'static str {
+    match tag {
+        ValueTypeTag::String => "String",
+        ValueTypeTag::Long => "Integer",
+        ValueTypeTag::Double => "Double",
+        ValueTypeTag::Boolean => "Boolean",
+        ValueTypeTag::Date => "Date",
+        ValueTypeTag::DateTime => "DateTime",
+        ValueTypeTag::DateTimeTz => "DateTimeTz",
+        ValueTypeTag::Decimal => "Decimal",
+        ValueTypeTag::Duration => "Duration",
+    }
+}
+
+fn scalar_domain_function_name(tag: ValueTypeTag) -> &'static str {
+    match tag {
+        ValueTypeTag::String => "string",
+        ValueTypeTag::Long => "integer",
+        ValueTypeTag::Double => "double",
+        ValueTypeTag::Boolean => "boolean",
+        ValueTypeTag::Date => "date",
+        ValueTypeTag::DateTime => "dateTime",
+        ValueTypeTag::DateTimeTz => "dateTimeTz",
+        ValueTypeTag::Decimal => "decimal",
+        ValueTypeTag::Duration => "duration",
+    }
+}
+
+fn upper_first(value: &str) -> String {
+    let mut characters = value.chars();
+    characters.next().map_or_else(String::new, |first| {
+        first.to_uppercase().chain(characters).collect()
+    })
 }
 
 fn render_schema(projection: &RuntimeProjection) -> Result<String, Diagnostic> {

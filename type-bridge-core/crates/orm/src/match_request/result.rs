@@ -752,7 +752,7 @@ impl ValidatedMatchResult {
     }
 
     #[cfg(test)]
-    fn new_for_test(
+    pub(crate) fn new_for_test(
         request_token: RequestToken,
         shape_id: ResultShapeId,
         result: MatchResult,

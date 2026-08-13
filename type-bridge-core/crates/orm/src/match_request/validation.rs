@@ -10,6 +10,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use sha2::{Digest, Sha256};
 use type_bridge_contract::id::is_canonical_thing_iid;
+use type_bridge_contract::id::{TypeId, TypeKind};
+use type_bridge_contract::projection::{FunctionReturnProjection, ProjectedTypeRef};
+use type_bridge_contract::value::ValueTypeTag;
 use type_bridge_core_lib::decimal::parse_decimal;
 
 use crate::_attribute::ValueType;
@@ -31,8 +34,9 @@ use super::limits::{
     MAX_PREDICATE_NODES, MAX_SELECTED_SLOTS, MAX_SEMANTIC_ID_BYTES,
 };
 use super::model::{
-    ComparisonOp, FetchShape, FetchSlot, MatchExpr, MatchMode, MatchOperation, MatchOrder,
-    MatchRequest, MatchRequestVersion, RowCardinality, SortDirection, ThingKind,
+    ComparisonOp, FetchShape, FetchSlot, MatchExpr, MatchFunctionArgument, MatchFunctionCall,
+    MatchMode, MatchOperation, MatchOrder, MatchRequest, MatchRequestVersion, MatchScalarOperand,
+    RowCardinality, SortDirection, ThingKind,
 };
 
 static NEXT_REQUEST_TOKEN: AtomicU64 = AtomicU64::new(1);
@@ -363,6 +367,17 @@ fn inspect_predicate_structure(
             validate_bound_field_id(left)?;
             validate_bound_field_id(right)?;
         }
+        MatchExpr::ScalarComparison { left, right, .. } => {
+            if !reachable_allowed {
+                return Err(invalid(
+                    "function_not_root",
+                    "schema-function calls are admitted only in the root conjunction",
+                )
+                .at(MatchErrorPathSegment::Predicate));
+            }
+            inspect_scalar_operand_structure(left, depth, stats)?;
+            inspect_scalar_operand_structure(right, depth, stats)?;
+        }
         MatchExpr::FieldPresence { field, .. } => validate_bound_field_id(field)?,
         MatchExpr::BindingIid { iid, .. } => {
             if !is_canonical_thing_iid(iid) {
@@ -460,6 +475,55 @@ fn inspect_predicate_structure(
         }
         MatchExpr::Not { expression } => {
             inspect_predicate_structure(expression, depth + 1, false, stats)?
+        }
+    }
+    Ok(())
+}
+
+fn inspect_scalar_operand_structure(
+    operand: &MatchScalarOperand,
+    depth: usize,
+    stats: &mut PredicateStats,
+) -> Result<(), MatchError> {
+    match operand {
+        MatchScalarOperand::Field { field } => validate_bound_field_id(field),
+        MatchScalarOperand::Value { .. } => Ok(()),
+        MatchScalarOperand::Function { call } => {
+            inspect_function_call_structure(call, depth, stats)
+        }
+    }
+}
+
+fn inspect_function_call_structure(
+    call: &MatchFunctionCall,
+    depth: usize,
+    stats: &mut PredicateStats,
+) -> Result<(), MatchError> {
+    validate_semantic_id("function", call.function.label().as_str())?;
+    stats.nodes = stats.nodes.saturating_add(1);
+    stats.max_depth = stats.max_depth.max(depth.saturating_add(1));
+    if stats.nodes > MAX_PREDICATE_NODES || depth >= MAX_PREDICATE_DEPTH {
+        return Err(resource(
+            "function_call_limit_exceeded",
+            "schema-function call graph exceeds canonical size or depth limits",
+        )
+        .at(MatchErrorPathSegment::Predicate));
+    }
+    check_limit(
+        "function_arguments",
+        call.arguments.len(),
+        MAX_BOOLEAN_TERMS,
+        MatchErrorPathSegment::Predicate,
+    )?;
+    for argument in &call.arguments {
+        match argument {
+            MatchFunctionArgument::Binding { .. } => {}
+            MatchFunctionArgument::Value { .. } => {
+                stats.nodes = stats.nodes.saturating_add(1);
+            }
+            MatchFunctionArgument::Call { call } => {
+                inspect_function_call_structure(call, depth.saturating_add(1), stats)?;
+            }
         }
     }
     Ok(())
@@ -677,7 +741,14 @@ fn validate_reducer_structure(reducers: &[super::model::ReduceTerm]) -> Result<(
     }
     for term in reducers {
         match (&term.input, term.reduction.requires_input()) {
-            (Some(field), _) => validate_bound_field_id(field)?,
+            (Some(_), false) => {
+                return Err(invalid(
+                    "reduce_input_unexpected",
+                    "count reduces the distinct root stream and forbids a field input",
+                )
+                .at(MatchErrorPathSegment::Operation));
+            }
+            (Some(field), true) => validate_bound_field_id(field)?,
             (None, true) => {
                 return Err(invalid(
                     "reduce_input_required",
@@ -780,6 +851,45 @@ fn validate_expr_node(
             }
             validate_operator(*operator, left_attr.value_type, false)
                 .map_err(|error| error.at(MatchErrorPathSegment::Field(left.field.clone())))?;
+        }
+        MatchExpr::ScalarComparison {
+            left,
+            operator,
+            right,
+        } => {
+            if !matches!(left, MatchScalarOperand::Function { .. })
+                && !matches!(right, MatchScalarOperand::Function { .. })
+            {
+                return Err(invalid(
+                    "function_comparison_missing_call",
+                    "schema-function scalar comparisons require at least one function result",
+                )
+                .at(MatchErrorPathSegment::Predicate));
+            }
+            if matches!(
+                operator,
+                ComparisonOp::Contains
+                    | ComparisonOp::StartsWith
+                    | ComparisonOp::EndsWith
+                    | ComparisonOp::Regex
+            ) {
+                return Err(invalid(
+                    "function_comparison_operator_unsupported",
+                    "schema-function comparisons admit only equality and scalar ordering operators",
+                )
+                .at(MatchErrorPathSegment::Predicate));
+            }
+            let left_type = validate_scalar_operand(registry, left, bindings)?;
+            let right_type = validate_scalar_operand(registry, right, bindings)?;
+            if left_type != right_type {
+                return Err(invalid(
+                    "function_comparison_type_mismatch",
+                    "schema-function scalar comparison requires identical operand domains",
+                )
+                .at(MatchErrorPathSegment::Predicate));
+            }
+            validate_operator(*operator, value_type_from_tag(left_type), true)
+                .map_err(|error| error.at(MatchErrorPathSegment::Predicate))?;
         }
         MatchExpr::FieldPresence { field, .. } => {
             resolve_bound_field(registry, field, bindings)?;
@@ -971,6 +1081,143 @@ fn validate_expr_node(
     Ok(())
 }
 
+fn validate_scalar_operand(
+    registry: &DescriptorRegistry,
+    operand: &MatchScalarOperand,
+    bindings: &BTreeMap<BindingId, TypeDescriptorRef>,
+) -> Result<ValueTypeTag, MatchError> {
+    match operand {
+        MatchScalarOperand::Field { field } => Ok(value_type_tag(
+            resolve_bound_field(registry, field, bindings)?.value_type,
+        )),
+        MatchScalarOperand::Value { value } => Ok(value.value_type()),
+        MatchScalarOperand::Function { call } => validate_function_call(registry, call, bindings),
+    }
+}
+
+fn validate_function_call(
+    registry: &DescriptorRegistry,
+    call: &MatchFunctionCall,
+    bindings: &BTreeMap<BindingId, TypeDescriptorRef>,
+) -> Result<ValueTypeTag, MatchError> {
+    let projection = registry.projected_function(&call.function).ok_or_else(|| {
+        invalid(
+            "unknown_projected_function",
+            "function token is absent from the verified generated projection",
+        )
+        .at(MatchErrorPathSegment::Predicate)
+    })?;
+    if projection.parameters().len() != call.arguments.len() {
+        return Err(invalid(
+            "function_argument_arity",
+            "function call argument count does not match the projected signature",
+        )
+        .at(MatchErrorPathSegment::Predicate));
+    }
+    for (parameter, argument) in projection.parameters().iter().zip(&call.arguments) {
+        validate_function_argument(registry, parameter.type_ref(), argument, bindings)?;
+    }
+    let FunctionReturnProjection::Scalar(result) = projection.returns() else {
+        return Err(invalid(
+            "function_return_shape_unsupported",
+            "generated match functions require one scalar return",
+        )
+        .at(MatchErrorPathSegment::Predicate));
+    };
+    if result.optional() {
+        return Err(invalid(
+            "optional_function_return_unsupported",
+            "generated match functions require a non-optional scalar return",
+        )
+        .at(MatchErrorPathSegment::Predicate));
+    }
+    let ProjectedTypeRef::Scalar(value_type) = result.type_ref() else {
+        return Err(invalid(
+            "function_return_domain_unsupported",
+            "generated match functions require a built-in scalar return",
+        )
+        .at(MatchErrorPathSegment::Predicate));
+    };
+    Ok(*value_type)
+}
+
+fn validate_function_argument(
+    registry: &DescriptorRegistry,
+    expected: &ProjectedTypeRef,
+    argument: &MatchFunctionArgument,
+    bindings: &BTreeMap<BindingId, TypeDescriptorRef>,
+) -> Result<(), MatchError> {
+    let valid = match (expected, argument) {
+        (ProjectedTypeRef::Scalar(expected), MatchFunctionArgument::Value { value }) => {
+            *expected == value.value_type()
+        }
+        (ProjectedTypeRef::Scalar(expected), MatchFunctionArgument::Call { call }) => {
+            *expected == validate_function_call(registry, call, bindings)?
+        }
+        (ProjectedTypeRef::Model(expected), MatchFunctionArgument::Binding { binding }) => {
+            let actual = bindings.get(binding).ok_or_else(|| {
+                invalid(
+                    "unknown_binding",
+                    "function argument references an undeclared binding",
+                )
+                .at(MatchErrorPathSegment::Binding(*binding))
+            })?;
+            let actual_id = registry
+                .descriptor_id(actual.type_name())
+                .expect("resolved descriptor remains registered");
+            descriptor_id_from_type(expected.id())
+                .is_some_and(|expected_id| registry.is_same_or_subtype(&actual_id, &expected_id))
+        }
+        _ => false,
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err(invalid(
+            "function_argument_type",
+            "function argument does not match the exact projected signature",
+        )
+        .at(MatchErrorPathSegment::Predicate))
+    }
+}
+
+fn descriptor_id_from_type(id: &TypeId) -> Option<DescriptorId> {
+    let prefix = match id.kind() {
+        TypeKind::Entity => "entity",
+        TypeKind::Relation => "relation",
+        TypeKind::Attribute | TypeKind::Struct => return None,
+    };
+    Some(DescriptorId::new(format!("{prefix}:{}", id.label())))
+}
+
+const fn value_type_tag(value: ValueType) -> ValueTypeTag {
+    match value {
+        ValueType::String => ValueTypeTag::String,
+        ValueType::Long => ValueTypeTag::Long,
+        ValueType::Double => ValueTypeTag::Double,
+        ValueType::Boolean => ValueTypeTag::Boolean,
+        ValueType::Date => ValueTypeTag::Date,
+        ValueType::DateTime => ValueTypeTag::DateTime,
+        ValueType::DateTimeTz => ValueTypeTag::DateTimeTz,
+        ValueType::Decimal => ValueTypeTag::Decimal,
+        ValueType::Duration => ValueTypeTag::Duration,
+    }
+}
+
+const fn value_type_from_tag(value: ValueTypeTag) -> ValueType {
+    match value {
+        ValueTypeTag::String => ValueType::String,
+        ValueTypeTag::Long => ValueType::Long,
+        ValueTypeTag::Double => ValueType::Double,
+        ValueTypeTag::Boolean => ValueType::Boolean,
+        ValueTypeTag::Date => ValueType::Date,
+        ValueTypeTag::DateTime => ValueType::DateTime,
+        ValueTypeTag::DateTimeTz => ValueType::DateTimeTz,
+        ValueTypeTag::Decimal => ValueType::Decimal,
+        ValueTypeTag::Duration => ValueType::Duration,
+    }
+}
+
 fn validate_or_exports(expression: &MatchExpr) -> Result<BTreeSet<BindingId>, MatchError> {
     match expression {
         MatchExpr::FieldValue { field, .. } => Ok(BTreeSet::from([field.binding])),
@@ -978,6 +1225,12 @@ fn validate_or_exports(expression: &MatchExpr) -> Result<BTreeSet<BindingId>, Ma
         MatchExpr::BindingIid { binding, .. } => Ok(BTreeSet::from([*binding])),
         MatchExpr::FieldComparison { left, right, .. } => {
             Ok(BTreeSet::from([left.binding, right.binding]))
+        }
+        MatchExpr::ScalarComparison { left, right, .. } => {
+            let mut bindings = BTreeSet::new();
+            collect_scalar_operand_bindings(left, &mut bindings);
+            collect_scalar_operand_bindings(right, &mut bindings);
+            Ok(bindings)
         }
         MatchExpr::RoleEdge {
             relation, player, ..
@@ -1075,6 +1328,19 @@ fn definite_positive_edges(
         MatchExpr::FieldComparison { left, right, .. } => {
             BTreeSet::from([canonical_edge(left.binding, right.binding)])
         }
+        MatchExpr::ScalarComparison { left, right, .. } => {
+            let mut bindings = BTreeSet::new();
+            collect_scalar_operand_bindings(left, &mut bindings);
+            collect_scalar_operand_bindings(right, &mut bindings);
+            let bindings = bindings.into_iter().collect::<Vec<_>>();
+            let mut edges = BTreeSet::new();
+            for (index, left) in bindings.iter().enumerate() {
+                for right in &bindings[index + 1..] {
+                    edges.insert(canonical_edge(*left, *right));
+                }
+            }
+            edges
+        }
         MatchExpr::RoleEdge {
             relation, player, ..
         } => BTreeSet::from([canonical_edge(*relation, *player)]),
@@ -1098,6 +1364,31 @@ fn definite_positive_edges(
             })
         }
         MatchExpr::Not { expression } => definite_positive_edges(expression, true),
+    }
+}
+
+fn collect_scalar_operand_bindings(
+    operand: &MatchScalarOperand,
+    bindings: &mut BTreeSet<BindingId>,
+) {
+    match operand {
+        MatchScalarOperand::Field { field } => {
+            bindings.insert(field.binding);
+        }
+        MatchScalarOperand::Value { .. } => {}
+        MatchScalarOperand::Function { call } => collect_function_call_bindings(call, bindings),
+    }
+}
+
+fn collect_function_call_bindings(call: &MatchFunctionCall, bindings: &mut BTreeSet<BindingId>) {
+    for argument in &call.arguments {
+        match argument {
+            MatchFunctionArgument::Binding { binding } => {
+                bindings.insert(*binding);
+            }
+            MatchFunctionArgument::Value { .. } => {}
+            MatchFunctionArgument::Call { call } => collect_function_call_bindings(call, bindings),
+        }
     }
 }
 
@@ -1627,16 +1918,62 @@ fn fingerprint_for_request(
             DescriptorFingerprintRoot::new(descriptor, include_subtypes)
         })
         .collect::<Vec<_>>();
-    registry
-        .request_relevant_fingerprint(&roots)
-        .map_err(|error| {
+    let descriptor_fingerprint =
+        registry
+            .request_relevant_fingerprint(&roots)
+            .map_err(|error| {
+                invalid(
+                    "schema_fingerprint_failed",
+                    "request-relevant descriptor closure could not be fingerprinted",
+                )
+                .at(MatchErrorPathSegment::Request)
+                .with_detail("cause", error.to_string())
+            })?;
+    let function_bound = request
+        .plan
+        .predicate
+        .as_ref()
+        .is_some_and(expression_contains_function);
+    if !function_bound {
+        return Ok(descriptor_fingerprint);
+    }
+    let semantic = registry
+        .projected_function_schema_fingerprint()
+        .ok_or_else(|| {
             invalid(
-                "schema_fingerprint_failed",
-                "request-relevant descriptor closure could not be fingerprinted",
+                "function_authority_unavailable",
+                "schema-function request has no generated semantic authority",
             )
             .at(MatchErrorPathSegment::Request)
-            .with_detail("cause", error.to_string())
-        })
+        })?;
+    let mut hasher = Sha256::new();
+    hasher.update(b"typebridge.match.function-schema/v1\0");
+    hasher.update(descriptor_fingerprint.as_str().as_bytes());
+    hasher.update(semantic.as_fingerprint().digest().bytes());
+    let digest = hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    Ok(SchemaFingerprint::new(format!(
+        "schema-function-sha256-v1:{digest}"
+    )))
+}
+
+fn expression_contains_function(expression: &MatchExpr) -> bool {
+    match expression {
+        MatchExpr::ScalarComparison { .. } => true,
+        MatchExpr::And { expressions } | MatchExpr::Or { expressions } => {
+            expressions.iter().any(expression_contains_function)
+        }
+        MatchExpr::Not { expression } => expression_contains_function(expression),
+        MatchExpr::FieldValue { .. }
+        | MatchExpr::FieldComparison { .. }
+        | MatchExpr::FieldPresence { .. }
+        | MatchExpr::BindingIid { .. }
+        | MatchExpr::RoleEdge { .. }
+        | MatchExpr::Reachable { .. } => false,
+    }
 }
 
 fn collect_reachability_descriptors(
@@ -1655,6 +1992,7 @@ fn collect_reachability_descriptors(
         MatchExpr::Not { expression } => collect_reachability_descriptors(expression, roots),
         MatchExpr::FieldValue { .. }
         | MatchExpr::FieldComparison { .. }
+        | MatchExpr::ScalarComparison { .. }
         | MatchExpr::FieldPresence { .. }
         | MatchExpr::BindingIid { .. }
         | MatchExpr::RoleEdge { .. } => {}
@@ -1774,6 +2112,20 @@ pub fn validate_public_order_term_count(actual: usize) -> Result<(), MatchError>
         actual,
         MAX_ORDER_TERMS,
         MatchErrorPathSegment::Operation,
+    )
+}
+
+/// Validate a projected schema-function arity before a binding materializes
+/// its positional argument graph.
+///
+/// Function calls are predicate nodes, so they share the canonical boolean
+/// term ceiling across every generated binding and the neutral request form.
+pub fn validate_public_function_argument_count(actual: usize) -> Result<(), MatchError> {
+    check_limit(
+        "function_arguments",
+        actual,
+        MAX_BOOLEAN_TERMS,
+        MatchErrorPathSegment::Predicate,
     )
 }
 

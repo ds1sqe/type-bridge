@@ -34,6 +34,24 @@ jobs:
           toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
           components: clippy
 
+      - name: Initialize MSVC and require clang-cl for every Windows C evidence step
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $installation = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $installation) { throw 'Visual Studio C++ tools were not found' }
+          $devcmd = Join-Path $installation.Trim() 'Common7\Tools\VsDevCmd.bat'
+          $environment = & cmd /D /S /C "`"$devcmd`" -arch=x64 -host_arch=x64 >nul && set"
+          if ($LASTEXITCODE -ne 0) { throw 'VsDevCmd failed' }
+          foreach ($line in $environment) {
+            if ($line -match '^([^=]+)=(.*)$') {
+              "$($matches[1])=$($matches[2])" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            }
+          }
+          & cmd /D /S /C "`"$devcmd`" -arch=x64 -host_arch=x64 >nul && where cl && cl /Bv && where clang-cl && clang-cl --version"
+          if ($LASTEXITCODE -ne 0) { throw 'MSVC cl or clang-cl is unavailable after VsDevCmd' }
+
       - name: Install pinned cargo-about
         if: runner.os == 'Linux'
         uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf # v2.85.2
@@ -81,9 +99,90 @@ jobs:
         working-directory: type-bridge-core
         run: cargo test -p type-bridge-schema-codegen --test rust_acceptance
 
+      - name: Require GCC and Clang for the Linux C gate
+        if: runner.os == 'Linux'
+        run: |
+          gcc --version
+          g++ --version
+          clang --version
+          clang++ --version
+          cmake --version
+          pkg-config --version
+
+      - name: Require Clang for the macOS C gate
+        if: runner.os == 'macOS'
+        run: |
+          clang --version
+          clang++ --version
+          cmake --version
+          pkg-config --version
+
+      - name: Check generated C package and strict public headers
+        working-directory: type-bridge-core
+        run: cargo test --locked -p type-bridge-schema-codegen --test c_emitter
+
+      - name: Check generated C entity and relation CRUD strict C17 consumer
+        if: runner.os != 'Windows'
+        working-directory: type-bridge-core
+        run: >-
+          cargo test --locked -p type-bridge-schema-codegen
+          --test c_projection_live
+          exact_live_consumer_is_strict_c17_against_the_shared_generated_schema
+          -- --exact
+
+      - name: Check C runtime, transaction, and cancellation ABI
+        working-directory: type-bridge-core
+        run: cargo test --locked -p type-bridge-c --lib --test execution_abi
+
+      - name: Check C typed-query, diagnostic, function, and remote ABI
+        working-directory: type-bridge-core
+        run: >-
+          cargo test --locked -p type-bridge-c
+          --test query_abi
+          --test query_diagnostic_abi
+          --test query_function_abi
+          --test query_remote_abi
+
+      - name: Build C ABI shared library
+        if: runner.os != 'Windows'
+        working-directory: type-bridge-core
+        run: cargo build --locked -p type-bridge-c --lib
+
+      - name: Check C ABI and standalone consumer
+        if: runner.os != 'Windows'
+        working-directory: type-bridge-core
+        env:
+          TYPE_BRIDGE_C_REQUIRE_SHARED_CONSUMER: "1"
+        run: cargo test --locked -p type-bridge-c --test schema_package_abi
+
+      - name: Build C ABI and check strict headers and consumer on Windows
+        if: runner.os == 'Windows'
+        shell: cmd
+        working-directory: type-bridge-core
+        run: |
+          for /f "usebackq delims=" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath`) do set "VS_INSTALL=%%i"
+          if not defined VS_INSTALL (echo Visual Studio installation not found & exit /b 1)
+          call "%VS_INSTALL%\Common7\Tools\VsDevCmd.bat" -arch=x64 -host_arch=x64
+          if errorlevel 1 exit /b 1
+          where cl
+          if errorlevel 1 exit /b 1
+          where dumpbin
+          if errorlevel 1 exit /b 1
+          cmake --version
+          if errorlevel 1 exit /b 1
+          cargo build --locked -p type-bridge-c --lib
+          if errorlevel 1 exit /b 1
+          set "TYPE_BRIDGE_C_REQUIRE_SHARED_CONSUMER=1"
+          cargo test --locked -p type-bridge-c --test schema_package_abi
+
       - name: Install generated Rust MSRV
         if: runner.os == 'Linux'
         run: rustup toolchain install 1.88.0 --profile minimal
+
+      - name: Check C foundation on MSRV 1.88
+        if: runner.os == 'Linux'
+        working-directory: type-bridge-core
+        run: cargo +1.88.0 check --locked -p type-bridge-c --all-targets
 
       - name: Validate first-party public Cargo docs on MSRV 1.88
         if: runner.os == 'Linux'
@@ -699,11 +798,111 @@ jobs:
             exit 1
           fi
 
+      - name: Prepare Python workforce report output
+        id: prepare-python-workforce-v1
+        if: >-
+          matrix.test-group == 'schema' &&
+          matrix.typedb-server == 'typedb/typedb:3.12.1'
+        run: |
+          set -euo pipefail
+          report_dir="$RUNNER_TEMP/typebridge-workforce"
+          mkdir -p "$report_dir"
+          test ! -e "$report_dir/python.json"
+          printf 'report=%s\n' "$report_dir/python.json" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare Python workforce-v2 evidence outputs
+        id: prepare-python-workforce-v2
+        if: >-
+          matrix.test-group == 'schema' &&
+          matrix.typedb-server == 'typedb/typedb:3.12.1'
+        run: |
+          set -euo pipefail
+          evidence_dir="$RUNNER_TEMP/typebridge-workforce-v2"
+          mkdir -p "$evidence_dir"
+          report="$evidence_dir/python.json"
+          direct_fragment="$evidence_dir/python-direct-proof.json"
+          remote_fragment="$evidence_dir/python-remote-proof.json"
+          test ! -e "$report"
+          test ! -e "$direct_fragment"
+          test ! -e "$remote_fragment"
+          run_nonce="$(python -c 'import secrets; print(secrets.token_hex(32))')"
+          [[ "$run_nonce" =~ ^[0-9a-f]{64}$ ]]
+          {
+            printf 'report=%s\n' "$report"
+            printf 'direct_fragment=%s\n' "$direct_fragment"
+            printf 'remote_fragment=%s\n' "$remote_fragment"
+            printf 'fragments=%s:%s\n' "$direct_fragment" "$remote_fragment"
+            printf 'run_nonce=%s\n' "$run_nonce"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Emit Python direct-cancellation workforce-v2 proof fragment
+        if: >-
+          matrix.test-group == 'schema' &&
+          matrix.typedb-server == 'typedb/typedb:3.12.1'
+        env:
+          TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENT: ${{ steps.prepare-python-workforce-v2.outputs.direct_fragment }}
+          TYPE_BRIDGE_WORKFORCE_V2_PROOF_RUN_NONCE: ${{ steps.prepare-python-workforce-v2.outputs.run_nonce }}
+        run: >-
+          cargo test --locked --manifest-path type-bridge-core/Cargo.toml
+          -p type-bridge-core --lib
+          match_runtime::tests::python_direct_cancellation_fragment_is_measured_from_owned_execution
+          -- --exact
+
+      - name: Emit Python generated-remote workforce-v2 proof fragment
+        if: >-
+          matrix.test-group == 'schema' &&
+          matrix.typedb-server == 'typedb/typedb:3.12.1'
+        env:
+          TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENT: ${{ steps.prepare-python-workforce-v2.outputs.remote_fragment }}
+          TYPE_BRIDGE_WORKFORCE_V2_PROOF_RUN_NONCE: ${{ steps.prepare-python-workforce-v2.outputs.run_nonce }}
+        run: uv run python type-bridge-core/crates/schema-codegen/tests/acceptance/check.py
+
       - name: Run integration tests for ${{ matrix.test-group }}
         env:
           USE_DOCKER: false
           TYPEDB_ADDRESS: localhost:1729
-        run: uv run pytest tests/integration/${{ matrix.test-group }} -m integration -v --tb=short
+          WORKFORCE_V1_REPORT_OUTPUT: ${{ steps.prepare-python-workforce-v1.outputs.report }}
+          WORKFORCE_V2_REPORT_OUTPUT: ${{ steps.prepare-python-workforce-v2.outputs.report }}
+          WORKFORCE_V2_FRAGMENT_OUTPUTS: ${{ steps.prepare-python-workforce-v2.outputs.fragments }}
+          WORKFORCE_V2_RUN_NONCE_OUTPUT: ${{ steps.prepare-python-workforce-v2.outputs.run_nonce }}
+        run: |
+          set -euo pipefail
+          workforce_env=()
+          if [[ -n "$WORKFORCE_V1_REPORT_OUTPUT" ]]; then
+            workforce_env+=("TYPE_BRIDGE_WORKFORCE_REPORT=$WORKFORCE_V1_REPORT_OUTPUT")
+          fi
+          if [[ -n "$WORKFORCE_V2_REPORT_OUTPUT" ]]; then
+            workforce_env+=(
+              "TYPE_BRIDGE_WORKFORCE_REPORT_V2=$WORKFORCE_V2_REPORT_OUTPUT"
+              "TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENTS=$WORKFORCE_V2_FRAGMENT_OUTPUTS"
+              "TYPE_BRIDGE_WORKFORCE_V2_PROOF_RUN_NONCE=$WORKFORCE_V2_RUN_NONCE_OUTPUT"
+            )
+          fi
+          env "${workforce_env[@]}" \
+            uv run pytest tests/integration/${{ matrix.test-group }} \
+              -m integration -v --tb=short
+
+      - name: Upload Python workforce report
+        if: >-
+          matrix.test-group == 'schema' &&
+          matrix.typedb-server == 'typedb/typedb:3.12.1'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: workforce-conformance-python
+          path: ${{ runner.temp }}/typebridge-workforce/python.json
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload Python workforce-v2 report
+        if: >-
+          matrix.test-group == 'schema' &&
+          matrix.typedb-server == 'typedb/typedb:3.12.1'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: workforce-conformance-v2-python
+          path: ${{ runner.temp }}/typebridge-workforce-v2/python.json
+          if-no-files-found: error
+          retention-days: 7
 
   # Rust ORM live-TypeDB integration. The ordinary rust-check job deliberately
   # leaves `integration-tests` disabled so it remains an offline gate. This job
@@ -798,7 +997,7 @@ jobs:
         run: >-
           cargo test --manifest-path type-bridge-core/Cargo.toml
           -p type-bridge-orm --features integration-tests
-          --test integration -- --nocapture
+          --test integration -- --nocapture --test-threads=1
 
       - name: Run production V1 + V2 server live smoke
         if: matrix.typedb-server == 'typedb/typedb:3.12.1'
@@ -824,17 +1023,163 @@ jobs:
               --test v2_query_integration_tests "$test_name" \
               -- --ignored --exact --nocapture
 
+      - name: Prepare Rust workforce report output
+        id: prepare-rust-workforce-v1
+        if: matrix.typedb-server == 'typedb/typedb:3.12.1'
+        run: |
+          set -euo pipefail
+          report_dir="$RUNNER_TEMP/typebridge-workforce"
+          mkdir -p "$report_dir"
+          test ! -e "$report_dir/rust.json"
+          printf 'report=%s\n' "$report_dir/rust.json" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare Rust workforce-v2 evidence outputs
+        id: prepare-rust-workforce-v2
+        if: matrix.typedb-server == 'typedb/typedb:3.12.1'
+        run: |
+          set -euo pipefail
+          evidence_dir="$RUNNER_TEMP/typebridge-workforce-v2"
+          mkdir -p "$evidence_dir"
+          report="$evidence_dir/rust.json"
+          fragment="$evidence_dir/rust-proof.json"
+          test ! -e "$report"
+          test ! -e "$fragment"
+          run_nonce="$(python -c 'import secrets; print(secrets.token_hex(32))')"
+          [[ "$run_nonce" =~ ^[0-9a-f]{64}$ ]]
+          {
+            printf 'report=%s\n' "$report"
+            printf 'fragment=%s\n' "$fragment"
+            printf 'run_nonce=%s\n' "$run_nonce"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Emit Rust workforce-v2 deterministic proof fragment
+        if: matrix.typedb-server == 'typedb/typedb:3.12.1'
+        env:
+          TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENT: ${{ steps.prepare-rust-workforce-v2.outputs.fragment }}
+          TYPE_BRIDGE_WORKFORCE_V2_PROOF_RUN_NONCE: ${{ steps.prepare-rust-workforce-v2.outputs.run_nonce }}
+        run: >-
+          cargo test --locked --manifest-path type-bridge-core/Cargo.toml
+          -p type-bridge --lib
+          remote::tests::workforce_v2_rust_deterministic_proof_fragment
+          -- --exact
+
       - name: Run generated Rust projection live smoke
         env:
           TYPEDB_ADDRESS: localhost:1729
           TYPEDB_HTTP_PORT: "8000"
           TYPE_BRIDGE_RUST_PROJECTION_INTG_DATABASE: type_bridge_rust_projection_live
           TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE: ${{ matrix.semantic-profile }}
+          WORKFORCE_V1_REPORT_OUTPUT: ${{ steps.prepare-rust-workforce-v1.outputs.report }}
+          WORKFORCE_V2_REPORT_OUTPUT: ${{ steps.prepare-rust-workforce-v2.outputs.report }}
+          WORKFORCE_V2_FRAGMENT_OUTPUT: ${{ steps.prepare-rust-workforce-v2.outputs.fragment }}
+          WORKFORCE_V2_RUN_NONCE_OUTPUT: ${{ steps.prepare-rust-workforce-v2.outputs.run_nonce }}
+        run: |
+          set -euo pipefail
+          workforce_env=()
+          if [[ -n "$WORKFORCE_V1_REPORT_OUTPUT" ]]; then
+            workforce_env+=("TYPE_BRIDGE_WORKFORCE_REPORT=$WORKFORCE_V1_REPORT_OUTPUT")
+          fi
+          if [[ -n "$WORKFORCE_V2_REPORT_OUTPUT" ]]; then
+            workforce_env+=(
+              "TYPE_BRIDGE_WORKFORCE_REPORT_V2=$WORKFORCE_V2_REPORT_OUTPUT"
+              "TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENTS=$WORKFORCE_V2_FRAGMENT_OUTPUT"
+              "TYPE_BRIDGE_WORKFORCE_V2_PROOF_RUN_NONCE=$WORKFORCE_V2_RUN_NONCE_OUTPUT"
+            )
+          fi
+          env "${workforce_env[@]}" \
+            bash scripts/ci/run_exact_ignored_rust_test.sh \
+              generated_rust_projection_round_trips_exact_live_models \
+              --manifest-path type-bridge-core/Cargo.toml \
+              -p type-bridge-schema-codegen --test rust_projection_live
+
+      - name: Run compiled C runtime transaction live smoke
+        if: matrix.typedb-server == 'typedb/typedb:3.12.1'
+        env:
+          TYPEDB_ADDRESS: localhost:1729
+          TYPEDB_HTTP_PORT: "8000"
+          TYPE_BRIDGE_C_REQUIRE_SHARED_CONSUMER: "1"
+          TYPE_BRIDGE_C_INTG_DATABASE: type_bridge_c_runtime_live
+        run: |
+          cargo build --locked --manifest-path type-bridge-core/Cargo.toml \
+            -p type-bridge-c --lib
+          bash scripts/ci/run_exact_ignored_rust_test.sh \
+            live_c17_consumer_exercises_exact_3_12_1_transaction_lifecycle \
+            --locked --manifest-path type-bridge-core/Cargo.toml \
+            -p type-bridge-c --test schema_package_abi
+
+      - name: Prepare C workforce-v2 evidence outputs
+        id: prepare-c-workforce-v2
+        if: matrix.typedb-server == 'typedb/typedb:3.12.1'
+        run: |
+          set -euo pipefail
+          evidence_dir="$RUNNER_TEMP/typebridge-workforce-v2"
+          mkdir -p "$evidence_dir"
+          report="$evidence_dir/c.json"
+          fragment="$evidence_dir/c-proof.json"
+          test ! -e "$report"
+          test ! -e "$fragment"
+          run_nonce="$(python -c 'import secrets; print(secrets.token_hex(32))')"
+          [[ "$run_nonce" =~ ^[0-9a-f]{64}$ ]]
+          test "$run_nonce" != '${{ steps.prepare-rust-workforce-v2.outputs.run_nonce }}'
+          {
+            printf 'report=%s\n' "$report"
+            printf 'fragment=%s\n' "$fragment"
+            printf 'run_nonce=%s\n' "$run_nonce"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Emit C workforce-v2 deterministic proof fragment
+        if: matrix.typedb-server == 'typedb/typedb:3.12.1'
+        env:
+          TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENT: ${{ steps.prepare-c-workforce-v2.outputs.fragment }}
+          TYPE_BRIDGE_WORKFORCE_V2_PROOF_RUN_NONCE: ${{ steps.prepare-c-workforce-v2.outputs.run_nonce }}
+        run: >-
+          cargo test --locked --manifest-path type-bridge-core/Cargo.toml
+          -p type-bridge-c --lib
+          query::tests::workforce_v2_c_deterministic_proof_fragment
+          -- --exact
+
+      - name: Run generated C entity and relation CRUD live smoke
+        if: matrix.typedb-server == 'typedb/typedb:3.12.1'
+        env:
+          TYPEDB_ADDRESS: localhost:1729
+          TYPEDB_HTTP_PORT: "8000"
+          TYPE_BRIDGE_C_PROJECTION_INTG_DATABASE: type_bridge_c_projection_live_${{ github.run_id }}_${{ github.run_attempt }}
+          ACCEPTANCE_TARGET_DIR: ${{ runner.temp }}/typebridge-c-projection-live-target
+          TYPE_BRIDGE_WORKFORCE_REPORT_V2: ${{ steps.prepare-c-workforce-v2.outputs.report }}
+          TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENTS: ${{ steps.prepare-c-workforce-v2.outputs.fragment }}
+          TYPE_BRIDGE_WORKFORCE_V2_PROOF_RUN_NONCE: ${{ steps.prepare-c-workforce-v2.outputs.run_nonce }}
         run: >-
           bash scripts/ci/run_exact_ignored_rust_test.sh
-          generated_rust_projection_round_trips_exact_live_models
-          --manifest-path type-bridge-core/Cargo.toml
-          -p type-bridge-schema-codegen --test rust_projection_live
+          live_c17_generated_person_and_membership_crud_round_trips_exact_3_12_1
+          --locked --manifest-path type-bridge-core/Cargo.toml
+          -p type-bridge-schema-codegen --test c_projection_live
+
+      - name: Upload Rust workforce report
+        if: matrix.typedb-server == 'typedb/typedb:3.12.1'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: workforce-conformance-rust
+          path: ${{ runner.temp }}/typebridge-workforce/rust.json
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload Rust workforce-v2 report
+        if: matrix.typedb-server == 'typedb/typedb:3.12.1'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: workforce-conformance-v2-rust
+          path: ${{ runner.temp }}/typebridge-workforce-v2/rust.json
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload C workforce-v2 report
+        if: matrix.typedb-server == 'typedb/typedb:3.12.1'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: workforce-conformance-v2-c
+          path: ${{ runner.temp }}/typebridge-workforce-v2/c.json
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Prove unsupported migration apply creates no databases
         if: matrix.typedb-server == 'typedb/typedb:3.11.5'
@@ -1091,7 +1436,7 @@ jobs:
   # Preserve the established job identity while making its authority generated-only.
   # Binding-specific live jobs execute generated applications; this gate proves
   # every removed handwritten operation maps to those exact sources and that
-  # all three emitters agree on the canonical projection.
+  # all four emitters agree on the canonical projection.
   cross-language-parity:
     name: Generated cross-language parity inventory
     runs-on: ubuntu-latest
@@ -1133,7 +1478,7 @@ jobs:
           tests/unit/compat/test_handwritten_operation_removal_map.py
           -q --tb=short
 
-      - name: Check canonical Python, TypeScript, and Rust projection parity
+      - name: Check canonical Python, TypeScript, Rust, and C projection parity
         run: >-
           cargo test --locked --manifest-path type-bridge-core/Cargo.toml
           -p type-bridge-schema-codegen --test cross_binding
@@ -1169,6 +1514,12 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python for the Node workforce-v2 validator
+        if: matrix.typedb-server == 'typedb/typedb:3.12.1'
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13.5"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
@@ -1226,6 +1577,63 @@ jobs:
           TYPEDB_VERSION: ${{ matrix.typedb-version }}
         run: npm run test:integration
 
+      - name: Prepare Node workforce report output
+        id: prepare-node-workforce-v1
+        if: matrix.typedb-server == 'typedb/typedb:3.12.1'
+        run: |
+          set -euo pipefail
+          report_dir="$RUNNER_TEMP/typebridge-workforce"
+          mkdir -p "$report_dir"
+          test ! -e "$report_dir/node.json"
+          printf 'report=%s\n' "$report_dir/node.json" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare Node workforce-v2 evidence outputs
+        id: prepare-node-workforce-v2
+        if: matrix.typedb-server == 'typedb/typedb:3.12.1'
+        run: |
+          set -euo pipefail
+          evidence_dir="$RUNNER_TEMP/typebridge-workforce-v2"
+          mkdir -p "$evidence_dir"
+          report="$evidence_dir/node.json"
+          direct_fragment="$evidence_dir/node-direct-proof.json"
+          remote_fragment="$evidence_dir/node-remote-proof.json"
+          test ! -e "$report"
+          test ! -e "$direct_fragment"
+          test ! -e "$remote_fragment"
+          run_nonce="$(python -c 'import secrets; print(secrets.token_hex(32))')"
+          validator_python="$(python -c 'import os, sys; print(os.path.realpath(sys.executable))')"
+          [[ "$run_nonce" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$validator_python" == /* ]]
+          test -x "$validator_python"
+          {
+            printf 'report=%s\n' "$report"
+            printf 'direct_fragment=%s\n' "$direct_fragment"
+            printf 'remote_fragment=%s\n' "$remote_fragment"
+            printf 'fragments=%s:%s\n' "$direct_fragment" "$remote_fragment"
+            printf 'run_nonce=%s\n' "$run_nonce"
+            printf 'validator_python=%s\n' "$validator_python"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Emit Node direct-cancellation workforce-v2 proof fragment
+        if: matrix.typedb-server == 'typedb/typedb:3.12.1'
+        working-directory: ${{ github.workspace }}
+        env:
+          TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENT: ${{ steps.prepare-node-workforce-v2.outputs.direct_fragment }}
+          TYPE_BRIDGE_WORKFORCE_V2_PROOF_RUN_NONCE: ${{ steps.prepare-node-workforce-v2.outputs.run_nonce }}
+        run: >-
+          cargo test --locked --manifest-path type-bridge-core/Cargo.toml
+          -p type-bridge-node --lib
+          match_runtime::tests::node_direct_cancellation_fragment_is_measured_from_owned_execution
+          -- --exact
+
+      - name: Emit Node generated-remote workforce-v2 proof fragment
+        if: matrix.typedb-server == 'typedb/typedb:3.12.1'
+        working-directory: ${{ github.workspace }}
+        env:
+          TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENT: ${{ steps.prepare-node-workforce-v2.outputs.remote_fragment }}
+          TYPE_BRIDGE_WORKFORCE_V2_PROOF_RUN_NONCE: ${{ steps.prepare-node-workforce-v2.outputs.run_nonce }}
+        run: node type-bridge-core/crates/schema-codegen/tests/typescript_acceptance/check.mjs
+
       - name: Run generated projection live smoke
         env:
           USE_DOCKER: false
@@ -1234,7 +1642,133 @@ jobs:
           TYPEDB_VERSION: ${{ matrix.typedb-version }}
           TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE: ${{ matrix.semantic-profile }}
           TYPE_BRIDGE_NODE_INTG_DATABASE: type_bridge_projection_live
-        run: npm run test:projection-integration
+          WORKFORCE_V1_REPORT_OUTPUT: ${{ steps.prepare-node-workforce-v1.outputs.report }}
+          WORKFORCE_V2_REPORT_OUTPUT: ${{ steps.prepare-node-workforce-v2.outputs.report }}
+          WORKFORCE_V2_FRAGMENT_OUTPUTS: ${{ steps.prepare-node-workforce-v2.outputs.fragments }}
+          WORKFORCE_V2_RUN_NONCE_OUTPUT: ${{ steps.prepare-node-workforce-v2.outputs.run_nonce }}
+          WORKFORCE_V2_VALIDATOR_PYTHON_OUTPUT: ${{ steps.prepare-node-workforce-v2.outputs.validator_python }}
+        run: |
+          set -euo pipefail
+          workforce_env=()
+          if [[ -n "$WORKFORCE_V1_REPORT_OUTPUT" ]]; then
+            workforce_env+=("TYPE_BRIDGE_WORKFORCE_REPORT=$WORKFORCE_V1_REPORT_OUTPUT")
+          fi
+          if [[ -n "$WORKFORCE_V2_REPORT_OUTPUT" ]]; then
+            workforce_env+=(
+              "TYPE_BRIDGE_WORKFORCE_REPORT_V2=$WORKFORCE_V2_REPORT_OUTPUT"
+              "TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENTS=$WORKFORCE_V2_FRAGMENT_OUTPUTS"
+              "TYPE_BRIDGE_WORKFORCE_V2_PROOF_RUN_NONCE=$WORKFORCE_V2_RUN_NONCE_OUTPUT"
+              "TYPE_BRIDGE_WORKFORCE_V2_VALIDATOR_PYTHON=$WORKFORCE_V2_VALIDATOR_PYTHON_OUTPUT"
+            )
+          fi
+          env "${workforce_env[@]}" npm run test:projection-integration
+
+      - name: Upload Node workforce report
+        if: matrix.typedb-server == 'typedb/typedb:3.12.1'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: workforce-conformance-node
+          path: ${{ runner.temp }}/typebridge-workforce/node.json
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload Node workforce-v2 report
+        if: matrix.typedb-server == 'typedb/typedb:3.12.1'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: workforce-conformance-v2-node
+          path: ${{ runner.temp }}/typebridge-workforce-v2/node.json
+          if-no-files-found: error
+          retention-days: 7
+
+  # Fan in the three exact 3.12.1 generated-application reports. The producer
+  # jobs already own their live TypeDB journeys; this job performs no provider
+  # I/O and cannot turn uncovered or known-gap proofs into accepted support.
+  workforce-conformance:
+    name: Shared workforce conformance
+    runs-on: ubuntu-latest
+    needs: [test-integration, rust-integration, node-integration]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13.5"
+
+      - name: Download Python workforce report
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: workforce-conformance-python
+          path: ${{ runner.temp }}/typebridge-workforce
+
+      - name: Download Node workforce report
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: workforce-conformance-node
+          path: ${{ runner.temp }}/typebridge-workforce
+
+      - name: Download Rust workforce report
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: workforce-conformance-rust
+          path: ${{ runner.temp }}/typebridge-workforce
+
+      - name: Compare generated SDK workforce reports
+        run: >-
+          python scripts/ci/compare_workforce_conformance.py
+          "$RUNNER_TEMP/typebridge-workforce/python.json"
+          "$RUNNER_TEMP/typebridge-workforce/node.json"
+          "$RUNNER_TEMP/typebridge-workforce/rust.json"
+
+  # Fan in the additive four-binding typed-query reports without provider I/O.
+  # The live jobs publish only after their same-run deterministic fragments
+  # validate; this job neither generates catalogs nor infers missing evidence.
+  workforce-conformance-v2:
+    name: Shared workforce-v2 conformance
+    runs-on: ubuntu-latest
+    needs: [test-integration, rust-integration, node-integration]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13.5"
+
+      - name: Download Python workforce-v2 report
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: workforce-conformance-v2-python
+          path: ${{ runner.temp }}/typebridge-workforce-v2
+
+      - name: Download Node workforce-v2 report
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: workforce-conformance-v2-node
+          path: ${{ runner.temp }}/typebridge-workforce-v2
+
+      - name: Download Rust workforce-v2 report
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: workforce-conformance-v2-rust
+          path: ${{ runner.temp }}/typebridge-workforce-v2
+
+      - name: Download C workforce-v2 report
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: workforce-conformance-v2-c
+          path: ${{ runner.temp }}/typebridge-workforce-v2
+
+      - name: Compare generated SDK workforce-v2 reports
+        run: >-
+          python scripts/ci/compare_workforce_conformance_v2.py
+          "$RUNNER_TEMP/typebridge-workforce-v2/python.json"
+          "$RUNNER_TEMP/typebridge-workforce-v2/node.json"
+          "$RUNNER_TEMP/typebridge-workforce-v2/rust.json"
+          "$RUNNER_TEMP/typebridge-workforce-v2/c.json"
 
   # Version-gate cells: each cell boots a server and checks either a positive
   # connect path or the expected rejection class.

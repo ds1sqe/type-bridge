@@ -7,6 +7,7 @@ use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use serde_json::Value;
 use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::projection::{BindingTarget, ProjectionConfig};
 use type_bridge_contract::schema::DocumentId;
@@ -23,7 +24,19 @@ const PROVIDER_SCHEMA: &str = include_str!("acceptance/provider-3.12.1.tql");
 const PROVIDER_SCHEMA_3_11: &str = include_str!("acceptance/provider-3.11.5.tql");
 const INTERNAL_FIXTURE: &str = include_str!("rust_projection_live/internal_fixture.rs");
 const CONSUMER: &str = include_str!("rust_projection_live/consumer.rs");
-const CONSUMER_TESTS: [&str; 9] = [
+const WORKFORCE_MANIFEST: &[u8] =
+    include_bytes!("../../../../tests/contracts/sdk_conformance/manifest-v1.json");
+const WORKFORCE_CATALOG: &[u8] =
+    include_bytes!("../../../../tests/contracts/sdk_conformance/workforce-v1/catalog-v1.json");
+const WORKFORCE_JOURNEY: &[u8] =
+    include_bytes!("../../../../tests/contracts/sdk_conformance/workforce-v1/journey-v1.json");
+const WORKFORCE_V2_JOURNEY: &[u8] =
+    include_bytes!("../../../../tests/contracts/sdk_conformance/workforce-v2/journey-v2.json");
+const WORKFORCE_V2_CATALOG_RELATIVE: &str =
+    "tests/contracts/sdk_conformance/workforce-v2/catalog-v2.json";
+const WORKFORCE_PROFILE: &str = "typedb-3.12.1/v1";
+const CONSUMER_TESTS: [&str; 10] = [
+    "generated_workforce_report_journeys",
     "generated_schema_handshake_and_tokens",
     "generated_entity_crud_batches_and_scalar_domains",
     "generated_inheritance_exact_and_subtype_reads",
@@ -148,9 +161,95 @@ fn manifest_path(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "\\\\")
 }
 
+fn requested_workforce_report(profile_name: &str) -> Option<PathBuf> {
+    let raw = env::var_os("TYPE_BRIDGE_WORKFORCE_REPORT")?;
+    let raw = raw
+        .into_string()
+        .expect("TYPE_BRIDGE_WORKFORCE_REPORT must be UTF-8");
+    assert!(
+        raw.len() <= 4096,
+        "TYPE_BRIDGE_WORKFORCE_REPORT exceeds 4096 UTF-8 bytes"
+    );
+    assert_eq!(
+        profile_name, WORKFORCE_PROFILE,
+        "workforce reports are frozen to {WORKFORCE_PROFILE}"
+    );
+    let path = PathBuf::from(raw);
+    assert!(
+        path.is_absolute(),
+        "TYPE_BRIDGE_WORKFORCE_REPORT must be an absolute path"
+    );
+    let parent = path
+        .parent()
+        .expect("TYPE_BRIDGE_WORKFORCE_REPORT must have a parent directory");
+    let metadata = fs::symlink_metadata(parent)
+        .expect("TYPE_BRIDGE_WORKFORCE_REPORT parent must already exist");
+    assert!(
+        metadata.is_dir() && !metadata.file_type().is_symlink(),
+        "TYPE_BRIDGE_WORKFORCE_REPORT parent must be a non-symlink directory"
+    );
+    match fs::symlink_metadata(&path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Ok(_) => panic!("TYPE_BRIDGE_WORKFORCE_REPORT target must not already exist"),
+        Err(error) => panic!("TYPE_BRIDGE_WORKFORCE_REPORT target is not inspectable: {error}"),
+    }
+    Some(path)
+}
+
+fn requested_workforce_v2_report(profile_name: &str) -> Option<PathBuf> {
+    let raw = env::var_os("TYPE_BRIDGE_WORKFORCE_REPORT_V2")?;
+    let raw = raw
+        .into_string()
+        .expect("TYPE_BRIDGE_WORKFORCE_REPORT_V2 must be UTF-8");
+    assert!(
+        raw.len() <= 4096,
+        "TYPE_BRIDGE_WORKFORCE_REPORT_V2 exceeds 4096 UTF-8 bytes"
+    );
+    assert_eq!(
+        profile_name, WORKFORCE_PROFILE,
+        "workforce-v2 reports are frozen to {WORKFORCE_PROFILE}"
+    );
+    let path = PathBuf::from(raw);
+    assert!(
+        path.is_absolute(),
+        "TYPE_BRIDGE_WORKFORCE_REPORT_V2 must be an absolute path"
+    );
+    let parent = path
+        .parent()
+        .expect("TYPE_BRIDGE_WORKFORCE_REPORT_V2 must have a parent directory");
+    let metadata = fs::symlink_metadata(parent)
+        .expect("TYPE_BRIDGE_WORKFORCE_REPORT_V2 parent must already exist");
+    assert!(
+        metadata.is_dir() && !metadata.file_type().is_symlink(),
+        "TYPE_BRIDGE_WORKFORCE_REPORT_V2 parent must be a non-symlink directory"
+    );
+    match fs::symlink_metadata(&path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Ok(_) => panic!("TYPE_BRIDGE_WORKFORCE_REPORT_V2 target must not already exist"),
+        Err(error) => {
+            panic!("TYPE_BRIDGE_WORKFORCE_REPORT_V2 target is not inspectable: {error}")
+        }
+    }
+    Some(path)
+}
+
 #[test]
 fn external_consumer_remains_a_focused_public_api_suite() {
+    fn consumer_test<'a>(source: &'a str, name: &str) -> &'a str {
+        let marker = format!("#[tokio::test]\nasync fn {name}()");
+        let start = source
+            .find(&marker)
+            .unwrap_or_else(|| panic!("external consumer test is missing: {name}"));
+        let remaining = &source[start + marker.len()..];
+        let end = remaining
+            .find("\n#[tokio::test]")
+            .unwrap_or(remaining.len());
+        &remaining[..end]
+    }
+
     assert!(!CONSUMER.contains("#[tokio::main]"));
+    assert!(!CONSUMER.contains("fn run_workforce_v2_journey("));
+    assert!(!CONSUMER.contains("Box::pin(run_workforce_v2_journey_inner(db))"));
     assert_eq!(
         CONSUMER.matches("#[tokio::test]").count(),
         CONSUMER_TESTS.len()
@@ -161,6 +260,31 @@ fn external_consumer_remains_a_focused_public_api_suite() {
             "external consumer test is missing: {test}"
         );
     }
+
+    let relation = consumer_test(CONSUMER, "generated_relation_query_and_remote_lifecycle");
+    assert!(relation.contains("F2C-03 public generated relation lifecycle: passed"));
+    assert!(!relation.contains("TYPE_BRIDGE_WORKFORCE_REPORT"));
+    assert!(!relation.contains("run_workforce_journey"));
+
+    let reports = consumer_test(CONSUMER, "generated_workforce_report_journeys");
+    for expression in [
+        "env::var_os(\"TYPE_BRIDGE_WORKFORCE_REPORT\")",
+        "env::var_os(\"TYPE_BRIDGE_WORKFORCE_REPORT_V2\")",
+        "run_workforce_journey(&db).await",
+        "run_workforce_v2_journey_inner(&db).await",
+    ] {
+        assert_eq!(
+            reports.matches(expression).count(),
+            1,
+            "report test must consume exactly one {expression}"
+        );
+        assert_eq!(
+            CONSUMER.matches(expression).count(),
+            1,
+            "report expression must occur in exactly one consumer test: {expression}"
+        );
+    }
+    assert!(reports.contains("generated workforce report journeys: passed"));
 }
 
 #[test]
@@ -212,6 +336,64 @@ fn generated_rust_projection_round_trips_exact_live_models() {
         "typedb-3.12.1/v1" => (SCHEMA, PROVIDER_SCHEMA),
         other => panic!("unsupported generated live semantic profile: {other}"),
     };
+    let workforce_report = requested_workforce_report(&profile_name);
+    let workforce_v2_report = requested_workforce_v2_report(&profile_name);
+    let workforce_v2_proof_fragments = workforce_v2_report.as_ref().map(|_| {
+        let raw = env::var_os("TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENTS")
+            .expect("TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENTS is required for a V2 report");
+        support::workforce_v2_proof_paths(&raw)
+            .expect("TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENTS must be a valid path list")
+    });
+    let workforce_v2_proof_run_nonce = workforce_v2_report.as_ref().map(|_| {
+        let nonce = env::var("TYPE_BRIDGE_WORKFORCE_V2_PROOF_RUN_NONCE")
+            .expect("TYPE_BRIDGE_WORKFORCE_V2_PROOF_RUN_NONCE is required for a V2 report");
+        assert!(
+            nonce.len() == 64
+                && nonce
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+            "TYPE_BRIDGE_WORKFORCE_V2_PROOF_RUN_NONCE must be 64 lowercase hexadecimal digits"
+        );
+        nonce
+    });
+    let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .and_then(Path::parent)
+        .expect("schema-codegen lives beneath the repository root")
+        .to_path_buf();
+    let workforce_v2_validated_observations = workforce_v2_report.as_ref().map(|_| {
+        let observations = support::validate_workforce_v2_proof_fragments(
+            &repository_root,
+            "rust",
+            workforce_v2_proof_run_nonce
+                .as_deref()
+                .expect("workforce-v2 proof nonce was captured"),
+            workforce_v2_proof_fragments
+                .as_deref()
+                .expect("workforce-v2 proof fragments were captured"),
+        )
+        .expect("Rust workforce-v2 proof fragments must validate");
+        let serialized = observations
+            .into_iter()
+            .map(|((observation_ref, proof_kind), observation)| {
+                (format!("{observation_ref}/{proof_kind}"), observation)
+            })
+            .collect::<std::collections::BTreeMap<String, Value>>();
+        let encoded = serde_json::to_string(&serialized)
+            .expect("validated workforce-v2 observations serialize");
+        assert!(
+            encoded.len() <= 64 * 1024,
+            "validated workforce-v2 observations exceed 64 KiB"
+        );
+        encoded
+    });
+    if let (Some(v1), Some(v2)) = (&workforce_report, &workforce_v2_report) {
+        assert_ne!(
+            v1, v2,
+            "workforce-v1 and workforce-v2 reports require distinct paths"
+        );
+    }
     let documents = SchemaDocumentSet::parse([(
         DocumentId::new("rust-projection-live.yaml").expect("document ID is valid"),
         schema,
@@ -224,8 +406,10 @@ fn generated_rust_projection_round_trips_exact_live_models() {
         support::authority_for_declared(&declared, "rust-projection-live", &profile_name);
     let authority_bytes = encode_schema_authority(&authority);
     let emitter = RustEmitter::new();
-    let handlers = emitter.generator_handlers();
-    let resources = emitter.code_resources().expect("emitter resources hash");
+    let handlers = emitter.generator_handlers_for(&resolved);
+    let resources = emitter
+        .code_resources_for(&resolved)
+        .expect("emitter resources hash");
     let projection = project(
         &resolved,
         BindingTarget::Rust,
@@ -239,6 +423,45 @@ fn generated_rust_projection_round_trips_exact_live_models() {
         .expect("Rust package emits");
 
     let stage = Stage::new();
+    let workforce_files = workforce_report.as_ref().map(|_| {
+        let directory = stage.path().join("workforce-v1");
+        fs::create_dir_all(&directory).expect("workforce contract stage is created");
+        let manifest = directory.join("manifest-v1.json");
+        let catalog = directory.join("catalog-v1.json");
+        let journey = directory.join("journey-v1.json");
+        let schema = directory.join("schema.yaml");
+        let provider_schema = directory.join("provider-3.12.1.tql");
+        fs::write(&manifest, WORKFORCE_MANIFEST).expect("workforce manifest is staged");
+        fs::write(&catalog, WORKFORCE_CATALOG).expect("workforce catalog is staged");
+        fs::write(&journey, WORKFORCE_JOURNEY).expect("workforce journey is staged");
+        fs::write(&schema, SCHEMA.as_bytes()).expect("workforce schema is staged");
+        fs::write(&provider_schema, PROVIDER_SCHEMA.as_bytes())
+            .expect("workforce provider schema is staged");
+        (manifest, catalog, journey, schema, provider_schema)
+    });
+    let workforce_v2_files = workforce_v2_report.as_ref().map(|_| {
+        let directory = stage.path().join("workforce-v2");
+        fs::create_dir_all(&directory).expect("workforce-v2 contract stage is created");
+        let manifest = directory.join("manifest-v1.json");
+        let catalog = directory.join("catalog-v2.json");
+        let journey = directory.join("journey-v2.json");
+        let schema = directory.join("schema.yaml");
+        let provider_schema = directory.join("provider-3.12.1.tql");
+        let catalog_source = repository_root.join(WORKFORCE_V2_CATALOG_RELATIVE);
+        let catalog_bytes = fs::read(&catalog_source).unwrap_or_else(|error| {
+            panic!(
+                "requested workforce-v2 report requires the frozen catalog at {}: {error}",
+                catalog_source.display()
+            )
+        });
+        fs::write(&manifest, WORKFORCE_MANIFEST).expect("workforce-v2 manifest is staged");
+        fs::write(&catalog, catalog_bytes).expect("workforce-v2 catalog is staged");
+        fs::write(&journey, WORKFORCE_V2_JOURNEY).expect("workforce-v2 journey is staged");
+        fs::write(&schema, SCHEMA.as_bytes()).expect("workforce-v2 schema is staged");
+        fs::write(&provider_schema, PROVIDER_SCHEMA.as_bytes())
+            .expect("workforce-v2 provider schema is staged");
+        (manifest, catalog, journey, schema, provider_schema)
+    });
     let generated = stage.path().join("generated");
     for (relative, bytes) in package.files() {
         let path = generated.join(relative);
@@ -262,7 +485,7 @@ fn generated_rust_projection_round_trips_exact_live_models() {
     fs::create_dir_all(consumer.join("src")).expect("consumer staging directory is created");
     fs::write(consumer.join("src/lib.rs"), CONSUMER).expect("consumer source is staged");
     let preflight_manifest = format!(
-        "[package]\nname=\"type-bridge-rust-projection-live-consumer\"\nversion=\"0.0.0\"\nedition=\"2024\"\npublish=false\n[dependencies]\ntype-bridge-generated-schema={{path=\"{}\"}}\ntype-bridge={{path=\"{}\"}}\ntokio={{version=\"1\",features=[\"macros\",\"rt-multi-thread\"]}}\nreqwest={{version=\"0.12\",default-features=false,features=[\"rustls-tls\"]}}\n[patch.crates-io]\ntype-bridge={{path=\"{}\"}}\n[workspace]\n",
+        "[package]\nname=\"type-bridge-rust-projection-live-consumer\"\nversion=\"0.0.0\"\nedition=\"2024\"\npublish=false\n[dependencies]\ntype-bridge-generated-schema={{path=\"{}\"}}\ntype-bridge={{path=\"{}\"}}\ntokio={{version=\"1\",features=[\"macros\",\"rt-multi-thread\"]}}\nreqwest={{version=\"0.12\",default-features=false,features=[\"rustls-tls\"]}}\nserde_json=\"1\"\nsha2=\"0.10\"\n[patch.crates-io]\ntype-bridge={{path=\"{}\"}}\n[workspace]\n",
         manifest_path(&generated),
         manifest_path(&crates_dir.join("rust")),
         manifest_path(&crates_dir.join("rust"))
@@ -304,7 +527,9 @@ fn generated_rust_projection_round_trips_exact_live_models() {
             "type-bridge-generated-schema",
             "type-bridge",
             "tokio",
-            "reqwest"
+            "reqwest",
+            "serde_json",
+            "sha2"
         ]
     );
     assert!(!consumer_manifest_text.contains("test-harness"));
@@ -357,6 +582,10 @@ fn generated_rust_projection_round_trips_exact_live_models() {
         "preflight consumer check failed\n{}",
         String::from_utf8_lossy(&consumer_check.stderr)
     );
+    if env::var("TYPE_BRIDGE_RUST_PROJECTION_PREFLIGHT_ONLY").as_deref() == Ok("1") {
+        println!("generated Rust public consumer preflight: passed");
+        return;
+    }
 
     // 1. Prepare the provider schema through the retained raw execution seam.
     // Application CRUD/query evidence comes only from the generated consumer below.
@@ -539,7 +768,8 @@ tokio = {{ version = "1", features = ["macros", "rt-multi-thread"] }}
     };
     server.wait_until_ready(server_port);
 
-    let consumer_output = Command::new(&cargo)
+    let mut consumer_command = Command::new(&cargo);
+    consumer_command
         .arg("test")
         .arg("--quiet")
         .arg("--manifest-path")
@@ -551,6 +781,39 @@ tokio = {{ version = "1", features = ["macros", "rt-multi-thread"] }}
             format!("http://127.0.0.1:{server_port}"),
         )
         .env("TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE", &profile_name)
+        .env_remove("TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENT")
+        .env_remove("TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENTS")
+        .env_remove("TYPE_BRIDGE_WORKFORCE_V2_PROOF_RUN_NONCE")
+        .env_remove("TYPE_BRIDGE_WORKFORCE_V2_VALIDATED_OBSERVATIONS");
+    if let (Some(report), Some((manifest, catalog, journey, schema, provider_schema))) =
+        (&workforce_report, &workforce_files)
+    {
+        consumer_command
+            .env("TYPE_BRIDGE_WORKFORCE_REPORT", report)
+            .env("TYPE_BRIDGE_WORKFORCE_MANIFEST", manifest)
+            .env("TYPE_BRIDGE_WORKFORCE_CATALOG", catalog)
+            .env("TYPE_BRIDGE_WORKFORCE_JOURNEY", journey)
+            .env("TYPE_BRIDGE_WORKFORCE_SCHEMA", schema)
+            .env("TYPE_BRIDGE_WORKFORCE_PROVIDER_SCHEMA", provider_schema);
+    }
+    if let (Some(report), Some((manifest, catalog, journey, schema, provider_schema))) =
+        (&workforce_v2_report, &workforce_v2_files)
+    {
+        consumer_command
+            .env("TYPE_BRIDGE_WORKFORCE_REPORT_V2", report)
+            .env("TYPE_BRIDGE_WORKFORCE_MANIFEST_V2", manifest)
+            .env("TYPE_BRIDGE_WORKFORCE_CATALOG_V2", catalog)
+            .env("TYPE_BRIDGE_WORKFORCE_JOURNEY_V2", journey)
+            .env("TYPE_BRIDGE_WORKFORCE_SCHEMA_V2", schema)
+            .env("TYPE_BRIDGE_WORKFORCE_PROVIDER_SCHEMA_V2", provider_schema)
+            .env(
+                "TYPE_BRIDGE_WORKFORCE_V2_VALIDATED_OBSERVATIONS",
+                workforce_v2_validated_observations
+                    .as_ref()
+                    .expect("workforce-v2 observations were validated"),
+            );
+    }
+    let consumer_output = consumer_command
         .output()
         .expect("dependency-isolated client consumer starts");
 
@@ -572,6 +835,7 @@ tokio = {{ version = "1", features = ["macros", "rt-multi-thread"] }}
     );
     assert!(consumer_stdout.contains("F2B-03 public generated entity lifecycle: passed"));
     assert!(consumer_stdout.contains("F2C-03 public generated relation lifecycle: passed"));
+    assert!(consumer_stdout.contains("generated workforce report journeys: passed"));
     assert!(consumer_stdout.contains("F2D public write transaction lifecycle: passed"));
     assert!(
         consumer_stdout.contains("generated lifecycle hooks and atomic mutation batches: passed")
@@ -585,6 +849,130 @@ tokio = {{ version = "1", features = ["macros", "rt-multi-thread"] }}
         consumer_stdout
             .contains("generated unkeyed entity IID lifecycle and singular query: passed")
     );
+    if let Some(report) = &workforce_report {
+        assert!(
+            report.is_file(),
+            "requested generated Rust workforce report was not produced: {}",
+            report.display()
+        );
+        let report_bytes = fs::read(report).expect("generated Rust report is readable");
+        assert_eq!(
+            report_bytes.last(),
+            Some(&b'\n'),
+            "generated Rust report must end in exactly one LF"
+        );
+        let canonical_bytes = &report_bytes[..report_bytes.len() - 1];
+        assert!(
+            !canonical_bytes.ends_with(b"\n"),
+            "generated Rust report must end in exactly one LF"
+        );
+        let report_json: serde_json::Value =
+            type_bridge_contract::codec::from_canonical_json(canonical_bytes)
+                .expect("generated Rust report is compact canonical JSON");
+        assert_eq!(report_json["binding"], "rust");
+        assert_eq!(report_json["fixture"]["projection_target"], "rust");
+        assert_eq!(
+            report_json["results"]
+                .as_array()
+                .expect("generated Rust report results are an array")
+                .len(),
+            9
+        );
+        fn assert_no_runtime_identity(value: &serde_json::Value) {
+            match value {
+                serde_json::Value::Array(values) => {
+                    for value in values {
+                        assert_no_runtime_identity(value);
+                    }
+                }
+                serde_json::Value::Object(values) => {
+                    for (key, value) in values {
+                        assert!(
+                            !matches!(
+                                key.as_str(),
+                                "iid" | "database" | "address" | "port" | "runtime_identity"
+                            ),
+                            "generated Rust report leaked provider/runtime identity: {key}"
+                        );
+                        assert_no_runtime_identity(value);
+                    }
+                }
+                _ => {}
+            }
+        }
+        assert_no_runtime_identity(&report_json);
+        assert!(
+            fs::symlink_metadata(report)
+                .expect("generated Rust report metadata is readable")
+                .is_file(),
+            "generated Rust report is not a regular file"
+        );
+    }
+    if let Some(report) = &workforce_v2_report {
+        assert!(
+            report.is_file(),
+            "requested generated Rust workforce-v2 report was not produced: {}",
+            report.display()
+        );
+        let report_bytes =
+            fs::read(report).expect("generated Rust workforce-v2 report is readable");
+        assert_eq!(
+            report_bytes.last(),
+            Some(&b'\n'),
+            "generated Rust workforce-v2 report must end in exactly one LF"
+        );
+        let canonical_bytes = &report_bytes[..report_bytes.len() - 1];
+        assert!(
+            !canonical_bytes.ends_with(b"\n"),
+            "generated Rust workforce-v2 report must end in exactly one LF"
+        );
+        let report_json: serde_json::Value =
+            type_bridge_contract::codec::from_canonical_json(canonical_bytes)
+                .expect("generated Rust workforce-v2 report is compact canonical JSON");
+        assert_eq!(
+            report_json["format"],
+            "typebridge.sdk-conformance-report/v2"
+        );
+        assert_eq!(report_json["binding"], "rust");
+        assert_eq!(report_json["fixture"]["projection_target"], "rust");
+        assert_eq!(
+            report_json["results"]
+                .as_array()
+                .expect("generated Rust workforce-v2 report results are an array")
+                .len(),
+            34
+        );
+        fn assert_no_v2_runtime_identity(value: &serde_json::Value) {
+            match value {
+                serde_json::Value::Array(values) => {
+                    for value in values {
+                        assert_no_v2_runtime_identity(value);
+                    }
+                }
+                serde_json::Value::Object(values) => {
+                    for (key, value) in values {
+                        assert!(
+                            !matches!(
+                                key.as_str(),
+                                "iid" | "database" | "address" | "port" | "runtime_identity"
+                            ),
+                            "generated Rust workforce-v2 report leaked provider/runtime identity: {key}"
+                        );
+                        assert_no_v2_runtime_identity(value);
+                    }
+                }
+                _ => {}
+            }
+        }
+        assert_no_v2_runtime_identity(&report_json);
+        assert!(
+            fs::symlink_metadata(report)
+                .expect("generated Rust workforce-v2 report metadata is readable")
+                .is_file(),
+            "generated Rust workforce-v2 report is not a regular file"
+        );
+    }
+    println!("generated workforce report journeys: passed");
     println!("F2B-03 public generated entity lifecycle: passed");
     println!("F2C-03 public generated relation lifecycle: passed");
     println!("F2D public write transaction lifecycle: passed");

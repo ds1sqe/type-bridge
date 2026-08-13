@@ -24,6 +24,13 @@ provider-owned function body. The workspace checker validates the declaration
 shape and selected semantic profile; provider execution remains capability-
 gated.
 
+Declare exactly one return shape. For example, a scalar function uses
+`returns: {scalar: integer}`, a composite single-row function uses
+`returns: {tuple: [integer, string]}`, and a multi-row function uses
+`returns: {stream: [event]}`. The generated immutable query vocabulary invokes
+non-optional scalar functions; tuple and stream tokens remain available to
+other typed result APIs and are rejected—not guessed—where unsupported.
+
 ```bash
 type-bridge --manifest typebridge.yaml schema check
 type-bridge --manifest typebridge.yaml migration make --name add-find-events

@@ -15,13 +15,14 @@ use std::fmt;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::path::{Component, Path, PathBuf};
 
+use sha2::{Digest as _, Sha256};
 use type_bridge_contract::capability::{CapabilityId, CapabilitySet};
 use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::managed_scope::{
     ManagedScopeBinding, ManagedScopeId, ManagedScopeProfileId,
 };
 use type_bridge_contract::migration::MigrationAppLabel;
-use type_bridge_contract::projection::BindingTarget;
+use type_bridge_contract::projection::{BindingTarget, CSymbolPrefix};
 use type_bridge_contract::reserved::TYPEBRIDGE_JOURNAL_DATABASE_SUFFIX;
 use type_bridge_contract::schema::SourceSpan;
 use type_bridge_contract::semantic_profile::SemanticProfile;
@@ -63,6 +64,11 @@ pub const TYPEBRIDGE_WORKSPACE_SEMANTIC_PROFILE_IDS: &[&str] =
 
 const MAX_SYMBOLIC_ID_BYTES: usize = 255;
 const MAX_EXTENSION_VERSION_BYTES: usize = 64;
+const C_SYMBOL_PREFIX_MAX_BYTES: usize = 63;
+const C_SYMBOL_PREFIX_SHORT_MARKER: &str = "tb_";
+const C_SYMBOL_PREFIX_DIGEST_MARKER: &str = "tbh_sha256_";
+const C_SYMBOL_PREFIX_DIGEST_DOMAIN: &[u8] = b"typebridge.c-symbol-prefix/v1\0";
+const BASE32_LOWER_ALPHABET: &[u8; 32] = b"abcdefghijklmnopqrstuvwxyz234567";
 
 /// Stable categories returned while validating programmatic workspace policy.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -94,6 +100,8 @@ pub enum WorkspaceConfigErrorCode {
     OverlappingWorkspacePath,
     /// One binding output target appeared more than once.
     DuplicateOutputTarget,
+    /// A binding target is newer than this workspace implementation.
+    UnsupportedBindingTarget,
     /// A symbolic secret slot appeared more than once.
     DuplicateSecretSlot,
     /// One extension handler appeared more than once.
@@ -617,12 +625,88 @@ impl SchemaAuthorityOutputPath {
     }
 }
 
-const fn output_field_name(target: BindingTarget) -> &'static str {
+fn output_field_name(target: BindingTarget) -> Result<&'static str, WorkspaceConfigError> {
     match target {
-        BindingTarget::Python => "output.python",
-        BindingTarget::TypeScript => "output.typescript",
-        BindingTarget::Rust => "output.rust",
+        BindingTarget::Python => Ok("output.python"),
+        BindingTarget::TypeScript => Ok("output.typescript"),
+        BindingTarget::Rust => Ok("output.rust"),
+        BindingTarget::C => Ok("output.c"),
+        _ => Err(unsupported_binding_target(target)),
     }
+}
+
+fn unsupported_binding_target(target: BindingTarget) -> WorkspaceConfigError {
+    WorkspaceConfigError::new(
+        WorkspaceConfigErrorCode::UnsupportedBindingTarget,
+        "workspace implementation does not support this binding target",
+    )
+    .with_detail(target.as_str())
+}
+
+/// Derive the stable C global-symbol prefix owned by a migration application.
+///
+/// Labels whose reversible `tb_` spelling fits in 63 bytes escape `_` as
+/// `_u` and `-` as `_h`. Longer spellings use the disjoint
+/// `tbh_sha256_` namespace followed by the complete lowercase unpadded RFC
+/// 4648 base32 encoding of SHA-256 over
+/// `typebridge.c-symbol-prefix/v1\0 || label_length_u64_be || label_bytes`.
+/// The digest lane is collision-resistant rather than mathematically
+/// injective. The app label is already portable lowercase ASCII, so this
+/// transformation is infallible.
+#[must_use]
+pub fn c_symbol_prefix_for_app_label(app_label: &MigrationAppLabel) -> CSymbolPrefix {
+    let mut short =
+        String::with_capacity(C_SYMBOL_PREFIX_SHORT_MARKER.len() + app_label.as_str().len());
+    short.push_str(C_SYMBOL_PREFIX_SHORT_MARKER);
+    for byte in app_label.as_str().bytes() {
+        match byte {
+            b'_' => short.push_str("_u"),
+            b'-' => short.push_str("_h"),
+            _ => short.push(char::from(byte)),
+        }
+    }
+    if short.len() <= C_SYMBOL_PREFIX_MAX_BYTES {
+        return CSymbolPrefix::new(short)
+            .expect("a validated migration app label always yields a valid short C prefix");
+    }
+
+    let mut hasher = Sha256::new();
+    hasher.update(C_SYMBOL_PREFIX_DIGEST_DOMAIN);
+    hasher.update(
+        u64::try_from(app_label.as_str().len())
+            .expect("migration app-label length fits u64")
+            .to_be_bytes(),
+    );
+    hasher.update(app_label.as_str().as_bytes());
+    let digest = hasher.finalize();
+    let prefix = format!(
+        "{C_SYMBOL_PREFIX_DIGEST_MARKER}{}",
+        encode_base32_lower(&digest)
+    );
+    debug_assert_eq!(prefix.len(), C_SYMBOL_PREFIX_MAX_BYTES);
+    CSymbolPrefix::new(prefix)
+        .expect("the frozen digest spelling always yields a valid bounded C prefix")
+}
+
+fn encode_base32_lower(bytes: &[u8]) -> String {
+    let mut encoded = String::with_capacity((bytes.len() * 8).div_ceil(5));
+    let mut accumulator = 0_u16;
+    let mut retained_bits = 0_u8;
+    for &byte in bytes {
+        accumulator = (accumulator << 8) | u16::from(byte);
+        retained_bits += 8;
+        while retained_bits >= 5 {
+            retained_bits -= 5;
+            let index = usize::from((accumulator >> retained_bits) & 0x1f);
+            encoded.push(char::from(BASE32_LOWER_ALPHABET[index]));
+            accumulator &= (1_u16 << retained_bits) - 1;
+        }
+    }
+    if retained_bits != 0 {
+        let index = usize::from((accumulator << (5 - retained_bits)) & 0x1f);
+        encoded.push(char::from(BASE32_LOWER_ALPHABET[index]));
+    }
+    encoded
 }
 
 pub(crate) fn portable_path_collision_key(path: &Path) -> Option<Vec<String>> {
@@ -1409,6 +1493,7 @@ impl TypeBridgeConfigBuilder {
 
         let mut outputs = BTreeMap::new();
         for (target, directory) in self.outputs {
+            output_field_name(target)?;
             if outputs.insert(target, directory).is_some() {
                 return Err(WorkspaceConfigError::new(
                     WorkspaceConfigErrorCode::DuplicateOutputTarget,
@@ -1422,7 +1507,7 @@ impl TypeBridgeConfigBuilder {
             ("migration_v2_directory", migration_v2_directory.as_path()),
         ];
         for (target, directory) in &outputs {
-            workspace_paths.push((output_field_name(*target), directory.as_path()));
+            workspace_paths.push((output_field_name(*target)?, directory.as_path()));
         }
         if let Some(output) = &schema_authority_output {
             workspace_paths.push(("artifact.schema_authority", output.as_path()));

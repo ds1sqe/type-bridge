@@ -1,7 +1,9 @@
 use type_bridge_contract::capability::{CapabilityId, CapabilitySet};
 use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::id::{AttributeId, FunctionId, RoleId, StructId, TypeId, TypeKind};
-use type_bridge_contract::schema::{AnnotationKindId, DocumentId, SchemaFactId, SubFactId};
+use type_bridge_contract::schema::{
+    AnnotationKindId, CollectionMode, DocumentId, SchemaFactId, SubFactId,
+};
 use type_bridge_schema::{
     BUILTIN_SCHEMA_CAPABILITY_IDS, SchemaDocumentSet, normalize_documents, resolve,
     resolve_schema_with_capabilities,
@@ -18,6 +20,183 @@ fn declared(source: &str) -> type_bridge_contract::schema::DeclaredSchema {
 
 fn profile() -> SemanticProfileId {
     SemanticProfileId::new("typedb-3.12.1/v1").expect("profile is valid")
+}
+
+#[test]
+fn ordered_collection_mode_and_distinct_survive_plain_inheritance() {
+    let schema = declared(
+        r#"format: typebridge.schema/v2
+attributes:
+  tag: { value: string }
+entities:
+  article:
+    owns:
+      tag: { ordered: true, distinct: true }
+  review:
+    sub: article
+relations:
+  collection:
+    relates:
+      member: { ordered: true, distinct: true }
+  curated-collection:
+    sub: collection
+"#,
+    );
+    let resolved = resolve(&schema, &profile()).expect("ordered schema resolves");
+    let tag = AttributeId::new("tag").unwrap();
+    let review = TypeId::new(TypeKind::Entity, "review").unwrap();
+    let owns = &resolved.types()[&review].owns()[&tag];
+    assert_eq!(owns.collection_mode(), CollectionMode::OrderedList);
+    assert!(owns.is_distinct());
+    assert!(!owns.origin().is_direct());
+
+    let curated = TypeId::new(TypeKind::Relation, "curated-collection").unwrap();
+    let member = RoleId::new("collection", "member").unwrap();
+    let relates = &resolved.types()[&curated].relates()[&member];
+    assert_eq!(relates.collection_mode(), CollectionMode::OrderedList);
+    assert!(relates.is_distinct());
+    assert!(!relates.origin().is_direct());
+}
+
+#[test]
+fn inherited_owns_redeclaration_must_preserve_collection_mode() {
+    let schema = declared(
+        r#"format: typebridge.schema/v2
+attributes:
+  tag: { value: string }
+entities:
+  article:
+    owns:
+      tag: { ordered: true }
+  review:
+    sub: article
+    owns: [tag]
+"#,
+    );
+    let error = resolve(&schema, &profile()).expect_err("mode conflict rejects");
+    let diagnostic = error.iter().next().expect("one diagnostic");
+    assert_eq!(
+        diagnostic.diagnostic().code().as_str(),
+        "inherited_owns_collection_mode_conflict"
+    );
+    assert!(diagnostic.primary().is_some());
+    assert_eq!(diagnostic.related().len(), 1);
+}
+
+#[test]
+fn specialized_role_must_preserve_effective_parent_collection_mode() {
+    let schema = declared(
+        r#"format: typebridge.schema/v2
+relations:
+  collection:
+    relates:
+      member: { ordered: true }
+  curated-collection:
+    sub: collection
+    relates:
+      curated-member: { as: member }
+"#,
+    );
+    let error = resolve(&schema, &profile()).expect_err("mode conflict rejects");
+    let diagnostic = error.iter().next().expect("one diagnostic");
+    assert_eq!(
+        diagnostic.diagnostic().code().as_str(),
+        "specialized_role_collection_mode_conflict"
+    );
+    assert!(diagnostic.primary().is_some());
+    assert_eq!(diagnostic.related().len(), 1);
+}
+
+#[test]
+fn direct_redeclarations_and_specializations_may_add_or_drop_distinct() {
+    let schema = declared(
+        r#"format: typebridge.schema/v2
+attributes:
+  tag: { value: string }
+entities:
+  base:
+    owns:
+      tag: { ordered: true, distinct: true }
+  dropped:
+    sub: base
+    owns:
+      tag: { ordered: true }
+  added-base:
+    owns:
+      tag: { ordered: true }
+  added:
+    sub: added-base
+    owns:
+      tag: { ordered: true, distinct: true }
+relations:
+  distinct-roles:
+    relates:
+      member: { ordered: true, distinct: true }
+  dropped-role:
+    sub: distinct-roles
+    relates:
+      child: { as: member, ordered: true }
+  plain-roles:
+    relates:
+      member: { ordered: true }
+  added-role:
+    sub: plain-roles
+    relates:
+      child: { as: member, ordered: true, distinct: true }
+"#,
+    );
+    let resolved = resolve(&schema, &profile()).expect("distinct transitions resolve");
+    let tag = AttributeId::new("tag").unwrap();
+    for (owner, distinct) in [("dropped", false), ("added", true)] {
+        let id = TypeId::new(TypeKind::Entity, owner).unwrap();
+        let owns = &resolved.types()[&id].owns()[&tag];
+        assert_eq!(owns.collection_mode(), CollectionMode::OrderedList);
+        assert_eq!(owns.is_distinct(), distinct);
+    }
+    for (relation, declaring_relation, distinct) in [
+        ("dropped-role", "dropped-role", false),
+        ("added-role", "added-role", true),
+    ] {
+        let id = TypeId::new(TypeKind::Relation, relation).unwrap();
+        let role = RoleId::new(declaring_relation, "child").unwrap();
+        let relates = &resolved.types()[&id].relates()[&role];
+        assert_eq!(relates.collection_mode(), CollectionMode::OrderedList);
+        assert_eq!(relates.is_distinct(), distinct);
+    }
+}
+
+#[test]
+fn ordered_collections_are_gated_to_the_3_12_1_semantic_profile() {
+    let schema = declared(
+        r#"format: typebridge.schema/v2
+attributes:
+  tag: { value: string }
+entities:
+  article:
+    owns:
+      tag: { ordered: true }
+"#,
+    );
+    resolve(&schema, &profile()).expect("3.12.1 accepts ordered collections");
+
+    let legacy = SemanticProfileId::new("typedb-3.11.5/v1").unwrap();
+    let error = resolve(&schema, &legacy).expect_err("3.11.5 rejects ordered collections");
+    let diagnostic = error.iter().next().expect("one diagnostic");
+    assert_eq!(
+        diagnostic.diagnostic().code().as_str(),
+        "ordered_collection_profile_unsupported"
+    );
+    assert!(diagnostic.primary().is_some());
+
+    let unordered = declared(
+        r#"format: typebridge.schema/v2
+attributes:
+  tag: { value: string }
+entities:
+  article: { owns: [tag] }
+"#,
+    );
+    resolve(&unordered, &legacy).expect("3.11.5 unordered behavior is preserved");
 }
 
 #[test]

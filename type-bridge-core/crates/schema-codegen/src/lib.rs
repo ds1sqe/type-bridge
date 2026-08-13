@@ -4,22 +4,24 @@
 
 use std::collections::BTreeMap;
 
+mod c;
 mod package;
 mod python;
 mod rust;
 mod typescript;
 
+pub use c::CEmitter;
 pub use package::GeneratedPackage;
 pub use python::PythonEmitter;
 pub use rust::RustEmitter;
 pub use typescript::TypeScriptEmitter;
 
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
-use type_bridge_contract::projection::{ModelProjection, ProjectedAnnotation};
+use type_bridge_contract::projection::{ModelProjection, ProjectedAnnotation, RuntimeProjection};
 use type_bridge_contract::schema::{
     AnnotationFactId, AnnotationKindId, SchemaAnnotationValue, encode_declared_schema,
 };
-use type_bridge_schema::{VerifiedSchemaAuthority, encode_schema_authority};
+use type_bridge_schema::{ResolvedSchema, VerifiedSchemaAuthority, encode_schema_authority};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct EmbeddedAuthority {
@@ -69,6 +71,34 @@ fn invalid(code: &'static str, message: impl Into<String>) -> Diagnostic {
         DiagnosticCode::new(code).expect("schema-codegen diagnostic code is valid"),
         message,
     )
+}
+
+fn resolved_schema_uses_ordered_collections(schema: &ResolvedSchema) -> bool {
+    schema.types().values().any(|model| {
+        model
+            .owns()
+            .values()
+            .any(|owns| !owns.collection_mode().is_unordered())
+            || model
+                .relates()
+                .values()
+                .any(|relates| !relates.collection_mode().is_unordered())
+    })
+}
+
+fn projection_uses_ordered_collections(projection: &RuntimeProjection) -> bool {
+    projection.models().values().any(|model| {
+        model
+            .query_tokens()
+            .fields()
+            .values()
+            .any(|field| !field.multiplicity().collection_mode().is_unordered())
+            || model
+                .query_tokens()
+                .roles()
+                .values()
+                .any(|role| !role.multiplicity().collection_mode().is_unordered())
+    })
 }
 
 fn model_documentation(model: &ModelProjection) -> Option<String> {

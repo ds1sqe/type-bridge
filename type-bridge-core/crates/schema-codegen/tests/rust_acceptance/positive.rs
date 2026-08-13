@@ -1,7 +1,7 @@
 use generated::*;
 use type_bridge::__codegen::{
-    CanonicalDouble, Date, DateTime, DateTimeTz, Decimal, Duration, HydratedPlayer,
-    HydratedRow, IntoEncodedScalar, materialize_model_for_test,
+    CanonicalDouble, Date, DateTime, DateTimeTz, Decimal, Duration, HydratedPlayer, HydratedRow,
+    IntoEncodedScalar, materialize_model_for_test,
 };
 
 #[derive(type_bridge::SelectedRow)]
@@ -69,7 +69,9 @@ async fn generated_manager_mutation_parity_compiles(
     let _ = people
         .update_many(vec![(person_iid.clone(), person_input)])
         .await?;
-    people.delete_many(std::slice::from_ref(&person_iid)).await?;
+    people
+        .delete_many(std::slice::from_ref(&person_iid))
+        .await?;
 
     let mut employments = database.relations::<Employment>();
     employments.add_hook(std::sync::Arc::new(GeneratedLifecycleHook));
@@ -118,6 +120,20 @@ fn bounded_reachability_compiles(
         2,
     )?;
     let _ = session.query((source, target))?.where_(reachable)?;
+    Ok(())
+}
+
+fn projected_function_call_compiles(
+    session: &type_bridge::QuerySession<'_, AppSchema>,
+    person: type_bridge::Binding<AppSchema, Person>,
+    minimum_value: &Score,
+) -> type_bridge::Result<()> {
+    let minimum: IntegerInput = integer_input(session, minimum_value)?;
+    let score: IntegerCall = qualifying_score(session, person, &minimum)?;
+    let predicate = score.ge_field(person.field(PersonType::score));
+    let _ = session.query(person)?.where_(predicate)?;
+    let nested = qualifying_score(session, person, &score)?;
+    let _ = score.ge_call(&nested)?;
     Ok(())
 }
 
@@ -171,11 +187,7 @@ impl type_bridge::RemoteQueryTransport for RemoteTransport {
     fn capabilities(
         &self,
     ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<Output = type_bridge::Result<Vec<u8>>>
-                + Send
-                + '_
-        >
+        Box<dyn std::future::Future<Output = type_bridge::Result<Vec<u8>>> + Send + '_>,
     > {
         Box::pin(async {
             Err(type_bridge::Error::Other {
@@ -189,11 +201,7 @@ impl type_bridge::RemoteQueryTransport for RemoteTransport {
         &'a self,
         _request: &'a [u8],
     ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<Output = type_bridge::Result<Vec<u8>>>
-                + Send
-                + 'a
-        >
+        Box<dyn std::future::Future<Output = type_bridge::Result<Vec<u8>>> + Send + 'a>,
     > {
         Box::pin(async {
             Err(type_bridge::Error::Other {
@@ -218,8 +226,7 @@ async fn remote_generated_outputs_compile() -> type_bridge::Result<()> {
     let event = session.exact::<Event>()?;
     let tuple = session.query((person, event))?;
     let tuple = tuple.allow_cross_join(person, event)?;
-    let _rows: Vec<(Person, Event)> =
-        tuple.rows(type_bridge::RowsOptions::new(10)).await?;
+    let _rows: Vec<(Person, Event)> = tuple.rows(type_bridge::RowsOptions::new(10)).await?;
     let graph = PersonGraph::select(person, event.collect())?;
     let page: type_bridge::Page<PersonGraph> = session
         .query(graph)?
@@ -287,24 +294,47 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Person::TYPE_ID_JSON,
         "person-iid-1".to_owned(),
         vec![
-            (PersonType::identifier.owns_id_json(), vec![id_scalar.clone()]),
+            (
+                PersonType::identifier.owns_id_json(),
+                vec![id_scalar.clone()],
+            ),
             (PersonType::score.owns_id_json(), vec![score_scalar]),
             (PersonType::val_double.owns_id_json(), vec![double_scalar]),
             (PersonType::val_decimal.owns_id_json(), vec![decimal_scalar]),
             (PersonType::val_bool.owns_id_json(), vec![bool_scalar]),
             (PersonType::val_date.owns_id_json(), vec![date_scalar]),
-            (PersonType::val_datetime.owns_id_json(), vec![datetime_scalar]),
-            (PersonType::val_datetime_tz.owns_id_json(), vec![datetimetz_scalar]),
-            (PersonType::val_duration.owns_id_json(), vec![duration_scalar]),
-            (PersonType::val_constrained.owns_id_json(), vec![constrained_scalar]),
+            (
+                PersonType::val_datetime.owns_id_json(),
+                vec![datetime_scalar],
+            ),
+            (
+                PersonType::val_datetime_tz.owns_id_json(),
+                vec![datetimetz_scalar],
+            ),
+            (
+                PersonType::val_duration.owns_id_json(),
+                vec![duration_scalar],
+            ),
+            (
+                PersonType::val_constrained.owns_id_json(),
+                vec![constrained_scalar],
+            ),
         ],
         vec![],
     );
     let person: Person = materialize_model_for_test(&person_row)?;
     assert_eq!(person.iid(), "person-iid-1");
+    let person_debug = format!("{person:?}");
+    assert!(person_debug.starts_with("Person { iid:"));
+    assert!(!person_debug.contains("__tb_origin"));
+    assert!(!person_debug.contains("ReferenceOrigin"));
 
     let person_ref = person.reference();
     assert_eq!(person_ref.iid(), Some("person-iid-1"));
+    let person_ref_debug = format!("{person_ref:?}");
+    assert!(person_ref_debug.starts_with("PersonRef { iid:"));
+    assert!(!person_ref_debug.contains("__tb_origin"));
+    assert!(!person_ref_debug.contains("ReferenceOrigin"));
 
     let key_ref = PersonRef::from_key(identifier)?;
     assert_eq!(key_ref.iid(), None);
@@ -320,7 +350,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Event::TYPE_ID_JSON,
         "event-iid-1".to_owned(),
         vec![],
-        vec![(EventType::subject.role_id_json(), vec![person_player_evidence.clone()])],
+        vec![(
+            EventType::subject.role_id_json(),
+            vec![person_player_evidence.clone()],
+        )],
     );
     let event: Event = materialize_model_for_test(&event_row)?;
     assert_eq!(event.iid(), "event-iid-1");
@@ -330,15 +363,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(container.item().len(), 1);
 
     let employment = EmploymentCreate::new(person_ref)?;
-    assert_eq!(employment.employee().identifier().unwrap().value(), "person-1");
+    assert_eq!(
+        employment.employee().identifier().unwrap().value(),
+        "person-1"
+    );
 
     let plain_activity = PlainActivityCreate::new(person.reference())?;
     assert_eq!(
-        plain_activity
-            .participant()
-            .identifier()
-            .unwrap()
-            .value(),
+        plain_activity.participant().identifier().unwrap().value(),
         "person-1"
     );
 
@@ -349,7 +381,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Employment::TYPE_ID_JSON,
         "emp-iid-1".to_owned(),
         vec![],
-        vec![(EmploymentType::employee.role_id_json(), vec![person_player_evidence])],
+        vec![(
+            EmploymentType::employee.role_id_json(),
+            vec![person_player_evidence],
+        )],
     );
     let emp_read: Employment = materialize_model_for_test(&emp_row)?;
     let family = MembershipFamily::Employment(emp_read);
@@ -365,6 +400,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(*stats.wins(), 3);
     assert_eq!(PLAYING_FACTS.len(), 12);
     assert!(RUNTIME_PROJECTION_JSON.contains("validated-create-input"));
-    assert!(MODEL_LINK_COMPONENTS.iter().any(|component| component.len() > 1));
+    assert!(
+        MODEL_LINK_COMPONENTS
+            .iter()
+            .any(|component| component.len() > 1)
+    );
     Ok(())
 }

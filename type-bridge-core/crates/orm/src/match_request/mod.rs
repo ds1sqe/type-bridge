@@ -14,6 +14,7 @@ pub mod limits;
 pub(crate) mod lowering;
 pub mod model;
 pub mod recording;
+pub(crate) mod reducer;
 pub mod result;
 pub(crate) mod result_validation;
 pub(crate) mod selected_result_executor;
@@ -28,8 +29,9 @@ pub use error::{
     MatchErrorPathSegment,
 };
 pub use handles::{
-    BindingHandle, FieldHandle, OrderHandle, PredicateHandle, QueryHandle, RoleHandle,
-    SelectionHandle, SessionHandle, ShapeHandle,
+    BindingHandle, FieldHandle, FunctionArgumentHandle, FunctionCallHandle, FunctionHandle,
+    FunctionValueHandle, OrderHandle, PredicateHandle, QueryHandle, RoleHandle, SelectionHandle,
+    SessionHandle, ShapeHandle,
 };
 pub use ids::{
     BindingId, BoundFieldId, DescriptorId, FieldId, RequestToken, ResultShapeId, RoleEdgeId,
@@ -42,5 +44,6 @@ pub use result::*;
 pub use selected_result_executor::MatchExecutionLimits;
 pub use validation::{
     StableOrderOrigin, StableOrderSpec, StableOrderTerm, ValidatedMatchRequest,
-    validate_match_request, validate_public_order_term_count,
+    validate_match_request, validate_public_function_argument_count,
+    validate_public_order_term_count,
 };

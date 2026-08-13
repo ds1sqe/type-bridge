@@ -1009,12 +1009,6 @@ pub(crate) fn relation_insert_resolved_clauses(
                 descriptor.type_name, role.role_name
             )));
         }
-        if role.ordered && count > 1 {
-            return Err(OrmError::QueryExecution(format!(
-                "{}: ordered relation role {} cannot contain multiple players",
-                descriptor.type_name, role.role_name
-            )));
-        }
     }
     let mut seen = std::collections::HashSet::new();
     for (_, iid, role) in resolved {

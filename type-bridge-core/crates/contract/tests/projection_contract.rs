@@ -1,9 +1,9 @@
 use type_bridge_contract::codec::to_canonical_json;
 use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::projection::{
-    BindingProjectionFingerprint, BindingTarget, CodeResourceDigest, ProjectedAnnotation,
-    ProjectionConfig, ProjectionHandler, ProjectionHandlerVersion, RustCreatePolicy,
-    canonical_binding_projection_bytes,
+    BindingProjectionFingerprint, BindingTarget, CNamingPolicy, CSymbolPrefix, CodeResourceDigest,
+    ProjectedAnnotation, ProjectionConfig, ProjectionHandler, ProjectionHandlerVersion,
+    RustCreatePolicy, TargetIdentifier, canonical_binding_projection_bytes,
 };
 use type_bridge_contract::schema::{
     AnnotationFactId, AnnotationKindId, AnnotationSubjectId, SchemaAnnotationValue,
@@ -13,6 +13,22 @@ use type_bridge_contract::schema_fingerprint::SemanticSchemaFingerprint;
 fn semantic(bytes: &[u8]) -> SemanticSchemaFingerprint {
     SemanticSchemaFingerprint::compute(SemanticProfileId::new("typedb-3.12.1/v1").unwrap(), bytes)
         .unwrap()
+}
+
+#[test]
+fn binding_targets_expose_stable_wire_spellings_without_exhaustive_matching() {
+    for (target, spelling) in [
+        (BindingTarget::Python, "python"),
+        (BindingTarget::TypeScript, "typescript"),
+        (BindingTarget::Rust, "rust"),
+        (BindingTarget::C, "c"),
+    ] {
+        assert_eq!(target.as_str(), spelling);
+        assert_eq!(
+            to_canonical_json(&target).unwrap(),
+            format!("\"{spelling}\"").as_bytes()
+        );
+    }
 }
 
 #[test]
@@ -304,8 +320,6 @@ fn typescript_projection_has_versioned_config_handler_and_identifiers() {
 
 #[test]
 fn rust_projection_has_versioned_config_create_policy_handler_and_identifiers() {
-    use type_bridge_contract::projection::TargetIdentifier;
-
     let target = BindingTarget::Rust;
     let config = ProjectionConfig::rust();
     assert_eq!(to_canonical_json(&target).unwrap(), br#""rust""#);
@@ -342,6 +356,100 @@ fn rust_projection_has_versioned_config_create_policy_handler_and_identifiers() 
         assert_eq!(
             TargetIdentifier::rust(value).unwrap_err().code().as_str(),
             "invalid_rust_projection_identifier",
+        );
+    }
+}
+
+#[test]
+fn c_projection_has_versioned_config_prefix_handler_and_identifiers() {
+    let prefix = CSymbolPrefix::new("acme_hr").unwrap();
+    let target = BindingTarget::C;
+    let config = ProjectionConfig::c(prefix.clone());
+
+    assert_eq!(to_canonical_json(&target).unwrap(), br#""c""#);
+    assert_eq!(
+        to_canonical_json(&config).unwrap(),
+        br#"{"binding":"c","naming_policy":"typebridge.c/v1","symbol_prefix":"acme_hr"}"#,
+    );
+    assert_eq!(config.c_naming_policy(), Some(CNamingPolicy::TypeBridgeV1));
+    assert_eq!(config.c_symbol_prefix(), Some(&prefix));
+    assert_eq!(config.target(), BindingTarget::C);
+
+    let handler_v1 = ProjectionHandler::c_v1();
+    let handler_v2 = ProjectionHandler::c_v2();
+    assert_eq!(handler_v1.id().as_str(), "typebridge.generator.c");
+    assert_eq!(handler_v1.version().get(), 1);
+    assert_eq!(handler_v2.id().as_str(), "typebridge.generator.c");
+    assert_eq!(handler_v2.version().get(), 2);
+    let v1 = BindingProjectionFingerprint::compute(
+        target,
+        &semantic(b"c-schema"),
+        &config,
+        &[handler_v1],
+        &[],
+    )
+    .expect("C v1 handler satisfies target evidence");
+    let v2 = BindingProjectionFingerprint::compute(
+        target,
+        &semantic(b"c-schema"),
+        &config,
+        &[handler_v2],
+        &[],
+    )
+    .expect("C v2 handler satisfies target evidence");
+    assert_ne!(v1, v2, "C handler behavior changes must rebrand packages");
+
+    assert_eq!(
+        TargetIdentifier::c("person_create").unwrap().as_str(),
+        "person_create"
+    );
+    for value in [
+        "",
+        "_reserved",
+        "acme__reserved",
+        "int",
+        "has-hyphen",
+        "9starts_with_digit",
+        "café",
+    ] {
+        assert_eq!(
+            TargetIdentifier::c(value).unwrap_err().code().as_str(),
+            "invalid_c_projection_identifier",
+        );
+    }
+}
+
+#[test]
+fn c_symbol_prefix_is_bounded_and_rejects_reserved_identifier_forms() {
+    let longest = "a".repeat(63);
+    assert_eq!(
+        CSymbolPrefix::new(longest.clone()).unwrap().as_str(),
+        longest
+    );
+    assert_eq!(
+        CSymbolPrefix::new("tb_projected_value").unwrap().as_str(),
+        "tb_projected_value",
+    );
+    for value in [
+        String::new(),
+        "_reserved".to_owned(),
+        "__reserved".to_owned(),
+        "acme__reserved".to_owned(),
+        "acme_".to_owned(),
+        "SchemaV1".to_owned(),
+        "con".to_owned(),
+        "lpt9".to_owned(),
+        "int".to_owned(),
+        "has-hyphen".to_owned(),
+        "9starts_with_digit".to_owned(),
+        "café".to_owned(),
+        "type_bridge".to_owned(),
+        "type_bridge_projected_value".to_owned(),
+        "a".repeat(64),
+    ] {
+        assert_eq!(
+            CSymbolPrefix::new(value).unwrap_err().code().as_str(),
+            "invalid_c_symbol_prefix",
         );
     }
 }

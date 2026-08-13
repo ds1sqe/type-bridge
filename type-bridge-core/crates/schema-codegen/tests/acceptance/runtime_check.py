@@ -1,10 +1,12 @@
 import asyncio
 import hashlib
 import json
+import os
 import struct
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
 
 import generated_v2._query as generated_query_module
 from generated_v2 import (
@@ -27,6 +29,8 @@ from generated_v2 import (
     Party,
     Person,
     PersonRef,
+    QueryCancellation,
+    QueryExecutionResourceLimits,
     RemoteQueryLimits,
     RemoteQuerySession,
     Robot,
@@ -42,9 +46,11 @@ from generated_v2 import (
     ValDouble,
     ValDuration,
     aggregate,
+    integer_input,
+    qualifying_score,
 )
 from generated_variant import Person as VariantPerson
-from type_bridge_core import QueryV2Error
+from type_bridge_core import MatchRequestError
 
 from type_bridge.query import QueryBuilder
 from type_bridge.session import Database
@@ -271,6 +277,37 @@ actor_reachable = query_session.reachable(
 )
 assert query_session.query(actor_var).match(other_actor_var).where(actor_reachable) is not None
 assert query_session.query(person_var, employment_var.collect()).where(employee).page_by is not None
+
+lifecycle_session = Person.query(Database(address="localhost:1729", database="lifecycle-only"))
+lifecycle_person = lifecycle_session.exact(Person)
+lifecycle_predicate = lifecycle_person.field(Person.score).gte(Score(1))
+lifecycle_source = lifecycle_session.query(lifecycle_person)
+lifecycle_clone = lifecycle_source.clone()
+lifecycle_derived = lifecycle_source.where(lifecycle_predicate)
+lifecycle_source.close()
+lifecycle_source.close()
+assert lifecycle_source.is_closed
+assert not lifecycle_clone.is_closed
+assert not lifecycle_derived.is_closed
+try:
+    lifecycle_source.where(lifecycle_predicate)
+except MatchRequestError as error:
+    assert error.code == "query_resource_closed"
+else:
+    raise AssertionError("closed Python query remained composable")
+assert lifecycle_clone.clone() is not None
+lifecycle_derived.close()
+assert not lifecycle_clone.is_closed
+lifecycle_session.close()
+lifecycle_session.close()
+assert lifecycle_session.is_closed
+assert lifecycle_clone.is_closed
+try:
+    lifecycle_clone.where(lifecycle_predicate)
+except MatchRequestError as error:
+    assert error.code == "query_resource_closed"
+else:
+    raise AssertionError("query remained composable after its session closed")
 for immutable in (query_session, person_var, employee, query, named):
     try:
         immutable.projection = object()
@@ -430,6 +467,7 @@ def _canonical(payload: dict[str, object]) -> bytes:
 _REMOTE_CAPABILITIES = [
     "query.execution.batch-identity-rebind",
     "query.execution.same-snapshot-hydration",
+    "query.input.given-rows",
     "query.operation.distinct-count",
     "query.operation.distinct-exists",
     "query.operation.exactly-one",
@@ -495,19 +533,20 @@ def _remote_signed_reply(payload: dict[str, object], advertisement: bytes) -> by
 
 generated_advertisement = _remote_advertisement()
 generated_remote_exchanges = 0
+generated_failure_reply: bytes | None = None
 
 
 async def generated_failure_exchange(request: bytes) -> bytes:
-    global generated_remote_exchanges
+    global generated_failure_reply, generated_remote_exchanges
     generated_remote_exchanges += 1
     decoded = json.loads(request)
     assert _canonical(decoded) == request
-    return _remote_signed_reply(
+    generated_failure_reply = _remote_signed_reply(
         {
-            "category": "invalid_contract",
+            "category": "integrity",
             "code": "remote_application_failure",
             "details": {
-                "attempt": {"kind": "long", "value": "7"},
+                "attempt": {"kind": "long", "value": "-7"},
                 "expected": {"kind": "text_list", "value": ["person", "employee"]},
                 "retryable": {"kind": "boolean", "value": False},
                 "subject": {"kind": "text", "value": "person"},
@@ -517,7 +556,7 @@ async def generated_failure_exchange(request: bytes) -> bytes:
             "nonce": decoded["nonce"],
             "path": [
                 {"kind": "field", "value": "plan"},
-                {"kind": "index", "value": 0},
+                {"kind": "index", "value": 2},
                 {"kind": "identifier", "value": "person"},
             ],
             "request": _remote_fingerprint(
@@ -528,6 +567,7 @@ async def generated_failure_exchange(request: bytes) -> bytes:
         },
         generated_advertisement,
     )
+    return generated_failure_reply
 
 
 generated_remote_session = RemoteQuerySession(
@@ -543,26 +583,352 @@ generated_remote_session = RemoteQuerySession(
     ),
 )
 generated_remote_person = generated_remote_session.exact(Person)
+captured_failure_pending: list[object] = []
+original_prepare_remote_rows = getattr(
+    generated_query_module,
+    "query_v2_prepare_remote_model_rows",
+)
+
+
+def capture_failure_pending(*args: object, **kwargs: object) -> object:
+    pending = original_prepare_remote_rows(*args, **kwargs)
+    captured_failure_pending.append(pending)
+    return pending
+
+
+setattr(
+    generated_query_module,
+    "query_v2_prepare_remote_model_rows",
+    capture_failure_pending,
+)
+remote_diagnostic_observation: dict[str, object]
 try:
     asyncio.run(generated_remote_session.query(generated_remote_person).one())
-except QueryV2Error as error:
-    assert error.category == "invalid_contract"
+except MatchRequestError as error:
+    assert error.category == "result_decode"
+    assert error.sdk_category == "integrity"
+    assert error.query_category == "result_decode"
     assert error.code == "remote_application_failure"
-    assert error.message == "the remote application rejected this query"
+    assert error.message == "Typed query evidence does not match the validated request invocation"
     assert error.path == [
-        {"kind": "field", "value": "plan"},
-        {"kind": "index", "value": 0},
-        {"kind": "identifier", "value": "person"},
+        {"kind": "contract_field", "value": "plan"},
+        {"kind": "index", "value": 2},
+        {"kind": "contract_identity", "value": "person"},
     ]
     assert error.details == {
-        "attempt": {"kind": "long", "value": "7"},
-        "expected": {"kind": "text_list", "value": ["person", "employee"]},
+        "attempt": {"kind": "signed", "value": -7},
+        "expected": {"kind": "query_identity_list", "value": ["person", "employee"]},
         "retryable": {"kind": "boolean", "value": False},
-        "subject": {"kind": "text", "value": "person"},
+        "subject": {"kind": "query_identity", "value": "person"},
+    }
+    attempt_detail = error.details["attempt"]
+    assert isinstance(attempt_detail, dict)
+    attempt_value = attempt_detail["value"]
+    assert isinstance(attempt_value, int)
+    diagnostic_serialized = json.dumps(
+        {"message": error.message, "path": error.path, "details": error.details},
+        sort_keys=True,
+    )
+    remote_diagnostic_observation = {
+        "category": error.sdk_category,
+        "query_category": error.query_category,
+        "code": error.code,
+        "message": error.message,
+        "path": error.path,
+        "details": {
+            "attempt": {"kind": "signed", "value": str(attempt_value)},
+            "expected": error.details["expected"],
+            "retryable": error.details["retryable"],
+            "subject": error.details["subject"],
+        },
+        "redacted": all(
+            secret not in diagnostic_serialized
+            for secret in (
+                "the remote application rejected this query",
+                "localhost",
+                "password",
+            )
+        ),
     }
 else:
     raise AssertionError("generated remote query accepted an authenticated application failure")
+finally:
+    setattr(
+        generated_query_module,
+        "query_v2_prepare_remote_model_rows",
+        original_prepare_remote_rows,
+    )
 assert generated_remote_exchanges == 1
+assert len(captured_failure_pending) == 1
+assert generated_failure_reply is not None
+try:
+    getattr(captured_failure_pending[0], "decode_reply")(generated_failure_reply)
+except MatchRequestError as error:
+    assert error.code == "query_remote_v2_reply_replayed", error.code
+else:
+    raise AssertionError("authenticated remote application failure did not consume its claim")
+remote_diagnostic_observation["claim_consumed"] = True
+
+
+async def _cancelled_before_remote_exchange() -> tuple[int, str, str]:
+    cancellation = QueryCancellation()
+    cancellation.cancel()
+    exchanges = 0
+
+    async def unexpected_exchange(_request: bytes) -> bytes:
+        nonlocal exchanges
+        exchanges += 1
+        raise AssertionError("pre-cancelled remote query reached caller transport")
+
+    session = RemoteQuerySession(
+        generated_advertisement,
+        unexpected_exchange,
+        QueryExecutionResourceLimits(),
+        cancellation=cancellation,
+    )
+    person = session.exact(Person)
+    try:
+        await session.query(person).one()
+    except MatchRequestError as error:
+        session.close()
+        return exchanges, error.sdk_category, error.code
+    raise AssertionError("pre-cancelled Python remote query returned a result")
+
+
+async def _cancelled_after_remote_exchange() -> tuple[int, bool, str, str]:
+    cancellation = QueryCancellation()
+    exchanges = 0
+    exchange_cancelled_after_send = False
+
+    async def completed_exchange(request: bytes) -> bytes:
+        nonlocal exchanges
+        exchanges += 1
+        decoded = json.loads(request)
+        reply = _remote_signed_reply(
+            {
+                "category": "integrity",
+                "code": "remote_application_failure",
+                "details": {},
+                "format": "typebridge.query-remote-failure/v2",
+                "message": "provider text must be redacted",
+                "nonce": decoded["nonce"],
+                "path": [],
+                "request": _remote_fingerprint(
+                    b"typebridge.query.remote-request",
+                    b"typebridge.query-remote-request/v2",
+                    request,
+                ),
+            },
+            generated_advertisement,
+        )
+        asyncio.get_running_loop().call_soon(cancellation.cancel)
+        return reply
+
+    session = RemoteQuerySession(
+        generated_advertisement,
+        completed_exchange,
+        QueryExecutionResourceLimits(),
+        cancellation=cancellation,
+    )
+    person = session.exact(Person)
+    try:
+        await session.query(person).one()
+    except MatchRequestError as error:
+        session.close()
+        return exchanges, exchange_cancelled_after_send, error.sdk_category, error.code
+    raise AssertionError("cancelled Python remote decode returned a result")
+
+
+async def _cancelled_remote_transport() -> tuple[bool, str, str]:
+    cancellation = QueryCancellation()
+    exchange_started = asyncio.Event()
+    exchange_cancelled = False
+
+    async def blocked_exchange(_request: bytes) -> bytes:
+        nonlocal exchange_cancelled
+        exchange_started.set()
+        try:
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            exchange_cancelled = True
+            raise
+
+    session = RemoteQuerySession(
+        generated_advertisement,
+        blocked_exchange,
+        QueryExecutionResourceLimits(),
+        cancellation=cancellation,
+    )
+    person = session.exact(Person)
+    execution = asyncio.create_task(session.query(person).one())
+    await exchange_started.wait()
+    cancellation.cancel()
+    try:
+        await execution
+    except MatchRequestError as error:
+        return exchange_cancelled, error.category, error.code
+    raise AssertionError("cancelled Python remote transport returned a result")
+
+
+transport_cancelled, cancellation_category, cancellation_code = asyncio.run(
+    _cancelled_remote_transport()
+)
+assert transport_cancelled
+assert cancellation_category == "cancelled"
+assert cancellation_code == "provider_cancelled"
+before_exchange_count, before_exchange_category, before_exchange_code = asyncio.run(
+    _cancelled_before_remote_exchange()
+)
+assert before_exchange_count == 0
+assert before_exchange_category == "cancelled"
+assert before_exchange_code == "provider_cancelled"
+(
+    after_exchange_count,
+    exchange_cancelled_after_send,
+    after_exchange_category,
+    after_exchange_code,
+) = asyncio.run(_cancelled_after_remote_exchange())
+assert after_exchange_count == 1
+assert not exchange_cancelled_after_send
+assert after_exchange_category == "cancelled"
+assert after_exchange_code == "provider_cancelled"
+remote_cancellation_observation = {
+    "before_exchange": {
+        "category": before_exchange_category,
+        "code": before_exchange_code,
+        "exchange_count": before_exchange_count,
+        "partial_result": False,
+    },
+    "during_decode": {
+        "category": after_exchange_category,
+        "code": after_exchange_code,
+        "exchange_count": after_exchange_count,
+        "partial_result": False,
+    },
+    "caller_transport_abort_supported": transport_cancelled,
+    "server_exchange_cancelled_after_send": exchange_cancelled_after_send,
+}
+
+
+def _proof_source_identity(root: Path, relative: str) -> dict[str, str]:
+    source = root / relative
+    if source.is_symlink() or not source.is_file():
+        raise AssertionError(f"workforce-v2 proof source is not a regular file: {relative}")
+    with source.open("rb") as source_file:
+        digest = hashlib.sha256(source_file.read()).hexdigest()
+    return {"path": relative, "sha256": digest}
+
+
+def _emit_workforce_v2_remote_proof_fragment() -> None:
+    raw_destination = os.environ.get("TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENT")
+    if raw_destination is None:
+        return
+    run_nonce = os.environ.get("TYPE_BRIDGE_WORKFORCE_V2_PROOF_RUN_NONCE")
+    if (
+        run_nonce is None
+        or len(run_nonce) != 64
+        or any(character not in "0123456789abcdef" for character in run_nonce)
+    ):
+        raise AssertionError("workforce-v2 proof run nonce must be 64 lowercase hex characters")
+    destination = Path(raw_destination)
+    if not destination.is_absolute():
+        raise AssertionError("workforce-v2 proof fragment path must be absolute")
+    if destination.parent.is_symlink() or not destination.parent.is_dir():
+        raise AssertionError("workforce-v2 proof fragment parent must be a regular directory")
+    root = Path.cwd()
+    if not (root / "type-bridge-core").is_dir():
+        raise AssertionError("workforce-v2 proof fragment emitter requires the repository root")
+    contract_paths = {
+        "proof_schema": (
+            "tests/contracts/sdk_conformance/workforce-v2/proof-fragment-schema-v1.json"
+        ),
+        "allowlist": (
+            "tests/contracts/sdk_conformance/workforce-v2/proof-fragment-allowlist-v1.json"
+        ),
+        "journey": "tests/contracts/sdk_conformance/workforce-v2/journey-v2.json",
+    }
+    producer_paths = sorted(
+        (
+            "type-bridge-core/crates/python/src/match_runtime.rs",
+            "type-bridge-core/crates/python/src/query_v2_model_remote_runtime.rs",
+            "type-bridge-core/crates/schema-codegen/src/python/query.py",
+            "type-bridge-core/crates/schema-codegen/tests/acceptance/runtime_check.py",
+        )
+    )
+    fragment = {
+        "format": "typebridge.workforce-v2-proof-fragment/v1",
+        "binding": "python",
+        "semantic_profile": "typedb-3.12.1/v1",
+        "run_nonce": run_nonce,
+        "contract": {
+            name: _proof_source_identity(root, relative)
+            for name, relative in contract_paths.items()
+        },
+        "producer": {
+            "id": "python.generated_remote_acceptance",
+            "sources": [_proof_source_identity(root, relative) for relative in producer_paths],
+        },
+        "results": [
+            {
+                "observation_ref": "cancellation_remote",
+                "proof_kind": "remote_runtime",
+                "test_id": "python.generated_remote_cancellation",
+                "outcome": "passed",
+                "observation": remote_cancellation_observation,
+            },
+            {
+                "observation_ref": "remote_structured_diagnostic",
+                "proof_kind": "diagnostic",
+                "test_id": "python.generated_remote_structured_diagnostic",
+                "outcome": "passed",
+                "observation": remote_diagnostic_observation,
+            },
+        ],
+    }
+    payload = (
+        json.dumps(fragment, ensure_ascii=False, separators=(",", ":"), sort_keys=True) + "\n"
+    ).encode()
+    if len(payload) > 64 * 1024:
+        raise AssertionError("workforce-v2 proof fragment exceeds 64 KiB")
+    with destination.open("xb") as output:
+        output.write(payload)
+        output.flush()
+        os.fsync(output.fileno())
+
+
+_emit_workforce_v2_remote_proof_fragment()
+
+remote_lifecycle = generated_remote_session.query(generated_remote_person)
+remote_lifecycle_clone = remote_lifecycle.clone()
+remote_lifecycle_derived = remote_lifecycle.where(
+    generated_remote_person.field(Person.score).gte(Score(1))
+)
+remote_lifecycle.close()
+remote_lifecycle.close()
+assert remote_lifecycle.is_closed
+assert not remote_lifecycle_clone.is_closed
+assert not remote_lifecycle_derived.is_closed
+remote_lifecycle_exchange_count = generated_remote_exchanges
+try:
+    asyncio.run(remote_lifecycle.one())
+except MatchRequestError as error:
+    assert error.code == "query_resource_closed"
+else:
+    raise AssertionError("closed Python remote query reached its terminal")
+assert generated_remote_exchanges == remote_lifecycle_exchange_count
+remote_lifecycle_derived.close()
+assert not remote_lifecycle_clone.is_closed
+generated_remote_session.close()
+generated_remote_session.close()
+assert generated_remote_session.is_closed
+assert remote_lifecycle_clone.is_closed
+try:
+    asyncio.run(remote_lifecycle_clone.one())
+except MatchRequestError as error:
+    assert error.code == "query_resource_closed"
+else:
+    raise AssertionError("Python remote query remained usable after session close")
+assert generated_remote_exchanges == remote_lifecycle_exchange_count
 
 
 class FakeRow:
@@ -663,6 +1029,10 @@ try:
         ),
     )
     remote_person = remote_session.exact(Person)
+    remote_minimum = integer_input(remote_session, Score(18))
+    remote_call = qualifying_score(remote_session, remote_person, remote_minimum)
+    remote_nested_call = qualifying_score(remote_session, remote_person, remote_call)
+    assert remote_call.gte_call(remote_nested_call) is not None
     remote_query = remote_session.query(remote_person)
     assert asyncio.run(remote_query.one()) is person
     assert asyncio.run(remote_query.first()) is person

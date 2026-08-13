@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Local source-tree CI checks. Release-artifact acceptance is workflow-only:
 # this script neither builds/installs Python wheels nor claims publication parity.
-# Run from repo root: ./scripts/check.sh [rust|python|node|all]
+# Run from repo root: ./scripts/check.sh [rust|python|node|c|all]
 set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
@@ -130,6 +130,40 @@ run_node() {
     popd >/dev/null
 }
 
+# ── C foundation checks (matching ci.yml rust-check C steps) ──────────────
+run_c() {
+    printf "${BOLD}━━━ C foundation (internal) ━━━${RESET}\n\n"
+
+    run_step "generated C package and strict installed-compiler checks" \
+        cargo test --locked --manifest-path type-bridge-core/Cargo.toml \
+        -p type-bridge-schema-codegen --test c_emitter
+
+    run_step "C runtime, transaction, and cancellation ABI" \
+        cargo test --locked --manifest-path type-bridge-core/Cargo.toml \
+        -p type-bridge-c --lib --test execution_abi
+
+    run_step "C typed-query, diagnostic, function, and remote ABI" \
+        cargo test --locked --manifest-path type-bridge-core/Cargo.toml \
+        -p type-bridge-c \
+        --test query_abi \
+        --test query_diagnostic_abi \
+        --test query_function_abi \
+        --test query_remote_abi
+
+    run_step "build the C ABI shared library" \
+        cargo build --locked --manifest-path type-bridge-core/Cargo.toml \
+        -p type-bridge-c --lib
+
+    run_step "C foundation on MSRV 1.88" \
+        cargo +1.88.0 check --locked --manifest-path type-bridge-core/Cargo.toml \
+        -p type-bridge-c --all-targets
+
+    run_step "C schema-package ABI and standalone consumer" \
+        env TYPE_BRIDGE_C_REQUIRE_SHARED_CONSUMER=1 \
+        cargo test --locked --manifest-path type-bridge-core/Cargo.toml \
+        -p type-bridge-c --test schema_package_abi
+}
+
 run_generated_examples() {
     printf "${BOLD}━━━ Generated examples ━━━${RESET}\n\n"
     run_step "generated-only example workspace" \
@@ -142,9 +176,10 @@ case "$target" in
     rust)   run_rust   ;;
     python) run_python ;;
     node)   run_node   ;;
-    all)    run_rust; run_python; run_node; run_generated_examples ;;
+    c)      run_c      ;;
+    all)    run_rust; run_python; run_node; run_c; run_generated_examples ;;
     *)
-        echo "Usage: $0 [rust|python|node|all]"
+        echo "Usage: $0 [rust|python|node|c|all]"
         exit 1
         ;;
 esac

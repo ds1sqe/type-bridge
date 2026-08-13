@@ -12,7 +12,7 @@
 //! preserve its behavior. This fallback is decided only after V1 validation
 //! and registry recheck; decoded V2 input can never request it.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use type_bridge_contract::codec::to_canonical_json;
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
@@ -20,14 +20,18 @@ use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind};
 use type_bridge_contract::limits::{MAX_CANONICAL_BYTES, StructuralLimits};
 use type_bridge_contract::managed_scope::ManagedScopeId;
-use type_bridge_contract::migration_assertion::{AssertionBinding, BindingId, QueryVariable};
+use type_bridge_contract::migration_assertion::{
+    AssertionBinding, BindingId, QueryVariable, ValueComparator,
+};
 use type_bridge_contract::query_plan::{
     CompatibilityValueV2, HydrationBindingV2, HydrationDescriptorV2, HydrationFieldV2,
-    HydrationPlayerV2, HydrationProjectionV2, HydrationRoleV2, ModelQueryV2, QueryBindingPairV2,
-    QueryComparatorV2, QueryFieldV2, QueryMissingOrderV2, QueryModelOutputSlotV2,
-    QueryModelOutputV2, QueryNamedOutputSlotV2, QueryOperation, QueryOrderDirectionV2,
-    QueryOrderTermV2, QueryOutput, QueryPattern, QueryPatternV2, QueryPlanV2Compatibility,
-    QueryRowCardinalityV2, QueryStableOrderV2, QueryWindowV2, ReadStage,
+    HydrationPlayerV2, HydrationProjectionV2, HydrationRoleV2, InputColumn, InputColumnId,
+    InputRow, ModelQueryV2, QueryBindingPairV2, QueryComparatorV2, QueryFieldV2,
+    QueryMissingOrderV2, QueryModelOutputSlotV2, QueryModelOutputV2, QueryNamedOutputSlotV2,
+    QueryOperand, QueryOperation, QueryOrderDirectionV2, QueryOrderTermV2, QueryOutput,
+    QueryPattern, QueryPatternV2, QueryPlanV2Compatibility, QueryReductionGroupV2,
+    QueryReductionKindV2, QueryReductionTermV2, QueryRowCardinalityV2, QueryStableOrderV2,
+    QueryWindowV2, ReadStage,
 };
 use type_bridge_contract::schema::{DocumentId, ManagedSchemaState};
 use type_bridge_contract::temporal::{
@@ -51,8 +55,9 @@ use crate::_registry::DescriptorRegistry;
 use crate::_schema::{SchemaInfo, generator::generate_define_block};
 use crate::AttributeValue;
 use crate::match_request::{
-    BoundFieldId, Capability, ComparisonOp, FetchShape, FetchSlot, MatchExpr, MatchMode,
-    MatchOperation, MatchRequest, MatchRequestVersion, MissingOrder, RowCardinality, SortDirection,
+    BoundFieldId, Capability, ComparisonOp, FetchShape, FetchSlot, MatchExpr,
+    MatchFunctionArgument, MatchFunctionCall, MatchMode, MatchOperation, MatchRequest,
+    MatchRequestVersion, MatchScalarOperand, MissingOrder, RowCardinality, SortDirection,
     StableOrderSpec, ThingKind, ValidatedMatchRequest,
 };
 use crate::query_v2_builder::{QueryCompatibilityPlanInput, QueryPlanBuilder};
@@ -139,19 +144,23 @@ pub(crate) enum MatchRequestAdaptation {
     Adapted(AdaptedMatchRequest),
     /// Preserve released behavior through the already-validated direct V1 path.
     LegacyRequired(V1ResourceEnvelopeReason),
-    /// The V2 vocabulary has no spelling for this operation; the direct
-    /// typed lane is its only execution program.
-    NativeOnly,
 }
 
 /// The V2 program one V1 request adapts to.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct AdaptedMatchRequest {
+    inputs: Vec<InputRow>,
     operation: QueryOperation,
     validated: Box<ValidatedQuery>,
 }
 
 impl AdaptedMatchRequest {
+    /// Return the exact canonical invocation rows owned by this adaptation.
+    #[must_use]
+    pub(crate) fn inputs(&self) -> &[InputRow] {
+        &self.inputs
+    }
+
     /// Return the schema-validated adapted query.
     #[must_use]
     pub(crate) const fn validated(&self) -> &ValidatedQuery {
@@ -200,14 +209,6 @@ pub(crate) fn adapt_match_request(
             ));
         }
     }
-    if matches!(
-        request.operation,
-        MatchOperation::ReduceBy { .. }
-            | MatchOperation::ReduceByField { .. }
-            | MatchOperation::ReduceByFields { .. }
-    ) {
-        return Ok(MatchRequestAdaptation::NativeOnly);
-    }
     if request
         .plan
         .predicate
@@ -221,12 +222,24 @@ pub(crate) fn adapt_match_request(
 
     let schema = context.resolved_schema();
     let hydration = build_hydration(request, registry, schema)?;
+    let has_schema_function = request
+        .plan
+        .predicate
+        .as_ref()
+        .is_some_and(predicate_has_schema_function);
     let predicate = request
         .plan
         .predicate
         .as_ref()
-        .map(|expression| adapt_expression(expression, request, registry))
-        .transpose()?;
+        .map(|expression| {
+            if has_schema_function {
+                adapt_compatibility_expression(expression, request, registry)
+            } else {
+                adapt_expression(expression, request, registry).map(Some)
+            }
+        })
+        .transpose()?
+        .flatten();
     let cross_joins = request
         .plan
         .allowed_cross_joins
@@ -240,7 +253,7 @@ pub(crate) fn adapt_match_request(
         .collect::<Result<Vec<_>, Diagnostic>>()?;
     let (operation, model_query, output_columns) = adapt_operation(validated, registry, hydration)?;
 
-    let bindings = request
+    let mut bindings = request
         .plan
         .bindings
         .iter()
@@ -252,7 +265,7 @@ pub(crate) fn adapt_match_request(
             ))
         })
         .collect::<Result<Vec<_>, Diagnostic>>()?;
-    let patterns = request
+    let mut patterns = request
         .plan
         .bindings
         .iter()
@@ -264,6 +277,18 @@ pub(crate) fn adapt_match_request(
             })
         })
         .collect::<Result<Vec<_>, Diagnostic>>()?;
+    let mut native = NativeFunctionAdaptation::new(bindings.len());
+    if let Some(predicate) = &request.plan.predicate {
+        native.adapt_expression(predicate, request, registry)?;
+    }
+    bindings.append(&mut native.bindings);
+    patterns.append(&mut native.patterns);
+    let inputs = native.inputs;
+    let invocation_inputs = if inputs.is_empty() {
+        Vec::new()
+    } else {
+        vec![InputRow::new(native.values)]
+    };
     let mut selected = output_columns.clone();
     selected.sort_unstable();
     selected.dedup();
@@ -276,6 +301,7 @@ pub(crate) fn adapt_match_request(
     let validated = match QueryPlanBuilder::finalize_compatibility(
         QueryCompatibilityPlanInput::new(
             bindings,
+            inputs,
             pipeline,
             QueryOutput::Rows {
                 columns: output_columns,
@@ -295,6 +321,7 @@ pub(crate) fn adapt_match_request(
     };
     match to_canonical_json(validated.plan()) {
         Ok(_) => Ok(MatchRequestAdaptation::Adapted(AdaptedMatchRequest {
+            inputs: invocation_inputs,
             operation,
             validated: Box::new(validated),
         })),
@@ -329,7 +356,8 @@ const fn assert_released_capability_mapped(capability: Capability) {
         | Capability::CollectDistinct
         | Capability::StableCollectionOrder
         | Capability::BoundedReachability
-        | Capability::TypedReduction => {}
+        | Capability::TypedReduction
+        | Capability::SchemaFunctionCall => {}
     }
 }
 
@@ -632,17 +660,66 @@ fn adapt_operation(
                 vec![root],
             )
         }
-        MatchOperation::ReduceBy { .. }
-        | MatchOperation::ReduceByField { .. }
-        | MatchOperation::ReduceByFields { .. } => {
-            return Err(type_bridge_contract::diagnostic::Diagnostic::new(
-                type_bridge_contract::diagnostic::DiagnosticCategory::UnsupportedCapability,
-                type_bridge_contract::diagnostic::DiagnosticCode::new(
-                    "typed_reduction_unsupported",
-                )
-                .expect("static diagnostic code is valid"),
-                "the V2 compatibility lane does not carry typed reductions",
-            ));
+        MatchOperation::ReduceBy {
+            root,
+            group,
+            reducers,
+        } => {
+            let root_v2 = BindingId::new(root.get())?;
+            let group = group
+                .map(|binding| BindingId::new(binding.get()).map(QueryReductionGroupV2::binding))
+                .transpose()?;
+            (
+                QueryOperation::Rows,
+                ModelQueryV2::Reduction {
+                    hydration,
+                    root: root_v2,
+                    group,
+                    reducers: adapt_reducers(reducers, request, registry)?,
+                },
+                vec![root_v2],
+            )
+        }
+        MatchOperation::ReduceByField {
+            root,
+            group,
+            reducers,
+        } => {
+            let root = BindingId::new(root.get())?;
+            (
+                QueryOperation::Rows,
+                ModelQueryV2::Reduction {
+                    hydration,
+                    root,
+                    group: Some(QueryReductionGroupV2::field(adapt_field(
+                        group, request, registry,
+                    )?)),
+                    reducers: adapt_reducers(reducers, request, registry)?,
+                },
+                vec![root],
+            )
+        }
+        MatchOperation::ReduceByFields {
+            root,
+            groups,
+            reducers,
+        } => {
+            let root = BindingId::new(root.get())?;
+            (
+                QueryOperation::Rows,
+                ModelQueryV2::Reduction {
+                    hydration,
+                    root,
+                    group: Some(QueryReductionGroupV2::fields(
+                        groups
+                            .iter()
+                            .map(|group| adapt_field(group, request, registry))
+                            .collect::<Result<Vec<_>, _>>()?,
+                    )),
+                    reducers: adapt_reducers(reducers, request, registry)?,
+                },
+                vec![root],
+            )
         }
         MatchOperation::ExistsBy { root } => {
             let root = BindingId::new(root.get())?;
@@ -653,6 +730,34 @@ fn adapt_operation(
             )
         }
     })
+}
+
+fn adapt_reducers(
+    reducers: &[crate::match_request::ReduceTerm],
+    request: &MatchRequest,
+    registry: &DescriptorRegistry,
+) -> Result<Vec<QueryReductionTermV2>, Diagnostic> {
+    reducers
+        .iter()
+        .map(|term| {
+            let reduction = match term.reduction {
+                crate::match_request::Reduction::Count => QueryReductionKindV2::Count,
+                crate::match_request::Reduction::Sum => QueryReductionKindV2::Sum,
+                crate::match_request::Reduction::Min => QueryReductionKindV2::Min,
+                crate::match_request::Reduction::Max => QueryReductionKindV2::Max,
+                crate::match_request::Reduction::Mean => QueryReductionKindV2::Mean,
+                crate::match_request::Reduction::Median => QueryReductionKindV2::Median,
+                crate::match_request::Reduction::Std => QueryReductionKindV2::Std,
+            };
+            Ok(QueryReductionTermV2::new(
+                reduction,
+                term.input
+                    .as_ref()
+                    .map(|field| adapt_field(field, request, registry))
+                    .transpose()?,
+            ))
+        })
+        .collect()
 }
 
 fn adapt_output(
@@ -757,6 +862,12 @@ fn adapt_expression(
             comparator: adapt_comparator(*operator),
             right: adapt_field(right, request, registry)?,
         },
+        MatchExpr::ScalarComparison { .. } => {
+            return Err(integrity(
+                "query_v2_adapter_function_state",
+                "schema-function predicates require native Query V2 adaptation",
+            ));
+        }
         MatchExpr::FieldPresence { field, present } => QueryPatternV2::FieldPresence {
             field: adapt_field(field, request, registry)?,
             present: *present,
@@ -835,6 +946,250 @@ fn adapt_expression(
             pattern: Box::new(adapt_expression(expression, request, registry)?),
         },
     })
+}
+
+/// Native low-level V2 fragment for the schema-function-only portion of one
+/// released predicate. Compatibility predicates remain the sole authority for
+/// every other released expression.
+struct NativeFunctionAdaptation {
+    bindings: Vec<AssertionBinding>,
+    fields: BTreeMap<BoundFieldId, BindingId>,
+    inputs: Vec<InputColumn>,
+    patterns: Vec<QueryPattern>,
+    values: Vec<Option<CanonicalValue>>,
+    next_binding: usize,
+}
+
+impl NativeFunctionAdaptation {
+    fn new(next_binding: usize) -> Self {
+        Self {
+            bindings: Vec::new(),
+            fields: BTreeMap::new(),
+            inputs: Vec::new(),
+            patterns: Vec::new(),
+            values: Vec::new(),
+            next_binding,
+        }
+    }
+
+    fn adapt_expression(
+        &mut self,
+        expression: &MatchExpr,
+        request: &MatchRequest,
+        registry: &DescriptorRegistry,
+    ) -> Result<(), Diagnostic> {
+        match expression {
+            MatchExpr::ScalarComparison {
+                left,
+                operator,
+                right,
+            } => {
+                let left = self.adapt_scalar_operand(left, request, registry)?;
+                let right = self.adapt_scalar_operand(right, request, registry)?;
+                self.patterns.push(QueryPattern::Value {
+                    comparator: function_comparator(*operator)?,
+                    left,
+                    right,
+                });
+            }
+            MatchExpr::And { expressions } => {
+                for child in expressions {
+                    self.adapt_expression(child, request, registry)?;
+                }
+            }
+            MatchExpr::FieldValue { .. }
+            | MatchExpr::FieldComparison { .. }
+            | MatchExpr::FieldPresence { .. }
+            | MatchExpr::BindingIid { .. }
+            | MatchExpr::RoleEdge { .. }
+            | MatchExpr::Reachable { .. } => {}
+            MatchExpr::Or { .. } | MatchExpr::Not { .. } => {
+                if predicate_has_schema_function(expression) {
+                    return Err(integrity(
+                        "query_v2_adapter_function_scope",
+                        "schema-function predicates must remain in the root conjunction",
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn adapt_scalar_operand(
+        &mut self,
+        operand: &MatchScalarOperand,
+        request: &MatchRequest,
+        registry: &DescriptorRegistry,
+    ) -> Result<QueryOperand, Diagnostic> {
+        match operand {
+            MatchScalarOperand::Field { field } => {
+                let binding = if let Some(binding) = self.fields.get(field) {
+                    *binding
+                } else {
+                    let owner = BindingId::new(field.binding.get())?;
+                    let attribute = registered_attribute(registry, &field.field)?;
+                    let binding = self.allocate_binding()?;
+                    self.patterns.push(QueryPattern::Has {
+                        attribute: binding,
+                        attribute_id: AttributeId::new(attribute.attr_name.clone())?,
+                        owner,
+                    });
+                    self.fields.insert(field.clone(), binding);
+                    binding
+                };
+                Ok(QueryOperand::Binding { binding })
+            }
+            MatchScalarOperand::Value { value } => Ok(self.adapt_value(value.clone())?),
+            MatchScalarOperand::Function { call } => Ok(QueryOperand::Binding {
+                binding: self.adapt_call(call, request, registry)?,
+            }),
+        }
+    }
+
+    fn adapt_call(
+        &mut self,
+        call: &MatchFunctionCall,
+        request: &MatchRequest,
+        registry: &DescriptorRegistry,
+    ) -> Result<BindingId, Diagnostic> {
+        if registry.projected_function(&call.function).is_none() {
+            return Err(integrity(
+                "query_v2_adapter_function_authority",
+                "validated schema function is absent from the installed projection authority",
+            ));
+        }
+        let mut arguments = Vec::with_capacity(call.arguments.len());
+        for argument in &call.arguments {
+            arguments.push(match argument {
+                MatchFunctionArgument::Binding { binding } => {
+                    request
+                        .plan
+                        .bindings
+                        .get(usize::from(binding.get()))
+                        .ok_or_else(|| {
+                            integrity(
+                                "query_v2_adapter_unknown_binding",
+                                "validated function argument references no declared binding",
+                            )
+                        })?;
+                    QueryOperand::Binding {
+                        binding: BindingId::new(binding.get())?,
+                    }
+                }
+                MatchFunctionArgument::Value { value } => self.adapt_value(value.clone())?,
+                MatchFunctionArgument::Call { call } => QueryOperand::Binding {
+                    binding: self.adapt_call(call, request, registry)?,
+                },
+            });
+        }
+        let assigned = self.allocate_binding()?;
+        self.patterns.push(QueryPattern::FunctionCall {
+            arguments,
+            assigned,
+            function: call.function.clone(),
+        });
+        Ok(assigned)
+    }
+
+    fn adapt_value(&mut self, value: CanonicalValue) -> Result<QueryOperand, Diagnostic> {
+        let ordinal = u16::try_from(self.inputs.len()).map_err(|_| {
+            integrity(
+                "query_v2_adapter_function_input_limit",
+                "schema-function input ordinal exceeds the canonical range",
+            )
+        })?;
+        let column = InputColumnId::new(ordinal);
+        self.inputs.push(InputColumn::new(
+            column,
+            QueryVariable::new(format!("g{ordinal}"))?,
+            value.value_type(),
+            false,
+        ));
+        self.values.push(Some(value));
+        Ok(QueryOperand::Input { column })
+    }
+
+    fn allocate_binding(&mut self) -> Result<BindingId, Diagnostic> {
+        let ordinal = binding_ordinal(self.next_binding)?;
+        self.next_binding = self.next_binding.checked_add(1).ok_or_else(|| {
+            integrity(
+                "query_v2_adapter_function_binding_limit",
+                "schema-function binding ordinal overflowed",
+            )
+        })?;
+        self.bindings.push(AssertionBinding::new(
+            ordinal,
+            QueryVariable::new(format!("b{}", ordinal.get()))?,
+        ));
+        Ok(ordinal)
+    }
+}
+
+fn adapt_compatibility_expression(
+    expression: &MatchExpr,
+    request: &MatchRequest,
+    registry: &DescriptorRegistry,
+) -> Result<Option<QueryPatternV2>, Diagnostic> {
+    match expression {
+        MatchExpr::ScalarComparison { .. } => Ok(None),
+        MatchExpr::And { expressions } => {
+            let patterns = expressions
+                .iter()
+                .map(|child| adapt_compatibility_expression(child, request, registry))
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>();
+            Ok(match patterns.len() {
+                0 => None,
+                1 => patterns.into_iter().next(),
+                _ => Some(QueryPatternV2::And { patterns }),
+            })
+        }
+        MatchExpr::Or { .. } | MatchExpr::Not { .. }
+            if predicate_has_schema_function(expression) =>
+        {
+            Err(integrity(
+                "query_v2_adapter_function_scope",
+                "schema-function predicates must remain in the root conjunction",
+            ))
+        }
+        _ => adapt_expression(expression, request, registry).map(Some),
+    }
+}
+
+fn predicate_has_schema_function(expression: &MatchExpr) -> bool {
+    match expression {
+        MatchExpr::ScalarComparison { .. } => true,
+        MatchExpr::And { expressions } | MatchExpr::Or { expressions } => {
+            expressions.iter().any(predicate_has_schema_function)
+        }
+        MatchExpr::Not { expression } => predicate_has_schema_function(expression),
+        MatchExpr::FieldValue { .. }
+        | MatchExpr::FieldComparison { .. }
+        | MatchExpr::FieldPresence { .. }
+        | MatchExpr::BindingIid { .. }
+        | MatchExpr::RoleEdge { .. }
+        | MatchExpr::Reachable { .. } => false,
+    }
+}
+
+fn function_comparator(operator: ComparisonOp) -> Result<ValueComparator, Diagnostic> {
+    match operator {
+        ComparisonOp::Equal => Ok(ValueComparator::Equal),
+        ComparisonOp::NotEqual => Ok(ValueComparator::NotEqual),
+        ComparisonOp::LessThan => Ok(ValueComparator::Less),
+        ComparisonOp::LessThanOrEqual => Ok(ValueComparator::LessOrEqual),
+        ComparisonOp::GreaterThan => Ok(ValueComparator::Greater),
+        ComparisonOp::GreaterThanOrEqual => Ok(ValueComparator::GreaterOrEqual),
+        ComparisonOp::Contains
+        | ComparisonOp::StartsWith
+        | ComparisonOp::EndsWith
+        | ComparisonOp::Regex => Err(integrity(
+            "query_v2_adapter_function_comparator",
+            "schema-function comparisons admit only scalar order comparators",
+        )),
+    }
 }
 
 fn adapt_field(
@@ -936,6 +1291,7 @@ fn predicate_has_artifact_sized_literal(expression: &MatchExpr) -> bool {
         }
         MatchExpr::Not { expression } => predicate_has_artifact_sized_literal(expression),
         MatchExpr::FieldComparison { .. }
+        | MatchExpr::ScalarComparison { .. }
         | MatchExpr::FieldPresence { .. }
         | MatchExpr::BindingIid { .. }
         | MatchExpr::RoleEdge { .. }

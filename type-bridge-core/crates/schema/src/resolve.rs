@@ -8,14 +8,14 @@ use type_bridge_contract::fingerprint::{
 };
 use type_bridge_contract::id::{AttributeId, FunctionId, RoleId, StructId, TypeId, TypeKind};
 use type_bridge_contract::schema::{
-    AnnotationKindId, AnnotationSubjectId, DeclaredIdentityFingerprint, DeclaredSchema,
-    FunctionFact, InterfaceKind, OwnsFact, OwnsFactId, PlaysFact, PlaysFactId, RelatesFact,
-    SchemaAnnotationValue, SchemaDiagnostics, SchemaFact, SchemaFactId, SemanticProfile,
-    SemanticSchemaFingerprint, StructFact, StructField, SubFactId, ValueFactId,
+    AnnotationKindId, AnnotationSubjectId, CollectionMode, DeclaredIdentityFingerprint,
+    DeclaredSchema, FunctionFact, InterfaceKind, OwnsFact, OwnsFactId, PlaysFact, PlaysFactId,
+    RelatesFact, SchemaAnnotationValue, SchemaDiagnostics, SchemaFact, SchemaFactId,
+    SemanticProfile, SemanticSchemaFingerprint, StructFact, StructField, SubFactId, ValueFactId,
 };
 use type_bridge_contract::value::{Cardinality, ValueTypeTag};
 
-use crate::semantic_schema_fingerprint;
+use crate::semantic::{semantic_schema_fingerprint, validate_collection_profile};
 
 /// Direct-fact identity plus the inheritance path used to derive an effective entry.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -62,6 +62,7 @@ impl ResolutionOrigin {
 pub struct EffectiveOwns {
     id: OwnsFactId,
     origin: ResolutionOrigin,
+    collection_mode: CollectionMode,
     annotations: BTreeMap<AnnotationKindId, SchemaAnnotationValue>,
     cardinality: Cardinality,
     key: bool,
@@ -79,6 +80,18 @@ impl EffectiveOwns {
     #[must_use]
     pub const fn origin(&self) -> &ResolutionOrigin {
         &self.origin
+    }
+
+    /// Return the effective collection semantics.
+    #[must_use]
+    pub const fn collection_mode(&self) -> CollectionMode {
+        self.collection_mode
+    }
+
+    /// Report whether members must be distinct within the ordered collection.
+    #[must_use]
+    pub fn is_distinct(&self) -> bool {
+        self.annotations.contains_key(&AnnotationKindId::Distinct)
     }
 
     /// Return all direct or inherited annotations keyed by independent kind.
@@ -171,6 +184,7 @@ impl EffectiveRelatesId {
 pub struct EffectiveRelates {
     id: EffectiveRelatesId,
     origin: ResolutionOrigin,
+    collection_mode: CollectionMode,
     annotations: BTreeMap<AnnotationKindId, SchemaAnnotationValue>,
     cardinality: Cardinality,
     replaced_roles: BTreeSet<RoleId>,
@@ -188,6 +202,18 @@ impl EffectiveRelates {
     #[must_use]
     pub const fn origin(&self) -> &ResolutionOrigin {
         &self.origin
+    }
+
+    /// Return the effective collection semantics.
+    #[must_use]
+    pub const fn collection_mode(&self) -> CollectionMode {
+        self.collection_mode
+    }
+
+    /// Report whether players must be distinct within the ordered collection.
+    #[must_use]
+    pub fn is_distinct(&self) -> bool {
+        self.annotations.contains_key(&AnnotationKindId::Distinct)
     }
 
     /// Return independent annotations on the exact relates fact.
@@ -637,6 +663,7 @@ pub fn resolve_schema_with_capabilities(
             type_bridge_contract::schema::SchemaDiagnostic::new(diagnostic, None),
         )
     })?;
+    validate_collection_profile(declared, profile_id)?;
     let index = DirectIndex::build(declared)?;
     let parents = validate_parents(declared, &index)?;
     validate_inheritance_cycles(declared, &index.types, &parents)?;
@@ -694,9 +721,22 @@ pub fn resolve_schema_with_capabilities(
 
         for owns in index.owns.get(&id).into_iter().flatten() {
             let annotations = annotations_for(&index, AnnotationSubjectId::Owns(owns.id().clone()));
+            if let Some(inherited) = resolved.owns.get(owns.id().attribute())
+                && inherited.collection_mode != owns.collection_mode()
+            {
+                return Err(collection_mode_conflict(
+                    declared,
+                    &SchemaFactId::Owns(owns.id().clone()),
+                    inherited.origin.declared(),
+                    "inherited_owns_collection_mode_conflict",
+                    "a direct ownership redeclaration must preserve the inherited collection mode",
+                    "inherited ownership collection mode is declared here",
+                ));
+            }
             let effective = EffectiveOwns {
                 id: owns.id().clone(),
                 origin: ResolutionOrigin::direct(SchemaFactId::Owns(owns.id().clone())),
+                collection_mode: owns.collection_mode(),
                 cardinality: cardinality(&annotations, &profile, InterfaceKind::Owns),
                 key: annotations.contains_key(&AnnotationKindId::Key),
                 unique: annotations.contains_key(&AnnotationKindId::Unique)
@@ -725,7 +765,7 @@ pub fn resolve_schema_with_capabilities(
                 annotations_for(&index, AnnotationSubjectId::Relates(relates.id().clone()));
             let mut replaced_roles = BTreeSet::new();
             if let Some(specialized) = relates.specializes() {
-                let replaced = resolved
+                let replaced_role = resolved
                     .relates
                     .iter()
                     .find_map(|(role, effective)| {
@@ -742,7 +782,21 @@ pub fn resolve_schema_with_capabilities(
                     })?;
                 let replaced = resolved
                     .relates
-                    .remove(&replaced)
+                    .get(&replaced_role)
+                    .expect("located effective role exists");
+                if replaced.collection_mode != relates.collection_mode() {
+                    return Err(collection_mode_conflict(
+                        declared,
+                        &SchemaFactId::Relates(relates.id().clone()),
+                        replaced.origin.declared(),
+                        "specialized_role_collection_mode_conflict",
+                        "a specialized role must preserve the effective parent-role collection mode",
+                        "effective parent-role collection mode is declared here",
+                    ));
+                }
+                let replaced = resolved
+                    .relates
+                    .remove(&replaced_role)
                     .expect("located effective role exists");
                 replaced_roles.extend(replaced.replaced_roles);
                 replaced_roles.insert(specialized.clone());
@@ -750,6 +804,7 @@ pub fn resolve_schema_with_capabilities(
             let effective = EffectiveRelates {
                 id: EffectiveRelatesId::new(id.clone(), relates.id().role().clone()),
                 origin: ResolutionOrigin::direct(SchemaFactId::Relates(relates.id().clone())),
+                collection_mode: relates.collection_mode(),
                 cardinality: cardinality(&annotations, &profile, InterfaceKind::Relates),
                 is_abstract: annotations.contains_key(&AnnotationKindId::Abstract),
                 annotations,
@@ -1253,6 +1308,27 @@ fn source_error(
         message,
         declared.source(fact).cloned(),
     )
+}
+
+fn collection_mode_conflict(
+    declared: &DeclaredSchema,
+    direct: &SchemaFactId,
+    inherited: &SchemaFactId,
+    code: &'static str,
+    message: &'static str,
+    related_message: &'static str,
+) -> SchemaDiagnostics {
+    match (declared.source(direct), declared.source(inherited)) {
+        (Some(primary), Some(related)) => crate::yaml::diagnostic_with_related(
+            DiagnosticCategory::InvalidContract,
+            code,
+            message,
+            primary.clone(),
+            related.clone(),
+            related_message,
+        ),
+        _ => source_error(declared, direct, code, message),
+    }
 }
 
 fn no_source(diagnostic: type_bridge_contract::diagnostic::Diagnostic) -> SchemaDiagnostics {

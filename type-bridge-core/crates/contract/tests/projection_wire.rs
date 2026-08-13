@@ -2,20 +2,21 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use type_bridge_contract::codec::to_canonical_json;
 use type_bridge_contract::fingerprint::SemanticProfileId;
-use type_bridge_contract::id::{RoleId, TypeId, TypeKind};
+use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind};
 use type_bridge_contract::projection::{
-    BindingTarget, CompleteReadProjection, CreateProjection, DeclarationProjection, EmissionPlan,
-    ModelProjection, ProjectedAnnotation, ProjectedMultiplicity, ProjectionConfig,
+    BindingTarget, CSymbolPrefix, CompleteReadProjection, CreateFieldProjection, CreateProjection,
+    DeclarationProjection, EmissionPlan, FieldTokenProjection, ModelProjection,
+    ProjectedAnnotation, ProjectedMultiplicity, ProjectedTypeRef, ProjectionConfig,
     ProjectionHandler, QueryTokenProjection, ReadRoleProjection, ReferenceReadProjection,
     RuntimeProjection, TargetIdentifier,
 };
 use type_bridge_contract::projection_wire::decode_runtime_projection_verified;
 use type_bridge_contract::schema::{
-    AnnotationFactId, AnnotationKindId, AnnotationSubjectId, DocText, SchemaAnnotationValue,
-    ValueFactId,
+    AnnotationFactId, AnnotationKindId, AnnotationSubjectId, DocText, OwnsFactId,
+    SchemaAnnotationValue, ValueFactId,
 };
 use type_bridge_contract::schema_fingerprint::SemanticSchemaFingerprint;
-use type_bridge_contract::value::Cardinality;
+use type_bridge_contract::value::{Cardinality, ValueTypeTag};
 
 fn fixture() -> RuntimeProjection {
     let person = TypeId::new(TypeKind::Entity, "person").unwrap();
@@ -66,6 +67,166 @@ fn fixture() -> RuntimeProjection {
         EmissionPlan::new(
             vec![person.clone()],
             vec![BTreeSet::from([person])],
+            vec![],
+            vec![],
+        )
+        .unwrap(),
+    )
+    .unwrap()
+}
+
+fn c_fixture(
+    explicit_names: bool,
+) -> Result<RuntimeProjection, type_bridge_contract::diagnostic::Diagnostic> {
+    let person = TypeId::new(TypeKind::Entity, "person").unwrap();
+    let mut create = CreateProjection::new(true, vec![], BTreeMap::new()).unwrap();
+    let mut query = QueryTokenProjection::new(person.clone(), BTreeMap::new(), BTreeMap::new())?;
+    if explicit_names {
+        create = create.with_target_name(TargetIdentifier::c("person_create")?);
+        query = query.with_target_name(TargetIdentifier::c("person_type")?);
+    }
+    let model = ModelProjection::new(
+        person.clone(),
+        TargetIdentifier::c("person")?,
+        DeclarationProjection::new(
+            None,
+            None,
+            false,
+            true,
+            BTreeMap::new(),
+            vec![],
+            BTreeMap::new(),
+            BTreeSet::new(),
+        )?,
+        create,
+        CompleteReadProjection::new(vec![], BTreeMap::new(), vec![])?,
+        ReferenceReadProjection::new(
+            explicit_names
+                .then(|| TargetIdentifier::c("person_ref"))
+                .transpose()?,
+            vec![],
+        )?,
+        query,
+    )?;
+    RuntimeProjection::try_new(
+        BindingTarget::C,
+        ProjectionConfig::c(CSymbolPrefix::new("acme_hr")?),
+        SemanticSchemaFingerprint::compute(
+            SemanticProfileId::new("typedb-3.12.1/v1").unwrap(),
+            b"c-schema",
+        )?,
+        &[ProjectionHandler::c_v1()],
+        &[],
+        BTreeMap::from([(person.clone(), model)]),
+        BTreeMap::new(),
+        BTreeMap::new(),
+        BTreeMap::new(),
+        EmissionPlan::new(
+            vec![person.clone()],
+            vec![BTreeSet::from([person])],
+            vec![],
+            vec![],
+        )?,
+    )
+}
+
+fn c_field_fixture() -> RuntimeProjection {
+    let person = TypeId::new(TypeKind::Entity, "person").unwrap();
+    let name = AttributeId::new("name").unwrap();
+    let name_model_id = TypeId::new(TypeKind::Attribute, "name").unwrap();
+    let owns = OwnsFactId::new(person.clone(), name).unwrap();
+    let multiplicity =
+        ProjectedMultiplicity::from_cardinality(Cardinality::new(0, Some(1)).unwrap());
+    let field_token = FieldTokenProjection::new(
+        owns.clone(),
+        owns.clone(),
+        TargetIdentifier::c("name").unwrap(),
+        multiplicity,
+        false,
+        false,
+        BTreeMap::new(),
+    )
+    .unwrap();
+    let create = CreateProjection::new(
+        true,
+        vec![CreateFieldProjection::new(
+            owns.clone(),
+            ProjectedTypeRef::Scalar(ValueTypeTag::String),
+            multiplicity,
+        )],
+        BTreeMap::new(),
+    )
+    .unwrap()
+    .with_target_name(TargetIdentifier::c("person_create").unwrap());
+    let person_model = ModelProjection::new(
+        person.clone(),
+        TargetIdentifier::c("person").unwrap(),
+        DeclarationProjection::new(
+            None,
+            None,
+            false,
+            true,
+            BTreeMap::new(),
+            vec![owns.clone()],
+            BTreeMap::new(),
+            BTreeSet::new(),
+        )
+        .unwrap(),
+        create,
+        CompleteReadProjection::new(vec![], BTreeMap::new(), vec![]).unwrap(),
+        ReferenceReadProjection::new(Some(TargetIdentifier::c("person_ref").unwrap()), vec![])
+            .unwrap(),
+        QueryTokenProjection::new(
+            person.clone(),
+            BTreeMap::from([(owns, field_token)]),
+            BTreeMap::new(),
+        )
+        .unwrap()
+        .with_target_name(TargetIdentifier::c("person_type").unwrap()),
+    )
+    .unwrap();
+    let name_model = ModelProjection::new(
+        name_model_id.clone(),
+        TargetIdentifier::c("name").unwrap(),
+        DeclarationProjection::new(
+            None,
+            Some(ValueTypeTag::String),
+            false,
+            true,
+            BTreeMap::new(),
+            vec![],
+            BTreeMap::new(),
+            BTreeSet::new(),
+        )
+        .unwrap(),
+        CreateProjection::new(false, vec![], BTreeMap::new()).unwrap(),
+        CompleteReadProjection::new(vec![], BTreeMap::new(), vec![]).unwrap(),
+        ReferenceReadProjection::new(None, vec![]).unwrap(),
+        QueryTokenProjection::new(name_model_id.clone(), BTreeMap::new(), BTreeMap::new())
+            .unwrap()
+            .with_target_name(TargetIdentifier::c("name_type").unwrap()),
+    )
+    .unwrap();
+    RuntimeProjection::try_new(
+        BindingTarget::C,
+        ProjectionConfig::c(CSymbolPrefix::new("acme_hr").unwrap()),
+        SemanticSchemaFingerprint::compute(
+            SemanticProfileId::new("typedb-3.12.1/v1").unwrap(),
+            b"c-field-schema",
+        )
+        .unwrap(),
+        &[ProjectionHandler::c_v1()],
+        &[],
+        BTreeMap::from([
+            (person.clone(), person_model),
+            (name_model_id.clone(), name_model),
+        ]),
+        BTreeMap::new(),
+        BTreeMap::new(),
+        BTreeMap::new(),
+        EmissionPlan::new(
+            vec![name_model_id.clone(), person.clone()],
+            vec![BTreeSet::from([name_model_id]), BTreeSet::from([person])],
             vec![],
             vec![],
         )
@@ -460,6 +621,48 @@ fn rust_projection_rebuilds_with_explicit_surface_names() {
 }
 
 #[test]
+fn c_projection_rebuilds_with_validated_prefix_and_explicit_surface_names() {
+    let runtime = c_fixture(true).unwrap();
+    let decoded = decode_runtime_projection_verified(
+        &to_canonical_json(&runtime).unwrap(),
+        &to_canonical_json(runtime.semantic_fingerprint()).unwrap(),
+        &to_canonical_json(runtime.projection_fingerprint()).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(decoded, runtime);
+    assert_eq!(
+        decoded.config().c_symbol_prefix().unwrap().as_str(),
+        "acme_hr"
+    );
+}
+
+#[test]
+fn c_projection_wire_rejects_an_invalid_symbol_prefix_during_rebuild() {
+    let runtime = c_fixture(true).unwrap();
+    let error = decode_mutated_projection(&runtime, |value| {
+        value["config"]["symbol_prefix"] = serde_json::Value::String("_reserved".to_owned());
+    });
+    assert_eq!(error.code().as_str(), "invalid_c_symbol_prefix");
+}
+
+#[test]
+fn c_projection_wire_rejects_1021_create_fields_during_authoritative_rebuild() {
+    let runtime = c_field_fixture();
+    let person = TypeId::new(TypeKind::Entity, "person").unwrap();
+    let error = decode_mutated_projection(&runtime, |value| {
+        let fields = model_wire_mut(value, &person)["create"]["fields"]
+            .as_array_mut()
+            .unwrap();
+        let field = fields[0].clone();
+        fields.resize(1_021, field);
+    });
+    assert_eq!(
+        error.code().as_str(),
+        "c_projection_create_field_limit_exceeded"
+    );
+}
+
+#[test]
 fn projection_wire_rejects_duplicate_reference_key_identities() {
     let runtime = rust_fixture(true).unwrap();
     let person = TypeId::new(TypeKind::Entity, "person").unwrap();
@@ -524,6 +727,14 @@ fn rust_projection_rejects_missing_required_surface_names() {
     assert_eq!(
         rust_fixture(false).unwrap_err().code().as_str(),
         "missing_rust_projection_identifier",
+    );
+}
+
+#[test]
+fn c_projection_rejects_missing_required_surface_names() {
+    assert_eq!(
+        c_fixture(false).unwrap_err().code().as_str(),
+        "missing_c_projection_identifier",
     );
 }
 

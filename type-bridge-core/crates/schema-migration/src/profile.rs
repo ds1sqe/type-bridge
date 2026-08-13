@@ -649,6 +649,12 @@ fn classify_annotation(
     transition: AnnotationTransition,
     expected: Option<&AnnotationFact>,
 ) -> TransitionRule {
+    // Ordered-collection migration execution belongs to Plan06. Keep the
+    // historical v1 profile bytes stable while classifying the additive
+    // contract kind explicitly and fail closed before TypeQL rendering.
+    if annotation.id().kind() == &AnnotationKindId::Distinct {
+        return unsupported(false);
+    }
     let subject = annotation_subject_kind(annotation.id().subject());
     let kind = annotation_kind(annotation.id().kind());
     let mut rule = annotation_transition_rule(subject, kind, transition);
@@ -689,6 +695,9 @@ fn annotation_kind(kind: &AnnotationKindId) -> AnnotationKind {
         AnnotationKindId::Independent => AnnotationKind::Independent,
         AnnotationKindId::Key => AnnotationKind::Key,
         AnnotationKindId::Unique => AnnotationKind::Unique,
+        AnnotationKindId::Distinct => {
+            unreachable!("distinct is classified as unsupported before the v1 annotation registry")
+        }
         AnnotationKindId::Card => AnnotationKind::Card,
         AnnotationKindId::Regex => AnnotationKind::Regex,
         AnnotationKindId::Range => AnnotationKind::Range,

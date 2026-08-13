@@ -163,11 +163,13 @@ entities:
 
     assert!(manifest.contains("doctest = false"));
     assert!(read.contains(&format!(
-        "{documentation}#[derive(Clone, Debug, PartialEq)]\npub struct Person"
+        "{documentation}#[derive(Clone, PartialEq)]\npub struct Person"
     )));
     assert!(reference.contains(&format!(
-        "{documentation}#[derive(Clone, Debug, PartialEq)]\npub struct PersonRef"
+        "{documentation}#[derive(Clone, PartialEq)]\npub struct PersonRef"
     )));
+    assert!(read.contains("impl core::fmt::Debug for Person"));
+    assert!(reference.contains("impl core::fmt::Debug for PersonRef"));
 }
 
 #[test]

@@ -15,7 +15,8 @@ use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind};
 use type_bridge_contract::migration_assertion::BindingId;
 use type_bridge_contract::query_plan::{
     HydrationDescriptorV2, HydrationProjectionV2, ModelQueryV2, QueryModelOutputSlotV2,
-    QueryOutput, QueryPattern, QueryPatternV2, QueryPlan, QueryPlanV2Compatibility, ReadStage,
+    QueryOperand, QueryOutput, QueryPattern, QueryPatternV2, QueryPlan, QueryPlanV2Compatibility,
+    ReadStage,
 };
 use type_bridge_schema::{ResolvedSchema, ResolvedType};
 
@@ -149,12 +150,12 @@ fn validate_adapter_normal_form(
     model_query: &ModelQueryV2,
     hydration: &HydrationProjectionV2,
 ) -> Result<(), Diagnostic> {
-    if !plan.inputs().is_empty() || !plan.functions().is_empty() {
+    if !plan.functions().is_empty() {
         return Err(correspondence_failure(
-            "adapter compatibility plans cannot carry native inputs or local functions",
+            "adapter compatibility plans cannot carry local functions",
         ));
     }
-    if hydration.bindings().len() != plan.bindings().len()
+    if hydration.bindings().len() > plan.bindings().len()
         || hydration
             .bindings()
             .iter()
@@ -162,7 +163,7 @@ fn validate_adapter_normal_form(
             .any(|(hydrated, declared)| hydrated.binding() != declared.id())
     {
         return Err(correspondence_failure(
-            "adapter hydration bindings must exactly cover dense native bindings",
+            "adapter hydration bindings must exactly cover the dense model-binding prefix",
         ));
     }
     if plan
@@ -181,9 +182,11 @@ fn validate_adapter_normal_form(
             "adapter compatibility plans require one root match skeleton",
         ));
     };
-    if patterns.len() != hydration.bindings().len()
+    let model_binding_count = hydration.bindings().len();
+    if patterns.len() < model_binding_count
         || patterns
             .iter()
+            .take(model_binding_count)
             .zip(hydration.bindings())
             .any(|(pattern, hydrated)| {
                 !matches!(
@@ -198,9 +201,10 @@ fn validate_adapter_normal_form(
             })
     {
         return Err(correspondence_failure(
-            "adapter root match must contain exactly one ordered isa target per binding",
+            "adapter root match must begin with one ordered isa target per model binding",
         ));
     }
+    validate_native_function_suffix(plan, &patterns[model_binding_count..], model_binding_count)?;
 
     let output_columns = model_native_output_columns(model_query);
     let mut selected = output_columns.clone();
@@ -233,6 +237,136 @@ fn validate_adapter_normal_form(
     Ok(())
 }
 
+fn validate_native_function_suffix(
+    plan: &QueryPlan,
+    patterns: &[QueryPattern],
+    model_binding_count: usize,
+) -> Result<(), Diagnostic> {
+    if plan.inputs().iter().enumerate().any(|(index, input)| {
+        usize::from(input.id().get()) != index
+            || input.optional()
+            || input.public_name().as_str() != format!("g{index}")
+    }) {
+        return Err(correspondence_failure(
+            "adapter function inputs must be dense non-optional canonical gN columns",
+        ));
+    }
+
+    let mut produced = BTreeSet::new();
+    let mut function_results = BTreeSet::new();
+    let mut used_inputs = BTreeSet::new();
+    for pattern in patterns {
+        match pattern {
+            QueryPattern::Has {
+                attribute, owner, ..
+            } => {
+                if usize::from(owner.get()) >= model_binding_count
+                    || usize::from(attribute.get()) < model_binding_count
+                    || !produced.insert(*attribute)
+                {
+                    return Err(correspondence_failure(
+                        "adapter native has patterns must uniquely bind fields owned by model bindings",
+                    ));
+                }
+            }
+            QueryPattern::FunctionCall {
+                arguments,
+                assigned,
+                ..
+            } => {
+                if usize::from(assigned.get()) < model_binding_count || produced.contains(assigned)
+                {
+                    return Err(correspondence_failure(
+                        "adapter schema-function calls must uniquely assign native suffix bindings",
+                    ));
+                }
+                for argument in arguments {
+                    validate_native_operand(
+                        argument,
+                        &produced,
+                        model_binding_count,
+                        plan.inputs().len(),
+                        &mut used_inputs,
+                    )?;
+                }
+                produced.insert(*assigned);
+                function_results.insert(*assigned);
+            }
+            QueryPattern::Value { left, right, .. } => {
+                validate_native_operand(
+                    left,
+                    &produced,
+                    model_binding_count,
+                    plan.inputs().len(),
+                    &mut used_inputs,
+                )?;
+                validate_native_operand(
+                    right,
+                    &produced,
+                    model_binding_count,
+                    plan.inputs().len(),
+                    &mut used_inputs,
+                )?;
+                let is_function = |operand: &QueryOperand| matches!(operand, QueryOperand::Binding { binding } if function_results.contains(binding));
+                if !is_function(left) && !is_function(right) {
+                    return Err(correspondence_failure(
+                        "adapter native value predicates must compare a schema-function result",
+                    ));
+                }
+            }
+            QueryPattern::Isa { .. }
+            | QueryPattern::Links { .. }
+            | QueryPattern::Or { .. }
+            | QueryPattern::Not { .. }
+            | QueryPattern::Try { .. }
+            | QueryPattern::Reachable { .. } => {
+                return Err(correspondence_failure(
+                    "adapter native suffix admits only has, schema-function call, and value patterns",
+                ));
+            }
+        }
+    }
+    let expected = plan
+        .bindings()
+        .iter()
+        .skip(model_binding_count)
+        .map(|binding| binding.id())
+        .collect::<BTreeSet<_>>();
+    if produced != expected || used_inputs.len() != plan.inputs().len() {
+        return Err(correspondence_failure(
+            "adapter native function suffix must exactly consume its bindings and inputs",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_native_operand(
+    operand: &QueryOperand,
+    produced: &BTreeSet<BindingId>,
+    model_binding_count: usize,
+    input_count: usize,
+    used_inputs: &mut BTreeSet<usize>,
+) -> Result<(), Diagnostic> {
+    match operand {
+        QueryOperand::Binding { binding } => {
+            if produced.contains(binding) || usize::from(binding.get()) < model_binding_count {
+                Ok(())
+            } else {
+                Err(correspondence_failure(
+                    "adapter native operand references a binding before it is established",
+                ))
+            }
+        }
+        QueryOperand::Input { column } if usize::from(column.get()) < input_count => {
+            used_inputs.insert(usize::from(column.get()));
+            Ok(())
+        }
+        QueryOperand::Input { .. } | QueryOperand::Literal { .. } => Err(correspondence_failure(
+            "adapter native operands admit declared input columns but no inline literals",
+        )),
+    }
+}
+
 fn model_native_output_columns(query: &ModelQueryV2) -> Vec<BindingId> {
     match query {
         ModelQueryV2::Rows { output, .. } => output
@@ -245,7 +379,8 @@ fn model_native_output_columns(query: &ModelQueryV2) -> Vec<BindingId> {
             .collect(),
         ModelQueryV2::Page { root, .. }
         | ModelQueryV2::DistinctCount { root, .. }
-        | ModelQueryV2::DistinctExists { root, .. } => vec![*root],
+        | ModelQueryV2::DistinctExists { root, .. }
+        | ModelQueryV2::Reduction { root, .. } => vec![*root],
     }
 }
 
@@ -258,7 +393,8 @@ fn model_hydration(query: &ModelQueryV2) -> &HydrationProjectionV2 {
         ModelQueryV2::Rows { hydration, .. }
         | ModelQueryV2::Page { hydration, .. }
         | ModelQueryV2::DistinctCount { hydration, .. }
-        | ModelQueryV2::DistinctExists { hydration, .. } => hydration,
+        | ModelQueryV2::DistinctExists { hydration, .. }
+        | ModelQueryV2::Reduction { hydration, .. } => hydration,
     }
 }
 

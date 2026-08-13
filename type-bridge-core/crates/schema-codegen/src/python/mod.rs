@@ -4,9 +4,12 @@ use type_bridge_contract::diagnostic::Diagnostic;
 use type_bridge_contract::projection::{
     BindingTarget, CodeResourceDigest, ProjectionConfig, ProjectionHandler, RuntimeProjection,
 };
-use type_bridge_schema::VerifiedSchemaAuthority;
+use type_bridge_schema::{ResolvedSchema, VerifiedSchemaAuthority};
 
-use crate::{GeneratedPackage, embedded_authority, invalid};
+use crate::{
+    GeneratedPackage, embedded_authority, invalid, projection_uses_ordered_collections,
+    resolved_schema_uses_ordered_collections,
+};
 
 const RUNTIME_SOURCE: &[u8] = include_bytes!("runtime.py");
 const RUNTIME_STUB: &[u8] = include_bytes!("runtime.pyi");
@@ -20,7 +23,9 @@ const QUERY_SOURCE_ID: &str = "typebridge.generator.python.query-source";
 const QUERY_STUB_ID: &str = "typebridge.generator.python.query-stub";
 const PY_TYPED_ID: &str = "typebridge.generator.python.py-typed";
 
-/// Version-one Python package emitter.
+const ORDERED_RUNTIME_SOURCE_SUFFIX: &[u8] = b"\n# Successor resource for ordered collection projections.\n_TYPE_BRIDGE_ORDERED_COLLECTION_RESOURCE_VERSION = 2\n";
+
+/// Python package emitter with feature-selected legacy and ordered evidence ledgers.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct PythonEmitter;
 
@@ -31,17 +36,44 @@ impl PythonEmitter {
         Self
     }
 
-    /// Return its exact projection-handler evidence.
+    /// Return its exact legacy unordered projection-handler evidence.
     #[must_use]
     pub fn generator_handlers(&self) -> Vec<ProjectionHandler> {
         vec![ProjectionHandler::python_v1()]
     }
 
-    /// Hash its exact fixed output resources.
+    /// Return projection-handler evidence selected for the resolved schema features.
+    #[must_use]
+    pub fn generator_handlers_for(&self, schema: &ResolvedSchema) -> Vec<ProjectionHandler> {
+        self.handlers_for_ordered(resolved_schema_uses_ordered_collections(schema))
+    }
+
+    /// Hash its exact legacy unordered fixed output resources.
     pub fn code_resources(&self) -> Result<Vec<CodeResourceDigest>, Diagnostic> {
+        self.resources_for_ordered(false)
+    }
+
+    /// Hash the exact fixed output resources selected for the resolved schema features.
+    pub fn code_resources_for(
+        &self,
+        schema: &ResolvedSchema,
+    ) -> Result<Vec<CodeResourceDigest>, Diagnostic> {
+        self.resources_for_ordered(resolved_schema_uses_ordered_collections(schema))
+    }
+
+    fn handlers_for_ordered(&self, ordered: bool) -> Vec<ProjectionHandler> {
+        if ordered {
+            vec![ProjectionHandler::python_v2()]
+        } else {
+            self.generator_handlers()
+        }
+    }
+
+    fn resources_for_ordered(&self, ordered: bool) -> Result<Vec<CodeResourceDigest>, Diagnostic> {
+        let runtime_source = ordered_runtime_source(ordered);
         let mut resources = vec![
             CodeResourceDigest::from_bytes(PY_TYPED_ID, PY_TYPED)?,
-            CodeResourceDigest::from_bytes(RUNTIME_SOURCE_ID, RUNTIME_SOURCE)?,
+            CodeResourceDigest::from_bytes(RUNTIME_SOURCE_ID, &runtime_source)?,
             CodeResourceDigest::from_bytes(RUNTIME_STUB_ID, RUNTIME_STUB)?,
             CodeResourceDigest::from_bytes(QUERY_SOURCE_ID, QUERY_SOURCE)?,
             CodeResourceDigest::from_bytes(QUERY_STUB_ID, QUERY_STUB)?,
@@ -56,8 +88,9 @@ impl PythonEmitter {
         projection: &RuntimeProjection,
         authority: &VerifiedSchemaAuthority,
     ) -> Result<GeneratedPackage, Diagnostic> {
-        let handlers = self.generator_handlers();
-        let resources = self.code_resources()?;
+        let ordered = projection_uses_ordered_collections(projection);
+        let handlers = self.handlers_for_ordered(ordered);
+        let resources = self.resources_for_ordered(ordered)?;
         if projection.target() != BindingTarget::Python
             || projection.config() != &ProjectionConfig::python()
             || projection.generator_handlers() != handlers
@@ -69,14 +102,31 @@ impl PythonEmitter {
             ));
         }
         let authority = embedded_authority(projection, authority)?;
+        let runtime_source = ordered_runtime_source(ordered);
         render::render(
             projection,
             &authority,
-            RUNTIME_SOURCE,
+            &runtime_source,
             RUNTIME_STUB,
             QUERY_SOURCE,
             QUERY_STUB,
             PY_TYPED,
         )
     }
+}
+
+fn ordered_runtime_source(ordered: bool) -> Vec<u8> {
+    resource_with_suffix(
+        RUNTIME_SOURCE,
+        ordered.then_some(ORDERED_RUNTIME_SOURCE_SUFFIX),
+    )
+}
+
+fn resource_with_suffix(resource: &[u8], suffix: Option<&[u8]>) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(resource.len() + suffix.map_or(0, <[u8]>::len));
+    bytes.extend_from_slice(resource);
+    if let Some(suffix) = suffix {
+        bytes.extend_from_slice(suffix);
+    }
+    bytes
 }

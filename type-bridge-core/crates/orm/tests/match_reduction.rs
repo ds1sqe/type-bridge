@@ -196,6 +196,12 @@ fn typed_reductions_reject_exact_validation_and_evidence_failures() {
         .unwrap_err();
     assert!(error.to_string().contains("reduce_input_required"));
 
+    // Count owns the distinct-root stream and cannot be paired with a field.
+    let error = query
+        .validate_reduce_by(&person, None, &[(Reduction::Count, Some(&age))])
+        .unwrap_err();
+    assert!(error.to_string().contains("reduce_input_unexpected"));
+
     // Numeric reducers reject non-numeric scalar inputs.
     let error = query
         .validate_reduce_by(&person, None, &[(Reduction::Mean, Some(&name))])
