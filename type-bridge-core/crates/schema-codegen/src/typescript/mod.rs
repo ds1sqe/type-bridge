@@ -20,6 +20,25 @@ const PACKAGE_JSON_ID: &str = "typebridge.generator.typescript.package-json";
 const RUNTIME_SOURCE_ID: &str = "typebridge.generator.typescript.runtime-source";
 const TSCONFIG_JSON_ID: &str = "typebridge.generator.typescript.tsconfig-json";
 
+const LEGACY_MATERIALIZE_THING_SOURCE: &[u8] = br#"function materializeThing(
+  state: QueryState,
+  thing: RuntimeProjectionMatchThing,
+): unknown {
+  const encoded = state.projection.materializeMatchThingJson(thing);
+  return hydrateProjectedValue(
+    parseProjectedWire(JSON.parse(encoded) as unknown),
+  );
+}"#;
+
+const ORDERED_MATERIALIZE_THING_SOURCE: &[u8] = br#"function materializeThing(
+  state: QueryState,
+  thing: RuntimeProjectionMatchThing,
+): unknown {
+  return hydrateOrderedProjectedEnvelope(
+    state.projection.materializeMatchThingProjected(thing),
+  );
+}"#;
+
 const ORDERED_RUNTIME_SOURCE_SUFFIX: &[u8] = br#"
 
 /** Canonical collection semantics present only in ordered projection resources. */
@@ -28,6 +47,12 @@ export interface Multiplicity {
 }
 
 const TYPE_BRIDGE_ORDERED_COLLECTION_RESOURCE_VERSION = 3 as const;
+
+type OrderedProjectedEnvelope = ReturnType<
+  NativeProjectedManager["insertProjected"]
+>;
+type OrderedFacadeProof = ReturnType<OrderedProjectedEnvelope["rootProof"]>;
+const orderedFacadeProofs = new WeakMap<object, OrderedFacadeProof>();
 
 type OrderedPackagePathSegment =
   | { readonly kind: "type"; readonly typeKey: string }
@@ -165,6 +190,171 @@ function lowerOrderedHydratedValue(value: unknown): ProjectedWire {
   return { typeKey, form, iid, value: null, values };
 }
 
+function orderedRoleProofs(
+  typeKey: string,
+  value: unknown,
+): (OrderedFacadeProof | null)[] {
+  assertRecord(value, "ordered projected create");
+  const entry = runtimeModels.get(typeKey);
+  if (entry === undefined) {
+    throw new TypeError("ordered projected manager has no model definition");
+  }
+  const proofs: (OrderedFacadeProof | null)[] = [];
+  for (const member of entry.definition.createMembers) {
+    if (member.accepted === undefined) continue;
+    const nested = value[member.name];
+    if (nested === undefined || nested === null) continue;
+    const values: readonly unknown[] = Array.isArray(nested) ? nested : [nested];
+    for (const candidate of values) {
+      assertRecord(candidate, `ordered role ${member.name}`);
+      proofs.push(orderedFacadeProofs.get(candidate) ?? null);
+    }
+  }
+  return proofs;
+}
+
+function hydrateOrderedProjectedEnvelope<Complete>(
+  envelope: OrderedProjectedEnvelope,
+  expectedTypeKey?: string,
+): Complete {
+  const wire = parseProjectedWire(JSON.parse(envelope.json) as unknown);
+  const hydrated = hydrateProjectedValue(wire, expectedTypeKey);
+  assertRecord(hydrated, "ordered projected hydration");
+  const entry = runtimeModels.get(wire.typeKey);
+  if (entry === undefined || wire.form !== "complete") {
+    throw new TypeError("ordered projected envelope has no complete root model");
+  }
+  const retained: [object, OrderedFacadeProof][] = [];
+  for (const member of entry.definition.completeMembers) {
+    if (member.accepted === undefined) continue;
+    const nested = hydrated[member.name];
+    if (nested === undefined || nested === null) continue;
+    const values: readonly unknown[] = Array.isArray(nested) ? nested : [nested];
+    values.forEach((candidate, index) => {
+      assertRecord(candidate, `ordered hydrated role ${member.name}`);
+      retained.push([candidate, envelope.roleProof(member.name, index)]);
+    });
+  }
+  retained.push([hydrated, envelope.rootProof()]);
+  for (const [facade, proof] of retained) {
+    orderedFacadeProofs.set(facade, proof);
+  }
+  return hydrated as Complete;
+}
+
+function orderedProjectedManager<Complete>(
+  typeKey: string,
+  connection: RuntimeProjectionConnection,
+): ProjectedModelManager<Complete> {
+  const projection = requireProjection();
+  return orderedProjectedManagerForNative(
+    typeKey,
+    projection.manager(typeKey, connection),
+  );
+}
+
+function orderedProjectedManagerForNative<Complete>(
+  typeKey: string,
+  native: NativeProjectedManager,
+): ProjectedModelManager<Complete> {
+  const legacy = projectedManagerForNative<Complete>(typeKey, native);
+  const exactWire = (instance: Complete, operation: string): ProjectedWire => {
+    const wire = lowerProjectedValue(instance);
+    if (wire.typeKey !== typeKey || wire.form !== "complete") {
+      throw new TypeError(
+        `projected ${operation} requires the manager's exact complete model`,
+      );
+    }
+    return wire;
+  };
+  return Object.freeze({
+    insert(instance: Complete): Complete {
+      const wire = exactWire(instance, "insert");
+      return hydrateOrderedProjectedEnvelope(
+        native.insertProjected(
+          JSON.stringify(wire),
+          orderedRoleProofs(typeKey, instance),
+        ),
+        typeKey,
+      );
+    },
+    insertMany(instances: readonly Complete[]): readonly Complete[] {
+      return legacy.insertMany(instances);
+    },
+    put(instance: Complete): Complete {
+      const wire = exactWire(instance, "put");
+      return hydrateOrderedProjectedEnvelope(
+        native.putProjected(
+          JSON.stringify(wire),
+          orderedRoleProofs(typeKey, instance),
+        ),
+        typeKey,
+      );
+    },
+    putMany(instances: readonly Complete[]): readonly Complete[] {
+      return legacy.putMany(instances);
+    },
+    update(iid: string, replacement: Complete): Complete {
+      if (typeof iid !== "string" || iid.length === 0) {
+        throw new TypeError(
+          "projected manager update requires a non-empty TypeDB IID",
+        );
+      }
+      const wire = exactWire(replacement, "update");
+      return hydrateOrderedProjectedEnvelope(
+        native.updateProjected(
+          iid,
+          JSON.stringify(wire),
+          orderedRoleProofs(typeKey, replacement),
+        ),
+        typeKey,
+      );
+    },
+    delete(instanceOrIid: Complete | string): void {
+      legacy.delete(instanceOrIid);
+    },
+    filter(
+      filters: Readonly<Record<string, ProjectedManagerFilterValue>>,
+    ): ProjectedModelManager<Complete> {
+      if (
+        filters === null ||
+        typeof filters !== "object" ||
+        Array.isArray(filters)
+      ) {
+        throw new TypeError(
+          "projected manager filters require a string-keyed object",
+        );
+      }
+      const lowered: Record<string, unknown> = {};
+      for (const [name, value] of Object.entries(filters)) {
+        lowered[name] = lowerManagerFilterValue(value);
+      }
+      return orderedProjectedManagerForNative(
+        typeKey,
+        native.filterJson(JSON.stringify(lowered)),
+      );
+    },
+    getByIid(iid: string): Complete | null {
+      const envelope = native.getByIidProjected(iid);
+      return envelope === null
+        ? null
+        : hydrateOrderedProjectedEnvelope(envelope, typeKey);
+    },
+    all(): readonly Complete[] {
+      return legacy.all();
+    },
+    first(): Complete | null {
+      return legacy.first();
+    },
+    count(): bigint {
+      return legacy.count();
+    },
+    exists(): boolean {
+      return legacy.exists();
+    },
+  });
+}
+
 /** @internal Define an ordered model whose create facet uses common native admission. */
 export function defineOrderedModel<
   Id extends string,
@@ -233,6 +423,13 @@ export function defineOrderedModel<
       return result;
     },
   };
+  descriptors["manager"] = {
+    ...descriptors["manager"],
+    value: (
+      connection: RuntimeProjectionConnection,
+    ): ProjectedModelManager<Complete> =>
+      orderedProjectedManager(definition.typeKey, connection),
+  };
   const token = Object.create(
     Object.getPrototypeOf(original),
     descriptors,
@@ -294,6 +491,7 @@ export function __installOrderedRuntimeProjectionPackage(
   installedProjection = projection;
   installedQueryAuthority = authority;
 }
+
 "#;
 
 /// TypeScript emitter with feature-selected legacy and ordered evidence ledgers.
@@ -341,7 +539,7 @@ impl TypeScriptEmitter {
     }
 
     fn resources_for_ordered(&self, ordered: bool) -> Result<Vec<CodeResourceDigest>, Diagnostic> {
-        let runtime_source = runtime_source(ordered);
+        let runtime_source = runtime_source(ordered)?;
         let mut resources = vec![
             CodeResourceDigest::from_bytes(PACKAGE_JSON_ID, PACKAGE_JSON)?,
             CodeResourceDigest::from_bytes(RUNTIME_SOURCE_ID, &runtime_source)?,
@@ -371,7 +569,7 @@ impl TypeScriptEmitter {
             ));
         }
         let authority = embedded_authority(projection, authority)?;
-        let runtime_source = runtime_source(ordered);
+        let runtime_source = runtime_source(ordered)?;
         render::render(
             projection,
             &authority,
@@ -382,14 +580,41 @@ impl TypeScriptEmitter {
     }
 }
 
-fn runtime_source(ordered: bool) -> Vec<u8> {
-    let suffix = ordered.then_some(ORDERED_RUNTIME_SOURCE_SUFFIX);
-    let mut bytes = Vec::with_capacity(RUNTIME_SOURCE.len() + suffix.map_or(0, <[u8]>::len));
-    bytes.extend_from_slice(RUNTIME_SOURCE);
-    if let Some(suffix) = suffix {
-        bytes.extend_from_slice(suffix);
+fn runtime_source(ordered: bool) -> Result<Vec<u8>, Diagnostic> {
+    if !ordered {
+        return Ok(RUNTIME_SOURCE.to_vec());
     }
-    bytes
+    ordered_runtime_source(RUNTIME_SOURCE)
+}
+
+fn ordered_runtime_source(base: &[u8]) -> Result<Vec<u8>, Diagnostic> {
+    let matches = base
+        .windows(LEGACY_MATERIALIZE_THING_SOURCE.len())
+        .enumerate()
+        .filter_map(|(offset, candidate)| {
+            (candidate == LEGACY_MATERIALIZE_THING_SOURCE).then_some(offset)
+        })
+        .collect::<Vec<_>>();
+    let [offset] = matches.as_slice() else {
+        return Err(invalid(
+            "typescript_ordered_runtime_anchor_mismatch",
+            format!(
+                "ordered TypeScript runtime requires exactly one legacy materialization anchor, found {}",
+                matches.len()
+            ),
+        ));
+    };
+    let tail = offset + LEGACY_MATERIALIZE_THING_SOURCE.len();
+    let mut bytes = Vec::with_capacity(
+        base.len() - LEGACY_MATERIALIZE_THING_SOURCE.len()
+            + ORDERED_MATERIALIZE_THING_SOURCE.len()
+            + ORDERED_RUNTIME_SOURCE_SUFFIX.len(),
+    );
+    bytes.extend_from_slice(&base[..*offset]);
+    bytes.extend_from_slice(ORDERED_MATERIALIZE_THING_SOURCE);
+    bytes.extend_from_slice(&base[tail..]);
+    bytes.extend_from_slice(ORDERED_RUNTIME_SOURCE_SUFFIX);
+    Ok(bytes)
 }
 
 #[cfg(test)]
@@ -398,25 +623,31 @@ mod tests {
 
     #[test]
     fn legacy_runtime_source_remains_byte_exact() {
-        assert_eq!(runtime_source(false), RUNTIME_SOURCE);
+        assert_eq!(runtime_source(false).unwrap(), RUNTIME_SOURCE);
     }
 
     #[test]
     fn ordered_runtime_source_installs_whole_create_validation() {
-        let source = String::from_utf8(runtime_source(true)).unwrap();
+        let source = String::from_utf8(runtime_source(true).unwrap()).unwrap();
 
-        assert!(source.starts_with(std::str::from_utf8(RUNTIME_SOURCE).unwrap()));
+        assert!(!source.contains(std::str::from_utf8(LEGACY_MATERIALIZE_THING_SOURCE).unwrap()));
+        assert_eq!(
+            source
+                .matches(std::str::from_utf8(ORDERED_MATERIALIZE_THING_SOURCE).unwrap())
+                .count(),
+            1
+        );
         assert!(source.contains("export function defineOrderedModel<"));
         assert!(source.contains("Object.getOwnPropertyDescriptors(original)"));
         assert!(source.contains("requireProjection().validateCreateJson("));
         assert!(source.contains("descriptors[HYDRATE_COMPLETE_BRAND]"));
         assert!(source.contains("requireProjection().validateHydratedAttributeValueJson("));
         assert!(source.contains("requireProjection().validateThingJson("));
-        assert!(!source.contains("__materializeOrderedThing"));
+        assert!(!source.contains("materializeOrderedThing"));
         assert!(source.contains("rejectGeneratedTokenPackageMismatch("));
-        let successor = source
-            .strip_prefix(std::str::from_utf8(RUNTIME_SOURCE).unwrap())
-            .unwrap();
+        let successor = &source[source
+            .find("/** Canonical collection semantics present only in ordered projection resources. */")
+            .unwrap()..];
         let projection = successor
             .find("const projection = installRuntimeProjection({")
             .unwrap();
@@ -424,5 +655,42 @@ mod tests {
             .find("const authority = installGeneratedSchemaAuthority({")
             .unwrap();
         assert!(projection < authority);
+    }
+
+    #[test]
+    fn ordered_runtime_source_anchor_must_be_exactly_unique() {
+        let missing = ordered_runtime_source(b"function materializeThing() {}").unwrap_err();
+        assert_eq!(
+            missing.code().as_str(),
+            "typescript_ordered_runtime_anchor_mismatch"
+        );
+
+        let duplicate = [
+            LEGACY_MATERIALIZE_THING_SOURCE,
+            b"\n",
+            LEGACY_MATERIALIZE_THING_SOURCE,
+        ]
+        .concat();
+        let duplicate = ordered_runtime_source(&duplicate).unwrap_err();
+        assert_eq!(
+            duplicate.code().as_str(),
+            "typescript_ordered_runtime_anchor_mismatch"
+        );
+    }
+
+    #[test]
+    fn ordered_runtime_changes_only_the_runtime_resource() {
+        let emitter = TypeScriptEmitter::new();
+        let legacy = emitter.resources_for_ordered(false).unwrap();
+        let ordered = emitter.resources_for_ordered(true).unwrap();
+        let changed = legacy
+            .iter()
+            .zip(&ordered)
+            .filter(|(left, right)| left != right)
+            .collect::<Vec<_>>();
+
+        assert_eq!(changed.len(), 1);
+        assert_eq!(changed[0].0.id().as_str(), RUNTIME_SOURCE_ID);
+        assert_eq!(changed[0].1.id().as_str(), RUNTIME_SOURCE_ID);
     }
 }

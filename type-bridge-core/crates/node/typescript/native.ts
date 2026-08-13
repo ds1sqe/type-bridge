@@ -6,7 +6,10 @@ import type {
   NativeRustTransactionContext,
 } from "./index.js";
 import { ownedByteSnapshot } from "./owned-bytes.js";
-import type { NativeProjectedManager } from "./runtime-projection.js";
+import type {
+  NativeProjectedManager,
+  NativeProjectedValueEnvelope,
+} from "./runtime-projection.js";
 
 type NativeMatchComparison =
   | "equal"
@@ -461,6 +464,9 @@ interface NativeRuntimeProjectionHandle {
   rejectGeneratedTokenPackageMismatch(pathJson: string): void;
   revalidateMatchDiagnostic(diagnostic: string): string;
   materializeMatchThingJson(thing: NativeValidatedThingHandle): string;
+  materializeMatchThingProjected(
+    thing: NativeValidatedThingHandle,
+  ): NativeProjectedValueEnvelope;
 }
 
 interface NativeRuntimeProjectionModule {

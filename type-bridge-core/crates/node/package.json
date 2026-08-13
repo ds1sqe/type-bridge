@@ -41,7 +41,7 @@
     "smoke:package": "node tests/package-smoke.cjs",
     "smoke:packed-package": "node tests/packed-package-smoke.cjs",
     "test:unit": "node scripts/clean-unit.js && tsc -p tsconfig.unit.json && node scripts/run-unit.js",
-    "test:contract-adapter": "cargo build -p type-bridge-node --features contract-test-adapter && node --test tests/native-contract-foundation.test.cjs",
+    "test:contract-adapter": "cargo build --locked -p type-bridge-node --features contract-test-adapter && node --test tests/native-contract-foundation.test.cjs && cargo test --locked -p type-bridge-schema-codegen --test ordered_collections ordered_typescript_hydration_uses_common_projected_validation -- --ignored",
     "typecheck": "tsc --noEmit",
     "typecheck:integration": "tsc -p tsconfig.integration.json",
     "typecheck:projection-integration": "tsc -p tsconfig.projection-integration.json",

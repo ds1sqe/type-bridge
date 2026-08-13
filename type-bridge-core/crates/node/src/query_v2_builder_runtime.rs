@@ -4,10 +4,11 @@
 //! references here. Rust owns every transition, semantic check, canonical
 //! byte, fingerprint, and capability.
 
+use napi::ValueType;
 use napi::bindgen_prelude::{
-    BigInt, Buffer, Env, FromNapiValue, Reference, TypeName, Unknown, ValidateNapiValue,
+    BigInt, Buffer, Env, FromNapiValue, JsObjectValue, JsValue, Object, Reference, TypeName,
+    Unknown, ValidateNapiValue,
 };
-use napi::{JsObject, ValueType};
 use napi_derive::napi;
 use type_bridge_contract::diagnostic::Diagnostic;
 use type_bridge_contract::id::{
@@ -188,15 +189,15 @@ fn node_u64(value: Unknown) -> napi::Result<u64> {
     Ok(value)
 }
 
-fn bounded_array_shape(
-    value: Unknown,
+fn bounded_array_shape<'env>(
+    value: Unknown<'env>,
     limit: usize,
     oversized: fn() -> Diagnostic,
-) -> napi::Result<(JsObject, u32)> {
+) -> napi::Result<(Object<'env>, u32)> {
     if !value.is_array()? {
         return Err(napi_error(&query_builder_host_collection_type_error()));
     }
-    let array: JsObject = value.coerce_to_object()?;
+    let array = value.coerce_to_object()?;
     let length = array.get_array_length_unchecked()?;
     if usize::try_from(length).unwrap_or(usize::MAX) > limit {
         return Err(napi_error(&oversized()));
@@ -204,17 +205,17 @@ fn bounded_array_shape(
     Ok((array, length))
 }
 
-fn array_elements(array: &JsObject, length: u32) -> napi::Result<Vec<Unknown>> {
+fn array_elements<'env>(array: &Object<'env>, length: u32) -> napi::Result<Vec<Unknown<'env>>> {
     (0..length)
         .map(|index| array.get_element::<Unknown>(index))
         .collect()
 }
 
-fn bounded_array(
-    value: Unknown,
+fn bounded_array<'env>(
+    value: Unknown<'env>,
     limit: usize,
     oversized: fn() -> Diagnostic,
-) -> napi::Result<Vec<Unknown>> {
+) -> napi::Result<Vec<Unknown<'env>>> {
     let (array, length) = bounded_array_shape(value, limit, oversized)?;
     array_elements(&array, length)
 }

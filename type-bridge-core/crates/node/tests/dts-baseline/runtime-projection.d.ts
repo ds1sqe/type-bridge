@@ -97,14 +97,29 @@ export interface RuntimeProjectionRemote {
     reduceByField(query: RuntimeProjectionMatchQuery, root: RuntimeProjectionMatchBinding, group: RuntimeProjectionMatchField, reducers: RuntimeProjectionReduction[], inputs: (RuntimeProjectionMatchField | null)[]): Promise<RuntimeProjectionMatchResult>;
     reduceByFields(query: RuntimeProjectionMatchQuery, root: RuntimeProjectionMatchBinding, groups: RuntimeProjectionMatchField[], reducers: RuntimeProjectionReduction[], inputs: (RuntimeProjectionMatchField | null)[]): Promise<RuntimeProjectionMatchResult>;
 }
+declare const nativeProjectedFacadeProof: unique symbol;
+/** @internal Opaque non-serializable proof retained only by generated successor facades. */
+export interface NativeProjectedFacadeProof {
+    readonly [nativeProjectedFacadeProof]: never;
+}
+/** @internal Private wire plus exact root and role-player proofs. */
+export interface NativeProjectedValueEnvelope {
+    readonly json: string;
+    rootProof(): NativeProjectedFacadeProof;
+    roleProof(roleName: string, playerIndex: number): NativeProjectedFacadeProof;
+}
 export interface NativeProjectedManager {
+    insertProjected(instanceJson: string, proofs: (NativeProjectedFacadeProof | null)[]): NativeProjectedValueEnvelope;
     insertJson(instanceJson: string): string;
     insertManyJson(batchJson: string): string;
+    putProjected(instanceJson: string, proofs: (NativeProjectedFacadeProof | null)[]): NativeProjectedValueEnvelope;
     putJson(instanceJson: string): string;
     putManyJson(batchJson: string): string;
+    updateProjected(iid: string, instanceJson: string, proofs: (NativeProjectedFacadeProof | null)[]): NativeProjectedValueEnvelope;
     updateJson(iid: string, instanceJson: string): string;
     deleteByIid(iid: string): void;
     filterJson(filtersJson: string): NativeProjectedManager;
+    getByIidProjected(iid: string): NativeProjectedValueEnvelope | null;
     getByIidJson(iid: string): string;
     allJson(): string;
     firstJson(): string;
@@ -125,6 +140,7 @@ interface NativeProjectionHandle {
     rejectGeneratedTokenPackageMismatch(pathJson: string): void;
     revalidateMatchDiagnostic(diagnostic: string): string;
     materializeMatchThingJson(thing: RuntimeProjectionMatchThing): string;
+    materializeMatchThingProjected(thing: RuntimeProjectionMatchThing): NativeProjectedValueEnvelope;
 }
 /** A verified native projection scoped to one generated package instance. */
 export declare class InstalledRuntimeProjection {
@@ -152,6 +168,8 @@ export declare class InstalledRuntimeProjection {
     assertConnection(connection: RuntimeProjectionConnection): void;
     /** @internal Materialize one native-validated thing as projected private JSON. */
     materializeMatchThingJson(thing: RuntimeProjectionMatchThing): string;
+    /** @internal Materialize one successor query thing with its exact opaque proof. */
+    materializeMatchThingProjected(thing: RuntimeProjectionMatchThing): NativeProjectedValueEnvelope;
     /** @internal Execute one selected-row request through the verified projection. */
     executeRows(query: RuntimeProjectionMatchQuery, connection: RuntimeProjectionConnection, orders: RuntimeProjectionMatchOrder[], offset: bigint, limit: bigint, cardinality: "exactly_one" | "bounded_many"): RuntimeProjectionMatchResult;
     /** @internal Execute one distinct-root page through the verified projection. */

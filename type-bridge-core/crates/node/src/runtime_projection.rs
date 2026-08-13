@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::str::FromStr;
 use std::sync::Arc;
 
-use napi::bindgen_prelude::BigInt;
+use napi::bindgen_prelude::{BigInt, External};
 use napi::{Error, Status};
 use napi_derive::napi;
 use serde::{Deserialize, Serialize};
@@ -35,9 +35,9 @@ use type_bridge_orm::_dynamic::{
 use type_bridge_orm::_manager::{DynamicEntityManager, DynamicRelationManager};
 use type_bridge_orm::{
     AnswerCancellation, AttributeValue, Database, HydratedAttribute, InstalledRuntimeProjection,
-    ProjectedAttributeValue, ProjectedCreate, ProjectedReference, ProjectedRolePlayer,
-    ProjectedThing, ProviderRuntimeOwner, QueryExecutionResourceLimits, ThingKind,
-    TransactionContext, ValueType,
+    ProjectedAttributeValue, ProjectedCreate, ProjectedCrudExecutor, ProjectedReference,
+    ProjectedRolePlayer, ProjectedThing, ProviderRuntimeOwner, QueryExecutionResourceLimits,
+    ThingKind, TransactionContext, ValueType,
 };
 use type_bridge_schema::{decode_schema_authority, schema_authority_capability_vocabulary};
 use type_bridge_schema_codegen::{TypeScriptEmitter, verify_projection_evidence};
@@ -61,6 +61,88 @@ struct ModelRegistration {
 struct InstalledPackage {
     projection: Arc<InstalledRuntimeProjection>,
     types_by_label: BTreeMap<String, TypeId>,
+}
+
+enum FacadeProjectionProof {
+    Thing(Arc<ProjectedThing>),
+    Reference(Arc<ProjectedReference>),
+}
+
+impl FacadeProjectionProof {
+    fn reference(
+        &self,
+        installed: &InstalledRuntimeProjection,
+    ) -> Result<ProjectedReference, SdkExecutionDiagnostic> {
+        match self {
+            Self::Thing(thing) => thing.try_to_reference(installed),
+            Self::Reference(reference) => {
+                reference.validate_for(installed)?;
+                Ok(reference.as_ref().clone())
+            }
+        }
+    }
+}
+
+/// Opaque native proof retained only by an ordered generated facade WeakMap.
+pub struct NodeProjectedFacadeProof {
+    proof: FacadeProjectionProof,
+}
+
+/// One private projected wire and its non-serializable facade proofs.
+#[napi]
+pub struct NodeProjectedValueEnvelope {
+    package: Arc<InstalledPackage>,
+    json: String,
+    thing: Arc<ProjectedThing>,
+}
+
+#[napi]
+impl NodeProjectedValueEnvelope {
+    /// Return the public generated-value wire without any origin evidence.
+    #[napi(getter)]
+    pub fn json(&self) -> String {
+        self.json.clone()
+    }
+
+    /// Clone the opaque proof for the root complete facade.
+    #[napi(js_name = "rootProof")]
+    pub fn root_proof(&self) -> External<NodeProjectedFacadeProof> {
+        External::new(NodeProjectedFacadeProof {
+            proof: FacadeProjectionProof::Thing(Arc::clone(&self.thing)),
+        })
+    }
+
+    /// Clone the opaque reference proof for one exact hydrated role facade.
+    #[napi(js_name = "roleProof")]
+    pub fn role_proof(
+        &self,
+        role_name: String,
+        player_index: u32,
+    ) -> napi::Result<External<NodeProjectedFacadeProof>> {
+        let model = self
+            .package
+            .projection
+            .projection()
+            .models()
+            .get(self.thing.type_id())
+            .ok_or_else(|| runtime_error("projected proof root model is absent"))?;
+        let role_id = model
+            .query_tokens()
+            .roles()
+            .iter()
+            .find(|(_, role)| role.target_name().as_str() == role_name)
+            .map(|(role_id, _)| role_id)
+            .ok_or_else(|| runtime_error("projected proof role is absent"))?;
+        let player = self
+            .thing
+            .roles()
+            .get(role_id)
+            .and_then(|players| players.get(player_index as usize))
+            .ok_or_else(|| runtime_error("projected proof role player is absent"))?;
+        Ok(External::new(NodeProjectedFacadeProof {
+            proof: FacadeProjectionProof::Reference(Arc::new(player.reference().clone())),
+        }))
+    }
 }
 
 impl InstalledPackage {
@@ -537,6 +619,23 @@ impl NodeRuntimeProjection {
         };
         serde_json::to_string(&wire).map_err(json_error)
     }
+
+    /// Materialize one successor query thing with its exact opaque proof.
+    #[napi(js_name = "materializeMatchThingProjected")]
+    pub fn materialize_match_thing_projected(
+        &self,
+        thing: &NodeValidatedThingHandle,
+    ) -> napi::Result<NodeProjectedValueEnvelope> {
+        if !projection_uses_ordered_collections(self.package.projection.projection()) {
+            return Err(invalid_error(
+                "projected query proof materialization is reserved for the ordered successor runtime",
+            ));
+        }
+        let projected = thing.projected_thing().ok_or_else(|| {
+            runtime_error("validated query thing has no projected successor companion")
+        })?;
+        projected_envelope_arc(Arc::clone(&self.package), projected)
+    }
 }
 
 /// Exact CRUD manager backed only by verified projection descriptors.
@@ -552,6 +651,134 @@ pub struct NodeProjectedModelManager {
 
 #[napi]
 impl NodeProjectedModelManager {
+    /// Insert one ordered successor value through the common projected executor.
+    #[napi(js_name = "insertProjected")]
+    pub fn insert_projected(
+        &self,
+        instance_json: String,
+        proofs: Vec<Option<&External<NodeProjectedFacadeProof>>>,
+    ) -> napi::Result<NodeProjectedValueEnvelope> {
+        let instance = self.projected_create_input(&instance_json, &proofs)?;
+        let executor = ProjectedCrudExecutor::new(self.package.projection.as_ref());
+        let projected = match (self.type_id.kind(), &self.database, &self.transaction) {
+            (TypeKind::Entity, Some(database), None) => self
+                .runtime
+                .block_on(executor.insert_entity(database, &instance)),
+            (TypeKind::Entity, None, Some(transaction)) => self
+                .runtime
+                .block_on(executor.insert_entity_in_transaction(transaction, &instance)),
+            (TypeKind::Relation, Some(database), None) => self
+                .runtime
+                .block_on(executor.insert_relation(database, &instance)),
+            (TypeKind::Relation, None, Some(transaction)) => self
+                .runtime
+                .block_on(executor.insert_relation_in_transaction(transaction, &instance)),
+            _ => return Err(runtime_error("projected manager has no execution target")),
+        }
+        .map_err(napi_sdk_diagnostic)?;
+        projected_envelope(Arc::clone(&self.package), projected)
+    }
+
+    /// Put one ordered successor value through the common projected executor.
+    #[napi(js_name = "putProjected")]
+    pub fn put_projected(
+        &self,
+        instance_json: String,
+        proofs: Vec<Option<&External<NodeProjectedFacadeProof>>>,
+    ) -> napi::Result<NodeProjectedValueEnvelope> {
+        let instance = self.projected_create_input(&instance_json, &proofs)?;
+        let executor = ProjectedCrudExecutor::new(self.package.projection.as_ref());
+        let projected = match (self.type_id.kind(), &self.database, &self.transaction) {
+            (TypeKind::Entity, Some(database), None) => self
+                .runtime
+                .block_on(executor.put_entity(database, &instance)),
+            (TypeKind::Entity, None, Some(transaction)) => self
+                .runtime
+                .block_on(executor.put_entity_in_transaction(transaction, &instance)),
+            (TypeKind::Relation, Some(database), None) => self
+                .runtime
+                .block_on(executor.put_relation(database, &instance)),
+            (TypeKind::Relation, None, Some(transaction)) => self
+                .runtime
+                .block_on(executor.put_relation_in_transaction(transaction, &instance)),
+            _ => return Err(runtime_error("projected manager has no execution target")),
+        }
+        .map_err(napi_sdk_diagnostic)?;
+        projected_envelope(Arc::clone(&self.package), projected)
+    }
+
+    /// Replace one ordered successor value through the common projected executor.
+    #[napi(js_name = "updateProjected")]
+    pub fn update_projected(
+        &self,
+        iid: String,
+        instance_json: String,
+        proofs: Vec<Option<&External<NodeProjectedFacadeProof>>>,
+    ) -> napi::Result<NodeProjectedValueEnvelope> {
+        let instance = self.projected_create_input(&instance_json, &proofs)?;
+        let executor = ProjectedCrudExecutor::new(self.package.projection.as_ref());
+        let projected = match (self.type_id.kind(), &self.database, &self.transaction) {
+            (TypeKind::Entity, Some(database), None) => self
+                .runtime
+                .block_on(executor.update_entity(database, &iid, &instance)),
+            (TypeKind::Entity, None, Some(transaction)) => self
+                .runtime
+                .block_on(executor.update_entity_in_transaction(transaction, &iid, &instance)),
+            (TypeKind::Relation, Some(database), None) => self
+                .runtime
+                .block_on(executor.update_relation(database, &iid, &instance)),
+            (TypeKind::Relation, None, Some(transaction)) => self
+                .runtime
+                .block_on(executor.update_relation_in_transaction(transaction, &iid, &instance)),
+            _ => return Err(runtime_error("projected manager has no execution target")),
+        }
+        .map_err(napi_sdk_diagnostic)?;
+        projected_envelope(Arc::clone(&self.package), projected)
+    }
+
+    /// Read one ordered successor value through the common projected executor.
+    #[napi(js_name = "getByIidProjected")]
+    pub fn get_by_iid_projected(
+        &self,
+        iid: String,
+    ) -> napi::Result<Option<NodeProjectedValueEnvelope>> {
+        if !projection_uses_ordered_collections(self.package.projection.projection()) {
+            return Err(invalid_error(
+                "common projected execution is reserved for the ordered successor runtime",
+            ));
+        }
+        let executor = ProjectedCrudExecutor::new(self.package.projection.as_ref());
+        let projected = match (self.type_id.kind(), &self.database, &self.transaction) {
+            (TypeKind::Entity, Some(database), None) => self
+                .runtime
+                .block_on(executor.get_entity_by_iid(database, &self.type_id, &iid)),
+            (TypeKind::Entity, None, Some(transaction)) => {
+                self.runtime
+                    .block_on(executor.get_entity_by_iid_in_transaction(
+                        transaction,
+                        &self.type_id,
+                        &iid,
+                    ))
+            }
+            (TypeKind::Relation, Some(database), None) => self
+                .runtime
+                .block_on(executor.get_relation_by_iid(database, &self.type_id, &iid)),
+            (TypeKind::Relation, None, Some(transaction)) => {
+                self.runtime
+                    .block_on(executor.get_relation_by_iid_in_transaction(
+                        transaction,
+                        &self.type_id,
+                        &iid,
+                    ))
+            }
+            _ => return Err(runtime_error("projected manager has no execution target")),
+        }
+        .map_err(napi_sdk_diagnostic)?;
+        projected
+            .map(|projected| projected_envelope(Arc::clone(&self.package), projected))
+            .transpose()
+    }
+
     /// Insert one exact complete value and return its hydrated private wire.
     #[napi(js_name = "insertJson")]
     pub fn insert_json(&self, instance_json: String) -> napi::Result<String> {
@@ -831,6 +1058,26 @@ impl NodeProjectedModelManager {
 }
 
 impl NodeProjectedModelManager {
+    fn projected_create_input(
+        &self,
+        instance_json: &str,
+        proofs: &[Option<&External<NodeProjectedFacadeProof>>],
+    ) -> napi::Result<ProjectedCreate> {
+        if !projection_uses_ordered_collections(self.package.projection.projection()) {
+            return Err(invalid_error(
+                "common projected execution is reserved for the ordered successor runtime",
+            ));
+        }
+        let instance = parse_wire(instance_json)?;
+        ensure_root_wire(self.package.as_ref(), &instance, &self.type_id)?;
+        let proofs = proofs
+            .iter()
+            .map(|proof| proof.map(AsRef::as_ref))
+            .collect::<Vec<_>>();
+        project_create_wire_with_proofs(self.package.as_ref(), &self.type_id, &instance, &proofs)
+            .map_err(napi_sdk_diagnostic)
+    }
+
     fn validate_ordered_single_write(&self, instance: &ProjectedWire) -> napi::Result<()> {
         if projection_uses_ordered_collections(self.package.projection.projection()) {
             project_create_wire(self.package.as_ref(), &self.type_id, instance)
@@ -1001,6 +1248,25 @@ struct ProjectedWire {
     iid: Option<String>,
     value: Option<ScalarWire>,
     values: BTreeMap<String, Value>,
+}
+
+fn projected_envelope(
+    package: Arc<InstalledPackage>,
+    thing: ProjectedThing,
+) -> napi::Result<NodeProjectedValueEnvelope> {
+    projected_envelope_arc(package, Arc::new(thing))
+}
+
+fn projected_envelope_arc(
+    package: Arc<InstalledPackage>,
+    thing: Arc<ProjectedThing>,
+) -> napi::Result<NodeProjectedValueEnvelope> {
+    let json = wire_json(&projected_thing_wire(package.as_ref(), thing.as_ref())?)?;
+    Ok(NodeProjectedValueEnvelope {
+        package,
+        json,
+        thing,
+    })
 }
 
 fn install_authority_backed_projection(
@@ -1234,6 +1500,104 @@ fn project_create_wire(
         .values
         .keys()
         .any(|name| !allowed.contains(name.as_str()))
+    {
+        return Err(malformed_projected_create_at([projected_path()]));
+    }
+    ProjectedCreate::try_new(&package.projection, id.clone(), fields, roles)
+}
+
+fn project_create_wire_with_proofs(
+    package: &InstalledPackage,
+    id: &TypeId,
+    wire: &ProjectedWire,
+    proofs: &[Option<&NodeProjectedFacadeProof>],
+) -> Result<ProjectedCreate, SdkExecutionDiagnostic> {
+    let model = package
+        .projection
+        .projection()
+        .models()
+        .get(id)
+        .ok_or_else(|| {
+            malformed_projected_create_at([SdkDiagnosticPathSegment::Type(id.clone())])
+        })?;
+    let projected_path = || SdkDiagnosticPathSegment::Type(id.clone());
+    let mut allowed = BTreeSet::new();
+    let mut fields = Vec::with_capacity(model.create().fields().len());
+    for field in model.create().fields() {
+        let token = model
+            .query_tokens()
+            .fields()
+            .get(field.token())
+            .ok_or_else(|| malformed_projected_create_at([projected_path()]))?;
+        allowed.insert(token.target_name().as_str());
+        let values = projected_wire_items(
+            wire.values.get(token.target_name().as_str()),
+            field.multiplicity(),
+            [
+                projected_path(),
+                SdkDiagnosticPathSegment::Field(field.token().clone()),
+            ],
+        )?;
+        let projected = values
+            .iter()
+            .enumerate()
+            .map(|(index, value)| {
+                project_attribute_wire(package, value).map_err(|diagnostic| {
+                    rebase_sdk_diagnostic(
+                        diagnostic,
+                        [
+                            projected_path(),
+                            SdkDiagnosticPathSegment::Field(field.token().clone()),
+                            SdkDiagnosticPathSegment::Index(projected_index(index)),
+                        ],
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        fields.push((field.token().clone(), projected));
+    }
+
+    let mut proof_index = 0_usize;
+    let mut roles = Vec::with_capacity(model.create().roles().len());
+    for (role_id, role) in model.create().roles() {
+        let token = model
+            .query_tokens()
+            .roles()
+            .get(role_id)
+            .ok_or_else(|| malformed_projected_create_at([projected_path()]))?;
+        allowed.insert(token.target_name().as_str());
+        let values = projected_wire_items(
+            wire.values.get(token.target_name().as_str()),
+            role.multiplicity(),
+            [
+                projected_path(),
+                SdkDiagnosticPathSegment::Role(role_id.clone()),
+            ],
+        )?;
+        let mut projected = Vec::with_capacity(values.len());
+        for (index, value) in values.iter().enumerate() {
+            let operation_path = [
+                projected_path(),
+                SdkDiagnosticPathSegment::Role(role_id.clone()),
+                SdkDiagnosticPathSegment::Index(projected_index(index)),
+            ];
+            let proof = proofs.get(proof_index).copied().flatten();
+            proof_index = proof_index.saturating_add(1);
+            projected.push(project_reference_wire_with_proof(
+                package,
+                role.players(),
+                value,
+                &operation_path,
+                proof,
+            )?);
+        }
+        roles.push((role_id.clone(), projected));
+    }
+    if proof_index != proofs.len()
+        || wire
+            .values
+            .keys()
+            .any(|name| !allowed.contains(name.as_str()))
     {
         return Err(malformed_projected_create_at([projected_path()]));
     }
@@ -1625,6 +1989,29 @@ fn project_reference_wire(
             rebase_sdk_diagnostic(diagnostic, path)
         },
     )
+}
+
+fn project_reference_wire_with_proof(
+    package: &InstalledPackage,
+    allowed_players: &BTreeSet<type_bridge_contract::projection::ProjectedModelUse>,
+    wire: &ProjectedWire,
+    operation_path: &[SdkDiagnosticPathSegment],
+    proof: Option<&NodeProjectedFacadeProof>,
+) -> Result<ProjectedReference, SdkExecutionDiagnostic> {
+    let visible = project_reference_wire(package, allowed_players, wire, operation_path)?;
+    let Some(proof) = proof else {
+        return Ok(visible);
+    };
+    let retained = proof
+        .proof
+        .reference(&package.projection)
+        .map_err(|diagnostic| rebase_sdk_diagnostic(diagnostic, operation_path.iter().cloned()))?;
+    if visible != retained {
+        return Err(malformed_projected_create_at(
+            operation_path.iter().cloned(),
+        ));
+    }
+    Ok(retained)
 }
 
 fn rebase_sdk_diagnostic(
@@ -2249,6 +2636,226 @@ fn attribute_json_value(value: &AttributeValue) -> Value {
         AttributeValue::Long(value) => serde_json::json!(value),
         AttributeValue::Double(value) => serde_json::json!(value),
         AttributeValue::Boolean(value) => serde_json::json!(value),
+    }
+}
+
+fn projected_thing_wire(
+    package: &InstalledPackage,
+    thing: &ProjectedThing,
+) -> napi::Result<ProjectedWire> {
+    thing
+        .validate_for(&package.projection)
+        .map_err(napi_sdk_diagnostic)?;
+    let id = thing.type_id();
+    let model = package
+        .projection
+        .projection()
+        .models()
+        .get(id)
+        .ok_or_else(|| runtime_error("projected thing model is absent"))?;
+    let mut values = projected_fields_wire(package, id, thing.fields(), false)?;
+    if thing.roles().len() != model.complete_read().roles().len() {
+        return Err(runtime_error(
+            "projected thing roles do not match its complete-read projection",
+        ));
+    }
+    for (role_id, read) in model.complete_read().roles() {
+        let token = model
+            .query_tokens()
+            .roles()
+            .get(role_id)
+            .ok_or_else(|| runtime_error("projected read role has no query token"))?;
+        let players = thing
+            .roles()
+            .get(role_id)
+            .ok_or_else(|| runtime_error("projected thing omitted a selected role"))?
+            .iter()
+            .map(|player| projected_role_player_wire(package, player))
+            .collect::<napi::Result<Vec<_>>>()?;
+        values.insert(
+            token.target_name().as_str().to_owned(),
+            projected_read_member_value(players, read.multiplicity())?,
+        );
+    }
+    Ok(ProjectedWire {
+        type_key: canonical_type_key(id)?,
+        form: WireForm::Complete,
+        iid: Some(thing.iid().to_owned()),
+        value: None,
+        values,
+    })
+}
+
+fn projected_role_player_wire(
+    package: &InstalledPackage,
+    player: &ProjectedRolePlayer,
+) -> napi::Result<ProjectedWire> {
+    let form = match player.exact_form() {
+        Some(ProjectedModelForm::Complete) => WireForm::Complete,
+        Some(ProjectedModelForm::Reference) => WireForm::Reference,
+        None => {
+            return Err(runtime_error(
+                "successor hydration requires exact role-player form evidence",
+            ));
+        }
+    };
+    let values = match form {
+        WireForm::Complete => {
+            projected_fields_wire(package, player.type_id(), player.fields(), false)?
+        }
+        WireForm::Reference => projected_reference_fields_wire(package, player.reference())?,
+    };
+    Ok(ProjectedWire {
+        type_key: canonical_type_key(player.type_id())?,
+        form,
+        iid: Some(player.iid().to_owned()),
+        value: None,
+        values,
+    })
+}
+
+fn projected_reference_fields_wire(
+    package: &InstalledPackage,
+    reference: &ProjectedReference,
+) -> napi::Result<BTreeMap<String, Value>> {
+    reference
+        .validate_for(&package.projection)
+        .map_err(napi_sdk_diagnostic)?;
+    let model = package
+        .projection
+        .projection()
+        .models()
+        .get(reference.type_id())
+        .ok_or_else(|| runtime_error("projected reference model is absent"))?;
+    if reference.keys().len() != model.reference_read().key_fields().len() {
+        return Err(runtime_error(
+            "projected hydrated reference keys do not match its reference projection",
+        ));
+    }
+    let mut values = BTreeMap::new();
+    for field_id in model.reference_read().key_fields() {
+        let token = model
+            .query_tokens()
+            .fields()
+            .get(field_id)
+            .ok_or_else(|| runtime_error("projected reference key has no query token"))?;
+        let read = model
+            .complete_read()
+            .fields()
+            .iter()
+            .find(|field| field.token() == field_id)
+            .ok_or_else(|| runtime_error("projected reference key has no read projection"))?;
+        let value = reference
+            .keys()
+            .get(field_id)
+            .ok_or_else(|| runtime_error("projected hydrated reference omitted a key"))?;
+        values.insert(
+            token.target_name().as_str().to_owned(),
+            projected_read_member_value(
+                vec![projected_attribute_value_wire(package, value)?],
+                read.multiplicity(),
+            )?,
+        );
+    }
+    Ok(values)
+}
+
+fn projected_fields_wire(
+    package: &InstalledPackage,
+    id: &TypeId,
+    fields: &BTreeMap<OwnsFactId, Vec<ProjectedAttributeValue>>,
+    reference: bool,
+) -> napi::Result<BTreeMap<String, Value>> {
+    let model = package
+        .projection
+        .projection()
+        .models()
+        .get(id)
+        .ok_or_else(|| runtime_error("projected hydrated model is absent"))?;
+    let selected = model
+        .complete_read()
+        .fields()
+        .iter()
+        .filter(|field| !reference || model.reference_read().key_fields().contains(field.token()))
+        .collect::<Vec<_>>();
+    if fields.len() != selected.len() {
+        return Err(runtime_error(
+            "projected hydrated fields do not match the selected model form",
+        ));
+    }
+    let mut values = BTreeMap::new();
+    for read in selected {
+        let field_id = read.token();
+        let token = model
+            .query_tokens()
+            .fields()
+            .get(field_id)
+            .ok_or_else(|| runtime_error("projected hydrated field has no query token"))?;
+        let projected = fields
+            .get(field_id)
+            .ok_or_else(|| runtime_error("projected hydrated model omitted a selected field"))?;
+        let hydrated = projected
+            .iter()
+            .map(|value| projected_attribute_value_wire(package, value))
+            .collect::<napi::Result<Vec<_>>>()?;
+        values.insert(
+            token.target_name().as_str().to_owned(),
+            projected_read_member_value(hydrated, read.multiplicity())?,
+        );
+    }
+    Ok(values)
+}
+
+fn projected_attribute_value_wire(
+    package: &InstalledPackage,
+    value: &ProjectedAttributeValue,
+) -> napi::Result<ProjectedWire> {
+    value
+        .validate_for(&package.projection)
+        .map_err(napi_sdk_diagnostic)?;
+    let model = package
+        .projection
+        .projection()
+        .models()
+        .get(value.attribute_type())
+        .ok_or_else(|| runtime_error("projected attribute model is absent"))?;
+    let value_type = model
+        .declaration()
+        .value_type()
+        .ok_or_else(|| runtime_error("projected attribute has no scalar domain"))?;
+    Ok(ProjectedWire {
+        type_key: canonical_type_key(value.attribute_type())?,
+        form: WireForm::Complete,
+        iid: None,
+        value: Some(attribute_to_scalar(
+            &value.to_attribute_value(),
+            projected_value_type(value_type),
+        )?),
+        values: BTreeMap::new(),
+    })
+}
+
+fn projected_read_member_value(
+    values: Vec<ProjectedWire>,
+    multiplicity: ProjectedMultiplicity,
+) -> napi::Result<Value> {
+    let count = u64::try_from(values.len())
+        .map_err(|_| runtime_error("projected hydrated value count exceeds u64"))?;
+    let cardinality = multiplicity.cardinality();
+    if count < cardinality.min() || cardinality.max().is_some_and(|maximum| count > maximum) {
+        return Err(runtime_error(
+            "projected hydrated value violates its projected cardinality",
+        ));
+    }
+    match multiplicity.container() {
+        ProjectedContainer::Scalar => values
+            .into_iter()
+            .next()
+            .map(serde_json::to_value)
+            .transpose()
+            .map_err(json_error)
+            .map(|value| value.unwrap_or(Value::Null)),
+        ProjectedContainer::Sequence => serde_json::to_value(values).map_err(json_error),
     }
 }
 
@@ -3167,6 +3774,119 @@ entities:
     }
 
     #[test]
+    fn ordered_facade_proof_restoration_requires_exact_visible_iid_and_keys() {
+        let runtime = ordered_runtime();
+        let package = runtime.package.as_ref();
+        let person_id = TypeId::new(TypeKind::Entity, "person").unwrap();
+        let membership_id = TypeId::new(TypeKind::Relation, "membership").unwrap();
+        let membership = package
+            .projection
+            .projection()
+            .models()
+            .get(&membership_id)
+            .unwrap();
+        let (role_id, role) = membership.create().roles().iter().next().unwrap();
+        let operation_path = [
+            SdkDiagnosticPathSegment::Type(membership_id),
+            SdkDiagnosticPathSegment::Role(role_id.clone()),
+            SdkDiagnosticPathSegment::Index(0),
+        ];
+        let identifier = attribute_wire(
+            "identifier",
+            ValueTypeTag::String,
+            Value::String("person-1".into()),
+        );
+        let score = attribute_wire("score", ValueTypeTag::Long, Value::String("3".into()));
+        let person = ProjectedWire {
+            type_key: canonical_type_key(&person_id).unwrap(),
+            form: WireForm::Complete,
+            iid: Some("0xa1".into()),
+            value: None,
+            values: BTreeMap::from([
+                (
+                    "identifier".into(),
+                    serde_json::to_value(&identifier).unwrap(),
+                ),
+                ("score".into(), serde_json::to_value(score).unwrap()),
+                ("tag".into(), Value::Array(Vec::new())),
+            ]),
+        };
+        let visible =
+            project_reference_wire(package, role.players(), &person, &operation_path).unwrap();
+        assert!(visible.origin_carrier().is_none());
+
+        let reference_proof = NodeProjectedFacadeProof {
+            proof: FacadeProjectionProof::Reference(Arc::new(visible.clone())),
+        };
+        let restored = project_reference_wire_with_proof(
+            package,
+            role.players(),
+            &person,
+            &operation_path,
+            Some(&reference_proof),
+        )
+        .unwrap();
+        assert_eq!(restored, visible);
+
+        let complete = project_thing_wire(package, &person_id, &person).unwrap();
+        let complete_proof = NodeProjectedFacadeProof {
+            proof: FacadeProjectionProof::Thing(Arc::new(complete)),
+        };
+        let restored = project_reference_wire_with_proof(
+            package,
+            role.players(),
+            &person,
+            &operation_path,
+            Some(&complete_proof),
+        )
+        .unwrap();
+        assert_eq!(restored, visible);
+
+        let mut changed_iid = person.clone();
+        changed_iid.iid = Some("0xa2".into());
+        let error = project_reference_wire_with_proof(
+            package,
+            role.players(),
+            &changed_iid,
+            &operation_path,
+            Some(&complete_proof),
+        )
+        .unwrap_err();
+        assert_eq!(error.code().as_str(), "malformed_projected_create");
+
+        let mut changed_key = person;
+        changed_key.values.insert(
+            "identifier".into(),
+            serde_json::to_value(attribute_wire(
+                "identifier",
+                ValueTypeTag::String,
+                Value::String("person-2".into()),
+            ))
+            .unwrap(),
+        );
+        let error = project_reference_wire_with_proof(
+            package,
+            role.players(),
+            &changed_key,
+            &operation_path,
+            Some(&reference_proof),
+        )
+        .unwrap_err();
+        assert_eq!(error.code().as_str(), "malformed_projected_create");
+
+        let lookalike = project_reference_wire_with_proof(
+            package,
+            role.players(),
+            &changed_key,
+            &operation_path,
+            None,
+        )
+        .unwrap();
+        assert_ne!(lookalike, visible);
+        assert!(lookalike.origin_carrier().is_none());
+    }
+
+    #[test]
     fn ordered_single_writes_validate_before_iid_and_execution_target_resolution() {
         let runtime = ordered_runtime();
         let person_id = TypeId::new(TypeKind::Entity, "person").unwrap();
@@ -3233,6 +3953,23 @@ entities:
             .insert_json(serde_json::to_string(&valid).unwrap())
             .unwrap_err();
         assert_eq!(error.reason, "projected manager has no execution target");
+    }
+
+    #[test]
+    fn unordered_projected_read_rejects_before_execution_target_resolution() {
+        let runtime = runtime_for_schema(UNORDERED_SCHEMA, "node-legacy-read.yaml");
+        let person_id = TypeId::new(TypeKind::Entity, "person").unwrap();
+        let manager = manager_without_execution_target(&runtime, person_id);
+
+        let error = match manager.get_by_iid_projected("0xa1".into()) {
+            Err(error) => error,
+            Ok(_) => panic!("unordered projected read must fail"),
+        };
+
+        assert_eq!(
+            error.reason,
+            "common projected execution is reserved for the ordered successor runtime"
+        );
     }
 
     #[test]

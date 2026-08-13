@@ -773,7 +773,7 @@ and fails the byte-for-byte CI freshness check.
 - Node root: `crates/node/Cargo.toml` with default features
 - Release targets: `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `x86_64-apple-darwin`, `aarch64-apple-darwin`, `x86_64-pc-windows-msvc`, `aarch64-pc-windows-msvc`
 - Excluded from this package inventory: build-only and development-only dependencies, plus private TypeBridge-authored crates covered by the MIT section
-- Closure fingerprint: `sha256:6e4e45480371af9ac8fed0c6eadf9ca6cee0f45ac17b3e277f3523f61eae8fbc`
+- Closure fingerprint: `sha256:85138d776670238f0c8cd246e57c39dc4ce753176d26df93a1eefd6ca60879fc`
 
 Every evaluated package's complete cargo-about-resolved SPDX expression is retained
 below. The
@@ -821,7 +821,7 @@ bytes actually reproduced in this notice.
 | `clap_derive` | `4.6.0` | Python | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:6efb0476a1cc085077ed49357026d8c173bf33017278ef440f222fb9cbcb66e6` |
 | `clap_lex` | `1.1.0` | Python | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:6efb0476a1cc085077ed49357026d8c173bf33017278ef440f222fb9cbcb66e6` |
 | `colorchoice` | `1.0.5` | Python | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:6efb0476a1cc085077ed49357026d8c173bf33017278ef440f222fb9cbcb66e6` |
-| `convert_case` | `0.6.0` | Node | `crates.io` | `MIT` | `MIT@sha256:797087750c4103075e96bb7a60202a040812f8679ae2f7263148a1cc0b298d28` |
+| `convert_case` | `0.11.0` | Node | `crates.io` | `MIT` | `MIT@sha256:e100f7104b0df01d9ca81432d47c21ec30c86ab8b3d706f6c5c61f5a3c0a661c` |
 | `core-foundation` | `0.10.1` | Python, Node | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:62065228e42caebca7e7d7db1204cbb867033de5982ca4009928915e4095f3a3` |
 | `core-foundation-sys` | `0.8.7` | Python, Node | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:62065228e42caebca7e7d7db1204cbb867033de5982ca4009928915e4095f3a3` |
 | `cpufeatures` | `0.2.17` | Python, Node | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:ae9baa7beea910273c2f384c2a6b721fb7bd02bda3436074a1072e4ee689f985` |
@@ -834,7 +834,7 @@ bytes actually reproduced in this notice.
 | `crossbeam-queue` | `0.3.12` | Python, Node | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:5734ed989dfca1f625b40281ee9f4530f91b2411ec01cb748223e7eb87e201ab` |
 | `crossbeam-utils` | `0.8.21` | Python, Node | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:5734ed989dfca1f625b40281ee9f4530f91b2411ec01cb748223e7eb87e201ab` |
 | `crypto-common` | `0.1.7` | Python, Node | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:3521672491a3479422d5fe1aca6645dd2984090f85da6e5205abfb18fb7a6897` |
-| `ctor` | `0.2.9` | Node | `crates.io` | `Apache-2.0 OR MIT` | `MIT@sha256:fd80a26fbb3f644af1fa994134446702932968519797227e07a1368dea80f0bc` |
+| `ctor` | `1.0.13` | Node | `crates.io` | `Apache-2.0 OR MIT` | `MIT@sha256:fd80a26fbb3f644af1fa994134446702932968519797227e07a1368dea80f0bc` |
 | `curve25519-dalek` | `4.1.3` | Python, Node | `crates.io` | `BSD-3-Clause` | `BSD-3-Clause@sha256:cca0bd3c4fcdba74145ef9d49c62337e2c9fbf9368288f11d0547f1b0273219f` |
 | `curve25519-dalek-derive` | `0.1.1` | Python, Node | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3` |
 | `digest` | `0.10.7` | Python, Node | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:9e0dfd2dd4173a530e238cb6adb37aa78c34c6bc7444e0e10c1ab5d8881f63ba` |
@@ -897,7 +897,7 @@ bytes actually reproduced in this notice.
 | `itoa` | `1.0.18` | Python, Node | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3` |
 | `lazy_static` | `1.5.0` | Python, Node | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:0621878e61f0d0fda054bcbe02df75192c28bde1ecc8289cbd86aeba2dd72720` |
 | `libc` | `0.2.184` | Python, Node | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:123a331b5dbf04c30097fa43b8f858bc85df671fe776de498d01f3d6b7c1f69e` |
-| `libloading` | `0.8.9` | Node | `crates.io` | `ISC` | `ISC@sha256:b29f8b01452350c20dd1af16ef83b598fea3053578ccc1c7a0ef40e57be2620f` |
+| `libloading` | `0.9.0` | Node | `crates.io` | `ISC` | `ISC@sha256:b29f8b01452350c20dd1af16ef83b598fea3053578ccc1c7a0ef40e57be2620f` |
 | `linux-raw-sys` | `0.12.1` | Python, Node | `crates.io` | `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT` | `MIT@sha256:23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3` |
 | `litemap` | `0.8.2` | Python, Node | `crates.io` | `Unicode-3.0` | `Unicode-3.0@sha256:f367c1b8e1aa262435251e442901da4607b4650e0e63a026f5044473ecfb90f2` |
 | `lock_api` | `0.4.14` | Python, Node | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:c9a75f18b9ab2927829a208fc6aa2cf4e63b8420887ba29cdb265d6619ae82d5` |
@@ -911,11 +911,12 @@ bytes actually reproduced in this notice.
 | `mime` | `0.3.17` | Python, Node | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:df9cfd06d8a44d9a671eadd39ffd97f166481da015a30f45dfd27886209c5922` |
 | `miniz_oxide` | `0.8.9` | Python, Node | `crates.io` | `MIT OR Zlib OR Apache-2.0` | `MIT@sha256:4108245a1f2df9d4e94df8abed5b4ba0759bb2f9b40a6b939f1be141077ae50b` |
 | `mio` | `1.2.0` | Python, Node | `crates.io` | `MIT` | `MIT@sha256:07919255c7e04793d8ea760d6c2ce32d19f9ff02bdbdde3ce90b1e1880929a9b` |
-| `napi` | `2.16.17` | Node | `crates.io` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
-| `napi-derive` | `2.16.13` | Node | `crates.io` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
-| `napi-derive-backend` | `1.0.75` | Node | `crates.io` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
-| `napi-sys` | `2.4.0` | Node | `crates.io` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
+| `napi` | `3.12.1` | Node | `crates.io` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
+| `napi-derive` | `3.6.3` | Node | `crates.io` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
+| `napi-derive-backend` | `6.1.2` | Node | `crates.io` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
+| `napi-sys` | `3.3.0` | Node | `crates.io` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
 | `network-interface` | `2.0.5` | Python | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:08e9575b11163b3b6760789ce0e3ebe79e3aef174bb862f6b780054709e047c2` |
+| `nohash-hasher` | `0.2.0` | Node | `crates.io` | `Apache-2.0 OR MIT` | `MIT@sha256:ec353d4fecf7963b4c054384557e5dbc3c7a717997eb4a3815b315721a6aa75a` |
 | `nu-ansi-term` | `0.50.3` | Python, Node | `crates.io` | `MIT` | `MIT@sha256:284465860407420254e39be4e1bdcaaf2e7f2d18e06f9bab75bc75341a5d8501` |
 | `num-traits` | `0.2.19` | Python, Node | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:6485b8ed310d3f0340bf1ad1f47645069ce4069dcc6bb46c7d5c6faf41de1fdb` |
 | `once_cell` | `1.21.4` | Python, Node | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3` |
@@ -955,6 +956,7 @@ bytes actually reproduced in this notice.
 | `regex-automata` | `0.4.14` | Python, Node | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:6485b8ed310d3f0340bf1ad1f47645069ce4069dcc6bb46c7d5c6faf41de1fdb` |
 | `regex-syntax` | `0.8.10` | Python, Node | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:6485b8ed310d3f0340bf1ad1f47645069ce4069dcc6bb46c7d5c6faf41de1fdb` |
 | `ring` | `0.17.14` | Python, Node | `crates.io` | `Apache-2.0 AND ISC` | `Apache-2.0@sha256:a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2`, `ISC@sha256:f025ccfb7dfb6bdfedc75ca0f67acc69e6fb4998143d834f7c2f38a29989680f` |
+| `rustc-hash` | `2.1.3` | Node | `crates.io` | `Apache-2.0 OR MIT` | `MIT@sha256:23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3` |
 | `rustix` | `1.1.4` | Python, Node | `crates.io` | `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT` | `MIT@sha256:23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3` |
 | `rustix-linux-procfs` | `0.1.1` | Python, Node | `crates.io` | `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT` | `MIT@sha256:23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3` |
 | `rustls` | `0.23.37` | Python, Node | `crates.io` | `Apache-2.0 OR MIT OR ISC` | `MIT@sha256:709e3175b4212f7b13aa93971c9f62ff8c69ec45ad8c6532a7e0c41d7a7d6f8c` |
@@ -1025,7 +1027,7 @@ bytes actually reproduced in this notice.
 | `type-bridge-orm` | `2.1.0` | Python, Node | `workspace:crates/orm/Cargo.toml` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
 | `type-bridge-query` | `2.1.0` | Python, Node | `workspace:crates/query/Cargo.toml` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
 | `type-bridge-schema` | `2.1.0` | Python, Node | `workspace:crates/schema/Cargo.toml` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
-| `type-bridge-schema-codegen` | `2.1.0` | Python | `workspace:crates/schema-codegen/Cargo.toml` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
+| `type-bridge-schema-codegen` | `2.1.0` | Python, Node | `workspace:crates/schema-codegen/Cargo.toml` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
 | `type-bridge-schema-compat` | `2.1.0` | Python, Node | `workspace:crates/schema-compat/Cargo.toml` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
 | `type-bridge-schema-migration` | `2.1.0` | Python | `workspace:crates/schema-migration/Cargo.toml` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
 | `type-bridge-schema-migration-typedb` | `2.1.0` | Python | `workspace:crates/schema-migration-typedb/Cargo.toml` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
@@ -3345,32 +3347,6 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-#### `MIT` — `sha256:797087750c4103075e96bb7a60202a040812f8679ae2f7263148a1cc0b298d28`
-
-~~~~text
-MIT License
-
-Copyright (c) 2020 David Purdum
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-~~~~
-
 #### `MIT` — `sha256:7b63ecd5f1902af1b63729947373683c32745c16a10e8e6292e2e2dcd7e90ae0`
 
 ~~~~text
@@ -4487,6 +4463,32 @@ THE SOFTWARE.
 
 ~~~~
 
+#### `MIT` — `sha256:e100f7104b0df01d9ca81432d47c21ec30c86ab8b3d706f6c5c61f5a3c0a661c`
+
+~~~~text
+MIT License
+
+Copyright (c) 2025 rutrum
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+~~~~
+
 #### `MIT` — `sha256:e20fa2b8e0a2565f24a792b94b4bf4b6c2b9d36f781d8a9516e218a036e6677a`
 
 ~~~~text
@@ -4593,6 +4595,29 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+~~~~
+
+#### `MIT` — `sha256:ec353d4fecf7963b4c054384557e5dbc3c7a717997eb4a3815b315721a6aa75a`
+
+~~~~text
+Copyright 2018 Parity Technologies (UK) Ltd.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS
+OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
 #### `MIT` — `sha256:ecc269ef87fd38a1d98e30bfac9ba964a9dbd9315c3770fed98d4d7cb5882055`

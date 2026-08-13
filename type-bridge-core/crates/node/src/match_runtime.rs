@@ -21,11 +21,12 @@ use type_bridge_orm::{
     FunctionArgumentHandle, FunctionCallHandle, FunctionHandle, FunctionValueHandle,
     HydratedAttribute, HydratedRole, HydratedRolePlayer, HydratedThing, InstalledRuntimeProjection,
     MatchError, MatchRequest, MatchResult, MissingOrder, OrderHandle, PredicateHandle,
-    ProjectedAttributeValue, QueryExecutionDeadline, QueryExecutionResourceLimits, QueryHandle,
-    ReducedValue, Reduction, ReductionRow, RoleHandle, RowCardinality, SelectionHandle,
-    SessionHandle, ShapeHandle, SlotValue, SortDirection, ThingKind, UnvalidatedMatchRequest,
-    ValidatedMatchRequest, ValidatedMatchResult, Window, lower_match_error,
-    query_resource_closed_diagnostic,
+    ProjectedAttributeValue, ProjectedQueryOrigin, ProjectedQuerySlotValue, ProjectedQueryValue,
+    ProjectedReductionGroup, ProjectedThing, QueryExecutionDeadline, QueryExecutionResourceLimits,
+    QueryHandle, ReducedValue, Reduction, ReductionRow, RoleHandle, RowCardinality,
+    SelectionHandle, SessionHandle, ShapeHandle, SlotValue, SortDirection, ThingKind,
+    UnvalidatedMatchRequest, ValidatedMatchRequest, ValidatedMatchResult, Window,
+    lower_match_error, query_resource_closed_diagnostic,
 };
 
 #[cfg(test)]
@@ -516,6 +517,21 @@ impl NodeMatchSessionHandle {
     }
 }
 
+fn supports_projected_query_companion(installed: &InstalledRuntimeProjection) -> bool {
+    installed.projection().models().values().any(|model| {
+        model
+            .query_tokens()
+            .fields()
+            .values()
+            .any(|field| !field.multiplicity().collection_mode().is_unordered())
+            || model
+                .query_tokens()
+                .roles()
+                .values()
+                .any(|role| !role.multiplicity().collection_mode().is_unordered())
+    })
+}
+
 #[napi]
 impl NodeMatchSessionHandle {
     #[napi]
@@ -665,6 +681,11 @@ impl NodeMatchSessionHandle {
             .query(shape.inner.clone())
             .map(|inner| NodeMatchQueryHandle {
                 inner,
+                installed: self
+                    .installed
+                    .as_ref()
+                    .filter(|installed| supports_projected_query_companion(installed))
+                    .map(Arc::clone),
                 output: Arc::clone(&shape.output),
                 lineage: Arc::new(()),
                 resources: self.resources,
@@ -1072,6 +1093,7 @@ pub struct NodeMatchShapeHandle {
 #[napi]
 pub struct NodeMatchQueryHandle {
     inner: QueryHandle,
+    installed: Option<Arc<InstalledRuntimeProjection>>,
     output: Arc<NodeOutputShape>,
     lineage: Arc<()>,
     resources: QueryExecutionResourceLimits,
@@ -1096,12 +1118,15 @@ impl NodeMatchQueryHandle {
 
     pub(crate) fn result_context(
         &self,
+        resources: QueryExecutionResourceLimits,
         deadline: QueryExecutionDeadline,
         cancellation: AnswerCancellation,
     ) -> NodeMatchResultContext {
         NodeMatchResultContext {
+            installed: self.installed.as_ref().map(Arc::clone),
             output: Arc::clone(&self.output),
             lineage: Arc::clone(&self.lineage),
+            resources,
             deadline,
             cancellation,
         }
@@ -1115,9 +1140,66 @@ impl NodeMatchQueryHandle {
         self.resources.direct_with_deadline(cancellation, deadline)
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn owned_result(
+        &self,
+        database: &type_bridge_orm::Database,
+        request: ValidatedMatchRequest,
+        result: ValidatedMatchResult,
+        registry: Arc<DescriptorRegistry>,
+        deadline: QueryExecutionDeadline,
+        cancellation: AnswerCancellation,
+    ) -> Result<NodeValidatedMatchResultHandle> {
+        validated_result_handle(
+            self.installed.as_ref(),
+            self.installed
+                .as_ref()
+                .map(|_| ProjectedQueryOrigin::for_database(database)),
+            request,
+            result,
+            registry,
+            Arc::clone(&self.output),
+            Arc::clone(&self.lineage),
+            self.resources,
+            deadline,
+            cancellation,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn borrowed_result(
+        &self,
+        transaction: &type_bridge_orm::TransactionContext,
+        request: ValidatedMatchRequest,
+        result: ValidatedMatchResult,
+        registry: Arc<DescriptorRegistry>,
+        deadline: QueryExecutionDeadline,
+        cancellation: AnswerCancellation,
+    ) -> Result<NodeValidatedMatchResultHandle> {
+        let origin = self
+            .installed
+            .as_ref()
+            .map(|_| ProjectedQueryOrigin::for_transaction(transaction))
+            .transpose()
+            .map_err(napi_sdk_diagnostic)?;
+        validated_result_handle(
+            self.installed.as_ref(),
+            origin,
+            request,
+            result,
+            registry,
+            Arc::clone(&self.output),
+            Arc::clone(&self.lineage),
+            self.resources,
+            deadline,
+            cancellation,
+        )
+    }
+
     fn derived(&self, inner: QueryHandle) -> Self {
         Self {
             inner,
+            installed: self.installed.as_ref().map(Arc::clone),
             output: Arc::clone(&self.output),
             lineage: Arc::new(()),
             resources: self.resources,
@@ -1241,14 +1323,14 @@ impl NodeMatchQueryHandle {
                 self.direct_limits(deadline, cancellation.clone()),
             ))
             .map_err(crate::napi_orm_error)?;
-        Ok(NodeValidatedMatchResultHandle {
+        self.owned_result(
+            database.as_ref(),
+            validated,
             inner,
-            request: validated,
-            output: Arc::clone(&self.output),
-            lineage: Arc::clone(&self.lineage),
+            registry,
             deadline,
             cancellation,
-        })
+        )
     }
 
     #[napi(js_name = "executeFetchRowsBorrowed")]
@@ -1281,14 +1363,14 @@ impl NodeMatchQueryHandle {
                 self.direct_limits(deadline, cancellation.clone()),
             ))
             .map_err(crate::napi_orm_error)?;
-        Ok(NodeValidatedMatchResultHandle {
+        self.borrowed_result(
+            &transaction,
+            validated,
             inner,
-            request: validated,
-            output: Arc::clone(&self.output),
-            lineage: Arc::clone(&self.lineage),
+            registry,
             deadline,
             cancellation,
-        })
+        )
     }
 
     #[napi(js_name = "executePageByOwned")]
@@ -1323,14 +1405,14 @@ impl NodeMatchQueryHandle {
                 self.direct_limits(deadline, cancellation.clone()),
             ))
             .map_err(crate::napi_orm_error)?;
-        Ok(NodeValidatedMatchResultHandle {
+        self.owned_result(
+            database.as_ref(),
+            validated,
             inner,
-            request: validated,
-            output: Arc::clone(&self.output),
-            lineage: Arc::clone(&self.lineage),
+            registry,
             deadline,
             cancellation,
-        })
+        )
     }
 
     #[napi(js_name = "executePageByBorrowed")]
@@ -1365,14 +1447,14 @@ impl NodeMatchQueryHandle {
                 self.direct_limits(deadline, cancellation.clone()),
             ))
             .map_err(crate::napi_orm_error)?;
-        Ok(NodeValidatedMatchResultHandle {
+        self.borrowed_result(
+            &transaction,
+            validated,
             inner,
-            request: validated,
-            output: Arc::clone(&self.output),
-            lineage: Arc::clone(&self.lineage),
+            registry,
             deadline,
             cancellation,
-        })
+        )
     }
 
     #[napi(js_name = "executeCountByOwned")]
@@ -1395,14 +1477,14 @@ impl NodeMatchQueryHandle {
                 self.direct_limits(deadline, cancellation.clone()),
             ))
             .map_err(crate::napi_orm_error)?;
-        Ok(NodeValidatedMatchResultHandle {
+        self.owned_result(
+            database.as_ref(),
+            validated,
             inner,
-            request: validated,
-            output: Arc::clone(&self.output),
-            lineage: Arc::clone(&self.lineage),
+            registry,
             deadline,
             cancellation,
-        })
+        )
     }
 
     #[napi(js_name = "executeCountByBorrowed")]
@@ -1425,14 +1507,14 @@ impl NodeMatchQueryHandle {
                 self.direct_limits(deadline, cancellation.clone()),
             ))
             .map_err(crate::napi_orm_error)?;
-        Ok(NodeValidatedMatchResultHandle {
+        self.borrowed_result(
+            &transaction,
+            validated,
             inner,
-            request: validated,
-            output: Arc::clone(&self.output),
-            lineage: Arc::clone(&self.lineage),
+            registry,
             deadline,
             cancellation,
-        })
+        )
     }
 
     #[napi(js_name = "executeExistsByOwned")]
@@ -1455,14 +1537,14 @@ impl NodeMatchQueryHandle {
                 self.direct_limits(deadline, cancellation.clone()),
             ))
             .map_err(crate::napi_orm_error)?;
-        Ok(NodeValidatedMatchResultHandle {
+        self.owned_result(
+            database.as_ref(),
+            validated,
             inner,
-            request: validated,
-            output: Arc::clone(&self.output),
-            lineage: Arc::clone(&self.lineage),
+            registry,
             deadline,
             cancellation,
-        })
+        )
     }
 
     #[napi(js_name = "executeExistsByBorrowed")]
@@ -1485,14 +1567,14 @@ impl NodeMatchQueryHandle {
                 self.direct_limits(deadline, cancellation.clone()),
             ))
             .map_err(crate::napi_orm_error)?;
-        Ok(NodeValidatedMatchResultHandle {
+        self.borrowed_result(
+            &transaction,
+            validated,
             inner,
-            request: validated,
-            output: Arc::clone(&self.output),
-            lineage: Arc::clone(&self.lineage),
+            registry,
             deadline,
             cancellation,
-        })
+        )
     }
 
     #[napi(js_name = "pageByDiagnostic")]
@@ -1583,14 +1665,14 @@ impl NodeMatchQueryHandle {
                 self.direct_limits(deadline, cancellation.clone()),
             ))
             .map_err(crate::napi_orm_error)?;
-        Ok(NodeValidatedMatchResultHandle {
+        self.owned_result(
+            database.as_ref(),
+            validated,
             inner,
-            request: validated,
-            output: Arc::clone(&self.output),
-            lineage: Arc::clone(&self.lineage),
+            registry,
             deadline,
             cancellation,
-        })
+        )
     }
 
     #[napi(js_name = "executeReduceByBorrowed")]
@@ -1618,14 +1700,14 @@ impl NodeMatchQueryHandle {
                 self.direct_limits(deadline, cancellation.clone()),
             ))
             .map_err(crate::napi_orm_error)?;
-        Ok(NodeValidatedMatchResultHandle {
+        self.borrowed_result(
+            &transaction,
+            validated,
             inner,
-            request: validated,
-            output: Arc::clone(&self.output),
-            lineage: Arc::clone(&self.lineage),
+            registry,
             deadline,
             cancellation,
-        })
+        )
     }
 
     #[napi(js_name = "reduceByFieldDiagnostic")]
@@ -1671,14 +1753,14 @@ impl NodeMatchQueryHandle {
                 self.direct_limits(deadline, cancellation.clone()),
             ))
             .map_err(crate::napi_orm_error)?;
-        Ok(NodeValidatedMatchResultHandle {
+        self.owned_result(
+            database.as_ref(),
+            validated,
             inner,
-            request: validated,
-            output: Arc::clone(&self.output),
-            lineage: Arc::clone(&self.lineage),
+            registry,
             deadline,
             cancellation,
-        })
+        )
     }
 
     #[napi(js_name = "executeReduceByFieldBorrowed")]
@@ -1706,14 +1788,14 @@ impl NodeMatchQueryHandle {
                 self.direct_limits(deadline, cancellation.clone()),
             ))
             .map_err(crate::napi_orm_error)?;
-        Ok(NodeValidatedMatchResultHandle {
+        self.borrowed_result(
+            &transaction,
+            validated,
             inner,
-            request: validated,
-            output: Arc::clone(&self.output),
-            lineage: Arc::clone(&self.lineage),
+            registry,
             deadline,
             cancellation,
-        })
+        )
     }
 
     #[napi(js_name = "reduceByFieldsDiagnostic")]
@@ -1761,14 +1843,14 @@ impl NodeMatchQueryHandle {
                 self.direct_limits(deadline, cancellation.clone()),
             ))
             .map_err(crate::napi_orm_error)?;
-        Ok(NodeValidatedMatchResultHandle {
+        self.owned_result(
+            database.as_ref(),
+            validated,
             inner,
-            request: validated,
-            output: Arc::clone(&self.output),
-            lineage: Arc::clone(&self.lineage),
+            registry,
             deadline,
             cancellation,
-        })
+        )
     }
 
     #[napi(js_name = "executeReduceByFieldsBorrowed")]
@@ -1797,14 +1879,14 @@ impl NodeMatchQueryHandle {
                 self.direct_limits(deadline, cancellation.clone()),
             ))
             .map_err(crate::napi_orm_error)?;
-        Ok(NodeValidatedMatchResultHandle {
+        self.borrowed_result(
+            &transaction,
+            validated,
             inner,
-            request: validated,
-            output: Arc::clone(&self.output),
-            lineage: Arc::clone(&self.lineage),
+            registry,
             deadline,
             cancellation,
-        })
+        )
     }
 }
 
@@ -1816,6 +1898,8 @@ impl NodeMatchQueryHandle {
 pub struct NodeValidatedMatchResultHandle {
     inner: ValidatedMatchResult,
     request: ValidatedMatchRequest,
+    registry: Arc<DescriptorRegistry>,
+    projected: Option<Arc<ProjectedQueryValue>>,
     output: Arc<NodeOutputShape>,
     lineage: Arc<()>,
     deadline: QueryExecutionDeadline,
@@ -1825,8 +1909,10 @@ pub struct NodeValidatedMatchResultHandle {
 /// Immutable materialization metadata retained while a remote reply is decoded.
 #[derive(Clone)]
 pub(crate) struct NodeMatchResultContext {
+    installed: Option<Arc<InstalledRuntimeProjection>>,
     output: Arc<NodeOutputShape>,
     lineage: Arc<()>,
+    resources: QueryExecutionResourceLimits,
     deadline: QueryExecutionDeadline,
     cancellation: AnswerCancellation,
 }
@@ -1836,16 +1922,65 @@ impl NodeMatchResultContext {
         self,
         request: ValidatedMatchRequest,
         inner: ValidatedMatchResult,
-    ) -> NodeValidatedMatchResultHandle {
-        NodeValidatedMatchResultHandle {
-            inner,
+        registry: Arc<DescriptorRegistry>,
+    ) -> Result<NodeValidatedMatchResultHandle> {
+        validated_result_handle(
+            self.installed.as_ref(),
+            self.installed
+                .as_ref()
+                .map(|_| ProjectedQueryOrigin::remote_unbound()),
             request,
-            output: self.output,
-            lineage: self.lineage,
-            deadline: self.deadline,
-            cancellation: self.cancellation,
-        }
+            inner,
+            registry,
+            self.output,
+            self.lineage,
+            self.resources,
+            self.deadline,
+            self.cancellation,
+        )
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validated_result_handle(
+    installed: Option<&Arc<InstalledRuntimeProjection>>,
+    origin: Option<ProjectedQueryOrigin>,
+    request: ValidatedMatchRequest,
+    result: ValidatedMatchResult,
+    registry: Arc<DescriptorRegistry>,
+    output: Arc<NodeOutputShape>,
+    lineage: Arc<()>,
+    resources: QueryExecutionResourceLimits,
+    deadline: QueryExecutionDeadline,
+    cancellation: AnswerCancellation,
+) -> Result<NodeValidatedMatchResultHandle> {
+    let projected = installed
+        .zip(origin)
+        .map(|(installed, origin)| {
+            origin
+                .materialize_borrowed_with_budget(
+                    installed,
+                    &registry,
+                    &request,
+                    &result,
+                    resources.projected(),
+                    &cancellation,
+                    Some(deadline),
+                )
+                .map(|(value, _measure)| Arc::new(value))
+                .map_err(napi_sdk_diagnostic)
+        })
+        .transpose()?;
+    Ok(NodeValidatedMatchResultHandle {
+        inner: result,
+        request,
+        registry,
+        projected,
+        output,
+        lineage,
+        deadline,
+        cancellation,
+    })
 }
 
 impl NodeValidatedMatchResultHandle {
@@ -2003,6 +2138,98 @@ impl NodeValidatedMatchResultHandle {
                 )
             })
     }
+
+    fn projected_slot_thing(
+        &self,
+        raw: &HydratedThing,
+        row_index: u32,
+        slot_index: u32,
+        value_index: u32,
+        page: bool,
+    ) -> Result<Option<Arc<ProjectedThing>>> {
+        let Some(projected) = &self.projected else {
+            return Ok(None);
+        };
+        let rows = match (page, projected.as_ref()) {
+            (false, ProjectedQueryValue::Rows { rows }) => rows,
+            (true, ProjectedQueryValue::Page { entries, .. }) => entries,
+            _ => return Err(projected_companion_mismatch()),
+        };
+        let value = rows
+            .get(row_index as usize)
+            .and_then(|row| row.slots().get(slot_index as usize))
+            .map(|slot| slot.value())
+            .ok_or_else(projected_companion_mismatch)?;
+        let thing = match value {
+            ProjectedQuerySlotValue::One(thing) if value_index == 0 => Arc::clone(thing),
+            ProjectedQuerySlotValue::Many(things) => things
+                .get(value_index as usize)
+                .cloned()
+                .ok_or_else(projected_companion_mismatch)?,
+            ProjectedQuerySlotValue::One(_) => return Err(projected_companion_mismatch()),
+        };
+        self.ensure_projected_thing_matches(raw, &thing)?;
+        Ok(Some(thing))
+    }
+
+    fn projected_reduction_group(
+        &self,
+        raw: &HydratedThing,
+        row_index: u32,
+    ) -> Result<Option<Arc<ProjectedThing>>> {
+        let Some(projected) = &self.projected else {
+            return Ok(None);
+        };
+        let rows = match projected.as_ref() {
+            ProjectedQueryValue::Reduction { rows, .. } => rows,
+            _ => return Err(projected_companion_mismatch()),
+        };
+        let thing = rows
+            .get(row_index as usize)
+            .and_then(|row| row.group())
+            .and_then(|group| match group {
+                ProjectedReductionGroup::Thing(thing) => Some(Arc::clone(thing)),
+                ProjectedReductionGroup::Field(_) | ProjectedReductionGroup::Fields(_) => None,
+            })
+            .ok_or_else(projected_companion_mismatch)?;
+        self.ensure_projected_thing_matches(raw, &thing)?;
+        Ok(Some(thing))
+    }
+
+    fn ensure_projected_thing_matches(
+        &self,
+        raw: &HydratedThing,
+        projected: &ProjectedThing,
+    ) -> Result<()> {
+        let label = self
+            .registry
+            .descriptor_type_name(raw.concrete_descriptor())
+            .ok_or_else(projected_companion_mismatch)?;
+        let kind_matches = matches!(
+            (raw.kind(), projected.type_id().kind()),
+            (
+                ThingKind::Entity,
+                type_bridge_contract::id::TypeKind::Entity
+            ) | (
+                ThingKind::Relation,
+                type_bridge_contract::id::TypeKind::Relation
+            )
+        );
+        if !kind_matches
+            || label != projected.type_id().label().as_str()
+            || raw.concept_id().as_str() != projected.iid()
+        {
+            return Err(projected_companion_mismatch());
+        }
+        Ok(())
+    }
+}
+
+fn projected_companion_mismatch() -> napi::Error {
+    result_decode_error(
+        "result_projected_companion_mismatch",
+        "projected companion differs from its validated result path",
+    )
 }
 
 #[napi]
@@ -2081,6 +2308,7 @@ impl NodeValidatedMatchResultHandle {
         self.require_slot_shape(query, slot_index, slot)?;
         match slot {
             SlotValue::One(thing) => Ok(NodeValidatedThingHandle {
+                projected: self.projected_slot_thing(thing, row_index, slot_index, 0, false)?,
                 inner: NodeValidatedThing::Selected(thing.clone()),
             }),
             SlotValue::Many(_) => Err(result_decode_error(
@@ -2182,6 +2410,13 @@ impl NodeValidatedMatchResultHandle {
             })?,
         };
         Ok(NodeValidatedThingHandle {
+            projected: self.projected_slot_thing(
+                thing,
+                entry_index,
+                slot_index,
+                value_index,
+                true,
+            )?,
             inner: NodeValidatedThing::Selected(thing.clone()),
         })
     }
@@ -2325,6 +2560,7 @@ impl NodeValidatedMatchResultHandle {
                 )
             })?;
         Ok(NodeValidatedThingHandle {
+            projected: self.projected_reduction_group(group, row_index)?,
             inner: NodeValidatedThing::Selected(group.clone()),
         })
     }
@@ -2471,10 +2707,15 @@ impl NodeValidatedThing {
 #[napi]
 pub struct NodeValidatedThingHandle {
     inner: NodeValidatedThing,
+    projected: Option<Arc<ProjectedThing>>,
 }
 
 #[napi]
 impl NodeValidatedThingHandle {
+    pub(crate) fn projected_thing(&self) -> Option<Arc<ProjectedThing>> {
+        self.projected.as_ref().map(Arc::clone)
+    }
+
     pub(crate) fn hydrated_kind(&self) -> ThingKind {
         self.inner.kind()
     }
@@ -2595,26 +2836,130 @@ impl NodeValidatedThingHandle {
             })?;
         Ok(NodeValidatedThingHandle {
             inner: NodeValidatedThing::RolePlayer(player.clone()),
+            projected: None,
         })
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::VecDeque;
     use std::fs::{File, OpenOptions};
     use std::io::{Read, Write};
     use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
     use std::sync::atomic::AtomicUsize;
     use std::time::{Duration, Instant};
 
     use super::*;
     use sha2::{Digest, Sha256};
     use tokio::sync::Notify;
+    use type_bridge_contract::fingerprint::SemanticProfileId;
+    use type_bridge_contract::projection::{BindingTarget, ProjectionConfig};
+    use type_bridge_contract::schema::DocumentId;
     use type_bridge_orm::session::backend::{
         AnswerCancellation, BoundedAnswerLimits, BoundedAnswerReader, BoxFuture, DriverBackend,
-        TransactionOps, TxType,
+        QueryResult, TransactionOps, TxType,
     };
-    use type_bridge_orm::{CapabilitySet, Database, MatchExecutionLimits, OrmError};
+    use type_bridge_orm::{
+        CapabilitySet, Database, MatchExecutionLimits, OrmError, ProjectedCreate,
+        ProjectedCrudExecutor,
+    };
+    use type_bridge_schema::{SchemaDocumentSet, normalize_documents, project, resolve};
+    use type_bridge_schema_codegen::TypeScriptEmitter;
+
+    const ORDERED_QUERY_SCHEMA: &str = r#"format: typebridge.schema/v2
+attributes:
+  identifier: { value: string }
+  tag: { value: string }
+entities:
+  person:
+    owns:
+      identifier: { key: true }
+      tag:
+        card: { min: 0 }
+        ordered: true
+relations:
+  membership:
+    relates:
+      member: { card: { min: 0 } }
+plays:
+  person:
+    membership: [member]
+"#;
+
+    #[derive(Default)]
+    struct ProjectedQueryEvents {
+        opens: AtomicUsize,
+        queries: AtomicUsize,
+        commits: AtomicUsize,
+        rollbacks: AtomicUsize,
+        closes: AtomicUsize,
+    }
+
+    struct ProjectedQueryBackend {
+        responses: Arc<Mutex<VecDeque<QueryResult>>>,
+        events: Arc<ProjectedQueryEvents>,
+    }
+
+    impl DriverBackend for ProjectedQueryBackend {
+        fn match_capabilities(&self) -> CapabilitySet {
+            CapabilitySet::all()
+        }
+
+        fn open_transaction(
+            &self,
+            _database: &str,
+            _tx_type: TxType,
+        ) -> BoxFuture<'_, std::result::Result<Box<dyn TransactionOps>, OrmError>> {
+            self.events.opens.fetch_add(1, Ordering::SeqCst);
+            let transaction = ProjectedQueryTransaction {
+                responses: Arc::clone(&self.responses),
+                events: Arc::clone(&self.events),
+            };
+            Box::pin(async move { Ok(Box::new(transaction) as Box<dyn TransactionOps>) })
+        }
+
+        fn is_open(&self) -> bool {
+            true
+        }
+    }
+
+    struct ProjectedQueryTransaction {
+        responses: Arc<Mutex<VecDeque<QueryResult>>>,
+        events: Arc<ProjectedQueryEvents>,
+    }
+
+    impl TransactionOps for ProjectedQueryTransaction {
+        fn query(
+            &mut self,
+            _typeql: &str,
+        ) -> BoxFuture<'_, std::result::Result<QueryResult, OrmError>> {
+            self.events.queries.fetch_add(1, Ordering::SeqCst);
+            let response = self
+                .responses
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("projected query bridge issued an unexpected provider query");
+            Box::pin(async move { Ok(response) })
+        }
+
+        fn commit(&mut self) -> BoxFuture<'_, std::result::Result<(), OrmError>> {
+            self.events.commits.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Ok(()) })
+        }
+
+        fn rollback(&mut self) -> BoxFuture<'_, std::result::Result<(), OrmError>> {
+            self.events.rollbacks.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Ok(()) })
+        }
+
+        fn close(&mut self) -> BoxFuture<'_, std::result::Result<(), OrmError>> {
+            self.events.closes.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Ok(()) })
+        }
+    }
 
     struct ProviderOpenFailureBackend;
 
@@ -2816,6 +3161,126 @@ mod tests {
         registry
     }
 
+    fn ordered_query_projection() -> Arc<InstalledRuntimeProjection> {
+        let documents = SchemaDocumentSet::parse([(
+            DocumentId::new("node-ordered-query.yaml").unwrap(),
+            ORDERED_QUERY_SCHEMA,
+        )])
+        .unwrap();
+        let resolved = resolve(
+            &normalize_documents(&documents).unwrap(),
+            &SemanticProfileId::new("typedb-3.12.1/v1").unwrap(),
+        )
+        .unwrap();
+        let emitter = TypeScriptEmitter::new();
+        let projection = project(
+            &resolved,
+            BindingTarget::TypeScript,
+            &ProjectionConfig::typescript(),
+            &emitter.generator_handlers_for(&resolved),
+            &emitter.code_resources_for(&resolved).unwrap(),
+        )
+        .unwrap();
+        Arc::new(InstalledRuntimeProjection::try_new(projection).unwrap())
+    }
+
+    fn projected_query_database(
+        responses: Vec<QueryResult>,
+    ) -> (Database, Arc<ProjectedQueryEvents>) {
+        let events = Arc::new(ProjectedQueryEvents::default());
+        let backend = ProjectedQueryBackend {
+            responses: Arc::new(Mutex::new(responses.into())),
+            events: Arc::clone(&events),
+        };
+        (
+            Database::with_backend(Box::new(backend), "ordered-query"),
+            events,
+        )
+    }
+
+    fn projected_query() -> (NodeMatchQueryHandle, Arc<DescriptorRegistry>) {
+        let installed = ordered_query_projection();
+        let registry = Arc::new(installed.match_registry().unwrap());
+        let session = NodeMatchSessionHandle::from_installed(
+            Arc::clone(&installed),
+            Arc::clone(&registry),
+            QueryExecutionResourceLimits::default(),
+            AnswerCancellation::default(),
+        );
+        let person = session.inner.exact("person").unwrap();
+        let shape = session.inner.positional([person.one()]).unwrap();
+        let inner = session.inner.query(shape).unwrap();
+        (
+            NodeMatchQueryHandle {
+                inner,
+                installed: Some(installed),
+                output: Arc::new(NodeOutputShape::Positional {
+                    slots: vec![NodeOutputSlotKind::One],
+                }),
+                lineage: Arc::new(()),
+                resources: session.resources,
+                cancellation: session.cancellation.clone(),
+                session_closed: Arc::clone(&session.closed),
+                closed: AtomicBool::new(false),
+            },
+            registry,
+        )
+    }
+
+    fn projected_rows_request(query: &NodeMatchQueryHandle) -> ValidatedMatchRequest {
+        query
+            .inner
+            .validate_fetch_rows(
+                &[],
+                Window {
+                    offset: 0,
+                    limit: 1,
+                },
+                RowCardinality::BoundedMany,
+            )
+            .unwrap()
+    }
+
+    fn projected_query_responses(iid: &str) -> Vec<QueryResult> {
+        vec![
+            QueryResult::Rows(vec![serde_json::json!({
+                "bindings": [{"binding": 0, "concept_id": iid}],
+                "satisfied_role_edges": [],
+            })]),
+            QueryResult::Documents(vec![serde_json::json!({
+                "binding": 0,
+                "concept_id": iid,
+                "concrete_type": "person",
+                "kind": "entity",
+                "attributes": [
+                    {"field": "identifier", "value_type": "string", "values": ["ada"]},
+                    {"field": "tag", "value_type": "string", "values": ["engineer"]},
+                ],
+                "roles": [],
+            })]),
+        ]
+    }
+
+    fn projected_membership_create(
+        installed: &InstalledRuntimeProjection,
+        thing: &ProjectedThing,
+    ) -> ProjectedCreate {
+        ProjectedCreate::try_new(
+            installed,
+            type_bridge_contract::id::TypeId::new(
+                type_bridge_contract::id::TypeKind::Relation,
+                "membership",
+            )
+            .unwrap(),
+            Vec::new(),
+            vec![(
+                type_bridge_contract::id::RoleId::new("membership", "member").unwrap(),
+                vec![thing.try_to_reference(installed).unwrap()],
+            )],
+        )
+        .unwrap()
+    }
+
     #[test]
     fn opaque_wrapper_types_are_send_and_sync() {
         assert_send_sync::<NodeMatchSessionHandle>();
@@ -2829,6 +3294,220 @@ mod tests {
         assert_send_sync::<NodeMatchQueryHandle>();
         assert_send_sync::<NodeValidatedMatchResultHandle>();
         assert_send_sync::<NodeValidatedThingHandle>();
+    }
+
+    #[tokio::test]
+    async fn ordered_query_companion_is_cached_aligned_and_origin_scoped() {
+        let (query, registry) = projected_query();
+        let installed = query.installed.as_ref().unwrap();
+        let responses = ["0xa1", "0xa2", "0xa3"]
+            .into_iter()
+            .flat_map(projected_query_responses)
+            .collect();
+        let (database, events) = projected_query_database(responses);
+        let deadline = || QueryExecutionDeadline::from_timeout_milliseconds(30_000);
+
+        let owned_request = projected_rows_request(&query);
+        let owned_inner = database
+            .execute_match(registry.as_ref(), &owned_request)
+            .await
+            .unwrap();
+        let owned = query
+            .owned_result(
+                &database,
+                owned_request,
+                owned_inner,
+                Arc::clone(&registry),
+                deadline(),
+                AnswerCancellation::default(),
+            )
+            .unwrap();
+        let owned_first = owned.slot_thing(&query, 0, 0).unwrap().projected.unwrap();
+        let owned_second = owned.slot_thing(&query, 0, 0).unwrap().projected.unwrap();
+        assert!(Arc::ptr_eq(&owned_first, &owned_second));
+        assert!(owned_first.origin_carrier().is_some());
+        assert_eq!(owned_first.iid(), "0xa1");
+        ProjectedCrudExecutor::new(installed)
+            .preflight_relation_create_for_database_with_compatibility(
+                &database,
+                &projected_membership_create(installed, &owned_first),
+            )
+            .unwrap();
+
+        let raw = match owned.result(&query).unwrap() {
+            MatchResult::Rows { rows } => match &rows[0].slots()[0] {
+                SlotValue::One(thing) => thing,
+                SlotValue::Many(_) => panic!("projected query fixture must be singular"),
+            },
+            _ => panic!("projected query fixture must return rows"),
+        };
+        let mut mismatched_json = serde_json::to_value(raw).unwrap();
+        mismatched_json["concept_id"] = json!("0xaf");
+        let mismatched: HydratedThing = serde_json::from_value(mismatched_json).unwrap();
+        let error = owned
+            .projected_slot_thing(&mismatched, 0, 0, 0, false)
+            .unwrap_err();
+        let payload: Value = serde_json::from_str(&error.reason).unwrap();
+        assert_eq!(payload["code"], "result_projected_companion_mismatch");
+
+        let transaction = database.transaction_context(TxType::Read).await.unwrap();
+        let borrowed_request = projected_rows_request(&query);
+        let borrowed_inner = transaction
+            .execute_match(registry.as_ref(), &borrowed_request)
+            .await
+            .unwrap();
+        let borrowed = query
+            .borrowed_result(
+                &transaction,
+                borrowed_request,
+                borrowed_inner,
+                Arc::clone(&registry),
+                deadline(),
+                AnswerCancellation::default(),
+            )
+            .unwrap();
+        let borrowed_thing = borrowed
+            .slot_thing(&query, 0, 0)
+            .unwrap()
+            .projected
+            .unwrap();
+        assert!(borrowed_thing.origin_carrier().is_some());
+        assert_eq!(borrowed_thing.iid(), "0xa2");
+        ProjectedCrudExecutor::new(installed)
+            .preflight_relation_create_for_database_with_compatibility(
+                &database,
+                &projected_membership_create(installed, &borrowed_thing),
+            )
+            .unwrap();
+
+        let remote_request = projected_rows_request(&query);
+        let remote_inner = database
+            .execute_match(registry.as_ref(), &remote_request)
+            .await
+            .unwrap();
+        let remote = query
+            .result_context(
+                QueryExecutionResourceLimits::default(),
+                deadline(),
+                AnswerCancellation::default(),
+            )
+            .attach(remote_request, remote_inner, Arc::clone(&registry))
+            .unwrap();
+        let remote_thing = remote.slot_thing(&query, 0, 0).unwrap().projected.unwrap();
+        assert!(remote_thing.origin_carrier().is_none());
+        assert!(
+            remote_thing
+                .try_to_reference(installed)
+                .unwrap()
+                .origin_carrier()
+                .is_none()
+        );
+        ProjectedCrudExecutor::new(installed)
+            .preflight_relation_create_for_database_with_compatibility(
+                &database,
+                &projected_membership_create(installed, &remote_thing),
+            )
+            .unwrap();
+
+        let foreign_create = projected_membership_create(installed, &owned_first);
+        let (foreign, foreign_events) = projected_query_database(Vec::new());
+        let diagnostic = ProjectedCrudExecutor::new(installed)
+            .insert_relation(&foreign, &foreign_create)
+            .await
+            .unwrap_err();
+        assert_eq!(diagnostic.code().as_str(), "reference_database_mismatch");
+        assert_eq!(foreign_events.opens.load(Ordering::SeqCst), 0);
+        assert_eq!(foreign_events.queries.load(Ordering::SeqCst), 0);
+        assert_eq!(foreign_events.commits.load(Ordering::SeqCst), 0);
+        assert_eq!(foreign_events.rollbacks.load(Ordering::SeqCst), 0);
+
+        assert_eq!(events.opens.load(Ordering::SeqCst), 3);
+        assert_eq!(events.queries.load(Ordering::SeqCst), 6);
+        assert_eq!(events.commits.load(Ordering::SeqCst), 0);
+        assert_eq!(events.rollbacks.load(Ordering::SeqCst), 0);
+        transaction.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn remote_projected_companion_retains_effective_resources_cancellation_and_deadline() {
+        let (query, registry) = projected_query();
+        let responses = ["0xa1", "0xa2", "0xa3"]
+            .into_iter()
+            .flat_map(projected_query_responses)
+            .collect();
+        let (database, events) = projected_query_database(responses);
+
+        let tight = QueryExecutionResourceLimits::tightened(
+            30_000,
+            0,
+            u64::MAX,
+            u64::MAX,
+            u64::MAX,
+            u64::MAX,
+            u64::MAX,
+            u32::MAX,
+        );
+        let request = projected_rows_request(&query);
+        let inner = database
+            .execute_match(registry.as_ref(), &request)
+            .await
+            .unwrap();
+        let error = match crate::query_v2_model_remote_runtime::remote_result_context(
+            &query,
+            tight,
+            QueryExecutionDeadline::for_limits(tight),
+            AnswerCancellation::default(),
+        )
+        .attach(request, inner, Arc::clone(&registry))
+        {
+            Err(error) => error,
+            Ok(_) => panic!("tight remote context must reject projected materialization"),
+        };
+        let payload: Value = serde_json::from_str(&error.reason).unwrap();
+        assert_eq!(payload["code"], "projected_query_row_limit");
+
+        let request = projected_rows_request(&query);
+        let inner = database
+            .execute_match(registry.as_ref(), &request)
+            .await
+            .unwrap();
+        let cancellation = AnswerCancellation::default();
+        cancellation.cancel();
+        let error = match crate::query_v2_model_remote_runtime::remote_result_context(
+            &query,
+            QueryExecutionResourceLimits::default(),
+            QueryExecutionDeadline::from_timeout_milliseconds(30_000),
+            cancellation,
+        )
+        .attach(request, inner, Arc::clone(&registry))
+        {
+            Err(error) => error,
+            Ok(_) => panic!("cancelled remote context must reject projected materialization"),
+        };
+        let payload: Value = serde_json::from_str(&error.reason).unwrap();
+        assert_eq!(payload["code"], "provider_cancelled");
+
+        let request = projected_rows_request(&query);
+        let inner = database
+            .execute_match(registry.as_ref(), &request)
+            .await
+            .unwrap();
+        let error = match crate::query_v2_model_remote_runtime::remote_result_context(
+            &query,
+            QueryExecutionResourceLimits::default(),
+            QueryExecutionDeadline::from_timeout_milliseconds(0),
+            AnswerCancellation::default(),
+        )
+        .attach(request, inner, registry)
+        {
+            Err(error) => error,
+            Ok(_) => panic!("expired remote context must reject projected materialization"),
+        };
+        let payload: Value = serde_json::from_str(&error.reason).unwrap();
+        assert_eq!(payload["code"], "transaction_deadline_exceeded");
+
+        assert_eq!(events.opens.load(Ordering::SeqCst), 3);
+        assert_eq!(events.queries.load(Ordering::SeqCst), 6);
     }
 
     #[test]
@@ -2937,6 +3616,7 @@ mod tests {
         let inner = session.inner.query(shape).unwrap();
         let query = NodeMatchQueryHandle {
             inner,
+            installed: None,
             output: Arc::new(NodeOutputShape::Positional {
                 slots: vec![NodeOutputSlotKind::One],
             }),
@@ -3167,6 +3847,8 @@ mod tests {
         let result = NodeValidatedMatchResultHandle {
             inner,
             request: validated,
+            registry: query.inner.registry_arc(),
+            projected: None,
             output: Arc::clone(&query.output),
             lineage: Arc::clone(&query.lineage),
             deadline: QueryExecutionDeadline::from_timeout_milliseconds(30_000),
@@ -3221,6 +3903,8 @@ mod tests {
         let page = NodeValidatedMatchResultHandle {
             inner: page_inner,
             request: page_request,
+            registry: query.inner.registry_arc(),
+            projected: None,
             output: Arc::clone(&query.output),
             lineage: Arc::clone(&query.lineage),
             deadline: QueryExecutionDeadline::from_timeout_milliseconds(30_000),
@@ -3253,6 +3937,8 @@ mod tests {
         let count = NodeValidatedMatchResultHandle {
             inner: count_inner,
             request: count_request,
+            registry: query.inner.registry_arc(),
+            projected: None,
             output: Arc::clone(&query.output),
             lineage: Arc::clone(&query.lineage),
             deadline: QueryExecutionDeadline::from_timeout_milliseconds(30_000),
@@ -3271,6 +3957,8 @@ mod tests {
         let exists = NodeValidatedMatchResultHandle {
             inner: exists_inner,
             request: exists_request,
+            registry: query.inner.registry_arc(),
+            projected: None,
             output: Arc::clone(&query.output),
             lineage: Arc::clone(&query.lineage),
             deadline: QueryExecutionDeadline::from_timeout_milliseconds(30_000),
@@ -3287,6 +3975,8 @@ mod tests {
         let mismatched = NodeValidatedMatchResultHandle {
             inner,
             request: foreign_request,
+            registry: query.inner.registry_arc(),
+            projected: None,
             output: Arc::clone(&query.output),
             lineage: Arc::clone(&query.lineage),
             deadline: QueryExecutionDeadline::from_timeout_milliseconds(30_000),
@@ -3384,6 +4074,8 @@ mod tests {
         let result = NodeValidatedMatchResultHandle {
             inner,
             request: validated,
+            registry: query.inner.registry_arc(),
+            projected: None,
             output: Arc::clone(&query.output),
             lineage: Arc::clone(&query.lineage),
             deadline: QueryExecutionDeadline::from_timeout_milliseconds(30_000),
@@ -3471,6 +4163,8 @@ mod tests {
         let result = NodeValidatedMatchResultHandle {
             inner,
             request: validated,
+            registry: query.inner.registry_arc(),
+            projected: None,
             output: Arc::clone(&query.output),
             lineage: Arc::clone(&query.lineage),
             deadline: QueryExecutionDeadline::from_timeout_milliseconds(30_000),

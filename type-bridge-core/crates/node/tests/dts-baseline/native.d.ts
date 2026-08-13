@@ -1,5 +1,5 @@
 import type { NativeModule, NativeRustDatabase, NativeRustTransactionContext } from "./index.js";
-import type { NativeProjectedManager } from "./runtime-projection.js";
+import type { NativeProjectedManager, NativeProjectedValueEnvelope } from "./runtime-projection.js";
 type NativeMatchComparison = "equal" | "not_equal" | "less_than" | "less_than_or_equal" | "greater_than" | "greater_than_or_equal" | "contains" | "starts_with" | "ends_with" | "regex";
 type NativeMatchDirection = "ascending" | "descending";
 type NativeMatchMissingOrder = "reject" | "first" | "last";
@@ -195,6 +195,7 @@ interface NativeRuntimeProjectionHandle {
     rejectGeneratedTokenPackageMismatch(pathJson: string): void;
     revalidateMatchDiagnostic(diagnostic: string): string;
     materializeMatchThingJson(thing: NativeValidatedThingHandle): string;
+    materializeMatchThingProjected(thing: NativeValidatedThingHandle): NativeProjectedValueEnvelope;
 }
 interface NativeRuntimeProjectionModule {
     NodeRuntimeProjection: new (projectionJson: string, semanticFingerprintJson: string, projectionFingerprintJson: string, registrationsJson: string, schemaAuthorityJson?: string) => NativeRuntimeProjectionHandle;

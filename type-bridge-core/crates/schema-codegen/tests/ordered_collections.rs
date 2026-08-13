@@ -676,11 +676,19 @@ fn unordered_schema_aware_evidence_and_fixed_resources_remain_exactly_legacy() {
 fn ordered_typescript_hydration_uses_common_projected_validation() {
     const SOURCE: &str = r#"format: typebridge.schema/v2
 attributes:
+  identifier: { value: string }
   tag:
     value:
       type: string
       regex: "^[a-z]+$"
 entities:
+  record:
+    owns:
+      identifier: { key: true }
+      tag:
+        card: { min: 0, max: 4 }
+        ordered: true
+        distinct: true
   actor:
     abstract: true
     owns:
@@ -730,11 +738,64 @@ plays:
         &emitter.code_resources_for(&schema).unwrap(),
     );
     let package = emitter.emit(&runtime_projection, &authority).unwrap();
+    let foreign_source = SOURCE.replace("relations:\n", "  foreign-marker: {}\nrelations:\n");
+    let (foreign_schema, foreign_authority) = resolved(&foreign_source);
+    let foreign_projection = projection(
+        &foreign_schema,
+        BindingTarget::TypeScript,
+        &ProjectionConfig::typescript(),
+        &emitter.generator_handlers_for(&foreign_schema),
+        &emitter.code_resources_for(&foreign_schema).unwrap(),
+    );
+    let foreign_package = emitter
+        .emit(&foreign_projection, &foreign_authority)
+        .unwrap();
     let stage = Stage::new();
     let generated = stage.path().join("generated");
     let foreign = stage.path().join("foreign");
     write_package(&package, &generated);
-    write_package(&package, &foreign);
+    write_package(&foreign_package, &foreign);
+    for root in [&generated, &foreign] {
+        let runtime_path = root.join("src/runtime.ts");
+        let mut runtime_source = fs::read_to_string(&runtime_path).unwrap();
+        runtime_source.push_str(
+            r#"
+
+// Test-only access to the module-private successor registry. This is appended
+// only to the staged package and is never part of an emitted resource.
+export function __testOrderedHydrateEnvelope(
+  envelope: OrderedProjectedEnvelope,
+): unknown {
+  return hydrateOrderedProjectedEnvelope(envelope);
+}
+export function __testOrderedFacadeProof(value: object): unknown {
+  return orderedFacadeProofs.get(value) ?? null;
+}
+export function __testOrderedRoleProofs(
+  typeKey: string,
+  value: unknown,
+): readonly unknown[] {
+  return orderedRoleProofs(typeKey, value);
+}
+export function __testOrderedNativeManager(
+  typeKey: string,
+  connection: RuntimeProjectionConnection,
+): NativeProjectedManager {
+  return requireProjection().manager(typeKey, connection);
+}
+export function __testOrderedNativeCreate(
+  typeKey: string,
+  value: unknown,
+): { readonly json: string; readonly proofs: readonly unknown[] } {
+  return {
+    json: JSON.stringify(lowerProjectedValue(value)),
+    proofs: orderedRoleProofs(typeKey, value),
+  };
+}
+"#,
+        );
+        fs::write(runtime_path, runtime_source).unwrap();
+    }
 
     let node_package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -752,24 +813,31 @@ plays:
     )
     .unwrap();
     copy_tree(&node_package.join("dist"), &installed_node.join("dist"));
-    let native_addons = fs::read_dir(&node_package)
-        .unwrap()
-        .filter_map(Result::ok)
-        .filter(|entry| {
-            entry
-                .path()
-                .extension()
-                .is_some_and(|extension| extension == "node")
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(
-        native_addons.len(),
-        1,
-        "ordered Node hydration acceptance requires one built native addon"
+    let target = std::env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            node_package
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .join("target")
+        });
+    let native_library = if cfg!(target_os = "windows") {
+        "type_bridge_node.dll"
+    } else if cfg!(target_os = "macos") {
+        "libtype_bridge_node.dylib"
+    } else {
+        "libtype_bridge_node.so"
+    };
+    let adapter_artifact = target.join("debug").join(native_library);
+    assert!(
+        adapter_artifact.is_file(),
+        "ordered Node hydration acceptance requires the debug contract-test-adapter artifact"
     );
     fs::copy(
-        native_addons[0].path(),
-        installed_node.join(native_addons[0].file_name()),
+        adapter_artifact,
+        installed_node.join("type_bridge_node.node"),
     )
     .unwrap();
 
@@ -785,8 +853,73 @@ plays:
     fs::write(
         stage.path().join("hydrate.mjs"),
         r#"import assert from "node:assert/strict";
+import { createRequire } from "node:module";
 import * as Local from "./generated/dist/index.js";
 import * as Foreign from "./foreign/dist/index.js";
+import * as Runtime from "./generated/dist/runtime.js";
+import * as ForeignRuntime from "./foreign/dist/runtime.js";
+
+const require = createRequire(import.meta.url);
+const Native = require("./node_modules/@type-bridge/node/type_bridge_node.node");
+const Handles = require("./node_modules/@type-bridge/node/dist/runtime-handles.js");
+
+assert.equal("NodeProjectedFacadeProof" in Native, false);
+assert.equal(
+  Object.keys(Native).some((name) => name.includes("FacadeProof")),
+  false,
+);
+
+const fixture = (responses, authority = null) => {
+  const recording = new Native.__ProjectionRecordingFixture(
+    JSON.stringify(responses),
+    authority,
+  );
+  const database = recording.takeDatabase();
+  const connection = Object.freeze({});
+  Handles.registerRustDatabaseHandle(connection, database);
+  return { recording, database, connection };
+};
+const counters = ({ recording }) => JSON.parse(recording.countersJson());
+const zeroCounters = {
+  opens: [], queries: [], commits: 0, rollbacks: 0, closes: 0,
+};
+const documents = (...values) => ({ Documents: values });
+const iidDocument = (iid) => documents({ iid });
+const personDocument = (iid, tag = "sourcetag") => ({
+  _iid: iid,
+  _type: "person",
+  attributes: { tag: [{ value: tag }] },
+});
+const membershipDocument = (iid, playerIid) => ({
+  _iid: iid,
+  _type: "membership",
+  attributes: {},
+  role_players: [{
+    role_name: "participant",
+    player_iid: playerIid,
+    player_type_name: "person",
+    attributes: { tag: [{ value: "sourcetag" }] },
+  }],
+});
+const activityLinkDocument = (iid, playerIid) => ({
+  _iid: iid,
+  _type: "activity-link",
+  attributes: {},
+  role_players: [{
+    role_name: "subject",
+    player_iid: playerIid,
+    player_type_name: "membership",
+    attributes: {},
+  }],
+});
+const recordDocument = (iid, identifier, tags) => ({
+  _iid: iid,
+  _type: "record",
+  attributes: {
+    identifier: [{ value: identifier }],
+    tag: tags.map((value) => ({ value })),
+  },
+});
 
 const diagnostic = (error) => {
   assert.ok(error instanceof Error);
@@ -861,6 +994,320 @@ rejects(
   "generated_token_package_mismatch",
   "role",
 );
+
+const nativeRoundTrip = fixture([
+  iidDocument("0xd1"),
+  documents(recordDocument("0xd1", "provider-insert", ["inserted", "normalized"])),
+  documents(),
+  iidDocument("0xd2"),
+  documents(recordDocument("0xd2", "provider-put", ["put", "normalized"])),
+  "Ok",
+  documents(recordDocument("0xd2", "provider-update", ["updated", "normalized"])),
+  documents(recordDocument("0xd2", "provider-get", ["read", "normalized"])),
+]);
+const recordManager = Local.Record.manager(nativeRoundTrip.connection);
+const insertedRecord = recordManager.insert(Local.Record.create({
+  identifier: Local.Identifier.create("client-insert"),
+  tag: [Local.Tag.create("client")],
+}));
+assert.equal(insertedRecord.iid, "0xd1");
+assert.equal(insertedRecord.identifier.value, "provider-insert");
+assert.deepEqual(insertedRecord.tag.map((value) => value.value), ["inserted", "normalized"]);
+const putRecord = recordManager.put(Local.Record.create({
+  identifier: Local.Identifier.create("client-put"),
+  tag: [Local.Tag.create("client")],
+}));
+assert.equal(putRecord.identifier.value, "provider-put");
+const updatedRecord = recordManager.update("0xd2", Local.Record.create({
+  identifier: Local.Identifier.create("client-update"),
+  tag: [Local.Tag.create("client")],
+}));
+assert.equal(updatedRecord.identifier.value, "provider-update");
+const readRecord = recordManager.getByIid("0xd2");
+assert.equal(readRecord.identifier.value, "provider-get");
+assert.deepEqual(readRecord.tag.map((value) => value.value), ["read", "normalized"]);
+assert.deepEqual(counters(nativeRoundTrip), {
+  opens: ["write", "write", "write", "read"],
+  queries: counters(nativeRoundTrip).queries,
+  commits: 3,
+  rollbacks: 0,
+  closes: 1,
+});
+assert.equal(counters(nativeRoundTrip).queries.length, 8);
+
+const sharedAuthority = Native.__newProjectionRecordingAuthority();
+const source = fixture([documents(personDocument("0xa7"))], sharedAuthority);
+const exactPerson = Local.Person.manager(source.connection).getByIid("0xa7");
+assert.equal(exactPerson.iid, "0xa7");
+const exactPersonProof = Runtime.__testOrderedFacadeProof(exactPerson);
+assert.notEqual(exactPersonProof, null);
+
+const sameEntity = fixture([
+  iidDocument("0xb7"),
+  documents(membershipDocument("0xb7", "0xa7")),
+], sharedAuthority);
+const sameMembership = Local.Membership.manager(sameEntity.connection).insert(
+  Local.Membership.create({ participant: [exactPerson] }),
+);
+assert.equal(sameMembership.participant[0].iid, "0xa7");
+assert.equal(counters(sameEntity).commits, 1);
+
+const foreignEntity = fixture([]);
+assert.throws(() => Local.Membership.manager(foreignEntity.connection).insert(
+  Local.Membership.create({ participant: [exactPerson] }),
+), (error) => diagnostic(error).code === "reference_database_mismatch");
+assert.deepEqual(counters(foreignEntity), zeroCounters);
+
+const membershipSource = fixture([
+  documents(membershipDocument("0xb8", "0xa7")),
+], sharedAuthority);
+const exactMembership = Local.Membership.manager(membershipSource.connection).getByIid("0xb8");
+assert.equal(exactMembership.iid, "0xb8");
+const sameRelation = fixture([
+  iidDocument("0xb8"),
+  iidDocument("0xc8"),
+  documents(activityLinkDocument("0xc8", "0xb8")),
+], sharedAuthority);
+const sameLink = Local.ActivityLink.manager(sameRelation.connection).insert(
+  Local.ActivityLink.create({ subject: [exactMembership] }),
+);
+assert.equal(sameLink.subject[0].iid, "0xb8");
+assert.equal(counters(sameRelation).queries.length, 3);
+const foreignRelation = fixture([]);
+assert.throws(() => Local.ActivityLink.manager(foreignRelation.connection).insert(
+  Local.ActivityLink.create({ subject: [exactMembership] }),
+), (error) => diagnostic(error).code === "reference_database_mismatch");
+assert.deepEqual(counters(foreignRelation), zeroCounters);
+
+const nativeForeign = fixture([]);
+const foreignNativeManager = ForeignRuntime.__testOrderedNativeManager(
+  Foreign.Membership.typeKey,
+  nativeForeign.connection,
+);
+const localPersonWire = Runtime.__testOrderedNativeCreate(
+  Local.Membership.typeKey,
+  Local.Membership.create({ participant: [exactPerson] }),
+);
+assert.throws(() => foreignNativeManager.insertProjected(
+  localPersonWire.json,
+  localPersonWire.proofs,
+));
+assert.deepEqual(counters(nativeForeign), zeroCounters);
+
+const rawSource = fixture([documents(personDocument("0xa9"))], sharedAuthority);
+const rawPersonManager = Runtime.__testOrderedNativeManager(
+  Local.Person.typeKey,
+  rawSource.connection,
+);
+const rawEnvelope = rawPersonManager.getByIidProjected("0xa9");
+const rawPerson = Runtime.__testOrderedHydrateEnvelope(rawEnvelope);
+const rawProof = Runtime.__testOrderedFacadeProof(rawPerson);
+assert.notEqual(rawProof, null);
+const proofTarget = fixture([]);
+const rawMembershipManager = Runtime.__testOrderedNativeManager(
+  Local.Membership.typeKey,
+  proofTarget.connection,
+);
+const rawMembershipWire = Runtime.__testOrderedNativeCreate(
+  Local.Membership.typeKey,
+  Local.Membership.create({
+    participant: [rawPerson],
+  }),
+).json;
+const malformedProofs = [
+  rawEnvelope,
+  {},
+  Object.create(null),
+  JSON.parse(JSON.stringify(rawProof)),
+  Native.__newProjectionRecordingAuthority(),
+];
+for (const candidate of malformedProofs) {
+  assert.throws(() => rawMembershipManager.insertProjected(
+    rawMembershipWire,
+    [candidate],
+  ));
+  assert.deepEqual(counters(proofTarget), zeroCounters);
+}
+assert.throws(() => rawMembershipManager.insertProjected(
+  rawMembershipWire,
+  [new Proxy(rawProof, {})],
+));
+assert.deepEqual(counters(proofTarget), zeroCounters);
+let clonedProof;
+let cloneFailed = false;
+try {
+  clonedProof = structuredClone(rawProof);
+} catch (error) {
+  assert.ok(error instanceof Error);
+  cloneFailed = true;
+}
+if (!cloneFailed) {
+  assert.throws(() => rawMembershipManager.insertProjected(
+    rawMembershipWire,
+    [clonedProof],
+  ));
+}
+assert.deepEqual(counters(proofTarget), zeroCounters);
+
+assert.throws(() => new Native.NodeProjectedModelManager());
+assert.throws(() => new Native.NodeProjectedValueEnvelope());
+
+const mismatchedWire = JSON.parse(rawMembershipWire);
+mismatchedWire.values.participant[0].iid = "0xaa";
+assert.throws(() => rawMembershipManager.insertProjected(
+  JSON.stringify(mismatchedWire),
+  [rawProof],
+), (error) => diagnostic(error).code === "malformed_projected_create");
+assert.deepEqual(counters(proofTarget), zeroCounters);
+
+const managerReceivers = [
+  {},
+  Object.create(Native.NodeProjectedModelManager.prototype),
+  Object.create(rawMembershipManager),
+  new Proxy(rawMembershipManager, {}),
+  rawEnvelope,
+];
+for (const receiver of managerReceivers) {
+  assert.throws(() =>
+    Native.NodeProjectedModelManager.prototype.getByIidProjected.call(receiver, "0xa9"),
+  );
+  assert.deepEqual(counters(proofTarget), zeroCounters);
+}
+const envelopeReceivers = [
+  {},
+  Object.create(Native.NodeProjectedValueEnvelope.prototype),
+  Object.create(rawEnvelope),
+  new Proxy(rawEnvelope, {}),
+  rawMembershipManager,
+];
+for (const receiver of envelopeReceivers) {
+  assert.throws(() =>
+    Native.NodeProjectedValueEnvelope.prototype.rootProof.call(receiver),
+  );
+}
+
+const exactPersonProxy = new Proxy(exactPerson, {});
+const exactPersonCopy = Object.create(
+  Object.getPrototypeOf(exactPerson),
+  Object.getOwnPropertyDescriptors(exactPerson),
+);
+assert.deepEqual(
+  Runtime.__testOrderedRoleProofs(
+    Local.Membership.typeKey,
+    Local.Membership.create({ participant: [exactPersonProxy] }),
+  ),
+  [null],
+);
+assert.deepEqual(
+  Runtime.__testOrderedRoleProofs(
+    Local.Membership.typeKey,
+    Local.Membership.create({ participant: [exactPersonCopy] }),
+  ),
+  [null],
+);
+for (const unboundPlayer of [exactPersonProxy, exactPersonCopy]) {
+  const unboundTarget = fixture([
+    iidDocument("0xbe"),
+    documents(membershipDocument("0xbe", "0xa7")),
+  ]);
+  const created = Local.Membership.manager(unboundTarget.connection).insert(
+    Local.Membership.create({ participant: [unboundPlayer] }),
+  );
+  assert.equal(created.iid, "0xbe");
+  assert.equal(counters(unboundTarget).queries.length, 2);
+  assert.equal(counters(unboundTarget).commits, 1);
+}
+
+const rootProof = Object.freeze({ marker: "private-root-proof" });
+const playerProof = Object.freeze({ marker: "private-player-proof" });
+const projected = Runtime.__testOrderedHydrateEnvelope({
+  json: JSON.stringify({
+    typeKey: Local.Membership.typeKey,
+    form: "complete",
+    iid: "0xb9",
+    value: null,
+    values: {
+      participant: [{
+        typeKey: Local.Person.typeKey,
+        form: "complete",
+        iid: "0xa9",
+        value: null,
+        values: { tag: [] },
+      }],
+    },
+  }),
+  rootProof: () => rootProof,
+  roleProof: (roleName, playerIndex) => {
+    assert.equal(roleName, "participant");
+    assert.equal(playerIndex, 0);
+    return playerProof;
+  },
+});
+const projectedPlayer = projected.participant[0];
+assert.equal(Runtime.__testOrderedFacadeProof(projected), rootProof);
+assert.equal(Runtime.__testOrderedFacadeProof(projectedPlayer), playerProof);
+assert.equal(JSON.stringify(projected).includes("private-"), false);
+assert.equal(
+  Reflect.ownKeys(projectedPlayer).some(
+    (key) => projectedPlayer[key] === playerProof,
+  ),
+  false,
+);
+assert.equal(Object.isFrozen(projected), true);
+assert.equal(Object.isFrozen(projectedPlayer), true);
+assert.throws(() => {
+  projectedPlayer.iid = "0xchanged";
+}, TypeError);
+const lookalike = Object.create(
+  Object.getPrototypeOf(projectedPlayer),
+  Object.getOwnPropertyDescriptors(projectedPlayer),
+);
+assert.notEqual(lookalike, projectedPlayer);
+assert.deepEqual(lookalike, projectedPlayer);
+assert.equal(Runtime.__testOrderedFacadeProof(lookalike), null);
+assert.deepEqual(
+  Runtime.__testOrderedRoleProofs(
+    Local.Membership.typeKey,
+    Local.Membership.create({ participant: [projectedPlayer] }),
+  ),
+  [playerProof],
+);
+assert.deepEqual(
+  Runtime.__testOrderedRoleProofs(
+    Local.Membership.typeKey,
+    Local.Membership.create({ participant: [lookalike] }),
+  ),
+  [null],
+);
+let failedRootProofCalls = 0;
+assert.throws(
+  () => Runtime.__testOrderedHydrateEnvelope({
+    json: JSON.stringify({
+      typeKey: Local.Membership.typeKey,
+      form: "complete",
+      iid: "0xba",
+      value: null,
+      values: {
+        participant: [{
+          typeKey: Local.Person.typeKey,
+          form: "complete",
+          iid: "0xaa",
+          value: null,
+          values: { tag: [] },
+        }],
+      },
+    }),
+    rootProof: () => {
+      failedRootProofCalls += 1;
+      return rootProof;
+    },
+    roleProof: () => {
+      throw new TypeError("proof lookup failed");
+    },
+  }),
+  /proof lookup failed/,
+);
+assert.equal(failedRootProofCalls, 0);
 "#,
     )
     .unwrap();

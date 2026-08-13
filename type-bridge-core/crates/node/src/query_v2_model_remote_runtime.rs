@@ -79,15 +79,15 @@ impl napi::Task for DecodeRemoteModelReplyTask {
                 result_context,
                 cancellation,
             } => {
-                let (request, result, _registry) = claimed
+                let (request, result, registry) = claimed
                     .take()
                     .ok_or_else(|| napi::Error::from_reason("remote model reply task already ran"))?
                     .decode_with_cancellation(response, cancellation)
                     .map_err(remote_model_error)?;
-                Ok(result_context
+                result_context
                     .take()
                     .ok_or_else(|| napi::Error::from_reason("remote model reply task already ran"))?
-                    .attach(request, result))
+                    .attach(request, result, registry)
             }
             DecodeRemoteModelReplyTaskState::Rejected { error } => {
                 Err(error.take().unwrap_or_else(|| {
@@ -421,9 +421,23 @@ fn prepare_pending(
     .map_err(remote_model_error)?;
     Ok(NodePendingRemoteModelQuery {
         pending: Arc::new(pending),
-        result_context: query.result_context(deadline, cancellation.clone()),
+        result_context: remote_result_context(
+            query,
+            context.resources,
+            deadline,
+            cancellation.clone(),
+        ),
         cancellation,
     })
+}
+
+pub(crate) fn remote_result_context(
+    query: &NodeMatchQueryHandle,
+    resources: QueryExecutionResourceLimits,
+    deadline: QueryExecutionDeadline,
+    cancellation: AnswerCancellation,
+) -> NodeMatchResultContext {
+    query.result_context(resources, deadline, cancellation)
 }
 
 #[allow(clippy::too_many_arguments, reason = "flat explicit limit contract")]

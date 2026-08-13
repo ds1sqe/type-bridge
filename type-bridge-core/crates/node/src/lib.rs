@@ -16,7 +16,9 @@ pub mod query_v2_runtime;
 mod runtime_projection;
 
 #[cfg(feature = "contract-test-adapter")]
-pub use contract_test_adapter::round_trip_contract_foundation;
+pub use contract_test_adapter::{
+    ProjectionRecordingFixture, new_projection_recording_authority, round_trip_contract_foundation,
+};
 
 pub use match_runtime::{
     NodeMatchBindingHandle, NodeMatchFieldHandle, NodeMatchFunctionArgumentHandle,

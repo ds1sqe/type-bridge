@@ -23,8 +23,8 @@ type-bridge-core-lib = { path = "../core", version = "2.1.0" }
 type-bridge-orm = { path = "../orm", version = "2.1.0", default-features = false, features = ["band8", "band9"] }
 type-bridge-schema = { path = "../schema", version = "2.1.0" }
 type-bridge-schema-codegen = { path = "../schema-codegen", version = "2.1.0" }
-napi = { version = "2", features = ["napi6"] }
-napi-derive = "2"
+napi = { version = "=3.12.1", default-features = false, features = ["napi8", "compat-mode"] }
+napi-derive = { version = "=3.6.3", features = ["compat-mode"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1", features = ["rt-multi-thread"] }
@@ -33,6 +33,7 @@ tokio = { version = "1", features = ["rt-multi-thread"] }
 napi-build = "2"
 
 [dev-dependencies]
+napi = { version = "=3.12.1", default-features = false, features = ["dyn-symbols"] }
 sha2 = "0.10"
 
 [lints]
