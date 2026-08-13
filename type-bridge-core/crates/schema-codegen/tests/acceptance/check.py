@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -22,6 +23,7 @@ def command(
     *,
     expected: int = 0,
     cwd: Path = ROOT,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     completed = subprocess.run(
         arguments,
@@ -29,6 +31,7 @@ def command(
         text=True,
         capture_output=True,
         check=False,
+        env=env,
     )
     if completed.returncode != expected:
         raise AssertionError(
@@ -90,6 +93,7 @@ def main() -> None:
         HERE / "negative.py",
         HERE / "runtime_check.py",
         HERE / "fingerprint_check.py",
+        HERE / "phase2_parity_check.py",
         DOCUMENTED_EXAMPLES,
     ]
     for fixture in fixtures:
@@ -113,6 +117,7 @@ def main() -> None:
         "runtime_check.py",
         "fingerprint_check.py",
         "authority_rejection_check.py",
+        "phase2_parity_check.py",
         "pyrightconfig.json",
     ):
         shutil.copy2(HERE / fixture, STAGE / fixture)
@@ -182,6 +187,78 @@ def main() -> None:
             "--",
             str(variant_schema),
             str(STAGE / "generated_variant"),
+        ]
+    )
+
+    phase2_schema = ROOT / "tests/contracts/sdk_conformance/workforce-v3/schema-v3.yaml"
+    command(
+        [
+            "cargo",
+            "run",
+            "--quiet",
+            "--manifest-path",
+            str(CORE / "Cargo.toml"),
+            "--package",
+            "type-bridge-schema-codegen",
+            "--example",
+            "emit_python_acceptance",
+            "--",
+            str(phase2_schema),
+            str(STAGE / "generated_phase2"),
+        ]
+    )
+    phase2_source = phase2_schema.read_text()
+    phase2_foreign_source = phase2_source.replace(
+        "member: { card: { min: 0, max: 2 }, doc: membership player }",
+        "member: { card: { min: 0, max: 3 }, doc: membership player }",
+    )
+    if phase2_foreign_source == phase2_source:
+        raise AssertionError("Phase-2 foreign package variant did not modify one playing fact")
+    phase2_foreign_schema = STAGE / "phase2-foreign-schema.yaml"
+    phase2_foreign_schema.write_text(phase2_foreign_source)
+    command(
+        [
+            "cargo",
+            "run",
+            "--quiet",
+            "--manifest-path",
+            str(CORE / "Cargo.toml"),
+            "--package",
+            "type-bridge-schema-codegen",
+            "--example",
+            "emit_python_acceptance",
+            "--",
+            str(phase2_foreign_schema),
+            str(STAGE / "generated_phase2_foreign"),
+        ]
+    )
+    phase2_report = STAGE / "phase2-python-report.json"
+    phase2_environment = os.environ.copy()
+    phase2_environment.update(
+        {
+            "TYPE_BRIDGE_PHASE2_PARITY_REPORT": str(phase2_report.resolve()),
+            "TYPE_BRIDGE_PHASE2_PYTHON_PACKAGE_ROOT": str(STAGE.resolve()),
+            "TYPE_BRIDGE_PHASE2_REPOSITORY_ROOT": str(ROOT.resolve()),
+        }
+    )
+    command(
+        [sys.executable, str(STAGE / "phase2_parity_check.py")],
+        env=phase2_environment,
+    )
+    command(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import importlib.util, pathlib, sys; "
+                "path = pathlib.Path(sys.argv[1]); "
+                "spec = importlib.util.spec_from_file_location('phase2_comparator', path); "
+                "module = importlib.util.module_from_spec(spec); "
+                "sys.modules[spec.name] = module; spec.loader.exec_module(module); "
+                "module._load_report(pathlib.Path(sys.argv[2]), module.load_contract())"
+            ),
+            str(ROOT / "scripts/ci/compare_phase2_projection_parity.py"),
+            str(phase2_report),
         ]
     )
     command([sys.executable, str(STAGE / "fingerprint_check.py")])
