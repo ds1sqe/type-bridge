@@ -26,6 +26,8 @@ pub enum ErrorCategory {
     Schema,
     /// Generated input or provider evidence failed model validation.
     ModelValidation,
+    /// Generated package or provider evidence failed an integrity contract.
+    Integrity,
     /// A typed query was invalid before provider execution.
     QueryAuthoring,
     /// The provider failed while executing an accepted query.
@@ -58,6 +60,7 @@ impl ErrorCategory {
             Self::Connection => "connection",
             Self::Schema => "schema",
             Self::ModelValidation => "model_validation",
+            Self::Integrity => "integrity",
             Self::QueryAuthoring => "query_authoring",
             Self::QueryExecution => "query_execution",
             Self::Transaction => "transaction",
@@ -154,6 +157,8 @@ pub enum QueryDiagnosticPathKind {
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum ErrorPathSegment {
+    /// A named public operation argument.
+    Argument(String),
     /// A named field in the rejected contract.
     Field(String),
     /// An indexed member in the rejected contract.
@@ -351,6 +356,35 @@ impl Error {
         source: Option<Box<dyn StdError + Send + Sync + 'static>>,
     ) -> Self {
         Self::classified_with_diagnostic(category, phase, code, path, None, message, source)
+    }
+
+    pub(crate) fn projection_evidence_mismatch() -> Self {
+        let error = SdkExecutionDiagnostic::projection_evidence_mismatch();
+        let code = error.code().as_str().to_owned();
+        let message = error.message().as_str().to_owned();
+        let path = error.path().iter().map(flatten_sdk_path).collect();
+        let diagnostic = ErrorDiagnostic {
+            path: error
+                .path()
+                .iter()
+                .map(|segment| match segment {
+                    SdkDiagnosticPathSegment::Argument(value) => {
+                        ErrorPathSegment::Argument(value.as_str().to_owned())
+                    }
+                    other => typed_sdk_path(other),
+                })
+                .collect(),
+            details: BTreeMap::new(),
+        };
+        Self::classified_with_diagnostic(
+            ErrorCategory::Integrity,
+            None,
+            code,
+            path,
+            Some(diagnostic),
+            message,
+            Some(Box::new(error)),
+        )
     }
 
     fn classified_with_diagnostic(
@@ -1033,6 +1067,7 @@ mod tests {
             (ErrorCategory::Connection, "connection"),
             (ErrorCategory::Schema, "schema"),
             (ErrorCategory::ModelValidation, "model_validation"),
+            (ErrorCategory::Integrity, "integrity"),
             (ErrorCategory::QueryAuthoring, "query_authoring"),
             (ErrorCategory::QueryExecution, "query_execution"),
             (ErrorCategory::Transaction, "transaction"),

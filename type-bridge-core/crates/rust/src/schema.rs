@@ -218,25 +218,39 @@ impl<S: Schema> SchemaPackage<S> {
         Arc<type_bridge_orm::InstalledRuntimeProjection>,
         Option<VerifiedSchemaAuthority>,
     )> {
-        let authority = self.verify_embedded_authority()?;
+        let authority_backed = self.schema_authority_json.is_some();
+        let authority = self
+            .verify_embedded_authority()
+            .map_err(|error| classify_admission_error(authority_backed, error))?;
         let projection = type_bridge_orm::InstalledRuntimeProjection::from_verified_rust_json(
             self.runtime_projection_json.as_bytes(),
             self.semantic_fingerprint_json.as_bytes(),
             self.projection_fingerprint_json.as_bytes(),
         )
-        .map_err(|err| Error::SchemaVerification {
-            message: err.to_string(),
-            source: Some(Box::new(err)),
+        .map_err(|err| {
+            classify_admission_error(
+                authority_backed,
+                Error::SchemaVerification {
+                    message: err.to_string(),
+                    source: Some(Box::new(err)),
+                },
+            )
         })?;
+        let successor =
+            authority_backed || projection_uses_ordered_collections(projection.projection());
         if authority.as_ref().is_some_and(|authority| {
             authority.resolved_schema().semantic_fingerprint()
                 != projection.projection().semantic_fingerprint()
         }) {
-            return Err(authority_error(
-                "generated schema authority does not match the installed runtime projection",
+            return Err(classify_admission_error(
+                successor,
+                authority_error(
+                    "generated schema authority does not match the installed runtime projection",
+                ),
             ));
         }
-        verify_rust_projection_evidence(&projection, authority.as_ref())?;
+        verify_rust_projection_evidence(&projection, authority.as_ref())
+            .map_err(|error| classify_admission_error(successor, error))?;
         Ok((Arc::new(projection), authority))
     }
 
@@ -355,6 +369,18 @@ fn authority_error(message: &'static str) -> Error {
     }
 }
 
+fn projection_evidence_error() -> Error {
+    Error::projection_evidence_mismatch()
+}
+
+fn classify_admission_error(successor: bool, error: Error) -> Error {
+    if successor {
+        projection_evidence_error()
+    } else {
+        error
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -366,6 +392,9 @@ mod tests {
     use type_bridge_contract::managed_scope::ManagedScopeId;
     use type_bridge_contract::projection::{BindingTarget, ProjectionConfig};
     use type_bridge_contract::schema::{DocumentId, encode_declared_schema};
+    use type_bridge_contract::sdk_diagnostic::{
+        SdkDiagnosticCategory, SdkDiagnosticPathSegment, SdkExecutionDiagnostic,
+    };
     use type_bridge_schema::{
         ManagedDeltaContext, SCHEMA_AUTHORITY_FINGERPRINT_CANONICALIZATION,
         SCHEMA_AUTHORITY_FINGERPRINT_DOMAIN, SchemaDocumentSet, build_schema_authority,
@@ -483,6 +512,37 @@ mod tests {
         value["authority_fingerprint"] = serde_json::to_value(fingerprint).unwrap();
     }
 
+    fn assert_projection_evidence_mismatch(error: &Error) {
+        assert_eq!(error.category(), crate::ErrorCategory::Integrity);
+        assert_eq!(error.model_validation_phase(), None);
+        assert_eq!(error.code(), Some("projection_evidence_mismatch"));
+        assert_eq!(
+            error.path().expect("evidence mismatch has a stable path"),
+            ["projection_evidence"],
+        );
+        assert_eq!(
+            error.message(),
+            "Generated projection evidence does not match the verified schema package",
+        );
+        assert!(matches!(
+            error
+                .diagnostic_path()
+                .expect("evidence mismatch retains its typed path"),
+            [crate::ErrorPathSegment::Argument(name)] if name == "projection_evidence"
+        ));
+
+        let diagnostic = std::error::Error::source(error)
+            .and_then(|source| source.downcast_ref::<SdkExecutionDiagnostic>())
+            .expect("the public Rust error retains the common SDK diagnostic");
+        assert_eq!(diagnostic.category(), SdkDiagnosticCategory::Integrity);
+        assert!(matches!(
+            diagnostic.path(),
+            [SdkDiagnosticPathSegment::Argument(name)]
+                if name.as_str() == "projection_evidence"
+        ));
+        assert!(diagnostic.details().is_empty());
+    }
+
     #[test]
     fn compiled_authority_is_fully_verified_and_bound_to_projection() {
         let package = generated_package(
@@ -512,7 +572,7 @@ mod tests {
         let error = mismatched
             .verify()
             .expect_err("foreign semantic authority must not bind to the projection");
-        assert!(error.to_string().contains("installed runtime projection"));
+        assert_projection_evidence_mismatch(&error);
     }
 
     #[test]
@@ -555,17 +615,13 @@ mod tests {
         let error = legacy
             .verify()
             .expect_err("an ordered package cannot claim the legacy Rust ledger");
-        assert!(error.to_string().contains("exact shipped emitter evidence"));
+        assert_projection_evidence_mismatch(&error);
 
         let authorityless = without_authority(valid);
         let error = authorityless
             .verify()
             .expect_err("ordered packages require reconstructable schema authority");
-        assert!(
-            error
-                .to_string()
-                .contains("require compiled schema authority")
-        );
+        assert_projection_evidence_mismatch(&error);
 
         let diagnostic = authorityless
             .generated_projection_validator()
@@ -588,13 +644,10 @@ mod tests {
             ]),
             Some(Vec::new()),
         );
-        assert!(
-            missing
-                .verify()
-                .expect_err("ordered resource evidence is mandatory")
-                .to_string()
-                .contains("exact shipped emitter evidence")
-        );
+        let error = missing
+            .verify()
+            .expect_err("ordered resource evidence is mandatory");
+        assert_projection_evidence_mismatch(&error);
 
         let emitter = RustEmitter::new();
         let documents =
@@ -616,13 +669,10 @@ mod tests {
             Some(emitter.generator_handlers_for(&resolved)),
             Some(forged_resources),
         );
-        assert!(
-            forged
-                .verify()
-                .expect_err("self-consistent forged resource evidence must reject")
-                .to_string()
-                .contains("exact shipped emitter evidence")
-        );
+        let error = forged
+            .verify()
+            .expect_err("self-consistent forged resource evidence must reject");
+        assert_projection_evidence_mismatch(&error);
 
         let foreign_resources = type_bridge_schema_codegen::PythonEmitter::new()
             .code_resources_for(&resolved)
@@ -633,13 +683,10 @@ mod tests {
             Some(emitter.generator_handlers_for(&resolved)),
             Some(foreign_resources),
         );
-        assert!(
-            foreign
-                .verify()
-                .expect_err("foreign binding resource evidence must reject")
-                .to_string()
-                .contains("exact shipped emitter evidence")
-        );
+        let error = foreign
+            .verify()
+            .expect_err("foreign binding resource evidence must reject");
+        assert_projection_evidence_mismatch(&error);
 
         let valid_legacy = generated_package(UNORDERED, "rust-resource-evidence");
         let installed_legacy = valid_legacy.verify_and_install().unwrap();
@@ -672,13 +719,10 @@ mod tests {
             Some(emitter.generator_handlers_for(&ordered_resolved)),
             Some(emitter.code_resources_for(&ordered_resolved).unwrap()),
         );
-        assert!(
-            stale_successor
-                .verify()
-                .expect_err("an unordered package cannot claim successor evidence")
-                .to_string()
-                .contains("exact shipped emitter evidence")
-        );
+        let error = stale_successor
+            .verify()
+            .expect_err("an unordered package cannot claim successor evidence");
+        assert_projection_evidence_mismatch(&error);
 
         let ordered = generated_package(ORDERED, "rust-reordered-evidence");
         let mut runtime: Value = serde_json::from_str(ordered.runtime_projection_json).unwrap();
@@ -690,11 +734,47 @@ mod tests {
         let error = reordered
             .verify()
             .expect_err("resource ledger wire order is canonical and cannot be changed");
-        assert!(
-            error
-                .to_string()
-                .contains("non_canonical_runtime_projection")
-        );
+        assert_projection_evidence_mismatch(&error);
+    }
+
+    #[test]
+    fn authority_backed_admission_normalizes_malformed_extra_and_duplicate_evidence() {
+        const ORDERED: &str = "format: typebridge.schema/v2\nattributes:\n  tag: { value: string }\nentities:\n  person:\n    owns:\n      tag:\n        card: 1\n        ordered: true\n";
+        let package = generated_package(ORDERED, "rust-malformed-evidence");
+
+        let malformed = with_envelope(package, "{")
+            .verify()
+            .expect_err("malformed authority evidence must reject");
+        assert_projection_evidence_mismatch(&malformed);
+
+        let runtime: Value = serde_json::from_str(package.runtime_projection_json).unwrap();
+        let resource = runtime["code_resources"]
+            .as_array()
+            .and_then(|resources| resources.first())
+            .cloned()
+            .expect("successor projection carries resource evidence");
+
+        let mut duplicate_runtime = runtime.clone();
+        duplicate_runtime["code_resources"]
+            .as_array_mut()
+            .unwrap()
+            .push(resource.clone());
+        let duplicate = with_runtime_projection(package, canonical(&duplicate_runtime))
+            .verify()
+            .expect_err("duplicate resource evidence must reject");
+        assert_projection_evidence_mismatch(&duplicate);
+
+        let mut extra_resource = resource;
+        extra_resource["id"] = Value::String("typebridge.generator.rust.zzz-extra".into());
+        let mut extra_runtime = runtime;
+        extra_runtime["code_resources"]
+            .as_array_mut()
+            .unwrap()
+            .push(extra_resource);
+        let extra = with_runtime_projection(package, canonical(&extra_runtime))
+            .verify()
+            .expect_err("extra resource evidence must reject");
+        assert_projection_evidence_mismatch(&extra);
     }
 
     #[test]
@@ -710,15 +790,17 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .remove("authority_fingerprint");
-        assert!(
-            with_envelope(package, canonical(&missing))
-                .verify()
-                .is_err()
-        );
+        let error = with_envelope(package, canonical(&missing))
+            .verify()
+            .expect_err("missing authority fingerprint must reject");
+        assert_projection_evidence_mismatch(&error);
 
         let mut stale = original;
         stale["authority_fingerprint"]["digest"] = "0".repeat(64).into();
-        assert!(with_envelope(package, canonical(&stale)).verify().is_err());
+        let error = with_envelope(package, canonical(&stale))
+            .verify()
+            .expect_err("stale authority fingerprint must reject");
+        assert_projection_evidence_mismatch(&error);
     }
 
     #[test]
@@ -732,11 +814,10 @@ mod tests {
         let mut managed = original.clone();
         managed["content"]["managed_state"]["declared_identity"]["digest"] = "0".repeat(64).into();
         resign(&mut managed);
-        assert!(
-            with_envelope(package, canonical(&managed))
-                .verify()
-                .is_err()
-        );
+        let error = with_envelope(package, canonical(&managed))
+            .verify()
+            .expect_err("detached managed-state evidence must reject");
+        assert_projection_evidence_mismatch(&error);
 
         let mut capabilities = original.clone();
         capabilities["content"]["required_capabilities"] =
@@ -745,7 +826,7 @@ mod tests {
         let error = with_envelope(package, canonical(&capabilities))
             .verify()
             .expect_err("unsupported artifact capability must fail closed");
-        assert!(error.to_string().contains("UnsupportedCapability"));
+        assert_projection_evidence_mismatch(&error);
 
         let mut version = original;
         version["content"]["authority_version"] =
@@ -754,7 +835,7 @@ mod tests {
         let error = with_envelope(package, canonical(&version))
             .verify()
             .expect_err("unsupported artifact version must fail closed");
-        assert!(error.to_string().contains("UnsupportedVersion"));
+        assert_projection_evidence_mismatch(&error);
     }
 
     #[test]
@@ -767,7 +848,7 @@ mod tests {
         let error = with_envelope(package, oversized)
             .verify()
             .expect_err("oversize authority must fail before parsing");
-        assert!(error.to_string().contains("byte ceiling"));
+        assert_projection_evidence_mismatch(&error);
 
         let detached: SchemaPackage<TestSchema> = SchemaPackage::new_with_authority(
             package.semantic_fingerprint_json,
@@ -781,7 +862,7 @@ mod tests {
         let error = detached
             .verify()
             .expect_err("detached scope must not override compiled authority");
-        assert!(error.to_string().contains("extracted query evidence"));
+        assert_projection_evidence_mismatch(&error);
     }
 
     #[test]
@@ -826,6 +907,9 @@ mod tests {
         match tampered_package.verify() {
             Err(err) => {
                 use std::error::Error as _;
+                assert_eq!(err.category(), crate::ErrorCategory::Schema);
+                assert_eq!(err.code(), None);
+                assert_eq!(err.path(), None);
                 assert!(err.source().is_some());
             }
             Ok(_) => panic!("tampered schema package must fail verification"),
@@ -868,6 +952,9 @@ mod tests {
         let py_package: SchemaPackage<TestSchema> =
             SchemaPackage::new(semantic_ref, projection_ref, runtime_ref);
         let err = py_package.verify().unwrap_err();
+        assert_eq!(err.category(), crate::ErrorCategory::Schema);
+        assert_eq!(err.code(), None);
+        assert_eq!(err.path(), None);
         assert!(err.to_string().contains("target mismatch") || err.to_string().contains("Rust"));
     }
 }
