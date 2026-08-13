@@ -288,11 +288,16 @@ fn ordered_projection_selects_successor_evidence_and_descriptors_in_all_bindings
     assert!(typescript_runtime.contains("TYPE_BRIDGE_ORDERED_COLLECTION_RESOURCE_VERSION = 3"));
     assert!(typescript_runtime.contains("descriptors[HYDRATE_COMPLETE_BRAND]"));
     assert!(typescript_runtime.contains("requireProjection().validateThingJson("));
-    assert!(
-        std::str::from_utf8(typescript_package.get("src/index.ts").unwrap())
-            .unwrap()
-            .contains("__installOrderedRuntimeProjectionPackage(")
-    );
+    let typescript_index =
+        std::str::from_utf8(typescript_package.get("src/index.ts").unwrap()).unwrap();
+    assert!(typescript_index.contains("__installOrderedRuntimeProjectionPackage("));
+    let projection_install = typescript_runtime
+        .rfind("const projection = installRuntimeProjection({")
+        .unwrap();
+    let authority_install = typescript_runtime
+        .rfind("const authority = installGeneratedSchemaAuthority({")
+        .unwrap();
+    assert!(projection_install < authority_install);
 
     let rust = RustEmitter::new();
     let rust_handlers = rust.generator_handlers_for(&schema);

@@ -45,7 +45,6 @@ use type_bridge_schema_codegen::{TypeScriptEmitter, verify_projection_evidence};
 use crate::match_runtime::{
     NodeQueryCancellation, NodeQueryExecutionResources, napi_sdk_diagnostic, revalidate_diagnostic,
 };
-use crate::query_v2_runtime::schema_authority_diagnostic;
 use crate::{
     NodeMatchSessionHandle, NodeRustDatabase, NodeRustTransactionContext, NodeValidatedThingHandle,
 };
@@ -89,28 +88,32 @@ impl NodeRuntimeProjection {
         registrations_json: String,
         schema_authority_json: Option<String>,
     ) -> napi::Result<Self> {
-        let runtime = decode_runtime_projection_verified(
-            projection_json.as_bytes(),
-            semantic_fingerprint_json.as_bytes(),
-            projection_fingerprint_json.as_bytes(),
-        )
-        .map_err(diagnostic_error)?;
-        if runtime.target() != BindingTarget::TypeScript {
-            return Err(invalid_error(
-                "runtime projection does not target TypeScript",
-            ));
-        }
-        match schema_authority_json {
-            Some(schema_authority_json) => {
-                let authority = decode_schema_authority(
-                    schema_authority_json.as_bytes(),
-                    &schema_authority_capability_vocabulary(),
+        let runtime = match schema_authority_json {
+            Some(schema_authority_json) => install_authority_backed_projection(
+                &projection_json,
+                &semantic_fingerprint_json,
+                &projection_fingerprint_json,
+                &schema_authority_json,
+            )?,
+            None => {
+                let runtime = decode_runtime_projection_verified(
+                    projection_json.as_bytes(),
+                    semantic_fingerprint_json.as_bytes(),
+                    projection_fingerprint_json.as_bytes(),
                 )
-                .map_err(|error| diagnostic_error(schema_authority_diagnostic(&error)))?;
-                verify_projection_evidence(&authority, &runtime).map_err(diagnostic_error)?;
+                .map_err(diagnostic_error)?;
+                if runtime.target() != BindingTarget::TypeScript {
+                    return Err(invalid_error(
+                        "runtime projection does not target TypeScript",
+                    ));
+                }
+                if projection_uses_ordered_collections(&runtime) {
+                    return Err(projection_evidence_mismatch());
+                }
+                verify_legacy_typescript_projection_evidence(&runtime)?;
+                runtime
             }
-            None => verify_legacy_typescript_projection_evidence(&runtime)?,
-        }
+        };
         let registrations: Vec<ModelRegistration> = serde_json::from_str(&registrations_json)
             .map_err(|error| invalid_error(format!("invalid projection registrations: {error}")))?;
         if registrations.len() != runtime.models().len() {
@@ -998,6 +1001,34 @@ struct ProjectedWire {
     iid: Option<String>,
     value: Option<ScalarWire>,
     values: BTreeMap<String, Value>,
+}
+
+fn install_authority_backed_projection(
+    projection_json: &str,
+    semantic_fingerprint_json: &str,
+    projection_fingerprint_json: &str,
+    schema_authority_json: &str,
+) -> napi::Result<RuntimeProjection> {
+    let runtime = decode_runtime_projection_verified(
+        projection_json.as_bytes(),
+        semantic_fingerprint_json.as_bytes(),
+        projection_fingerprint_json.as_bytes(),
+    )
+    .map_err(|_| projection_evidence_mismatch())?;
+    if runtime.target() != BindingTarget::TypeScript {
+        return Err(projection_evidence_mismatch());
+    }
+    let authority = decode_schema_authority(
+        schema_authority_json.as_bytes(),
+        &schema_authority_capability_vocabulary(),
+    )
+    .map_err(|_| projection_evidence_mismatch())?;
+    verify_projection_evidence(&authority, &runtime).map_err(|_| projection_evidence_mismatch())?;
+    Ok(runtime)
+}
+
+fn projection_evidence_mismatch() -> Error {
+    napi_sdk_diagnostic(SdkExecutionDiagnostic::projection_evidence_mismatch())
 }
 
 fn verify_legacy_typescript_projection_evidence(runtime: &RuntimeProjection) -> napi::Result<()> {
@@ -2787,6 +2818,22 @@ entities:
         .unwrap()
     }
 
+    fn assert_projection_evidence_mismatch(error: Error) {
+        let diagnostic: Value = serde_json::from_str(&error.reason).unwrap();
+        assert_eq!(
+            diagnostic,
+            serde_json::json!({
+                "category": "integrity",
+                "sdkCategory": "integrity",
+                "queryCategory": null,
+                "code": "projection_evidence_mismatch",
+                "message": "Generated projection evidence does not match the verified schema package",
+                "path": [{"kind": "argument", "value": "projection_evidence"}],
+                "details": {},
+            })
+        );
+    }
+
     fn runtime_for_schema(source: &str, document: &str) -> NodeRuntimeProjection {
         let authority = authority(source, document);
         let authority_json = String::from_utf8(encode_schema_authority(&authority)).unwrap();
@@ -3391,7 +3438,65 @@ entities:
     }
 
     #[test]
-    fn install_rejects_a_foreign_binding_target_before_registration() {
+    fn authorityless_install_retains_exact_unordered_legacy_admission_errors() {
+        let legacy_authority = authority(UNORDERED_SCHEMA, "node-legacy-install.yaml");
+        let legacy = typescript_projection(&legacy_authority);
+        let (legacy_json, legacy_semantic, legacy_fingerprint) = evidence(&legacy);
+        NodeRuntimeProjection::new(
+            legacy_json.clone(),
+            legacy_semantic.clone(),
+            legacy_fingerprint.clone(),
+            registrations(&legacy),
+            None,
+        )
+        .expect("exact legacy unordered evidence must remain authorityless");
+
+        let malformed = NodeRuntimeProjection::new(
+            "{".into(),
+            legacy_semantic,
+            legacy_fingerprint,
+            "[]".into(),
+            None,
+        )
+        .err()
+        .expect("malformed legacy projection evidence must fail");
+        assert_eq!(
+            malformed.reason,
+            "invalid_contract [malformed_canonical_json]: input is not valid canonical JSON"
+        );
+
+        let emitter = TypeScriptEmitter::new();
+        let mut forged_resources = emitter.code_resources().unwrap();
+        let forged_id = forged_resources[0].id().as_str().to_owned();
+        forged_resources[0] =
+            CodeResourceDigest::from_bytes(forged_id, b"forged legacy resource").unwrap();
+        let forged = project(
+            legacy_authority.resolved_schema(),
+            BindingTarget::TypeScript,
+            &ProjectionConfig::typescript(),
+            &emitter.generator_handlers(),
+            &forged_resources,
+        )
+        .unwrap();
+        let (projection, semantic, fingerprint) = evidence(&forged);
+        let forged =
+            NodeRuntimeProjection::new(projection, semantic, fingerprint, "[]".into(), None)
+                .err()
+                .expect("forged legacy resource evidence must fail");
+        assert_eq!(
+            forged.reason,
+            "legacy TypeScript runtime projection does not match the exact shipped handler and resource evidence"
+        );
+
+        let ordered_authority = authority(ORDERED_SCHEMA, "node-legacy-ordered-install.yaml");
+        let ordered = typescript_projection(&ordered_authority);
+        let (projection, semantic, fingerprint) = evidence(&ordered);
+        let missing_authority =
+            NodeRuntimeProjection::new(projection, semantic, fingerprint, "[]".into(), None)
+                .err()
+                .expect("authorityless ordered projection evidence must fail");
+        assert_projection_evidence_mismatch(missing_authority);
+
         let authority = authority(ORDERED_SCHEMA, "node-foreign-target.yaml");
         let emitter = PythonEmitter::new();
         let projection = project(
@@ -3409,15 +3514,14 @@ entities:
             NodeRuntimeProjection::new(projection, semantic, fingerprint, "[]".into(), None)
                 .err()
                 .expect("a Python projection must not install as TypeScript");
-        assert!(
-            error
-                .to_string()
-                .contains("runtime projection does not target TypeScript")
+        assert_eq!(
+            error.reason,
+            "runtime projection does not target TypeScript"
         );
     }
 
     #[test]
-    fn ordered_install_rejects_missing_stale_forged_reordered_and_foreign_evidence() {
+    fn successor_install_converges_all_hostile_evidence_on_the_integrity_diagnostic() {
         let ordered_authority = authority(ORDERED_SCHEMA, "node-ordered.yaml");
         let authority_json =
             String::from_utf8(encode_schema_authority(&ordered_authority)).unwrap();
@@ -3438,12 +3542,12 @@ entities:
         )
         .expect("the exact ordered TypeScript package evidence must install");
 
-        let rejected = |projection: &RuntimeProjection,
-                        projection_json: Option<String>,
+        let rejected = |projection_json: String,
+                        semantic: String,
+                        fingerprint: String,
                         authority_json: Option<&str>| {
-            let (canonical, semantic, fingerprint) = evidence(projection);
             NodeRuntimeProjection::new(
-                projection_json.unwrap_or(canonical),
+                projection_json,
                 semantic,
                 fingerprint,
                 "[]".into(),
@@ -3463,6 +3567,27 @@ entities:
             &missing_resources,
         )
         .unwrap();
+
+        let mut raw: Value = serde_json::from_str(&exact_json).unwrap();
+        let resources = raw["code_resources"].as_array().unwrap();
+        let first_resource = resources[0].clone();
+
+        let mut extra: Value = serde_json::from_str(&exact_json).unwrap();
+        let mut extra_resource = first_resource.clone();
+        extra_resource["id"] =
+            Value::String("typebridge.generator.typescript.zzz-extra-resource".to_owned());
+        extra["code_resources"]
+            .as_array_mut()
+            .unwrap()
+            .push(extra_resource);
+        let extra = String::from_utf8(to_canonical_json(&extra).unwrap()).unwrap();
+
+        let mut duplicate: Value = serde_json::from_str(&exact_json).unwrap();
+        duplicate["code_resources"]
+            .as_array_mut()
+            .unwrap()
+            .push(first_resource);
+        let duplicate = String::from_utf8(to_canonical_json(&duplicate).unwrap()).unwrap();
 
         let stale = project(
             ordered_authority.resolved_schema(),
@@ -3486,12 +3611,8 @@ entities:
         )
         .unwrap();
 
-        let mut reordered: Value = serde_json::from_str(&exact_json).unwrap();
-        reordered["code_resources"]
-            .as_array_mut()
-            .unwrap()
-            .reverse();
-        let reordered = String::from_utf8(to_canonical_json(&reordered).unwrap()).unwrap();
+        raw["code_resources"].as_array_mut().unwrap().reverse();
+        let reordered = String::from_utf8(to_canonical_json(&raw).unwrap()).unwrap();
 
         let foreign = authority(
             "format: typebridge.schema/v2\nentities:\n  foreign: {}\n",
@@ -3499,17 +3620,99 @@ entities:
         );
         let foreign = String::from_utf8(encode_schema_authority(&foreign)).unwrap();
 
+        let python = PythonEmitter::new();
+        let foreign_target = project(
+            ordered_authority.resolved_schema(),
+            BindingTarget::Python,
+            &ProjectionConfig::python(),
+            &python.generator_handlers_for(ordered_authority.resolved_schema()),
+            &python
+                .code_resources_for(ordered_authority.resolved_schema())
+                .unwrap(),
+        )
+        .unwrap();
+        let (foreign_target, foreign_target_semantic, foreign_target_fingerprint) =
+            evidence(&foreign_target);
+
+        let (missing, missing_semantic, missing_fingerprint) = evidence(&missing);
+        let (stale, stale_semantic, stale_fingerprint) = evidence(&stale);
+        let (forged, forged_semantic, forged_fingerprint) = evidence(&forged);
+
         for error in [
-            rejected(&exact, None, None),
-            rejected(&missing, None, Some(&authority_json)),
-            rejected(&stale, None, Some(&authority_json)),
-            rejected(&forged, None, Some(&authority_json)),
-            rejected(&exact, Some(reordered), Some(&authority_json)),
-            rejected(&exact, None, Some(&foreign)),
+            rejected(
+                "{".into(),
+                exact_semantic.clone(),
+                exact_fingerprint.clone(),
+                Some(&authority_json),
+            ),
+            rejected(
+                exact_json.clone(),
+                "{".into(),
+                exact_fingerprint.clone(),
+                Some(&authority_json),
+            ),
+            rejected(
+                exact_json.clone(),
+                exact_semantic.clone(),
+                "{".into(),
+                Some(&authority_json),
+            ),
+            rejected(
+                exact_json.clone(),
+                exact_semantic.clone(),
+                exact_fingerprint.clone(),
+                Some("{"),
+            ),
+            rejected(
+                missing,
+                missing_semantic,
+                missing_fingerprint,
+                Some(&authority_json),
+            ),
+            rejected(
+                extra,
+                exact_semantic.clone(),
+                exact_fingerprint.clone(),
+                Some(&authority_json),
+            ),
+            rejected(
+                duplicate,
+                exact_semantic.clone(),
+                exact_fingerprint.clone(),
+                Some(&authority_json),
+            ),
+            rejected(
+                reordered,
+                exact_semantic.clone(),
+                exact_fingerprint.clone(),
+                Some(&authority_json),
+            ),
+            rejected(
+                stale,
+                stale_semantic,
+                stale_fingerprint,
+                Some(&authority_json),
+            ),
+            rejected(
+                forged,
+                forged_semantic,
+                forged_fingerprint,
+                Some(&authority_json),
+            ),
+            rejected(
+                exact_json.clone(),
+                exact_semantic.clone(),
+                exact_fingerprint.clone(),
+                Some(&foreign),
+            ),
+            rejected(
+                foreign_target,
+                foreign_target_semantic,
+                foreign_target_fingerprint,
+                Some(&authority_json),
+            ),
         ] {
-            assert!(
-                error.to_string().contains("projection") || error.to_string().contains("canonical")
-            );
+            assert_projection_evidence_mismatch(error);
         }
     }
 }

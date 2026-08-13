@@ -275,10 +275,6 @@ export function __installOrderedRuntimeProjectionPackage(
     }
     return entry;
   });
-  const authority = installGeneratedSchemaAuthority({
-    schemaAuthorityJson,
-    semanticFingerprintJson,
-  });
   const projection = installRuntimeProjection({
     schemaAuthorityJson,
     projectionJson,
@@ -290,6 +286,10 @@ export function __installOrderedRuntimeProjectionPackage(
       create: typeof token.create === "function",
       reference: typeof token.reference === "function",
     })),
+  });
+  const authority = installGeneratedSchemaAuthority({
+    schemaAuthorityJson,
+    semanticFingerprintJson,
   });
   installedProjection = projection;
   installedQueryAuthority = authority;
@@ -414,5 +414,15 @@ mod tests {
         assert!(source.contains("requireProjection().validateThingJson("));
         assert!(!source.contains("__materializeOrderedThing"));
         assert!(source.contains("rejectGeneratedTokenPackageMismatch("));
+        let successor = source
+            .strip_prefix(std::str::from_utf8(RUNTIME_SOURCE).unwrap())
+            .unwrap();
+        let projection = successor
+            .find("const projection = installRuntimeProjection({")
+            .unwrap();
+        let authority = successor
+            .find("const authority = installGeneratedSchemaAuthority({")
+            .unwrap();
+        assert!(projection < authority);
     }
 }
