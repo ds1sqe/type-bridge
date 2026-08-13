@@ -2615,11 +2615,20 @@ plays:
         let person = TypeId::new(TypeKind::Entity, "person").unwrap();
         let friendship = TypeId::new(TypeKind::Relation, "friendship").unwrap();
         let friend = RoleId::new("friendship", "friend").unwrap();
-        let identifier = OwnsFactId::new(person, AttributeId::new("identifier").unwrap()).unwrap();
+        let identifier =
+            OwnsFactId::new(person.clone(), AttributeId::new("identifier").unwrap()).unwrap();
         let identifier_value = ProjectedAttributeValue::try_new(
             installed,
             TypeId::new(TypeKind::Attribute, "identifier").unwrap(),
             CanonicalValue::String(CanonicalString::new("ada").unwrap()),
+        )
+        .unwrap();
+        let reference = ProjectedReference::try_new_with_origin_carrier(
+            installed,
+            person,
+            reference.iid().map(str::to_owned),
+            vec![(identifier.clone(), identifier_value.clone())],
+            reference.origin_carrier(),
         )
         .unwrap();
         let read_role = &installed.projection().models()[&friendship]
