@@ -406,7 +406,7 @@ pub(crate) fn materialize_projected<M: CompleteModel>(
         .map_err(|error| map_validation_error(error, ModelValidationPhase::Hydration))
 }
 
-fn projected_to_hydrated_row(
+pub(crate) fn projected_to_hydrated_row(
     thing: &ProjectedThing,
     installed: &InstalledRuntimeProjection,
 ) -> Result<HydratedRow> {

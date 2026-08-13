@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use type_bridge_contract::codec::from_canonical_json;
 use type_bridge_contract::decimal::parse_decimal;
 use type_bridge_contract::id::{FunctionId, TypeId, TypeKind};
+use type_bridge_contract::projection::ProjectionHandler;
 use type_bridge_contract::query_plan::CompatibilityValueV2;
 use type_bridge_contract::temporal::{
     CanonicalDate, CanonicalDateTime, CanonicalDateTimeTz, CanonicalDuration,
@@ -27,13 +28,14 @@ use type_bridge_orm::match_request::model::{
     ComparisonOp, MissingOrder, RowCardinality, SortDirection, Window,
 };
 use type_bridge_orm::match_request::result::{
-    HydratedThing, MatchResult, MatchRow, SlotValue, ValidatedMatchResult,
+    HydratedThing, MatchResult, MatchRow, ReducedValue, SlotValue, ValidatedMatchResult,
 };
 use type_bridge_orm::match_request::validation::ValidatedMatchRequest;
 use type_bridge_orm::{
     AnswerCancellation, AttributeValue, DynamicEntityRow, DynamicRelationRow, DynamicRolePlayer,
-    InstalledRuntimeProjection, ProjectedAttributeValue, QueryExecutionDeadline,
-    QueryExecutionResourceLimits,
+    InstalledRuntimeProjection, ProjectedAttributeValue, ProjectedQueryOrigin, ProjectedQueryRow,
+    ProjectedQuerySlotValue, ProjectedQueryValue, ProjectedReducedValue, ProjectedReductionGroup,
+    ProjectedThing, QueryExecutionDeadline, QueryExecutionResourceLimits,
 };
 
 use crate::__codegen::{
@@ -43,6 +45,7 @@ use crate::__codegen::{
 };
 use crate::entity_codec::{hydrate_entity, map_validation_error};
 use crate::error::{Error, ModelValidationPhase};
+use crate::projected_codec::projected_to_hydrated_row;
 use crate::relation_codec::hydrate_relation;
 use crate::schema::Schema;
 use crate::{Database, Result};
@@ -660,6 +663,45 @@ impl<'db, S: Schema> QuerySession<'db, S> {
             Ok(())
         }
     }
+
+    fn uses_successor_projected_materialization(&self) -> bool {
+        self.installed.projection().generator_handlers() == [ProjectionHandler::rust_v2()]
+    }
+
+    fn projected_query_origin(&self) -> Result<ProjectedQueryOrigin> {
+        match &self.execution {
+            QueryExecution::Local(database) => {
+                Ok(ProjectedQueryOrigin::for_database(database.inner_orm()))
+            }
+            QueryExecution::Borrowed(transaction) => {
+                ProjectedQueryOrigin::for_transaction(transaction).map_err(|error| {
+                    Error::from_sdk_execution(error, ModelValidationPhase::Hydration)
+                })
+            }
+            QueryExecution::Remote(_) => Ok(ProjectedQueryOrigin::remote_unbound()),
+        }
+    }
+
+    fn materialize_projected_query_value(
+        &self,
+        validated: &ValidatedMatchRequest,
+        result: &ValidatedMatchResult,
+        deadline: QueryExecutionDeadline,
+    ) -> Result<ProjectedQueryValue> {
+        self.check_invocation(deadline, ModelValidationPhase::Hydration)?;
+        self.projected_query_origin()?
+            .materialize_borrowed_with_budget(
+                self.installed,
+                &self.registry,
+                validated,
+                result,
+                self.resources.projected(),
+                &self.cancellation,
+                Some(deadline),
+            )
+            .map(|(value, _measure)| value)
+            .map_err(|error| Error::from_sdk_execution(error, ModelValidationPhase::Hydration))
+    }
 }
 
 impl<'db, S: Schema> QuerySession<'db, S> {
@@ -1166,6 +1208,10 @@ impl<'db, S: Schema> QuerySession<'db, S> {
             }
         }
     }
+
+    fn client_row_for_projected(&self, thing: &ProjectedThing) -> Result<HydratedRow> {
+        projected_to_hydrated_row(thing, self.installed()?)
+    }
 }
 
 fn canonicalize_selected_value(value: AttributeValue) -> Result<AttributeValue> {
@@ -1233,6 +1279,19 @@ fn encoded_group_scalar(value: &AttributeValue) -> Result<EncodedScalar> {
             .map(EncodedScalar::Duration)
             .map_err(map),
     }
+}
+
+fn decoded_projected_reduction_values(values: &[ProjectedReducedValue]) -> Vec<ReducedValue> {
+    values
+        .iter()
+        .map(|value| match value {
+            ProjectedReducedValue::Count(value) => ReducedValue::Count(*value),
+            ProjectedReducedValue::Long(value) => ReducedValue::Long(*value),
+            ProjectedReducedValue::Double(value) => {
+                ReducedValue::Double(value.map(type_bridge_contract::value::CanonicalDouble::get))
+            }
+        })
+        .collect()
 }
 
 fn normalize_provider_datetime_tz(value: String) -> String {
@@ -2042,6 +2101,16 @@ pub trait Selectable<S: Schema>: selectable_sealed::Sealed + Copy {
     fn materialize_output(row: &HydratedRow) -> std::result::Result<Self::Output, ValidationError>;
 
     #[doc(hidden)]
+    fn __materialize_projected_output(
+        session: &QuerySession<'_, S>,
+        thing: &ProjectedThing,
+    ) -> Result<Self::Output> {
+        let row = session.client_row_for_projected(thing)?;
+        Self::materialize_output(&row)
+            .map_err(|error| map_validation_error(error, ModelValidationPhase::Hydration))
+    }
+
+    #[doc(hidden)]
     fn __selection_handle(self, session: &QuerySession<'_, S>) -> Result<OrmSelectionHandle> {
         Ok(session.handle_by_key(self.binding_key())?.one())
     }
@@ -2129,6 +2198,13 @@ pub trait SelectedSlot<S: Schema>: selected_slot_sealed::Sealed<S> + Clone {
     ) -> Result<Self::Output>;
 
     #[doc(hidden)]
+    fn __materialize_projected_slot(
+        &self,
+        session: &QuerySession<'_, S>,
+        slot: &ProjectedQuerySlotValue,
+    ) -> Result<Self::Output>;
+
+    #[doc(hidden)]
     fn __materialize_slot_with_checkpoint(
         &self,
         session: &QuerySession<'_, S>,
@@ -2137,6 +2213,19 @@ pub trait SelectedSlot<S: Schema>: selected_slot_sealed::Sealed<S> + Clone {
     ) -> Result<Self::Output> {
         checkpoint()?;
         let output = self.__materialize_slot(session, slot)?;
+        checkpoint()?;
+        Ok(output)
+    }
+
+    #[doc(hidden)]
+    fn __materialize_projected_slot_with_checkpoint(
+        &self,
+        session: &QuerySession<'_, S>,
+        slot: &ProjectedQuerySlotValue,
+        checkpoint: &dyn Fn() -> Result<()>,
+    ) -> Result<Self::Output> {
+        checkpoint()?;
+        let output = self.__materialize_projected_slot(session, slot)?;
         checkpoint()?;
         Ok(output)
     }
@@ -2158,6 +2247,23 @@ impl<S: Schema, B: Selectable<S>> SelectedSlot<S> for B {
         (*self).__materialize_slot(session, slot)
     }
 
+    fn __materialize_projected_slot(
+        &self,
+        session: &QuerySession<'_, S>,
+        slot: &ProjectedQuerySlotValue,
+    ) -> Result<Self::Output> {
+        let ProjectedQuerySlotValue::One(thing) = slot else {
+            return Err(Error::model_validation(
+                ModelValidationPhase::Hydration,
+                "wrong_result_shape",
+                vec![],
+                "provider returned a collection slot for a singular selection",
+                None,
+            ));
+        };
+        B::__materialize_projected_output(session, thing)
+    }
+
     fn __materialize_slot_with_checkpoint(
         &self,
         session: &QuerySession<'_, S>,
@@ -2165,6 +2271,18 @@ impl<S: Schema, B: Selectable<S>> SelectedSlot<S> for B {
         checkpoint: &dyn Fn() -> Result<()>,
     ) -> Result<Self::Output> {
         (*self).__materialize_slot_with_checkpoint(session, slot, checkpoint)
+    }
+
+    fn __materialize_projected_slot_with_checkpoint(
+        &self,
+        session: &QuerySession<'_, S>,
+        slot: &ProjectedQuerySlotValue,
+        checkpoint: &dyn Fn() -> Result<()>,
+    ) -> Result<Self::Output> {
+        checkpoint()?;
+        let output = self.__materialize_projected_slot(session, slot)?;
+        checkpoint()?;
+        Ok(output)
     }
 }
 
@@ -2212,6 +2330,26 @@ impl<S: Schema, B: Selectable<S>> SelectedSlot<S> for Collected<S, B> {
         Ok(outputs)
     }
 
+    fn __materialize_projected_slot(
+        &self,
+        session: &QuerySession<'_, S>,
+        slot: &ProjectedQuerySlotValue,
+    ) -> Result<Self::Output> {
+        let ProjectedQuerySlotValue::Many(things) = slot else {
+            return Err(Error::model_validation(
+                ModelValidationPhase::Hydration,
+                "wrong_result_shape",
+                vec![],
+                "provider returned a singular slot for a collection selection",
+                None,
+            ));
+        };
+        things
+            .iter()
+            .map(|thing| B::__materialize_projected_output(session, thing))
+            .collect()
+    }
+
     fn __materialize_slot_with_checkpoint(
         &self,
         session: &QuerySession<'_, S>,
@@ -2241,6 +2379,31 @@ impl<S: Schema, B: Selectable<S>> SelectedSlot<S> for Collected<S, B> {
         checkpoint()?;
         Ok(outputs)
     }
+
+    fn __materialize_projected_slot_with_checkpoint(
+        &self,
+        session: &QuerySession<'_, S>,
+        slot: &ProjectedQuerySlotValue,
+        checkpoint: &dyn Fn() -> Result<()>,
+    ) -> Result<Self::Output> {
+        let ProjectedQuerySlotValue::Many(things) = slot else {
+            return Err(Error::model_validation(
+                ModelValidationPhase::Hydration,
+                "wrong_result_shape",
+                vec![],
+                "provider returned a singular slot for a collection selection",
+                None,
+            ));
+        };
+        checkpoint()?;
+        let mut outputs = Vec::with_capacity(things.len());
+        for thing in things {
+            checkpoint()?;
+            outputs.push(B::__materialize_projected_output(session, thing)?);
+        }
+        checkpoint()?;
+        Ok(outputs)
+    }
 }
 
 mod selected_shape_sealed {
@@ -2266,6 +2429,13 @@ pub trait SelectedShape<S: Schema>: selected_shape_sealed::Sealed<S> + Clone {
     ) -> Result<Self::Output>;
 
     #[doc(hidden)]
+    fn __materialize_projected_row(
+        &self,
+        session: &QuerySession<'_, S>,
+        row: &ProjectedQueryRow,
+    ) -> Result<Self::Output>;
+
+    #[doc(hidden)]
     fn __materialize_row_with_checkpoint(
         &self,
         session: &QuerySession<'_, S>,
@@ -2274,6 +2444,19 @@ pub trait SelectedShape<S: Schema>: selected_shape_sealed::Sealed<S> + Clone {
     ) -> Result<Self::Output> {
         checkpoint()?;
         let output = self.__materialize_row(session, row)?;
+        checkpoint()?;
+        Ok(output)
+    }
+
+    #[doc(hidden)]
+    fn __materialize_projected_row_with_checkpoint(
+        &self,
+        session: &QuerySession<'_, S>,
+        row: &ProjectedQueryRow,
+        checkpoint: &dyn Fn() -> Result<()>,
+    ) -> Result<Self::Output> {
+        checkpoint()?;
+        let output = self.__materialize_projected_row(session, row)?;
         checkpoint()?;
         Ok(output)
     }
@@ -2300,6 +2483,17 @@ impl<S: Schema, B: Selectable<S>> SelectedShape<S> for B {
         };
         SelectedSlot::__materialize_slot(self, session, slot)
     }
+
+    fn __materialize_projected_row(
+        &self,
+        session: &QuerySession<'_, S>,
+        row: &ProjectedQueryRow,
+    ) -> Result<Self::Output> {
+        let [slot] = row.slots() else {
+            return Err(selected_shape_arity_error(1, row.slots().len()));
+        };
+        SelectedSlot::__materialize_projected_slot(self, session, slot.value())
+    }
 }
 
 impl<S: Schema, B: Selectable<S>> selected_shape_sealed::Sealed<S> for Collected<S, B> {}
@@ -2324,6 +2518,17 @@ impl<S: Schema, B: Selectable<S>> SelectedShape<S> for Collected<S, B> {
         SelectedSlot::__materialize_slot(self, session, slot)
     }
 
+    fn __materialize_projected_row(
+        &self,
+        session: &QuerySession<'_, S>,
+        row: &ProjectedQueryRow,
+    ) -> Result<Self::Output> {
+        let [slot] = row.slots() else {
+            return Err(selected_shape_arity_error(1, row.slots().len()));
+        };
+        SelectedSlot::__materialize_projected_slot(self, session, slot.value())
+    }
+
     fn __materialize_row_with_checkpoint(
         &self,
         session: &QuerySession<'_, S>,
@@ -2334,6 +2539,23 @@ impl<S: Schema, B: Selectable<S>> SelectedShape<S> for Collected<S, B> {
             return Err(selected_shape_arity_error(1, row.slots().len()));
         };
         SelectedSlot::__materialize_slot_with_checkpoint(self, session, slot, checkpoint)
+    }
+
+    fn __materialize_projected_row_with_checkpoint(
+        &self,
+        session: &QuerySession<'_, S>,
+        row: &ProjectedQueryRow,
+        checkpoint: &dyn Fn() -> Result<()>,
+    ) -> Result<Self::Output> {
+        let [slot] = row.slots() else {
+            return Err(selected_shape_arity_error(1, row.slots().len()));
+        };
+        SelectedSlot::__materialize_projected_slot_with_checkpoint(
+            self,
+            session,
+            slot.value(),
+            checkpoint,
+        )
     }
 }
 
@@ -2366,6 +2588,13 @@ pub trait SelectedTuple<S: Schema>: Clone {
     ) -> Result<Self::Output>;
 
     #[doc(hidden)]
+    fn __materialize_projected_slots(
+        &self,
+        session: &QuerySession<'_, S>,
+        slots: &[type_bridge_orm::ProjectedQuerySlot],
+    ) -> Result<Self::Output>;
+
+    #[doc(hidden)]
     fn __materialize_slots_with_checkpoint(
         &self,
         session: &QuerySession<'_, S>,
@@ -2374,6 +2603,19 @@ pub trait SelectedTuple<S: Schema>: Clone {
     ) -> Result<Self::Output> {
         checkpoint()?;
         let output = self.__materialize_slots(session, slots)?;
+        checkpoint()?;
+        Ok(output)
+    }
+
+    #[doc(hidden)]
+    fn __materialize_projected_slots_with_checkpoint(
+        &self,
+        session: &QuerySession<'_, S>,
+        slots: &[type_bridge_orm::ProjectedQuerySlot],
+        checkpoint: &dyn Fn() -> Result<()>,
+    ) -> Result<Self::Output> {
+        checkpoint()?;
+        let output = self.__materialize_projected_slots(session, slots)?;
         checkpoint()?;
         Ok(output)
     }
@@ -2411,6 +2653,21 @@ macro_rules! selected_tuple {
                 )?,)+))
             }
 
+            fn __materialize_projected_slots(
+                &self,
+                session: &QuerySession<'_, S>,
+                slots: &[type_bridge_orm::ProjectedQuerySlot],
+            ) -> Result<Self::Output> {
+                let slots: &[type_bridge_orm::ProjectedQuerySlot; $length] = slots
+                    .try_into()
+                    .map_err(|_| selected_shape_arity_error($length, slots.len()))?;
+                Ok(($(SelectedSlot::__materialize_projected_slot(
+                    &self.$index,
+                    session,
+                    slots[$index].value(),
+                )?,)+))
+            }
+
             fn __materialize_slots_with_checkpoint(
                 &self,
                 session: &QuerySession<'_, S>,
@@ -2424,6 +2681,24 @@ macro_rules! selected_tuple {
                     &self.$index,
                     session,
                     &slots[$index],
+                    checkpoint,
+                )?,)+))
+            }
+
+
+            fn __materialize_projected_slots_with_checkpoint(
+                &self,
+                session: &QuerySession<'_, S>,
+                slots: &[type_bridge_orm::ProjectedQuerySlot],
+                checkpoint: &dyn Fn() -> Result<()>,
+            ) -> Result<Self::Output> {
+                let slots: &[type_bridge_orm::ProjectedQuerySlot; $length] = slots
+                    .try_into()
+                    .map_err(|_| selected_shape_arity_error($length, slots.len()))?;
+                Ok(($(SelectedSlot::__materialize_projected_slot_with_checkpoint(
+                    &self.$index,
+                    session,
+                    slots[$index].value(),
                     checkpoint,
                 )?,)+))
             }
@@ -2455,6 +2730,14 @@ macro_rules! selected_tuple {
                 self.__materialize_slots(session, row.slots())
             }
 
+            fn __materialize_projected_row(
+                &self,
+                session: &QuerySession<'_, S>,
+                row: &ProjectedQueryRow,
+            ) -> Result<Self::Output> {
+                self.__materialize_projected_slots(session, row.slots())
+            }
+
 
             fn __materialize_row_with_checkpoint(
                 &self,
@@ -2463,6 +2746,20 @@ macro_rules! selected_tuple {
                 checkpoint: &dyn Fn() -> Result<()>,
             ) -> Result<Self::Output> {
                 self.__materialize_slots_with_checkpoint(session, row.slots(), checkpoint)
+            }
+
+
+            fn __materialize_projected_row_with_checkpoint(
+                &self,
+                session: &QuerySession<'_, S>,
+                row: &ProjectedQueryRow,
+                checkpoint: &dyn Fn() -> Result<()>,
+            ) -> Result<Self::Output> {
+                self.__materialize_projected_slots_with_checkpoint(
+                    session,
+                    row.slots(),
+                    checkpoint,
+                )
             }
         }
 
@@ -2581,6 +2878,17 @@ where
         ))
     }
 
+    fn __materialize_projected_row(
+        &self,
+        session: &QuerySession<'_, S>,
+        row: &ProjectedQueryRow,
+    ) -> Result<Self::Output> {
+        Ok(Row::__from_selected_outputs(
+            self.slots
+                .__materialize_projected_slots(session, row.slots())?,
+        ))
+    }
+
     fn __materialize_row_with_checkpoint(
         &self,
         session: &QuerySession<'_, S>,
@@ -2590,6 +2898,21 @@ where
         Ok(Row::__from_selected_outputs(
             self.slots
                 .__materialize_slots_with_checkpoint(session, row.slots(), checkpoint)?,
+        ))
+    }
+
+    fn __materialize_projected_row_with_checkpoint(
+        &self,
+        session: &QuerySession<'_, S>,
+        row: &ProjectedQueryRow,
+        checkpoint: &dyn Fn() -> Result<()>,
+    ) -> Result<Self::Output> {
+        Ok(Row::__from_selected_outputs(
+            self.slots.__materialize_projected_slots_with_checkpoint(
+                session,
+                row.slots(),
+                checkpoint,
+            )?,
         ))
     }
 }
@@ -3015,6 +3338,29 @@ impl<'s, 'db, S: Schema, Shape: SelectedShape<S>> Query<'s, 'db, S, Shape> {
         Ok(outputs)
     }
 
+    fn materialize_projected_rows(
+        &self,
+        rows: &[ProjectedQueryRow],
+        deadline: QueryExecutionDeadline,
+    ) -> Result<Vec<Shape::Output>> {
+        let checkpoint = || {
+            self.session
+                .check_invocation(deadline, ModelValidationPhase::Hydration)
+        };
+        checkpoint()?;
+        let mut outputs = Vec::with_capacity(rows.len());
+        for row in rows {
+            checkpoint()?;
+            outputs.push(self.selection.__materialize_projected_row_with_checkpoint(
+                self.session,
+                row,
+                &checkpoint,
+            )?);
+        }
+        checkpoint()?;
+        Ok(outputs)
+    }
+
     pub(crate) fn outputs_from_rows(
         &self,
         validated: &ValidatedMatchRequest,
@@ -3023,6 +3369,21 @@ impl<'s, 'db, S: Schema, Shape: SelectedShape<S>> Query<'s, 'db, S, Shape> {
     ) -> Result<Vec<Shape::Output>> {
         self.session
             .check_invocation(deadline, ModelValidationPhase::Hydration)?;
+        if self.session.uses_successor_projected_materialization() {
+            let projected = self
+                .session
+                .materialize_projected_query_value(validated, result, deadline)?;
+            let ProjectedQueryValue::Rows { rows } = projected else {
+                return Err(Error::model_validation(
+                    ModelValidationPhase::Hydration,
+                    "wrong_result_shape",
+                    vec![],
+                    "provider returned a non-row result for a row fetch",
+                    None,
+                ));
+            };
+            return self.materialize_projected_rows(&rows, deadline);
+        }
         let rows = match result
             .for_request(validated)
             .map_err(|error| Error::from_orm_hydration(error.into()))?
@@ -3049,6 +3410,32 @@ impl<'s, 'db, S: Schema, Shape: SelectedShape<S>> Query<'s, 'db, S, Shape> {
     ) -> Result<Page<Shape::Output>> {
         self.session
             .check_invocation(deadline, ModelValidationPhase::Hydration)?;
+        if self.session.uses_successor_projected_materialization() {
+            let projected = self
+                .session
+                .materialize_projected_query_value(validated, result, deadline)?;
+            let ProjectedQueryValue::Page {
+                entries,
+                window,
+                total,
+                ..
+            } = projected
+            else {
+                return Err(Error::model_validation(
+                    ModelValidationPhase::Hydration,
+                    "wrong_result_shape",
+                    vec![],
+                    "provider returned a non-page result for a page fetch",
+                    None,
+                ));
+            };
+            return Ok(Page {
+                items: self.materialize_projected_rows(&entries, deadline)?,
+                offset: window.offset,
+                limit: window.limit,
+                total,
+            });
+        }
         let (entries, window, total) = match result
             .for_request(validated)
             .map_err(|error| Error::from_orm_hydration(error.into()))?
@@ -3533,6 +3920,47 @@ impl<'s, 'db, S: Schema, B: Selectable<S>, G: Selectable<S>> GroupedQuery<'s, 'd
             .query
             .validated_reduce(Some(self.group.binding_key()), &term_list)?;
         let (validated, result) = self.query.execute(validated, deadline).await?;
+        if self
+            .query
+            .session
+            .uses_successor_projected_materialization()
+        {
+            let projected = self
+                .query
+                .session
+                .materialize_projected_query_value(&validated, &result, deadline)?;
+            let ProjectedQueryValue::Reduction { rows, .. } = projected else {
+                return Err(Error::model_validation(
+                    ModelValidationPhase::Hydration,
+                    "wrong_result_shape",
+                    vec![],
+                    "provider returned a non-reduction result for an aggregate",
+                    None,
+                ));
+            };
+            let mut outputs = Vec::with_capacity(rows.len());
+            for row in rows {
+                self.query
+                    .session
+                    .check_invocation(deadline, ModelValidationPhase::Hydration)?;
+                let Some(ProjectedReductionGroup::Thing(thing)) = row.group() else {
+                    return Err(Error::model_validation(
+                        ModelValidationPhase::Hydration,
+                        "wrong_result_shape",
+                        vec![],
+                        "grouped aggregates require group evidence per row",
+                        None,
+                    ));
+                };
+                let key = G::__materialize_projected_output(self.query.session, thing)?;
+                let values = decoded_projected_reduction_values(row.values());
+                outputs.push((key, T::decode(&values)?));
+            }
+            self.query
+                .session
+                .check_invocation(deadline, ModelValidationPhase::Hydration)?;
+            return Ok(outputs);
+        }
         let rows = self
             .query
             .decoded_reduction_rows(&validated, &result, deadline)?;
