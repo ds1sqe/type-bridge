@@ -2998,6 +2998,11 @@ impl RuntimeProjection {
                     || model.reference_read().target_name().is_some()
             })
         };
+        let read_model_use_is_valid = |value: &ProjectedModelUse| {
+            model_use_is_valid(value)
+                && (value.form() != ProjectedModelForm::Complete
+                    || value.id().kind() != TypeKind::Relation)
+        };
         let type_ref_is_valid = |value: &ProjectedTypeRef| match value {
             ProjectedTypeRef::Scalar(_) => true,
             ProjectedTypeRef::Model(value) => model_use_is_valid(value),
@@ -3069,7 +3074,7 @@ impl RuntimeProjection {
                     .complete_read()
                     .roles()
                     .values()
-                    .all(|role| role.players().iter().all(&model_use_is_valid));
+                    .all(|role| role.players().iter().all(&read_model_use_is_valid));
             let role_upcasts_are_valid =
                 model
                     .complete_read()

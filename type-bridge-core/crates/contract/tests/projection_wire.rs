@@ -5,9 +5,10 @@ use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind};
 use type_bridge_contract::projection::{
     BindingTarget, CSymbolPrefix, CompleteReadProjection, CreateFieldProjection, CreateProjection,
-    DeclarationProjection, EmissionPlan, FieldTokenProjection, ModelProjection,
-    ProjectedAnnotation, ProjectedMultiplicity, ProjectedTypeRef, ProjectionConfig,
-    ProjectionHandler, QueryTokenProjection, ReadRoleProjection, ReferenceReadProjection,
+    CreateRoleProjection, DeclarationProjection, EmissionPlan, FieldTokenProjection,
+    ModelProjection, ProjectedAnnotation, ProjectedModelForm, ProjectedModelUse,
+    ProjectedMultiplicity, ProjectedTypeRef, ProjectionConfig, ProjectionHandler,
+    QueryTokenProjection, ReadRoleProjection, ReferenceReadProjection, RoleTokenProjection,
     RuntimeProjection, TargetIdentifier,
 };
 use type_bridge_contract::projection_wire::decode_runtime_projection_verified;
@@ -67,6 +68,120 @@ fn fixture() -> RuntimeProjection {
         EmissionPlan::new(
             vec![person.clone()],
             vec![BTreeSet::from([person])],
+            vec![],
+            vec![],
+        )
+        .unwrap(),
+    )
+    .unwrap()
+}
+
+fn relation_player_fixture() -> RuntimeProjection {
+    let event = TypeId::new(TypeKind::Relation, "event").unwrap();
+    let container = TypeId::new(TypeKind::Relation, "container").unwrap();
+    let item = RoleId::new("container", "item").unwrap();
+    let multiplicity = ProjectedMultiplicity::from_cardinality(Cardinality::new(0, None).unwrap());
+    let event_model = ModelProjection::new(
+        event.clone(),
+        TargetIdentifier::python("Event").unwrap(),
+        DeclarationProjection::new(
+            None,
+            None,
+            false,
+            true,
+            BTreeMap::new(),
+            vec![],
+            BTreeMap::new(),
+            BTreeSet::new(),
+        )
+        .unwrap(),
+        CreateProjection::new(false, vec![], BTreeMap::new()).unwrap(),
+        CompleteReadProjection::new(vec![], BTreeMap::new(), vec![]).unwrap(),
+        ReferenceReadProjection::new(Some(TargetIdentifier::python("EventRef").unwrap()), vec![])
+            .unwrap(),
+        QueryTokenProjection::new(event.clone(), BTreeMap::new(), BTreeMap::new()).unwrap(),
+    )
+    .unwrap();
+    let role_token = RoleTokenProjection::new(
+        container.clone(),
+        item.clone(),
+        TargetIdentifier::python("item").unwrap(),
+        BTreeSet::from([event.clone()]),
+        None,
+        multiplicity,
+        false,
+        BTreeMap::new(),
+    )
+    .unwrap();
+    let read_role = ReadRoleProjection::new(
+        item.clone(),
+        BTreeSet::from([ProjectedModelUse::new(
+            event.clone(),
+            ProjectedModelForm::Reference,
+        )]),
+        multiplicity,
+    )
+    .unwrap();
+    let create_role = CreateRoleProjection::new(
+        item.clone(),
+        BTreeSet::from([
+            ProjectedModelUse::new(event.clone(), ProjectedModelForm::Complete),
+            ProjectedModelUse::new(event.clone(), ProjectedModelForm::Reference),
+        ]),
+        multiplicity,
+    )
+    .unwrap();
+    let container_model = ModelProjection::new(
+        container.clone(),
+        TargetIdentifier::python("Container").unwrap(),
+        DeclarationProjection::new(
+            None,
+            None,
+            false,
+            true,
+            BTreeMap::new(),
+            vec![],
+            BTreeMap::new(),
+            BTreeSet::new(),
+        )
+        .unwrap(),
+        CreateProjection::new(false, vec![], BTreeMap::from([(item.clone(), create_role)]))
+            .unwrap(),
+        CompleteReadProjection::new(vec![], BTreeMap::from([(item.clone(), read_role)]), vec![])
+            .unwrap(),
+        ReferenceReadProjection::new(
+            Some(TargetIdentifier::python("ContainerRef").unwrap()),
+            vec![],
+        )
+        .unwrap(),
+        QueryTokenProjection::new(
+            container.clone(),
+            BTreeMap::new(),
+            BTreeMap::from([(item, role_token)]),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    RuntimeProjection::try_new(
+        BindingTarget::Python,
+        ProjectionConfig::python(),
+        SemanticSchemaFingerprint::compute(
+            SemanticProfileId::new("typedb-3.12.1/v1").unwrap(),
+            b"relation-player-schema",
+        )
+        .unwrap(),
+        &[ProjectionHandler::python_v1()],
+        &[],
+        BTreeMap::from([
+            (event.clone(), event_model),
+            (container.clone(), container_model),
+        ]),
+        BTreeMap::new(),
+        BTreeMap::new(),
+        BTreeMap::new(),
+        EmissionPlan::new(
+            vec![event.clone(), container.clone()],
+            vec![BTreeSet::from([event]), BTreeSet::from([container])],
             vec![],
             vec![],
         )
@@ -809,6 +924,24 @@ fn projection_wire_rejects_duplicate_annotations_before_map_rebuild() {
         annotations.push(annotations[0].clone());
     });
     assert_eq!(error.code().as_str(), "duplicate_projected_annotation");
+}
+
+#[test]
+fn projection_wire_rejects_complete_relation_model_uses() {
+    let runtime = relation_player_fixture();
+    let container = TypeId::new(TypeKind::Relation, "container").unwrap();
+    let item = RoleId::new("container", "item").unwrap();
+    let error = decode_mutated_projection(&runtime, |value| {
+        let expected_role = serde_json::to_value(item).unwrap();
+        let role = model_wire_mut(value, &container)["complete_read"]["roles"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|role| role["role"] == expected_role)
+            .expect("container item read role is present");
+        role["players"][0]["form"] = serde_json::Value::String("complete".into());
+    });
+    assert_eq!(error.code().as_str(), "invalid_projection_reference");
 }
 
 #[test]
