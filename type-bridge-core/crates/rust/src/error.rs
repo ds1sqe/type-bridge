@@ -544,6 +544,115 @@ impl Error {
         }
     }
 
+    pub(crate) fn from_projected_batch(
+        error: SdkExecutionDiagnostic,
+        model_phase: ModelValidationPhase,
+    ) -> Self {
+        let (category, phase) = match error.category() {
+            SdkDiagnosticCategory::InvalidInput => {
+                (ErrorCategory::ModelValidation, Some(model_phase))
+            }
+            SdkDiagnosticCategory::Integrity => (ErrorCategory::Integrity, Some(model_phase)),
+            SdkDiagnosticCategory::Provider => (ErrorCategory::QueryExecution, None),
+            SdkDiagnosticCategory::Transaction => (ErrorCategory::Transaction, None),
+            SdkDiagnosticCategory::UnsupportedCapability => (ErrorCategory::Capability, None),
+            SdkDiagnosticCategory::ResourceLimit => (ErrorCategory::ResourceLimit, None),
+            SdkDiagnosticCategory::Cancelled => (ErrorCategory::Cancelled, None),
+            SdkDiagnosticCategory::Internal => (ErrorCategory::Other, None),
+            _ => (ErrorCategory::Other, None),
+        };
+        let code = error.code().as_str().to_owned();
+        let message = error.message().as_str().to_owned();
+        let path = error.path().iter().map(flatten_sdk_path).collect();
+        let diagnostic = ErrorDiagnostic {
+            path: error
+                .path()
+                .iter()
+                .map(typed_projected_batch_path)
+                .collect(),
+            details: error
+                .details()
+                .iter()
+                .map(|(name, value)| (name.as_str().to_owned(), flatten_sdk_detail(value)))
+                .collect(),
+        };
+        Self::classified_with_diagnostic(
+            category,
+            phase,
+            code,
+            path,
+            Some(diagnostic),
+            message,
+            Some(Box::new(error)),
+        )
+    }
+
+    pub(crate) fn with_projected_batch_row(self, ordinal: u64) -> Self {
+        let row_path = [
+            ErrorPathSegment::Argument("rows".to_owned()),
+            ErrorPathSegment::Index(ordinal),
+        ];
+        match self {
+            Self::ModelValidation {
+                phase,
+                code,
+                mut path,
+                message,
+                source,
+            } => {
+                let mut typed_path = Vec::with_capacity(path.len().saturating_add(2));
+                typed_path.extend(row_path);
+                for segment in &path {
+                    append_generated_path_segment(&mut typed_path, segment);
+                }
+                path.insert(0, format!("[{ordinal}]"));
+                path.insert(0, "rows".to_owned());
+                Self::classified_with_diagnostic(
+                    ErrorCategory::ModelValidation,
+                    Some(phase),
+                    code,
+                    path,
+                    Some(ErrorDiagnostic {
+                        path: typed_path,
+                        details: BTreeMap::new(),
+                    }),
+                    message,
+                    source,
+                )
+            }
+            Self::Classified {
+                category,
+                phase,
+                code,
+                mut path,
+                diagnostic,
+                message,
+                source,
+            } => {
+                path.insert(0, format!("[{ordinal}]"));
+                path.insert(0, "rows".to_owned());
+                let mut diagnostic = diagnostic.map_or_else(
+                    || ErrorDiagnostic {
+                        path: Vec::new(),
+                        details: BTreeMap::new(),
+                    },
+                    |diagnostic| *diagnostic,
+                );
+                diagnostic.path.splice(0..0, row_path);
+                Self::classified_with_diagnostic(
+                    category,
+                    phase,
+                    code,
+                    path,
+                    Some(diagnostic),
+                    message,
+                    source,
+                )
+            }
+            other => other,
+        }
+    }
+
     pub(crate) fn from_projected_crud(
         error: ProjectedCrudCompatibilityFailure,
         kind: ModelKind,
@@ -978,6 +1087,44 @@ fn typed_sdk_path(segment: &SdkDiagnosticPathSegment) -> ErrorPathSegment {
             ErrorPathSegment::ContractIdentity(value.as_str().to_owned())
         }
         _ => ErrorPathSegment::Identifier("diagnostic".into()),
+    }
+}
+
+fn typed_projected_batch_path(segment: &SdkDiagnosticPathSegment) -> ErrorPathSegment {
+    match segment {
+        SdkDiagnosticPathSegment::Argument(value) => {
+            ErrorPathSegment::Argument(value.as_str().to_owned())
+        }
+        other => typed_sdk_path(other),
+    }
+}
+
+fn append_generated_path_segment(path: &mut Vec<ErrorPathSegment>, segment: &str) {
+    let Some(first_index) = segment.find('[') else {
+        path.push(ErrorPathSegment::Field(segment.to_owned()));
+        return;
+    };
+    let mut parsed = Vec::new();
+    if first_index > 0 {
+        parsed.push(ErrorPathSegment::Field(segment[..first_index].to_owned()));
+    }
+    let mut remainder = &segment[first_index..];
+    while remainder.starts_with('[') {
+        let Some(end) = remainder.find(']') else {
+            path.push(ErrorPathSegment::Field(segment.to_owned()));
+            return;
+        };
+        let Ok(index) = remainder[1..end].parse::<u64>() else {
+            path.push(ErrorPathSegment::Field(segment.to_owned()));
+            return;
+        };
+        parsed.push(ErrorPathSegment::Index(index));
+        remainder = &remainder[end + 1..];
+    }
+    if !remainder.is_empty() || parsed.is_empty() {
+        path.push(ErrorPathSegment::Field(segment.to_owned()));
+    } else {
+        path.extend(parsed);
     }
 }
 

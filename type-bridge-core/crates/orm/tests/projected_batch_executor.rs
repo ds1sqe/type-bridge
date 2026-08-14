@@ -1,5 +1,7 @@
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use serde_json::{Value, json};
 use type_bridge_contract::fingerprint::SemanticProfileId;
@@ -543,6 +545,325 @@ async fn empty_and_band8_reject_without_transaction_or_provider_work() {
     let state = state.lock().unwrap();
     assert!(state.opens.is_empty());
     assert!(state.calls.is_empty());
+}
+
+#[tokio::test]
+async fn empty_mapped_execution_is_infallible_and_never_invokes_the_mapper() {
+    let installed = installed();
+    let empty = ProjectedBatch::try_new(
+        &installed,
+        type_id(TypeKind::Entity, "person"),
+        ProjectedBatchOperation::Insert,
+        vec![],
+    )
+    .unwrap();
+    let (database, state) = fixture(
+        vec![],
+        Version::new(3, 11, 5),
+        false,
+        CommitBehavior::Success,
+    );
+
+    let result = ProjectedBatchExecutor::new(&installed)
+        .execute_mapped(&database, &empty, control(), Vec::<String>::new(), |_| {
+            panic!("an empty batch must not invoke its mapper")
+        })
+        .await
+        .unwrap();
+
+    assert!(result.is_empty());
+    let state = state.lock().unwrap();
+    assert!(state.opens.is_empty());
+    assert!(state.calls.is_empty());
+    assert_eq!(state.commits, 0);
+    assert_eq!(state.rollbacks, 0);
+}
+
+#[tokio::test]
+async fn mapped_execution_preserves_input_order_before_owned_commit() {
+    let installed = installed();
+    let batch = three_row_batch(&installed, BatchKind::Entity);
+    let (database, state) = fixture(
+        vec![
+            Response::Documents(vec![
+                json!({"ordinal": 2, "iid": "0x22"}),
+                json!({"ordinal": 0, "iid": "0x20"}),
+                json!({"ordinal": 1, "iid": "0x21"}),
+            ]),
+            Response::Documents(vec![
+                person_document(1, "0x21", "person-1"),
+                person_document(2, "0x22", "person-2"),
+                person_document(0, "0x20", "person-0"),
+            ]),
+        ],
+        Version::new(3, 12, 1),
+        true,
+        CommitBehavior::Success,
+    );
+    let mapper_state = Arc::clone(&state);
+
+    let mapped = ProjectedBatchExecutor::new(&installed)
+        .execute_mapped(
+            &database,
+            &batch,
+            control(),
+            Vec::<String>::new(),
+            |result| {
+                let state = mapper_state.lock().unwrap();
+                assert_eq!(state.commits, 0, "mapper must run before commit");
+                assert_eq!(state.rollbacks, 0, "mapper must run before rollback");
+                drop(state);
+                let ProjectedBatchResult::Things(things) = result else {
+                    panic!("insert returned a delete result")
+                };
+                Ok(things
+                    .into_iter()
+                    .map(|thing| thing.iid().to_owned())
+                    .collect())
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(mapped, ["0x20", "0x21", "0x22"]);
+    let state = state.lock().unwrap();
+    assert_eq!(state.calls.len(), 2);
+    assert_eq!(state.commits, 1);
+    assert_eq!(state.rollbacks, 0);
+}
+
+#[tokio::test]
+async fn first_middle_and_last_mapper_failures_roll_back_owned_execution_once() {
+    for failing_ordinal in 0..3 {
+        let installed = installed();
+        let batch = three_row_batch(&installed, BatchKind::Entity);
+        let (database, state) = fixture(
+            successful_responses(BatchKind::Entity),
+            Version::new(3, 12, 1),
+            true,
+            CommitBehavior::Success,
+        );
+
+        let diagnostic = ProjectedBatchExecutor::new(&installed)
+            .execute_mapped(
+                &database,
+                &batch,
+                control(),
+                Vec::<String>::new(),
+                |result| {
+                    let ProjectedBatchResult::Things(things) = result else {
+                        panic!("insert returned a delete result")
+                    };
+                    let mut mapped = Vec::with_capacity(things.len());
+                    for (ordinal, thing) in things.into_iter().enumerate() {
+                        if ordinal == failing_ordinal {
+                            return Err(ProjectedBatchExecutor::binding_materialization_failure(
+                                u64::try_from(ordinal).expect("three-row batch ordinal fits u64"),
+                            ));
+                        }
+                        mapped.push(thing.iid().to_owned());
+                    }
+                    Ok(mapped)
+                },
+            )
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            diagnostic.code().as_str(),
+            "generated_model_materialization_failed"
+        );
+        assert_eq!(diagnostic.category(), SdkDiagnosticCategory::Integrity);
+        assert!(matches!(
+            diagnostic.path(),
+            [SdkDiagnosticPathSegment::Argument(argument), SdkDiagnosticPathSegment::Index(index)]
+                if argument.as_str() == "rows" && *index == failing_ordinal as u64
+        ));
+        let state = state.lock().unwrap();
+        assert_eq!(state.calls.len(), 2);
+        assert_eq!(state.commits, 0);
+        assert_eq!(state.rollbacks, 1);
+        assert!(state.responses.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn borrowed_mapper_failure_latches_the_exact_cause_and_rejects_commit() {
+    let installed = installed();
+    let batch = three_row_batch(&installed, BatchKind::Entity);
+    let (database, state) = fixture(
+        successful_responses(BatchKind::Entity),
+        Version::new(3, 12, 1),
+        true,
+        CommitBehavior::Success,
+    );
+    let transaction = database.transaction_context(TxType::Write).await.unwrap();
+
+    let diagnostic = ProjectedBatchExecutor::new(&installed)
+        .execute_in_transaction_mapped(
+            &transaction,
+            &batch,
+            control(),
+            Vec::<String>::new(),
+            |result| {
+                let ProjectedBatchResult::Things(things) = result else {
+                    panic!("insert returned a delete result")
+                };
+                let mut mapped = Vec::with_capacity(things.len());
+                for (ordinal, thing) in things.into_iter().enumerate() {
+                    if ordinal == 1 {
+                        return Err(ProjectedBatchExecutor::binding_materialization_failure(
+                            u64::try_from(ordinal).expect("three-row batch ordinal fits u64"),
+                        ));
+                    }
+                    mapped.push(thing.iid().to_owned());
+                }
+                Ok(mapped)
+            },
+        )
+        .await
+        .unwrap_err();
+
+    assert_eq!(
+        diagnostic.code().as_str(),
+        "generated_model_materialization_failed"
+    );
+    assert_eq!(diagnostic.category(), SdkDiagnosticCategory::Integrity);
+    assert!(matches!(
+        diagnostic.path(),
+        [SdkDiagnosticPathSegment::Argument(argument), SdkDiagnosticPathSegment::Index(1)]
+            if argument.as_str() == "rows"
+    ));
+    assert_eq!(
+        transaction.lifecycle_state().await,
+        TransactionContextState::RollbackOnly
+    );
+    assert_eq!(
+        transaction.rollback_only_cause().await.as_ref(),
+        Some(&diagnostic)
+    );
+    let commit = transaction.commit_sdk().await.unwrap_err();
+    assert_eq!(commit.code().as_str(), "transaction_rollback_only");
+    let state = state.lock().unwrap();
+    assert_eq!(state.calls.len(), 2);
+    assert_eq!(state.commits, 0);
+    assert_eq!(state.rollbacks, 0);
+}
+
+#[tokio::test]
+async fn cancellation_triggered_by_the_mapper_poisons_borrowed_execution() {
+    let installed = installed();
+    let batch = three_row_batch(&installed, BatchKind::Entity);
+    let (database, state) = fixture(
+        successful_responses(BatchKind::Entity),
+        Version::new(3, 12, 1),
+        true,
+        CommitBehavior::Success,
+    );
+    let transaction = database.transaction_context(TxType::Write).await.unwrap();
+    let cancellation = AnswerCancellation::default();
+    let mapper_cancellation = cancellation.clone();
+
+    let diagnostic = ProjectedBatchExecutor::new(&installed)
+        .execute_in_transaction_mapped(
+            &transaction,
+            &batch,
+            ProjectedBatchInvocationControl::capture(
+                QueryExecutionResourceLimits::default(),
+                cancellation,
+            ),
+            Vec::<String>::new(),
+            move |result| {
+                mapper_cancellation.cancel();
+                let ProjectedBatchResult::Things(things) = result else {
+                    panic!("insert returned a delete result")
+                };
+                Ok(things
+                    .into_iter()
+                    .map(|thing| thing.iid().to_owned())
+                    .collect())
+            },
+        )
+        .await
+        .unwrap_err();
+
+    assert_eq!(diagnostic.code().as_str(), "provider_cancelled");
+    assert_eq!(
+        transaction.lifecycle_state().await,
+        TransactionContextState::RollbackOnly
+    );
+    assert_eq!(
+        transaction.rollback_only_cause().await.as_ref(),
+        Some(&diagnostic)
+    );
+    assert_eq!(
+        transaction.commit_sdk().await.unwrap_err().code().as_str(),
+        "transaction_rollback_only"
+    );
+    let state = state.lock().unwrap();
+    assert_eq!(state.commits, 0);
+    assert_eq!(state.rollbacks, 0);
+}
+
+#[tokio::test]
+async fn deadline_crossed_by_the_mapper_poisons_borrowed_execution() {
+    let installed = installed();
+    let batch = three_row_batch(&installed, BatchKind::Entity);
+    let (database, state) = fixture(
+        successful_responses(BatchKind::Entity),
+        Version::new(3, 12, 1),
+        true,
+        CommitBehavior::Success,
+    );
+    let transaction = database.transaction_context(TxType::Write).await.unwrap();
+    let limits = QueryExecutionResourceLimits {
+        timeout_milliseconds: 100,
+        ..QueryExecutionResourceLimits::default()
+    };
+    let mapper_ran = Arc::new(AtomicBool::new(false));
+    let mapper_probe = Arc::clone(&mapper_ran);
+
+    let diagnostic = ProjectedBatchExecutor::new(&installed)
+        .execute_in_transaction_mapped(
+            &transaction,
+            &batch,
+            ProjectedBatchInvocationControl::capture(limits, AnswerCancellation::default()),
+            Vec::<String>::new(),
+            move |result| {
+                mapper_probe.store(true, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(150));
+                let ProjectedBatchResult::Things(things) = result else {
+                    panic!("insert returned a delete result")
+                };
+                Ok(things
+                    .into_iter()
+                    .map(|thing| thing.iid().to_owned())
+                    .collect())
+            },
+        )
+        .await
+        .unwrap_err();
+
+    assert_eq!(diagnostic.code().as_str(), "transaction_deadline_exceeded");
+    assert!(
+        mapper_ran.load(Ordering::SeqCst),
+        "deadline mapper must run"
+    );
+    assert_eq!(
+        transaction.lifecycle_state().await,
+        TransactionContextState::RollbackOnly
+    );
+    assert_eq!(
+        transaction.rollback_only_cause().await.as_ref(),
+        Some(&diagnostic)
+    );
+    assert_eq!(
+        transaction.commit_sdk().await.unwrap_err().code().as_str(),
+        "transaction_rollback_only"
+    );
+    let state = state.lock().unwrap();
+    assert_eq!(state.commits, 0);
+    assert_eq!(state.rollbacks, 0);
 }
 
 #[tokio::test]

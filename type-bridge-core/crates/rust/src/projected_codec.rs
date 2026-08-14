@@ -52,7 +52,7 @@ pub(crate) fn validate_hydrated_row(
     project_hydrated_row(row, installed).map(|_| ())
 }
 
-fn project_encoded_create(
+pub(crate) fn project_encoded_create(
     encoded: &EncodedCreate,
     expected_type: &TypeId,
     installed: &InstalledRuntimeProjection,

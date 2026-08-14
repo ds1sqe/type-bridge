@@ -16,6 +16,7 @@ mod entity_manager;
 pub mod error;
 pub mod hooks;
 pub mod model;
+mod projected_batch;
 mod projected_codec;
 mod query;
 #[allow(dead_code)]

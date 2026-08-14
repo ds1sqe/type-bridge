@@ -192,4 +192,7 @@ pub use session::{
     delete_database_prepared_secure, delete_database_secure, ensure_database_exists,
     ensure_database_exists_prepared_secure, ensure_database_exists_secure,
 };
+/// Provider version type used by binding-owned recording backends.
+#[doc(hidden)]
+pub use type_bridge_core_lib::version::Version as _ProviderVersion;
 pub use value::AttributeValue;

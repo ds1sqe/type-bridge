@@ -69,6 +69,20 @@ impl<'projection> ProjectedBatchExecutor<'projection> {
         }
     }
 
+    /// Construct the shared redacted diagnostic for one binding
+    /// materialization failure after projected hydration.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn binding_materialization_failure(ordinal: u64) -> SdkExecutionDiagnostic {
+        SdkExecutionDiagnostic::integrity(
+            code("generated_model_materialization_failed"),
+            message("The generated model could not materialize validated projected evidence"),
+        )
+        .try_at(SdkDiagnosticPathSegment::Argument(name("rows")))
+        .and_then(|diagnostic| diagnostic.try_at(SdkDiagnosticPathSegment::Index(ordinal)))
+        .unwrap_or_else(|_| SdkExecutionDiagnostic::internal_failure())
+    }
+
     #[cfg(test)]
     fn failing_hydration_allocation_for_test(mut self) -> Self {
         self.fail_hydration_allocation = true;
@@ -82,9 +96,42 @@ impl<'projection> ProjectedBatchExecutor<'projection> {
         batch: &ProjectedBatch,
         control: ProjectedBatchInvocationControl,
     ) -> std::result::Result<ProjectedBatchResult, SdkExecutionDiagnostic> {
+        self.execute_mapped(
+            database,
+            batch,
+            control,
+            empty_result(batch.operation()),
+            Ok,
+        )
+        .await
+    }
+
+    /// Execute, synchronously map the fully hydrated result while atomicity is
+    /// still armed, and commit one batch in an owned write transaction.
+    ///
+    /// An authority-valid empty batch returns `empty` without invoking the
+    /// mapper. For a nonempty batch, the mapper receives no transaction or
+    /// provider handle and cannot yield. It must not synchronously re-enter a
+    /// captured transaction or provider API: the mutation lease remains held
+    /// during mapping, so re-entry could self-deadlock.
+    /// Its exact diagnostic is treated as a pre-commit failure: owned execution
+    /// rolls back, while borrowed execution through
+    /// [`Self::execute_in_transaction_mapped`] becomes rollback-only.
+    #[doc(hidden)]
+    pub async fn execute_mapped<T, F>(
+        &self,
+        database: &Database,
+        batch: &ProjectedBatch,
+        control: ProjectedBatchInvocationControl,
+        empty: T,
+        mapper: F,
+    ) -> std::result::Result<T, SdkExecutionDiagnostic>
+    where
+        F: FnOnce(ProjectedBatchResult) -> std::result::Result<T, SdkExecutionDiagnostic>,
+    {
         let prepared = PreparedProjectedBatchInvocation::try_new(self.installed, batch, control)?;
         if batch.is_empty() {
-            return Ok(empty_result(batch.operation()));
+            return Ok(empty);
         }
         prepared.check_control()?;
         require_given_capability(database.supports_given_stage())?;
@@ -107,7 +154,7 @@ impl<'projection> ProjectedBatchExecutor<'projection> {
         })?;
 
         let result = self
-            .execute_prepared_in_transaction(&transaction, &prepared, plan, &identity)
+            .execute_prepared_in_transaction(&transaction, &prepared, plan, &identity, mapper)
             .await;
         match result {
             Ok(value) => {
@@ -138,9 +185,41 @@ impl<'projection> ProjectedBatchExecutor<'projection> {
         batch: &ProjectedBatch,
         control: ProjectedBatchInvocationControl,
     ) -> std::result::Result<ProjectedBatchResult, SdkExecutionDiagnostic> {
+        self.execute_in_transaction_mapped(
+            transaction,
+            batch,
+            control,
+            empty_result(batch.operation()),
+            Ok,
+        )
+        .await
+    }
+
+    /// Execute and synchronously map one fully hydrated batch result inside a
+    /// caller-owned write transaction while its mutation lease remains armed.
+    ///
+    /// An authority-valid empty batch returns `empty` without invoking the
+    /// mapper. For a nonempty batch, the mapper receives no transaction or
+    /// provider handle and cannot yield. It must not synchronously re-enter a
+    /// captured transaction or provider API: the mutation lease remains held
+    /// during mapping, so re-entry could self-deadlock.
+    /// Its exact diagnostic becomes the transaction's first rollback-only
+    /// cause after mutation dispatch.
+    #[doc(hidden)]
+    pub async fn execute_in_transaction_mapped<T, F>(
+        &self,
+        transaction: &TransactionContext,
+        batch: &ProjectedBatch,
+        control: ProjectedBatchInvocationControl,
+        empty: T,
+        mapper: F,
+    ) -> std::result::Result<T, SdkExecutionDiagnostic>
+    where
+        F: FnOnce(ProjectedBatchResult) -> std::result::Result<T, SdkExecutionDiagnostic>,
+    {
         let prepared = PreparedProjectedBatchInvocation::try_new(self.installed, batch, control)?;
         if batch.is_empty() {
-            return Ok(empty_result(batch.operation()));
+            return Ok(empty);
         }
         if transaction.tx_type() != TxType::Write {
             return Err(invalid_at_type(
@@ -161,17 +240,21 @@ impl<'projection> ProjectedBatchExecutor<'projection> {
         let identity = transaction.execution_identity().clone();
         let plan = BatchPlan::compile(self.installed, &prepared, &identity)?;
         prepared.check_control()?;
-        self.execute_prepared_in_transaction(transaction, &prepared, plan, &identity)
+        self.execute_prepared_in_transaction(transaction, &prepared, plan, &identity, mapper)
             .await
     }
 
-    async fn execute_prepared_in_transaction(
+    async fn execute_prepared_in_transaction<T, F>(
         &self,
         transaction: &TransactionContext,
         prepared: &PreparedProjectedBatchInvocation<'_>,
         mut plan: BatchPlan<'_>,
         identity: &DatabaseExecutionIdentity,
-    ) -> std::result::Result<ProjectedBatchResult, SdkExecutionDiagnostic> {
+        mapper: F,
+    ) -> std::result::Result<T, SdkExecutionDiagnostic>
+    where
+        F: FnOnce(ProjectedBatchResult) -> std::result::Result<T, SdkExecutionDiagnostic>,
+    {
         let mut lease = await_controlled(
             transaction.acquire_mutation_lease(),
             prepared.deadline(),
@@ -181,7 +264,12 @@ impl<'projection> ProjectedBatchExecutor<'projection> {
         .map_err(|error| controlled_orm(error, SdkProviderOperation::Write, plan.model.id()))?;
         let result = self
             .run_with_lease(&mut lease, prepared, &mut plan, identity)
-            .await;
+            .await
+            .and_then(mapper)
+            .and_then(|value| {
+                prepared.check_control()?;
+                Ok(value)
+            });
         match result {
             Ok(value) => {
                 lease.complete_success();

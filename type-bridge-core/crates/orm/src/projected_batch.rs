@@ -158,6 +158,27 @@ pub struct ProjectedBatch {
 }
 
 impl ProjectedBatch {
+    /// Construct the shared redacted diagnostic for binding-owned batch row
+    /// storage that cannot be reserved.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn binding_allocation_failure() -> SdkExecutionDiagnostic {
+        append_path(
+            SdkExecutionDiagnostic::resource_limit(
+                sdk_code("projected_batch_allocation_exhausted"),
+                sdk_message("The projected batch binding could not reserve bounded row storage"),
+            ),
+            [SdkDiagnosticPathSegment::Argument(name("rows"))],
+        )
+    }
+
+    /// Validate a binding-owned row count against the common hard item
+    /// ceiling before the binding duplicates or projects caller inputs.
+    #[doc(hidden)]
+    pub fn validate_binding_row_count(row_count: usize) -> Result<(), SdkExecutionDiagnostic> {
+        validate_row_count(row_count, MAX_QUERY_ITEMS).map(|_| ())
+    }
+
     /// Validate and normalize one homogeneous projected batch.
     pub fn try_new(
         installed: &InstalledRuntimeProjection,
@@ -242,25 +263,7 @@ impl ProjectedBatch {
             control.check()?;
         }
         let item_ceiling = control.map_or(MAX_QUERY_ITEMS, |control| control.limits.items);
-        let item_count = match u64::try_from(row_count) {
-            Ok(item_count) => item_count,
-            Err(_) => {
-                return Err(saturated_limit_failure(limit_failure(
-                    "batch_item_limit",
-                    "items",
-                    u64::MAX,
-                    item_ceiling,
-                )));
-            }
-        };
-        if item_count > item_ceiling {
-            return Err(limit_failure(
-                "batch_item_limit",
-                "items",
-                item_count,
-                item_ceiling,
-            ));
-        }
+        let item_count = validate_row_count(row_count, item_ceiling)?;
         if let Some(control) = control {
             control.check()?;
         }
@@ -1148,6 +1151,29 @@ fn limit_code(dimension: &'static str) -> &'static str {
         "statements" => "batch_statement_limit",
         _ => "batch_resource_limit",
     }
+}
+
+fn validate_row_count(row_count: usize, item_ceiling: u64) -> Result<u64, SdkExecutionDiagnostic> {
+    let item_count = match u64::try_from(row_count) {
+        Ok(item_count) => item_count,
+        Err(_) => {
+            return Err(saturated_limit_failure(limit_failure(
+                "batch_item_limit",
+                "items",
+                u64::MAX,
+                item_ceiling,
+            )));
+        }
+    };
+    if item_count > item_ceiling {
+        return Err(limit_failure(
+            "batch_item_limit",
+            "items",
+            item_count,
+            item_ceiling,
+        ));
+    }
+    Ok(item_count)
 }
 
 fn hard_ceiling(dimension: &'static str) -> u64 {
