@@ -38,6 +38,7 @@ pub use runtime_projection::{NodeProjectedModelManager, NodeRuntimeProjection};
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
@@ -170,6 +171,7 @@ impl NodeRustDatabase {
         Ok(NodeRustTransactionContext {
             context,
             runtime: Arc::clone(&self.runtime),
+            successor_batch_invoked: Arc::new(AtomicBool::new(false)),
         })
     }
 }
@@ -179,11 +181,16 @@ impl NodeRustDatabase {
 pub struct NodeRustTransactionContext {
     context: TransactionContext,
     runtime: Arc<ProviderRuntimeOwner>,
+    successor_batch_invoked: Arc<AtomicBool>,
 }
 
 impl NodeRustTransactionContext {
     pub(crate) fn handles(&self) -> (TransactionContext, Arc<ProviderRuntimeOwner>) {
         (self.context.clone(), Arc::clone(&self.runtime))
+    }
+
+    pub(crate) fn successor_batch_marker(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.successor_batch_invoked)
     }
 }
 
@@ -200,9 +207,15 @@ impl NodeRustTransactionContext {
 
     #[napi(js_name = "commit")]
     pub fn commit(&self) -> Result<()> {
-        self.runtime
-            .block_on(self.context.commit())
-            .map_err(napi_orm_error)
+        if self.successor_batch_invoked.load(Ordering::Acquire) {
+            self.runtime
+                .block_on(self.context.commit_sdk())
+                .map_err(match_runtime::napi_sdk_diagnostic)
+        } else {
+            self.runtime
+                .block_on(self.context.commit())
+                .map_err(napi_orm_error)
+        }
     }
 
     #[napi(js_name = "rollback")]

@@ -13,7 +13,8 @@ use type_bridge_contract::schema::OwnsFactId;
 use type_bridge_contract::value::ValueTypeTag;
 
 use super::reserved::{
-    MODEL_RESERVED_NAMES, PUBLIC_RUNTIME_NAMES, PUBLIC_SCHEMA_NAMES, is_typescript_keyword,
+    MODEL_RESERVED_NAMES, ORDERED_PUBLIC_RUNTIME_NAMES, PUBLIC_RUNTIME_NAMES, PUBLIC_SCHEMA_NAMES,
+    is_typescript_keyword,
 };
 use crate::{
     EmbeddedAuthority, GeneratedPackage, documentation_annotation, invalid, model_documentation,
@@ -113,14 +114,18 @@ fn render_authority(authority: &EmbeddedAuthority) -> Result<String, Diagnostic>
 
 fn render_models(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
     let mut output = String::from(header());
-    let define_model = if projection_uses_ordered_collections(projection) {
-        "defineOrderedModel as defineModel"
+    let ordered = projection_uses_ordered_collections(projection);
+    let (define_model, model_token) = if ordered {
+        (
+            "defineOrderedModel as defineModel",
+            "type OrderedModelToken as ModelToken",
+        )
     } else {
-        "defineModel"
+        ("defineModel", "type ModelToken")
     };
     let _ = write!(
         output,
-        "import {{\n  defineFieldToken,\n  {define_model},\n  defineRoleToken,\n  type CompleteFacet,\n  type FieldToken,\n  type ModelToken,\n  type ReferenceFacet,\n  type RoleToken,\n}} from \"./runtime.js\";\nimport type * as Structs from \"./structs.js\";\n\n",
+        "import {{\n  defineFieldToken,\n  {define_model},\n  defineRoleToken,\n  type CompleteFacet,\n  type FieldToken,\n  {model_token},\n  type ReferenceFacet,\n  type RoleToken,\n}} from \"./runtime.js\";\nimport type * as Structs from \"./structs.js\";\n\n",
     );
 
     for id in projection.emission().model_shells() {
@@ -1072,6 +1077,11 @@ fn validate_projection(projection: &RuntimeProjection) -> Result<(), Diagnostic>
     let mut public = BTreeMap::<String, String>::new();
     for name in PUBLIC_RUNTIME_NAMES.iter().chain(PUBLIC_SCHEMA_NAMES) {
         public.insert((*name).to_owned(), "generated runtime".to_owned());
+    }
+    if projection_uses_ordered_collections(projection) {
+        for name in ORDERED_PUBLIC_RUNTIME_NAMES {
+            public.insert((*name).to_owned(), "generated ordered runtime".to_owned());
+        }
     }
     for id in projection.emission().model_shells() {
         let model = projection

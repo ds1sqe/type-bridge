@@ -1,16 +1,26 @@
 //! Verified package-scoped runtime projections for generated TypeScript models.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::{c_char, c_void};
+use std::fmt::{self, Write as _};
+use std::ptr;
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::{Arc, OnceLock};
 
-use napi::bindgen_prelude::{BigInt, External};
-use napi::{Error, Status};
+use napi::bindgen_prelude::{
+    Array, BigInt, Env, External, FromNapiRef, FromNapiValue, Function, FunctionRef, JsValue,
+    Unknown, type_tag_from_ident,
+};
+use napi::{Error, Status, sys};
 use napi_derive::napi;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use type_bridge_contract::codec::to_canonical_json;
 use type_bridge_contract::id::{RoleId, TypeId, TypeKind, is_canonical_thing_iid};
+use type_bridge_contract::limits::{
+    MAX_CANONICAL_BYTES, MAX_CANONICAL_COLLECTION_LEN, MAX_CANONICAL_STRING_BYTES,
+};
 use type_bridge_contract::projection::{
     BindingTarget, ProjectedContainer, ProjectedModelForm, ProjectedMultiplicity, ProjectionConfig,
     RuntimeProjection,
@@ -25,7 +35,7 @@ use type_bridge_contract::sdk_diagnostic::{
 use type_bridge_contract::temporal::{
     CanonicalDate, CanonicalDateTime, CanonicalDateTimeTz, CanonicalDuration,
 };
-use type_bridge_contract::value::{DecimalValue, ValueTypeTag};
+use type_bridge_contract::value::{CanonicalValue, DecimalValue, ValueTypeTag};
 use type_bridge_orm::_descriptor::{
     EntityDescriptor, OwnedAttributeDescriptor, RelationDescriptor, RoleDescriptor, TypeDescriptor,
 };
@@ -34,11 +44,14 @@ use type_bridge_orm::_dynamic::{
     DynamicRolePlayer, DynamicRolePlayerInput,
 };
 use type_bridge_orm::_manager::{DynamicEntityManager, DynamicRelationManager};
+use type_bridge_orm::projected_batch::ProjectedBatchBindingBudget;
 use type_bridge_orm::{
     AnswerCancellation, AttributeValue, Database, HydratedAttribute, InstalledRuntimeProjection,
-    ProjectedAttributeValue, ProjectedCreate, ProjectedCrudExecutor, ProjectedReference,
+    ProjectedAttributeValue, ProjectedBatch, ProjectedBatchExecutor,
+    ProjectedBatchInvocationControl, ProjectedBatchOperation, ProjectedBatchResult,
+    ProjectedBatchRow, ProjectedCreate, ProjectedCrudExecutor, ProjectedReference,
     ProjectedRolePlayer, ProjectedThing, ProviderRuntimeOwner, QueryExecutionResourceLimits,
-    ThingKind, TransactionContext, ValueType,
+    ThingKind, TransactionContext, TransactionContextState, ValueType,
 };
 use type_bridge_schema::{decode_schema_authority, schema_authority_capability_vocabulary};
 use type_bridge_schema_codegen::{TypeScriptEmitter, verify_projection_evidence};
@@ -62,8 +75,1272 @@ struct ModelRegistration {
 struct InstalledPackage {
     projection: Arc<InstalledRuntimeProjection>,
     types_by_label: BTreeMap<String, TypeId>,
+    projected_type_keys: BTreeMap<TypeId, ProjectedTypeKeyCache>,
+    projected_batch_materializer: Option<Arc<FunctionRef<(), ()>>>,
 }
 
+struct ProjectedTypeKeyCache {
+    canonical: String,
+    json_string: String,
+    roles: ProjectedRoleIndex,
+}
+
+struct ProjectedRoleIndex {
+    role_ids: Vec<RoleId>,
+    role_ordinals_by_target: BTreeMap<String, u32>,
+}
+
+impl ProjectedRoleIndex {
+    fn role_ordinal(&self, target_name: &str) -> Option<u32> {
+        self.role_ordinals_by_target.get(target_name).copied()
+    }
+
+    fn role_id(&self, ordinal: u32) -> Option<&RoleId> {
+        self.role_ids.get(ordinal as usize)
+    }
+}
+
+const BATCH_AUTHORITY_PENDING: u8 = 0;
+const BATCH_AUTHORITY_ACTIVE: u8 = 1;
+const BATCH_AUTHORITY_ABORTED: u8 = 2;
+
+const PROJECTED_BATCH_AUTHORITY_TAG: sys::napi_type_tag =
+    type_tag_from_ident("type_bridge_node::runtime_projection::NodeProjectedBatchAuthority");
+
+/// Opaque native authority shared by every proof produced for one batch.
+///
+/// The authority intentionally owns only common projection authority and the
+/// hydrated rows. It must not retain [`InstalledPackage`], whose stored
+/// [`FunctionRef`] would otherwise remain live with every generated facade.
+struct NodeProjectedBatchAuthority {
+    projection: Arc<InstalledRuntimeProjection>,
+    state: AtomicU8,
+    rows: OnceLock<Vec<ProjectedThing>>,
+}
+
+impl NodeProjectedBatchAuthority {
+    fn pending(projection: Arc<InstalledRuntimeProjection>) -> Arc<Self> {
+        Arc::new(Self {
+            projection,
+            state: AtomicU8::new(BATCH_AUTHORITY_PENDING),
+            rows: OnceLock::new(),
+        })
+    }
+
+    fn is_active(&self) -> bool {
+        self.state.load(Ordering::Acquire) == BATCH_AUTHORITY_ACTIVE
+    }
+
+    fn abort(&self) {
+        let _ = self.state.compare_exchange(
+            BATCH_AUTHORITY_PENDING,
+            BATCH_AUTHORITY_ABORTED,
+            Ordering::Release,
+            Ordering::Relaxed,
+        );
+    }
+}
+
+struct PendingBatchAuthority {
+    authority: Arc<NodeProjectedBatchAuthority>,
+    armed: bool,
+}
+
+impl PendingBatchAuthority {
+    fn new(authority: Arc<NodeProjectedBatchAuthority>) -> Self {
+        Self {
+            authority,
+            armed: true,
+        }
+    }
+
+    fn finish(mut self) {
+        self.authority
+            .state
+            .store(BATCH_AUTHORITY_ACTIVE, Ordering::Release);
+        self.armed = false;
+    }
+}
+
+impl Drop for PendingBatchAuthority {
+    fn drop(&mut self) {
+        if self.armed {
+            self.authority.abort();
+        }
+    }
+}
+
+unsafe extern "C" fn finalize_projected_batch_authority(
+    _env: sys::napi_env,
+    data: *mut c_void,
+    _hint: *mut c_void,
+) {
+    if !data.is_null() {
+        // SAFETY: `create_projected_batch_authority_external` installs exactly
+        // one Box<Arc<_>> as this external's finalizer payload.
+        drop(unsafe { Box::from_raw(data.cast::<Arc<NodeProjectedBatchAuthority>>()) });
+    }
+}
+
+fn napi_status(status: sys::napi_status, message: &'static str) -> napi::Result<()> {
+    if status == sys::Status::napi_ok {
+        Ok(())
+    } else {
+        Err(Error::new(Status::from(status), message))
+    }
+}
+
+fn napi_status_preserving_exception(
+    env: sys::napi_env,
+    status: sys::napi_status,
+    message: &'static str,
+) -> napi::Result<()> {
+    if status == sys::Status::napi_ok {
+        return Ok(());
+    }
+    let mut pending = false;
+    if unsafe { sys::napi_is_exception_pending(env, &mut pending) } == sys::Status::napi_ok
+        && pending
+    {
+        let mut exception = ptr::null_mut();
+        if unsafe { sys::napi_get_and_clear_last_exception(env, &mut exception) }
+            == sys::Status::napi_ok
+            && !exception.is_null()
+        {
+            // SAFETY: `exception` is a live local handle in this native call.
+            let value = unsafe { Unknown::from_napi_value(env, exception) }?;
+            return Err(Error::from_unknown_without_coercion(value));
+        }
+    }
+    Err(Error::new(Status::from(status), message))
+}
+
+fn raw_typeof(env: sys::napi_env, value: sys::napi_value) -> napi::Result<sys::napi_valuetype> {
+    let mut value_type = sys::ValueType::napi_undefined;
+    napi_status_preserving_exception(
+        env,
+        unsafe { sys::napi_typeof(env, value, &mut value_type) },
+        "failed to inspect JavaScript value",
+    )?;
+    Ok(value_type)
+}
+
+fn raw_named_property(
+    env: sys::napi_env,
+    object: sys::napi_value,
+    name: &'static std::ffi::CStr,
+) -> napi::Result<sys::napi_value> {
+    let mut value = ptr::null_mut();
+    napi_status_preserving_exception(
+        env,
+        unsafe { sys::napi_get_named_property(env, object, name.as_ptr(), &mut value) },
+        "failed to read projected batch row property",
+    )?;
+    Ok(value)
+}
+
+enum RawProjectedBindingError {
+    Napi(Error),
+    Diagnostic(SdkExecutionDiagnostic),
+}
+
+impl From<Error> for RawProjectedBindingError {
+    fn from(error: Error) -> Self {
+        Self::Napi(error)
+    }
+}
+
+impl RawProjectedBindingError {
+    fn into_napi(self) -> Error {
+        match self {
+            Self::Napi(error) => error,
+            Self::Diagnostic(diagnostic) => napi_sdk_diagnostic(diagnostic),
+        }
+    }
+}
+
+fn raw_projected_binding_or_shape(
+    error: RawProjectedBindingError,
+    shape: impl FnOnce() -> SdkExecutionDiagnostic,
+) -> Error {
+    match error {
+        RawProjectedBindingError::Napi(_) => napi_sdk_diagnostic(shape()),
+        RawProjectedBindingError::Diagnostic(diagnostic) => napi_sdk_diagnostic(diagnostic),
+    }
+}
+
+#[cfg(test)]
+static FAIL_PROJECTED_BATCH_INGRESS_RESERVATION: AtomicBool = AtomicBool::new(false);
+
+fn reserved_projected_binding_bytes(capacity: usize) -> Result<Vec<u8>, SdkExecutionDiagnostic> {
+    #[cfg(test)]
+    if FAIL_PROJECTED_BATCH_INGRESS_RESERVATION.swap(false, Ordering::Relaxed) {
+        return Err(ProjectedBatch::binding_allocation_failure());
+    }
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(capacity)
+        .map_err(|_| ProjectedBatch::binding_allocation_failure())?;
+    Ok(bytes)
+}
+
+fn raw_utf8_string(
+    env: sys::napi_env,
+    value: sys::napi_value,
+    maximum_bytes: usize,
+    mismatch: &'static str,
+) -> Result<String, RawProjectedBindingError> {
+    if raw_typeof(env, value)? != sys::ValueType::napi_string {
+        return Err(invalid_error(mismatch).into());
+    }
+    let mut length = 0_usize;
+    napi_status_preserving_exception(
+        env,
+        unsafe { sys::napi_get_value_string_utf8(env, value, ptr::null_mut(), 0, &mut length) },
+        "failed to measure projected batch string",
+    )?;
+    if length > maximum_bytes {
+        return Err(invalid_error("projected batch string exceeds its binding ceiling").into());
+    }
+    let capacity = length
+        .checked_add(1)
+        .ok_or_else(ProjectedBatch::binding_allocation_failure)
+        .map_err(RawProjectedBindingError::Diagnostic)?;
+    let mut bytes =
+        reserved_projected_binding_bytes(capacity).map_err(RawProjectedBindingError::Diagnostic)?;
+    bytes.resize(capacity, 0);
+    let mut written = 0_usize;
+    napi_status_preserving_exception(
+        env,
+        unsafe {
+            sys::napi_get_value_string_utf8(
+                env,
+                value,
+                bytes.as_mut_ptr().cast(),
+                bytes.len(),
+                &mut written,
+            )
+        },
+        "failed to copy projected batch string",
+    )?;
+    bytes.truncate(written);
+    String::from_utf8(bytes).map_err(|_| invalid_error(mismatch).into())
+}
+
+fn raw_fixed_string_equals(
+    env: sys::napi_env,
+    value: sys::napi_value,
+    expected: &str,
+) -> napi::Result<bool> {
+    if raw_typeof(env, value)? != sys::ValueType::napi_string {
+        return Ok(false);
+    }
+    let mut length = 0_usize;
+    napi_status_preserving_exception(
+        env,
+        unsafe { sys::napi_get_value_string_utf8(env, value, ptr::null_mut(), 0, &mut length) },
+        "failed to measure projected proof key",
+    )?;
+    if length != expected.len() {
+        return Ok(false);
+    }
+    let mut bytes = [0_u8; 32];
+    if length.saturating_add(1) > bytes.len() {
+        return Ok(false);
+    }
+    let mut written = 0_usize;
+    napi_status_preserving_exception(
+        env,
+        unsafe {
+            sys::napi_get_value_string_utf8(
+                env,
+                value,
+                bytes.as_mut_ptr().cast(),
+                length.saturating_add(1),
+                &mut written,
+            )
+        },
+        "failed to copy projected proof key",
+    )?;
+    Ok(written == expected.len() && &bytes[..written] == expected.as_bytes())
+}
+
+fn raw_exact_own_properties(
+    env: sys::napi_env,
+    object: sys::napi_value,
+    expected: &[&str],
+) -> napi::Result<bool> {
+    if raw_typeof(env, object)? != sys::ValueType::napi_object {
+        return Ok(false);
+    }
+    let mut keys = ptr::null_mut();
+    napi_status_preserving_exception(
+        env,
+        unsafe {
+            sys::napi_get_all_property_names(
+                env,
+                object,
+                sys::KeyCollectionMode::own_only,
+                sys::KeyFilter::all_properties,
+                sys::KeyConversion::numbers_to_strings,
+                &mut keys,
+            )
+        },
+        "failed to inspect projected batch row properties",
+    )?;
+    let mut length = 0_u32;
+    napi_status_preserving_exception(
+        env,
+        unsafe { sys::napi_get_array_length(env, keys, &mut length) },
+        "failed to inspect projected batch row property count",
+    )?;
+    if usize::try_from(length).ok() != Some(expected.len()) {
+        return Ok(false);
+    }
+    let mut seen = 0_u32;
+    for index in 0..length {
+        let mut key = ptr::null_mut();
+        napi_status_preserving_exception(
+            env,
+            unsafe { sys::napi_get_element(env, keys, index, &mut key) },
+            "failed to inspect projected batch row property",
+        )?;
+        let mut matched = None;
+        for (expected_index, expected) in expected.iter().enumerate() {
+            if raw_fixed_string_equals(env, key, expected)? {
+                matched = Some(expected_index);
+                break;
+            }
+        }
+        let Some(matched) = matched else {
+            return Ok(false);
+        };
+        let bit = 1_u32.checked_shl(matched as u32).unwrap_or(0);
+        if bit == 0 || seen & bit != 0 {
+            return Ok(false);
+        }
+        seen |= bit;
+    }
+    Ok(seen.count_ones() as usize == expected.len())
+}
+
+fn raw_u32(env: sys::napi_env, value: sys::napi_value) -> napi::Result<u32> {
+    if raw_typeof(env, value)? != sys::ValueType::napi_number {
+        return Err(invalid_error("projected proof index is not a number"));
+    }
+    let mut number = 0_f64;
+    napi_status_preserving_exception(
+        env,
+        unsafe { sys::napi_get_value_double(env, value, &mut number) },
+        "failed to read projected proof index",
+    )?;
+    if !number.is_finite()
+        || number.fract() != 0.0
+        || !(0.0..=f64::from(u32::MAX)).contains(&number)
+    {
+        return Err(invalid_error(
+            "projected proof index is outside the uint32 domain",
+        ));
+    }
+    Ok(number as u32)
+}
+
+fn raw_is_null(env: sys::napi_env, value: sys::napi_value) -> napi::Result<bool> {
+    let mut null = ptr::null_mut();
+    napi_status_preserving_exception(
+        env,
+        unsafe { sys::napi_get_null(env, &mut null) },
+        "failed to obtain JavaScript null",
+    )?;
+    let mut equal = false;
+    napi_status_preserving_exception(
+        env,
+        unsafe { sys::napi_strict_equals(env, value, null, &mut equal) },
+        "failed to inspect JavaScript null",
+    )?;
+    Ok(equal)
+}
+
+fn raw_projected_input_proof(
+    env: sys::napi_env,
+    value: sys::napi_value,
+    package: &InstalledPackage,
+) -> Result<Option<NodeProjectedInputProof>, RawProjectedBindingError> {
+    if raw_is_null(env, value)? {
+        return Ok(None);
+    }
+    if raw_typeof(env, value)? == sys::ValueType::napi_external {
+        // SAFETY: napi-rs checks its own Rust TypeId tag before returning the
+        // external reference. JS retains the external for this native frame.
+        let proof = unsafe { External::<NodeProjectedFacadeProof>::from_napi_ref(env, value) }?;
+        return Ok(Some(NodeProjectedInputProof::Single(proof.proof.clone())));
+    }
+    if raw_typeof(env, value)? != sys::ValueType::napi_object {
+        return Err(invalid_error(
+            "projected proof must be an opaque single proof or batch descriptor",
+        )
+        .into());
+    }
+    let kind = raw_named_property(env, value, c"kind")?;
+    let role_request = if raw_fixed_string_equals(env, kind, "root")? {
+        if !raw_exact_own_properties(env, value, &["kind", "authority", "row"])? {
+            return Err(
+                invalid_error("projected batch root proof has an invalid property set").into(),
+            );
+        }
+        None
+    } else if raw_fixed_string_equals(env, kind, "role")? {
+        if !raw_exact_own_properties(
+            env,
+            value,
+            &["kind", "authority", "row", "roleName", "playerIndex"],
+        )? {
+            return Err(
+                invalid_error("projected batch role proof has an invalid property set").into(),
+            );
+        }
+        let role_name = raw_utf8_string(
+            env,
+            raw_named_property(env, value, c"roleName")?,
+            MAX_CANONICAL_STRING_BYTES,
+            "projected batch role proof name is not a string",
+        )?;
+        let player_index = raw_u32(env, raw_named_property(env, value, c"playerIndex")?)?;
+        Some((role_name, player_index))
+    } else {
+        return Err(invalid_error("projected batch proof has an invalid discriminant").into());
+    };
+    let authority = projected_batch_authority_from_external(
+        env,
+        raw_named_property(env, value, c"authority")?,
+    )?;
+    if !authority.is_active() || !Arc::ptr_eq(&authority.projection, &package.projection) {
+        return Err(invalid_error(
+            "projected batch proof is not active for this installed package",
+        )
+        .into());
+    }
+    let row = raw_u32(env, raw_named_property(env, value, c"row")?)?;
+    let rows = authority
+        .rows
+        .get()
+        .ok_or_else(|| invalid_error("projected batch proof has no hydrated rows"))?;
+    let thing = rows
+        .get(row as usize)
+        .ok_or_else(|| invalid_error("projected batch proof row is out of bounds"))?;
+    let selector = if let Some((role_name, player_index)) = role_request {
+        let roles = package
+            .projected_type_keys
+            .get(thing.type_id())
+            .ok_or_else(|| invalid_error("projected batch proof model is absent"))?;
+        let role_ordinal = roles
+            .roles
+            .role_ordinal(&role_name)
+            .ok_or_else(|| invalid_error("projected batch proof role is out of bounds"))?;
+        let role_id = roles
+            .roles
+            .role_id(role_ordinal)
+            .ok_or_else(|| invalid_error("projected batch proof role is out of bounds"))?;
+        if thing
+            .roles()
+            .get(role_id)
+            .and_then(|players| players.get(player_index as usize))
+            .is_none()
+        {
+            return Err(invalid_error("projected batch proof player is out of bounds").into());
+        }
+        NodeProjectedBatchProofSelector::Role {
+            role_ordinal,
+            player_index,
+        }
+    } else {
+        NodeProjectedBatchProofSelector::Root
+    };
+    Ok(Some(NodeProjectedInputProof::Batch(
+        NodeProjectedBatchProof {
+            authority,
+            row,
+            selector,
+        },
+    )))
+}
+
+fn reserved_projected_proof_slots(
+    capacity: usize,
+) -> Result<Vec<Option<NodeProjectedInputProof>>, SdkExecutionDiagnostic> {
+    #[cfg(test)]
+    if FAIL_PROJECTED_BATCH_INGRESS_RESERVATION.swap(false, Ordering::Relaxed) {
+        return Err(ProjectedBatch::binding_allocation_failure());
+    }
+    let mut proofs = Vec::new();
+    proofs
+        .try_reserve_exact(capacity)
+        .map_err(|_| ProjectedBatch::binding_allocation_failure())?;
+    Ok(proofs)
+}
+
+fn raw_projected_input_proofs(
+    env: sys::napi_env,
+    value: sys::napi_value,
+    package: &InstalledPackage,
+    checkpoint: Option<&ProjectedBatchBindingBudget<'_>>,
+) -> Result<Vec<Option<NodeProjectedInputProof>>, RawProjectedBindingError> {
+    let mut is_array = false;
+    napi_status_preserving_exception(
+        env,
+        unsafe { sys::napi_is_array(env, value, &mut is_array) },
+        "failed to inspect projected proof array",
+    )?;
+    if !is_array {
+        return Err(invalid_error("projected proofs must be an exact array").into());
+    }
+    let mut length = 0_u32;
+    napi_status_preserving_exception(
+        env,
+        unsafe { sys::napi_get_array_length(env, value, &mut length) },
+        "failed to inspect projected proof array length",
+    )?;
+    if length as usize > MAX_CANONICAL_COLLECTION_LEN {
+        return Err(RawProjectedBindingError::Diagnostic(
+            ProjectedBatch::binding_allocation_failure(),
+        ));
+    }
+    let mut proofs = reserved_projected_proof_slots(length as usize)
+        .map_err(RawProjectedBindingError::Diagnostic)?;
+    for index in 0..length {
+        if let Some(checkpoint) = checkpoint {
+            checkpoint
+                .checkpoint()
+                .map_err(RawProjectedBindingError::Diagnostic)?;
+        }
+        // Exact-property enumeration creates one temporary JavaScript key
+        // array. Bound its lifetime to this descriptor rather than retaining
+        // up to the full proof-array ceiling in the enclosing row scope.
+        let scope = RawHandleScope::open(env)?;
+        let mut proof = ptr::null_mut();
+        napi_status_preserving_exception(
+            env,
+            unsafe { sys::napi_get_element(env, value, index, &mut proof) },
+            "failed to read projected proof array element",
+        )?;
+        let proof = raw_projected_input_proof(env, proof, package)?;
+        scope.close()?;
+        proofs.push(proof);
+    }
+    Ok(proofs)
+}
+
+const MAX_PROJECTED_BINDING_JSON_BYTES: usize =
+    MAX_CANONICAL_BYTES * 8 + MAX_CANONICAL_COLLECTION_LEN * 256;
+
+#[cfg(test)]
+static FAIL_PROJECTED_BATCH_ROW_RESERVATION: AtomicBool = AtomicBool::new(false);
+
+fn reserved_projected_batch_rows<T>(capacity: usize) -> Result<Vec<T>, SdkExecutionDiagnostic> {
+    #[cfg(test)]
+    if FAIL_PROJECTED_BATCH_ROW_RESERVATION.swap(false, Ordering::Relaxed) {
+        return Err(ProjectedBatch::binding_allocation_failure());
+    }
+    let mut rows = Vec::new();
+    rows.try_reserve_exact(capacity)
+        .map_err(|_| ProjectedBatch::binding_allocation_failure())?;
+    Ok(rows)
+}
+
+struct RawHandleScope {
+    env: sys::napi_env,
+    scope: sys::napi_handle_scope,
+    closed: bool,
+}
+
+impl RawHandleScope {
+    fn open(env: sys::napi_env) -> napi::Result<Self> {
+        let mut scope = ptr::null_mut();
+        napi_status_preserving_exception(
+            env,
+            unsafe { sys::napi_open_handle_scope(env, &mut scope) },
+            "failed to open projected batch handle scope",
+        )?;
+        Ok(Self {
+            env,
+            scope,
+            closed: false,
+        })
+    }
+
+    fn close(mut self) -> napi::Result<()> {
+        let status = unsafe { sys::napi_close_handle_scope(self.env, self.scope) };
+        self.closed = true;
+        napi_status_preserving_exception(
+            self.env,
+            status,
+            "failed to close projected batch handle scope",
+        )
+    }
+}
+
+impl Drop for RawHandleScope {
+    fn drop(&mut self) {
+        if !self.closed {
+            let _ = unsafe { sys::napi_close_handle_scope(self.env, self.scope) };
+        }
+    }
+}
+
+fn raw_call_one(
+    env: sys::napi_env,
+    function: sys::napi_value,
+    receiver: sys::napi_value,
+    argument: sys::napi_value,
+) -> napi::Result<sys::napi_value> {
+    let arguments = [argument];
+    let mut result = ptr::null_mut();
+    napi_status_preserving_exception(
+        env,
+        unsafe {
+            sys::napi_call_function(
+                env,
+                receiver,
+                function,
+                arguments.len(),
+                arguments.as_ptr(),
+                &mut result,
+            )
+        },
+        "projected batch row callback failed",
+    )?;
+    Ok(result)
+}
+
+fn raw_batch_create_row(
+    env: sys::napi_env,
+    value: sys::napi_value,
+    package: &InstalledPackage,
+    checkpoint: &ProjectedBatchBindingBudget<'_>,
+    update: bool,
+    ordinal: usize,
+) -> napi::Result<(Option<String>, String, Vec<Option<NodeProjectedInputProof>>)> {
+    let row_path = projected_batch_row_path(ordinal);
+    let expected: &[&str] = if update {
+        &["iid", "instanceJson", "proofs"]
+    } else {
+        &["instanceJson", "proofs"]
+    };
+    if raw_is_null(env, value)? || !raw_exact_own_properties(env, value, expected)? {
+        return Err(napi_sdk_diagnostic(batch_input_shape_diagnostic(
+            "generated_model_layout_mismatch",
+            "The generated batch row no longer has its installed runtime shape",
+            &row_path,
+        )));
+    }
+    let iid = update
+        .then(|| {
+            raw_utf8_string(
+                env,
+                raw_named_property(env, value, c"iid")?,
+                MAX_CANONICAL_STRING_BYTES,
+                "projected update batch IID is not a string",
+            )
+        })
+        .transpose()
+        .map_err(|error| {
+            raw_projected_binding_or_shape(error, || {
+                batch_input_shape_diagnostic(
+                    "batch_iid_type_mismatch",
+                    "Successor update rows require exact string IIDs",
+                    &projected_batch_iid_path(ordinal),
+                )
+            })
+        })?;
+    let instance_json = raw_utf8_string(
+        env,
+        raw_named_property(env, value, c"instanceJson")?,
+        MAX_PROJECTED_BINDING_JSON_BYTES,
+        "projected batch instance JSON is not a string",
+    )
+    .map_err(|error| {
+        raw_projected_binding_or_shape(error, || {
+            batch_input_shape_diagnostic(
+                "generated_model_layout_mismatch",
+                "The generated batch row instance wire is not a bounded UTF-8 string",
+                &row_path,
+            )
+        })
+    })?;
+    let proofs = raw_projected_input_proofs(
+        env,
+        raw_named_property(env, value, c"proofs")?,
+        package,
+        Some(checkpoint),
+    )
+    .map_err(|error| {
+        raw_projected_binding_or_shape(error, || {
+            batch_input_shape_diagnostic(
+                "generated_model_layout_mismatch",
+                "The generated batch row proofs do not match the installed runtime shape",
+                &row_path,
+            )
+        })
+    })?;
+    Ok((iid, instance_json, proofs))
+}
+
+fn projected_batch_row_path(ordinal: usize) -> [SdkDiagnosticPathSegment; 2] {
+    [
+        SdkDiagnosticPathSegment::Argument(
+            type_bridge_contract::sdk_diagnostic::SdkDiagnosticName::new("rows")
+                .expect("the static batch argument name is canonical"),
+        ),
+        SdkDiagnosticPathSegment::Index(u64::try_from(ordinal).unwrap_or(u64::MAX)),
+    ]
+}
+
+fn projected_batch_iid_path(ordinal: usize) -> [SdkDiagnosticPathSegment; 3] {
+    [
+        projected_batch_row_path(ordinal)[0].clone(),
+        projected_batch_row_path(ordinal)[1].clone(),
+        SdkDiagnosticPathSegment::Argument(
+            type_bridge_contract::sdk_diagnostic::SdkDiagnosticName::new("iid")
+                .expect("the static batch IID argument name is canonical"),
+        ),
+    ]
+}
+
+fn batch_input_shape_diagnostic(
+    code: &'static str,
+    message: &'static str,
+    path: &[SdkDiagnosticPathSegment],
+) -> SdkExecutionDiagnostic {
+    path.iter().cloned().fold(
+        SdkExecutionDiagnostic::invalid_input(
+            SdkDiagnosticCode::new(code).expect("the static batch-shape code is canonical"),
+            SdkDiagnosticMessage::new(message)
+                .expect("the static batch-shape message is canonical"),
+        ),
+        |diagnostic, segment| {
+            diagnostic
+                .try_at(segment)
+                .unwrap_or_else(|_| SdkExecutionDiagnostic::internal_failure())
+        },
+    )
+}
+
+fn project_batch_create_json(
+    package: &InstalledPackage,
+    id: &TypeId,
+    instance_json: &str,
+    proofs: &[Option<NodeProjectedInputProof>],
+    ordinal: usize,
+) -> Result<ProjectedCreate, SdkExecutionDiagnostic> {
+    let row_path = projected_batch_row_path(ordinal);
+    let wire: ProjectedWire = serde_json::from_str(instance_json)
+        .map_err(|_| malformed_projected_create_at(row_path.iter().cloned()))?;
+    let expected = package
+        .projected_type_keys
+        .get(id)
+        .ok_or_else(|| malformed_projected_create_at(row_path.iter().cloned()))?;
+    if wire.type_key != expected.canonical
+        || wire.form != WireForm::Complete
+        || wire.value.is_some()
+    {
+        return Err(generated_token_package_mismatch_at(
+            row_path.iter().cloned(),
+        ));
+    }
+    project_create_wire_with_proofs(package, id, &wire, proofs)
+        .map_err(|diagnostic| rebase_sdk_diagnostic(diagnostic, row_path))
+}
+
+fn capture_projected_batch(
+    env: sys::napi_env,
+    package: &InstalledPackage,
+    model: &TypeId,
+    operation: ProjectedBatchOperation,
+    row_count: u32,
+    row_at: sys::napi_value,
+) -> napi::Result<(ProjectedBatch, ProjectedBatchInvocationControl)> {
+    let row_count = row_count as usize;
+    ProjectedBatch::validate_binding_row_count(row_count).map_err(napi_sdk_diagnostic)?;
+    let control = ProjectedBatchInvocationControl::capture(
+        QueryExecutionResourceLimits::default(),
+        AnswerCancellation::default(),
+    );
+    let mut budget = ProjectedBatchBindingBudget::try_new_for_invocation(
+        package.projection.as_ref(),
+        model.clone(),
+        operation,
+        &control,
+    )
+    .map_err(napi_sdk_diagnostic)?;
+    let mut rows = reserved_projected_batch_rows(row_count).map_err(napi_sdk_diagnostic)?;
+    let mut receiver = ptr::null_mut();
+    napi_status_preserving_exception(
+        env,
+        unsafe { sys::napi_get_undefined(env, &mut receiver) },
+        "failed to create projected batch row callback receiver",
+    )?;
+    for ordinal in 0..row_count {
+        budget.checkpoint().map_err(napi_sdk_diagnostic)?;
+        let scope = RawHandleScope::open(env)?;
+        let mut ordinal_value = ptr::null_mut();
+        let ordinal_u32 = u32::try_from(ordinal)
+            .map_err(|_| napi_sdk_diagnostic(ProjectedBatch::binding_allocation_failure()))?;
+        napi_status_preserving_exception(
+            env,
+            unsafe { sys::napi_create_uint32(env, ordinal_u32, &mut ordinal_value) },
+            "failed to create projected batch row ordinal",
+        )?;
+        let value = raw_call_one(env, row_at, receiver, ordinal_value)?;
+        let row = match operation {
+            ProjectedBatchOperation::Delete => {
+                let iid = raw_utf8_string(
+                    env,
+                    value,
+                    MAX_CANONICAL_STRING_BYTES,
+                    "projected delete batch row is not a string",
+                )
+                .map_err(|error| {
+                    raw_projected_binding_or_shape(error, || {
+                        batch_input_shape_diagnostic(
+                            "batch_iid_type_mismatch",
+                            "Successor delete rows require exact string IIDs",
+                            &projected_batch_iid_path(ordinal),
+                        )
+                    })
+                })?;
+                ProjectedBatchRow::Delete { iid }
+            }
+            ProjectedBatchOperation::Insert | ProjectedBatchOperation::Put => {
+                let (_, instance_json, proofs) =
+                    raw_batch_create_row(env, value, package, &budget, false, ordinal)?;
+                let replacement =
+                    project_batch_create_json(package, model, &instance_json, &proofs, ordinal)
+                        .map_err(napi_sdk_diagnostic)?;
+                ProjectedBatchRow::Create(replacement)
+            }
+            ProjectedBatchOperation::Update => {
+                let (iid, instance_json, proofs) =
+                    raw_batch_create_row(env, value, package, &budget, true, ordinal)?;
+                let replacement =
+                    project_batch_create_json(package, model, &instance_json, &proofs, ordinal)
+                        .map_err(napi_sdk_diagnostic)?;
+                ProjectedBatchRow::Update {
+                    iid: iid.expect("an exact update row always carries its IID"),
+                    replacement,
+                }
+            }
+        };
+        scope.close()?;
+        budget
+            .try_add_row(package.projection.as_ref(), &row)
+            .map_err(napi_sdk_diagnostic)?;
+        rows.push(row);
+    }
+    drop(budget);
+    let batch = ProjectedBatch::try_new_for_invocation(
+        package.projection.as_ref(),
+        model.clone(),
+        operation,
+        rows,
+        &control,
+    )
+    .map_err(napi_sdk_diagnostic)?;
+    Ok((batch, control))
+}
+
+fn create_projected_batch_authority_external(
+    env: sys::napi_env,
+    authority: &Arc<NodeProjectedBatchAuthority>,
+) -> napi::Result<sys::napi_value> {
+    let payload = Box::into_raw(Box::new(Arc::clone(authority)));
+    let mut value = ptr::null_mut();
+    let status = unsafe {
+        sys::napi_create_external(
+            env,
+            payload.cast(),
+            Some(finalize_projected_batch_authority),
+            ptr::null_mut(),
+            &mut value,
+        )
+    };
+    if status != sys::Status::napi_ok {
+        // SAFETY: creation failed, so Node did not assume finalizer ownership.
+        drop(unsafe { Box::from_raw(payload) });
+        return Err(Error::new(
+            Status::from(status),
+            "failed to create projected batch authority",
+        ));
+    }
+    let status = unsafe { sys::napi_type_tag_object(env, value, &PROJECTED_BATCH_AUTHORITY_TAG) };
+    napi_status(status, "failed to tag projected batch authority")?;
+    Ok(value)
+}
+
+fn projected_batch_authority_from_external(
+    env: sys::napi_env,
+    value: sys::napi_value,
+) -> napi::Result<Arc<NodeProjectedBatchAuthority>> {
+    let mut value_type = sys::ValueType::napi_undefined;
+    napi_status(
+        unsafe { sys::napi_typeof(env, value, &mut value_type) },
+        "failed to inspect projected batch authority",
+    )?;
+    if value_type != sys::ValueType::napi_external {
+        return Err(invalid_error(
+            "projected batch authority is not an external",
+        ));
+    }
+    let mut tagged = false;
+    napi_status(
+        unsafe {
+            sys::napi_check_object_type_tag(env, value, &PROJECTED_BATCH_AUTHORITY_TAG, &mut tagged)
+        },
+        "failed to authenticate projected batch authority",
+    )?;
+    if !tagged {
+        return Err(invalid_error("projected batch authority is not authentic"));
+    }
+    let mut payload = ptr::null_mut();
+    napi_status(
+        unsafe { sys::napi_get_value_external(env, value, &mut payload) },
+        "failed to unwrap projected batch authority",
+    )?;
+    if payload.is_null() {
+        return Err(invalid_error("projected batch authority is empty"));
+    }
+    // SAFETY: the exact type tag is installed only for a Box<Arc<_>> created
+    // above; cloning the Arc leaves ownership with the JS external finalizer.
+    Ok(Arc::clone(unsafe {
+        &*payload.cast::<Arc<NodeProjectedBatchAuthority>>()
+    }))
+}
+
+#[derive(Default)]
+struct FallibleJsonWriter {
+    bytes: Vec<u8>,
+}
+
+impl FallibleJsonWriter {
+    fn clear(&mut self) {
+        self.bytes.clear();
+    }
+
+    fn as_bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+impl fmt::Write for FallibleJsonWriter {
+    fn write_str(&mut self, value: &str) -> fmt::Result {
+        self.bytes
+            .len()
+            .checked_add(value.len())
+            .ok_or(fmt::Error)?;
+        self.bytes
+            .try_reserve(value.len())
+            .map_err(|_| fmt::Error)?;
+        self.bytes.extend_from_slice(value.as_bytes());
+        Ok(())
+    }
+}
+
+struct PreparedProjectedBatchOutput {
+    env: sys::napi_env,
+    function: sys::napi_value,
+    receiver: sys::napi_value,
+    type_key: sys::napi_value,
+    null: sys::napi_value,
+    authority_value: sys::napi_value,
+    array: sys::napi_value,
+    ordinals: Vec<sys::napi_value>,
+    authority: Arc<NodeProjectedBatchAuthority>,
+    package: Arc<InstalledPackage>,
+}
+
+fn decimal_property_name(value: u32, output: &mut [u8; 11]) -> *const c_char {
+    output.fill(0);
+    let mut cursor = output.len().saturating_sub(1);
+    let mut remaining = value;
+    loop {
+        cursor = cursor.saturating_sub(1);
+        output[cursor] = b'0' + (remaining % 10) as u8;
+        remaining /= 10;
+        if remaining == 0 {
+            break;
+        }
+    }
+    output[cursor..].as_ptr().cast()
+}
+
+fn prepare_projected_batch_output(
+    env: &Env,
+    package: Arc<InstalledPackage>,
+    type_id: &TypeId,
+    row_count: usize,
+    authority: Arc<NodeProjectedBatchAuthority>,
+) -> napi::Result<PreparedProjectedBatchOutput> {
+    let materializer = package
+        .projected_batch_materializer
+        .as_ref()
+        .ok_or_else(|| {
+            invalid_error("ordered successor projection has no installed batch materializer")
+        })?;
+    let function = materializer.borrow_back(env)?.raw();
+    let raw_env = env.raw();
+    let mut receiver = ptr::null_mut();
+    napi_status(
+        unsafe { sys::napi_get_undefined(raw_env, &mut receiver) },
+        "failed to create projected batch materializer receiver",
+    )?;
+    let type_key_cache = package
+        .projected_type_keys
+        .get(type_id)
+        .ok_or_else(|| runtime_error("projected batch model type key is absent"))?;
+    let type_key_length = isize::try_from(type_key_cache.canonical.len())
+        .map_err(|_| napi_sdk_diagnostic(ProjectedBatch::binding_allocation_failure()))?;
+    let mut type_key = ptr::null_mut();
+    napi_status(
+        unsafe {
+            sys::napi_create_string_utf8(
+                raw_env,
+                type_key_cache.canonical.as_ptr().cast(),
+                type_key_length,
+                &mut type_key,
+            )
+        },
+        "failed to create projected batch model type key",
+    )?;
+    let mut null = ptr::null_mut();
+    napi_status(
+        unsafe { sys::napi_get_null(raw_env, &mut null) },
+        "failed to create projected batch null sentinel",
+    )?;
+    let authority_value = create_projected_batch_authority_external(raw_env, &authority)?;
+    let mut array = ptr::null_mut();
+    napi_status(
+        unsafe { sys::napi_create_array_with_length(raw_env, row_count, &mut array) },
+        "failed to create projected batch result array",
+    )?;
+    for ordinal in 0..row_count {
+        let ordinal = u32::try_from(ordinal)
+            .map_err(|_| napi_sdk_diagnostic(ProjectedBatch::binding_allocation_failure()))?;
+        let mut name = [0_u8; 11];
+        let descriptor = sys::napi_property_descriptor {
+            utf8name: decimal_property_name(ordinal, &mut name),
+            name: ptr::null_mut(),
+            method: None,
+            getter: None,
+            setter: None,
+            value: receiver,
+            attributes: sys::PropertyAttributes::writable
+                | sys::PropertyAttributes::enumerable
+                | sys::PropertyAttributes::configurable,
+            data: ptr::null_mut(),
+        };
+        napi_status(
+            unsafe { sys::napi_define_properties(raw_env, array, 1, &descriptor) },
+            "failed to create projected batch own result slot",
+        )?;
+    }
+    let mut ordinals = Vec::new();
+    ordinals
+        .try_reserve_exact(row_count)
+        .map_err(|_| napi_sdk_diagnostic(ProjectedBatch::binding_allocation_failure()))?;
+    for ordinal in 0..row_count {
+        let ordinal = u32::try_from(ordinal)
+            .map_err(|_| napi_sdk_diagnostic(ProjectedBatch::binding_allocation_failure()))?;
+        let mut value = ptr::null_mut();
+        napi_status(
+            unsafe { sys::napi_create_uint32(raw_env, ordinal, &mut value) },
+            "failed to create projected batch materializer ordinal",
+        )?;
+        ordinals.push(value);
+    }
+    Ok(PreparedProjectedBatchOutput {
+        env: raw_env,
+        function,
+        receiver,
+        type_key,
+        null,
+        authority_value,
+        array,
+        ordinals,
+        authority,
+        package,
+    })
+}
+
+fn clear_pending_js_exception(env: sys::napi_env) {
+    let mut pending = false;
+    if unsafe { sys::napi_is_exception_pending(env, &mut pending) } == sys::Status::napi_ok
+        && pending
+    {
+        let mut exception = ptr::null_mut();
+        let _ = unsafe { sys::napi_get_and_clear_last_exception(env, &mut exception) };
+    }
+}
+
+fn mapper_status(env: sys::napi_env, status: sys::napi_status) -> Result<(), ()> {
+    if status == sys::Status::napi_ok {
+        Ok(())
+    } else {
+        clear_pending_js_exception(env);
+        Err(())
+    }
+}
+
+struct MapperHandleScope {
+    env: sys::napi_env,
+    scope: sys::napi_handle_scope,
+    armed: bool,
+}
+
+impl MapperHandleScope {
+    fn open(env: sys::napi_env) -> Result<Self, ()> {
+        let mut scope = ptr::null_mut();
+        mapper_status(env, unsafe { sys::napi_open_handle_scope(env, &mut scope) })?;
+        Ok(Self {
+            env,
+            scope,
+            armed: true,
+        })
+    }
+
+    fn close(mut self) -> Result<(), ()> {
+        let status = unsafe { sys::napi_close_handle_scope(self.env, self.scope) };
+        self.armed = false;
+        mapper_status(self.env, status)
+    }
+}
+
+impl Drop for MapperHandleScope {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = unsafe { sys::napi_close_handle_scope(self.env, self.scope) };
+        }
+    }
+}
+
+fn materialization_failure(ordinal: usize) -> SdkExecutionDiagnostic {
+    ProjectedBatchExecutor::binding_materialization_failure(
+        u64::try_from(ordinal).unwrap_or(u64::MAX),
+    )
+}
+
+impl PreparedProjectedBatchOutput {
+    fn materialize(
+        self,
+        result: ProjectedBatchResult,
+    ) -> Result<sys::napi_value, SdkExecutionDiagnostic> {
+        let ProjectedBatchResult::Things(things) = result else {
+            return Err(SdkExecutionDiagnostic::internal_failure());
+        };
+        if things.len() != self.ordinals.len() {
+            return Err(materialization_failure(0));
+        }
+        if self.authority.state.load(Ordering::Relaxed) != BATCH_AUTHORITY_PENDING {
+            return Err(SdkExecutionDiagnostic::internal_failure());
+        }
+        self.authority
+            .rows
+            .set(things)
+            .map_err(|_| SdkExecutionDiagnostic::internal_failure())?;
+        let rows = self
+            .authority
+            .rows
+            .get()
+            .ok_or_else(SdkExecutionDiagnostic::internal_failure)?;
+        let mut json = FallibleJsonWriter::default();
+        for (ordinal, thing) in rows.iter().enumerate() {
+            json.clear();
+            write_projected_thing_json(&mut json, self.package.as_ref(), thing)
+                .map_err(|_| materialization_failure(ordinal))?;
+            let scope =
+                MapperHandleScope::open(self.env).map_err(|_| materialization_failure(ordinal))?;
+            let mut json_value = ptr::null_mut();
+            let json_length = isize::try_from(json.as_bytes().len())
+                .map_err(|_| materialization_failure(ordinal))?;
+            mapper_status(self.env, unsafe {
+                sys::napi_create_string_utf8(
+                    self.env,
+                    json.as_bytes().as_ptr().cast(),
+                    json_length,
+                    &mut json_value,
+                )
+            })
+            .map_err(|_| materialization_failure(ordinal))?;
+            let arguments = [
+                self.type_key,
+                self.ordinals[ordinal],
+                json_value,
+                self.authority_value,
+            ];
+            let mut facade = ptr::null_mut();
+            mapper_status(self.env, unsafe {
+                sys::napi_call_function(
+                    self.env,
+                    self.receiver,
+                    self.function,
+                    arguments.len(),
+                    arguments.as_ptr(),
+                    &mut facade,
+                )
+            })
+            .map_err(|_| materialization_failure(ordinal))?;
+            let mut value_type = sys::ValueType::napi_undefined;
+            mapper_status(self.env, unsafe {
+                sys::napi_typeof(self.env, facade, &mut value_type)
+            })
+            .map_err(|_| materialization_failure(ordinal))?;
+            let mut is_null = false;
+            mapper_status(self.env, unsafe {
+                sys::napi_strict_equals(self.env, facade, self.null, &mut is_null)
+            })
+            .map_err(|_| materialization_failure(ordinal))?;
+            let mut is_array = false;
+            mapper_status(self.env, unsafe {
+                sys::napi_is_array(self.env, facade, &mut is_array)
+            })
+            .map_err(|_| materialization_failure(ordinal))?;
+            if value_type != sys::ValueType::napi_object || is_null || is_array {
+                return Err(materialization_failure(ordinal));
+            }
+            mapper_status(self.env, unsafe {
+                sys::napi_set_element(
+                    self.env,
+                    self.array,
+                    u32::try_from(ordinal).unwrap_or(u32::MAX),
+                    facade,
+                )
+            })
+            .map_err(|_| materialization_failure(ordinal))?;
+            scope
+                .close()
+                .map_err(|_| materialization_failure(ordinal))?;
+        }
+        mapper_status(self.env, unsafe {
+            sys::napi_object_freeze(self.env, self.array)
+        })
+        .map_err(|_| materialization_failure(0))?;
+        Ok(self.array)
+    }
+}
+
+fn frozen_empty_array<'env>(env: &Env) -> napi::Result<Array<'env>> {
+    let mut array = ptr::null_mut();
+    napi_status(
+        unsafe { sys::napi_create_array_with_length(env.raw(), 0, &mut array) },
+        "failed to create empty projected batch result",
+    )?;
+    napi_status(
+        unsafe { sys::napi_object_freeze(env.raw(), array) },
+        "failed to freeze empty projected batch result",
+    )?;
+    // SAFETY: `array` is a live Array local in `env`'s current native scope.
+    unsafe { Array::from_napi_value(env.raw(), array) }
+}
+
+#[derive(Clone)]
 enum FacadeProjectionProof {
     Thing(Arc<ProjectedThing>),
     Reference(Arc<ProjectedReference>),
@@ -87,6 +1364,74 @@ impl FacadeProjectionProof {
 /// Opaque native proof retained only by an ordered generated facade WeakMap.
 pub struct NodeProjectedFacadeProof {
     proof: FacadeProjectionProof,
+}
+
+enum NodeProjectedBatchProofSelector {
+    Root,
+    Role {
+        role_ordinal: u32,
+        player_index: u32,
+    },
+}
+
+struct NodeProjectedBatchProof {
+    authority: Arc<NodeProjectedBatchAuthority>,
+    row: u32,
+    selector: NodeProjectedBatchProofSelector,
+}
+
+enum NodeProjectedInputProof {
+    Single(FacadeProjectionProof),
+    Batch(NodeProjectedBatchProof),
+}
+
+impl NodeProjectedInputProof {
+    fn reference(
+        &self,
+        package: &InstalledPackage,
+    ) -> Result<ProjectedReference, SdkExecutionDiagnostic> {
+        match self {
+            Self::Single(proof) => proof.reference(package.projection.as_ref()),
+            Self::Batch(proof) => {
+                if !proof.authority.is_active()
+                    || !Arc::ptr_eq(&proof.authority.projection, &package.projection)
+                {
+                    return Err(malformed_projected_create_at(std::iter::empty()));
+                }
+                let rows = proof
+                    .authority
+                    .rows
+                    .get()
+                    .ok_or_else(|| malformed_projected_create_at(std::iter::empty()))?;
+                let row = rows
+                    .get(proof.row as usize)
+                    .ok_or_else(|| malformed_projected_create_at(std::iter::empty()))?;
+                match &proof.selector {
+                    NodeProjectedBatchProofSelector::Root => {
+                        row.try_to_reference(package.projection.as_ref())
+                    }
+                    NodeProjectedBatchProofSelector::Role {
+                        role_ordinal,
+                        player_index,
+                    } => {
+                        let role_id = package
+                            .projected_type_keys
+                            .get(row.type_id())
+                            .and_then(|cache| cache.roles.role_id(*role_ordinal))
+                            .ok_or_else(|| malformed_projected_create_at(std::iter::empty()))?;
+                        let player = row
+                            .roles()
+                            .get(role_id)
+                            .and_then(|players| players.get(*player_index as usize))
+                            .ok_or_else(|| malformed_projected_create_at(std::iter::empty()))?;
+                        let retained = player.reference().clone();
+                        retained.validate_for(package.projection.as_ref())?;
+                        Ok(retained)
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// One private projected wire and its non-serializable facade proofs.
@@ -170,6 +1515,27 @@ impl NodeRuntimeProjection {
         projection_fingerprint_json: String,
         registrations_json: String,
         schema_authority_json: Option<String>,
+        projected_batch_materializer: Option<Function<'_, (), ()>>,
+    ) -> napi::Result<Self> {
+        Self::install(
+            projection_json,
+            semantic_fingerprint_json,
+            projection_fingerprint_json,
+            registrations_json,
+            schema_authority_json,
+            projected_batch_materializer,
+            true,
+        )
+    }
+
+    fn install(
+        projection_json: String,
+        semantic_fingerprint_json: String,
+        projection_fingerprint_json: String,
+        registrations_json: String,
+        schema_authority_json: Option<String>,
+        projected_batch_materializer: Option<Function<'_, (), ()>>,
+        require_projected_batch_materializer: bool,
     ) -> napi::Result<Self> {
         let runtime = match schema_authority_json {
             Some(schema_authority_json) => install_authority_backed_projection(
@@ -197,6 +1563,23 @@ impl NodeRuntimeProjection {
                 runtime
             }
         };
+        let ordered_successor = projection_uses_ordered_collections(&runtime);
+        match (ordered_successor, projected_batch_materializer.as_ref()) {
+            (true, None) if require_projected_batch_materializer => {
+                return Err(invalid_error(
+                    "ordered successor projection requires exactly one generated batch materializer",
+                ));
+            }
+            (false, Some(_)) => {
+                return Err(invalid_error(
+                    "legacy projection cannot install a successor batch materializer",
+                ));
+            }
+            _ => {}
+        }
+        let projected_batch_materializer = projected_batch_materializer
+            .map(|materializer| materializer.create_ref().map(Arc::new))
+            .transpose()?;
         let registrations: Vec<ModelRegistration> = serde_json::from_str(&registrations_json)
             .map_err(|error| invalid_error(format!("invalid projection registrations: {error}")))?;
         if registrations.len() != runtime.models().len() {
@@ -230,6 +1613,7 @@ impl NodeRuntimeProjection {
             ));
         }
         let mut types_by_label = BTreeMap::new();
+        let mut projected_type_keys = BTreeMap::new();
         for id in runtime.models().keys() {
             if types_by_label
                 .insert(id.label().as_str().to_owned(), id.clone())
@@ -239,12 +1623,57 @@ impl NodeRuntimeProjection {
                     "projection contains duplicate provider type labels",
                 ));
             }
+            let canonical = canonical_type_key(id)?;
+            let json_string = serde_json::to_string(&canonical).map_err(json_error)?;
+            let model = runtime
+                .models()
+                .get(id)
+                .ok_or_else(|| runtime_error("projected role index model is absent"))?;
+            let mut role_ids = Vec::new();
+            role_ids
+                .try_reserve_exact(model.complete_read().roles().len())
+                .map_err(|_| runtime_error("failed to reserve projected role index"))?;
+            let mut role_ordinals_by_target = BTreeMap::new();
+            for (ordinal, role_id) in model.complete_read().roles().keys().enumerate() {
+                let ordinal = u32::try_from(ordinal)
+                    .map_err(|_| invalid_error("projection contains too many projected roles"))?;
+                let target_name = model
+                    .query_tokens()
+                    .roles()
+                    .get(role_id)
+                    .ok_or_else(|| runtime_error("projected role has no generated token"))?
+                    .target_name()
+                    .as_str()
+                    .to_owned();
+                if role_ordinals_by_target
+                    .insert(target_name, ordinal)
+                    .is_some()
+                {
+                    return Err(invalid_error(
+                        "projection contains duplicate generated role targets",
+                    ));
+                }
+                role_ids.push(role_id.clone());
+            }
+            projected_type_keys.insert(
+                id.clone(),
+                ProjectedTypeKeyCache {
+                    canonical,
+                    json_string,
+                    roles: ProjectedRoleIndex {
+                        role_ids,
+                        role_ordinals_by_target,
+                    },
+                },
+            );
         }
         let projection = Arc::new(InstalledRuntimeProjection::try_new(runtime).map_err(orm_error)?);
         Ok(Self {
             package: Arc::new(InstalledPackage {
                 projection,
                 types_by_label,
+                projected_type_keys,
+                projected_batch_materializer,
             }),
         })
     }
@@ -263,6 +1692,7 @@ impl NodeRuntimeProjection {
             type_id,
             database: Some(database),
             transaction: None,
+            successor_batch_marker: None,
             runtime,
             filters: vec![],
         })
@@ -276,12 +1706,14 @@ impl NodeRuntimeProjection {
         transaction: &NodeRustTransactionContext,
     ) -> napi::Result<NodeProjectedModelManager> {
         let type_id = manageable_type(self.package.as_ref(), &type_key)?;
+        let successor_batch_marker = transaction.successor_batch_marker();
         let (transaction, runtime) = transaction.handles();
         Ok(NodeProjectedModelManager {
             package: Arc::clone(&self.package),
             type_id,
             database: None,
             transaction: Some(transaction),
+            successor_batch_marker: Some(successor_batch_marker),
             runtime,
             filters: vec![],
         })
@@ -646,6 +2078,7 @@ pub struct NodeProjectedModelManager {
     type_id: TypeId,
     database: Option<Arc<Database>>,
     transaction: Option<TransactionContext>,
+    successor_batch_marker: Option<Arc<AtomicBool>>,
     runtime: Arc<ProviderRuntimeOwner>,
     filters: Vec<DynamicExpr>,
 }
@@ -654,11 +2087,14 @@ pub struct NodeProjectedModelManager {
 impl NodeProjectedModelManager {
     /// Insert one ordered successor value through the common projected executor.
     #[napi(js_name = "insertProjected")]
-    pub fn insert_projected(
+    pub fn insert_projected<'env>(
         &self,
         instance_json: String,
-        proofs: Vec<Option<&External<NodeProjectedFacadeProof>>>,
+        proofs: Unknown<'env>,
     ) -> napi::Result<NodeProjectedValueEnvelope> {
+        let proofs =
+            raw_projected_input_proofs(proofs.value().env, proofs.raw(), &self.package, None)
+                .map_err(RawProjectedBindingError::into_napi)?;
         let instance = self.projected_create_input(&instance_json, &proofs)?;
         let executor = ProjectedCrudExecutor::new(self.package.projection.as_ref());
         let projected = match (self.type_id.kind(), &self.database, &self.transaction) {
@@ -682,11 +2118,14 @@ impl NodeProjectedModelManager {
 
     /// Put one ordered successor value through the common projected executor.
     #[napi(js_name = "putProjected")]
-    pub fn put_projected(
+    pub fn put_projected<'env>(
         &self,
         instance_json: String,
-        proofs: Vec<Option<&External<NodeProjectedFacadeProof>>>,
+        proofs: Unknown<'env>,
     ) -> napi::Result<NodeProjectedValueEnvelope> {
+        let proofs =
+            raw_projected_input_proofs(proofs.value().env, proofs.raw(), &self.package, None)
+                .map_err(RawProjectedBindingError::into_napi)?;
         let instance = self.projected_create_input(&instance_json, &proofs)?;
         let executor = ProjectedCrudExecutor::new(self.package.projection.as_ref());
         let projected = match (self.type_id.kind(), &self.database, &self.transaction) {
@@ -710,12 +2149,15 @@ impl NodeProjectedModelManager {
 
     /// Replace one ordered successor value through the common projected executor.
     #[napi(js_name = "updateProjected")]
-    pub fn update_projected(
+    pub fn update_projected<'env>(
         &self,
         iid: String,
         instance_json: String,
-        proofs: Vec<Option<&External<NodeProjectedFacadeProof>>>,
+        proofs: Unknown<'env>,
     ) -> napi::Result<NodeProjectedValueEnvelope> {
+        let proofs =
+            raw_projected_input_proofs(proofs.value().env, proofs.raw(), &self.package, None)
+                .map_err(RawProjectedBindingError::into_napi)?;
         let instance = self.projected_create_input(&instance_json, &proofs)?;
         let executor = ProjectedCrudExecutor::new(self.package.projection.as_ref());
         let projected = match (self.type_id.kind(), &self.database, &self.transaction) {
@@ -735,6 +2177,73 @@ impl NodeProjectedModelManager {
         }
         .map_err(napi_sdk_diagnostic)?;
         projected_envelope(Arc::clone(&self.package), projected)
+    }
+
+    /// Insert ordered successor values atomically through the common executor.
+    #[napi(js_name = "insertManyProjected")]
+    pub fn insert_many_projected<'env>(
+        &self,
+        env: Env,
+        row_count: u32,
+        row_at: Function<'env, u32, Unknown<'env>>,
+    ) -> napi::Result<Array<'env>> {
+        self.write_many_projected(
+            &env,
+            row_count,
+            row_at.raw(),
+            ProjectedBatchOperation::Insert,
+        )
+    }
+
+    /// Put ordered successor values atomically through the common executor.
+    #[napi(js_name = "putManyProjected")]
+    pub fn put_many_projected<'env>(
+        &self,
+        env: Env,
+        row_count: u32,
+        row_at: Function<'env, u32, Unknown<'env>>,
+    ) -> napi::Result<Array<'env>> {
+        self.write_many_projected(&env, row_count, row_at.raw(), ProjectedBatchOperation::Put)
+    }
+
+    /// Replace ordered successor values atomically through the common executor.
+    #[napi(js_name = "updateManyProjected")]
+    pub fn update_many_projected<'env>(
+        &self,
+        env: Env,
+        row_count: u32,
+        row_at: Function<'env, u32, Unknown<'env>>,
+    ) -> napi::Result<Array<'env>> {
+        self.write_many_projected(
+            &env,
+            row_count,
+            row_at.raw(),
+            ProjectedBatchOperation::Update,
+        )
+    }
+
+    /// Delete ordered successor values atomically by canonical TypeDB IID.
+    #[napi(js_name = "deleteManyProjected")]
+    pub fn delete_many_projected<'env>(
+        &self,
+        env: Env,
+        row_count: u32,
+        row_at: Function<'env, u32, Unknown<'env>>,
+    ) -> napi::Result<()> {
+        self.require_successor_batch_runtime()?;
+        let (batch, control) = capture_projected_batch(
+            env.raw(),
+            self.package.as_ref(),
+            &self.type_id,
+            ProjectedBatchOperation::Delete,
+            row_count,
+            row_at.raw(),
+        )?;
+        self.execute_projected_batch(&batch, control, (), |result| match result {
+            ProjectedBatchResult::Deleted => Ok(()),
+            _ => Err(SdkExecutionDiagnostic::internal_failure()),
+        })
+        .map_err(napi_sdk_diagnostic)
     }
 
     /// Read one ordered successor value through the common projected executor.
@@ -948,6 +2457,7 @@ impl NodeProjectedModelManager {
             type_id: self.type_id.clone(),
             database: self.database.clone(),
             transaction: self.transaction.clone(),
+            successor_batch_marker: self.successor_batch_marker.clone(),
             runtime: Arc::clone(&self.runtime),
             filters: combined,
         })
@@ -1059,10 +2569,123 @@ impl NodeProjectedModelManager {
 }
 
 impl NodeProjectedModelManager {
+    fn require_successor_batch_runtime(&self) -> napi::Result<()> {
+        if !projection_uses_ordered_collections(self.package.projection.projection()) {
+            return Err(invalid_error(
+                "common projected batch execution is reserved for the ordered successor runtime",
+            ));
+        }
+        Ok(())
+    }
+
+    fn write_many_projected<'env>(
+        &self,
+        env: &Env,
+        row_count: u32,
+        row_at: sys::napi_value,
+        operation: ProjectedBatchOperation,
+    ) -> napi::Result<Array<'env>> {
+        self.require_successor_batch_runtime()?;
+        let (batch, control) = capture_projected_batch(
+            env.raw(),
+            self.package.as_ref(),
+            &self.type_id,
+            operation,
+            row_count,
+            row_at,
+        )?;
+        if batch.is_empty() {
+            self.execute_projected_batch(&batch, control, (), |_| {
+                Err(SdkExecutionDiagnostic::internal_failure())
+            })
+            .map_err(napi_sdk_diagnostic)?;
+            return frozen_empty_array(env);
+        }
+
+        let authority = NodeProjectedBatchAuthority::pending(Arc::clone(&self.package.projection));
+        let authority_guard = PendingBatchAuthority::new(Arc::clone(&authority));
+        let output = prepare_projected_batch_output(
+            env,
+            Arc::clone(&self.package),
+            &self.type_id,
+            batch.len(),
+            authority,
+        )?;
+        // Convert and cache the typed wrapper before provider dispatch. napi-rs
+        // reads the array length during this conversion; no fallible N-API work
+        // may follow authority activation.
+        let array = unsafe { Array::from_napi_value(env.raw(), output.array) }?;
+        self.execute_projected_batch(&batch, control, ptr::null_mut(), |result| {
+            output.materialize(result)
+        })
+        .map_err(napi_sdk_diagnostic)?;
+        authority_guard.finish();
+        Ok(array)
+    }
+
+    fn execute_projected_batch<T, F>(
+        &self,
+        batch: &ProjectedBatch,
+        control: ProjectedBatchInvocationControl,
+        empty: T,
+        mapper: F,
+    ) -> Result<T, SdkExecutionDiagnostic>
+    where
+        F: FnOnce(ProjectedBatchResult) -> Result<T, SdkExecutionDiagnostic>,
+    {
+        let executor = ProjectedBatchExecutor::new(self.package.projection.as_ref());
+        match (&self.database, &self.transaction) {
+            (Some(database), None) => self
+                .runtime
+                .block_on(executor.execute_mapped(database, batch, control, empty, mapper)),
+            (None, Some(transaction)) if batch.is_empty() => {
+                self.runtime
+                    .block_on(executor.execute_in_transaction_mapped(
+                        transaction,
+                        batch,
+                        control,
+                        empty,
+                        mapper,
+                    ))
+            }
+            (None, Some(transaction)) => {
+                let prior = self.runtime.block_on(transaction.lifecycle_state());
+                let marker = self
+                    .successor_batch_marker
+                    .as_ref()
+                    .ok_or_else(SdkExecutionDiagnostic::internal_failure)?;
+                let mark_successor = prior == TransactionContextState::Active;
+                let result = self
+                    .runtime
+                    .block_on(executor.execute_in_transaction_mapped(
+                        transaction,
+                        batch,
+                        control,
+                        empty,
+                        |result| {
+                            if mark_successor {
+                                marker.store(true, Ordering::Release);
+                            }
+                            mapper(result)
+                        },
+                    ));
+                if mark_successor
+                    && (result.is_ok()
+                        || self.runtime.block_on(transaction.lifecycle_state())
+                            == TransactionContextState::RollbackOnly)
+                {
+                    marker.store(true, Ordering::Release);
+                }
+                result
+            }
+            _ => Err(SdkExecutionDiagnostic::internal_failure()),
+        }
+    }
+
     fn projected_create_input(
         &self,
         instance_json: &str,
-        proofs: &[Option<&External<NodeProjectedFacadeProof>>],
+        proofs: &[Option<NodeProjectedInputProof>],
     ) -> napi::Result<ProjectedCreate> {
         if !projection_uses_ordered_collections(self.package.projection.projection()) {
             return Err(invalid_error(
@@ -1071,11 +2694,7 @@ impl NodeProjectedModelManager {
         }
         let instance = parse_wire(instance_json)?;
         ensure_root_wire(self.package.as_ref(), &instance, &self.type_id)?;
-        let proofs = proofs
-            .iter()
-            .map(|proof| proof.map(AsRef::as_ref))
-            .collect::<Vec<_>>();
-        project_create_wire_with_proofs(self.package.as_ref(), &self.type_id, &instance, &proofs)
+        project_create_wire_with_proofs(self.package.as_ref(), &self.type_id, &instance, proofs)
             .map_err(napi_sdk_diagnostic)
     }
 
@@ -1523,7 +3142,7 @@ fn project_create_wire_with_proofs(
     package: &InstalledPackage,
     id: &TypeId,
     wire: &ProjectedWire,
-    proofs: &[Option<&NodeProjectedFacadeProof>],
+    proofs: &[Option<NodeProjectedInputProof>],
 ) -> Result<ProjectedCreate, SdkExecutionDiagnostic> {
     let model = package
         .projection
@@ -1594,9 +3213,9 @@ fn project_create_wire_with_proofs(
                 SdkDiagnosticPathSegment::Role(role_id.clone()),
                 SdkDiagnosticPathSegment::Index(projected_index(index)),
             ];
-            let proof = proofs.get(proof_index).copied().flatten();
+            let proof = proofs.get(proof_index).and_then(Option::as_ref);
             proof_index = proof_index.saturating_add(1);
-            projected.push(project_reference_wire_with_proof(
+            projected.push(project_reference_wire_with_input_proof(
                 package,
                 role.players(),
                 value,
@@ -2004,6 +3623,7 @@ fn project_reference_wire(
     )
 }
 
+#[cfg(test)]
 fn project_reference_wire_with_proof(
     package: &InstalledPackage,
     allowed_players: &BTreeSet<type_bridge_contract::projection::ProjectedModelUse>,
@@ -2011,13 +3631,29 @@ fn project_reference_wire_with_proof(
     operation_path: &[SdkDiagnosticPathSegment],
     proof: Option<&NodeProjectedFacadeProof>,
 ) -> Result<ProjectedReference, SdkExecutionDiagnostic> {
+    let proof = proof.map(|proof| NodeProjectedInputProof::Single(proof.proof.clone()));
+    project_reference_wire_with_input_proof(
+        package,
+        allowed_players,
+        wire,
+        operation_path,
+        proof.as_ref(),
+    )
+}
+
+fn project_reference_wire_with_input_proof(
+    package: &InstalledPackage,
+    allowed_players: &BTreeSet<type_bridge_contract::projection::ProjectedModelUse>,
+    wire: &ProjectedWire,
+    operation_path: &[SdkDiagnosticPathSegment],
+    proof: Option<&NodeProjectedInputProof>,
+) -> Result<ProjectedReference, SdkExecutionDiagnostic> {
     let visible = project_reference_wire(package, allowed_players, wire, operation_path)?;
     let Some(proof) = proof else {
         return Ok(visible);
     };
     let retained = proof
-        .proof
-        .reference(&package.projection)
+        .reference(package)
         .map_err(|diagnostic| rebase_sdk_diagnostic(diagnostic, operation_path.iter().cloned()))?;
     if visible != retained {
         return Err(malformed_projected_create_at(
@@ -2650,6 +4286,511 @@ fn attribute_json_value(value: &AttributeValue) -> Value {
         AttributeValue::Double(value) => serde_json::json!(value),
         AttributeValue::Boolean(value) => serde_json::json!(value),
     }
+}
+
+fn write_json_string(output: &mut FallibleJsonWriter, value: &str) -> fmt::Result {
+    output.write_char('"')?;
+    let bytes = value.as_bytes();
+    let mut start = 0_usize;
+    for (index, byte) in bytes.iter().copied().enumerate() {
+        let escaped = match byte {
+            b'"' => Some("\\\""),
+            b'\\' => Some("\\\\"),
+            b'\x08' => Some("\\b"),
+            b'\x0c' => Some("\\f"),
+            b'\n' => Some("\\n"),
+            b'\r' => Some("\\r"),
+            b'\t' => Some("\\t"),
+            0x00..=0x1f => None,
+            _ => continue,
+        };
+        if start < index {
+            output.write_str(&value[start..index])?;
+        }
+        if let Some(escaped) = escaped {
+            output.write_str(escaped)?;
+        } else {
+            const HEX: &[u8; 16] = b"0123456789abcdef";
+            let escaped = [
+                b'\\',
+                b'u',
+                b'0',
+                b'0',
+                HEX[usize::from(byte >> 4)],
+                HEX[usize::from(byte & 0x0f)],
+            ];
+            // SAFETY: the fixed JSON escape alphabet is ASCII.
+            output.write_str(unsafe { std::str::from_utf8_unchecked(&escaped) })?;
+        }
+        start = index.saturating_add(1);
+    }
+    if start < value.len() {
+        output.write_str(&value[start..])?;
+    }
+    output.write_char('"')
+}
+
+fn projected_type_key_cache<'a>(
+    package: &'a InstalledPackage,
+    id: &TypeId,
+) -> Result<&'a ProjectedTypeKeyCache, fmt::Error> {
+    package.projected_type_keys.get(id).ok_or(fmt::Error)
+}
+
+fn write_projected_wire_prefix(
+    output: &mut FallibleJsonWriter,
+    package: &InstalledPackage,
+    id: &TypeId,
+    form: ProjectedModelForm,
+    iid: Option<&str>,
+) -> fmt::Result {
+    let type_key = projected_type_key_cache(package, id)?;
+    output.write_str("{\"typeKey\":")?;
+    output.write_str(&type_key.json_string)?;
+    output.write_str(",\"form\":")?;
+    output.write_str(match form {
+        ProjectedModelForm::Complete => "\"complete\"",
+        ProjectedModelForm::Reference => "\"reference\"",
+    })?;
+    output.write_str(",\"iid\":")?;
+    match iid {
+        Some(iid) => write_json_string(output, iid)?,
+        None => output.write_str("null")?,
+    }
+    Ok(())
+}
+
+fn write_fractional_nanoseconds(output: &mut FallibleJsonWriter, nanosecond: u32) -> fmt::Result {
+    if nanosecond == 0 {
+        return Ok(());
+    }
+    let mut digits = 9_u32;
+    let mut trimmed = nanosecond;
+    while trimmed.is_multiple_of(10) {
+        trimmed /= 10;
+        digits -= 1;
+    }
+    output.write_char('.')?;
+    let mut divisor = 100_000_000_u32;
+    for _ in 0..digits {
+        output.write_char(char::from(b'0' + ((nanosecond / divisor) % 10) as u8))?;
+        divisor /= 10;
+    }
+    Ok(())
+}
+
+fn write_canonical_time(
+    output: &mut FallibleJsonWriter,
+    hour: u8,
+    minute: u8,
+    second: u8,
+    nanosecond: u32,
+) -> fmt::Result {
+    write!(output, "{hour:02}:{minute:02}:{second:02}")?;
+    write_fractional_nanoseconds(output, nanosecond)
+}
+
+fn write_canonical_datetime(
+    output: &mut FallibleJsonWriter,
+    value: CanonicalDateTime,
+) -> fmt::Result {
+    let (year, month, day) = value.date().components();
+    write_javascript_date(output, year, month, day)?;
+    output.write_char('T')?;
+    let (hour, minute, second, nanosecond) = value.time().components();
+    write_canonical_time(output, hour, minute, second, nanosecond)
+}
+
+fn is_leap_year(year: i32) -> bool {
+    year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
+}
+
+fn days_in_month(year: i32, month: u8) -> u8 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if is_leap_year(year) => 29,
+        2 => 28,
+        _ => 0,
+    }
+}
+
+fn adjacent_date(year: i32, month: u8, day: u8, delta: i32) -> (i32, u8, u8) {
+    debug_assert!(matches!(delta, -1..=1));
+    match delta {
+        -1 if day > 1 => (year, month, day - 1),
+        -1 if month > 1 => {
+            let month = month - 1;
+            (year, month, days_in_month(year, month))
+        }
+        -1 => (year - 1, 12, 31),
+        1 if day < days_in_month(year, month) => (year, month, day + 1),
+        1 if month < 12 => (year, month + 1, 1),
+        1 => (year + 1, 1, 1),
+        _ => (year, month, day),
+    }
+}
+
+fn write_javascript_date(
+    output: &mut FallibleJsonWriter,
+    year: i32,
+    month: u8,
+    day: u8,
+) -> fmt::Result {
+    // ECMAScript's date-time string format uses four digits in the ordinary
+    // range and a signed six-digit extended year outside it.
+    if (0..=9_999).contains(&year) {
+        write!(output, "{year:04}")?;
+    } else {
+        let sign = if year < 0 { '-' } else { '+' };
+        write!(
+            output,
+            "{sign}{absolute:06}",
+            absolute = year.unsigned_abs()
+        )?;
+    }
+    write!(output, "-{month:02}-{day:02}")
+}
+
+fn write_datetime_tz_evidence(
+    output: &mut FallibleJsonWriter,
+    value: &CanonicalDateTimeTz,
+) -> fmt::Result {
+    // JavaScript Date does not accept IANA suffixes or second-precision UTC
+    // offsets. Preserve the exact instant by normalizing the already-resolved
+    // local value and effective offset to UTC before crossing the callback.
+    let local = value.local();
+    let (year, month, day) = local.date().components();
+    let (hour, minute, second, nanosecond) = local.time().components();
+    let local_seconds = i32::from(hour) * 3_600 + i32::from(minute) * 60 + i32::from(second);
+    let utc_seconds = local_seconds - value.effective_offset_seconds();
+    let day_delta = utc_seconds.div_euclid(86_400);
+    debug_assert!(matches!(day_delta, -1..=1));
+    let seconds = utc_seconds.rem_euclid(86_400);
+    let (year, month, day) = adjacent_date(year, month, day, day_delta);
+    write_javascript_date(output, year, month, day)?;
+    output.write_char('T')?;
+    write_canonical_time(
+        output,
+        (seconds / 3_600) as u8,
+        (seconds % 3_600 / 60) as u8,
+        (seconds % 60) as u8,
+        nanosecond,
+    )?;
+    output.write_char('Z')
+}
+
+fn write_canonical_duration(
+    output: &mut FallibleJsonWriter,
+    value: CanonicalDuration,
+) -> fmt::Result {
+    let (negative, months, days, seconds, nanosecond) = value.components();
+    if negative {
+        output.write_char('-')?;
+    }
+    output.write_char('P')?;
+    if months != 0 {
+        write!(output, "{months}M")?;
+    }
+    if days != 0 {
+        write!(output, "{days}D")?;
+    }
+    if seconds != 0 || nanosecond != 0 || (months == 0 && days == 0) {
+        write!(output, "T{seconds}")?;
+        write_fractional_nanoseconds(output, nanosecond)?;
+        output.write_char('S')?;
+    }
+    Ok(())
+}
+
+fn write_projected_scalar(output: &mut FallibleJsonWriter, value: &CanonicalValue) -> fmt::Result {
+    output.write_str("{\"valueType\":")?;
+    write_json_string(output, value.value_type().as_str())?;
+    output.write_str(",\"value\":")?;
+    match value {
+        CanonicalValue::String(value) => write_json_string(output, value.as_str())?,
+        CanonicalValue::Long(value) => {
+            output.write_char('"')?;
+            write!(output, "{value}")?;
+            output.write_char('"')?;
+        }
+        CanonicalValue::Double(value) => {
+            // Canonical doubles are finite. Rust's direct finite-f64 formatter
+            // uses the shortest round-trippable representation without an
+            // intermediate allocation or an io::Error payload.
+            write!(output, "{}", value.get())?;
+        }
+        CanonicalValue::Boolean(value) => {
+            output.write_str(if *value { "true" } else { "false" })?;
+        }
+        CanonicalValue::Date(value) => {
+            output.write_char('"')?;
+            let (year, month, day) = value.components();
+            write_javascript_date(output, year, month, day)?;
+            output.write_char('"')?;
+        }
+        CanonicalValue::DateTime(value) => {
+            output.write_char('"')?;
+            write_canonical_datetime(output, *value)?;
+            output.write_char('"')?;
+        }
+        CanonicalValue::DateTimeTz(value) => {
+            output.write_char('"')?;
+            write_datetime_tz_evidence(output, value)?;
+            output.write_char('"')?;
+        }
+        CanonicalValue::Decimal(value) => write_json_string(output, value.as_str())?,
+        CanonicalValue::Duration(value) => {
+            output.write_char('"')?;
+            write_canonical_duration(output, *value)?;
+            output.write_char('"')?;
+        }
+    }
+    output.write_char('}')
+}
+
+fn write_projected_attribute_wire(
+    output: &mut FallibleJsonWriter,
+    package: &InstalledPackage,
+    value: &ProjectedAttributeValue,
+) -> fmt::Result {
+    write_projected_wire_prefix(
+        output,
+        package,
+        value.attribute_type(),
+        ProjectedModelForm::Complete,
+        None,
+    )?;
+    output.write_str(",\"value\":")?;
+    write_projected_scalar(output, value.value())?;
+    output.write_str(",\"values\":{}}")
+}
+
+fn projected_cardinality_valid(multiplicity: ProjectedMultiplicity, count: usize) -> bool {
+    let Ok(count) = u64::try_from(count) else {
+        return false;
+    };
+    let cardinality = multiplicity.cardinality();
+    count >= cardinality.min() && cardinality.max().is_none_or(|maximum| count <= maximum)
+}
+
+fn write_projected_attribute_member(
+    output: &mut FallibleJsonWriter,
+    package: &InstalledPackage,
+    values: &[ProjectedAttributeValue],
+    multiplicity: ProjectedMultiplicity,
+) -> fmt::Result {
+    if !projected_cardinality_valid(multiplicity, values.len()) {
+        return Err(fmt::Error);
+    }
+    match multiplicity.container() {
+        ProjectedContainer::Scalar => match values {
+            [] => output.write_str("null"),
+            [value] => write_projected_attribute_wire(output, package, value),
+            _ => Err(fmt::Error),
+        },
+        ProjectedContainer::Sequence => {
+            output.write_char('[')?;
+            for (index, value) in values.iter().enumerate() {
+                if index != 0 {
+                    output.write_char(',')?;
+                }
+                write_projected_attribute_wire(output, package, value)?;
+            }
+            output.write_char(']')
+        }
+    }
+}
+
+fn write_projected_fields(
+    output: &mut FallibleJsonWriter,
+    package: &InstalledPackage,
+    id: &TypeId,
+    fields: &BTreeMap<OwnsFactId, Vec<ProjectedAttributeValue>>,
+    reference: bool,
+    first: &mut bool,
+) -> fmt::Result {
+    let model = package
+        .projection
+        .projection()
+        .models()
+        .get(id)
+        .ok_or(fmt::Error)?;
+    let selected_count = model
+        .complete_read()
+        .fields()
+        .iter()
+        .filter(|field| !reference || model.reference_read().key_fields().contains(field.token()))
+        .count();
+    if fields.len() != selected_count {
+        return Err(fmt::Error);
+    }
+    for read in
+        model.complete_read().fields().iter().filter(|field| {
+            !reference || model.reference_read().key_fields().contains(field.token())
+        })
+    {
+        let token = model
+            .query_tokens()
+            .fields()
+            .get(read.token())
+            .ok_or(fmt::Error)?;
+        let values = fields.get(read.token()).ok_or(fmt::Error)?;
+        if !*first {
+            output.write_char(',')?;
+        }
+        *first = false;
+        write_json_string(output, token.target_name().as_str())?;
+        output.write_char(':')?;
+        write_projected_attribute_member(output, package, values, read.multiplicity())?;
+    }
+    Ok(())
+}
+
+fn write_projected_reference_fields(
+    output: &mut FallibleJsonWriter,
+    package: &InstalledPackage,
+    reference: &ProjectedReference,
+    first: &mut bool,
+) -> fmt::Result {
+    let model = package
+        .projection
+        .projection()
+        .models()
+        .get(reference.type_id())
+        .ok_or(fmt::Error)?;
+    if reference.keys().len() != model.reference_read().key_fields().len() {
+        return Err(fmt::Error);
+    }
+    for field_id in model.reference_read().key_fields() {
+        let token = model
+            .query_tokens()
+            .fields()
+            .get(field_id)
+            .ok_or(fmt::Error)?;
+        let read = model
+            .complete_read()
+            .fields()
+            .iter()
+            .find(|field| field.token() == field_id)
+            .ok_or(fmt::Error)?;
+        let value = reference.keys().get(field_id).ok_or(fmt::Error)?;
+        if !*first {
+            output.write_char(',')?;
+        }
+        *first = false;
+        write_json_string(output, token.target_name().as_str())?;
+        output.write_char(':')?;
+        write_projected_attribute_member(
+            output,
+            package,
+            std::slice::from_ref(value),
+            read.multiplicity(),
+        )?;
+    }
+    Ok(())
+}
+
+fn write_projected_role_player_wire(
+    output: &mut FallibleJsonWriter,
+    package: &InstalledPackage,
+    player: &ProjectedRolePlayer,
+) -> fmt::Result {
+    let form = player.exact_form().ok_or(fmt::Error)?;
+    write_projected_wire_prefix(output, package, player.type_id(), form, Some(player.iid()))?;
+    output.write_str(",\"value\":null,\"values\":{")?;
+    let mut first = true;
+    match form {
+        ProjectedModelForm::Complete => write_projected_fields(
+            output,
+            package,
+            player.type_id(),
+            player.fields(),
+            false,
+            &mut first,
+        )?,
+        ProjectedModelForm::Reference => {
+            write_projected_reference_fields(output, package, player.reference(), &mut first)?;
+        }
+    }
+    output.write_str("}}")
+}
+
+fn write_projected_role_member(
+    output: &mut FallibleJsonWriter,
+    package: &InstalledPackage,
+    players: &[ProjectedRolePlayer],
+    multiplicity: ProjectedMultiplicity,
+) -> fmt::Result {
+    if !projected_cardinality_valid(multiplicity, players.len()) {
+        return Err(fmt::Error);
+    }
+    match multiplicity.container() {
+        ProjectedContainer::Scalar => match players {
+            [] => output.write_str("null"),
+            [player] => write_projected_role_player_wire(output, package, player),
+            _ => Err(fmt::Error),
+        },
+        ProjectedContainer::Sequence => {
+            output.write_char('[')?;
+            for (index, player) in players.iter().enumerate() {
+                if index != 0 {
+                    output.write_char(',')?;
+                }
+                write_projected_role_player_wire(output, package, player)?;
+            }
+            output.write_char(']')
+        }
+    }
+}
+
+fn write_projected_thing_json(
+    output: &mut FallibleJsonWriter,
+    package: &InstalledPackage,
+    thing: &ProjectedThing,
+) -> fmt::Result {
+    write_projected_wire_prefix(
+        output,
+        package,
+        thing.type_id(),
+        ProjectedModelForm::Complete,
+        Some(thing.iid()),
+    )?;
+    output.write_str(",\"value\":null,\"values\":{")?;
+    let mut first = true;
+    write_projected_fields(
+        output,
+        package,
+        thing.type_id(),
+        thing.fields(),
+        false,
+        &mut first,
+    )?;
+    let model = package
+        .projection
+        .projection()
+        .models()
+        .get(thing.type_id())
+        .ok_or(fmt::Error)?;
+    if thing.roles().len() != model.complete_read().roles().len() {
+        return Err(fmt::Error);
+    }
+    for (role_id, read) in model.complete_read().roles() {
+        let token = model
+            .query_tokens()
+            .roles()
+            .get(role_id)
+            .ok_or(fmt::Error)?;
+        let players = thing.roles().get(role_id).ok_or(fmt::Error)?;
+        if !first {
+            output.write_char(',')?;
+        }
+        first = false;
+        write_json_string(output, token.target_name().as_str())?;
+        output.write_char(':')?;
+        write_projected_role_member(output, package, players, read.multiplicity())?;
+    }
+    output.write_str("}}")
 }
 
 fn projected_thing_wire(
@@ -3302,6 +5443,10 @@ fn runtime_error(message: impl Into<String>) -> Error {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "contract-test-adapter")]
+    use crate::contract_test_adapter::{
+        ProjectionRecordingResponse, projection_recording_database_for_test,
+    };
     use type_bridge_contract::codec::to_canonical_json;
     use type_bridge_contract::fingerprint::SemanticProfileId;
     use type_bridge_contract::managed_scope::ManagedScopeId;
@@ -3309,6 +5454,8 @@ mod tests {
         CodeResourceDigest, ProjectionConfig, ProjectionHandler, RuntimeProjection,
     };
     use type_bridge_contract::schema::DocumentId;
+    use type_bridge_contract::temporal::TimeZoneDesignator;
+    use type_bridge_contract::value::{CanonicalDouble, CanonicalString};
     use type_bridge_schema::{
         ManagedDeltaContext, SchemaDocumentSet, VerifiedSchemaAuthority, build_schema_authority,
         encode_schema_authority, normalize_documents, project,
@@ -3487,12 +5634,14 @@ entities:
         let projection = typescript_projection(&authority);
         let registrations = registrations(&projection);
         let (projection, semantic, fingerprint) = evidence(&projection);
-        NodeRuntimeProjection::new(
+        NodeRuntimeProjection::install(
             projection,
             semantic,
             fingerprint,
             registrations,
             Some(authority_json),
+            None,
+            false,
         )
         .unwrap()
     }
@@ -3510,11 +5659,34 @@ entities:
             type_id,
             database: None,
             transaction: None,
+            successor_batch_marker: None,
             runtime: Arc::new(
                 ProviderRuntimeOwner::new().expect("provider runtime should start for native test"),
             ),
             filters: vec![],
         }
+    }
+
+    #[cfg(feature = "contract-test-adapter")]
+    fn one_row_insert_batch(
+        runtime: &NodeRuntimeProjection,
+        type_id: TypeId,
+        wire: ProjectedWire,
+    ) -> (ProjectedBatch, ProjectedBatchInvocationControl) {
+        let control = ProjectedBatchInvocationControl::capture(
+            QueryExecutionResourceLimits::default(),
+            AnswerCancellation::default(),
+        );
+        let create = project_create_wire(runtime.package.as_ref(), &type_id, &wire).unwrap();
+        let batch = ProjectedBatch::try_new_for_invocation(
+            runtime.package.projection.as_ref(),
+            type_id,
+            ProjectedBatchOperation::Insert,
+            vec![ProjectedBatchRow::Create(create)],
+            &control,
+        )
+        .unwrap();
+        (batch, control)
     }
 
     fn type_key(kind: TypeKind, label: &str) -> String {
@@ -3559,6 +5731,647 @@ entities:
             value: Value::String("2023-02-29".into()),
         };
         assert!(scalar_to_attribute(&bad_date, ValueType::Date).is_err());
+    }
+
+    #[test]
+    fn projected_batch_authority_publishes_only_finished_rows() {
+        let projection = Arc::clone(&ordered_runtime().package.projection);
+
+        let aborted = NodeProjectedBatchAuthority::pending(Arc::clone(&projection));
+        {
+            let _guard = PendingBatchAuthority::new(Arc::clone(&aborted));
+            assert!(!aborted.is_active());
+        }
+        assert_eq!(
+            aborted.state.load(Ordering::Acquire),
+            BATCH_AUTHORITY_ABORTED
+        );
+        assert!(!aborted.is_active());
+
+        let active = NodeProjectedBatchAuthority::pending(projection);
+        active.rows.set(Vec::new()).unwrap();
+        PendingBatchAuthority::new(Arc::clone(&active)).finish();
+        assert_eq!(active.state.load(Ordering::Acquire), BATCH_AUTHORITY_ACTIVE);
+        assert!(active.is_active());
+        active.abort();
+        assert!(active.is_active(), "an active authority cannot be revoked");
+    }
+
+    #[test]
+    fn projected_batch_role_selector_retains_only_fixed_size_indices() {
+        assert!(
+            std::mem::size_of::<NodeProjectedBatchProofSelector>()
+                <= 3 * std::mem::size_of::<u32>(),
+            "a batch proof selector must not retain caller-sized role text"
+        );
+        let selector = NodeProjectedBatchProofSelector::Role {
+            role_ordinal: 65_535,
+            player_index: 65_534,
+        };
+        assert!(matches!(
+            selector,
+            NodeProjectedBatchProofSelector::Role {
+                role_ordinal: 65_535,
+                player_index: 65_534,
+            }
+        ));
+    }
+
+    #[test]
+    fn projected_batch_role_index_handles_role_last_repeated_lookup() {
+        const ROLE_COUNT: u32 = 4_096;
+        let mut role_ids = Vec::with_capacity(ROLE_COUNT as usize);
+        let mut role_ordinals_by_target = BTreeMap::new();
+        for ordinal in 0..ROLE_COUNT {
+            let target = format!("role-{ordinal:04}");
+            role_ids.push(RoleId::new("membership", "member").unwrap());
+            role_ordinals_by_target.insert(target, ordinal);
+        }
+        let index = ProjectedRoleIndex {
+            role_ids,
+            role_ordinals_by_target,
+        };
+        let last_target = format!("role-{:04}", ROLE_COUNT - 1);
+        for _ in 0..MAX_CANONICAL_COLLECTION_LEN {
+            let ordinal = index.role_ordinal(&last_target).unwrap();
+            assert_eq!(ordinal, ROLE_COUNT - 1);
+            assert_eq!(index.role_id(ordinal).unwrap().label().as_str(), "member");
+        }
+    }
+
+    #[test]
+    fn projected_batch_ingress_reservation_failure_preserves_common_diagnostic() {
+        let shape = || {
+            batch_input_shape_diagnostic(
+                "generated_model_layout_mismatch",
+                "The generated batch row no longer has its installed runtime shape",
+                &projected_batch_row_path(0),
+            )
+        };
+        FAIL_PROJECTED_BATCH_INGRESS_RESERVATION.store(true, Ordering::Relaxed);
+        let string_diagnostic = match reserved_projected_binding_bytes(8) {
+            Ok(_) => panic!("the deterministic string reservation seam must fail"),
+            Err(diagnostic) => diagnostic,
+        };
+        FAIL_PROJECTED_BATCH_INGRESS_RESERVATION.store(true, Ordering::Relaxed);
+        let proof_diagnostic = match reserved_projected_proof_slots(8) {
+            Ok(_) => panic!("the deterministic proof reservation seam must fail"),
+            Err(diagnostic) => diagnostic,
+        };
+        for diagnostic in [string_diagnostic, proof_diagnostic] {
+            let error = raw_projected_binding_or_shape(
+                RawProjectedBindingError::Diagnostic(diagnostic),
+                shape,
+            );
+            let rendered: Value = serde_json::from_str(&error.reason).unwrap();
+            assert_eq!(rendered["code"], "projected_batch_allocation_exhausted");
+        }
+    }
+
+    #[test]
+    fn projected_batch_role_selector_rejects_wrong_role_and_player_indices() {
+        let runtime = ordered_runtime();
+        let package = runtime.package.as_ref();
+        let link_id = TypeId::new(TypeKind::Relation, "activity-link").unwrap();
+        let player_id = TypeId::new(TypeKind::Relation, "plain-activity").unwrap();
+        let link_model = package
+            .projection
+            .projection()
+            .models()
+            .get(&link_id)
+            .unwrap();
+        let (role_id, read_role) = link_model.complete_read().roles().iter().next().unwrap();
+        let reference = ProjectedReference::try_new_for_hydration(
+            package.projection.as_ref(),
+            player_id,
+            Some("0xd1".into()),
+            Vec::new(),
+        )
+        .unwrap();
+        let player = ProjectedRolePlayer::try_new_reference_for_hydration(
+            package.projection.as_ref(),
+            read_role,
+            reference,
+        )
+        .unwrap();
+        let relation = ProjectedThing::try_new(
+            package.projection.as_ref(),
+            link_id,
+            "0xe1".into(),
+            Vec::new(),
+            vec![(role_id.clone(), vec![player])],
+        )
+        .unwrap();
+        let expected = relation.roles()[role_id][0].reference().clone();
+        let authority = NodeProjectedBatchAuthority::pending(Arc::clone(&package.projection));
+        authority.rows.set(vec![relation]).unwrap();
+        PendingBatchAuthority::new(Arc::clone(&authority)).finish();
+
+        let proof = |role_ordinal, player_index| {
+            NodeProjectedInputProof::Batch(NodeProjectedBatchProof {
+                authority: Arc::clone(&authority),
+                row: 0,
+                selector: NodeProjectedBatchProofSelector::Role {
+                    role_ordinal,
+                    player_index,
+                },
+            })
+        };
+        assert_eq!(proof(0, 0).reference(package).unwrap(), expected);
+        for rejected in [proof(1, 0), proof(0, 1)] {
+            assert_eq!(
+                rejected.reference(package).unwrap_err().code().as_str(),
+                "malformed_projected_create"
+            );
+        }
+    }
+
+    #[test]
+    fn projected_batch_shape_diagnostics_retain_exact_row_paths() {
+        let row = batch_input_shape_diagnostic(
+            "generated_model_layout_mismatch",
+            "The generated batch row no longer has its installed runtime shape",
+            &projected_batch_row_path(2),
+        );
+        assert_eq!(row.code().as_str(), "generated_model_layout_mismatch");
+        assert!(matches!(
+            row.path(),
+            [SdkDiagnosticPathSegment::Argument(argument), SdkDiagnosticPathSegment::Index(2)]
+                if argument.as_str() == "rows"
+        ));
+
+        let iid = batch_input_shape_diagnostic(
+            "batch_iid_type_mismatch",
+            "Successor update rows require exact string IIDs",
+            &projected_batch_iid_path(1),
+        );
+        assert_eq!(iid.code().as_str(), "batch_iid_type_mismatch");
+        assert!(matches!(
+            iid.path(),
+            [
+                SdkDiagnosticPathSegment::Argument(rows),
+                SdkDiagnosticPathSegment::Index(1),
+                SdkDiagnosticPathSegment::Argument(iid),
+            ] if rows.as_str() == "rows" && iid.as_str() == "iid"
+        ));
+    }
+
+    #[cfg(feature = "contract-test-adapter")]
+    #[test]
+    fn node_batch_routes_preserve_provider_and_hydration_atomicity() {
+        use type_bridge_orm::TxType;
+        use type_bridge_orm::session::backend::QueryResult;
+
+        let runtime_projection = ordered_runtime();
+        let cases = [
+            (
+                TypeId::new(TypeKind::Entity, "group").unwrap(),
+                ProjectedWire {
+                    type_key: type_key(TypeKind::Entity, "group"),
+                    form: WireForm::Complete,
+                    iid: None,
+                    value: None,
+                    values: BTreeMap::from([("tag".into(), Value::Array(Vec::new()))]),
+                },
+                "group",
+                "0xa1",
+                serde_json::json!({
+                    "ordinal": 0,
+                    "_iid": "0xa1",
+                    "_type": "person",
+                    "attributes": {"tag": []},
+                }),
+            ),
+            (
+                TypeId::new(TypeKind::Relation, "activity-link").unwrap(),
+                ProjectedWire {
+                    type_key: type_key(TypeKind::Relation, "activity-link"),
+                    form: WireForm::Complete,
+                    iid: None,
+                    value: None,
+                    values: BTreeMap::from([(
+                        "subject".into(),
+                        Value::Array(vec![
+                            serde_json::to_value(ProjectedWire {
+                                type_key: type_key(TypeKind::Relation, "plain-activity"),
+                                form: WireForm::Reference,
+                                iid: Some("0xd1".into()),
+                                value: None,
+                                values: BTreeMap::new(),
+                            })
+                            .unwrap(),
+                        ]),
+                    )]),
+                },
+                "activity-link",
+                "0xe1",
+                serde_json::json!({
+                    "ordinal": 0,
+                    "_iid": "0xe1",
+                    "_type": "plain-activity",
+                    "attributes": {},
+                    "role_players": [],
+                }),
+            ),
+        ];
+
+        for (type_id, wire, provider_label, iid, malformed_hydration) in cases {
+            for borrowed in [false, true] {
+                for hydration_failure in [false, true] {
+                    let relation = type_id.kind() == TypeKind::Relation;
+                    let mut responses = Vec::new();
+                    if relation {
+                        responses.push(ProjectionRecordingResponse::Query(QueryResult::Documents(
+                            vec![serde_json::json!({
+                                "kind": 1,
+                                "ordinal": 0,
+                                "reference_ordinal": 0,
+                                "iid": "0xd1",
+                                "type": "plain-activity",
+                            })],
+                        )));
+                    }
+                    if hydration_failure {
+                        responses.extend([
+                            ProjectionRecordingResponse::Query(QueryResult::Documents(vec![
+                                serde_json::json!({"ordinal": 0, "iid": iid}),
+                            ])),
+                            ProjectionRecordingResponse::Query(QueryResult::Documents(vec![
+                                malformed_hydration.clone(),
+                            ])),
+                        ]);
+                    } else {
+                        responses.push(ProjectionRecordingResponse::Failure {
+                            provider_failure: true,
+                        });
+                    }
+                    let (database, state) = projection_recording_database_for_test(responses);
+                    let provider_runtime = Arc::new(
+                        ProviderRuntimeOwner::new()
+                            .expect("provider runtime should start for Node route test"),
+                    );
+                    let transaction = borrowed.then(|| {
+                        provider_runtime
+                            .block_on(database.transaction_context(TxType::Write))
+                            .unwrap()
+                    });
+                    let marker = borrowed.then(|| Arc::new(AtomicBool::new(false)));
+                    let manager = NodeProjectedModelManager {
+                        package: Arc::clone(&runtime_projection.package),
+                        type_id: type_id.clone(),
+                        database: (!borrowed).then(|| Arc::clone(&database)),
+                        transaction: transaction.clone(),
+                        successor_batch_marker: marker.clone(),
+                        runtime: Arc::clone(&provider_runtime),
+                        filters: Vec::new(),
+                    };
+                    let (batch, control) =
+                        one_row_insert_batch(&runtime_projection, type_id.clone(), wire.clone());
+                    let diagnostic = manager
+                        .execute_projected_batch(&batch, control, (), |_| -> Result<_, _> {
+                            panic!("provider/hydration failure unexpectedly reached the mapper")
+                        })
+                        .unwrap_err();
+                    if hydration_failure {
+                        assert_eq!(diagnostic.category(), SdkDiagnosticCategory::Integrity);
+                        assert_eq!(diagnostic.code().as_str(), "hydrated_type_mismatch");
+                    } else {
+                        assert_eq!(diagnostic.category(), SdkDiagnosticCategory::Provider);
+                    }
+
+                    let state = state.lock().unwrap();
+                    assert_eq!(state.opens, ["write"]);
+                    assert_eq!(
+                        state.queries.len(),
+                        1 + usize::from(relation) + usize::from(hydration_failure)
+                    );
+                    assert!(
+                        state
+                            .queries
+                            .iter()
+                            .any(|query| query.contains(provider_label))
+                    );
+                    assert_eq!(state.given_rows.len(), state.queries.len());
+                    assert_eq!(state.commits, 0);
+                    if borrowed {
+                        assert_eq!(state.rollbacks, 0);
+                        assert_eq!(state.closes, 0);
+                    } else {
+                        assert_eq!(state.rollbacks, 1);
+                        assert_eq!(state.closes, 0);
+                    }
+                    drop(state);
+
+                    if let (Some(transaction), Some(marker)) = (transaction, marker) {
+                        assert!(marker.load(Ordering::Acquire));
+                        assert_eq!(
+                            provider_runtime.block_on(transaction.lifecycle_state()),
+                            TransactionContextState::RollbackOnly
+                        );
+                        let transaction = crate::NodeRustTransactionContext {
+                            context: transaction,
+                            runtime: Arc::clone(&provider_runtime),
+                            successor_batch_invoked: marker,
+                        };
+                        let commit = transaction.commit().unwrap_err();
+                        let diagnostic: Value = serde_json::from_str(&commit.reason).unwrap();
+                        assert_eq!(diagnostic["code"], "transaction_rollback_only");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn projected_batch_mapper_and_writer_keep_the_lease_safe_source_fence() {
+        let source = include_str!("runtime_projection.rs");
+        let activation = source
+            .split_once("fn finish(mut self) {")
+            .unwrap()
+            .1
+            .split_once("impl Drop for PendingBatchAuthority")
+            .unwrap()
+            .0;
+        assert!(activation.contains(".store(BATCH_AUTHORITY_ACTIVE, Ordering::Release)"));
+        for forbidden in ["debug_assert", "compare_exchange", "Err(", "?"] {
+            assert!(
+                !activation.contains(forbidden),
+                "post-common activation crossed the infallible source fence: {forbidden}"
+            );
+        }
+
+        let exception_bridge = source
+            .split_once("fn napi_status_preserving_exception(")
+            .unwrap()
+            .1
+            .split_once("fn raw_typeof(")
+            .unwrap()
+            .0;
+        assert!(exception_bridge.contains("Error::from_unknown_without_coercion(value)"));
+        assert!(!exception_bridge.contains("Error::from(value)"));
+
+        let proof_parser = source
+            .split_once("fn raw_projected_input_proofs(")
+            .unwrap()
+            .1
+            .split_once("const MAX_PROJECTED_BINDING_JSON_BYTES")
+            .unwrap()
+            .0;
+        assert!(proof_parser.contains("let scope = RawHandleScope::open(env)?;"));
+        assert!(proof_parser.contains("scope.close()?;\n        proofs.push(proof);"));
+        assert!(proof_parser.contains(".checkpoint()"));
+
+        let proof_descriptor = source
+            .split_once("fn raw_projected_input_proof(")
+            .unwrap()
+            .1
+            .split_once("fn reserved_projected_proof_slots(")
+            .unwrap()
+            .0;
+        assert!(proof_descriptor.contains(".role_ordinal(&role_name)"));
+        assert!(proof_descriptor.contains(".role_id(role_ordinal)"));
+        assert!(!proof_descriptor.contains(".enumerate()"));
+        assert!(!proof_descriptor.contains(".find("));
+
+        let proof_restore = source
+            .split_once("impl NodeProjectedInputProof {")
+            .unwrap()
+            .1
+            .split_once("pub struct NodeProjectedValueEnvelope")
+            .unwrap()
+            .0;
+        assert!(proof_restore.contains("cache.roles.role_id(*role_ordinal)"));
+        assert!(!proof_restore.contains(".nth("));
+
+        let mapper = source
+            .split_once("struct PreparedProjectedBatchOutput {")
+            .unwrap()
+            .1
+            .split_once("#[derive(Clone)]\nenum FacadeProjectionProof")
+            .unwrap()
+            .0;
+        for forbidden in [
+            "Function::call",
+            "External::new",
+            "ThreadsafeFunction",
+            "serde_json::to_",
+            "projected_thing_wire(",
+            ".validate_for(",
+        ] {
+            assert!(
+                !mapper.contains(forbidden),
+                "batch mapper crossed the forbidden source fence: {forbidden}"
+            );
+        }
+        assert!(mapper.contains("sys::napi_call_function"));
+        assert!(mapper.contains("sys::napi_get_and_clear_last_exception"));
+
+        let writer = source
+            .split_once("fn write_json_string(")
+            .unwrap()
+            .1
+            .split_once("fn projected_thing_wire(")
+            .unwrap()
+            .0;
+        for forbidden in [
+            "serde_json::",
+            ".validate_for(",
+            "format!(",
+            ".to_owned()",
+            "collect::<Vec",
+        ] {
+            assert!(
+                !writer.contains(forbidden),
+                "batch writer crossed the forbidden source fence: {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn projected_batch_row_reservation_failure_uses_the_common_diagnostic() {
+        FAIL_PROJECTED_BATCH_ROW_RESERVATION.store(true, Ordering::Relaxed);
+        let diagnostic = reserved_projected_batch_rows::<ProjectedBatchRow>(3).unwrap_err();
+        assert_eq!(
+            diagnostic.code().as_str(),
+            "projected_batch_allocation_exhausted"
+        );
+        assert!(matches!(
+            diagnostic.path(),
+            [SdkDiagnosticPathSegment::Argument(name)] if name.as_str() == "rows"
+        ));
+    }
+
+    #[test]
+    fn fallible_projected_scalar_writer_covers_js_temporal_and_all_scalar_domains() {
+        let datetime: CanonicalDateTime = "2026-10-25T01:30:00.123456789".parse().unwrap();
+        let named =
+            CanonicalDateTimeTz::new_named_resolved(datetime, "Europe/London", 3_600).unwrap();
+        let second_offset =
+            CanonicalDateTimeTz::new_fixed(datetime, TimeZoneDesignator::OffsetSeconds(3_661))
+                .unwrap();
+        let values = [
+            (
+                CanonicalValue::String(CanonicalString::new("line\nvalue").unwrap()),
+                serde_json::json!({"valueType":"string","value":"line\nvalue"}),
+            ),
+            (
+                CanonicalValue::Long(9_007_199_254_740_993),
+                serde_json::json!({"valueType":"long","value":"9007199254740993"}),
+            ),
+            (
+                CanonicalValue::Double(CanonicalDouble::new(1.5).unwrap()),
+                serde_json::json!({"valueType":"double","value":1.5}),
+            ),
+            (
+                CanonicalValue::Boolean(true),
+                serde_json::json!({"valueType":"boolean","value":true}),
+            ),
+            (
+                CanonicalValue::Date("+10000-01-02".parse().unwrap()),
+                serde_json::json!({"valueType":"date","value":"+010000-01-02"}),
+            ),
+            (
+                CanonicalValue::DateTime("-9999-01-02T03:04:05.12".parse().unwrap()),
+                serde_json::json!({"valueType":"datetime","value":"-009999-01-02T03:04:05.12"}),
+            ),
+            (
+                CanonicalValue::DateTimeTz(named),
+                serde_json::json!({"valueType":"datetime_tz","value":"2026-10-25T00:30:00.123456789Z"}),
+            ),
+            (
+                CanonicalValue::DateTimeTz(second_offset),
+                serde_json::json!({"valueType":"datetime_tz","value":"2026-10-25T00:28:59.123456789Z"}),
+            ),
+            (
+                CanonicalValue::Decimal(DecimalValue::new("123.450").unwrap()),
+                serde_json::json!({"valueType":"decimal","value":"123.45"}),
+            ),
+            (
+                CanonicalValue::Duration("-P2M3DT4.12S".parse().unwrap()),
+                serde_json::json!({"valueType":"duration","value":"-P2M3DT4.12S"}),
+            ),
+        ];
+        for (value, expected) in values {
+            let mut output = FallibleJsonWriter::default();
+            write_projected_scalar(&mut output, &value).unwrap();
+            let actual: Value = serde_json::from_slice(output.as_bytes()).unwrap();
+            assert_eq!(actual, expected, "failed scalar domain {value:?}");
+        }
+    }
+
+    #[test]
+    fn projected_batch_writer_matches_existing_entity_and_nested_role_wires() {
+        let runtime = ordered_runtime();
+        let package = runtime.package.as_ref();
+        let person_id = TypeId::new(TypeKind::Entity, "person").unwrap();
+        let identifier = attribute_wire(
+            "identifier",
+            ValueTypeTag::String,
+            Value::String("person-1".into()),
+        );
+        let score = attribute_wire("score", ValueTypeTag::Long, Value::String("3".into()));
+        let tag_a = attribute_wire("tag", ValueTypeTag::String, Value::String("alpha".into()));
+        let tag_b = attribute_wire("tag", ValueTypeTag::String, Value::String("beta".into()));
+        let person = project_thing_wire(
+            package,
+            &person_id,
+            &ProjectedWire {
+                type_key: canonical_type_key(&person_id).unwrap(),
+                form: WireForm::Complete,
+                iid: Some("0xa1".into()),
+                value: None,
+                values: BTreeMap::from([
+                    (
+                        "identifier".into(),
+                        serde_json::to_value(identifier).unwrap(),
+                    ),
+                    ("score".into(), serde_json::to_value(score).unwrap()),
+                    ("tag".into(), serde_json::to_value([tag_a, tag_b]).unwrap()),
+                ]),
+            },
+        )
+        .unwrap();
+
+        let link_id = TypeId::new(TypeKind::Relation, "activity-link").unwrap();
+        let player_id = TypeId::new(TypeKind::Relation, "plain-activity").unwrap();
+        let link_model = package
+            .projection
+            .projection()
+            .models()
+            .get(&link_id)
+            .unwrap();
+        let (role_id, read_role) = link_model.complete_read().roles().iter().next().unwrap();
+        assert!(read_role.players().iter().any(|player| {
+            player.id() == &player_id && player.form() == ProjectedModelForm::Reference
+        }));
+        let reference = ProjectedReference::try_new_for_hydration(
+            package.projection.as_ref(),
+            player_id,
+            Some("0xd1".into()),
+            Vec::new(),
+        )
+        .unwrap();
+        let player = ProjectedRolePlayer::try_new_reference_for_hydration(
+            package.projection.as_ref(),
+            read_role,
+            reference,
+        )
+        .unwrap();
+        let relation = ProjectedThing::try_new(
+            package.projection.as_ref(),
+            link_id,
+            "0xe1".into(),
+            Vec::new(),
+            vec![(role_id.clone(), vec![player])],
+        )
+        .unwrap();
+
+        let membership_id = TypeId::new(TypeKind::Relation, "membership").unwrap();
+        let membership_model = package
+            .projection
+            .projection()
+            .models()
+            .get(&membership_id)
+            .unwrap();
+        let (member_role_id, member_read_role) = membership_model
+            .complete_read()
+            .roles()
+            .iter()
+            .next()
+            .unwrap();
+        assert!(member_read_role.players().iter().any(|player| {
+            player.id() == &person_id && player.form() == ProjectedModelForm::Complete
+        }));
+        let complete_player = ProjectedRolePlayer::try_new_complete_for_hydration(
+            package.projection.as_ref(),
+            member_read_role,
+            person
+                .try_to_reference(package.projection.as_ref())
+                .unwrap(),
+            person
+                .fields()
+                .iter()
+                .map(|(field, values)| (field.clone(), values.clone()))
+                .collect(),
+        )
+        .unwrap();
+        let membership = ProjectedThing::try_new(
+            package.projection.as_ref(),
+            membership_id,
+            "0xf1".into(),
+            Vec::new(),
+            vec![(member_role_id.clone(), vec![complete_player])],
+        )
+        .unwrap();
+
+        for thing in [&person, &relation, &membership] {
+            let existing =
+                serde_json::to_value(projected_thing_wire(package, thing).unwrap()).unwrap();
+            let mut output = FallibleJsonWriter::default();
+            write_projected_thing_json(&mut output, package, thing).unwrap();
+            let streamed: Value = serde_json::from_slice(output.as_bytes()).unwrap();
+            assert_eq!(streamed, existing);
+        }
     }
 
     #[test]
@@ -4225,6 +7038,7 @@ entities:
             legacy_fingerprint.clone(),
             registrations(&legacy),
             None,
+            None,
         )
         .expect("exact legacy unordered evidence must remain authorityless");
 
@@ -4233,6 +7047,7 @@ entities:
             legacy_semantic,
             legacy_fingerprint,
             "[]".into(),
+            None,
             None,
         )
         .err()
@@ -4257,7 +7072,7 @@ entities:
         .unwrap();
         let (projection, semantic, fingerprint) = evidence(&forged);
         let forged =
-            NodeRuntimeProjection::new(projection, semantic, fingerprint, "[]".into(), None)
+            NodeRuntimeProjection::new(projection, semantic, fingerprint, "[]".into(), None, None)
                 .err()
                 .expect("forged legacy resource evidence must fail");
         assert_eq!(
@@ -4269,7 +7084,7 @@ entities:
         let ordered = typescript_projection(&ordered_authority);
         let (projection, semantic, fingerprint) = evidence(&ordered);
         let missing_authority =
-            NodeRuntimeProjection::new(projection, semantic, fingerprint, "[]".into(), None)
+            NodeRuntimeProjection::new(projection, semantic, fingerprint, "[]".into(), None, None)
                 .err()
                 .expect("authorityless ordered projection evidence must fail");
         assert_projection_evidence_mismatch(missing_authority);
@@ -4288,12 +7103,37 @@ entities:
         .unwrap();
         let (projection, semantic, fingerprint) = evidence(&projection);
         let error =
-            NodeRuntimeProjection::new(projection, semantic, fingerprint, "[]".into(), None)
+            NodeRuntimeProjection::new(projection, semantic, fingerprint, "[]".into(), None, None)
                 .err()
                 .expect("a Python projection must not install as TypeScript");
         assert_eq!(
             error.reason,
             "runtime projection does not target TypeScript"
+        );
+    }
+
+    #[test]
+    fn public_successor_install_requires_one_materializer() {
+        let authority = authority(ORDERED_SCHEMA, "node-successor-materializer.yaml");
+        let authority_json = String::from_utf8(encode_schema_authority(&authority)).unwrap();
+        let projection = typescript_projection(&authority);
+        let registrations = registrations(&projection);
+        let (projection, semantic, fingerprint) = evidence(&projection);
+
+        let error = match NodeRuntimeProjection::new(
+            projection,
+            semantic,
+            fingerprint,
+            registrations,
+            Some(authority_json),
+            None,
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("successor install without a materializer unexpectedly succeeded"),
+        };
+        assert_eq!(
+            error.reason,
+            "ordered successor projection requires exactly one generated batch materializer"
         );
     }
 
@@ -4310,12 +7150,14 @@ entities:
         );
 
         let (exact_json, exact_semantic, exact_fingerprint) = evidence(&exact);
-        NodeRuntimeProjection::new(
+        NodeRuntimeProjection::install(
             exact_json.clone(),
             exact_semantic.clone(),
             exact_fingerprint.clone(),
             registrations(&exact),
             Some(authority_json.clone()),
+            None,
+            false,
         )
         .expect("the exact ordered TypeScript package evidence must install");
 
@@ -4329,6 +7171,7 @@ entities:
                 fingerprint,
                 "[]".into(),
                 authority_json.map(str::to_owned),
+                None,
             )
             .err()
             .expect("hostile ordered projection evidence must fail")

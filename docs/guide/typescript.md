@@ -81,6 +81,30 @@ Generated entity and relation managers expose `insert`, `insertMany`, `put`,
 `putMany`, immutable replacement `update`, `delete`, `getByIid`, `filter`,
 `all`, `first`, `count`, and `exists`.
 
+Packages whose schema uses ordered collections select the successor manager and
+also expose atomic `updateMany` and `deleteMany`. Updates are readonly
+`[iid, replacement]` tuples; deletes accept canonical IID strings. Insert, put,
+and update batches return frozen values in input order, while delete returns no
+affected-row count:
+
+```ts
+if (stored.iid !== null) {
+  const replacements = [
+    [stored.iid, Person.create({
+      personId: PersonId.create("ada"),
+      age: Age.create(38n),
+    })],
+  ] as const;
+
+  const updated = manager.updateMany(replacements);
+  manager.deleteMany(replacements.map(([iid]) => iid));
+}
+```
+
+Legacy unordered packages retain their existing manager surface and runtime
+resource exactly; regenerate from an ordered schema to use the successor batch
+methods.
+
 Filter keys use generated TypeScript field names plus optional `__eq`, `__ne`,
 `__gt`, `__gte`, `__lt`, or `__lte` suffixes. Use a trailing `__eq` when a
 generated field name itself collides with a lookup suffix.

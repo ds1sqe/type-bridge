@@ -282,10 +282,21 @@ fn ordered_projection_selects_successor_evidence_and_descriptors_in_all_bindings
         std::str::from_utf8(typescript_package.get("src/runtime.ts").unwrap()).unwrap();
     assert!(typescript_models.contains("\"collection_mode\":\"ordered_list\""));
     assert!(typescript_models.contains("defineOrderedModel as defineModel"));
+    assert!(typescript_models.contains("type OrderedModelToken as ModelToken"));
     assert!(typescript_models.contains("\"kind\":\"distinct\""));
     assert!(typescript_models.contains("readonly (Tag)[]"));
     assert!(typescript_runtime.contains("readonly collection_mode?: \"ordered_list\""));
-    assert!(typescript_runtime.contains("TYPE_BRIDGE_ORDERED_COLLECTION_RESOURCE_VERSION = 3"));
+    assert!(typescript_runtime.contains("TYPE_BRIDGE_ORDERED_COLLECTION_RESOURCE_VERSION = 4"));
+    assert!(typescript_runtime.contains("export type ProjectedBatchUpdate<Complete>"));
+    assert!(typescript_runtime.contains("export interface OrderedProjectedModelManager<Complete>"));
+    assert!(typescript_runtime.contains("export type OrderedModelToken<"));
+    assert!(typescript_runtime.contains("native.insertManyProjected<Complete>"));
+    assert!(typescript_runtime.contains("native.putManyProjected<Complete>"));
+    assert!(typescript_runtime.contains("native.updateManyProjected<Complete>"));
+    assert!(typescript_runtime.contains("native.deleteManyProjected("));
+    assert!(
+        typescript_runtime.contains("projectedBatchMaterializer: materializeOrderedProjectedBatch")
+    );
     assert!(typescript_runtime.contains("descriptors[HYDRATE_COMPLETE_BRAND]"));
     assert!(typescript_runtime.contains("requireProjection().validateThingJson("));
     let typescript_index =
@@ -564,6 +575,92 @@ fn ordered_generated_packages_pass_all_four_language_compilers() {
 }
 
 #[test]
+fn ordered_typescript_runtime_names_are_reserved_only_for_successor_packages() {
+    let emitter = TypeScriptEmitter::new();
+    for (label, target_name) in [
+        ("ordered-model-token", "OrderedModelToken"),
+        (
+            "ordered-projected-model-manager",
+            "OrderedProjectedModelManager",
+        ),
+        ("projected-batch-update", "ProjectedBatchUpdate"),
+    ] {
+        let ordered_source = ORDERED_SOURCE.replace("  person:", &format!("  {label}:"));
+        let (ordered_schema, ordered_authority) = resolved(&ordered_source);
+        let ordered_projection = projection(
+            &ordered_schema,
+            BindingTarget::TypeScript,
+            &ProjectionConfig::typescript(),
+            &emitter.generator_handlers_for(&ordered_schema),
+            &emitter.code_resources_for(&ordered_schema).unwrap(),
+        );
+        let error = emitter
+            .emit(&ordered_projection, &ordered_authority)
+            .unwrap_err();
+        assert_eq!(error.code().as_str(), "typescript_emitter_name_collision");
+        assert!(error.to_string().contains(target_name));
+
+        let unordered_source = UNORDERED_SOURCE.replace("  person:", &format!("  {label}:"));
+        let (unordered_schema, unordered_authority) = resolved(&unordered_source);
+        let unordered_projection = projection(
+            &unordered_schema,
+            BindingTarget::TypeScript,
+            &ProjectionConfig::typescript(),
+            &emitter.generator_handlers_for(&unordered_schema),
+            &emitter.code_resources_for(&unordered_schema).unwrap(),
+        );
+        let package = emitter
+            .emit(&unordered_projection, &unordered_authority)
+            .unwrap();
+        let models = std::str::from_utf8(package.get("src/models.ts").unwrap()).unwrap();
+        assert!(models.contains(&format!("export interface {target_name}")));
+    }
+
+    const COLLIDING_FUNCTION: &str = r#"
+functions:
+  define-ordered-model:
+    parameters:
+      - { name: person, type: person }
+    returns: { scalar: string }
+    body:
+      typeql: |-
+        match
+          $person has tag $tag-attribute;
+          let $tag = $tag-attribute;
+        return first $tag;
+"#;
+    let ordered_source = format!("{ORDERED_SOURCE}{COLLIDING_FUNCTION}");
+    let (ordered_schema, ordered_authority) = resolved(&ordered_source);
+    let ordered_projection = projection(
+        &ordered_schema,
+        BindingTarget::TypeScript,
+        &ProjectionConfig::typescript(),
+        &emitter.generator_handlers_for(&ordered_schema),
+        &emitter.code_resources_for(&ordered_schema).unwrap(),
+    );
+    let error = emitter
+        .emit(&ordered_projection, &ordered_authority)
+        .unwrap_err();
+    assert_eq!(error.code().as_str(), "typescript_emitter_name_collision");
+    assert!(error.to_string().contains("defineOrderedModel"));
+
+    let unordered_source = format!("{UNORDERED_SOURCE}{COLLIDING_FUNCTION}");
+    let (unordered_schema, unordered_authority) = resolved(&unordered_source);
+    let unordered_projection = projection(
+        &unordered_schema,
+        BindingTarget::TypeScript,
+        &ProjectionConfig::typescript(),
+        &emitter.generator_handlers_for(&unordered_schema),
+        &emitter.code_resources_for(&unordered_schema).unwrap(),
+    );
+    let package = emitter
+        .emit(&unordered_projection, &unordered_authority)
+        .unwrap();
+    let functions = std::str::from_utf8(package.get("src/functions.ts").unwrap()).unwrap();
+    assert!(functions.contains("export function defineOrderedModel"));
+}
+
+#[test]
 fn unordered_schema_aware_evidence_and_fixed_resources_remain_exactly_legacy() {
     let (schema, authority) = resolved(UNORDERED_SOURCE);
 
@@ -621,6 +718,18 @@ fn unordered_schema_aware_evidence_and_fixed_resources_remain_exactly_legacy() {
         std::str::from_utf8(typescript_package.get("src/models.ts").unwrap()).unwrap();
     assert!(typescript_models.contains("\n  defineModel,\n"));
     assert!(!typescript_models.contains("defineOrderedModel"));
+    assert!(typescript_models.contains("\n  type ModelToken,\n"));
+    assert!(!typescript_models.contains("OrderedModelToken"));
+    let typescript_runtime =
+        std::str::from_utf8(typescript_package.get("src/runtime.ts").unwrap()).unwrap();
+    assert!(!typescript_runtime.contains("ProjectedBatchUpdate"));
+    assert!(!typescript_runtime.contains("OrderedProjectedModelManager"));
+    assert!(!typescript_runtime.contains("OrderedModelToken"));
+    assert!(!typescript_runtime.contains("insertManyProjected"));
+    assert!(!typescript_runtime.contains("putManyProjected"));
+    assert!(!typescript_runtime.contains("updateManyProjected"));
+    assert!(!typescript_runtime.contains("deleteManyProjected"));
+    assert!(!typescript_runtime.contains("projectedBatchMaterializer"));
     let typescript_index =
         std::str::from_utf8(typescript_package.get("src/index.ts").unwrap()).unwrap();
     assert!(typescript_index.contains("__installRuntimeProjectionPackage("));
@@ -681,6 +790,9 @@ attributes:
     value:
       type: string
       regex: "^[a-z]+$"
+  occurred-on: { value: date }
+  observed-at: { value: datetime }
+  reported-at: { value: datetime-tz }
 entities:
   record:
     owns:
@@ -700,6 +812,11 @@ entities:
     sub: actor
   group:
     sub: actor
+  temporal-record:
+    owns:
+      occurred-on: { key: true }
+      observed-at: { card: 1 }
+      reported-at: { card: 1 }
 relations:
   membership-base:
     abstract: true
@@ -716,7 +833,16 @@ relations:
         card: { min: 0, max: 4 }
         ordered: true
         distinct: true
+  temporal-link:
+    relates:
+      subject: { card: 1 }
+  record-link:
+    relates:
+      subject: { card: 1 }
 plays:
+  record:
+    record-link:
+      subject: { card: { min: 0, max: 1 } }
   person:
     membership-base:
       participant: { card: { min: 0, max: 4 } }
@@ -726,6 +852,9 @@ plays:
   membership:
     activity-link:
       subject: { card: { min: 0, max: 4 } }
+  temporal-record:
+    temporal-link:
+      subject: { card: { min: 0, max: 1 } }
 "#;
 
     let (schema, authority) = resolved(SOURCE);
@@ -758,6 +887,74 @@ plays:
     for root in [&generated, &foreign] {
         let runtime_path = root.join("src/runtime.ts");
         let mut runtime_source = fs::read_to_string(&runtime_path).unwrap();
+        let materializer_declaration = "const materializeOrderedProjectedBatch: NonNullable<";
+        assert_eq!(runtime_source.matches(materializer_declaration).count(), 1);
+        runtime_source = runtime_source.replacen(
+            materializer_declaration,
+            "const __testOrderedBatchMaterializeBase: NonNullable<",
+            1,
+        );
+        let install_anchor =
+            "/** @internal Install authority-backed evidence for an ordered generated package. */";
+        assert_eq!(runtime_source.matches(install_anchor).count(), 1);
+        runtime_source = runtime_source.replacen(
+            install_anchor,
+            r#"
+let __testOrderedBatchFault = "none";
+let __testOrderedBatchFaultOrdinal = -1;
+let __testOrderedBatchInterceptor:
+  | ((ordinal: number, value: object) => void)
+  | null = null;
+const __testOrderedBatchCaptured: object[] = [];
+const materializeOrderedProjectedBatch: typeof __testOrderedBatchMaterializeBase = (
+  typeKey,
+  ordinal,
+  json,
+  authority,
+): any => {
+  const value = __testOrderedBatchMaterializeBase(
+    typeKey,
+    ordinal,
+    json,
+    authority,
+  );
+  __testOrderedBatchCaptured.push(value);
+  __testOrderedBatchInterceptor?.(ordinal, value);
+  if (ordinal === __testOrderedBatchFaultOrdinal) {
+    if (__testOrderedBatchFault === "throw") {
+      throw new TypeError("injected ordered batch materializer failure");
+    }
+    if (__testOrderedBatchFault === "null") {
+      return null;
+    }
+    if (__testOrderedBatchFault === "primitive") {
+      return 7;
+    }
+  }
+  return value;
+};
+
+export function __testConfigureOrderedBatchMaterializer(
+  fault: string,
+  ordinal: number,
+  interceptor: ((ordinal: number, value: object) => void) | null = null,
+): void {
+  if (!["none", "throw", "null", "primitive"].includes(fault)) {
+    throw new TypeError("unknown ordered batch materializer fault");
+  }
+  __testOrderedBatchFault = fault;
+  __testOrderedBatchFaultOrdinal = ordinal;
+  __testOrderedBatchInterceptor = interceptor;
+  __testOrderedBatchCaptured.length = 0;
+}
+
+export function __testCapturedOrderedBatchValues(): readonly object[] {
+  return Object.freeze([...__testOrderedBatchCaptured]);
+}
+
+/** @internal Install authority-backed evidence for an ordered generated package. */"#,
+            1,
+        );
         runtime_source.push_str(
             r#"
 
@@ -788,9 +985,22 @@ export function __testOrderedNativeCreate(
   value: unknown,
 ): { readonly json: string; readonly proofs: readonly unknown[] } {
   return {
-    json: JSON.stringify(lowerProjectedValue(value)),
+    json: JSON.stringify(lowerOrderedProjectedValue(value)),
     proofs: orderedRoleProofs(typeKey, value),
   };
+}
+export function __testOrderedBatchMaterialize(
+  typeKey: string,
+  ordinal: number,
+  json: string,
+  authority: object,
+): object {
+  return __testOrderedBatchMaterializeBase(
+    typeKey,
+    ordinal,
+    json,
+    authority as Parameters<typeof materializeOrderedProjectedBatch>[3],
+  );
 }
 "#,
         );
@@ -869,11 +1079,14 @@ assert.equal(
   false,
 );
 
-const fixture = (responses, authority = null) => {
-  const recording = new Native.__ProjectionRecordingFixture(
-    JSON.stringify(responses),
-    authority,
-  );
+const fixture = (responses, authority = null, commitFailure = null) => {
+  const recording = commitFailure === null
+    ? new Native.__ProjectionRecordingFixture(JSON.stringify(responses), authority)
+    : new Native.__ProjectionRecordingFixture(
+        JSON.stringify(responses),
+        authority,
+        commitFailure,
+      );
   const database = recording.takeDatabase();
   const connection = Object.freeze({});
   Handles.registerRustDatabaseHandle(connection, database);
@@ -919,6 +1132,43 @@ const recordDocument = (iid, identifier, tags) => ({
     identifier: [{ value: identifier }],
     tag: tags.map((value) => ({ value })),
   },
+});
+const batchRecordResponses = () => [
+  documents(
+    { ordinal: 2, iid: "0xd2" },
+    { ordinal: 0, iid: "0xd0" },
+    { ordinal: 1, iid: "0xd1" },
+  ),
+  documents(
+    { ordinal: 1, ...recordDocument("0xd1", "provider-1", ["normalizedone"]) },
+    { ordinal: 2, ...recordDocument("0xd2", "provider-2", ["normalizedtwo"]) },
+    { ordinal: 0, ...recordDocument("0xd0", "provider-0", ["normalizedzero"]) },
+  ),
+];
+const temporalRecordDocument = (ordinal, iid) => ({
+  ordinal,
+  _iid: iid,
+  _type: "temporal-record",
+  attributes: {
+    "occurred-on": [{ value: "+10000-01-02" }],
+    "observed-at": [{ value: "-9999-01-02T03:04:05" }],
+    "reported-at": [{ value: "-9999-01-02T03:04:05Z" }],
+  },
+});
+const temporalLinkDocument = (iid, playerIid) => ({
+  _iid: iid,
+  _type: "temporal-link",
+  attributes: {},
+  role_players: [{
+    role: "temporal-link:subject",
+    iid: playerIid,
+    type_name: "temporal-record",
+    attributes: {
+      "occurred-on": [{ value: "+10000-01-02" }],
+      "observed-at": [{ value: "-9999-01-02T03:04:05" }],
+      "reported-at": [{ value: "-9999-01-02T03:04:05Z" }],
+    },
+  }],
 });
 
 const diagnostic = (error) => {
@@ -994,6 +1244,124 @@ rejects(
   "generated_token_package_mismatch",
   "role",
 );
+
+const recordBatchInputs = () => ["alpha", "beta", "gamma"].map((tag, ordinal) => Local.Record.create({
+  identifier: Local.Identifier.create(`client-${ordinal}`),
+  tag: [Local.Tag.create(tag)],
+}));
+const rejectsRecordProofWithoutIo = (value, target) => {
+  assert.throws(
+    () => Local.RecordLink.manager(target.connection).insert(
+      Local.RecordLink.create({ subject: value }),
+    ),
+    (error) => error instanceof Error && error.message ===
+      "projected batch proof is not active for this installed package",
+  );
+  assert.deepEqual(counters(target), zeroCounters);
+};
+const rowAtFailure = fixture([]);
+const rawRecordManager = Runtime.__testOrderedNativeManager(
+  Local.Record.typeKey,
+  rowAtFailure.connection,
+);
+const hostileRowError = new Error("hostile rowAt failure");
+hostileRowError.cause = hostileRowError;
+Object.defineProperty(hostileRowError, "toString", {
+  value: () => {
+    throw new Error("rowAt error must not be coerced");
+  },
+});
+let failedRowAtCalls = 0;
+assert.throws(
+  () => rawRecordManager.insertManyProjected(3, () => {
+    failedRowAtCalls += 1;
+    throw hostileRowError;
+  }),
+  (error) => error === hostileRowError,
+);
+assert.equal(failedRowAtCalls, 1);
+assert.deepEqual(counters(rowAtFailure), zeroCounters);
+
+for (const fault of ["throw", "null", "primitive"]) {
+  for (const faultOrdinal of [0, 1, 2]) {
+    const batchFailure = fixture(batchRecordResponses());
+    const proofTarget = fixture([]);
+    const callbackOrdinals = [];
+    Runtime.__testConfigureOrderedBatchMaterializer(
+      fault,
+      faultOrdinal,
+      (ordinal, value) => {
+        callbackOrdinals.push(ordinal);
+        rejectsRecordProofWithoutIo(value, proofTarget);
+      },
+    );
+    assert.throws(
+      () => Local.Record.manager(batchFailure.connection).insertMany(
+        recordBatchInputs(),
+      ),
+      (error) => {
+        const value = diagnostic(error);
+        assert.equal(value.sdkCategory, "integrity");
+        assert.equal(value.code, "generated_model_materialization_failed");
+        assert.deepEqual(value.path, [
+          { kind: "argument", value: "rows" },
+          { kind: "index", value: faultOrdinal },
+        ]);
+        return true;
+      },
+    );
+    assert.deepEqual(
+      callbackOrdinals,
+      Array.from({ length: faultOrdinal + 1 }, (_, index) => index),
+    );
+    const captured = Runtime.__testCapturedOrderedBatchValues();
+    assert.equal(Object.isFrozen(captured), true);
+    assert.equal(captured.length, faultOrdinal + 1);
+    assert.deepEqual(
+      captured.map((value) => value.identifier.value),
+      callbackOrdinals.map((ordinal) => `provider-${ordinal}`),
+    );
+    for (const value of captured) {
+      rejectsRecordProofWithoutIo(value, proofTarget);
+    }
+    const state = counters(batchFailure);
+    assert.deepEqual(state.opens, ["write"]);
+    assert.equal(state.queries.length, 2);
+    assert.equal(state.givenRows.length, 2);
+    assert.equal(state.commits, 0);
+    assert.equal(state.rollbacks, 1);
+    assert.equal(state.closes, 0);
+  }
+}
+
+for (const commitFailure of ["definitely_aborted", "unknown"]) {
+  const failedCommit = fixture(batchRecordResponses(), null, commitFailure);
+  const proofTarget = fixture([]);
+  const callbackOrdinals = [];
+  Runtime.__testConfigureOrderedBatchMaterializer(
+    "none",
+    -1,
+    (ordinal, value) => {
+      callbackOrdinals.push(ordinal);
+      rejectsRecordProofWithoutIo(value, proofTarget);
+    },
+  );
+  assert.throws(() => Local.Record.manager(failedCommit.connection).insertMany(
+    recordBatchInputs(),
+  ));
+  assert.deepEqual(callbackOrdinals, [0, 1, 2]);
+  const captured = Runtime.__testCapturedOrderedBatchValues();
+  assert.equal(captured.length, 3);
+  for (const value of captured) {
+    rejectsRecordProofWithoutIo(value, proofTarget);
+  }
+  const state = counters(failedCommit);
+  assert.deepEqual(state.opens, ["write"]);
+  assert.equal(state.queries.length, 2);
+  assert.equal(state.givenRows.length, 2);
+  assert.equal(state.commits, 1);
+}
+Runtime.__testConfigureOrderedBatchMaterializer("none", -1);
 
 const nativeRoundTrip = fixture([
   iidDocument("0xd1"),
@@ -1308,6 +1676,348 @@ assert.throws(
   /proof lookup failed/,
 );
 assert.equal(failedRootProofCalls, 0);
+
+const batchAuthority = Object.freeze({ marker: "private-batch-authority" });
+const batchProjected = Runtime.__testOrderedBatchMaterialize(
+  Local.Membership.typeKey,
+  7,
+  JSON.stringify({
+    typeKey: Local.Membership.typeKey,
+    form: "complete",
+    iid: "0xbb",
+    value: null,
+        values: {
+          participant: [{
+            typeKey: Local.Person.typeKey,
+            form: "complete",
+            iid: "0xab",
+            value: null,
+            values: {
+              tag: [{
+                typeKey: Local.Tag.typeKey,
+                form: "complete",
+                iid: null,
+                value: { valueType: "string", value: "batchtag" },
+                values: {},
+              }],
+            },
+          }],
+        },
+  }),
+  batchAuthority,
+);
+const batchRootProof = Runtime.__testOrderedFacadeProof(batchProjected);
+const batchRoleProof = Runtime.__testOrderedFacadeProof(
+  batchProjected.participant[0],
+);
+assert.deepEqual(batchRootProof, {
+  kind: "root",
+  authority: batchAuthority,
+  row: 7,
+});
+assert.deepEqual(batchRoleProof, {
+  kind: "role",
+  authority: batchAuthority,
+  row: 7,
+  roleName: "participant",
+  playerIndex: 0,
+});
+assert.equal(Object.isFrozen(batchRootProof), true);
+assert.equal(Object.isFrozen(batchRoleProof), true);
+assert.equal(batchProjected.participant[0].tag[0].value, "batchtag");
+assert.deepEqual(
+  Runtime.__testOrderedRoleProofs(
+    Local.Membership.typeKey,
+    Local.Membership.create({ participant: [batchProjected.participant[0]] }),
+  ),
+  [batchRoleProof],
+);
+
+const temporalRecord = Runtime.__testOrderedBatchMaterialize(
+  Local.TemporalRecord.typeKey,
+  9,
+  JSON.stringify({
+    typeKey: Local.TemporalRecord.typeKey,
+    form: "complete",
+    iid: "0xdc",
+    value: null,
+    values: {
+      occurredOn: {
+        typeKey: Local.OccurredOn.typeKey,
+        form: "complete",
+        iid: null,
+        value: { valueType: "date", value: "+010000-01-02" },
+        values: {},
+      },
+      observedAt: {
+        typeKey: Local.ObservedAt.typeKey,
+        form: "complete",
+        iid: null,
+        value: {
+          valueType: "datetime",
+          value: "-009999-01-02T03:04:05",
+        },
+        values: {},
+      },
+      reportedAt: {
+        typeKey: Local.ReportedAt.typeKey,
+        form: "complete",
+        iid: null,
+        value: {
+          valueType: "datetime_tz",
+          value: "-009999-01-02T03:04:05Z",
+        },
+        values: {},
+      },
+    },
+  }),
+  batchAuthority,
+);
+assert.equal(temporalRecord.occurredOn.value.toISOString(), "+010000-01-02T00:00:00.000Z");
+assert.equal(temporalRecord.observedAt.value.toISOString(), "-009999-01-02T03:04:05.000Z");
+assert.equal(temporalRecord.reportedAt.value.toISOString(), "-009999-01-02T03:04:05.000Z");
+const temporalRecordInput = Runtime.__testOrderedNativeCreate(
+  Local.TemporalRecord.typeKey,
+  temporalRecord,
+);
+const temporalRecordWire = JSON.parse(temporalRecordInput.json);
+assert.equal(temporalRecordWire.values.occurredOn.value.value, "+10000-01-02");
+assert.equal(
+  temporalRecordWire.values.observedAt.value.value,
+  "-9999-01-02T03:04:05",
+);
+assert.equal(
+  temporalRecordWire.values.reportedAt.value.value,
+  "-9999-01-02T03:04:05Z",
+);
+const temporalLinkInput = Local.TemporalLink.create({ subject: temporalRecord });
+assert.deepEqual(
+  Runtime.__testOrderedRoleProofs(
+    Local.TemporalLink.typeKey,
+    temporalLinkInput,
+  ),
+  [Runtime.__testOrderedFacadeProof(temporalRecord)],
+);
+const temporalLinkWire = JSON.parse(
+  Runtime.__testOrderedNativeCreate(
+    Local.TemporalLink.typeKey,
+    temporalLinkInput,
+  ).json,
+);
+assert.equal(
+  temporalLinkWire.values.subject.values.occurredOn.value.value,
+  "+10000-01-02",
+);
+const negativeSmallTemporalRecord = Runtime.__testOrderedBatchMaterialize(
+  Local.TemporalRecord.typeKey,
+  10,
+  JSON.stringify({
+    ...temporalRecordWire,
+    iid: "0xdd",
+    values: {
+      occurredOn: {
+        ...temporalRecordWire.values.occurredOn,
+        value: { valueType: "date", value: "-000001-01-02" },
+      },
+      observedAt: {
+        ...temporalRecordWire.values.observedAt,
+        value: {
+          valueType: "datetime",
+          value: "-000001-01-02T03:04:05",
+        },
+      },
+      reportedAt: {
+        ...temporalRecordWire.values.reportedAt,
+        value: {
+          valueType: "datetime_tz",
+          value: "-000001-01-02T03:04:05Z",
+        },
+      },
+    },
+  }),
+  batchAuthority,
+);
+const negativeSmallWire = JSON.parse(
+  Runtime.__testOrderedNativeCreate(
+    Local.TemporalRecord.typeKey,
+    negativeSmallTemporalRecord,
+  ).json,
+);
+assert.equal(negativeSmallWire.values.occurredOn.value.value, "-0001-01-02");
+assert.equal(
+  negativeSmallWire.values.observedAt.value.value,
+  "-0001-01-02T03:04:05",
+);
+assert.equal(
+  negativeSmallWire.values.reportedAt.value.value,
+  "-0001-01-02T03:04:05Z",
+);
+
+const temporalDatabaseAuthority = Native.__newProjectionRecordingAuthority();
+const temporalBatch = fixture([
+  documents({ ordinal: 0, iid: "0xde" }),
+  documents(temporalRecordDocument(0, "0xde")),
+], temporalDatabaseAuthority);
+Runtime.__testConfigureOrderedBatchMaterializer("none", -1);
+const temporalNativeManager = Runtime.__testOrderedNativeManager(
+  Local.TemporalRecord.typeKey,
+  temporalBatch.connection,
+);
+let temporalRowAtCalls = 0;
+const temporalBatchValues = temporalNativeManager.insertManyProjected(
+  1,
+  (ordinal) => {
+    temporalRowAtCalls += 1;
+    assert.equal(ordinal, 0);
+    return {
+      instanceJson: JSON.stringify({ ...temporalRecordWire, iid: null }),
+      proofs: [],
+    };
+  },
+);
+assert.equal(temporalRowAtCalls, 1);
+assert.equal(Object.isFrozen(temporalBatchValues), true);
+assert.equal(temporalBatchValues.length, 1);
+const activeTemporalRecord = temporalBatchValues[0];
+assert.equal(activeTemporalRecord.iid, "0xde");
+assert.equal(
+  activeTemporalRecord.occurredOn.value.toISOString(),
+  "+010000-01-02T00:00:00.000Z",
+);
+const activeTemporalProof = Runtime.__testOrderedFacadeProof(activeTemporalRecord);
+assert.equal(activeTemporalProof.kind, "root");
+assert.equal(activeTemporalProof.row, 0);
+const temporalLinkTarget = fixture([
+  documents({
+    kind: 1,
+    ordinal: 0,
+    reference_ordinal: 0,
+    iid: "0xde",
+    type: "temporal-record",
+  }),
+  documents({ ordinal: 0, iid: "0xdf" }),
+  documents({ ordinal: 0, ...temporalLinkDocument("0xdf", "0xde") }),
+], temporalDatabaseAuthority);
+const [activeTemporalLink] = Local.TemporalLink.manager(
+  temporalLinkTarget.connection,
+).insertMany([Local.TemporalLink.create({ subject: activeTemporalRecord })]);
+assert.equal(activeTemporalLink.iid, "0xdf");
+assert.equal(activeTemporalLink.subject.iid, "0xde");
+assert.equal(
+  activeTemporalLink.subject.occurredOn.value.toISOString(),
+  "+010000-01-02T00:00:00.000Z",
+);
+assert.equal(counters(temporalBatch).commits, 1);
+assert.equal(counters(temporalLinkTarget).commits, 1);
+
+Runtime.__testConfigureOrderedBatchMaterializer("none", -1);
+const abortedTemporalLinkBatch = fixture([
+  documents({
+    kind: 1,
+    ordinal: 0,
+    reference_ordinal: 0,
+    iid: "0xde",
+    type: "temporal-record",
+  }),
+  documents({ ordinal: 0, iid: "0xe0" }),
+  documents({ ordinal: 0, ...temporalLinkDocument("0xe0", "0xde") }),
+], temporalDatabaseAuthority, "definitely_aborted");
+assert.throws(() => Local.TemporalLink.manager(
+  abortedTemporalLinkBatch.connection,
+).insertMany([Local.TemporalLink.create({ subject: activeTemporalRecord })]));
+const [abortedTemporalLink] = Runtime.__testCapturedOrderedBatchValues();
+const abortedTemporalRoleProof = Runtime.__testOrderedFacadeProof(
+  abortedTemporalLink.subject,
+);
+assert.equal(abortedTemporalRoleProof.kind, "role");
+assert.equal(abortedTemporalRoleProof.row, 0);
+assert.equal(abortedTemporalRoleProof.roleName, "subject");
+assert.equal(abortedTemporalRoleProof.playerIndex, 0);
+const abortedTemporalRoleTarget = fixture([], temporalDatabaseAuthority);
+assert.throws(
+  () => Local.TemporalLink.manager(
+    abortedTemporalRoleTarget.connection,
+  ).insert(Local.TemporalLink.create({ subject: abortedTemporalLink.subject })),
+  (error) => error instanceof Error && error.message ===
+    "projected batch proof is not active for this installed package",
+);
+assert.deepEqual(counters(abortedTemporalRoleTarget), zeroCounters);
+const abortedTemporalLinkState = counters(abortedTemporalLinkBatch);
+assert.equal(abortedTemporalLinkState.queries.length, 3);
+assert.equal(abortedTemporalLinkState.givenRows.length, 3);
+assert.equal(abortedTemporalLinkState.commits, 1);
+
+const materializeMalformedBatch = (typeKey, wire) =>
+  Runtime.__testOrderedBatchMaterialize(
+    typeKey,
+    8,
+    JSON.stringify(wire),
+    batchAuthority,
+  );
+const identifierWire = {
+  typeKey: Local.Identifier.typeKey,
+  form: "complete",
+  iid: null,
+  value: { valueType: "string", value: "identifier" },
+  values: {},
+};
+const personWire = {
+  typeKey: Local.Person.typeKey,
+  form: "complete",
+  iid: "0xac",
+  value: null,
+  values: { tag: [] },
+};
+assert.throws(
+  () => materializeMalformedBatch(Local.Membership.typeKey, {
+    typeKey: Local.Membership.typeKey,
+    form: "complete",
+    iid: null,
+    value: null,
+    values: { participant: [] },
+  }),
+  /native complete thing wire has no IID/,
+);
+assert.throws(
+  () => materializeMalformedBatch(Local.Membership.typeKey, {
+    typeKey: Local.Membership.typeKey,
+    form: "complete",
+    iid: "0xbc",
+    value: null,
+    values: { participant: [], extra: null },
+  }),
+  /native projected wire has an inexact member set/,
+);
+assert.throws(
+  () => materializeMalformedBatch(Local.Membership.typeKey, {
+    typeKey: Local.Membership.typeKey,
+    form: "complete",
+    iid: "0xbd",
+    value: null,
+    values: { participant: personWire },
+  }),
+  /participant must be a sequence/,
+);
+assert.throws(
+  () => materializeMalformedBatch(Local.Membership.typeKey, {
+    typeKey: Local.Membership.typeKey,
+    form: "complete",
+    iid: "0xbe",
+    value: null,
+    values: { participant: [identifierWire] },
+  }),
+  /participant has an incompatible projected model form/,
+);
+assert.throws(
+  () => materializeMalformedBatch(Local.Person.typeKey, {
+    typeKey: Local.Person.typeKey,
+    form: "complete",
+    iid: "0xad",
+    value: null,
+    values: { tag: [identifierWire] },
+  }),
+  /tag is not the field's exact attribute value/,
+);
 "#,
     )
     .unwrap();

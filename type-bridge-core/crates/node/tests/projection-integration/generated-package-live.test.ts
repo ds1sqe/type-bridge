@@ -42,6 +42,10 @@ const WORKFORCE_V2_CATALOG_RELATIVE =
   "tests/contracts/sdk_conformance/workforce-v2/catalog-v2.json";
 const WORKFORCE_V2_JOURNEY_RELATIVE =
   "tests/contracts/sdk_conformance/workforce-v2/journey-v2.json";
+const WORKFORCE_V3_PROVIDER_SCHEMA = resolve(
+  ROOT,
+  "tests/contracts/sdk_conformance/workforce-v3/provider-3.12.1-v3.tql",
+);
 const WORKFORCE_MANIFEST = resolve(ROOT, WORKFORCE_MANIFEST_RELATIVE);
 const WORKFORCE_CATALOG = resolve(ROOT, WORKFORCE_CATALOG_RELATIVE);
 const WORKFORCE_JOURNEY = resolve(ROOT, WORKFORCE_JOURNEY_RELATIVE);
@@ -3333,3 +3337,271 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
     await publishWorkforceReport(workforceV2ReportPath, preparedWorkforceV2Report);
   }
 });
+
+test(
+  `generated ordered successor batch CRUD reuses proofs on TypeDB ${TYPEDB_VERSION}`,
+  { skip: IS_TYPEDB_3_11, timeout: 360_000 },
+  async () => {
+    const suppliedStage = process.env.TYPE_BRIDGE_GENERATED_NODE_STAGE;
+    const stage = suppliedStage === undefined
+      ? await mkdtemp(join(tmpdir(), "type-bridge-node-ordered-projection-"))
+      : resolve(suppliedStage);
+    const ownsStage = suppliedStage === undefined;
+    const generatedDirectory = resolve(stage, "generated_ordered");
+    let database: ReturnType<typeof connectIntegration> | undefined;
+    let failure: unknown;
+
+    try {
+      if (ownsStage) {
+        run(
+          resolve(ROOT, "scripts/ci/prepare_generated_live_fixture.sh"),
+          ["node", stage],
+          ROOT,
+        );
+      }
+
+      const packageScope = resolve(stage, "node_modules/@type-bridge");
+      await mkdir(packageScope, { recursive: true });
+      await rm(resolve(packageScope, "node"), { recursive: true, force: true });
+      await symlink(
+        NODE_RUNTIME_PACKAGE,
+        resolve(packageScope, "node"),
+        process.platform === "win32" ? "junction" : "dir",
+      );
+      if (ownsStage) {
+        run(
+          resolve(NODE_SOURCE_PACKAGE, "node_modules/.bin/tsc"),
+          ["--project", resolve(generatedDirectory, "tsconfig.json")],
+          generatedDirectory,
+        );
+      }
+
+      const generated = await import(
+        pathToFileURL(resolve(generatedDirectory, "dist/index.js")).href
+      );
+      const {
+        Identifier,
+        NetworkLink,
+        Person,
+        Score,
+        ValBool,
+        ValConstrained,
+        ValDate,
+        ValDatetime,
+        ValDatetimeTz,
+        ValDecimal,
+        ValDouble,
+        ValDuration,
+      } = generated;
+
+      database = connectIntegration();
+      database.resetDatabase();
+      defineSchema(database, await readFile(WORKFORCE_V3_PROVIDER_SCHEMA, "utf8"));
+
+      const personInput = (identifierValue: string, scoreValue: bigint) => Person.create({
+        identifier: Identifier.create(identifierValue),
+        score: Score.create(scoreValue),
+        valBool: ValBool.create(true),
+        valConstrained: ValConstrained.create(20n),
+        valDate: ValDate.create(new Date("2026-08-14T00:00:00.000Z")),
+        valDatetime: ValDatetime.create(new Date("2026-08-14T12:34:56.000Z")),
+        valDatetimeTz: ValDatetimeTz.create(new Date("2026-08-14T12:34:56.000Z")),
+        valDecimal: ValDecimal.create("3.5"),
+        valDouble: ValDouble.create(3.5),
+        valDuration: ValDuration.create("PT3S"),
+      });
+      const frozenBatch = (value: unknown): void => {
+        assert.equal(Array.isArray(value), true);
+        assert.equal(Object.isFrozen(value), true);
+      };
+      const nonce = randomUUID();
+      const personKeys = [
+        `ordered-person-a-${nonce}`,
+        `ordered-person-b-${nonce}`,
+      ] as const;
+      const networkKeys = [
+        `ordered-network-a-${nonce}`,
+        `ordered-network-b-${nonce}`,
+      ] as const;
+
+      const personManager = Person.manager(database);
+      for (const empty of [
+        personManager.insertMany([]),
+        personManager.putMany([]),
+        personManager.updateMany([]),
+      ]) {
+        assert.deepEqual(empty, []);
+        frozenBatch(empty);
+      }
+      assert.equal(personManager.deleteMany([]), undefined);
+      assert.equal(typeof personManager.updateMany, "function");
+      assert.equal(typeof personManager.deleteMany, "function");
+
+      const insertedPeople = personManager.insertMany([
+        personInput(personKeys[0], 1n),
+        personInput(personKeys[1], 2n),
+      ]);
+      frozenBatch(insertedPeople);
+      assert.deepEqual(
+        insertedPeople.map((person) => person.identifier.value),
+        personKeys,
+      );
+      assert.ok(insertedPeople.every((person) => Object.isFrozen(person)));
+      const personIids = insertedPeople.map((person) => {
+        assertIid(person.iid);
+        return person.iid;
+      });
+
+      const putPeople = personManager.putMany(insertedPeople);
+      frozenBatch(putPeople);
+      assert.deepEqual(putPeople.map((person) => person.iid), personIids);
+      const updatedPeople = personManager.updateMany([
+        [personIids[1], personInput(personKeys[1], 12n)],
+        [personIids[0], personInput(personKeys[0], 11n)],
+      ]);
+      frozenBatch(updatedPeople);
+      assert.deepEqual(
+        updatedPeople.map((person) => person.identifier.value),
+        [personKeys[1], personKeys[0]],
+      );
+      assert.deepEqual(
+        updatedPeople.map((person) => person.score.value),
+        [12n, 11n],
+      );
+      const personB = updatedPeople[0];
+      const personA = updatedPeople[1];
+
+      const networkManager = NetworkLink.manager(database);
+      for (const empty of [
+        networkManager.insertMany([]),
+        networkManager.putMany([]),
+        networkManager.updateMany([]),
+      ]) {
+        assert.deepEqual(empty, []);
+        frozenBatch(empty);
+      }
+      assert.equal(networkManager.deleteMany([]), undefined);
+      const insertedNetworks = networkManager.insertMany([
+        NetworkLink.create({
+          destination: personB,
+          identifier: Identifier.create(networkKeys[0]),
+          origin: personA,
+        }),
+        NetworkLink.create({
+          destination: personA,
+          identifier: Identifier.create(networkKeys[1]),
+          origin: personB,
+        }),
+      ]);
+      frozenBatch(insertedNetworks);
+      assert.deepEqual(
+        insertedNetworks.map((network) => network.identifier.value),
+        networkKeys,
+      );
+      const networkIids = insertedNetworks.map((network) => {
+        assertIid(network.iid);
+        return network.iid;
+      });
+      const putNetworks = networkManager.putMany(insertedNetworks);
+      frozenBatch(putNetworks);
+      assert.deepEqual(putNetworks.map((network) => network.iid), networkIids);
+      const updatedNetworks = networkManager.updateMany([
+        [networkIids[1], NetworkLink.create({
+          destination: personB,
+          identifier: Identifier.create(networkKeys[1]),
+          origin: personA,
+        })],
+        [networkIids[0], NetworkLink.create({
+          destination: personA,
+          identifier: Identifier.create(networkKeys[0]),
+          origin: personB,
+        })],
+      ]);
+      frozenBatch(updatedNetworks);
+      assert.deepEqual(
+        updatedNetworks.map((network) => network.identifier.value),
+        [networkKeys[1], networkKeys[0]],
+      );
+      assert.equal(
+        networkManager.getByIid(networkIids[1])?.origin.identifier.value,
+        personKeys[0],
+      );
+      assert.equal(networkManager.deleteMany(networkIids), undefined);
+      assert.ok(networkIids.every((iid) => networkManager.getByIid(iid) === null));
+      assert.equal(personManager.deleteMany(personIids), undefined);
+      assert.ok(personIids.every((iid) => personManager.getByIid(iid) === null));
+
+      const transactionPersonKeys = [
+        `ordered-transaction-person-a-${nonce}`,
+        `ordered-transaction-person-b-${nonce}`,
+      ] as const;
+      const transactionNetworkKey = `ordered-transaction-network-${nonce}`;
+      const transaction = database.transaction("write");
+      let transactionPeople: readonly any[] = [];
+      let transactionNetworks: readonly any[] = [];
+      try {
+        const transactionPersonManager = Person.manager(transaction);
+        transactionPeople = transactionPersonManager.insertMany([
+          personInput(transactionPersonKeys[0], 21n),
+          personInput(transactionPersonKeys[1], 22n),
+        ]);
+        frozenBatch(transactionPeople);
+        const transactionNetworkManager = NetworkLink.manager(transaction);
+        transactionNetworks = transactionNetworkManager.insertMany([
+          NetworkLink.create({
+            destination: transactionPeople[1],
+            identifier: Identifier.create(transactionNetworkKey),
+            origin: transactionPeople[0],
+          }),
+        ]);
+        frozenBatch(transactionNetworks);
+        assert.deepEqual(
+          transactionNetworkManager.putMany(transactionNetworks).map(
+            (network) => network.iid,
+          ),
+          transactionNetworks.map((network) => network.iid),
+        );
+        transaction.commit();
+      } catch (error) {
+        try {
+          transaction.rollback();
+        } catch {
+          // Preserve the operation or commit failure.
+        }
+        throw error;
+      }
+
+      const transactionPersonIids = transactionPeople.map((person) => {
+        assertIid(person.iid);
+        assert.equal(personManager.getByIid(person.iid)?.iid, person.iid);
+        return person.iid;
+      });
+      const transactionNetworkIids = transactionNetworks.map((network) => {
+        assertIid(network.iid);
+        assert.equal(networkManager.getByIid(network.iid)?.iid, network.iid);
+        return network.iid;
+      });
+      assert.equal(networkManager.deleteMany(transactionNetworkIids), undefined);
+      assert.equal(personManager.deleteMany(transactionPersonIids), undefined);
+      assert.equal(networkManager.count(), 0n);
+      assert.equal(personManager.count(), 0n);
+    } catch (error) {
+      failure = error;
+    }
+
+    try {
+      database?.deleteDatabase();
+    } catch (error) {
+      failure ??= error;
+    }
+    try {
+      await rm(
+        ownsStage ? stage : resolve(stage, "node_modules", "@type-bridge", "node"),
+        { recursive: true, force: true },
+      );
+    } catch (error) {
+      failure ??= error;
+    }
+    if (failure !== undefined) throw failure;
+  },
+);

@@ -162,6 +162,11 @@ assert.equal(packageJson.main, "dist/public.js");
 assert.equal(packageJson.types, "dist/public.d.ts");
 assert.equal(packageJson.exports["."].default, "./dist/public.js");
 assert.equal(packageJson.exports["."].types, "./dist/public.d.ts");
+assert.deepEqual(packageJson.exports["./runtime-projection"], {
+  types: "./dist/runtime-projection.d.ts",
+  require: "./dist/runtime-projection.js",
+  default: "./dist/runtime-projection.js",
+});
 for (const forbiddenSubpath of [
   "./attribute",
   "./flags",
@@ -188,6 +193,15 @@ assert.deepEqual(Object.keys(queryV2).sort(), [
   "QueryV2Authority",
 ]);
 assert.equal(queryV2.QueryV2Authority, typeBridge.QueryV2Authority);
+
+const runtimeProjection = require("@type-bridge/node/runtime-projection");
+assert.deepEqual(Object.keys(runtimeProjection).sort(), [
+  "InstalledRuntimeProjection",
+  "QueryCancellation",
+  "QueryExecutionResourceLimits",
+  "installGeneratedSchemaAuthority",
+  "installRuntimeProjection",
+]);
 
 const packed = JSON.parse(execSync("npm pack --dry-run --json", { encoding: "utf8" }));
 const packInfo = Array.isArray(packed) ? packed[0] : Object.values(packed)[0];

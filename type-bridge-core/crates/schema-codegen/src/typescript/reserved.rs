@@ -53,6 +53,14 @@ pub(super) const PUBLIC_RUNTIME_NAMES: &[&str] = &[
     "__installRuntimeProjectionPackage",
 ];
 
+/// Additional public names exported only by ordered successor runtime resources.
+pub(super) const ORDERED_PUBLIC_RUNTIME_NAMES: &[&str] = &[
+    "OrderedModelToken",
+    "OrderedProjectedModelManager",
+    "ProjectedBatchUpdate",
+    "defineOrderedModel",
+];
+
 /// Fixed public schema/evidence names re-exported from the package root.
 pub(super) const PUBLIC_SCHEMA_NAMES: &[&str] = &[
     "PLAYING_FACTS",

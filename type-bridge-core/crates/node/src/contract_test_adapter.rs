@@ -11,10 +11,13 @@ use type_bridge_contract::codec::{from_canonical_json, to_canonical_json};
 use type_bridge_contract::fingerprint::Fingerprint;
 use type_bridge_contract::id::TypeId;
 use type_bridge_contract::value::{CanonicalValue, Cardinality};
-use type_bridge_orm::session::backend::{BoxFuture, DriverBackend, QueryResult, TransactionOps};
+use type_bridge_core_lib::version::Version;
+use type_bridge_orm::session::backend::{
+    BoxFuture, DriverBackend, GivenRowsSpec, QueryResult, TransactionOps,
+};
 use type_bridge_orm::{
-    ClassifiedCommitError, Database, DatabaseConnectionAuthority, OrmError, ProviderRuntimeOwner,
-    TxType,
+    ClassifiedCommitError, CommitFailureCertainty, Database, DatabaseConnectionAuthority, OrmError,
+    ProviderRuntimeOwner, TxType,
 };
 
 use crate::NodeRustDatabase;
@@ -26,6 +29,16 @@ struct ContractFoundationProbe {
     fingerprint: Fingerprint,
     long: CanonicalValue,
     type_id: TypeId,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub(crate) enum ProjectionRecordingResponse {
+    Query(QueryResult),
+    Failure {
+        #[serde(rename = "providerFailure")]
+        provider_failure: bool,
+    },
 }
 
 /// Round-trip exact canonical foundation bytes through the N-API boundary.
@@ -49,16 +62,38 @@ pub fn round_trip_contract_foundation(input: Buffer) -> Result<Buffer> {
 
 #[derive(Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ProjectionRecordingState {
-    opens: Vec<String>,
-    queries: Vec<String>,
-    commits: usize,
-    rollbacks: usize,
-    closes: usize,
+pub(crate) struct ProjectionRecordingState {
+    pub(crate) opens: Vec<String>,
+    pub(crate) queries: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(crate) given_rows: Vec<GivenRowsSpec>,
+    pub(crate) commits: usize,
+    pub(crate) rollbacks: usize,
+    pub(crate) closes: usize,
+    #[serde(skip)]
+    commit_failure: Option<CommitFailureCertainty>,
+}
+
+#[cfg(test)]
+pub(crate) fn projection_recording_database_for_test(
+    responses: Vec<ProjectionRecordingResponse>,
+) -> (Arc<Database>, Arc<Mutex<ProjectionRecordingState>>) {
+    let state = Arc::new(Mutex::new(ProjectionRecordingState::default()));
+    let backend = ProjectionRecordingBackend {
+        responses: Arc::new(Mutex::new(responses.into())),
+        state: Arc::clone(&state),
+    };
+    (
+        Arc::new(Database::with_backend(
+            Box::new(backend),
+            "projection-recording-test",
+        )),
+        state,
+    )
 }
 
 struct ProjectionRecordingBackend {
-    responses: Arc<Mutex<VecDeque<QueryResult>>>,
+    responses: Arc<Mutex<VecDeque<ProjectionRecordingResponse>>>,
     state: Arc<Mutex<ProjectionRecordingState>>,
 }
 
@@ -90,14 +125,26 @@ impl DriverBackend for ProjectionRecordingBackend {
     fn is_open(&self) -> bool {
         true
     }
+
+    fn server_version(&self) -> Option<Version> {
+        Some(Version::new(3, 12, 1))
+    }
+
+    fn supports_given_rows(&self) -> bool {
+        true
+    }
 }
 
 struct ProjectionRecordingTransaction {
-    responses: Arc<Mutex<VecDeque<QueryResult>>>,
+    responses: Arc<Mutex<VecDeque<ProjectionRecordingResponse>>>,
     state: Arc<Mutex<ProjectionRecordingState>>,
 }
 
 impl TransactionOps for ProjectionRecordingTransaction {
+    fn supports_given_rows(&self) -> bool {
+        true
+    }
+
     fn query(&mut self, typeql: &str) -> BoxFuture<'_, std::result::Result<QueryResult, OrmError>> {
         self.query_canonical(typeql)
     }
@@ -117,12 +164,34 @@ impl TransactionOps for ProjectionRecordingTransaction {
             .expect("recording responses poisoned")
             .pop_front();
         Box::pin(async move {
-            response.ok_or_else(|| {
-                OrmError::QueryExecution(
+            match response {
+                Some(ProjectionRecordingResponse::Query(response)) => Ok(response),
+                Some(ProjectionRecordingResponse::Failure {
+                    provider_failure: true,
+                }) => Err(OrmError::QueryExecution(
+                    "contract recording provider failure".to_owned(),
+                )),
+                Some(ProjectionRecordingResponse::Failure {
+                    provider_failure: false,
+                })
+                | None => Err(OrmError::QueryExecution(
                     "contract recording adapter received unexpected provider I/O".to_owned(),
-                )
-            })
+                )),
+            }
         })
+    }
+
+    fn query_with_rows(
+        &mut self,
+        typeql: &str,
+        rows: GivenRowsSpec,
+    ) -> BoxFuture<'_, std::result::Result<QueryResult, OrmError>> {
+        self.state
+            .lock()
+            .expect("recording state poisoned")
+            .given_rows
+            .push(rows);
+        self.query_canonical(typeql)
     }
 
     fn commit(&mut self) -> BoxFuture<'_, std::result::Result<(), OrmError>> {
@@ -136,8 +205,20 @@ impl TransactionOps for ProjectionRecordingTransaction {
     fn commit_classified(
         &mut self,
     ) -> BoxFuture<'_, std::result::Result<(), ClassifiedCommitError>> {
-        self.state.lock().expect("recording state poisoned").commits += 1;
-        Box::pin(async { Ok(()) })
+        let failure = {
+            let mut state = self.state.lock().expect("recording state poisoned");
+            state.commits += 1;
+            state.commit_failure
+        };
+        Box::pin(async move {
+            match failure {
+                Some(certainty) => Err(ClassifiedCommitError::Driver {
+                    certainty,
+                    message: "contract recording commit failed".to_owned(),
+                }),
+                None => Ok(()),
+            }
+        })
     }
 
     fn rollback(&mut self) -> BoxFuture<'_, std::result::Result<(), OrmError>> {
@@ -173,12 +254,27 @@ impl ProjectionRecordingFixture {
     pub fn new(
         responses_json: String,
         authority: Option<&External<DatabaseConnectionAuthority>>,
+        commit_failure: Option<String>,
     ) -> Result<Self> {
-        let responses: Vec<QueryResult> =
-            serde_json::from_str(&responses_json).map_err(|error| {
+        let responses: Vec<ProjectionRecordingResponse> = serde_json::from_str(&responses_json)
+            .map_err(|error| {
                 Error::new(Status::InvalidArg, format!("invalid responses: {error}"))
             })?;
-        let state = Arc::new(Mutex::new(ProjectionRecordingState::default()));
+        let commit_failure = match commit_failure.as_deref() {
+            None => None,
+            Some("definitely_aborted") => Some(CommitFailureCertainty::DefinitelyAborted),
+            Some("unknown") => Some(CommitFailureCertainty::Unknown),
+            Some(_) => {
+                return Err(Error::new(
+                    Status::InvalidArg,
+                    "commit failure must be 'definitely_aborted' or 'unknown'",
+                ));
+            }
+        };
+        let state = Arc::new(Mutex::new(ProjectionRecordingState {
+            commit_failure,
+            ..ProjectionRecordingState::default()
+        }));
         let backend = ProjectionRecordingBackend {
             responses: Arc::new(Mutex::new(responses.into())),
             state: Arc::clone(&state),
@@ -234,4 +330,62 @@ fn contract_json_error(error: serde_json::Error) -> Error {
         Status::GenericFailure,
         format!("adapter JSON failure: {error}"),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+    use type_bridge_orm::GivenValue;
+
+    use super::*;
+
+    #[test]
+    fn empty_recording_state_preserves_the_legacy_counter_shape() {
+        assert_eq!(
+            serde_json::to_value(ProjectionRecordingState::default()).unwrap(),
+            json!({
+                "opens": [],
+                "queries": [],
+                "commits": 0,
+                "rollbacks": 0,
+                "closes": 0,
+            })
+        );
+    }
+
+    #[test]
+    fn recording_state_exposes_exact_given_row_order_only_when_present() {
+        let state = ProjectionRecordingState {
+            given_rows: vec![GivenRowsSpec {
+                variables: vec!["ordinal".to_owned(), "target-iid".to_owned()],
+                rows: vec![
+                    vec![GivenValue::Integer(0), GivenValue::String("0xa".into())],
+                    vec![GivenValue::Integer(1), GivenValue::String("0xb".into())],
+                ],
+            }],
+            ..ProjectionRecordingState::default()
+        };
+        assert_eq!(
+            serde_json::to_value(state).unwrap()["givenRows"],
+            json!([{
+                "variables": ["ordinal", "target-iid"],
+                "rows": [
+                    [{"Integer": 0}, {"String": "0xa"}],
+                    [{"Integer": 1}, {"String": "0xb"}],
+                ],
+            }])
+        );
+    }
+
+    #[test]
+    fn recording_response_accepts_the_fixed_provider_failure_sentinel() {
+        let responses: Vec<ProjectionRecordingResponse> =
+            serde_json::from_value(json!([{"providerFailure": true}])).unwrap();
+        assert!(matches!(
+            responses.as_slice(),
+            [ProjectionRecordingResponse::Failure {
+                provider_failure: true,
+            }]
+        ));
+    }
 }

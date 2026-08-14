@@ -35,6 +35,8 @@ function command(program, args, cwd = ROOT, environment = process.env) {
 for (const fixture of [
   "positive.ts",
   "negative.ts",
+  "ordered_batch_positive.ts",
+  "ordered_batch_negative.ts",
   "runtime_check.mjs",
   "phase2_parity_check.mjs",
 ]) {
@@ -50,7 +52,11 @@ for (const forbidden of ["as unknown as", "@ts-ignore"]) {
     throw new Error(`documented_examples.ts contains forbidden escape ${forbidden}`);
   }
 }
-for (const fixture of ["positive.ts", "runtime_check.mjs"]) {
+for (const fixture of [
+  "positive.ts",
+  "ordered_batch_positive.ts",
+  "runtime_check.mjs",
+]) {
   const source = readFileSync(resolve(HERE, fixture), "utf8");
   for (const forbidden of ["QueryV2Authority", "declared-schema.json", "readFileSync"]) {
     if (source.includes(forbidden)) {
@@ -63,8 +69,10 @@ for (const forbidden of ["QueryV2Authority", "declared-schema.json", "readFileSy
     throw new Error(`documented_examples.ts bypasses generated embedded authority with ${forbidden}`);
   }
 }
-if (!readFileSync(resolve(HERE, "negative.ts"), "utf8").includes("@ts-expect-error")) {
-  throw new Error("negative fixture has no @ts-expect-error assertions");
+for (const fixture of ["negative.ts", "ordered_batch_negative.ts"]) {
+  if (!readFileSync(resolve(HERE, fixture), "utf8").includes("@ts-expect-error")) {
+    throw new Error(`${fixture} has no @ts-expect-error assertions`);
+  }
 }
 
 rmSync(STAGE, { recursive: true, force: true });
@@ -170,9 +178,39 @@ command("tsc", ["--project", resolve(FOREIGN, "tsconfig.json")]);
 command("tsc", ["--project", resolve(PHASE2, "tsconfig.json")]);
 command("tsc", ["--project", resolve(PHASE2_FOREIGN, "tsconfig.json")]);
 
+const unorderedRuntimeDts = readFileSync(resolve(GENERATED, "dist/runtime.d.ts"), "utf8");
+const unorderedModelsDts = readFileSync(resolve(GENERATED, "dist/models.d.ts"), "utf8");
+const orderedRuntimeDts = readFileSync(resolve(ORDERED, "dist/runtime.d.ts"), "utf8");
+const orderedModelsDts = readFileSync(resolve(ORDERED, "dist/models.d.ts"), "utf8");
+for (const successorName of [
+  "ProjectedBatchUpdate",
+  "OrderedProjectedModelManager",
+  "OrderedModelToken",
+]) {
+  if (unorderedRuntimeDts.includes(successorName) || unorderedModelsDts.includes(successorName)) {
+    throw new Error(`unordered declarations expose ordered successor ${successorName}`);
+  }
+  if (!orderedRuntimeDts.includes(successorName)) {
+    throw new Error(`ordered runtime declaration omits ${successorName}`);
+  }
+}
+for (const method of ["updateMany", "deleteMany"]) {
+  if (unorderedRuntimeDts.includes(`${method}(`)) {
+    throw new Error(`unordered declarations expose ordered successor ${method}`);
+  }
+  if (!orderedRuntimeDts.includes(`${method}(`)) {
+    throw new Error(`ordered runtime declaration omits ${method}`);
+  }
+}
+if (!orderedModelsDts.includes("OrderedModelToken as ModelToken")) {
+  throw new Error("ordered model declarations lose the successor token alias");
+}
+
 for (const fixture of [
   "positive.ts",
   "negative.ts",
+  "ordered_batch_positive.ts",
+  "ordered_batch_negative.ts",
   "runtime_check.mjs",
   "authority_rejection_check.mjs",
   "phase2_parity_check.mjs",
@@ -198,6 +236,8 @@ writeFileSync(
     include: [
       "positive.ts",
       "negative.ts",
+      "ordered_batch_positive.ts",
+      "ordered_batch_negative.ts",
       "documented_examples.ts",
       "generated_v2/src/**/*.ts",
       "generated_ordered/src/**/*.ts",

@@ -9,7 +9,12 @@ import { ownedByteSnapshot } from "./owned-bytes.js";
 import type {
   NativeProjectedManager,
   NativeProjectedValueEnvelope,
+  RuntimeProjectionInstall,
 } from "./runtime-projection.js";
+
+type NativeProjectedBatchAuthority = Parameters<
+  NonNullable<RuntimeProjectionInstall["projectedBatchMaterializer"]>
+>[3];
 
 type NativeMatchComparison =
   | "equal"
@@ -476,6 +481,12 @@ interface NativeRuntimeProjectionModule {
     projectionFingerprintJson: string,
     registrationsJson: string,
     schemaAuthorityJson?: string,
+    projectedBatchMaterializer?: (
+      typeKey: string,
+      ordinal: number,
+      json: string,
+      authority: NativeProjectedBatchAuthority,
+    ) => object,
   ) => NativeRuntimeProjectionHandle;
 }
 

@@ -31,6 +31,12 @@ export interface RuntimeProjectionInstall {
     readonly semanticFingerprintJson: string;
     readonly projectionFingerprintJson: string;
     readonly bindings: readonly RuntimeProjectionBinding[];
+    /**
+     * @internal Generated-package-only authority installed exactly once.
+     * Manual callbacks, global or prototype mutation, and provider re-entry are
+     * unsupported and outside the runtime projection contract.
+     */
+    readonly projectedBatchMaterializer?: NativeProjectedBatchMaterializer;
 }
 export interface GeneratedSchemaAuthorityInstall {
     readonly schemaAuthorityJson: string;
@@ -108,16 +114,49 @@ export interface NativeProjectedValueEnvelope {
     rootProof(): NativeProjectedFacadeProof;
     roleProof(roleName: string, playerIndex: number): NativeProjectedFacadeProof;
 }
+type NativeProjectedBatchMaterializer = (typeKey: string, ordinal: number, json: string, authority: NativeProjectedBatchAuthority) => object;
+declare const nativeProjectedBatchAuthority: unique symbol;
+/** @internal One opaque pending/active authority shared by a projected batch. */
+interface NativeProjectedBatchAuthority {
+    readonly [nativeProjectedBatchAuthority]: never;
+}
+/** @internal Exact root selector backed by one batch publication authority. */
+interface NativeProjectedBatchRootProof {
+    readonly kind: "root";
+    readonly authority: NativeProjectedBatchAuthority;
+    readonly row: number;
+}
+/** @internal Exact role-player selector backed by one batch publication authority. */
+interface NativeProjectedBatchRoleProof {
+    readonly kind: "role";
+    readonly authority: NativeProjectedBatchAuthority;
+    readonly row: number;
+    readonly roleName: string;
+    readonly playerIndex: number;
+}
+/** @internal Proof input accepted from a single envelope or a batch selector. */
+type NativeProjectedInputProof = NativeProjectedFacadeProof | NativeProjectedBatchRootProof | NativeProjectedBatchRoleProof;
+interface NativeProjectedCreateBatchRow {
+    readonly instanceJson: string;
+    readonly proofs: readonly (NativeProjectedInputProof | null)[];
+}
+interface NativeProjectedUpdateBatchRow extends NativeProjectedCreateBatchRow {
+    readonly iid: string;
+}
 export interface NativeProjectedManager {
-    insertProjected(instanceJson: string, proofs: (NativeProjectedFacadeProof | null)[]): NativeProjectedValueEnvelope;
+    insertProjected(instanceJson: string, proofs: (NativeProjectedInputProof | null)[]): NativeProjectedValueEnvelope;
     insertJson(instanceJson: string): string;
     insertManyJson(batchJson: string): string;
-    putProjected(instanceJson: string, proofs: (NativeProjectedFacadeProof | null)[]): NativeProjectedValueEnvelope;
+    insertManyProjected<Complete>(rowCount: number, rowAt: (ordinal: number) => NativeProjectedCreateBatchRow): readonly Complete[];
+    putProjected(instanceJson: string, proofs: (NativeProjectedInputProof | null)[]): NativeProjectedValueEnvelope;
     putJson(instanceJson: string): string;
     putManyJson(batchJson: string): string;
-    updateProjected(iid: string, instanceJson: string, proofs: (NativeProjectedFacadeProof | null)[]): NativeProjectedValueEnvelope;
+    putManyProjected<Complete>(rowCount: number, rowAt: (ordinal: number) => NativeProjectedCreateBatchRow): readonly Complete[];
+    updateProjected(iid: string, instanceJson: string, proofs: (NativeProjectedInputProof | null)[]): NativeProjectedValueEnvelope;
     updateJson(iid: string, instanceJson: string): string;
+    updateManyProjected<Complete>(rowCount: number, rowAt: (ordinal: number) => NativeProjectedUpdateBatchRow): readonly Complete[];
     deleteByIid(iid: string): void;
+    deleteManyProjected(rowCount: number, rowAt: (ordinal: number) => string): void;
     filterJson(filtersJson: string): NativeProjectedManager;
     getByIidProjected(iid: string): NativeProjectedValueEnvelope | null;
     getByIidJson(iid: string): string;
