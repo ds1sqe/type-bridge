@@ -8,12 +8,12 @@ use type_bridge_orm::_manager::DynamicRelationManager;
 use type_bridge_orm::session::backend::TxType;
 use type_bridge_orm::{
     DynamicAttributeMap, DynamicRelationRow, DynamicRolePlayerInput, ProjectedBatchOperation,
-    ProjectedBatchRow, ProjectedCrudExecutor,
+    ProjectedBatchRow, ProjectedCrudExecutor, ProjectedManagerComparison,
 };
 
 use crate::__codegen::{
-    CompleteModel, EncodedCreate, HydrationCapability, IntoEncodedCreate, RelationModel,
-    SubtypeRootModel,
+    CompleteModel, EncodedCreate, FieldToken, HydrationCapability, IntoEncodedCreate, Model,
+    QueryValued, RelationModel, SubtypeRootModel,
 };
 use crate::error::{Error, ModelValidationPhase};
 use crate::hooks::{CrudOperation, HookRunner, LifecycleHook, ModelKind};
@@ -23,6 +23,7 @@ use crate::projected_batch::{
     uses_successor_batch_runtime, validate_binding_row_count,
 };
 use crate::projected_codec::{materialize_projected, project_create};
+use crate::projected_filter::ProjectedRelationFilter;
 use crate::relation_codec::{
     hydrate_relation, lower_relation_create, resolve_discovered_relation,
     resolve_relation_authority,
@@ -134,11 +135,29 @@ impl<S: Schema, M: RelationModel<Schema = S>> RelationManager<'_, S, M> {
     }
 }
 
-impl<S, M> RelationManager<'_, S, M>
+impl<'db, S, M> RelationManager<'db, S, M>
 where
     S: Schema,
     M: RelationModel<Schema = S> + CompleteModel,
 {
+    /// Start one empty immutable canonical filter for this exact relation model.
+    pub fn filter(&self) -> Result<ProjectedRelationFilter<'db, S, M>> {
+        ProjectedRelationFilter::for_database(self.db)
+    }
+
+    /// Start a canonical filter with one exact generated field comparison.
+    pub fn where_<V>(
+        &self,
+        field: FieldToken<M, V>,
+        operator: ProjectedManagerComparison,
+        value: &V,
+    ) -> Result<ProjectedRelationFilter<'db, S, M>>
+    where
+        V: Model<Schema = S> + QueryValued,
+    {
+        self.filter()?.where_(field, operator, value)
+    }
+
     fn successor_batches_enabled(&self) -> bool {
         self.db
             .installed_schema()

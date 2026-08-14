@@ -9,6 +9,7 @@ from datetime import UTC, date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
+import generated_identical as identical
 import generated_v2._query as generated_query_module
 import generated_variant as variant
 from generated_ordered import CrudHook as OrderedCrudHook
@@ -38,6 +39,9 @@ from generated_v2 import (
     Party,
     Person,
     PersonRef,
+    ProjectedManagerComparison,
+    ProjectedModelFilter,
+    ProjectedModelManager,
     QueryCancellation,
     QueryExecutionResourceLimits,
     RemoteQueryLimits,
@@ -100,6 +104,128 @@ assert isinstance(Employment.employee, RoleToken)
 assert isinstance(Person.identifier, FieldToken)
 assert Person.identifier.fact["key"] is True
 assert Person.aliases.fact["unique"] is True
+
+
+class FakeCanonicalFilterNative:
+    def __init__(
+        self,
+        calls: tuple[tuple[object, str, str, str, object], ...] = (),
+        *,
+        rejected: bool = False,
+    ) -> None:
+        self.calls = calls
+        self.rejected = rejected
+
+    def where_field(
+        self,
+        owner: object,
+        field_name: str,
+        metadata_json: str,
+        comparison: str,
+        value: object,
+    ) -> "FakeCanonicalFilterNative":
+        return FakeCanonicalFilterNative(
+            (*self.calls, (owner, field_name, metadata_json, comparison, value))
+        )
+
+    def reject_unissued_field(self) -> "FakeCanonicalFilterNative":
+        return FakeCanonicalFilterNative(self.calls, rejected=True)
+
+    def all(self) -> list[object]:
+        return []
+
+    def first(self) -> object | None:
+        return None
+
+    def count(self) -> int:
+        return 0
+
+    def exists(self) -> bool:
+        return False
+
+
+class FakeCanonicalManagerNative:
+    def canonical_filter(self) -> FakeCanonicalFilterNative:
+        return FakeCanonicalFilterNative()
+
+
+canonical_manager = ProjectedModelManager.__new__(ProjectedModelManager)
+object.__setattr__(canonical_manager, "_model", Person)
+object.__setattr__(canonical_manager, "_native", FakeCanonicalManagerNative())
+object.__setattr__(canonical_manager, "_hooks", [])
+object.__setattr__(canonical_manager, "_filtered", False)
+issued_foo = Person.foo__bar
+object.__setattr__(issued_foo, "owner", Employment)
+object.__setattr__(issued_foo, "fact", {})
+canonical_filter = canonical_manager.where(
+    issued_foo,
+    ProjectedManagerComparison.GTE,
+    FooBar(7),
+)
+assert isinstance(canonical_filter, ProjectedModelFilter)
+assert canonical_filter._native.calls[0][0:2] == (Person, "foo__bar")
+assert canonical_filter._native.calls[0][3] == "gte"
+assert (
+    canonical_filter.where(
+        Person.identifier,
+        ProjectedManagerComparison.EQ,
+        Identifier("person-1"),
+    )._native.calls[:1]
+    == canonical_filter._native.calls
+)
+
+
+class SpoofManagerComparison:
+    value = "eq"
+
+
+prior_canonical_calls = canonical_filter._native.calls
+try:
+    canonical_filter.where(
+        Person.identifier,
+        SpoofManagerComparison(),
+        Identifier("person-spoof"),
+    )
+except TypeError as error:
+    assert str(error) == "canonical manager comparison must use ProjectedManagerComparison"
+else:
+    raise AssertionError("a spoof canonical manager comparison was accepted")
+assert canonical_filter._native.calls == prior_canonical_calls
+assert (
+    canonical_filter.where(
+        Person.identifier,
+        ProjectedManagerComparison.EQ,
+        Identifier("person-sibling"),
+    )._native.calls[:1]
+    == canonical_filter._native.calls
+)
+forged_field = FieldToken.__new__(FieldToken)
+forged_field.owner = Person
+forged_field.fact = Person.identifier.fact
+equality_target = Person.identifier
+
+
+class EqualityForgedField(FieldToken):
+    def __hash__(self) -> int:
+        return hash(equality_target)
+
+    def __eq__(self, other: object) -> bool:
+        return other is equality_target
+
+
+equality_forged_field = EqualityForgedField(Person, equality_target.fact)
+for unissued in (
+    forged_field,
+    equality_forged_field,
+    identical.Person.identifier,
+    variant.Person.identifier,
+):
+    rejected = canonical_manager.where(
+        unissued,
+        ProjectedManagerComparison.EQ,
+        Identifier("person-1"),
+    )
+    assert rejected._native.rejected is True
 
 person = make_person(
     "person-1",

@@ -1408,6 +1408,11 @@ impl<Owner: Model, Value> FieldToken<Owner, Value> {
     pub const fn metadata_json(self) -> &'static str {
         self.metadata_json
     }
+
+    /// Borrow both canonical evidence fragments without consuming the token.
+    pub(crate) const fn evidence_json(&self) -> (&'static str, &'static str) {
+        (self.owns_id_json, self.metadata_json)
+    }
 }
 
 /// A related-role token branded by owner and exact accepted-player enum.

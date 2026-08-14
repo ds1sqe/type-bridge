@@ -5,7 +5,7 @@ import logging
 from collections.abc import Callable, Mapping, Sequence
 from datetime import date, datetime, timedelta
 from decimal import Decimal
-from enum import Enum
+from enum import Enum, StrEnum
 from typing import (
     TYPE_CHECKING,
     Literal,
@@ -17,11 +17,16 @@ from typing import (
     overload,
     runtime_checkable,
 )
+from weakref import ReferenceType, ref
 
 from type_bridge._runtime_projection import GeneratedEntityProjection, GeneratedRelationProjection
 
 if TYPE_CHECKING:
-    from type_bridge_core import PyProjectedModelManager, PyRuntimeProjection
+    from type_bridge_core import (
+        PyProjectedManagerFilter,
+        PyProjectedModelManager,
+        PyRuntimeProjection,
+    )
 
     from type_bridge.session import Database, TransactionContext
 
@@ -87,7 +92,7 @@ def load_mapping(source: str) -> Mapping[str, object]:
 
 
 class FieldToken:
-    __slots__ = ("owner", "fact")
+    __slots__ = ("owner", "fact", "__weakref__")
 
     def __init__(
         self,
@@ -96,6 +101,32 @@ class FieldToken:
     ) -> None:
         self.owner = owner
         self.fact = fact
+
+
+_issued_field_tokens: dict[int, tuple[ReferenceType[FieldToken], type[ModelBase], str, str]] = {}
+
+
+def _issue_field_token(
+    owner: type[ModelBase],
+    name: str,
+    fact: Mapping[str, object],
+) -> FieldToken:
+    token = FieldToken(owner, fact)
+    token_id = id(token)
+
+    def forget(reference: ReferenceType[FieldToken]) -> None:
+        issued = _issued_field_tokens.get(token_id)
+        if issued is not None and issued[0] is reference:
+            del _issued_field_tokens[token_id]
+
+    token_reference = ref(token, forget)
+    _issued_field_tokens[token_id] = (
+        token_reference,
+        owner,
+        name,
+        _canonical(fact),
+    )
+    return token
 
 
 class RoleToken:
@@ -253,6 +284,68 @@ class ProjectedModelNotFoundError(LookupError):
     """A strict generated-manager mutation could not resolve one input."""
 
 
+class ProjectedManagerComparison(StrEnum):
+    """Closed comparison algebra for canonical generated-manager filters."""
+
+    EQ = "eq"
+    NE = "ne"
+    LT = "lt"
+    LTE = "lte"
+    GT = "gt"
+    GTE = "gte"
+
+
+_MISSING = object()
+
+
+class ProjectedModelFilter[ModelT: ModelBase]:
+    """Persistent exact-model filter with identity-strict ``first``."""
+
+    __slots__ = ("_model", "_native")
+
+    def __init__(
+        self,
+        model: type[ModelT],
+        native: PyProjectedManagerFilter,
+    ) -> None:
+        self._model = model
+        self._native = native
+
+    def where(
+        self,
+        field: FieldToken | object,
+        comparison: ProjectedManagerComparison | object,
+        value: object,
+    ) -> ProjectedModelFilter[ModelT]:
+        if not isinstance(comparison, ProjectedManagerComparison):
+            raise TypeError("canonical manager comparison must use ProjectedManagerComparison")
+        issued = _issued_field_tokens.get(id(field)) if isinstance(field, FieldToken) else None
+        if issued is None or issued[0]() is not field:
+            native = self._native.reject_unissued_field()
+        else:
+            _, owner, name, metadata_json = issued
+            native = self._native.where_field(
+                owner,
+                name,
+                metadata_json,
+                comparison.value,
+                value,
+            )
+        return ProjectedModelFilter(self._model, native)
+
+    def all(self) -> list[ModelT]:
+        return cast(list[ModelT], self._native.all())
+
+    def first(self) -> ModelT | None:
+        return cast(ModelT | None, self._native.first())
+
+    def count(self) -> int:
+        return self._native.count()
+
+    def exists(self) -> bool:
+        return self._native.exists()
+
+
 class ProjectedModelManager[ModelT: ModelBase]:
     __slots__ = ("_filtered", "_hooks", "_model", "_native")
 
@@ -332,7 +425,7 @@ class ProjectedModelManager[ModelT: ModelBase]:
         if instance_or_iid is None:
             if not self._filtered:
                 raise TypeError("generated manager delete() without an instance requires filter()")
-            instances = self.all()
+            instances = cast(list[ModelT], self._native.legacy_all())
             self._run_pre_many(CrudEvent.PRE_DELETE, instances)
             self._native.delete_many([cast(str, instance.iid) for instance in instances])
             self._run_post_many(CrudEvent.POST_DELETE, instances)
@@ -371,7 +464,7 @@ class ProjectedModelManager[ModelT: ModelBase]:
     def update_with(self, function: Callable[[ModelT], None]) -> list[ModelT]:
         if not self._filtered:
             raise TypeError("generated manager update_with() requires filter()")
-        instances = self.all()
+        instances = cast(list[ModelT], self._native.legacy_all())
         for instance in instances:
             function(instance)
         return self.update_many(instances)
@@ -383,6 +476,21 @@ class ProjectedModelManager[ModelT: ModelBase]:
             self._hooks,
             filtered=True,
         )
+
+    def where(
+        self,
+        field: FieldToken | object = _MISSING,
+        comparison: ProjectedManagerComparison | object = _MISSING,
+        value: object = _MISSING,
+    ) -> ProjectedModelFilter[ModelT]:
+        canonical = ProjectedModelFilter(self._model, self._native.canonical_filter())
+        if field is _MISSING and comparison is _MISSING and value is _MISSING:
+            return canonical
+        if field is _MISSING or comparison is _MISSING or value is _MISSING:
+            raise TypeError("where() requires either zero arguments or field, comparison, value")
+        if not isinstance(comparison, ProjectedManagerComparison):
+            raise TypeError("canonical manager comparison must use ProjectedManagerComparison")
+        return canonical.where(field, comparison, value)
 
     def all(self) -> list[ModelT]:
         return cast(list[ModelT], self._native.all())
@@ -743,7 +851,7 @@ class _ProjectedField:
         if instance is None:
             if self.role:
                 return RoleToken(owner, self.fact)
-            return FieldToken(owner, self.fact)
+            return _issue_field_token(owner, self.name, self.fact)
         values = instance.runtime_values()
         if self.name not in values:
             raise AttributeError(self.name)

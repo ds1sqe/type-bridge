@@ -14,6 +14,11 @@ Manager suffixes are `eq`, `ne`, `gt`, `gte`, `lt`, and `lte`. Multiple keyword
 filters are combined with AND. See [CRUD](crud.md#filters) for double-underscore
 field names and the explicit `__eq` escape.
 
+For the binding-neutral exact subset, build a canonical manager filter with an
+issued field token and exact projected value. It is immutable and exposes only
+`all`, identity-strict `first`, `count`, and `exists`; joins, roles, ordering,
+pagination, and rich string predicates remain on the typed-query surface below.
+
 ## Owner-aware fields
 
 ```python

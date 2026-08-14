@@ -174,7 +174,7 @@ fn render_header(
     if ordered {
         render_successor_model_api(&mut output, projection, prefix)?;
     }
-    query::render_inline(&mut output, projection, prefix)?;
+    query::render_inline(&mut output, projection, prefix, ordered)?;
     if ordered {
         let _ = write!(
             output,
@@ -246,7 +246,7 @@ fn projected_nominal_names(
         .c_symbol_prefix()
         .expect("C renderer validated its symbol prefix")
         .as_str();
-    for name in query::nominal_names(projection, prefix)? {
+    for name in query::nominal_names(projection, prefix, ordered)? {
         insert(&name)?;
     }
     if ordered {
@@ -1095,10 +1095,10 @@ fn validate_generated_symbols(
     if ordered {
         insert(format!("{prefix}_schema_package_open_v2"))?;
     }
-    for symbol in query::auxiliary_type_names(projection, prefix)? {
+    for symbol in query::auxiliary_type_names(projection, prefix, ordered)? {
         insert(symbol)?;
     }
-    for symbol in query::function_names(projection, prefix)? {
+    for symbol in query::function_names(projection, prefix, ordered)? {
         insert(symbol)?;
     }
     for symbol in query::macro_names(projection, prefix)? {

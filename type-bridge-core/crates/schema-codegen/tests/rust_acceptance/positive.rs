@@ -181,6 +181,59 @@ async fn reusable_read_context_compiles(
     read.close().await
 }
 
+async fn canonical_manager_filters_compile(
+    database: &type_bridge::Database<AppSchema>,
+) -> type_bridge::Result<()> {
+    let seven = FooBar::new(7).unwrap();
+    let forty = Score::new(40).unwrap();
+    let ada = Identifier::new("data-ada").unwrap();
+
+    let base = database.entities::<Person>().where_(
+        PersonType::foo__bar,
+        type_bridge::ProjectedManagerComparison::Gte,
+        &seven,
+    )?;
+    let sibling = base.where_(
+        PersonType::score,
+        type_bridge::ProjectedManagerComparison::Gt,
+        &forty,
+    )?;
+    let _: Vec<Person> = base.all().await?;
+    let _: u64 = sibling.count().await?;
+    let _: bool = sibling.exists().await?;
+    let _: Option<Person> = database
+        .entities::<Person>()
+        .where_(
+            PersonType::identifier,
+            type_bridge::ProjectedManagerComparison::Eq,
+            &ada,
+        )?
+        .first()
+        .await?;
+
+    let read = database.read().await?;
+    let borrowed = read.entities::<Person>().where_(
+        PersonType::foo__bar,
+        type_bridge::ProjectedManagerComparison::Eq,
+        &seven,
+    )?;
+    let _: Vec<Person> = borrowed.all().await?;
+    let _: u64 = borrowed.count().await?;
+    let _: bool = borrowed.exists().await?;
+    let _: Option<Person> = read
+        .entities::<Person>()
+        .where_(
+            PersonType::identifier,
+            type_bridge::ProjectedManagerComparison::Eq,
+            &ada,
+        )?
+        .first()
+        .await?;
+    let _: u64 = read.relations::<Interaction>().filter()?.count().await?;
+    drop(borrowed);
+    read.close().await
+}
+
 struct RemoteTransport;
 
 impl type_bridge::RemoteQueryTransport for RemoteTransport {

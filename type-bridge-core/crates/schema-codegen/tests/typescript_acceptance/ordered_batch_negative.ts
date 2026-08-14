@@ -37,6 +37,19 @@ personManager.updateMany([["0xa1", membership] as const]);
 personManager.deleteMany([person]);
 // @ts-expect-error deleteMany accepts canonical IID strings, not numbers
 personManager.deleteMany([1]);
+// @ts-expect-error unordered managers do not expose canonical field-token filters
+legacyManager.where();
+// @ts-expect-error exact field values must match the field token's scalar domain
+personManager.where(Person.fields.score, "eq", Identifier.create("wrong"));
+// @ts-expect-error manager comparisons are the closed six-operator vocabulary
+personManager.where(Person.fields.score, "contains", Score.create(1n));
+// @ts-expect-error a relation manager rejects a field token owned by Person
+Membership.manager(database).where(Person.fields.score, "eq", Score.create(1n));
+const canonicalFilter = personManager.where();
+// @ts-expect-error canonical filters expose no mutation terminals
+canonicalFilter.delete(person);
+// @ts-expect-error canonical filters are immutable and expose no object filter escape
+canonicalFilter.filter({ score: Score.create(1n) });
 // @ts-expect-error batch results are immutable
 const mutablePeople: Person[] = personManager.updateMany([["0xa1", person]] as const);
 // @ts-expect-error the replacement retains its exact generated complete type

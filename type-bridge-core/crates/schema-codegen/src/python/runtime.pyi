@@ -1,5 +1,5 @@
 from collections.abc import Callable, Mapping, Sequence
-from enum import Enum
+from enum import Enum, StrEnum
 from typing import Literal, Never, overload
 
 from type_bridge_core import PyRuntimeProjection
@@ -28,6 +28,7 @@ type _OwnerLookup = Literal[
 class FieldToken[OwnerT: ModelBase, AttributeT: AttributeBase]:
     owner: type[OwnerT]
     fact: Mapping[str, object]
+    def _field_value_invariant(self, value: AttributeT) -> AttributeT: ...
 
 class RoleToken[OwnerT: ModelBase, PlayerT_co: ModelBase, CompatibleBindingT_contra]:
     owner: type[OwnerT]
@@ -162,6 +163,26 @@ class CrudHook[ModelT: ModelBase]:
 
 class ProjectedModelNotFoundError(LookupError): ...
 
+class ProjectedManagerComparison(StrEnum):
+    EQ = "eq"
+    NE = "ne"
+    LT = "lt"
+    LTE = "lte"
+    GT = "gt"
+    GTE = "gte"
+
+class ProjectedModelFilter[ModelT: ModelBase]:
+    def where[AttributeT: AttributeBase](
+        self,
+        field: FieldToken[ModelT, AttributeT],
+        comparison: ProjectedManagerComparison,
+        value: AttributeT,
+    ) -> ProjectedModelFilter[ModelT]: ...
+    def all(self) -> list[ModelT]: ...
+    def first(self) -> ModelT | None: ...
+    def count(self) -> int: ...
+    def exists(self) -> bool: ...
+
 class ProjectedModelManager[ModelT: ModelBase]:
     def add_hook(self, hook: CrudHook[ModelT]) -> ProjectedModelManager[ModelT]: ...
     def remove_hook(self, hook: CrudHook[ModelT]) -> None: ...
@@ -185,6 +206,15 @@ class ProjectedModelManager[ModelT: ModelBase]:
     ) -> list[ModelT]: ...
     def update_with(self, function: Callable[[ModelT], None]) -> list[ModelT]: ...
     def filter(self, **filters: object) -> ProjectedModelManager[ModelT]: ...
+    @overload
+    def where(self) -> ProjectedModelFilter[ModelT]: ...
+    @overload
+    def where[AttributeT: AttributeBase](
+        self,
+        field: FieldToken[ModelT, AttributeT],
+        comparison: ProjectedManagerComparison,
+        value: AttributeT,
+    ) -> ProjectedModelFilter[ModelT]: ...
     def all(self) -> list[ModelT]: ...
     def first(self) -> ModelT | None: ...
     def count(self) -> int: ...

@@ -27,6 +27,43 @@ static type_bridge_status_t (*const keyed_thing_at)(
 static type_bridge_status_t (*const gathering_delete_count)(
     const acme_v3_gathering_delete_batch_result *, size_t *,
     type_bridge_execution_diagnostics_t **) = acme_v3_gathering_delete_batch_result_count;
+static type_bridge_status_t (*const keyed_manager_open)(
+    const type_bridge_schema_package_t *, acme_v3_keyed_manager *,
+    type_bridge_execution_diagnostics_t **) = acme_v3_keyed_manager_open;
+static type_bridge_status_t (*const keyed_manager_identifier_eq)(
+    const acme_v3_keyed_manager *, acme_v3_keyed_manager_filter_ref_v1_t,
+    const acme_v3_identifier *, acme_v3_keyed_manager_filter **,
+    type_bridge_execution_diagnostics_t **) =
+    acme_v3_keyed_manager_filter_identifier_eq;
+static type_bridge_status_t (*const keyed_manager_database_all)(
+    const type_bridge_database_t *, const acme_v3_keyed_manager *,
+    acme_v3_keyed_manager_filter_ref_v1_t,
+    const type_bridge_query_execution_limits_v1_t *,
+    const type_bridge_cancellation_t *, acme_v3_keyed_manager_all_result **,
+    type_bridge_execution_diagnostics_t **) = acme_v3_keyed_manager_database_all;
+static type_bridge_status_t (*const keyed_manager_read_first)(
+    const type_bridge_read_transaction_t *, const acme_v3_keyed_manager *,
+    acme_v3_keyed_manager_filter_ref_v1_t,
+    const type_bridge_query_execution_limits_v1_t *,
+    const type_bridge_cancellation_t *, acme_v3_keyed **,
+    type_bridge_execution_diagnostics_t **) =
+    acme_v3_keyed_manager_read_transaction_first;
+static type_bridge_status_t (*const keyed_manager_database_count)(
+    const type_bridge_database_t *, const acme_v3_keyed_manager *,
+    acme_v3_keyed_manager_filter_ref_v1_t,
+    const type_bridge_query_execution_limits_v1_t *,
+    const type_bridge_cancellation_t *, uint64_t *,
+    type_bridge_execution_diagnostics_t **) = acme_v3_keyed_manager_database_count;
+static type_bridge_status_t (*const keyed_manager_read_exists)(
+    const type_bridge_read_transaction_t *, const acme_v3_keyed_manager *,
+    acme_v3_keyed_manager_filter_ref_v1_t,
+    const type_bridge_query_execution_limits_v1_t *,
+    const type_bridge_cancellation_t *, uint8_t *,
+    type_bridge_execution_diagnostics_t **) =
+    acme_v3_keyed_manager_read_transaction_exists;
+static type_bridge_status_t (*const keyed_manager_result_at)(
+    const acme_v3_keyed_manager_all_result *, size_t, acme_v3_keyed **,
+    type_bridge_execution_diagnostics_t **) = acme_v3_keyed_manager_all_result_at;
 
 int main(void) {
   (void)keyed_insert_v2;
@@ -36,5 +73,12 @@ int main(void) {
   (void)membership_execute;
   (void)keyed_thing_at;
   (void)gathering_delete_count;
+  (void)keyed_manager_open;
+  (void)keyed_manager_identifier_eq;
+  (void)keyed_manager_database_all;
+  (void)keyed_manager_read_first;
+  (void)keyed_manager_database_count;
+  (void)keyed_manager_read_exists;
+  (void)keyed_manager_result_at;
   return 0;
 }

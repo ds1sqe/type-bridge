@@ -14,7 +14,10 @@ from generated_v2 import (
     Membership,
     Person,
     PersonRef,
+    ProjectedManagerComparison,
+    ProjectedModelManager,
     Robot,
+    RobotId,
     RoleToken,
     Score,
     SubtypeBoundVar,
@@ -77,6 +80,27 @@ Employment(
     ]
 )
 person(7)  # E: wrong_scalar:reportArgumentType
+
+person_manager = Person.manager(Database(address="localhost:1729", database="generated-manager"))
+person_manager.where(
+    Robot.robot_id,  # E: wrong_manager_field_owner:reportArgumentType
+    ProjectedManagerComparison.EQ,
+    RobotId(7),
+)
+person_manager.where(
+    Person.score,  # E: wrong_manager_field_value:reportArgumentType
+    ProjectedManagerComparison.EQ,
+    Identifier("wrong"),
+)
+
+
+def requires_mutating_manager(value: ProjectedModelManager[Person]) -> None:
+    del value
+
+
+requires_mutating_manager(
+    person_manager.where()  # E: canonical_filter_has_no_mutations:reportArgumentType
+)
 
 query_session = Person.query(Database(address="localhost:1729", database="generated-query"))
 person_var = query_session.exact(Person)

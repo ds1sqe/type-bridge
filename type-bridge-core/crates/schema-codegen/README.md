@@ -22,8 +22,14 @@ The C emitter feature-selects its compatibility surface. Unordered C-v2
 packages retain their five generated files byte-for-byte, including ABI 1.3
 descriptor and dependency metadata. Ordered C-v3 packages include the additive
 ABI 1.4 header and emit policy-aware nominal CRUD and operation-branded batch
-wrappers. The C package remains an unpublished, unsupported foundation until
-the C SDK plans are complete.
+wrappers. They also emit header-local exact-model managers: immutable field-token
+filters compose into siblings, and database or borrowed read-transaction
+terminals provide exhaustive `all`, identity-strict `first`, `count`, and
+`exists` without extending the frozen native export or macro inventories.
+Manager filters and results retain their own native owners and use the same
+generated close/recovery and deep-alias rules as the other nominal C facades.
+The C package remains an unpublished, unsupported foundation until the C SDK
+plans are complete.
 
 This crate has no optional features. It is released in lockstep with TypeBridge
 2.1.0 and requires Rust 1.88+. Generated runtime packages follow the TypeBridge

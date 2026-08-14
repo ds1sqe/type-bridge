@@ -41,6 +41,8 @@ const ORDERED_MATERIALIZE_THING_SOURCE: &[u8] = br#"function materializeThing(
 
 const ORDERED_RUNTIME_SOURCE_SUFFIX: &[u8] = br#"
 
+import { projectedManagerNativeCall } from "@type-bridge/node/runtime-projection";
+
 /** Canonical collection semantics present only in ordered projection resources. */
 export interface Multiplicity {
   readonly collection_mode?: "ordered_list";
@@ -54,8 +56,34 @@ export type ProjectedBatchUpdate<Complete> = readonly [
   replacement: Complete,
 ];
 
+/** Closed comparison vocabulary for canonical generated-manager filters. */
+export type ProjectedManagerComparison =
+  | "eq"
+  | "ne"
+  | "lt"
+  | "lte"
+  | "gt"
+  | "gte";
+
+/** Immutable canonical exact-model field-token filter. */
+export interface ProjectedModelFilter<Complete, Owner extends string = string> {
+  where(): ProjectedModelFilter<Complete, Owner>;
+  where<Attribute extends string, Value>(
+    field: FieldToken<Owner, Attribute, Value>,
+    comparison: ProjectedManagerComparison,
+    value: Value,
+  ): ProjectedModelFilter<Complete, Owner>;
+  all(): readonly Complete[];
+  first(): Complete | null;
+  count(): bigint;
+  exists(): boolean;
+}
+
 /** Batch-complete manager surface present only in ordered successor packages. */
-export interface OrderedProjectedModelManager<Complete>
+export interface OrderedProjectedModelManager<
+  Complete,
+  Owner extends string = string,
+>
   extends ProjectedModelManager<Complete> {
   updateMany(
     updates: readonly ProjectedBatchUpdate<Complete>[],
@@ -63,7 +91,13 @@ export interface OrderedProjectedModelManager<Complete>
   deleteMany(iids: readonly string[]): void;
   filter(
     filters: Readonly<Record<string, ProjectedManagerFilterValue>>,
-  ): OrderedProjectedModelManager<Complete>;
+  ): OrderedProjectedModelManager<Complete, Owner>;
+  where(): ProjectedModelFilter<Complete, Owner>;
+  where<Attribute extends string, Value>(
+    field: FieldToken<Owner, Attribute, Value>,
+    comparison: ProjectedManagerComparison,
+    value: Value,
+  ): ProjectedModelFilter<Complete, Owner>;
 }
 
 /** Model token whose manager retains the ordered successor batch surface. */
@@ -80,7 +114,7 @@ export type OrderedModelToken<
 > & {
   readonly manager: (
     connection: RuntimeProjectionConnection,
-  ) => OrderedProjectedModelManager<Complete>;
+  ) => OrderedProjectedModelManager<Complete, Id>;
 };
 
 type OrderedProjectedEnvelope = ReturnType<
@@ -545,10 +579,10 @@ function retainOrderedProjectedProofs(
   return hydrated;
 }
 
-function orderedProjectedManager<Complete>(
-  typeKey: string,
+function orderedProjectedManager<Complete, Owner extends string>(
+  typeKey: Owner,
   connection: RuntimeProjectionConnection,
-): OrderedProjectedModelManager<Complete> {
+): OrderedProjectedModelManager<Complete, Owner> {
   const projection = requireProjection();
   return orderedProjectedManagerForNative(
     typeKey,
@@ -556,10 +590,13 @@ function orderedProjectedManager<Complete>(
   );
 }
 
-function orderedProjectedManagerForNative<Complete>(
-  typeKey: string,
+function orderedProjectedManagerForNative<Complete, Owner extends string>(
+  typeKey: Owner,
   native: NativeProjectedManager,
-): OrderedProjectedModelManager<Complete> {
+  compatibilityFilter: OrderedNativeManagerFilter | null = projectedManagerNativeCall(
+    () => native.managerFilter(),
+  ),
+): OrderedProjectedModelManager<Complete, Owner> {
   const legacy = projectedManagerForNative<Complete>(typeKey, native);
   const exactWire = (instance: Complete, operation: string): ProjectedWire => {
     const wire = lowerOrderedProjectedValue(instance);
@@ -675,7 +712,7 @@ function orderedProjectedManagerForNative<Complete>(
     },
     filter(
       filters: Readonly<Record<string, ProjectedManagerFilterValue>>,
-    ): OrderedProjectedModelManager<Complete> {
+    ): OrderedProjectedModelManager<Complete, Owner> {
       if (
         filters === null ||
         typeof filters !== "object" ||
@@ -685,14 +722,53 @@ function orderedProjectedManagerForNative<Complete>(
           "projected manager filters require a string-keyed object",
         );
       }
-      const lowered: Record<string, unknown> = {};
-      for (const [name, value] of Object.entries(filters)) {
-        lowered[name] = lowerManagerFilterValue(value);
+      const entries = Object.entries(filters);
+      const lowered: { readonly name: string; readonly value: unknown }[] = [];
+      for (const [name, value] of entries) {
+        lowered.push({ name, value: lowerManagerFilterValue(value) });
+      }
+      let nextCompatibility: OrderedNativeManagerFilter | null = null;
+      const predicates = orderedCompatibilityPredicates(typeKey, entries);
+      if (compatibilityFilter !== null && predicates !== null) {
+        nextCompatibility = compatibilityFilter;
+        for (const predicate of predicates) {
+          nextCompatibility = projectedManagerNativeCall(() =>
+            nextCompatibility!.andProjected(
+              predicate.definition.owner,
+              predicate.definition.attribute,
+              predicate.comparison,
+              JSON.stringify(lowerOrderedProjectedValue(predicate.value)),
+            ),
+          );
+        }
       }
       return orderedProjectedManagerForNative(
         typeKey,
-        native.filterJson(JSON.stringify(lowered)),
+        native.filterEntriesJson(JSON.stringify(lowered)),
+        nextCompatibility,
       );
+    },
+    where<Attribute extends string, Value>(
+      field?: FieldToken<Owner, Attribute, Value>,
+      comparison?: ProjectedManagerComparison,
+      value?: Value,
+    ): ProjectedModelFilter<Complete, Owner> {
+      const filter = orderedProjectedFilterForNative<Complete, Owner>(
+        typeKey,
+        projectedManagerNativeCall(() => native.managerFilter()),
+      );
+      if (field === undefined) {
+        if (comparison !== undefined || value !== undefined) {
+          throw new TypeError("empty manager where accepts no comparison or value");
+        }
+        return filter;
+      }
+      if (comparison === undefined || arguments.length !== 3) {
+        throw new TypeError(
+          "manager where requires a field token, comparison, and exact value",
+        );
+      }
+      return filter.where(field, comparison, value as Value);
     },
     getByIid(iid: string): Complete | null {
       const envelope = native.getByIidProjected(iid);
@@ -701,18 +777,180 @@ function orderedProjectedManagerForNative<Complete>(
         : hydrateOrderedProjectedEnvelope(envelope, typeKey);
     },
     all(): readonly Complete[] {
-      return legacy.all();
+      return compatibilityFilter === null
+        ? legacy.all()
+        : orderedProjectedFilterForNative<Complete, Owner>(
+            typeKey,
+            compatibilityFilter,
+          ).all();
     },
     first(): Complete | null {
       return legacy.first();
     },
     count(): bigint {
-      return legacy.count();
+      return compatibilityFilter === null
+        ? legacy.count()
+        : projectedManagerNativeCall(() => compatibilityFilter.count());
     },
     exists(): boolean {
-      return legacy.exists();
+      return compatibilityFilter === null
+        ? legacy.exists()
+        : projectedManagerNativeCall(() => compatibilityFilter.exists());
     },
   });
+}
+
+type OrderedNativeManagerFilter = ReturnType<
+  NativeProjectedManager["managerFilter"]
+>;
+
+function orderedProjectedFilterForNative<
+  Complete,
+  Owner extends string,
+>(
+  typeKey: Owner,
+  native: OrderedNativeManagerFilter,
+): ProjectedModelFilter<Complete, Owner> {
+  return Object.freeze({
+    where<Attribute extends string, Value>(
+      field?: FieldToken<Owner, Attribute, Value>,
+      comparison?: ProjectedManagerComparison,
+      value?: Value,
+    ): ProjectedModelFilter<Complete, Owner> {
+      if (field === undefined) {
+        if (comparison !== undefined || value !== undefined) {
+          throw new TypeError("empty manager where accepts no comparison or value");
+        }
+        return orderedProjectedFilterForNative(typeKey, native);
+      }
+      if (comparison === undefined || arguments.length !== 3) {
+        throw new TypeError(
+          "manager where requires a field token, comparison, and exact value",
+        );
+      }
+      const definition = fieldTokenStates.get(field);
+      if (definition === undefined) {
+        return projectedManagerNativeCall(() => native.rejectForeignFieldToken());
+      }
+      const wire = lowerOrderedProjectedValue(value);
+      return orderedProjectedFilterForNative(
+        typeKey,
+        projectedManagerNativeCall(() =>
+          native.andProjected(
+            definition.owner,
+            definition.attribute,
+            comparison,
+            JSON.stringify(wire),
+          ),
+        ),
+      );
+    },
+    all(): readonly Complete[] {
+      return Object.freeze(
+        projectedManagerNativeCall(() => native.allProjected())
+          .map((envelope) =>
+            hydrateOrderedProjectedEnvelope<Complete>(envelope, typeKey),
+          ),
+      );
+    },
+    first(): Complete | null {
+      const envelope = projectedManagerNativeCall(() => native.firstProjected());
+      return envelope === null
+        ? null
+        : hydrateOrderedProjectedEnvelope<Complete>(envelope, typeKey);
+    },
+    count(): bigint {
+      return projectedManagerNativeCall(() => native.count());
+    },
+    exists(): boolean {
+      return projectedManagerNativeCall(() => native.exists());
+    },
+  });
+}
+
+interface OrderedCompatibilityPredicate {
+  readonly definition: FieldTokenDefinition<string, string>;
+  readonly comparison: ProjectedManagerComparison;
+  readonly value: unknown;
+}
+
+function orderedCompatibilityPredicates(
+  typeKey: string,
+  entries: readonly (readonly [string, ProjectedManagerFilterValue])[],
+): readonly OrderedCompatibilityPredicate[] | null {
+  const model = orderedModelDefinitions.get(typeKey);
+  if (model === undefined) return null;
+  const fields = Object.values(model.fields)
+    .map((token) => fieldTokenStates.get(token))
+    .filter(
+      (field): field is FieldTokenDefinition<string, string> =>
+        field !== undefined,
+    );
+  const fieldNamed = (
+    name: string,
+  ): FieldTokenDefinition<string, string> | undefined =>
+    fields.find((field) => {
+      if (field.name === name) return true;
+      try {
+        return JSON.parse(field.attribute) === name;
+      } catch {
+        return false;
+      }
+    });
+  const recognisedOperations = new Set([
+    "eq",
+    "exact",
+    "ne",
+    "gt",
+    "gte",
+    "lt",
+    "lte",
+    "contains",
+    "startswith",
+    "endswith",
+    "regex",
+    "like",
+    "in",
+    "isnull",
+  ]);
+  const canonicalOperations = new Set([
+    "eq",
+    "exact",
+    "ne",
+    "lt",
+    "lte",
+    "gt",
+    "gte",
+  ]);
+  const predicates: OrderedCompatibilityPredicate[] = [];
+  for (const [lookupName, value] of entries) {
+    const direct = fieldNamed(lookupName);
+    const separator = lookupName.lastIndexOf("__");
+    const prefix = separator < 0 ? lookupName : lookupName.slice(0, separator);
+    const suffix = separator < 0 ? "eq" : lookupName.slice(separator + 2);
+    const prefixed = recognisedOperations.has(suffix)
+      ? fieldNamed(prefix)
+      : undefined;
+    const definition = prefixed ?? direct;
+    const operation = prefixed === undefined && direct !== undefined ? "eq" : suffix;
+    if (
+      definition === undefined ||
+      !canonicalOperations.has(operation) ||
+      !isProjectedModelValue(value) ||
+      Array.isArray(value)
+    ) {
+      return null;
+    }
+    predicates.push({
+      definition,
+      comparison:
+        operation === "exact"
+          ? "eq"
+          : (operation as ProjectedManagerComparison),
+      value,
+    });
+  }
+  return predicates;
 }
 
 /** @internal Define an ordered model whose create facet uses common native admission. */
@@ -794,7 +1032,7 @@ export function defineOrderedModel<
     ...descriptors["manager"],
     value: (
       connection: RuntimeProjectionConnection,
-    ): OrderedProjectedModelManager<Complete> =>
+    ): OrderedProjectedModelManager<Complete, Id> =>
       orderedProjectedManager(definition.typeKey, connection),
   };
   const token = Object.create(
@@ -1089,7 +1327,18 @@ mod tests {
         assert!(source.contains("export function defineOrderedModel<"));
         assert!(source.contains("TYPE_BRIDGE_ORDERED_COLLECTION_RESOURCE_VERSION = 4"));
         assert!(source.contains("export type ProjectedBatchUpdate<Complete>"));
-        assert!(source.contains("export interface OrderedProjectedModelManager<Complete>"));
+        assert!(source.contains("export interface OrderedProjectedModelManager<"));
+        assert!(source.contains("export interface ProjectedModelFilter<"));
+        assert!(source.contains(
+            "import { projectedManagerNativeCall } from \"@type-bridge/node/runtime-projection\";"
+        ));
+        assert!(source.contains("const entries = Object.entries(filters);"));
+        assert!(source.contains("orderedCompatibilityPredicates(typeKey, entries)"));
+        assert!(!source.contains("orderedCompatibilityPredicates(typeKey, filters)"));
+        assert!(source.contains("return JSON.parse(field.attribute) === name;"));
+        assert!(
+            source.contains("projectedManagerNativeCall(() => native.rejectForeignFieldToken())")
+        );
         assert!(source.contains("export type OrderedModelToken<"));
         assert!(source.contains("native.insertManyProjected<Complete>"));
         assert!(source.contains("native.putManyProjected<Complete>"));

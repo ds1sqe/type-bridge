@@ -47,6 +47,7 @@ pub mod migration_assertion;
 pub mod projected_batch;
 mod projected_batch_executor;
 pub mod projected_crud;
+mod projected_manager_filter;
 pub mod projected_model;
 mod projected_query;
 pub mod provider_runtime;
@@ -141,6 +142,12 @@ pub use projected_crud::ProjectedCrudExecutor;
 pub use projected_crud::{
     ProjectedCrudCompatibilityCause, ProjectedCrudCompatibilityFailure,
     ProjectedCrudCompatibilityStage,
+};
+#[doc(hidden)]
+pub use projected_manager_filter::ProjectedManagerFilterInvocationControl;
+pub use projected_manager_filter::{
+    ProjectedManagerComparison, ProjectedManagerFilter, ProjectedManagerFilterExecutor,
+    ProjectedManagerFilterResourceMeasure,
 };
 pub use projected_model::{
     MAX_PROJECTED_MODEL_BYTES, MAX_PROJECTED_MODEL_MEMBERS, ProjectedAttributeValue,

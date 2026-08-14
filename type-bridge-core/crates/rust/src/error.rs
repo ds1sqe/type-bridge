@@ -915,6 +915,20 @@ impl Error {
         }
     }
 
+    /// Return the exact common SDK diagnostic category, when this error
+    /// directly retains one.
+    ///
+    /// This is an additive, lossless view for generated manager and projected
+    /// batch diagnostics. [`Self::category`] remains the released Rust
+    /// compatibility classification and may intentionally map SDK
+    /// `invalid_input` to [`ErrorCategory::ModelValidation`].
+    #[must_use]
+    pub fn sdk_category(&self) -> Option<&'static str> {
+        StdError::source(self)
+            .and_then(|source| source.downcast_ref::<SdkExecutionDiagnostic>())
+            .map(|diagnostic| diagnostic.category().as_str())
+    }
+
     /// Return the error message string.
     #[must_use]
     pub fn message(&self) -> &str {

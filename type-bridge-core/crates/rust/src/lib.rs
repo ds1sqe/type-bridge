@@ -18,6 +18,7 @@ pub mod hooks;
 pub mod model;
 mod projected_batch;
 mod projected_codec;
+mod projected_filter;
 mod query;
 #[allow(dead_code)]
 mod relation_codec;
@@ -35,6 +36,9 @@ pub use error::{
 };
 pub use hooks::{
     CrudOperation, HookContext, HookError, HookFuture, LifecycleHook, ModelKind, PreHookResult,
+};
+pub use projected_filter::{
+    ProjectedEntityFilter, ProjectedRelationFilter, ReadEntityManager, ReadRelationManager,
 };
 pub use query::{
     Binding, BoundField, BoundRole, Collected, Exact, FieldGroupedQuery, FunctionArgument,
@@ -55,6 +59,7 @@ pub use transaction::{
 pub use type_bridge_orm::{
     AnswerCancellation, MAX_QUERY_ATTRIBUTE_VALUES, MAX_QUERY_BYTES, MAX_QUERY_COLLECTION_MEMBERS,
     MAX_QUERY_GRAPH_NODES, MAX_QUERY_ITEMS, MAX_QUERY_ROLE_PLAYERS, MAX_QUERY_STATEMENTS,
-    MAX_QUERY_TIMEOUT_MILLISECONDS, QueryExecutionDeadline, QueryExecutionResourceLimits,
+    MAX_QUERY_TIMEOUT_MILLISECONDS, ProjectedManagerComparison, QueryExecutionDeadline,
+    QueryExecutionResourceLimits,
 };
 pub use type_bridge_orm_derive::SelectedRow;

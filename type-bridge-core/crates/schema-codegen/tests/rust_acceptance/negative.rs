@@ -56,6 +56,41 @@ async fn active_read_borrow_prevents_close(read: type_bridge::ReadTransaction<'_
     let _ = query.count().await;
 }
 
+fn manager_filter_owner_and_value_are_static(database: &type_bridge::Database<AppSchema>) {
+    let identifier = Identifier::new("data-ada").unwrap();
+    let _ = database.entities::<Person>().where_(
+        RobotType::robot_id,
+        type_bridge::ProjectedManagerComparison::Eq,
+        &RobotId::new(7).unwrap(),
+    );
+    let _ = database.entities::<Person>().where_(
+        PersonType::score,
+        type_bridge::ProjectedManagerComparison::Eq,
+        &identifier,
+    );
+}
+
+fn canonical_filter_exposes_no_mutations(database: &type_bridge::Database<AppSchema>) {
+    let identifier = Identifier::new("data-ada").unwrap();
+    let filter = database
+        .entities::<Person>()
+        .where_(
+            PersonType::identifier,
+            type_bridge::ProjectedManagerComparison::Eq,
+            &identifier,
+        )
+        .unwrap();
+    let _ = filter.insert();
+}
+
+async fn active_manager_filter_borrow_prevents_close(
+    read: type_bridge::ReadTransaction<'_, AppSchema>,
+) {
+    let filter = read.entities::<Person>().filter().unwrap();
+    read.close().await.unwrap();
+    let _ = filter.count().await;
+}
+
 fn requires_event_reference(_: EventRef) {}
 
 fn complete_is_not_reference(value: Event) {

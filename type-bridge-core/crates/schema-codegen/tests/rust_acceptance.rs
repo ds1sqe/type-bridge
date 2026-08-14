@@ -225,6 +225,94 @@ fn generated_rust_crate_compiles_rejects_invalid_types_and_runs() {
 }
 
 #[test]
+fn generated_manager_filter_compile_boundaries_fail_independently() {
+    let stage = Stage::new();
+    let generated = stage.path().join("generated");
+    write_package(&emit(), &generated);
+
+    let cases: [(&str, &str, &[&str]); 4] = [
+        (
+            "manager-filter-rejects-wrong-owner",
+            r#"use generated::{AppSchema, Person, RobotId, RobotType};
+use type_bridge::{Database, ProjectedManagerComparison};
+fn check(db: &Database<AppSchema>) {
+    let _ = db.entities::<Person>().where_(
+        RobotType::robot_id,
+        ProjectedManagerComparison::Eq,
+        &RobotId::new(7).unwrap(),
+    );
+}
+fn main() {}"#,
+            &["mismatched types", "FieldToken", "Person", "Robot"],
+        ),
+        (
+            "manager-filter-rejects-wrong-value",
+            r#"use generated::{AppSchema, Identifier, Person, PersonType};
+use type_bridge::{Database, ProjectedManagerComparison};
+fn check(db: &Database<AppSchema>) {
+    let identifier = Identifier::new("data-ada").unwrap();
+    let _ = db.entities::<Person>().where_(
+        PersonType::score,
+        ProjectedManagerComparison::Eq,
+        &identifier,
+    );
+}
+fn main() {}"#,
+            &["mismatched types", "Identifier", "Score"],
+        ),
+        (
+            "manager-filter-exposes-no-mutations",
+            r#"use generated::{AppSchema, Person};
+use type_bridge::Database;
+fn check(db: &Database<AppSchema>) {
+    let filter = db.entities::<Person>().filter().unwrap();
+    let _ = filter.insert();
+}
+fn main() {}"#,
+            &["no method named `insert`", "ProjectedEntityFilter"],
+        ),
+        (
+            "manager-filter-borrow-prevents-read-close",
+            r#"use generated::{AppSchema, Person};
+async fn check(read: type_bridge::ReadTransaction<'_, AppSchema>) {
+    let filter = read.entities::<Person>().filter().unwrap();
+    read.close().await.unwrap();
+    let _ = filter.count().await;
+}
+fn main() {}"#,
+            &["cannot move out of `read` because it is borrowed"],
+        ),
+    ];
+
+    for (name, source, expected) in cases {
+        let consumer = stage.path().join(name);
+        write_consumer(&consumer, name, source);
+        let output = cargo(
+            &[
+                "check",
+                "--offline",
+                "--quiet",
+                "--manifest-path",
+                consumer.join("Cargo.toml").to_str().unwrap(),
+            ],
+            &stage.path().join(format!("{name}-target")),
+        );
+        assert!(!output.status.success(), "{name} unexpectedly compiled");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        for fragment in expected {
+            assert!(
+                stderr.contains(fragment),
+                "{name} omitted {fragment:?}:\n{stderr}",
+            );
+        }
+        assert!(
+            !stderr.contains("unresolved import"),
+            "{name} failed before the intended boundary:\n{stderr}",
+        );
+    }
+}
+
+#[test]
 fn generated_role_bindings_admit_only_overlapping_subtype_domains() {
     let stage = Stage::new();
     let generated = stage.path().join("generated");
@@ -3183,6 +3271,58 @@ type-bridge-schema = {{ path = "{schema_path}" }}
     )
     .unwrap();
     fs::write(root.join("src/main.rs"), source).unwrap();
+}
+
+#[test]
+fn generated_manager_filter_rejects_a_foreign_nominal_field_token() {
+    let stage = Stage::new();
+    let generated = stage.path().join("generated");
+    let foreign = stage.path().join("foreign");
+    let consumer = stage.path().join("manager-token-negative");
+    let package = emit();
+    write_package(&package, &generated);
+    write_package(&package, &foreign);
+    rename_generated_package(&foreign, "type-bridge-generated-schema-foreign");
+    write_phase2_consumer(
+        &consumer,
+        r#"use generated::{AppSchema, Person};
+use type_bridge::{Database, ProjectedManagerComparison};
+fn check(db: &Database<AppSchema>) {
+    let value = foreign::FooBar::new(7).unwrap();
+    let _ = db.entities::<Person>().where_(
+        foreign::PersonType::foo__bar,
+        ProjectedManagerComparison::Eq,
+        &value,
+    );
+}
+fn main() {}"#,
+    );
+
+    let output = cargo(
+        &[
+            "check",
+            "--offline",
+            "--quiet",
+            "--manifest-path",
+            consumer.join("Cargo.toml").to_str().unwrap(),
+        ],
+        &stage.path().join("manager-token-negative-target"),
+    );
+    assert!(
+        !output.status.success(),
+        "foreign manager field token unexpectedly crossed the nominal package fence",
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    for fragment in [
+        "mismatched types",
+        "type_bridge_generated_schema_foreign",
+        "type_bridge_generated_schema::Person",
+    ] {
+        assert!(
+            stderr.contains(fragment),
+            "foreign manager token diagnostic omitted {fragment:?}:\n{stderr}",
+        );
+    }
 }
 
 fn run_phase2_consumer(

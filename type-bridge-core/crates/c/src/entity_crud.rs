@@ -391,8 +391,21 @@ functions:
     }
 
     pub(crate) fn package(prefix: &str) -> TypeBridgeSchemaPackage {
+        package_from_source(prefix, SCHEMA)
+    }
+
+    pub(crate) fn ordered_package(prefix: &str) -> TypeBridgeSchemaPackage {
+        let source = SCHEMA.replace(
+            "department: { card: { min: 0, max: 1 } }",
+            "department:\n        card: { min: 0, max: 3 }\n        ordered: true",
+        );
+        assert_ne!(source, SCHEMA);
+        package_from_source(prefix, &source)
+    }
+
+    fn package_from_source(prefix: &str, source: &str) -> TypeBridgeSchemaPackage {
         let documents =
-            SchemaDocumentSet::parse([(DocumentId::new("entity-crud.yaml").unwrap(), SCHEMA)])
+            SchemaDocumentSet::parse([(DocumentId::new("entity-crud.yaml").unwrap(), source)])
                 .unwrap();
         let declared = normalize_documents(&documents).unwrap();
         let profile = SemanticProfileId::new("typedb-3.12.1/v1").unwrap();
@@ -406,12 +419,14 @@ functions:
         let authority =
             build_schema_authority(&declared, declared.required_capabilities(), &context).unwrap();
         let emitter = CEmitter::new();
+        let handlers = emitter.generator_handlers_for(&resolved);
+        let resources = emitter.code_resources_for(&resolved).unwrap();
         let projection = project(
             &resolved,
             BindingTarget::C,
             &ProjectionConfig::c(CSymbolPrefix::new(prefix).unwrap()),
-            &emitter.generator_handlers(),
-            &emitter.code_resources().unwrap(),
+            &handlers,
+            &resources,
         )
         .unwrap();
         let evidence = PackageEvidence {

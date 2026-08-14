@@ -70,7 +70,10 @@ duplicated directory snapshot here.
   CRUD/count, homogeneous atomic mutation batches, and closed typed role-player
   unions. The same internal boundary includes a
   generated nominal typed-query facade, reductions, schema-function calls, and
-  caller-owned remote transport over Rust-owned query semantics. Its chunked
+  caller-owned remote transport over Rust-owned query semantics. Ordered C-v3
+  packages also compose those frozen query entries into generated nominal
+  field-token manager filters with database and borrowed-read terminals; this
+  adds no native exports. Its chunked
   package resources and streaming create builder keep generated objects within
   the hosted C11 portability floors. Ordered C-v3 packages select this successor
   surface, but exact TypeDB 3.12.1 live acceptance leaves ordered attributes and

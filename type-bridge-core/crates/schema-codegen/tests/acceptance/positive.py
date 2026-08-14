@@ -32,6 +32,8 @@ from generated_v2 import (
     PlainActivity,
     PlayerStats,
     Predicate,
+    ProjectedManagerComparison,
+    ProjectedModelFilter,
     ProjectedModelManager,
     ProjectedModelNotFoundError,
     Query,
@@ -155,6 +157,25 @@ def generated_owner_lookup_types(database: Database) -> None:
 
 
 filtered_person_manager = person_manager.filter(score__gte=Score(3))
+canonical_person_filter = person_manager.where().where(
+    Person.foo__bar,
+    ProjectedManagerComparison.GTE,
+    FooBar(7),
+)
+canonical_person_filter = canonical_person_filter.where(
+    Person.identifier,
+    ProjectedManagerComparison.EQ,
+    Identifier("person-1"),
+)
+assert_type(canonical_person_filter, ProjectedModelFilter[Person])
+assert_type(
+    person_manager.where(Person.score, ProjectedManagerComparison.EQ, Score(3)),
+    ProjectedModelFilter[Person],
+)
+assert_type(canonical_person_filter.all(), list[Person])
+assert_type(canonical_person_filter.first(), Person | None)
+assert_type(canonical_person_filter.count(), int)
+assert_type(canonical_person_filter.exists(), bool)
 assert_type(person_manager.filter(score__in=[Score(3), Score(4)]), ProjectedModelManager[Person])
 assert_type(person_manager.filter(aliases__isnull=True), ProjectedModelManager[Person])
 assert_type(person_manager.filter(iid__in=["0x1", "0x2"]), ProjectedModelManager[Person])

@@ -288,7 +288,9 @@ fn ordered_projection_selects_successor_evidence_and_descriptors_in_all_bindings
     assert!(typescript_runtime.contains("readonly collection_mode?: \"ordered_list\""));
     assert!(typescript_runtime.contains("TYPE_BRIDGE_ORDERED_COLLECTION_RESOURCE_VERSION = 4"));
     assert!(typescript_runtime.contains("export type ProjectedBatchUpdate<Complete>"));
-    assert!(typescript_runtime.contains("export interface OrderedProjectedModelManager<Complete>"));
+    assert!(typescript_runtime.contains("export interface OrderedProjectedModelManager<"));
+    assert!(typescript_runtime.contains("export interface ProjectedModelFilter<"));
+    assert!(typescript_runtime.contains("export type ProjectedManagerComparison ="));
     assert!(typescript_runtime.contains("export type OrderedModelToken<"));
     assert!(typescript_runtime.contains("native.insertManyProjected<Complete>"));
     assert!(typescript_runtime.contains("native.putManyProjected<Complete>"));
@@ -602,6 +604,8 @@ fn ordered_typescript_runtime_names_are_reserved_only_for_successor_packages() {
             "OrderedProjectedModelManager",
         ),
         ("projected-batch-update", "ProjectedBatchUpdate"),
+        ("projected-manager-comparison", "ProjectedManagerComparison"),
+        ("projected-model-filter", "ProjectedModelFilter"),
     ] {
         let ordered_source = ORDERED_SOURCE.replace("  person:", &format!("  {label}:"));
         let (ordered_schema, ordered_authority) = resolved(&ordered_source);
@@ -742,6 +746,8 @@ fn unordered_schema_aware_evidence_and_fixed_resources_remain_exactly_legacy() {
         std::str::from_utf8(typescript_package.get("src/runtime.ts").unwrap()).unwrap();
     assert!(!typescript_runtime.contains("ProjectedBatchUpdate"));
     assert!(!typescript_runtime.contains("OrderedProjectedModelManager"));
+    assert!(!typescript_runtime.contains("ProjectedManagerComparison"));
+    assert!(!typescript_runtime.contains("ProjectedModelFilter"));
     assert!(!typescript_runtime.contains("OrderedModelToken"));
     assert!(!typescript_runtime.contains("insertManyProjected"));
     assert!(!typescript_runtime.contains("putManyProjected"));

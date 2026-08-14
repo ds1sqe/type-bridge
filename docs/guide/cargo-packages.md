@@ -93,8 +93,11 @@ single-relation CRUD/count with closed typed role-player unions. ABI 1.4 also
 includes typed flat and chunked schema-package admission, policy-aware database
 and transaction entries, homogeneous atomic mutation batches, and the internal
 generated nominal typed-query, reduction, schema-function, and caller-owned
-remote-transport facade. Chunked schema-package resources and a streaming create
-builder keep generated C objects within the hosted C11 portability floors.
+remote-transport facade. Ordered C-v3 packages additionally generate nominal
+field-token manager filters over that existing query ABI, including borrowed
+read-transaction terminals, without adding runtime exports. Chunked
+schema-package resources and a streaming create builder keep generated C
+objects within the hosted C11 portability floors.
 Ordered C-v3 live acceptance on exact TypeDB 3.12.1 leaves ordered values empty
 and does not claim list-instance evidence. Multi-endpoint connection policy and
 the support/distribution contract remain incomplete before C can become a public

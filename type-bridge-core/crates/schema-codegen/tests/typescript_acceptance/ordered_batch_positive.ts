@@ -7,6 +7,8 @@ import {
   type OrderedModelToken,
   type OrderedProjectedModelManager,
   type ProjectedBatchUpdate,
+  type ProjectedManagerComparison,
+  type ProjectedModelFilter,
   type ProjectedModelManager,
 } from "./generated_ordered/src/index.js";
 import type { RustDatabase } from "@type-bridge/node";
@@ -33,7 +35,7 @@ const personToken: OrderedModelToken<
   typeof Person.fields,
   typeof Person.roles
 > = Person;
-const personManager: OrderedProjectedModelManager<Person> =
+const personManager: OrderedProjectedModelManager<Person, typeof Person.typeKey> =
   personToken.manager(database);
 const legacyPersonManager: ProjectedModelManager<Person> = personManager;
 
@@ -58,7 +60,23 @@ const filtered: OrderedProjectedModelManager<Person> = personManager.filter({
 const filteredUpdates: readonly Person[] = filtered.updateMany(personUpdates);
 filtered.deleteMany(["0xa1"] as const);
 
-const membershipManager: OrderedProjectedModelManager<Membership> =
+const comparison: ProjectedManagerComparison = "gte";
+const canonicalFilter: ProjectedModelFilter<Person, typeof Person.typeKey> =
+  personManager
+    .where(Person.fields.score, comparison, Score.create(1n))
+    .where(Person.fields.tag, "eq", Tag.create("one"));
+const canonicalRoot = personManager.where();
+const canonicalPeople: readonly Person[] = canonicalFilter.all();
+const canonicalFirst: Person | null = personManager
+  .where(Person.fields.identifier, "eq", Identifier.create("first"))
+  .first();
+const canonicalCount: bigint = canonicalFilter.count();
+const canonicalExists: boolean = canonicalRoot.exists();
+
+const membershipManager: OrderedProjectedModelManager<
+  Membership,
+  typeof Membership.typeKey
+> =
   Membership.manager(database);
 const insertedMemberships: readonly Membership[] =
   membershipManager.insertMany([membership] as const);
@@ -81,6 +99,10 @@ void insertedPeople;
 void putPeople;
 void updatedPeople;
 void filteredUpdates;
+void canonicalPeople;
+void canonicalFirst;
+void canonicalCount;
+void canonicalExists;
 void insertedMemberships;
 void putMemberships;
 void updatedMemberships;

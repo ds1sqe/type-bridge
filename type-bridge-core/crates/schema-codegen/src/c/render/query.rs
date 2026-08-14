@@ -12,6 +12,7 @@ use super::{
 };
 
 mod function;
+mod manager;
 mod reduction;
 
 const QUERY_MODES: [(&str, &str); 2] = [
@@ -234,6 +235,7 @@ fn remote_nominal_suffixes() -> impl Iterator<Item = String> {
 pub(super) fn nominal_names(
     projection: &RuntimeProjection,
     prefix: &str,
+    ordered: bool,
 ) -> Result<BTreeSet<String>, Diagnostic> {
     let mut names = BTreeSet::new();
     for suffix in package_opaque_suffixes() {
@@ -273,6 +275,9 @@ pub(super) fn nominal_names(
     }
     names.extend(reduction::nominal_names(projection, prefix)?);
     names.extend(function::nominal_names(projection, prefix)?);
+    if ordered {
+        names.extend(manager::nominal_names(projection, prefix)?);
+    }
     Ok(names)
 }
 
@@ -290,6 +295,7 @@ fn bridge_type_names(prefix: &str) -> Result<[String; 6], Diagnostic> {
 pub(super) fn auxiliary_type_names(
     projection: &RuntimeProjection,
     prefix: &str,
+    ordered: bool,
 ) -> Result<BTreeSet<String>, Diagnostic> {
     let mut names = BTreeSet::from(bridge_type_names(prefix)?);
     for model in query_models(projection) {
@@ -301,6 +307,9 @@ pub(super) fn auxiliary_type_names(
     }
     names.extend(reduction::auxiliary_type_names(prefix)?);
     names.extend(function::auxiliary_names(projection, prefix)?);
+    if ordered {
+        names.extend(manager::auxiliary_type_names(projection)?);
+    }
     Ok(names)
 }
 
@@ -347,6 +356,7 @@ pub(super) fn macro_names(
 pub(super) fn function_names(
     projection: &RuntimeProjection,
     prefix: &str,
+    ordered: bool,
 ) -> Result<BTreeSet<String>, Diagnostic> {
     let mut names = BTreeSet::new();
     for suffix in [
@@ -509,6 +519,9 @@ pub(super) fn function_names(
     }
     names.extend(reduction::function_names(projection, prefix)?);
     names.extend(function::function_names(projection, prefix)?);
+    if ordered {
+        names.extend(manager::function_names(projection, prefix)?);
+    }
     Ok(names)
 }
 
@@ -516,6 +529,7 @@ fn render_declarations(
     output: &mut String,
     projection: &RuntimeProjection,
     prefix: &str,
+    ordered: bool,
 ) -> Result<(), Diagnostic> {
     let [
         binding_ref,
@@ -625,6 +639,9 @@ fn render_declarations(
     reduction::render_declarations(output, projection, prefix)?;
     render_remote_declarations(output, prefix)?;
     function::render_declarations(output, projection, prefix)?;
+    if ordered {
+        manager::render_declarations(output, projection, prefix)?;
+    }
     Ok(())
 }
 
@@ -1219,6 +1236,7 @@ pub(super) fn render_definitions(
     output: &mut String,
     projection: &RuntimeProjection,
     prefix: &str,
+    ordered: bool,
 ) -> Result<(), Diagnostic> {
     render_package_definitions(output, projection, prefix)?;
     for model in query_models(projection) {
@@ -1227,6 +1245,9 @@ pub(super) fn render_definitions(
     reduction::render_definitions(output, projection, prefix)?;
     render_remote_definitions(output, prefix)?;
     function::render_definitions(output, projection, prefix)?;
+    if ordered {
+        manager::render_definitions(output, projection, prefix)?;
+    }
     Ok(())
 }
 
@@ -1234,12 +1255,13 @@ pub(super) fn render_inline(
     output: &mut String,
     projection: &RuntimeProjection,
     prefix: &str,
+    ordered: bool,
 ) -> Result<(), Diagnostic> {
     let mut declarations = String::new();
-    render_declarations(&mut declarations, projection, prefix)?;
+    render_declarations(&mut declarations, projection, prefix, ordered)?;
 
     let mut definitions = String::new();
-    render_definitions(&mut definitions, projection, prefix)?;
+    render_definitions(&mut definitions, projection, prefix, ordered)?;
 
     let mut inline = String::with_capacity(declarations.len() + definitions.len());
     let mut skipping_function = false;
@@ -1278,7 +1300,7 @@ pub(super) fn render_inline(
         .cloned()
         .collect::<BTreeSet<_>>();
     if rendered_function_names.len() != unique_rendered_function_names.len()
-        || unique_rendered_function_names != function_names(projection, prefix)?
+        || unique_rendered_function_names != function_names(projection, prefix, ordered)?
     {
         return Err(super::invalid(
             "c_emitter_query_function_inventory_drift",

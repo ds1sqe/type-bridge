@@ -215,6 +215,7 @@ pub struct TypeBridgeSchemaPackage {
 
 /// Immutable verified package state retained by projected handles.
 pub(crate) struct SchemaPackageState {
+    pub(crate) abi_minor: u32,
     pub(crate) authority_json: Vec<u8>,
     pub(crate) projection_json: Vec<u8>,
     pub(crate) semantic_fingerprint_json: Vec<u8>,

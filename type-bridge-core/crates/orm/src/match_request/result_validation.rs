@@ -1661,6 +1661,170 @@ fn validate_solutions<'a>(
     Ok(checked)
 }
 
+/// Validate complete exact-model hydration returned by the private
+/// generated-manager root executor.
+///
+/// The public `CountBy` request supplies canonical graph and schema authority,
+/// while this seam validates the privately hydrated roots as if each were a
+/// one-binding solution. Repeated predicates on one multivalue field are
+/// evaluated against one shared candidate value, matching the compiler's one
+/// variable per [`BoundFieldId`] semantics instead of independently accepting
+/// different members.
+pub(crate) fn validate_manager_things_with_limits(
+    registry: &DescriptorRegistry,
+    validated: &ValidatedMatchRequest,
+    root: BindingId,
+    things: &[HydratedThing],
+    limits: ResultValidationLimits,
+) -> Result<(), MatchError> {
+    validated.recheck_schema(registry)?;
+    let request = validated.request();
+    let [binding] = request.plan.bindings.as_slice() else {
+        return Err(result_error(
+            "manager_filter_query_shape_invalid",
+            "generated-manager evidence requires exactly one validated binding",
+        )
+        .at(MatchErrorPathSegment::Plan));
+    };
+    if binding.id != root
+        || binding.match_mode != MatchMode::Exact
+        || !matches!(request.operation, MatchOperation::CountBy { root: operation_root } if operation_root == root)
+    {
+        return Err(result_error(
+            "manager_filter_query_shape_invalid",
+            "generated-manager evidence requires one exact CountBy root",
+        )
+        .at(MatchErrorPathSegment::Operation));
+    }
+
+    let mut budget = EvidenceBudget::new(limits);
+    budget.charge_solutions(things.len())?;
+    let mut identities = BTreeSet::new();
+    let mut consistent = BTreeMap::new();
+    let mut grouped = BTreeMap::<BoundFieldId, Vec<(ComparisonOp, &AttributeValue)>>::new();
+    if let Some(predicate) = request.plan.predicate.as_ref()
+        && !collect_manager_field_predicates(predicate, root, &mut grouped)
+    {
+        return Err(result_error(
+            "manager_filter_query_shape_invalid",
+            "generated-manager evidence admits only a conjunction of root field literals",
+        )
+        .at(MatchErrorPathSegment::Predicate));
+    }
+
+    for (index, thing) in things.iter().enumerate() {
+        validate_bound_thing(registry, binding, thing, &mut budget).map_err(|error| {
+            error
+                .at(MatchErrorPathSegment::ProviderEvidence)
+                .at(MatchErrorPathSegment::Index(index))
+                .at(MatchErrorPathSegment::Binding(root))
+        })?;
+        if !identities.insert(thing.concept_id().clone()) {
+            return Err(result_error(
+                "duplicate_manager_root",
+                "generated-manager hydration repeats one exact-model IID",
+            )
+            .at(MatchErrorPathSegment::ProviderEvidence)
+            .at(MatchErrorPathSegment::Index(index))
+            .at(MatchErrorPathSegment::Binding(root)));
+        }
+        budget.charge_result_identity()?;
+        require_global_hydration_consistency(
+            &mut consistent,
+            thing.concept_id(),
+            GlobalHydration::thing(thing),
+        )
+        .map_err(|error| {
+            error
+                .at(MatchErrorPathSegment::ProviderEvidence)
+                .at(MatchErrorPathSegment::Index(index))
+                .at(MatchErrorPathSegment::Binding(root))
+        })?;
+        for role in thing.roles() {
+            for player in role.players() {
+                require_global_hydration_consistency(
+                    &mut consistent,
+                    player.concept_id(),
+                    GlobalHydration::player(player),
+                )
+                .map_err(|error| {
+                    error
+                        .at(MatchErrorPathSegment::ProviderEvidence)
+                        .at(MatchErrorPathSegment::Index(index))
+                        .at(MatchErrorPathSegment::Binding(root))
+                        .at(MatchErrorPathSegment::Role(role.role().clone()))
+                })?;
+            }
+        }
+
+        for (field, predicates) in &grouped {
+            let values = thing
+                .attributes()
+                .iter()
+                .find(|attribute| attribute.field() == &field.field)
+                .map(HydratedAttribute::values)
+                .unwrap_or_default();
+            let witnessed = values.iter().any(|candidate| {
+                predicates.iter().all(|(operator, literal)| {
+                    compare_values(*operator, candidate, literal).unwrap_or(false)
+                })
+            });
+            if !witnessed {
+                return Err(result_error(
+                    "predicate_evidence_mismatch",
+                    "provider hydration does not contain one field member satisfying every authored comparison",
+                )
+                .at(MatchErrorPathSegment::ProviderEvidence)
+                .at(MatchErrorPathSegment::Index(index))
+                .at(MatchErrorPathSegment::Field(field.field.clone())));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn collect_manager_field_predicates<'a>(
+    expression: &'a MatchExpr,
+    root: BindingId,
+    grouped: &mut BTreeMap<BoundFieldId, Vec<(ComparisonOp, &'a AttributeValue)>>,
+) -> bool {
+    match expression {
+        MatchExpr::FieldValue {
+            field,
+            operator,
+            value,
+        } if field.binding == root
+            && matches!(
+                operator,
+                ComparisonOp::Equal
+                    | ComparisonOp::NotEqual
+                    | ComparisonOp::LessThan
+                    | ComparisonOp::LessThanOrEqual
+                    | ComparisonOp::GreaterThan
+                    | ComparisonOp::GreaterThanOrEqual
+            ) =>
+        {
+            grouped
+                .entry(field.clone())
+                .or_default()
+                .push((*operator, value));
+            true
+        }
+        MatchExpr::And { expressions } => expressions
+            .iter()
+            .all(|expression| collect_manager_field_predicates(expression, root, grouped)),
+        MatchExpr::FieldValue { .. }
+        | MatchExpr::FieldComparison { .. }
+        | MatchExpr::ScalarComparison { .. }
+        | MatchExpr::FieldPresence { .. }
+        | MatchExpr::BindingIid { .. }
+        | MatchExpr::RoleEdge { .. }
+        | MatchExpr::Reachable { .. }
+        | MatchExpr::Or { .. }
+        | MatchExpr::Not { .. } => false,
+    }
+}
+
 #[derive(Clone, Copy)]
 struct GlobalHydration<'a> {
     concrete_descriptor: &'a DescriptorId,
@@ -4422,6 +4586,98 @@ mod tests {
                 value: true
             } if *root == BindingId::new(0)
         ));
+    }
+
+    #[test]
+    fn manager_multivalue_conjunction_requires_one_shared_member() {
+        let registry = registry();
+        let root = BindingId::new(0);
+        let notes = BoundFieldId::new(root, field(&registry, "employee", "notes"));
+        let request = |upper: &str| {
+            validate_match_request(
+                &registry,
+                MatchRequest::v1(
+                    MatchPlan {
+                        bindings: vec![binding(
+                            &registry,
+                            0,
+                            "employee",
+                            ThingKind::Entity,
+                            MatchMode::Exact,
+                        )],
+                        predicate: Some(MatchExpr::And {
+                            expressions: vec![
+                                MatchExpr::FieldValue {
+                                    field: notes.clone(),
+                                    operator: ComparisonOp::GreaterThan,
+                                    value: AttributeValue::String("b".into()),
+                                },
+                                MatchExpr::FieldValue {
+                                    field: notes.clone(),
+                                    operator: ComparisonOp::LessThan,
+                                    value: AttributeValue::String(upper.into()),
+                                },
+                            ],
+                        }),
+                        allowed_cross_joins: BTreeSet::new(),
+                    },
+                    MatchOperation::CountBy { root },
+                ),
+            )
+            .unwrap()
+        };
+        let descriptor = registry.descriptor_id("employee").unwrap();
+        let hydrated = HydratedThing::new(
+            ConceptId::new("employee-1"),
+            descriptor.clone(),
+            descriptor,
+            ThingKind::Entity,
+            vec![
+                hydrated_attribute(
+                    &registry,
+                    "employee",
+                    "name",
+                    vec![AttributeValue::String("Ada".into())],
+                ),
+                hydrated_attribute(
+                    &registry,
+                    "employee",
+                    "badge",
+                    vec![AttributeValue::String("badge-1".into())],
+                ),
+                hydrated_attribute(
+                    &registry,
+                    "employee",
+                    "notes",
+                    vec![
+                        AttributeValue::String("a".into()),
+                        AttributeValue::String("c".into()),
+                    ],
+                ),
+            ],
+            vec![],
+        );
+
+        let impossible = request("b");
+        let error = validate_manager_things_with_limits(
+            &registry,
+            &impossible,
+            root,
+            std::slice::from_ref(&hydrated),
+            ResultValidationLimits::DEFAULT,
+        )
+        .unwrap_err();
+        assert_eq!(error_code(&error), "predicate_evidence_mismatch");
+
+        let witnessed = request("d");
+        validate_manager_things_with_limits(
+            &registry,
+            &witnessed,
+            root,
+            &[hydrated],
+            ResultValidationLimits::DEFAULT,
+        )
+        .unwrap();
     }
 
     #[test]

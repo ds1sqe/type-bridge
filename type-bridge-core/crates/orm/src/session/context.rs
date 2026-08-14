@@ -11,7 +11,9 @@ use super::backend::{
 use super::database::DatabaseExecutionIdentity;
 use crate::_registry::DescriptorRegistry;
 use crate::error::{ClassifiedCommitError, OrmError, Result};
-use crate::match_request::selected_result_executor::SelectedResultExecutor;
+use crate::match_request::selected_result_executor::{
+    ManagerHydratedRoots, ManagerRootSelection, SelectedResultExecutor,
+};
 use crate::match_request::{
     CapabilitySet, MatchExecutionLimits, ValidatedMatchRequest, ValidatedMatchResult,
 };
@@ -517,6 +519,18 @@ impl TransactionContext {
     ) -> Result<ValidatedMatchResult> {
         SelectedResultExecutor::new(registry, self.match_capabilities.clone(), limits)
             .execute_compatible_borrowed(self, validated)
+            .await
+    }
+
+    pub(crate) async fn execute_manager_roots_with_limits(
+        &self,
+        registry: &DescriptorRegistry,
+        validated: &ValidatedMatchRequest,
+        selection: ManagerRootSelection,
+        limits: MatchExecutionLimits,
+    ) -> Result<ManagerHydratedRoots> {
+        SelectedResultExecutor::new(registry, self.match_capabilities.clone(), limits)
+            .execute_manager_roots_borrowed(self, validated, selection)
             .await
     }
 

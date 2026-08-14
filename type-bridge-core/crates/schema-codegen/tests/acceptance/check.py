@@ -141,6 +141,7 @@ def main() -> None:
             str(STAGE / "generated_v2"),
         ]
     )
+    shutil.copytree(STAGE / "generated_v2", STAGE / "generated_identical")
     command(
         [
             "cargo",

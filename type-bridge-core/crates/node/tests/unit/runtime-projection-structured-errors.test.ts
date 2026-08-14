@@ -10,6 +10,7 @@ import {
 } from "../../typescript/index.js";
 import {
   InstalledRuntimeProjection,
+  projectedManagerNativeCall,
   type RuntimeProjectionConnection,
 } from "../../typescript/runtime-projection.js";
 import {
@@ -30,6 +31,20 @@ const nativeDiagnostic = Object.freeze({
 function throwNativeDiagnostic(): never {
   throw new Error(JSON.stringify(nativeDiagnostic));
 }
+
+test("generated manager calls preserve structured SDK diagnostics", () => {
+  assert.throws(() => projectedManagerNativeCall(throwNativeDiagnostic), (error: unknown) => {
+    assert.ok(error instanceof QueryV2Error);
+    assert.equal(error.category, nativeDiagnostic.category);
+    assert.equal(error.sdkCategory, nativeDiagnostic.sdkCategory);
+    assert.equal(error.queryCategory, nativeDiagnostic.queryCategory);
+    assert.equal(error.code, nativeDiagnostic.code);
+    assert.equal(error.diagnosticMessage, nativeDiagnostic.message);
+    assert.deepEqual(error.path, nativeDiagnostic.path);
+    assert.deepEqual(error.details, nativeDiagnostic.details);
+    return true;
+  });
+});
 
 function directExecutionFixture(): {
   projection: InstalledRuntimeProjection;

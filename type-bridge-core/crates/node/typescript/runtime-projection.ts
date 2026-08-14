@@ -331,6 +331,8 @@ export interface NativeProjectedManager {
     rowCount: number,
     rowAt: (ordinal: number) => string,
   ): void;
+  managerFilter(): NativeProjectedManagerFilter;
+  filterEntriesJson(filtersJson: string): NativeProjectedManager;
   filterJson(filtersJson: string): NativeProjectedManager;
   getByIidProjected(iid: string): NativeProjectedValueEnvelope | null;
   getByIidJson(iid: string): string;
@@ -338,6 +340,26 @@ export interface NativeProjectedManager {
   firstJson(): string;
   count(): bigint;
   exists(): boolean;
+}
+
+/** @internal Immutable common field-token filter for ordered generated managers. */
+export interface NativeProjectedManagerFilter {
+  andProjected(
+    fieldOwnerTypeKey: string,
+    fieldAttributeKey: string,
+    comparison: "eq" | "ne" | "lt" | "lte" | "gt" | "gte",
+    valueJson: string,
+  ): NativeProjectedManagerFilter;
+  rejectForeignFieldToken(): never;
+  allProjected(): readonly NativeProjectedValueEnvelope[];
+  firstProjected(): NativeProjectedValueEnvelope | null;
+  count(): bigint;
+  exists(): boolean;
+}
+
+/** @internal Preserve structured SDK diagnostics from generated-manager N-API calls. */
+export function projectedManagerNativeCall<Result>(operation: () => Result): Result {
+  return queryV2NativeCall(operation);
 }
 
 interface NativeProjectionHandle {

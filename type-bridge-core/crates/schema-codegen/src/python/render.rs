@@ -22,6 +22,8 @@ const PUBLIC_RUNTIME_NAMES: &[&str] = &[
     "FieldToken",
     "FunctionRef",
     "HookCancelled",
+    "ProjectedManagerComparison",
+    "ProjectedModelFilter",
     "ProjectedModelManager",
     "ProjectedModelNotFoundError",
     "RoleToken",
@@ -142,6 +144,8 @@ fn render_init(projection: &RuntimeProjection, stub: bool, ordered: bool) -> Str
          from ._runtime import FieldToken as FieldToken\n\
          from ._runtime import FunctionRef as FunctionRef\n\
          from ._runtime import HookCancelled as HookCancelled\n\
+         from ._runtime import ProjectedManagerComparison as ProjectedManagerComparison\n\
+         from ._runtime import ProjectedModelFilter as ProjectedModelFilter\n\
          from ._runtime import ProjectedModelManager as ProjectedModelManager\n\
          from ._runtime import ProjectedModelNotFoundError as ProjectedModelNotFoundError\n\
          from ._runtime import RoleToken as RoleToken\n",

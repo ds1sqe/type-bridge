@@ -519,6 +519,42 @@ pub fn materialize_projected_query_result_with_budget(
     })
 }
 
+/// Atomically materialize the complete hydration returned by the private
+/// generated-manager root executor.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the manager materializer keeps every authority and invocation budget explicit"
+)]
+pub(crate) fn materialize_projected_manager_things_with_budget(
+    installed: &InstalledRuntimeProjection,
+    registry: &DescriptorRegistry,
+    origin: ProjectedQueryOrigin,
+    model: &TypeId,
+    things: &[HydratedThing],
+    limits: ProjectedQueryMaterializationLimits,
+    cancellation: &AnswerCancellation,
+    deadline: Option<QueryExecutionDeadline>,
+) -> Result<Vec<Arc<ProjectedThing>>, SdkExecutionDiagnostic> {
+    check_materialization_budget(cancellation, deadline)?;
+    let mut materializer =
+        Materializer::new(installed, registry, origin, limits, cancellation, deadline);
+    materializer.add_rows(things.len())?;
+    let mut projected = Vec::new();
+    projected
+        .try_reserve_exact(things.len())
+        .map_err(|_| materialization_allocation())?;
+    for thing in things {
+        materializer.checkpoint()?;
+        let value = materializer.thing(thing)?;
+        if value.type_id() != model {
+            return Err(result_integrity());
+        }
+        projected.push(value);
+    }
+    materializer.checkpoint()?;
+    Ok(projected)
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "the materializer boundary keeps every invocation proof and budget explicit"

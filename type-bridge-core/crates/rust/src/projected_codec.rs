@@ -2,7 +2,11 @@
 
 use type_bridge_contract::codec::{from_canonical_json, to_canonical_json};
 use type_bridge_contract::id::{RoleId, TypeId, TypeKind};
+use type_bridge_contract::projection::{FieldTokenProjection, ProjectedTokenIdentity};
 use type_bridge_contract::schema::OwnsFactId;
+use type_bridge_contract::sdk_diagnostic::{
+    SdkDiagnosticCode, SdkDiagnosticMessage, SdkExecutionDiagnostic,
+};
 use type_bridge_contract::value::CanonicalValue;
 use type_bridge_orm::{
     AttributeValue, InstalledRuntimeProjection, ProjectedAttributeValue, ProjectedCreate,
@@ -11,12 +15,131 @@ use type_bridge_orm::{
 
 use crate::__codegen::{
     CanonicalDouble, CompleteModel, Date, DateTime, DateTimeTz, Decimal, Duration, EncodedCreate,
-    EncodedReference, EncodedScalar, HydratedPlayer, HydratedRow, HydrationCapability,
-    IntoEncodedCreate, ReferenceOrigin, ValidationPath,
+    EncodedReference, EncodedScalar, FieldToken, HydratedPlayer, HydratedRow, HydrationCapability,
+    IntoEncodedCreate, Model, QueryValued, ReferenceOrigin, ValidationPath,
 };
 use crate::Result;
 use crate::entity_codec::map_validation_error;
 use crate::error::{Error, ModelValidationPhase};
+
+/// Resolve one generated field token and exact generated scalar into the
+/// binding-neutral manager-filter inputs. The public filter API statically
+/// couples the token owner to its manager and the value to its token; this
+/// runtime fence additionally rejects foreign or forged token metadata that
+/// differs from the installed projection. Because `FieldToken::new` is a
+/// released public compatibility surface, an exact-byte reconstruction with
+/// the same nominal owner and value is observationally equivalent and valid.
+pub(crate) fn project_manager_predicate<S, M, V>(
+    installed: &InstalledRuntimeProjection,
+    selected_model: &TypeId,
+    field: FieldToken<M, V>,
+    value: &V,
+) -> Result<(ProjectedTokenIdentity, ProjectedAttributeValue)>
+where
+    S: crate::schema::Schema,
+    M: Model<Schema = S>,
+    V: Model<Schema = S> + QueryValued,
+{
+    let (owns_identity, metadata) = field.evidence_json();
+    let effective = match resolve_owns_identity(
+        installed,
+        selected_model,
+        owns_identity,
+        ModelValidationPhase::Input,
+        "generated_token_package_mismatch",
+        vec!["field".into()],
+        "generated field token is not part of the selected installed package",
+    ) {
+        Ok(value) => value,
+        Err(_) if installed_token_exists(installed, owns_identity, metadata) => {
+            return Err(manager_filter_error(SdkExecutionDiagnostic::integrity(
+                SdkDiagnosticCode::new("field_owner_mismatch")
+                    .expect("static manager-filter diagnostic code is valid"),
+                SdkDiagnosticMessage::new(
+                    "The generated field token belongs to a different exact model owner",
+                )
+                .expect("static manager-filter diagnostic message is valid"),
+            )));
+        }
+        Err(_) => {
+            return Err(manager_filter_error(
+                SdkExecutionDiagnostic::generated_token_package_mismatch(),
+            ));
+        }
+    };
+
+    let Some(installed_token) = installed
+        .projection()
+        .models()
+        .get(selected_model)
+        .and_then(|model| model.query_tokens().fields().get(&effective))
+    else {
+        return Err(manager_filter_error(
+            SdkExecutionDiagnostic::generated_token_package_mismatch(),
+        ));
+    };
+    if !field_token_json_matches(installed_token, metadata) {
+        return Err(manager_filter_error(
+            SdkExecutionDiagnostic::generated_token_package_mismatch(),
+        ));
+    }
+
+    let value_type = decode_type_identity(
+        V::TYPE_ID_JSON,
+        ModelValidationPhase::Input,
+        "generated_token_package_mismatch",
+        vec!["value".into(), "type".into()],
+        "generated filter value type is not canonical",
+    )?;
+    if !type_id_json_matches(&value_type, V::TYPE_ID_JSON) {
+        return Err(manager_filter_error(
+            SdkExecutionDiagnostic::generated_token_package_mismatch(),
+        ));
+    }
+    let canonical = value
+        .into_encoded_scalar()
+        .to_canonical_value(&ValidationPath::root().join("value"))
+        .map_err(|error| map_validation_error(error, ModelValidationPhase::Input))?;
+    let value = ProjectedAttributeValue::try_new(installed, value_type, canonical)
+        .map_err(manager_filter_error)?;
+
+    Ok((
+        ProjectedTokenIdentity::Field {
+            owner: selected_model.clone(),
+            field: effective,
+        },
+        value,
+    ))
+}
+
+fn installed_token_exists(
+    installed: &InstalledRuntimeProjection,
+    owns_identity: &str,
+    metadata: &str,
+) -> bool {
+    installed.projection().models().values().any(|model| {
+        model.query_tokens().fields().values().any(|token| {
+            owns_id_json_matches(token.declaring_id(), owns_identity)
+                && field_token_json_matches(token, metadata)
+        })
+    })
+}
+
+fn owns_id_json_matches(value: &OwnsFactId, expected: &str) -> bool {
+    to_canonical_json(value).is_ok_and(|canonical| canonical.as_slice() == expected.as_bytes())
+}
+
+fn field_token_json_matches(value: &FieldTokenProjection, expected: &str) -> bool {
+    to_canonical_json(value).is_ok_and(|canonical| canonical.as_slice() == expected.as_bytes())
+}
+
+fn type_id_json_matches(value: &TypeId, expected: &str) -> bool {
+    to_canonical_json(value).is_ok_and(|canonical| canonical.as_slice() == expected.as_bytes())
+}
+
+pub(crate) fn manager_filter_error(error: SdkExecutionDiagnostic) -> Error {
+    Error::from_projected_batch(error, ModelValidationPhase::Input)
+}
 
 /// Lower one generated create value into the common projected DTO without a
 /// serialized model or dynamic field-name representation.
@@ -658,11 +781,257 @@ mod tests {
     use type_bridge_schema_codegen::RustEmitter;
 
     use super::*;
+    use crate::__codegen::{IntoEncodedScalar, QueryValued};
+    use crate::schema::{Schema, sealed};
+
+    struct ManagerSchema;
+    impl sealed::Sealed for ManagerSchema {}
+    impl Schema for ManagerSchema {}
+
+    struct ManagerPerson;
+    impl sealed::Sealed for ManagerPerson {}
+    impl Model for ManagerPerson {
+        type Schema = ManagerSchema;
+        const TYPE_ID_JSON: &'static str = r#"{"kind":"entity","label":"person"}"#;
+    }
+
+    struct ManagerIdentifier(String);
+    impl sealed::Sealed for ManagerIdentifier {}
+    impl Model for ManagerIdentifier {
+        type Schema = ManagerSchema;
+        const TYPE_ID_JSON: &'static str = r#"{"kind":"attribute","label":"identifier"}"#;
+    }
+    impl IntoEncodedScalar for ManagerIdentifier {
+        fn into_encoded_scalar(&self) -> EncodedScalar {
+            EncodedScalar::String(self.0.clone())
+        }
+    }
+    impl QueryValued for ManagerIdentifier {
+        type Domain = String;
+    }
+
+    struct ManagerFlag(bool);
+    impl sealed::Sealed for ManagerFlag {}
+    impl Model for ManagerFlag {
+        type Schema = ManagerSchema;
+        const TYPE_ID_JSON: &'static str = r#"{"kind":"attribute","label":"flag"}"#;
+    }
+    impl IntoEncodedScalar for ManagerFlag {
+        fn into_encoded_scalar(&self) -> EncodedScalar {
+            EncodedScalar::Boolean(self.0)
+        }
+    }
+    impl QueryValued for ManagerFlag {
+        type Domain = bool;
+    }
 
     macro_rules! canonical_identity {
         ($value:expr) => {
             String::from_utf8(to_canonical_json($value).unwrap()).unwrap()
         };
+    }
+
+    #[test]
+    fn manager_adapter_preserves_nominal_and_common_filter_diagnostics() {
+        let installed = manager_filter_fixture();
+        let person = TypeId::new(TypeKind::Entity, "person").unwrap();
+        let other = TypeId::new(TypeKind::Entity, "other").unwrap();
+        let identifier = ManagerIdentifier("ada".into());
+        let base =
+            type_bridge_orm::ProjectedManagerFilter::try_new(&installed, person.clone()).unwrap();
+
+        let valid = manager_field_token::<ManagerPerson, ManagerIdentifier>(
+            &installed,
+            &person,
+            "identifier",
+        );
+        let (valid_owns, valid_metadata) = valid.evidence_json();
+        let exact_clone =
+            FieldToken::<ManagerPerson, ManagerIdentifier>::new(valid_owns, valid_metadata);
+        let (field, value) = project_manager_predicate::<
+            ManagerSchema,
+            ManagerPerson,
+            ManagerIdentifier,
+        >(&installed, &person, valid, &identifier)
+        .unwrap();
+        let valid_filter = base
+            .try_and(
+                &installed,
+                &field,
+                type_bridge_orm::ProjectedManagerComparison::Eq,
+                &value,
+            )
+            .unwrap();
+        assert_eq!(valid_filter.len(), 1);
+
+        // The released public constructor cannot carry hidden issuance
+        // provenance. An exact-byte reconstruction is deliberately equivalent
+        // to the generated constant; the nominal M/V types remain the fence.
+        let (field, value) = project_manager_predicate::<
+            ManagerSchema,
+            ManagerPerson,
+            ManagerIdentifier,
+        >(&installed, &person, exact_clone, &identifier)
+        .unwrap();
+        base.try_and(
+            &installed,
+            &field,
+            type_bridge_orm::ProjectedManagerComparison::Eq,
+            &value,
+        )
+        .unwrap();
+
+        let wrong_owner = manager_field_token::<ManagerPerson, ManagerIdentifier>(
+            &installed,
+            &other,
+            "identifier",
+        );
+        let owner_error = project_manager_predicate::<
+            ManagerSchema,
+            ManagerPerson,
+            ManagerIdentifier,
+        >(&installed, &person, wrong_owner, &identifier)
+        .unwrap_err();
+        assert_manager_adapter_error(
+            &owner_error,
+            SdkDiagnosticCategory::Integrity,
+            "field_owner_mismatch",
+        );
+
+        let forged = FieldToken::<ManagerPerson, ManagerIdentifier>::new(
+            r#"{"attribute":"identifier","owner":{"kind":"entity","label":"person"}}"#,
+            "{}",
+        );
+        let package_error = project_manager_predicate::<
+            ManagerSchema,
+            ManagerPerson,
+            ManagerIdentifier,
+        >(&installed, &person, forged, &identifier)
+        .unwrap_err();
+        assert_manager_adapter_error(
+            &package_error,
+            SdkDiagnosticCategory::Integrity,
+            "generated_token_package_mismatch",
+        );
+
+        let wrong_scalar =
+            manager_field_token::<ManagerPerson, ManagerIdentifier>(&installed, &person, "score");
+        let (field, value) = project_manager_predicate::<
+            ManagerSchema,
+            ManagerPerson,
+            ManagerIdentifier,
+        >(&installed, &person, wrong_scalar, &identifier)
+        .unwrap();
+        let scalar_error = base
+            .try_and(
+                &installed,
+                &field,
+                type_bridge_orm::ProjectedManagerComparison::Eq,
+                &value,
+            )
+            .unwrap_err();
+        assert_manager_adapter_error(
+            &manager_filter_error(scalar_error),
+            SdkDiagnosticCategory::InvalidInput,
+            "wrong_scalar_domain",
+        );
+
+        let flag = ManagerFlag(true);
+        let flag_token =
+            manager_field_token::<ManagerPerson, ManagerFlag>(&installed, &person, "flag");
+        let (field, value) =
+            project_manager_predicate::<ManagerSchema, ManagerPerson, ManagerFlag>(
+                &installed, &person, flag_token, &flag,
+            )
+            .unwrap();
+        let operator_error = base
+            .try_and(
+                &installed,
+                &field,
+                type_bridge_orm::ProjectedManagerComparison::Gt,
+                &value,
+            )
+            .unwrap_err();
+        assert_manager_adapter_error(
+            &manager_filter_error(operator_error),
+            SdkDiagnosticCategory::InvalidInput,
+            "invalid_operator_for_type",
+        );
+    }
+
+    fn assert_manager_adapter_error(error: &Error, category: SdkDiagnosticCategory, code: &str) {
+        let public_category = match category {
+            SdkDiagnosticCategory::InvalidInput => crate::error::ErrorCategory::ModelValidation,
+            SdkDiagnosticCategory::Integrity => crate::error::ErrorCategory::Integrity,
+            _ => panic!("manager adapter fixture uses only input and integrity diagnostics"),
+        };
+        assert_eq!(error.category(), public_category);
+        assert_eq!(error.sdk_category(), Some(category.as_str()));
+        assert_eq!(error.code(), Some(code));
+        let diagnostic = std::error::Error::source(error)
+            .and_then(|source| source.downcast_ref::<SdkExecutionDiagnostic>())
+            .expect("manager adapter retains its common SDK diagnostic");
+        assert_eq!(diagnostic.category(), category);
+        assert_eq!(diagnostic.code().as_str(), code);
+    }
+
+    fn manager_field_token<M, V>(
+        installed: &InstalledRuntimeProjection,
+        owner: &TypeId,
+        target_name: &str,
+    ) -> FieldToken<M, V>
+    where
+        M: Model,
+    {
+        let field = installed.projection().models()[owner]
+            .query_tokens()
+            .fields()
+            .values()
+            .find(|field| field.target_name().as_str() == target_name)
+            .unwrap();
+        let owns = String::from_utf8(to_canonical_json(field.declaring_id()).unwrap()).unwrap();
+        let metadata = String::from_utf8(to_canonical_json(field).unwrap()).unwrap();
+        FieldToken::new(
+            Box::leak(owns.into_boxed_str()),
+            Box::leak(metadata.into_boxed_str()),
+        )
+    }
+
+    fn manager_filter_fixture() -> InstalledRuntimeProjection {
+        let documents = SchemaDocumentSet::parse([(
+            DocumentId::new("manager-filter.yaml").unwrap(),
+            r#"format: typebridge.schema/v2
+attributes:
+  identifier: { value: string }
+  score: { value: integer }
+  flag: { value: boolean }
+entities:
+  person:
+    owns:
+      identifier: { key: true }
+      score: { card: 1 }
+      flag: { card: 1 }
+  other:
+    owns:
+      identifier: { key: true }
+"#,
+        )])
+        .unwrap();
+        let resolved = resolve(
+            &normalize_documents(&documents).unwrap(),
+            &SemanticProfileId::new("typedb-3.12.1/v1").unwrap(),
+        )
+        .unwrap();
+        let emitter = RustEmitter::new();
+        let projection = project(
+            &resolved,
+            BindingTarget::Rust,
+            &ProjectionConfig::rust(),
+            &emitter.generator_handlers(),
+            &emitter.code_resources().unwrap(),
+        )
+        .unwrap();
+        InstalledRuntimeProjection::try_new(projection).unwrap()
     }
 
     #[test]

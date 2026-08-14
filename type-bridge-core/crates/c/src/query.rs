@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 
 use type_bridge_contract::id::{FunctionId, TypeId, TypeKind};
 use type_bridge_contract::limits::MAX_REMOTE_ENVELOPE_BYTES;
-use type_bridge_contract::projection::ProjectedTokenIdentity;
+use type_bridge_contract::projection::{ProjectedTokenIdentity, ProjectionHandler};
 use type_bridge_contract::query_remote::RemoteCapabilities;
 use type_bridge_contract::schema::{OwnsFactId, encode_declared_schema};
 use type_bridge_contract::sdk_diagnostic::{
@@ -22,10 +22,12 @@ use type_bridge_orm::query_v2_prepared::QueryAuthority;
 use type_bridge_orm::{
     BindingHandle, FieldHandle, FunctionArgumentHandle, FunctionCallHandle, FunctionHandle,
     FunctionValueHandle, MatchMode, MissingOrder, OrderHandle, PredicateHandle,
-    ProjectedQueryMaterializationLimits, ProjectedQueryOrigin, ProjectedQueryResult,
-    ProjectedQuerySlotValue, ProjectedQueryValue, ProjectedReducedValue, ProjectedReductionGroup,
-    ProjectedReductionRow, QueryExecutionDeadline, QueryExecutionResourceLimits, QueryHandle,
-    Reduction, RemoteModelQueryV2Error, RoleHandle, RowCardinality, SelectionHandle, SessionHandle,
+    ProjectedManagerFilter, ProjectedManagerFilterExecutor,
+    ProjectedManagerFilterInvocationControl, ProjectedQueryMaterializationLimits,
+    ProjectedQueryOrigin, ProjectedQueryResult, ProjectedQuerySlotValue, ProjectedQueryValue,
+    ProjectedReducedValue, ProjectedReductionGroup, ProjectedReductionRow, ProjectedThing,
+    QueryExecutionDeadline, QueryExecutionResourceLimits, QueryHandle, Reduction,
+    RemoteModelQueryV2Error, RoleHandle, RowCardinality, SelectionHandle, SessionHandle,
     SortDirection, ValidatedMatchRequest, Window, lower_execution_error,
     materialize_projected_query_result_with_budget, prepare_remote_model_query_v2_with_budget,
 };
@@ -126,6 +128,7 @@ const REDUCED_DOUBLE: u32 = 3;
 const FUNCTION_ARGUMENT_BINDING: u32 = 1;
 const FUNCTION_ARGUMENT_VALUE: u32 = 2;
 const FUNCTION_ARGUMENT_CALL: u32 = 3;
+const MANAGER_ABI_MINOR: u32 = 4;
 
 /// Version-1 descriptor for one stable order term.
 #[repr(C)]
@@ -421,7 +424,17 @@ struct TypeBridgeQueryFieldSpec {
     handle: FieldHandle,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ManagerTerminalKind {
+    All,
+    First,
+    Count,
+    Exists,
+}
+
 #[derive(Clone, Debug)]
+// Keep the filter inline so terminal publication remains one failpoint-accounted allocation.
+#[allow(clippy::large_enum_variant)]
 enum TerminalSpec {
     Rows {
         orders: Vec<OrderHandle>,
@@ -455,6 +468,10 @@ enum TerminalSpec {
         groups: Vec<TypeBridgeQueryFieldSpec>,
         reducers: Vec<ReducerSpec>,
     },
+    Manager {
+        operation: ManagerTerminalKind,
+        filter: ProjectedManagerFilter,
+    },
 }
 
 /// Opaque immutable reusable terminal plan.
@@ -469,7 +486,20 @@ pub struct TypeBridgeQueryTerminal {
 /// Opaque all-or-nothing materialized query result.
 pub struct TypeBridgeQueryResult {
     state: Arc<QuerySessionState>,
-    value: ProjectedQueryResult,
+    storage: QueryResultStorage,
+}
+
+// Keep the materialized query inline so result publication remains one
+// failpoint-accounted allocation and preserves the frozen C allocation policy.
+#[allow(clippy::large_enum_variant)]
+enum QueryResultStorage {
+    Query(ProjectedQueryResult),
+    ManagerRows {
+        model: TypeId,
+        rows: Vec<Arc<ProjectedThing>>,
+    },
+    ManagerCount(u64),
+    ManagerExists(bool),
 }
 
 struct QueryRemoteContextState {
@@ -738,45 +768,53 @@ impl TypeBridgeQueryResult {
         preflight: &DirectOutputPreflight,
     ) -> Result<(), TypeBridgeStatus> {
         check_state_ranges(&self.state, preflight)?;
-        match self.value.value() {
-            ProjectedQueryValue::Rows { rows }
-            | ProjectedQueryValue::Page { entries: rows, .. } => {
-                for row in rows {
-                    for slot in row.slots() {
-                        match slot.value() {
-                            ProjectedQuerySlotValue::One(value) => {
-                                check_projected_thing_ranges(value, preflight)?;
-                            }
-                            ProjectedQuerySlotValue::Many(values) => {
-                                for value in values {
+        match &self.storage {
+            QueryResultStorage::Query(value) => match value.value() {
+                ProjectedQueryValue::Rows { rows }
+                | ProjectedQueryValue::Page { entries: rows, .. } => {
+                    for row in rows {
+                        for slot in row.slots() {
+                            match slot.value() {
+                                ProjectedQuerySlotValue::One(value) => {
                                     check_projected_thing_ranges(value, preflight)?;
+                                }
+                                ProjectedQuerySlotValue::Many(values) => {
+                                    for value in values {
+                                        check_projected_thing_ranges(value, preflight)?;
+                                    }
                                 }
                             }
                         }
                     }
                 }
-            }
-            ProjectedQueryValue::Reduction { rows, .. }
-            | ProjectedQueryValue::FieldReduction { rows, .. }
-            | ProjectedQueryValue::FieldTupleReduction { rows, .. } => {
-                for row in rows {
-                    match row.group() {
-                        Some(ProjectedReductionGroup::Thing(value)) => {
-                            check_projected_thing_ranges(value, preflight)?;
-                        }
-                        Some(ProjectedReductionGroup::Field(value)) => {
-                            check_projected_attribute_value_ranges(value, preflight)?;
-                        }
-                        Some(ProjectedReductionGroup::Fields(values)) => {
-                            for value in values {
+                ProjectedQueryValue::Reduction { rows, .. }
+                | ProjectedQueryValue::FieldReduction { rows, .. }
+                | ProjectedQueryValue::FieldTupleReduction { rows, .. } => {
+                    for row in rows {
+                        match row.group() {
+                            Some(ProjectedReductionGroup::Thing(value)) => {
+                                check_projected_thing_ranges(value, preflight)?;
+                            }
+                            Some(ProjectedReductionGroup::Field(value)) => {
                                 check_projected_attribute_value_ranges(value, preflight)?;
                             }
+                            Some(ProjectedReductionGroup::Fields(values)) => {
+                                for value in values {
+                                    check_projected_attribute_value_ranges(value, preflight)?;
+                                }
+                            }
+                            None => {}
                         }
-                        None => {}
                     }
                 }
+                ProjectedQueryValue::Count { .. } | ProjectedQueryValue::Exists { .. } => {}
+            },
+            QueryResultStorage::ManagerRows { rows, .. } => {
+                for value in rows {
+                    check_projected_thing_ranges(value, preflight)?;
+                }
             }
-            ProjectedQueryValue::Count { .. } | ProjectedQueryValue::Exists { .. } => {}
+            QueryResultStorage::ManagerCount(_) | QueryResultStorage::ManagerExists(_) => {}
         }
         Ok(())
     }
@@ -888,15 +926,29 @@ fn write_handle<T>(
     }
 }
 
-fn query_result_kind(value: &ProjectedQueryValue) -> u32 {
-    match value {
-        ProjectedQueryValue::Rows { .. } => RESULT_ROWS,
-        ProjectedQueryValue::Page { .. } => RESULT_PAGE,
-        ProjectedQueryValue::Count { .. } => RESULT_COUNT,
-        ProjectedQueryValue::Reduction { .. } => RESULT_REDUCTION,
-        ProjectedQueryValue::FieldReduction { .. } => RESULT_FIELD_REDUCTION,
-        ProjectedQueryValue::FieldTupleReduction { .. } => RESULT_FIELD_TUPLE_REDUCTION,
-        ProjectedQueryValue::Exists { .. } => RESULT_EXISTS,
+fn query_result_kind(storage: &QueryResultStorage) -> u32 {
+    match storage {
+        QueryResultStorage::Query(value) => match value.value() {
+            ProjectedQueryValue::Rows { .. } => RESULT_ROWS,
+            ProjectedQueryValue::Page { .. } => RESULT_PAGE,
+            ProjectedQueryValue::Count { .. } => RESULT_COUNT,
+            ProjectedQueryValue::Reduction { .. } => RESULT_REDUCTION,
+            ProjectedQueryValue::FieldReduction { .. } => RESULT_FIELD_REDUCTION,
+            ProjectedQueryValue::FieldTupleReduction { .. } => RESULT_FIELD_TUPLE_REDUCTION,
+            ProjectedQueryValue::Exists { .. } => RESULT_EXISTS,
+        },
+        QueryResultStorage::ManagerRows { .. } => RESULT_ROWS,
+        QueryResultStorage::ManagerCount(_) => RESULT_COUNT,
+        QueryResultStorage::ManagerExists(_) => RESULT_EXISTS,
+    }
+}
+
+fn query_result_value(storage: &QueryResultStorage) -> Option<&ProjectedQueryValue> {
+    match storage {
+        QueryResultStorage::Query(value) => Some(value.value()),
+        QueryResultStorage::ManagerRows { .. }
+        | QueryResultStorage::ManagerCount(_)
+        | QueryResultStorage::ManagerExists(_) => None,
     }
 }
 
@@ -3267,7 +3319,52 @@ pub unsafe extern "C" fn type_bridge_query_close(
     unsafe { close_box(query) }
 }
 
+fn manager_terminal_marker(
+    value: &TypeBridgeQueryTerminalDescriptorV1,
+) -> Option<ManagerTerminalKind> {
+    if !descriptor_layout::<TypeBridgeQueryTerminalDescriptorV1>(
+        value.struct_size,
+        value.version,
+        value.reserved,
+    ) || value.reserved0 != [0; 7]
+        || value.reserved1 != 0
+        || value.reserved2 != 0
+        || value.root.is_null()
+        || value.expected_root_model.is_null()
+        || value.expected_root_mode != MATCH_EXACT
+        || !value.orders.is_null()
+        || value.order_count != 0
+        || value.offset != 0
+        || value.limit != 0
+        || value.include_total != 0
+        || !value.group_binding.is_null()
+        || !value.expected_group_model.is_null()
+        || value.expected_group_mode != 0
+        || !value.group_fields.is_null()
+        || value.group_field_count != 0
+        || !value.reducers.is_null()
+        || value.reducer_count != 0
+    {
+        return None;
+    }
+    match (value.kind, value.cardinality) {
+        (TERMINAL_ROWS, ROWS_BOUNDED_MANY) => Some(ManagerTerminalKind::All),
+        (TERMINAL_FIRST, ROWS_BOUNDED_MANY) => Some(ManagerTerminalKind::First),
+        (TERMINAL_COUNT, ROWS_EXACTLY_ONE) => Some(ManagerTerminalKind::Count),
+        (TERMINAL_EXISTS, ROWS_EXACTLY_ONE) => Some(ManagerTerminalKind::Exists),
+        _ => None,
+    }
+}
+
+fn manager_terminal_package_allowed(state: &SchemaPackageState) -> bool {
+    state.abi_minor >= MANAGER_ABI_MINOR
+        && state._projection.generator_handlers() == [ProjectionHandler::c_v3()]
+}
+
 fn terminal_lanes_valid(value: &TypeBridgeQueryTerminalDescriptorV1) -> bool {
+    if manager_terminal_marker(value).is_some() {
+        return true;
+    }
     if !descriptor_layout::<TypeBridgeQueryTerminalDescriptorV1>(
         value.struct_size,
         value.version,
@@ -3630,6 +3727,10 @@ pub unsafe extern "C" fn type_bridge_query_terminal_open_v1(
         }
         // SAFETY: caller retains the immutable query.
         let query = unsafe { &*query };
+        let manager_operation = manager_terminal_marker(&descriptor);
+        if manager_operation.is_some() && !manager_terminal_package_allowed(&query.state.package) {
+            return return_execution_error(layout_invalid(), out_diagnostics);
+        }
         let orders = if descriptor.order_count == 0 {
             Vec::new()
         } else {
@@ -3672,106 +3773,128 @@ pub unsafe extern "C" fn type_bridge_query_terminal_open_v1(
                 Err(error) => return return_execution_error(error, out_diagnostics),
             }
         };
-        let spec = match descriptor.kind {
-            TERMINAL_ROWS | TERMINAL_FIRST => TerminalSpec::Rows {
-                orders,
-                window: Window {
-                    offset: descriptor.offset,
-                    limit: descriptor.limit,
+        let spec = if let Some(operation) = manager_operation {
+            let root = root
+                .as_ref()
+                .expect("manager terminal exact-root lane was validated");
+            let validated = match query.handle.validate_manager_count_by(root) {
+                Ok(value) => value,
+                Err(error) => return return_execution_error(lower(error), out_diagnostics),
+            };
+            let filter = match ProjectedManagerFilter::try_from_validated_exact_query(
+                &query.state.package.installed_projection,
+                &validated,
+            ) {
+                Ok(value) => value,
+                Err(error) => return return_execution_error(error, out_diagnostics),
+            };
+            TerminalSpec::Manager { operation, filter }
+        } else {
+            match descriptor.kind {
+                TERMINAL_ROWS | TERMINAL_FIRST => TerminalSpec::Rows {
+                    orders,
+                    window: Window {
+                        offset: descriptor.offset,
+                        limit: descriptor.limit,
+                    },
+                    cardinality: if descriptor.cardinality == ROWS_EXACTLY_ONE {
+                        RowCardinality::ExactlyOne
+                    } else {
+                        RowCardinality::BoundedMany
+                    },
                 },
-                cardinality: if descriptor.cardinality == ROWS_EXACTLY_ONE {
-                    RowCardinality::ExactlyOne
-                } else {
-                    RowCardinality::BoundedMany
+                TERMINAL_PAGE => TerminalSpec::Page {
+                    root: root.expect("page root lane validated"),
+                    orders,
+                    window: Window {
+                        offset: descriptor.offset,
+                        limit: descriptor.limit,
+                    },
+                    include_total: descriptor.include_total != 0,
                 },
-            },
-            TERMINAL_PAGE => TerminalSpec::Page {
-                root: root.expect("page root lane validated"),
-                orders,
-                window: Window {
-                    offset: descriptor.offset,
-                    limit: descriptor.limit,
+                TERMINAL_COUNT => TerminalSpec::Count {
+                    root: root.expect("count root lane validated"),
                 },
-                include_total: descriptor.include_total != 0,
-            },
-            TERMINAL_COUNT => TerminalSpec::Count {
-                root: root.expect("count root lane validated"),
-            },
-            TERMINAL_EXISTS => TerminalSpec::Exists {
-                root: root.expect("exists root lane validated"),
-            },
-            TERMINAL_REDUCE => {
-                let group = if descriptor.group_binding.is_null() {
-                    None
-                } else {
-                    // SAFETY: optional active binding and token were completely preflighted.
-                    let group = unsafe { &*descriptor.group_binding };
-                    // SAFETY: exact generated model token remains readable.
-                    if let Err(error) = unsafe {
-                        require_binding_contract(
-                            group,
-                            descriptor.expected_group_model,
-                            descriptor.expected_group_mode,
-                        )
-                    } {
-                        return return_execution_error(error, out_diagnostics);
+                TERMINAL_EXISTS => TerminalSpec::Exists {
+                    root: root.expect("exists root lane validated"),
+                },
+                TERMINAL_REDUCE => {
+                    let group = if descriptor.group_binding.is_null() {
+                        None
+                    } else {
+                        // SAFETY: optional active binding and token were completely preflighted.
+                        let group = unsafe { &*descriptor.group_binding };
+                        // SAFETY: exact generated model token remains readable.
+                        if let Err(error) = unsafe {
+                            require_binding_contract(
+                                group,
+                                descriptor.expected_group_model,
+                                descriptor.expected_group_mode,
+                            )
+                        } {
+                            return return_execution_error(error, out_diagnostics);
+                        }
+                        if !same_state(&query.state, &group.state) {
+                            return return_execution_error(nominal_mismatch(), out_diagnostics);
+                        }
+                        Some(group.handle.clone())
+                    };
+                    TerminalSpec::Reduce {
+                        root: root.expect("reduction root lane validated"),
+                        group,
+                        reducers,
                     }
-                    if !same_state(&query.state, &group.state) {
-                        return return_execution_error(nominal_mismatch(), out_diagnostics);
-                    }
-                    Some(group.handle.clone())
-                };
-                TerminalSpec::Reduce {
-                    root: root.expect("reduction root lane validated"),
-                    group,
-                    reducers,
                 }
-            }
-            TERMINAL_REDUCE_FIELD => {
-                // SAFETY: complete group-field reference table was preflighted.
-                let group = unsafe { descriptor.group_fields.read_unaligned() };
-                // SAFETY: active group field and token were completely preflighted.
-                let group =
-                    match unsafe { field_spec(&query.state, group.field, group.expected_field) } {
+                TERMINAL_REDUCE_FIELD => {
+                    // SAFETY: complete group-field reference table was preflighted.
+                    let group = unsafe { descriptor.group_fields.read_unaligned() };
+                    // SAFETY: active group field and token were completely preflighted.
+                    let group = match unsafe {
+                        field_spec(&query.state, group.field, group.expected_field)
+                    } {
                         Ok(value) => value,
                         Err(error) => return return_execution_error(error, out_diagnostics),
                     };
-                TerminalSpec::ReduceField {
-                    root: root.expect("field reduction root lane validated"),
-                    group,
-                    reducers,
-                }
-            }
-            TERMINAL_REDUCE_FIELDS => {
-                let mut groups = Vec::new();
-                if try_reserve(
-                    &mut groups,
-                    descriptor.group_field_count,
-                    AllocationSite::QueryTerminalHandle,
-                )
-                .is_err()
-                {
-                    return return_execution_error(allocation_exhausted(), out_diagnostics);
-                }
-                for index in 0..descriptor.group_field_count {
-                    // SAFETY: complete bounded reference table was preflighted.
-                    let group = unsafe { descriptor.group_fields.add(index).read_unaligned() };
-                    // SAFETY: active group field and token were completely preflighted.
-                    match unsafe { field_spec(&query.state, group.field, group.expected_field) } {
-                        Ok(value) => groups.push(value),
-                        Err(error) => return return_execution_error(error, out_diagnostics),
+                    TerminalSpec::ReduceField {
+                        root: root.expect("field reduction root lane validated"),
+                        group,
+                        reducers,
                     }
                 }
-                TerminalSpec::ReduceFields {
-                    root: root.expect("tuple reduction root lane validated"),
-                    groups,
-                    reducers,
+                TERMINAL_REDUCE_FIELDS => {
+                    let mut groups = Vec::new();
+                    if try_reserve(
+                        &mut groups,
+                        descriptor.group_field_count,
+                        AllocationSite::QueryTerminalHandle,
+                    )
+                    .is_err()
+                    {
+                        return return_execution_error(allocation_exhausted(), out_diagnostics);
+                    }
+                    for index in 0..descriptor.group_field_count {
+                        // SAFETY: complete bounded reference table was preflighted.
+                        let group = unsafe { descriptor.group_fields.add(index).read_unaligned() };
+                        // SAFETY: active group field and token were completely preflighted.
+                        match unsafe { field_spec(&query.state, group.field, group.expected_field) }
+                        {
+                            Ok(value) => groups.push(value),
+                            Err(error) => return return_execution_error(error, out_diagnostics),
+                        }
+                    }
+                    TerminalSpec::ReduceFields {
+                        root: root.expect("tuple reduction root lane validated"),
+                        groups,
+                        reducers,
+                    }
                 }
+                _ => unreachable!("terminal kind validated before active traversal"),
             }
-            _ => unreachable!("terminal kind validated before active traversal"),
         };
         // Validate provider-free now, but discard the invocation-local proof.
-        if let Err(error) = validate_terminal(&query.handle, &spec) {
+        if !matches!(spec, TerminalSpec::Manager { .. })
+            && let Err(error) = validate_terminal(&query.handle, &spec)
+        {
             return return_execution_error(lower(error), out_diagnostics);
         }
         write_handle(
@@ -3854,6 +3977,9 @@ fn validate_terminal(
                 })
                 .collect::<Vec<_>>();
             query.validate_reduce_by_fields(root, &group_refs, &terms)
+        }
+        TerminalSpec::Manager { .. } => {
+            unreachable!("manager terminals are validated through the projected-manager seam")
         }
     }
 }
@@ -3995,7 +4121,97 @@ fn materialize_result(
     )
     .map(|value| TypeBridgeQueryResult {
         state: Arc::clone(&terminal.state),
-        value,
+        storage: QueryResultStorage::Query(value),
+    })
+}
+
+async fn execute_manager_database(
+    terminal: &TypeBridgeQueryTerminal,
+    database: &TypeBridgeDatabase,
+    operation: ManagerTerminalKind,
+    filter: &ProjectedManagerFilter,
+    resources: QueryExecutionResourceLimits,
+    deadline: QueryExecutionDeadline,
+    answer: type_bridge_orm::AnswerCancellation,
+) -> Result<TypeBridgeQueryResult, SdkExecutionDiagnostic> {
+    let executor =
+        ProjectedManagerFilterExecutor::new(&terminal.state.package.installed_projection);
+    let control = ProjectedManagerFilterInvocationControl::from_parts(resources, deadline, answer);
+    let model = filter.model().clone();
+    let storage = match operation {
+        ManagerTerminalKind::All => QueryResultStorage::ManagerRows {
+            model,
+            rows: executor
+                .all_with_control(database.orm_database(), filter, control)
+                .await?,
+        },
+        ManagerTerminalKind::First => QueryResultStorage::ManagerRows {
+            model,
+            rows: executor
+                .first_with_control(database.orm_database(), filter, control)
+                .await?
+                .into_iter()
+                .collect(),
+        },
+        ManagerTerminalKind::Count => QueryResultStorage::ManagerCount(
+            executor
+                .count_with_control(database.orm_database(), filter, control)
+                .await?,
+        ),
+        ManagerTerminalKind::Exists => QueryResultStorage::ManagerExists(
+            executor
+                .exists_with_control(database.orm_database(), filter, control)
+                .await?,
+        ),
+    };
+    Ok(TypeBridgeQueryResult {
+        state: Arc::clone(&terminal.state),
+        storage,
+    })
+}
+
+async fn execute_manager_read_transaction(
+    terminal: &TypeBridgeQueryTerminal,
+    context: &type_bridge_orm::TransactionContext,
+    operation: ManagerTerminalKind,
+    filter: &ProjectedManagerFilter,
+    resources: QueryExecutionResourceLimits,
+    deadline: QueryExecutionDeadline,
+    answer: type_bridge_orm::AnswerCancellation,
+) -> Result<TypeBridgeQueryResult, SdkExecutionDiagnostic> {
+    let executor =
+        ProjectedManagerFilterExecutor::new(&terminal.state.package.installed_projection);
+    let control = ProjectedManagerFilterInvocationControl::from_parts(resources, deadline, answer);
+    let model = filter.model().clone();
+    let storage = match operation {
+        ManagerTerminalKind::All => QueryResultStorage::ManagerRows {
+            model,
+            rows: executor
+                .all_in_read_transaction_with_control(context, filter, control)
+                .await?,
+        },
+        ManagerTerminalKind::First => QueryResultStorage::ManagerRows {
+            model,
+            rows: executor
+                .first_in_read_transaction_with_control(context, filter, control)
+                .await?
+                .into_iter()
+                .collect(),
+        },
+        ManagerTerminalKind::Count => QueryResultStorage::ManagerCount(
+            executor
+                .count_in_read_transaction_with_control(context, filter, control)
+                .await?,
+        ),
+        ManagerTerminalKind::Exists => QueryResultStorage::ManagerExists(
+            executor
+                .exists_in_read_transaction_with_control(context, filter, control)
+                .await?,
+        ),
+    };
+    Ok(TypeBridgeQueryResult {
+        state: Arc::clone(&terminal.state),
+        storage,
     })
 }
 
@@ -4059,6 +4275,13 @@ fn remote_response_limit() -> SdkExecutionDiagnostic {
     SdkExecutionDiagnostic::resource_limit(
         code("c_query_remote_response_limit_exceeded"),
         message("Remote typed-query reply exceeds the authenticated snapshot ceiling"),
+    )
+}
+
+fn manager_remote_unsupported() -> SdkExecutionDiagnostic {
+    invalid(
+        "c_query_manager_terminal_remote_unsupported",
+        "Generated manager terminals support database and borrowed read-transaction execution only",
     )
 }
 
@@ -4180,52 +4403,90 @@ pub unsafe extern "C" fn type_bridge_database_query_execute_v1(
         if !Arc::ptr_eq(database.package_state(), &terminal.state.package) {
             return return_execution_error(package_mismatch(), out_diagnostics);
         }
-        let request = match validate_terminal(&terminal.query, &terminal.spec) {
-            Ok(value) => value,
-            Err(error) => return return_execution_error(lower(error), out_diagnostics),
-        };
-        let reservation = match ReservedBox::try_new(AllocationSite::QueryResultHandle) {
-            Ok(value) => value,
-            Err(_) => return return_execution_error(allocation_exhausted(), out_diagnostics),
-        };
-        let outcome = catch_unwind(AssertUnwindSafe(|| {
-            let value = database
-                .block_on(
-                    database.orm_database().execute_match_with_limits(
+        let result = match &terminal.spec {
+            TerminalSpec::Manager { operation, filter } => {
+                let reservation = match ReservedBox::try_new(AllocationSite::QueryResultHandle) {
+                    Ok(value) => value,
+                    Err(_) => {
+                        return return_execution_error(allocation_exhausted(), out_diagnostics);
+                    }
+                };
+                let outcome = catch_unwind(AssertUnwindSafe(|| {
+                    database.block_on(execute_manager_database(
+                        terminal,
+                        database,
+                        *operation,
+                        filter,
+                        parsed.resources,
+                        parsed.deadline,
+                        answer.clone(),
+                    ))
+                }));
+                let value = match outcome {
+                    Ok(Ok(value)) => value,
+                    Ok(Err(error)) => {
+                        return return_query_failure(
+                            QueryExecutionFailure::Diagnostic(error),
+                            out_diagnostics,
+                        );
+                    }
+                    Err(_) => {
+                        return return_query_failure(QueryExecutionFailure::Panic, out_diagnostics);
+                    }
+                };
+                reservation.initialize(value)
+            }
+            _ => {
+                let request = match validate_terminal(&terminal.query, &terminal.spec) {
+                    Ok(value) => value,
+                    Err(error) => return return_execution_error(lower(error), out_diagnostics),
+                };
+                let reservation = match ReservedBox::try_new(AllocationSite::QueryResultHandle) {
+                    Ok(value) => value,
+                    Err(_) => {
+                        return return_execution_error(allocation_exhausted(), out_diagnostics);
+                    }
+                };
+                let outcome = catch_unwind(AssertUnwindSafe(|| {
+                    let value = database
+                        .block_on(
+                            database.orm_database().execute_match_with_limits(
+                                &terminal.state.registry,
+                                &request,
+                                parsed
+                                    .resources
+                                    .direct_with_deadline(answer.clone(), parsed.deadline),
+                            ),
+                        )
+                        .map_err(lower)?;
+                    materialize_result(
+                        terminal,
                         &terminal.state.registry,
-                        &request,
-                        parsed
-                            .resources
-                            .direct_with_deadline(answer.clone(), parsed.deadline),
-                    ),
-                )
-                .map_err(lower)?;
-            materialize_result(
-                terminal,
-                &terminal.state.registry,
-                ProjectedQueryOrigin::for_database(database.orm_database()),
-                request,
-                value,
-                MaterializationBudget {
-                    limits: parsed.resources.projected(),
-                    cancellation: &answer,
-                    deadline: parsed.deadline,
-                },
-            )
-        }));
-        let result = match outcome {
-            Ok(Ok(value)) => value,
-            Ok(Err(error)) => {
-                return return_query_failure(
-                    QueryExecutionFailure::Diagnostic(error),
-                    out_diagnostics,
-                );
-            }
-            Err(_) => {
-                return return_query_failure(QueryExecutionFailure::Panic, out_diagnostics);
+                        ProjectedQueryOrigin::for_database(database.orm_database()),
+                        request,
+                        value,
+                        MaterializationBudget {
+                            limits: parsed.resources.projected(),
+                            cancellation: &answer,
+                            deadline: parsed.deadline,
+                        },
+                    )
+                }));
+                let value = match outcome {
+                    Ok(Ok(value)) => value,
+                    Ok(Err(error)) => {
+                        return return_query_failure(
+                            QueryExecutionFailure::Diagnostic(error),
+                            out_diagnostics,
+                        );
+                    }
+                    Err(_) => {
+                        return return_query_failure(QueryExecutionFailure::Panic, out_diagnostics);
+                    }
+                };
+                reservation.initialize(value)
             }
         };
-        let result = reservation.initialize(result);
         // SAFETY: output slot was initialized and remains caller-writable.
         unsafe { out_result.write_unaligned(Box::into_raw(result)) };
         TypeBridgeStatus::Ok
@@ -4295,49 +4556,83 @@ pub unsafe extern "C" fn type_bridge_read_transaction_query_execute_v1(
         let Some(context) = transaction.context() else {
             return return_execution_error(inactive_transaction(), out_diagnostics);
         };
-        let request = match validate_terminal(&terminal.query, &terminal.spec) {
-            Ok(value) => value,
-            Err(error) => return return_execution_error(lower(error), out_diagnostics),
-        };
-        let reservation = match ReservedBox::try_new(AllocationSite::QueryResultHandle) {
-            Ok(value) => value,
-            Err(_) => return return_execution_error(allocation_exhausted(), out_diagnostics),
-        };
-        let outcome = catch_unwind(AssertUnwindSafe(|| {
-            let value = transaction
-                .block_on(
-                    context.execute_match_with_limits(
+        let result = match &terminal.spec {
+            TerminalSpec::Manager { operation, filter } => {
+                let reservation = match ReservedBox::try_new(AllocationSite::QueryResultHandle) {
+                    Ok(value) => value,
+                    Err(_) => {
+                        return return_execution_error(allocation_exhausted(), out_diagnostics);
+                    }
+                };
+                let outcome = catch_unwind(AssertUnwindSafe(|| {
+                    transaction.block_on(execute_manager_read_transaction(
+                        terminal,
+                        context,
+                        *operation,
+                        filter,
+                        parsed.resources,
+                        parsed.deadline,
+                        answer.clone(),
+                    ))
+                }));
+                let value = match outcome {
+                    Ok(Ok(value)) => value,
+                    Ok(Err(error)) => return return_execution_error(error, out_diagnostics),
+                    Err(_) => {
+                        transaction.mark_poisoned();
+                        return TypeBridgeStatus::Panic;
+                    }
+                };
+                reservation.initialize(value)
+            }
+            _ => {
+                let request = match validate_terminal(&terminal.query, &terminal.spec) {
+                    Ok(value) => value,
+                    Err(error) => return return_execution_error(lower(error), out_diagnostics),
+                };
+                let reservation = match ReservedBox::try_new(AllocationSite::QueryResultHandle) {
+                    Ok(value) => value,
+                    Err(_) => {
+                        return return_execution_error(allocation_exhausted(), out_diagnostics);
+                    }
+                };
+                let outcome = catch_unwind(AssertUnwindSafe(|| {
+                    let value = transaction
+                        .block_on(
+                            context.execute_match_with_limits(
+                                &terminal.state.registry,
+                                &request,
+                                parsed
+                                    .resources
+                                    .direct_with_deadline(answer.clone(), parsed.deadline),
+                            ),
+                        )
+                        .map_err(lower)?;
+                    let origin = ProjectedQueryOrigin::for_transaction(context)?;
+                    materialize_result(
+                        terminal,
                         &terminal.state.registry,
-                        &request,
-                        parsed
-                            .resources
-                            .direct_with_deadline(answer.clone(), parsed.deadline),
-                    ),
-                )
-                .map_err(lower)?;
-            let origin = ProjectedQueryOrigin::for_transaction(context)?;
-            materialize_result(
-                terminal,
-                &terminal.state.registry,
-                origin,
-                request,
-                value,
-                MaterializationBudget {
-                    limits: parsed.resources.projected(),
-                    cancellation: &answer,
-                    deadline: parsed.deadline,
-                },
-            )
-        }));
-        let result = match outcome {
-            Ok(Ok(value)) => value,
-            Ok(Err(error)) => return return_execution_error(error, out_diagnostics),
-            Err(_) => {
-                transaction.mark_poisoned();
-                return TypeBridgeStatus::Panic;
+                        origin,
+                        request,
+                        value,
+                        MaterializationBudget {
+                            limits: parsed.resources.projected(),
+                            cancellation: &answer,
+                            deadline: parsed.deadline,
+                        },
+                    )
+                }));
+                let value = match outcome {
+                    Ok(Ok(value)) => value,
+                    Ok(Err(error)) => return return_execution_error(error, out_diagnostics),
+                    Err(_) => {
+                        transaction.mark_poisoned();
+                        return TypeBridgeStatus::Panic;
+                    }
+                };
+                reservation.initialize(value)
             }
         };
-        let result = reservation.initialize(result);
         // SAFETY: output slot was initialized and remains caller-writable.
         unsafe { out_result.write_unaligned(Box::into_raw(result)) };
         TypeBridgeStatus::Ok
@@ -4521,6 +4816,9 @@ pub unsafe extern "C" fn type_bridge_query_remote_prepare_v1(
         }
         if !Arc::ptr_eq(&context.state.package, &terminal.state.package) {
             return return_execution_error(package_mismatch(), out_diagnostics);
+        }
+        if matches!(&terminal.spec, TerminalSpec::Manager { .. }) {
+            return return_execution_error(manager_remote_unsupported(), out_diagnostics);
         }
         let request = match validate_terminal(&terminal.query, &terminal.spec) {
             Ok(value) => value,
@@ -4877,7 +5175,7 @@ fn reduction_kind_matches(result: &TypeBridgeQueryResult, expected_kind: u32) ->
     matches!(
         expected_kind,
         RESULT_REDUCTION | RESULT_FIELD_REDUCTION | RESULT_FIELD_TUPLE_REDUCTION
-    ) && query_result_kind(result.value.value()) == expected_kind
+    ) && query_result_kind(&result.storage) == expected_kind
 }
 
 unsafe fn result_scalar_preflight<T: Copy>(
@@ -4936,7 +5234,7 @@ pub unsafe extern "C" fn type_bridge_query_result_kind(
         // SAFETY: caller retains the immutable result handle.
         let result = unsafe { &*result };
         // SAFETY: output was initialized and remains caller-writable.
-        unsafe { out_kind.write_unaligned(query_result_kind(result.value.value())) };
+        unsafe { out_kind.write_unaligned(query_result_kind(&result.storage)) };
         TypeBridgeStatus::Ok
     })
 }
@@ -4961,14 +5259,27 @@ pub unsafe extern "C" fn type_bridge_query_result_row_count(
         }
         // SAFETY: caller retains the immutable result handle.
         let result = unsafe { &*result };
-        if query_result_kind(result.value.value()) != expected_kind {
+        if query_result_kind(&result.storage) != expected_kind {
             return return_execution_error(result_mismatch(), out_diagnostics);
         }
-        let values = rows(result.value.value()).expect("kind checked as row result");
+        let count = match &result.storage {
+            QueryResultStorage::Query(value) => rows(value.value())
+                .expect("kind checked as row result")
+                .len(),
+            QueryResultStorage::ManagerRows { rows, .. } => rows.len(),
+            QueryResultStorage::ManagerCount(_) | QueryResultStorage::ManagerExists(_) => {
+                unreachable!("result kind checked as rows")
+            }
+        };
         // SAFETY: output was initialized and remains caller-writable.
-        unsafe { out_count.write_unaligned(values.len()) };
+        unsafe { out_count.write_unaligned(count) };
         TypeBridgeStatus::Ok
     })
+}
+
+enum CheckedRowSlot<'a> {
+    Query(&'a type_bridge_orm::ProjectedQuerySlot),
+    Manager(&'a Arc<ProjectedThing>),
 }
 
 unsafe fn checked_row_slot(
@@ -4979,9 +5290,9 @@ unsafe fn checked_row_slot(
     expected_model: *const TypeBridgeProjectedTokenV1,
     expected_mode: u32,
     expected_kind: u32,
-) -> Result<&type_bridge_orm::ProjectedQuerySlot, SdkExecutionDiagnostic> {
+) -> Result<CheckedRowSlot<'_>, SdkExecutionDiagnostic> {
     if !matches!(expected_result_kind, RESULT_ROWS | RESULT_PAGE)
-        || query_result_kind(result.value.value()) != expected_result_kind
+        || query_result_kind(&result.storage) != expected_result_kind
         || !matches!(expected_kind, SELECTION_ONE | SELECTION_COLLECT)
     {
         return Err(result_mismatch());
@@ -4991,24 +5302,44 @@ unsafe fn checked_row_slot(
     let Some(mode) = match_mode(expected_mode) else {
         return Err(layout_invalid());
     };
-    let row = rows(result.value.value())
-        .and_then(|rows| rows.get(row_index))
-        .ok_or_else(result_index_invalid)?;
-    let slot = row
-        .slots()
-        .get(slot_index)
-        .ok_or_else(result_index_invalid)?;
-    let actual_kind = match slot.value() {
-        ProjectedQuerySlotValue::One(_) => SELECTION_ONE,
-        ProjectedQuerySlotValue::Many(_) => SELECTION_COLLECT,
-    };
-    if slot.declared_type() != &expected
-        || slot.match_mode() != mode
-        || actual_kind != expected_kind
-    {
-        return Err(result_mismatch());
+    match &result.storage {
+        QueryResultStorage::Query(value) => {
+            let row = rows(value.value())
+                .and_then(|rows| rows.get(row_index))
+                .ok_or_else(result_index_invalid)?;
+            let slot = row
+                .slots()
+                .get(slot_index)
+                .ok_or_else(result_index_invalid)?;
+            let actual_kind = match slot.value() {
+                ProjectedQuerySlotValue::One(_) => SELECTION_ONE,
+                ProjectedQuerySlotValue::Many(_) => SELECTION_COLLECT,
+            };
+            if slot.declared_type() != &expected
+                || slot.match_mode() != mode
+                || actual_kind != expected_kind
+            {
+                return Err(result_mismatch());
+            }
+            Ok(CheckedRowSlot::Query(slot))
+        }
+        QueryResultStorage::ManagerRows { model, rows } => {
+            if expected_result_kind != RESULT_ROWS
+                || slot_index != 0
+                || expected_kind != SELECTION_ONE
+                || mode != MatchMode::Exact
+                || model != &expected
+            {
+                return Err(result_mismatch());
+            }
+            rows.get(row_index)
+                .map(CheckedRowSlot::Manager)
+                .ok_or_else(result_index_invalid)
+        }
+        QueryResultStorage::ManagerCount(_) | QueryResultStorage::ManagerExists(_) => {
+            Err(result_mismatch())
+        }
     }
-    Ok(slot)
 }
 
 /// Return one exact generated row-slot multiplicity.
@@ -5074,9 +5405,12 @@ pub unsafe extern "C" fn type_bridge_query_result_row_slot_count(
             Ok(value) => value,
             Err(error) => return return_execution_error(error, out_diagnostics),
         };
-        let count = match slot.value() {
-            ProjectedQuerySlotValue::One(_) => 1,
-            ProjectedQuerySlotValue::Many(values) => values.len(),
+        let count = match slot {
+            CheckedRowSlot::Query(slot) => match slot.value() {
+                ProjectedQuerySlotValue::One(_) => 1,
+                ProjectedQuerySlotValue::Many(values) => values.len(),
+            },
+            CheckedRowSlot::Manager(_) => 1,
         };
         // SAFETY: output was initialized and remains caller-writable.
         unsafe { out_count.write_unaligned(count) };
@@ -5142,15 +5476,23 @@ pub unsafe extern "C" fn type_bridge_query_result_row_slot_thing_at(
             Ok(value) => value,
             Err(error) => return return_execution_error(error, out_diagnostics),
         };
-        let thing = match slot.value() {
-            ProjectedQuerySlotValue::One(value) if thing_index == 0 => Arc::clone(value),
-            ProjectedQuerySlotValue::One(_) => {
+        let thing = match slot {
+            CheckedRowSlot::Query(slot) => match slot.value() {
+                ProjectedQuerySlotValue::One(value) if thing_index == 0 => Arc::clone(value),
+                ProjectedQuerySlotValue::One(_) => {
+                    return return_execution_error(result_index_invalid(), out_diagnostics);
+                }
+                ProjectedQuerySlotValue::Many(values) => match values.get(thing_index) {
+                    Some(value) => Arc::clone(value),
+                    None => {
+                        return return_execution_error(result_index_invalid(), out_diagnostics);
+                    }
+                },
+            },
+            CheckedRowSlot::Manager(value) if thing_index == 0 => Arc::clone(value),
+            CheckedRowSlot::Manager(_) => {
                 return return_execution_error(result_index_invalid(), out_diagnostics);
             }
-            ProjectedQuerySlotValue::Many(values) => match values.get(thing_index) {
-                Some(value) => Arc::clone(value),
-                None => return return_execution_error(result_index_invalid(), out_diagnostics),
-            },
         };
         write_handle(
             AllocationSite::QueryThingHandle,
@@ -5190,7 +5532,9 @@ pub unsafe extern "C" fn type_bridge_query_result_page_metadata_v1(
         }
         // SAFETY: caller retains the immutable result handle.
         let result = unsafe { &*result };
-        let ProjectedQueryValue::Page { window, total, .. } = result.value.value() else {
+        let Some(ProjectedQueryValue::Page { window, total, .. }) =
+            query_result_value(&result.storage)
+        else {
             return return_execution_error(result_mismatch(), out_diagnostics);
         };
         let struct_size = match u32::try_from(size_of::<TypeBridgeQueryPageMetadataV1>()) {
@@ -5233,11 +5577,20 @@ pub unsafe extern "C" fn type_bridge_query_result_count(
         }
         // SAFETY: caller retains the immutable result.
         let result = unsafe { &*result };
-        let ProjectedQueryValue::Count { value, .. } = result.value.value() else {
-            return return_execution_error(result_mismatch(), out_diagnostics);
+        let value = match &result.storage {
+            QueryResultStorage::Query(value) => {
+                let ProjectedQueryValue::Count { value, .. } = value.value() else {
+                    return return_execution_error(result_mismatch(), out_diagnostics);
+                };
+                *value
+            }
+            QueryResultStorage::ManagerCount(value) => *value,
+            QueryResultStorage::ManagerRows { .. } | QueryResultStorage::ManagerExists(_) => {
+                return return_execution_error(result_mismatch(), out_diagnostics);
+            }
         };
         // SAFETY: output was initialized and remains caller-writable.
-        unsafe { out_count.write_unaligned(*value) };
+        unsafe { out_count.write_unaligned(value) };
         TypeBridgeStatus::Ok
     })
 }
@@ -5261,11 +5614,20 @@ pub unsafe extern "C" fn type_bridge_query_result_exists(
         }
         // SAFETY: caller retains the immutable result.
         let result = unsafe { &*result };
-        let ProjectedQueryValue::Exists { value, .. } = result.value.value() else {
-            return return_execution_error(result_mismatch(), out_diagnostics);
+        let value = match &result.storage {
+            QueryResultStorage::Query(value) => {
+                let ProjectedQueryValue::Exists { value, .. } = value.value() else {
+                    return return_execution_error(result_mismatch(), out_diagnostics);
+                };
+                *value
+            }
+            QueryResultStorage::ManagerExists(value) => *value,
+            QueryResultStorage::ManagerRows { .. } | QueryResultStorage::ManagerCount(_) => {
+                return return_execution_error(result_mismatch(), out_diagnostics);
+            }
         };
         // SAFETY: output was initialized and remains caller-writable.
-        unsafe { out_exists.write_unaligned(u8::from(*value)) };
+        unsafe { out_exists.write_unaligned(u8::from(value)) };
         TypeBridgeStatus::Ok
     })
 }
@@ -5293,7 +5655,7 @@ pub unsafe extern "C" fn type_bridge_query_result_reduction_row_count(
         if !reduction_kind_matches(result, expected_result_kind) {
             return return_execution_error(result_mismatch(), out_diagnostics);
         }
-        let Some(rows) = reduction_rows(result.value.value()) else {
+        let Some(rows) = query_result_value(&result.storage).and_then(reduction_rows) else {
             return return_execution_error(result_mismatch(), out_diagnostics);
         };
         // SAFETY: output was initialized and remains caller-writable.
@@ -5306,7 +5668,8 @@ fn reduction_row(
     result: &TypeBridgeQueryResult,
     row_index: usize,
 ) -> Result<&ProjectedReductionRow, SdkExecutionDiagnostic> {
-    reduction_rows(result.value.value())
+    query_result_value(&result.storage)
+        .and_then(reduction_rows)
         .and_then(|values| values.get(row_index))
         .ok_or_else(result_index_invalid)
 }
@@ -5354,14 +5717,16 @@ pub unsafe extern "C" fn type_bridge_query_result_reduction_group_kind(
 fn binding_group_contract(
     result: &TypeBridgeQueryResult,
 ) -> Option<(type_bridge_orm::BindingId, &type_bridge_orm::MatchBinding)> {
+    let QueryResultStorage::Query(projected) = &result.storage else {
+        return None;
+    };
     let ProjectedQueryValue::Reduction {
         group: Some(group), ..
-    } = result.value.value()
+    } = projected.value()
     else {
         return None;
     };
-    let binding = result
-        .value
+    let binding = projected
         .request_proof()
         .request()
         .plan
@@ -5497,7 +5862,7 @@ fn grouped_field(
     result: &TypeBridgeQueryResult,
     field_index: usize,
 ) -> Option<&type_bridge_orm::BoundFieldId> {
-    match result.value.value() {
+    match query_result_value(&result.storage)? {
         ProjectedQueryValue::FieldReduction { group, .. } if field_index == 0 => Some(group),
         ProjectedQueryValue::FieldTupleReduction { groups, .. } => groups.get(field_index),
         _ => None,
@@ -5932,7 +6297,7 @@ mod tests {
     use super::*;
     use crate::abi::{TypeBridgeByteView, type_bridge_schema_package_close};
     use crate::allocation::inject_failure;
-    use crate::entity_crud::tests::{model_token, package};
+    use crate::entity_crud::tests::{model_token, ordered_package, package};
     use crate::execution_diagnostic::{
         TypeBridgeExecutionDiagnosticCategory, TypeBridgeExecutionDiagnosticDetailKind,
         TypeBridgeExecutionDiagnosticDetailViewV1, TypeBridgeExecutionDiagnosticPathKind,
@@ -7813,6 +8178,25 @@ mod tests {
         descriptor
     }
 
+    fn manager_terminal_descriptor(
+        built: &BuiltQuery,
+        operation: ManagerTerminalKind,
+    ) -> TypeBridgeQueryTerminalDescriptorV1 {
+        let kind = match operation {
+            ManagerTerminalKind::All => TERMINAL_ROWS,
+            ManagerTerminalKind::First => TERMINAL_FIRST,
+            ManagerTerminalKind::Count => TERMINAL_COUNT,
+            ManagerTerminalKind::Exists => TERMINAL_EXISTS,
+        };
+        let mut descriptor = root_terminal_descriptor(built, kind);
+        descriptor.cardinality = match operation {
+            ManagerTerminalKind::All | ManagerTerminalKind::First => ROWS_BOUNDED_MANY,
+            ManagerTerminalKind::Count | ManagerTerminalKind::Exists => ROWS_EXACTLY_ONE,
+        };
+        descriptor.limit = 0;
+        descriptor
+    }
+
     unsafe fn replace_terminal(
         built: &mut BuiltQuery,
         descriptor: &TypeBridgeQueryTerminalDescriptorV1,
@@ -7865,6 +8249,85 @@ mod tests {
         predicate
     }
 
+    unsafe fn add_identifier_equality(
+        package: &TypeBridgeSchemaPackage,
+        built: &mut BuiltQuery,
+        text: &[u8],
+    ) {
+        let person = TypeId::new(TypeKind::Entity, "person").expect("person identity");
+        let field_token = projected_field_token(package, &person, "identifier");
+        let attribute_token = model_token(
+            package,
+            TypeId::new(TypeKind::Attribute, "identifier").expect("identifier attribute"),
+        );
+        let mut diagnostics = ptr::null_mut();
+        let mut value = ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                type_bridge_projected_value_string_open(
+                    package,
+                    &attribute_token,
+                    TypeBridgeByteView {
+                        data: text.as_ptr(),
+                        length: text.len(),
+                    },
+                    &mut value,
+                    &mut diagnostics,
+                )
+            },
+            TypeBridgeStatus::Ok,
+        );
+        let mut field = ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                type_bridge_query_field_open(
+                    built.binding,
+                    &field_token,
+                    &mut field,
+                    &mut diagnostics,
+                )
+            },
+            TypeBridgeStatus::Ok,
+        );
+        let mut predicate = ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                type_bridge_query_field_compare_value(
+                    field,
+                    &field_token,
+                    COMPARE_EQUAL,
+                    value,
+                    &mut predicate,
+                    &mut diagnostics,
+                )
+            },
+            TypeBridgeStatus::Ok,
+        );
+        let mut next = ptr::null_mut();
+        assert_eq!(
+            unsafe { type_bridge_query_where(built.query, predicate, &mut next, &mut diagnostics) },
+            TypeBridgeStatus::Ok,
+        );
+        assert_eq!(
+            unsafe { type_bridge_query_close(&mut built.query) },
+            TypeBridgeStatus::Ok,
+        );
+        built.query = next;
+        assert_eq!(
+            unsafe { type_bridge_query_predicate_close(&mut predicate) },
+            TypeBridgeStatus::Ok,
+        );
+        assert_eq!(
+            unsafe { type_bridge_query_field_close(&mut field) },
+            TypeBridgeStatus::Ok,
+        );
+        assert_eq!(
+            unsafe { type_bridge_projected_value_close(&mut value) },
+            TypeBridgeStatus::Ok,
+        );
+        assert!(diagnostics.is_null());
+    }
+
     #[test]
     fn provider_free_construction_rejects_inactive_junk_without_following_it() {
         let package = package("querylanes");
@@ -7893,6 +8356,464 @@ mod tests {
         );
         // SAFETY: diagnostic owner is unique.
         unsafe { close_diagnostics(&mut diagnostics) };
+    }
+
+    #[test]
+    fn manager_sentinels_are_disjoint_and_require_abi_1_4_exact_c_v3() {
+        let mut marker = terminal_descriptor(TERMINAL_ROWS, ROWS_BOUNDED_MANY);
+        marker.root = std::ptr::NonNull::<TypeBridgeQueryBinding>::dangling().as_ptr();
+        marker.expected_root_model =
+            std::ptr::NonNull::<TypeBridgeProjectedTokenV1>::dangling().as_ptr();
+        marker.expected_root_mode = MATCH_EXACT;
+        marker.limit = 0;
+        assert_eq!(
+            manager_terminal_marker(&marker),
+            Some(ManagerTerminalKind::All)
+        );
+        marker.limit = 1;
+        assert_eq!(manager_terminal_marker(&marker), None);
+
+        let ordered = ordered_package("querymanagerlanes");
+        assert!(manager_terminal_package_allowed(ordered.state()));
+        // SAFETY: fixture owns the exact generated construction graph.
+        let mut built = unsafe { BuiltQuery::open(&ordered, TERMINAL_COUNT, ROWS_BOUNDED_MANY) };
+        for operation in [
+            ManagerTerminalKind::All,
+            ManagerTerminalKind::First,
+            ManagerTerminalKind::Count,
+            ManagerTerminalKind::Exists,
+        ] {
+            let descriptor = manager_terminal_descriptor(&built, operation);
+            assert_eq!(manager_terminal_marker(&descriptor), Some(operation));
+            // SAFETY: the complete descriptor graph and output slots remain live.
+            unsafe { replace_terminal(&mut built, &descriptor) };
+            // SAFETY: fixture retains the immutable terminal handle.
+            let terminal = unsafe { &*built.terminal };
+            let TerminalSpec::Manager {
+                operation: actual,
+                filter,
+            } = &terminal.spec
+            else {
+                panic!("manager marker was routed through an ordinary generic terminal");
+            };
+            assert_eq!(*actual, operation);
+            assert!(filter.is_empty());
+            assert_eq!(filter.model().label().as_str(), "person");
+        }
+
+        for rejected in [package("querymanagerlegacy"), {
+            let mut value = ordered_package("querymanagerminor");
+            Arc::get_mut(&mut value.state)
+                .expect("fresh package state is unique")
+                .abi_minor = MANAGER_ABI_MINOR - 1;
+            value
+        }] {
+            assert!(!manager_terminal_package_allowed(rejected.state()));
+            // SAFETY: fixture owns the exact generated construction graph.
+            let mut built =
+                unsafe { BuiltQuery::open(&rejected, TERMINAL_COUNT, ROWS_BOUNDED_MANY) };
+            let descriptor = manager_terminal_descriptor(&built, ManagerTerminalKind::Count);
+            assert_eq!(
+                unsafe { type_bridge_query_terminal_close(&mut built.terminal) },
+                TypeBridgeStatus::Ok,
+            );
+            let mut diagnostics = ptr::null_mut();
+            assert_eq!(
+                unsafe {
+                    type_bridge_query_terminal_open_v1(
+                        built.query,
+                        &descriptor,
+                        &mut built.terminal,
+                        &mut diagnostics,
+                    )
+                },
+                TypeBridgeStatus::InvalidArgument,
+            );
+            assert!(built.terminal.is_null());
+            assert_eq!(
+                unsafe { diagnostic_code(diagnostics) },
+                "c_query_descriptor_layout_invalid"
+            );
+            unsafe { close_diagnostics(&mut diagnostics) };
+        }
+    }
+
+    #[test]
+    fn manager_terminal_flattens_three_where_predicates_in_authored_order() {
+        fn collect_strings(
+            expression: &type_bridge_orm::match_request::MatchExpr,
+            values: &mut Vec<String>,
+        ) {
+            match expression {
+                type_bridge_orm::match_request::MatchExpr::And { expressions } => {
+                    for expression in expressions {
+                        collect_strings(expression, values);
+                    }
+                }
+                type_bridge_orm::match_request::MatchExpr::FieldValue {
+                    operator: type_bridge_orm::match_request::ComparisonOp::Equal,
+                    value: type_bridge_orm::AttributeValue::String(value),
+                    ..
+                } => values.push(value.clone()),
+                other => panic!("unexpected generated manager predicate: {other:?}"),
+            }
+        }
+
+        let package = ordered_package("querymanagerthreewhere");
+        // SAFETY: fixture owns the exact generated construction graph.
+        let mut built = unsafe { BuiltQuery::open(&package, TERMINAL_COUNT, ROWS_BOUNDED_MANY) };
+        for value in [b"Ada".as_slice(), b"Bob".as_slice(), b"Carol".as_slice()] {
+            // SAFETY: this mirrors one generated immutable manager predicate transition.
+            unsafe { add_identifier_equality(&package, &mut built, value) };
+        }
+
+        // Repeated generated `where` calls form And(And(first, second), third).
+        // Preserve authored order while proving the exact nested lineage validates.
+        let query = unsafe { &*built.query };
+        let binding = unsafe { &*built.binding };
+        let validated = query
+            .handle
+            .validate_count_by(&binding.handle)
+            .expect("three-predicate exact query validates");
+        let mut values = Vec::new();
+        collect_strings(
+            validated
+                .request()
+                .plan
+                .predicate
+                .as_ref()
+                .expect("three-predicate query has a conjunction"),
+            &mut values,
+        );
+        assert_eq!(values, ["Ada", "Bob", "Carol"]);
+
+        let descriptor = manager_terminal_descriptor(&built, ManagerTerminalKind::Count);
+        // SAFETY: the ABI1.4 sentinel graph and all borrowed inputs remain live.
+        unsafe { replace_terminal(&mut built, &descriptor) };
+        let terminal = unsafe { &*built.terminal };
+        let TerminalSpec::Manager { operation, filter } = &terminal.spec else {
+            panic!("three-predicate sentinel bypassed the manager conversion");
+        };
+        assert_eq!(*operation, ManagerTerminalKind::Count);
+        assert_eq!(filter.len(), 3);
+        assert_eq!(filter.resource_measure().items(), 3);
+        assert_eq!(filter.resource_measure().attribute_values(), 3);
+    }
+
+    #[test]
+    fn manager_terminal_accepts_the_shared_boolean_term_ceiling() {
+        let package = ordered_package("querymanagertermceiling");
+        // SAFETY: fixture owns the exact generated construction graph.
+        let mut built = unsafe { BuiltQuery::open(&package, TERMINAL_COUNT, ROWS_BOUNDED_MANY) };
+        for index in 0..type_bridge_contract::limits::MAX_BOOLEAN_TERMS {
+            let value = format!("excluded-{index}");
+            // SAFETY: this mirrors one generated immutable manager predicate transition.
+            unsafe { add_identifier_equality(&package, &mut built, value.as_bytes()) };
+        }
+        let descriptor = manager_terminal_descriptor(&built, ManagerTerminalKind::Count);
+        // SAFETY: manager-only validation flattens the bounded conjunction before validation.
+        unsafe { replace_terminal(&mut built, &descriptor) };
+        let terminal = unsafe { &*built.terminal };
+        let TerminalSpec::Manager { filter, .. } = &terminal.spec else {
+            panic!("maximum manager conjunction bypassed the manager conversion");
+        };
+        assert_eq!(
+            filter.len(),
+            type_bridge_contract::limits::MAX_BOOLEAN_TERMS
+        );
+
+        // One additional generated predicate remains constructible as a generic
+        // lineage, but the manager terminal rejects it before provider work.
+        let value = b"one-too-many";
+        unsafe { add_identifier_equality(&package, &mut built, value) };
+        assert_eq!(
+            unsafe { type_bridge_query_terminal_close(&mut built.terminal) },
+            TypeBridgeStatus::Ok,
+        );
+        let mut diagnostics = ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                type_bridge_query_terminal_open_v1(
+                    built.query,
+                    &descriptor,
+                    &mut built.terminal,
+                    &mut diagnostics,
+                )
+            },
+            TypeBridgeStatus::ResourceLimit,
+        );
+        assert!(built.terminal.is_null());
+        assert_eq!(
+            unsafe { diagnostic_code(diagnostics) },
+            "manager_filter_predicate_limit"
+        );
+        unsafe { close_diagnostics(&mut diagnostics) };
+    }
+
+    #[test]
+    fn manager_database_terminals_are_exhaustive_scalar_and_identity_strict() {
+        let package = ordered_package("querymanagerexecute");
+        let mut diagnostics = ptr::null_mut();
+
+        // All uses the unbounded common root collector and private row storage.
+        let mut all = unsafe { BuiltQuery::open(&package, TERMINAL_COUNT, ROWS_BOUNDED_MANY) };
+        let descriptor = manager_terminal_descriptor(&all, ManagerTerminalKind::All);
+        unsafe { replace_terminal(&mut all, &descriptor) };
+        let database = fake_database(
+            &package,
+            vec![Response::Items(vec![solution("0x01"), solution("0x02")])],
+            vec![Response::Items(vec![
+                hydration(&package, "0x01", "Ada"),
+                hydration(&package, "0x02", "Bob"),
+            ])],
+        );
+        let mut result = ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                type_bridge_database_query_execute_v1(
+                    &*database.value,
+                    all.terminal,
+                    TERMINAL_ROWS,
+                    ptr::null(),
+                    ptr::null(),
+                    &mut result,
+                    &mut diagnostics,
+                )
+            },
+            TypeBridgeStatus::Ok,
+        );
+        let mut count = usize::MAX;
+        assert_eq!(
+            unsafe {
+                type_bridge_query_result_row_count(
+                    result,
+                    RESULT_ROWS,
+                    &mut count,
+                    &mut diagnostics,
+                )
+            },
+            TypeBridgeStatus::Ok,
+        );
+        assert_eq!(count, 2);
+        let mut thing = ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                type_bridge_query_result_row_slot_thing_at(
+                    result,
+                    RESULT_ROWS,
+                    1,
+                    0,
+                    0,
+                    &all.model,
+                    MATCH_EXACT,
+                    SELECTION_ONE,
+                    &mut thing,
+                    &mut diagnostics,
+                )
+            },
+            TypeBridgeStatus::Ok,
+        );
+        let mut iid = TypeBridgeByteView {
+            data: ptr::null(),
+            length: 0,
+        };
+        assert_eq!(
+            unsafe { type_bridge_projected_thing_iid(thing, &mut iid) },
+            TypeBridgeStatus::Ok,
+        );
+        assert_eq!(
+            unsafe { std::slice::from_raw_parts(iid.data, iid.length) },
+            b"0x02"
+        );
+        assert_eq!(
+            unsafe { type_bridge_projected_thing_close(&mut thing) },
+            TypeBridgeStatus::Ok,
+        );
+        assert_eq!(
+            unsafe { type_bridge_query_result_close(&mut result) },
+            TypeBridgeStatus::Ok,
+        );
+        assert_eq!(database.events.queries.load(Ordering::Acquire), 1);
+        assert_eq!(database.events.hydrations.load(Ordering::Acquire), 1);
+        assert_eq!(database.events.closes.load(Ordering::Acquire), 1);
+
+        // Count and exists remain canonical scalars while using the private marker lane.
+        for (operation, items, expected) in [
+            (
+                ManagerTerminalKind::Count,
+                vec![solution("0x01"), solution("0x01"), solution("0x02")],
+                2_u64,
+            ),
+            (ManagerTerminalKind::Exists, vec![solution("0x01")], 1_u64),
+        ] {
+            let mut built =
+                unsafe { BuiltQuery::open(&package, TERMINAL_COUNT, ROWS_BOUNDED_MANY) };
+            let descriptor = manager_terminal_descriptor(&built, operation);
+            unsafe { replace_terminal(&mut built, &descriptor) };
+            let database = fake_database(&package, vec![Response::Items(items)], Vec::new());
+            assert_eq!(
+                unsafe {
+                    type_bridge_database_query_execute_v1(
+                        &*database.value,
+                        built.terminal,
+                        descriptor.kind,
+                        ptr::null(),
+                        ptr::null(),
+                        &mut result,
+                        &mut diagnostics,
+                    )
+                },
+                TypeBridgeStatus::Ok,
+            );
+            match operation {
+                ManagerTerminalKind::Count => {
+                    let mut value = u64::MAX;
+                    assert_eq!(
+                        unsafe {
+                            type_bridge_query_result_count(result, &mut value, &mut diagnostics)
+                        },
+                        TypeBridgeStatus::Ok,
+                    );
+                    assert_eq!(value, expected);
+                }
+                ManagerTerminalKind::Exists => {
+                    let mut value = u8::MAX;
+                    assert_eq!(
+                        unsafe {
+                            type_bridge_query_result_exists(result, &mut value, &mut diagnostics)
+                        },
+                        TypeBridgeStatus::Ok,
+                    );
+                    assert_eq!(u64::from(value), expected);
+                }
+                ManagerTerminalKind::All | ManagerTerminalKind::First => unreachable!(),
+            }
+            assert_eq!(
+                unsafe { type_bridge_query_result_close(&mut result) },
+                TypeBridgeStatus::Ok,
+            );
+            assert_eq!(database.events.hydrations.load(Ordering::Acquire), 0);
+        }
+
+        // First rejects an unkeyed filter before opening provider state.
+        let mut first = unsafe { BuiltQuery::open(&package, TERMINAL_COUNT, ROWS_BOUNDED_MANY) };
+        let descriptor = manager_terminal_descriptor(&first, ManagerTerminalKind::First);
+        unsafe { replace_terminal(&mut first, &descriptor) };
+        let database = fake_database(&package, Vec::new(), Vec::new());
+        assert_eq!(
+            unsafe {
+                type_bridge_database_query_execute_v1(
+                    &*database.value,
+                    first.terminal,
+                    TERMINAL_FIRST,
+                    ptr::null(),
+                    ptr::null(),
+                    &mut result,
+                    &mut diagnostics,
+                )
+            },
+            TypeBridgeStatus::InvalidArgument,
+        );
+        assert!(result.is_null());
+        assert_eq!(
+            unsafe { diagnostic_code(diagnostics) },
+            "manager_first_requires_identity"
+        );
+        unsafe { close_diagnostics(&mut diagnostics) };
+        assert_eq!(database.events.opens.load(Ordering::Acquire), 0);
+
+        // Exact equality for every key admits first, and distinct duplicate identities fail.
+        unsafe { add_identifier_equality(&package, &mut first, b"Ada") };
+        let descriptor = manager_terminal_descriptor(&first, ManagerTerminalKind::First);
+        unsafe { replace_terminal(&mut first, &descriptor) };
+        let database = fake_database(
+            &package,
+            vec![Response::Items(vec![solution("0x01"), solution("0x02")])],
+            Vec::new(),
+        );
+        assert_eq!(
+            unsafe {
+                type_bridge_database_query_execute_v1(
+                    &*database.value,
+                    first.terminal,
+                    TERMINAL_FIRST,
+                    ptr::null(),
+                    ptr::null(),
+                    &mut result,
+                    &mut diagnostics,
+                )
+            },
+            TypeBridgeStatus::ExecutionFailed,
+        );
+        assert!(result.is_null());
+        assert_eq!(
+            unsafe { diagnostic_code(diagnostics) },
+            "manager_first_identity_not_unique"
+        );
+        unsafe { close_diagnostics(&mut diagnostics) };
+    }
+
+    #[test]
+    fn manager_read_transaction_terminals_reuse_the_borrowed_context() {
+        let package = ordered_package("querymanagerread");
+        let mut built = unsafe { BuiltQuery::open(&package, TERMINAL_COUNT, ROWS_BOUNDED_MANY) };
+        let descriptor = manager_terminal_descriptor(&built, ManagerTerminalKind::Count);
+        unsafe { replace_terminal(&mut built, &descriptor) };
+        let database = fake_database(
+            &package,
+            vec![
+                Response::Items(vec![solution("0x01")]),
+                Response::Items(vec![solution("0x01"), solution("0x02")]),
+            ],
+            Vec::new(),
+        );
+        let mut diagnostics = ptr::null_mut();
+        let mut read = ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                type_bridge_read_transaction_open(
+                    &*database.value,
+                    ptr::null(),
+                    &mut read,
+                    &mut diagnostics,
+                )
+            },
+            TypeBridgeStatus::Ok,
+        );
+        assert_eq!(database.events.opens.load(Ordering::Acquire), 1);
+        for expected in [1_u64, 2_u64] {
+            let mut result = ptr::null_mut();
+            assert_eq!(
+                unsafe {
+                    type_bridge_read_transaction_query_execute_v1(
+                        read,
+                        built.terminal,
+                        TERMINAL_COUNT,
+                        ptr::null(),
+                        ptr::null(),
+                        &mut result,
+                        &mut diagnostics,
+                    )
+                },
+                TypeBridgeStatus::Ok,
+            );
+            let mut count = u64::MAX;
+            assert_eq!(
+                unsafe { type_bridge_query_result_count(result, &mut count, &mut diagnostics) },
+                TypeBridgeStatus::Ok,
+            );
+            assert_eq!(count, expected);
+            assert_eq!(
+                unsafe { type_bridge_query_result_close(&mut result) },
+                TypeBridgeStatus::Ok,
+            );
+            assert_eq!(database.events.closes.load(Ordering::Acquire), 0);
+        }
+        assert_eq!(
+            unsafe { type_bridge_read_transaction_close(&mut read, &mut diagnostics) },
+            TypeBridgeStatus::Ok,
+        );
+        assert_eq!(database.events.closes.load(Ordering::Acquire), 1);
     }
 
     #[test]

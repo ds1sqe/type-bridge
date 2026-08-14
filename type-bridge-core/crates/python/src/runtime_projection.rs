@@ -18,12 +18,13 @@ use type_bridge_contract::id::{TypeId, TypeKind, is_canonical_thing_iid};
 use type_bridge_contract::limits::MAX_CANONICAL_STRING_BYTES;
 use type_bridge_contract::projection::{
     BindingTarget, ProjectedContainer, ProjectedModelForm, ProjectedModelUse,
-    ProjectedMultiplicity, ProjectionConfig, RuntimeProjection,
+    ProjectedMultiplicity, ProjectedTokenIdentity, ProjectionConfig, RuntimeProjection,
 };
 use type_bridge_contract::projection_wire::decode_runtime_projection_verified;
 use type_bridge_contract::sdk_diagnostic::{
     SdkDiagnosticCode, SdkDiagnosticDetailValue, SdkDiagnosticMessage, SdkDiagnosticName,
     SdkDiagnosticPathSegment, SdkExecutionDiagnostic, SdkProjectionEvidenceSlotPresence,
+    SdkQueryDiagnosticPathKind,
 };
 use type_bridge_contract::temporal::{
     CanonicalDate, CanonicalDateTime, CanonicalDateTimeTz, CanonicalDuration, CanonicalTime,
@@ -51,6 +52,7 @@ use type_bridge_orm::{
     ProjectedAttributeValue, ProjectedBatch, ProjectedBatchExecutor,
     ProjectedBatchInvocationControl, ProjectedBatchOperation, ProjectedBatchResult,
     ProjectedBatchRow, ProjectedCreate, ProjectedCreateBudget, ProjectedCrudExecutor,
+    ProjectedManagerComparison, ProjectedManagerFilter, ProjectedManagerFilterExecutor,
     ProjectedReference, ProjectedReferenceOrigin, ProjectedRolePlayer, ProjectedThing,
     QueryExecutionResourceLimits, ThingKind,
 };
@@ -984,6 +986,7 @@ impl PyRuntimeProjection {
     ) -> PyResult<PyProjectedModelManager> {
         let type_id = self.package.model_id_for_class(py, &model)?;
         ensure_manageable(self.package.as_ref(), &type_id)?;
+        let compatibility_filter = initial_compatibility_filter(self.package.as_ref(), &type_id)?;
         let (database, runtime) = database.handles();
         Ok(PyProjectedModelManager {
             package: Arc::clone(&self.package),
@@ -993,6 +996,7 @@ impl PyRuntimeProjection {
             successor_batch_marker: None,
             runtime,
             filters: vec![],
+            compatibility_filter,
         })
     }
 
@@ -1007,6 +1011,11 @@ impl PyRuntimeProjection {
         ensure_manageable(self.package.as_ref(), &type_id)?;
         let successor_batch_marker = transaction.successor_batch_marker();
         let (transaction, runtime) = transaction.handles();
+        let compatibility_filter = if transaction.tx_type() == type_bridge_orm::TxType::Read {
+            initial_compatibility_filter(self.package.as_ref(), &type_id)?
+        } else {
+            None
+        };
         Ok(PyProjectedModelManager {
             package: Arc::clone(&self.package),
             type_id,
@@ -1015,6 +1024,7 @@ impl PyRuntimeProjection {
             successor_batch_marker: Some(successor_batch_marker),
             runtime,
             filters: vec![],
+            compatibility_filter,
         })
     }
 
@@ -1360,10 +1370,249 @@ pub struct PyProjectedModelManager {
     successor_batch_marker: Option<Arc<AtomicBool>>,
     runtime: Arc<ProviderRuntimeOwner>,
     filters: Vec<DynamicExpr>,
+    compatibility_filter: Option<ProjectedManagerFilter>,
+}
+
+/// Persistent canonical filter for one exact generated model.
+#[pyclass]
+pub struct PyProjectedManagerFilter {
+    package: Arc<InstalledPackage>,
+    database: Option<Arc<Database>>,
+    transaction: Option<TransactionContext>,
+    runtime: Arc<ProviderRuntimeOwner>,
+    filter: ProjectedManagerFilter,
+}
+
+#[pymethods]
+impl PyProjectedManagerFilter {
+    /// Append one package-issued field predicate without mutating this filter.
+    #[pyo3(signature = (owner, field_name, metadata_json, comparison, value))]
+    fn where_field(
+        &self,
+        py: Python<'_>,
+        owner: Py<PyType>,
+        field_name: &str,
+        metadata_json: &str,
+        comparison: &str,
+        value: Bound<'_, PyAny>,
+    ) -> PyResult<Self> {
+        let owner_id = self.package.model_id_for_class(py, &owner).map_err(|_| {
+            py_sdk_diagnostic(SdkExecutionDiagnostic::generated_token_package_mismatch())
+        })?;
+        let field = self
+            .package
+            .projection
+            .projection()
+            .models()
+            .get(&owner_id)
+            .and_then(|model| {
+                model
+                    .query_tokens()
+                    .fields()
+                    .values()
+                    .find(|field| field.target_name().as_str() == field_name)
+            })
+            .ok_or_else(|| {
+                py_sdk_diagnostic(SdkExecutionDiagnostic::generated_token_package_mismatch())
+            })?;
+        if !to_canonical_json(field)
+            .is_ok_and(|canonical| canonical.as_slice() == metadata_json.as_bytes())
+        {
+            return Err(py_sdk_diagnostic(
+                SdkExecutionDiagnostic::generated_token_package_mismatch(),
+            ));
+        }
+        let projected = project_attribute_value(py, self.package.as_ref(), &value, &[])?;
+        let comparison = projected_manager_comparison(comparison)?;
+        let filter = self
+            .filter
+            .try_and(
+                &self.package.projection,
+                &ProjectedTokenIdentity::Field {
+                    owner: owner_id,
+                    field: field.id().clone(),
+                },
+                comparison,
+                &projected,
+            )
+            .map_err(py_sdk_diagnostic)?;
+        Ok(Self {
+            package: Arc::clone(&self.package),
+            database: self.database.clone(),
+            transaction: self.transaction.clone(),
+            runtime: Arc::clone(&self.runtime),
+            filter,
+        })
+    }
+
+    /// Reject a token that was not issued by the calling generated package.
+    fn reject_unissued_field(&self) -> PyResult<Self> {
+        Err(py_sdk_diagnostic(
+            SdkExecutionDiagnostic::generated_token_package_mismatch(),
+        ))
+    }
+
+    /// Hydrate every distinct exact-model match.
+    fn all(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let executor = ProjectedManagerFilterExecutor::new(&self.package.projection);
+        let projected = match (&self.database, &self.transaction) {
+            (Some(database), None) => provider_block_on(
+                py,
+                self.runtime.as_ref(),
+                executor.all(
+                    database.as_ref(),
+                    &self.filter,
+                    QueryExecutionResourceLimits::default(),
+                    AnswerCancellation::default(),
+                ),
+            ),
+            (None, Some(transaction)) => provider_block_on(
+                py,
+                self.runtime.as_ref(),
+                executor.all_in_read_transaction(
+                    transaction,
+                    &self.filter,
+                    QueryExecutionResourceLimits::default(),
+                    AnswerCancellation::default(),
+                ),
+            ),
+            _ => return Err(py_runtime_error("projected filter has no execution target")),
+        }
+        .map_err(py_sdk_diagnostic)?;
+        let values = PyList::empty(py);
+        for value in projected {
+            values.append(hydrate_projected_thing(py, self.package.as_ref(), value)?)?;
+        }
+        Ok(values.into_any().unbind())
+    }
+
+    /// Return the optional identity-proven match.
+    fn first(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let executor = ProjectedManagerFilterExecutor::new(&self.package.projection);
+        let projected = match (&self.database, &self.transaction) {
+            (Some(database), None) => provider_block_on(
+                py,
+                self.runtime.as_ref(),
+                executor.first(
+                    database.as_ref(),
+                    &self.filter,
+                    QueryExecutionResourceLimits::default(),
+                    AnswerCancellation::default(),
+                ),
+            ),
+            (None, Some(transaction)) => provider_block_on(
+                py,
+                self.runtime.as_ref(),
+                executor.first_in_read_transaction(
+                    transaction,
+                    &self.filter,
+                    QueryExecutionResourceLimits::default(),
+                    AnswerCancellation::default(),
+                ),
+            ),
+            _ => return Err(py_runtime_error("projected filter has no execution target")),
+        }
+        .map_err(py_sdk_diagnostic)?;
+        projected
+            .map(|value| hydrate_projected_thing(py, self.package.as_ref(), value))
+            .transpose()
+            .map(|value| value.unwrap_or_else(|| py.None()))
+    }
+
+    /// Count distinct exact-model matches.
+    fn count(&self, py: Python<'_>) -> PyResult<u64> {
+        let executor = ProjectedManagerFilterExecutor::new(&self.package.projection);
+        match (&self.database, &self.transaction) {
+            (Some(database), None) => provider_block_on(
+                py,
+                self.runtime.as_ref(),
+                executor.count(
+                    database.as_ref(),
+                    &self.filter,
+                    QueryExecutionResourceLimits::default(),
+                    AnswerCancellation::default(),
+                ),
+            ),
+            (None, Some(transaction)) => provider_block_on(
+                py,
+                self.runtime.as_ref(),
+                executor.count_in_read_transaction(
+                    transaction,
+                    &self.filter,
+                    QueryExecutionResourceLimits::default(),
+                    AnswerCancellation::default(),
+                ),
+            ),
+            _ => return Err(py_runtime_error("projected filter has no execution target")),
+        }
+        .map_err(py_sdk_diagnostic)
+    }
+
+    /// Return whether at least one exact-model match exists.
+    fn exists(&self, py: Python<'_>) -> PyResult<bool> {
+        let executor = ProjectedManagerFilterExecutor::new(&self.package.projection);
+        match (&self.database, &self.transaction) {
+            (Some(database), None) => provider_block_on(
+                py,
+                self.runtime.as_ref(),
+                executor.exists(
+                    database.as_ref(),
+                    &self.filter,
+                    QueryExecutionResourceLimits::default(),
+                    AnswerCancellation::default(),
+                ),
+            ),
+            (None, Some(transaction)) => provider_block_on(
+                py,
+                self.runtime.as_ref(),
+                executor.exists_in_read_transaction(
+                    transaction,
+                    &self.filter,
+                    QueryExecutionResourceLimits::default(),
+                    AnswerCancellation::default(),
+                ),
+            ),
+            _ => return Err(py_runtime_error("projected filter has no execution target")),
+        }
+        .map_err(py_sdk_diagnostic)
+    }
 }
 
 #[pymethods]
 impl PyProjectedModelManager {
+    /// Start a distinct persistent canonical filter for this exact model.
+    fn canonical_filter(&self) -> PyResult<PyProjectedManagerFilter> {
+        if self
+            .transaction
+            .as_ref()
+            .is_some_and(|transaction| transaction.tx_type() != type_bridge_orm::TxType::Read)
+        {
+            let diagnostic = SdkExecutionDiagnostic::invalid_input(
+                SdkDiagnosticCode::new("borrowed_target_not_read_only")
+                    .expect("the static borrowed-target code is canonical"),
+                SdkDiagnosticMessage::new(
+                    "Canonical manager filters require a borrowed read transaction",
+                )
+                .expect("the static borrowed-target message is canonical"),
+            )
+            .try_at(SdkDiagnosticPathSegment::Query(
+                SdkQueryDiagnosticPathKind::Operation,
+            ))
+            .expect("the fixed borrowed-target path fits the SDK diagnostic contract");
+            return Err(py_sdk_diagnostic(diagnostic));
+        }
+        let filter =
+            ProjectedManagerFilter::try_new(&self.package.projection, self.type_id.clone())
+                .map_err(py_sdk_diagnostic)?;
+        Ok(PyProjectedManagerFilter {
+            package: Arc::clone(&self.package),
+            database: self.database.clone(),
+            transaction: self.transaction.clone(),
+            runtime: Arc::clone(&self.runtime),
+            filter,
+        })
+    }
+
     /// Insert one exact generated model and attach the returned TypeDB IID.
     fn insert(&self, py: Python<'_>, instance: Bound<'_, PyAny>) -> PyResult<PyObject> {
         self.ensure_instance(py, &instance)?;
@@ -1817,6 +2066,17 @@ impl PyProjectedModelManager {
             attributes,
             filters,
         )?);
+        let compatibility_filter = match &self.compatibility_filter {
+            Some(filter) => lower_compatibility_filter_kwargs(
+                py,
+                self.package.as_ref(),
+                &self.type_id,
+                attributes,
+                filters,
+                filter,
+            )?,
+            None => None,
+        };
         Ok(Self {
             package: Arc::clone(&self.package),
             type_id: self.type_id.clone(),
@@ -1825,11 +2085,20 @@ impl PyProjectedModelManager {
             successor_batch_marker: self.successor_batch_marker.clone(),
             runtime: Arc::clone(&self.runtime),
             filters: combined,
+            compatibility_filter,
         })
     }
 
     /// Fetch all exact instances of this projected type using `isa!`.
     fn all(&self, py: Python<'_>) -> PyResult<PyObject> {
+        if let Some(filter) = &self.compatibility_filter {
+            return self.compatibility_filter_handle(filter.clone()).all(py);
+        }
+        self.legacy_all(py)
+    }
+
+    /// Preserve released dynamic-query selection for generated mutations.
+    fn legacy_all(&self, py: Python<'_>) -> PyResult<PyObject> {
         match self.descriptor()? {
             TypeDescriptor::Entity(descriptor) => {
                 let manager = self.entity_manager(Arc::new(descriptor))?;
@@ -1906,6 +2175,9 @@ impl PyProjectedModelManager {
 
     /// Count exact filtered models.
     fn count(&self, py: Python<'_>) -> PyResult<u64> {
+        if let Some(filter) = &self.compatibility_filter {
+            return self.compatibility_filter_handle(filter.clone()).count(py);
+        }
         match self.descriptor()? {
             TypeDescriptor::Entity(descriptor) => {
                 let manager = self.entity_manager(Arc::new(descriptor))?;
@@ -1930,6 +2202,9 @@ impl PyProjectedModelManager {
 
     /// Return whether at least one exact filtered model exists.
     fn exists(&self, py: Python<'_>) -> PyResult<bool> {
+        if let Some(filter) = &self.compatibility_filter {
+            return self.compatibility_filter_handle(filter.clone()).exists(py);
+        }
         match self.descriptor()? {
             TypeDescriptor::Entity(descriptor) => {
                 let manager = self.entity_manager(Arc::new(descriptor))?;
@@ -1998,6 +2273,19 @@ impl PyProjectedModelManager {
 }
 
 impl PyProjectedModelManager {
+    fn compatibility_filter_handle(
+        &self,
+        filter: ProjectedManagerFilter,
+    ) -> PyProjectedManagerFilter {
+        PyProjectedManagerFilter {
+            package: Arc::clone(&self.package),
+            database: self.database.clone(),
+            transaction: self.transaction.clone(),
+            runtime: Arc::clone(&self.runtime),
+            filter,
+        }
+    }
+
     fn uses_successor_runtime(&self) -> bool {
         self.package.projection.projection().generator_handlers()
             == [type_bridge_contract::projection::ProjectionHandler::python_v2()]
@@ -5219,6 +5507,135 @@ fn projected_index(index: usize) -> u64 {
     u64::try_from(index).expect("a projected collection index fits the SDK diagnostic contract")
 }
 
+fn initial_compatibility_filter(
+    package: &InstalledPackage,
+    model: &TypeId,
+) -> PyResult<Option<ProjectedManagerFilter>> {
+    if package.projection.projection().generator_handlers()
+        != [type_bridge_contract::projection::ProjectionHandler::python_v2()]
+    {
+        return Ok(None);
+    }
+    ProjectedManagerFilter::try_new(&package.projection, model.clone())
+        .map(Some)
+        .map_err(py_sdk_diagnostic)
+}
+
+/// Preserve the released keyword-filter grammar while routing only its closed,
+/// exact-wrapper comparison subset through the canonical manager executor.
+/// Iterating the Python dict directly retains authored predicate order.
+fn lower_compatibility_filter_kwargs(
+    py: Python<'_>,
+    package: &InstalledPackage,
+    model: &TypeId,
+    descriptors: &[OwnedAttributeDescriptor],
+    filters: Option<&Bound<'_, PyDict>>,
+    base: &ProjectedManagerFilter,
+) -> PyResult<Option<ProjectedManagerFilter>> {
+    let Some(filters) = filters else {
+        return Ok(Some(base.clone()));
+    };
+    let mut lowered = base.clone();
+    for (key, value) in filters {
+        let key = key
+            .downcast::<PyString>()
+            .map_err(|_| py_type_error("generated manager filter names must be strings"))?
+            .to_str()?;
+        if matches!(
+            key,
+            "iid" | "_iid" | "iid__eq" | "_iid__eq" | "iid__in" | "_iid__in"
+        ) {
+            return Ok(None);
+        }
+        let parsed_lookup = key.rsplit_once("__");
+        let has_field = |name: &str| {
+            descriptors
+                .iter()
+                .any(|descriptor| descriptor.field_name == name || descriptor.attr_name == name)
+        };
+        let (field_name, lookup) = match parsed_lookup {
+            Some((field_name, lookup))
+                if matches!(
+                    lookup,
+                    "eq" | "exact"
+                        | "ne"
+                        | "gt"
+                        | "gte"
+                        | "lt"
+                        | "lte"
+                        | "contains"
+                        | "startswith"
+                        | "endswith"
+                        | "regex"
+                        | "like"
+                        | "in"
+                        | "isnull"
+                ) && has_field(field_name) =>
+            {
+                (field_name, lookup)
+            }
+            _ if has_field(key) => (key, "eq"),
+            Some((field_name, lookup)) => (field_name, lookup),
+            None => (key, "eq"),
+        };
+        let comparison = match lookup {
+            "eq" | "exact" => ProjectedManagerComparison::Eq,
+            "ne" => ProjectedManagerComparison::Ne,
+            "gt" => ProjectedManagerComparison::Gt,
+            "gte" => ProjectedManagerComparison::Gte,
+            "lt" => ProjectedManagerComparison::Lt,
+            "lte" => ProjectedManagerComparison::Lte,
+            _ => return Ok(None),
+        };
+        let Some(descriptor) = descriptors.iter().find(|descriptor| {
+            descriptor.field_name == field_name || descriptor.attr_name == field_name
+        }) else {
+            return Ok(None);
+        };
+        if descriptor.value_type == ValueType::Boolean
+            && !matches!(
+                comparison,
+                ProjectedManagerComparison::Eq | ProjectedManagerComparison::Ne
+            )
+        {
+            return Ok(None);
+        }
+        let expected = package.type_by_label(&descriptor.attr_name, TypeKind::Attribute)?;
+        if !matches!(
+            package.identify_value(py, &value),
+            Ok((ref attribute, ProjectedModelForm::Complete)) if attribute == expected
+        ) {
+            return Ok(None);
+        }
+        let field = package
+            .projection
+            .projection()
+            .models()
+            .get(model)
+            .and_then(|projection| {
+                projection
+                    .query_tokens()
+                    .fields()
+                    .values()
+                    .find(|field| field.target_name().as_str() == field_name)
+            })
+            .ok_or_else(|| py_runtime_error("projected manager field token is absent"))?;
+        let projected = project_attribute_value(py, package, &value, &[])?;
+        lowered = lowered
+            .try_and(
+                &package.projection,
+                &ProjectedTokenIdentity::Field {
+                    owner: model.clone(),
+                    field: field.id().clone(),
+                },
+                comparison,
+                &projected,
+            )
+            .map_err(py_sdk_diagnostic)?;
+    }
+    Ok(Some(lowered))
+}
+
 fn lower_filter_kwargs(
     py: Python<'_>,
     package: &InstalledPackage,
@@ -7382,6 +7799,20 @@ fn py_diagnostic(error: type_bridge_contract::diagnostic::Diagnostic) -> PyErr {
     py_value_error(error.to_string())
 }
 
+fn projected_manager_comparison(value: &str) -> PyResult<ProjectedManagerComparison> {
+    match value {
+        "eq" => Ok(ProjectedManagerComparison::Eq),
+        "ne" => Ok(ProjectedManagerComparison::Ne),
+        "lt" => Ok(ProjectedManagerComparison::Lt),
+        "lte" => Ok(ProjectedManagerComparison::Lte),
+        "gt" => Ok(ProjectedManagerComparison::Gt),
+        "gte" => Ok(ProjectedManagerComparison::Gte),
+        _ => Err(py_value_error(
+            "unsupported canonical manager comparison; expected eq, ne, lt, lte, gt, or gte",
+        )),
+    }
+}
+
 const fn projected_value_type(value: ValueTypeTag) -> ValueType {
     match value {
         ValueTypeTag::String => ValueType::String,
@@ -7416,6 +7847,7 @@ fn py_runtime_error(message: impl Into<String>) -> PyErr {
 pub fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyRuntimeProjection>()?;
     module.add_class::<PyProjectedModelManager>()?;
+    module.add_class::<PyProjectedManagerFilter>()?;
     Ok(())
 }
 
@@ -7520,6 +7952,7 @@ plays:
     const BATCH_SCHEMA: &str = r#"format: typebridge.schema/v2
 attributes:
   identifier: { value: string }
+  flag: { value: boolean }
   tag:
     value:
       type: string
@@ -7533,6 +7966,9 @@ entities:
         ordered: true
         distinct: true
   memo: {}
+  switch:
+    owns:
+      flag: { key: true }
 relations:
   membership:
     owns:
@@ -9204,7 +9640,254 @@ class Reference:
             successor_batch_marker,
             runtime,
             filters: vec![],
+            compatibility_filter: None,
         }
+    }
+
+    #[test]
+    fn canonical_manager_filter_fences_tokens_domains_and_persists() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            let (_, package) = install_batch(py);
+            let person_id = package
+                .type_by_label("person", TypeKind::Entity)
+                .unwrap()
+                .clone();
+            let membership_id = package
+                .type_by_label("membership", TypeKind::Relation)
+                .unwrap()
+                .clone();
+            let identifier_id = package
+                .type_by_label("identifier", TypeKind::Attribute)
+                .unwrap()
+                .clone();
+            let tag_id = package
+                .type_by_label("tag", TypeKind::Attribute)
+                .unwrap()
+                .clone();
+            let switch_id = package
+                .type_by_label("switch", TypeKind::Entity)
+                .unwrap()
+                .clone();
+            let flag_id = package
+                .type_by_label("flag", TypeKind::Attribute)
+                .unwrap()
+                .clone();
+            let person_class = package
+                .class(&person_id, ProjectedModelForm::Complete)
+                .unwrap()
+                .clone_ref(py);
+            let membership_class = package
+                .class(&membership_id, ProjectedModelForm::Complete)
+                .unwrap()
+                .clone_ref(py);
+            let switch_class = package
+                .class(&switch_id, ProjectedModelForm::Complete)
+                .unwrap()
+                .clone_ref(py);
+            let identifier = package
+                .class(&identifier_id, ProjectedModelForm::Complete)
+                .unwrap()
+                .bind(py)
+                .call1(("person-1",))
+                .unwrap();
+            let tag = package
+                .class(&tag_id, ProjectedModelForm::Complete)
+                .unwrap()
+                .bind(py)
+                .call1(("tag-1",))
+                .unwrap();
+            let flag = package
+                .class(&flag_id, ProjectedModelForm::Complete)
+                .unwrap()
+                .bind(py)
+                .call1((true,))
+                .unwrap();
+            let manager = origin_manager(
+                Arc::clone(&package),
+                person_id.clone(),
+                None,
+                None,
+                Arc::new(ProviderRuntimeOwner::new().unwrap()),
+            );
+            let field_metadata = |owner: &TypeId, name: &str| {
+                let field = package
+                    .projection
+                    .projection()
+                    .models()
+                    .get(owner)
+                    .unwrap()
+                    .query_tokens()
+                    .fields()
+                    .values()
+                    .find(|field| field.target_name().as_str() == name)
+                    .unwrap();
+                String::from_utf8(to_canonical_json(field).unwrap()).unwrap()
+            };
+            let person_identifier_metadata = field_metadata(&person_id, "identifier");
+            let membership_identifier_metadata = field_metadata(&membership_id, "identifier");
+            let switch_flag_metadata = field_metadata(&switch_id, "flag");
+            let filter = manager.canonical_filter().unwrap();
+            let sibling = filter
+                .where_field(
+                    py,
+                    person_class.clone_ref(py),
+                    "identifier",
+                    &person_identifier_metadata,
+                    "eq",
+                    identifier.clone(),
+                )
+                .unwrap();
+            assert_eq!(filter.filter.len(), 0);
+            assert_eq!(sibling.filter.len(), 1);
+            let switch_filter =
+                ProjectedManagerFilter::try_new(&package.projection, switch_id).unwrap();
+            let switch_filter = PyProjectedManagerFilter {
+                package: Arc::clone(&package),
+                database: None,
+                transaction: None,
+                runtime: Arc::new(ProviderRuntimeOwner::new().unwrap()),
+                filter: switch_filter,
+            };
+
+            let cases = [
+                (
+                    switch_filter
+                        .where_field(py, switch_class, "flag", &switch_flag_metadata, "gt", flag)
+                        .err()
+                        .expect("boolean ordering must fail"),
+                    "invalid_input",
+                    "invalid_operator_for_type",
+                ),
+                (
+                    filter
+                        .where_field(
+                            py,
+                            membership_class,
+                            "identifier",
+                            &membership_identifier_metadata,
+                            "eq",
+                            identifier,
+                        )
+                        .err()
+                        .expect("wrong-owner token must fail"),
+                    "integrity",
+                    "field_owner_mismatch",
+                ),
+                (
+                    filter
+                        .where_field(
+                            py,
+                            person_class,
+                            "identifier",
+                            &person_identifier_metadata,
+                            "eq",
+                            tag,
+                        )
+                        .err()
+                        .expect("wrong scalar domain must fail"),
+                    "invalid_input",
+                    "wrong_scalar_domain",
+                ),
+                (
+                    filter
+                        .reject_unissued_field()
+                        .err()
+                        .expect("unissued token must fail"),
+                    "integrity",
+                    "generated_token_package_mismatch",
+                ),
+            ];
+            for (error, category, code) in cases {
+                let value = error.value(py);
+                assert_eq!(
+                    value
+                        .getattr("sdk_category")
+                        .unwrap()
+                        .extract::<String>()
+                        .unwrap(),
+                    category,
+                );
+                assert_eq!(
+                    value.getattr("code").unwrap().extract::<String>().unwrap(),
+                    code,
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn write_transaction_manager_preserves_legacy_reads_and_rejects_canonical_filter_pre_io() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            let (_, package) = install_batch(py);
+            let person_id = package
+                .type_by_label("person", TypeKind::Entity)
+                .unwrap()
+                .clone();
+            let person_class = package
+                .class(&person_id, ProjectedModelForm::Complete)
+                .unwrap()
+                .clone_ref(py);
+            let (backend, state) =
+                OriginRecordingBackend::new(vec![QueryResult::Documents(vec![])]);
+            let database = Arc::new(Database::with_backend(
+                Box::new(backend),
+                "canonical-write-target",
+            ));
+            let runtime =
+                Arc::new(ProviderRuntimeOwner::new().expect("provider runtime should start"));
+            let transaction = runtime
+                .block_on(database.transaction_context(TxType::Write))
+                .expect("write transaction should open");
+            let context = PyRustTransactionContext::from_parts_for_test(
+                transaction.clone(),
+                Arc::clone(&runtime),
+            );
+            let projection = PyRuntimeProjection {
+                package: Arc::clone(&package),
+            };
+            let manager = projection
+                .manager_for_transaction(py, person_class, &context)
+                .expect("released manager should bind to a write transaction");
+
+            assert!(manager.compatibility_filter.is_none());
+            let error = manager
+                .canonical_filter()
+                .err()
+                .expect("canonical filters require a borrowed read transaction");
+            let diagnostic = error.value(py);
+            assert_eq!(
+                diagnostic
+                    .getattr("sdk_category")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "invalid_input",
+            );
+            assert_eq!(
+                diagnostic
+                    .getattr("code")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "borrowed_target_not_read_only",
+            );
+            assert!(state.lock().unwrap().queries.is_empty());
+
+            let values = manager
+                .all(py)
+                .expect("released write-transaction manager reads remain on the legacy route");
+            assert_eq!(values.bind(py).downcast::<PyList>().unwrap().len(), 0);
+            {
+                let state = state.lock().unwrap();
+                assert_eq!(state.opens, [TxType::Write]);
+                assert_eq!(state.queries.len(), 1);
+            }
+            runtime
+                .block_on(transaction.close())
+                .expect("write transaction should close");
+        });
     }
 
     fn thing_query(
@@ -9479,6 +10162,7 @@ class Reference:
                     ProviderRuntimeOwner::new().expect("provider runtime should start"),
                 ),
                 filters: Vec::new(),
+                compatibility_filter: None,
             };
 
             let errors = [
@@ -11796,6 +12480,7 @@ def failing_initialize(target, original):
                     successor_batch_marker: Some(Arc::clone(&marker)),
                     runtime: Arc::clone(&runtime),
                     filters: Vec::new(),
+                    compatibility_filter: None,
                 };
                 let error = if operation == ProjectedBatchOperation::Insert {
                     let input = batch_person(py, package.as_ref(), "person-0", "authored-0", None);
@@ -11930,6 +12615,7 @@ def failing_initialize(target, original):
                         successor_batch_marker: Some(Arc::clone(&marker)),
                         runtime: Arc::clone(&runtime),
                         filters: Vec::new(),
+                        compatibility_filter: None,
                     };
                     assert!(!manager.uses_successor_runtime());
 
@@ -12063,6 +12749,7 @@ def failing_initialize(target, original):
                     successor_batch_marker: Some(Arc::clone(&marker)),
                     runtime: Arc::clone(&runtime),
                     filters: Vec::new(),
+                    compatibility_filter: None,
                 };
                 let filtered = manager.filter(py, None).unwrap();
                 let instances = (0..2)
@@ -12143,6 +12830,7 @@ def failing_initialize(target, original):
                     successor_batch_marker: Some(Arc::clone(&marker)),
                     runtime: Arc::clone(&runtime),
                     filters: Vec::new(),
+                    compatibility_filter: None,
                 };
                 let context = Py::new(py, context).unwrap();
                 let commit_context = context.clone_ref(py);

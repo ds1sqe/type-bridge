@@ -92,12 +92,24 @@ cancellation, classified commit outcomes, parent/child ownership, generated
 nominal exact entity and relation CRUD/count, homogeneous atomic mutation
 batches, and closed role-player unions. It also covers bounded generated create
 arguments and the native streaming create builder, plus the generated nominal
-query, reduction, schema-function, and caller-owned remote-transport facade.
+query, reduction, schema-function, caller-owned remote-transport, and ordered
+field-token manager-filter facades. Manager-filter coverage includes immutable
+siblings, strict identity-first validation, and reusable borrowed reads without
+adding C runtime exports.
+
 The full integration suite runs the ordinary generated C17 CRUD and typed-query
 consumer and strict generated C17/C++17 ABI-1.4 successor consumers against
-exact TypeDB 3.12.1. The successor lane leaves ordered attributes and ordered
-role-player lists empty and therefore does not claim live list-instance
-evidence. These checks do not make C a supported SDK or release artifact.
+exact TypeDB 3.12.1. A focused four-binding lane compares the same generated
+Python, Node, Rust, and C manager-filter observation. The successor lane leaves
+ordered attributes and ordered role-player lists empty and therefore does not
+claim live list-instance evidence. These checks do not make C a supported SDK
+or release artifact.
+
+Run the focused generated manager-filter parity lane with:
+
+```bash
+uv run python scripts/ci/run_phase5_manager_filter_live.py
+```
 
 ### Live integration
 

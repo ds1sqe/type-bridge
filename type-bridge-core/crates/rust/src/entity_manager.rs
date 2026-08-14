@@ -6,11 +6,13 @@ use std::sync::Arc;
 use type_bridge_contract::id::is_canonical_thing_iid;
 use type_bridge_orm::_manager::DynamicEntityManager;
 use type_bridge_orm::session::backend::TxType;
-use type_bridge_orm::{ProjectedBatchOperation, ProjectedBatchRow, ProjectedCrudExecutor};
+use type_bridge_orm::{
+    ProjectedBatchOperation, ProjectedBatchRow, ProjectedCrudExecutor, ProjectedManagerComparison,
+};
 
 use crate::__codegen::{
-    CompleteModel, EncodedCreate, EntityModel, HydrationCapability, IntoEncodedCreate,
-    SubtypeRootModel,
+    CompleteModel, EncodedCreate, EntityModel, FieldToken, HydrationCapability, IntoEncodedCreate,
+    Model, QueryValued, SubtypeRootModel,
 };
 use crate::entity_codec::{
     hydrate_entity, lower_entity_create, map_validation_error, resolve_discovered_entity,
@@ -24,6 +26,7 @@ use crate::projected_batch::{
     uses_successor_batch_runtime, validate_binding_row_count,
 };
 use crate::projected_codec::{materialize_projected, project_create};
+use crate::projected_filter::ProjectedEntityFilter;
 use crate::schema::Schema;
 use crate::{Database, Result};
 
@@ -324,11 +327,29 @@ impl<S: Schema, M: EntityModel<Schema = S>> EntityManager<'_, S, M> {
     }
 }
 
-impl<S, M> EntityManager<'_, S, M>
+impl<'db, S, M> EntityManager<'db, S, M>
 where
     S: Schema,
     M: EntityModel<Schema = S> + CompleteModel,
 {
+    /// Start one empty immutable canonical filter for this exact entity model.
+    pub fn filter(&self) -> Result<ProjectedEntityFilter<'db, S, M>> {
+        ProjectedEntityFilter::for_database(self.db)
+    }
+
+    /// Start a canonical filter with one exact generated field comparison.
+    pub fn where_<V>(
+        &self,
+        field: FieldToken<M, V>,
+        operator: ProjectedManagerComparison,
+        value: &V,
+    ) -> Result<ProjectedEntityFilter<'db, S, M>>
+    where
+        V: Model<Schema = S> + QueryValued,
+    {
+        self.filter()?.where_(field, operator, value)
+    }
+
     fn successor_batches_enabled(&self) -> bool {
         self.db
             .installed_schema()

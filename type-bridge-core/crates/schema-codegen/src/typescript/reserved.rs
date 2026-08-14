@@ -58,6 +58,8 @@ pub(super) const ORDERED_PUBLIC_RUNTIME_NAMES: &[&str] = &[
     "OrderedModelToken",
     "OrderedProjectedModelManager",
     "ProjectedBatchUpdate",
+    "ProjectedManagerComparison",
+    "ProjectedModelFilter",
     "defineOrderedModel",
 ];
 

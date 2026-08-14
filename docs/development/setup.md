@@ -112,10 +112,12 @@ handles, plus generated nominal exact single-entity and single-relation
 CRUD/count, homogeneous atomic mutation batches, and closed typed role-player
 unions. The internal ABI also carries generated nominal typed-query, reduction,
 schema-function, and caller-owned remote-transport wrappers without duplicating
-Rust-owned query semantics. Chunked package resources and a streaming create
-builder bound large generated objects to the C11 hosted-implementation
-portability floors. Exact TypeDB 3.12.1 acceptance leaves ordered values empty
-and makes no live list-instance evidence claim. This remains an internal
+Rust-owned query semantics. Ordered C-v3 packages compose those entries into
+generated nominal field-token manager filters for database and borrowed-read
+execution, with no additional native exports. Chunked package resources and a
+streaming create builder bound large generated objects to the C11
+hosted-implementation portability floors. Exact TypeDB 3.12.1 acceptance
+leaves ordered values empty and makes no live list-instance evidence claim. This remains an internal
 development target, not a supported SDK or published artifact; multi-endpoint
 connection policy and a C distribution contract remain future work.
 

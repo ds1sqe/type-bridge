@@ -79,6 +79,7 @@ pub(crate) fn open(
     }?;
 
     open_owned(
+        descriptor.abi_minor,
         authority_bytes,
         declared_bytes,
         projection_bytes,
@@ -186,6 +187,7 @@ pub(crate) unsafe fn open_chunked(
         .try_into()
         .expect("the fixed seven-view assembly has exact length");
     open_owned(
+        descriptor.abi_minor,
         authority_bytes,
         declared_bytes,
         projection_bytes,
@@ -296,6 +298,7 @@ unsafe fn snapshot_chunked(
 
 #[allow(clippy::too_many_arguments)]
 fn open_owned(
+    abi_minor: u32,
     authority_bytes: Vec<u8>,
     declared_bytes: Vec<u8>,
     projection_bytes: Vec<u8>,
@@ -368,6 +371,7 @@ fn open_owned(
 
     Ok(TypeBridgeSchemaPackage {
         state: Arc::new(SchemaPackageState {
+            abi_minor,
             authority_json: authority_bytes,
             projection_json: projection_bytes,
             semantic_fingerprint_json: semantic_bytes,

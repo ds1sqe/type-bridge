@@ -17,19 +17,19 @@ use napi_derive::napi;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use type_bridge_contract::codec::to_canonical_json;
-use type_bridge_contract::id::{RoleId, TypeId, TypeKind, is_canonical_thing_iid};
+use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind, is_canonical_thing_iid};
 use type_bridge_contract::limits::{
     MAX_CANONICAL_BYTES, MAX_CANONICAL_COLLECTION_LEN, MAX_CANONICAL_STRING_BYTES,
 };
 use type_bridge_contract::projection::{
-    BindingTarget, ProjectedContainer, ProjectedModelForm, ProjectedMultiplicity, ProjectionConfig,
-    RuntimeProjection,
+    BindingTarget, ProjectedContainer, ProjectedModelForm, ProjectedMultiplicity,
+    ProjectedTokenIdentity, ProjectionConfig, RuntimeProjection,
 };
 use type_bridge_contract::projection_wire::decode_runtime_projection_verified;
 use type_bridge_contract::schema::OwnsFactId;
 use type_bridge_contract::sdk_diagnostic::{
     MAX_SDK_DIAGNOSTIC_PATH_SEGMENTS, SdkDiagnosticCategory, SdkDiagnosticCode,
-    SdkDiagnosticMessage, SdkDiagnosticPathSegment, SdkExecutionDiagnostic,
+    SdkDiagnosticMessage, SdkDiagnosticName, SdkDiagnosticPathSegment, SdkExecutionDiagnostic,
     SdkProjectionEvidenceSlotPresence,
 };
 use type_bridge_contract::temporal::{
@@ -49,7 +49,8 @@ use type_bridge_orm::{
     AnswerCancellation, AttributeValue, Database, HydratedAttribute, InstalledRuntimeProjection,
     ProjectedAttributeValue, ProjectedBatch, ProjectedBatchExecutor,
     ProjectedBatchInvocationControl, ProjectedBatchOperation, ProjectedBatchResult,
-    ProjectedBatchRow, ProjectedCreate, ProjectedCrudExecutor, ProjectedReference,
+    ProjectedBatchRow, ProjectedCreate, ProjectedCrudExecutor, ProjectedManagerComparison,
+    ProjectedManagerFilter, ProjectedManagerFilterExecutor, ProjectedReference,
     ProjectedRolePlayer, ProjectedThing, ProviderRuntimeOwner, QueryExecutionResourceLimits,
     ThingKind, TransactionContext, TransactionContextState, ValueType,
 };
@@ -2083,6 +2084,178 @@ pub struct NodeProjectedModelManager {
     filters: Vec<DynamicExpr>,
 }
 
+/// One immutable exact-model field-token filter for generated successor managers.
+#[napi]
+pub struct NodeProjectedManagerFilter {
+    package: Arc<InstalledPackage>,
+    filter: ProjectedManagerFilter,
+    database: Option<Arc<Database>>,
+    transaction: Option<TransactionContext>,
+    runtime: Arc<ProviderRuntimeOwner>,
+}
+
+#[napi]
+impl NodeProjectedManagerFilter {
+    /// Append one exact generated field comparison and return an immutable sibling.
+    #[napi(js_name = "andProjected")]
+    pub fn and_projected(
+        &self,
+        field_owner_type_key: String,
+        field_attribute_key: String,
+        comparison: String,
+        value_json: String,
+    ) -> napi::Result<Self> {
+        let owner = type_id_from_key(&field_owner_type_key)?;
+        let attribute_label: String = serde_json::from_str(&field_attribute_key)
+            .map_err(|error| invalid_error(format!("invalid canonical attribute key: {error}")))?;
+        let attribute = AttributeId::new(attribute_label).map_err(diagnostic_error)?;
+        let field = OwnsFactId::new(owner.clone(), attribute).map_err(diagnostic_error)?;
+        let identity = ProjectedTokenIdentity::Field { owner, field };
+        let comparison = projected_manager_comparison(&comparison)?;
+        let wire = parse_wire(&value_json)?;
+        let value =
+            project_attribute_wire(self.package.as_ref(), &wire).map_err(napi_sdk_diagnostic)?;
+        let filter = self
+            .filter
+            .try_and(
+                self.package.projection.as_ref(),
+                &identity,
+                comparison,
+                &value,
+            )
+            .map_err(napi_sdk_diagnostic)?;
+        Ok(Self {
+            package: Arc::clone(&self.package),
+            filter,
+            database: self.database.clone(),
+            transaction: self.transaction.clone(),
+            runtime: Arc::clone(&self.runtime),
+        })
+    }
+
+    /// Reject a field token that was not issued by this generated package.
+    #[napi(js_name = "rejectForeignFieldToken")]
+    pub fn reject_foreign_field_token(&self) -> napi::Result<()> {
+        Err(napi_sdk_diagnostic(generated_token_package_mismatch_at([
+            SdkDiagnosticPathSegment::Type(self.filter.model().clone()),
+            SdkDiagnosticPathSegment::Argument(
+                SdkDiagnosticName::new("predicates")
+                    .expect("static manager predicate argument is canonical"),
+            ),
+        ])))
+    }
+
+    /// Return all exact-model matches with opaque successor proof retention.
+    #[napi(js_name = "allProjected")]
+    pub fn all_projected(&self) -> napi::Result<Vec<NodeProjectedValueEnvelope>> {
+        self.execute_all()?
+            .into_iter()
+            .map(|thing| projected_envelope_arc(Arc::clone(&self.package), thing))
+            .collect()
+    }
+
+    /// Return the optional identity-proven exact-model match.
+    #[napi(js_name = "firstProjected")]
+    pub fn first_projected(&self) -> napi::Result<Option<NodeProjectedValueEnvelope>> {
+        self.execute_first()?
+            .map(|thing| projected_envelope_arc(Arc::clone(&self.package), thing))
+            .transpose()
+    }
+
+    /// Count exact-model matches without materializing them.
+    #[napi]
+    pub fn count(&self) -> napi::Result<BigInt> {
+        let executor = ProjectedManagerFilterExecutor::new(self.package.projection.as_ref());
+        let count = match (&self.database, &self.transaction) {
+            (Some(database), None) => self.runtime.block_on(executor.count(
+                database,
+                &self.filter,
+                QueryExecutionResourceLimits::default(),
+                AnswerCancellation::default(),
+            )),
+            (None, Some(transaction)) => self.runtime.block_on(executor.count_in_read_transaction(
+                transaction,
+                &self.filter,
+                QueryExecutionResourceLimits::default(),
+                AnswerCancellation::default(),
+            )),
+            _ => {
+                return Err(runtime_error(
+                    "projected manager filter has no execution target",
+                ));
+            }
+        }
+        .map_err(napi_sdk_diagnostic)?;
+        Ok(BigInt::from(count))
+    }
+
+    /// Test whether an exact-model match exists without materializing it.
+    #[napi]
+    pub fn exists(&self) -> napi::Result<bool> {
+        let executor = ProjectedManagerFilterExecutor::new(self.package.projection.as_ref());
+        match (&self.database, &self.transaction) {
+            (Some(database), None) => self.runtime.block_on(executor.exists(
+                database,
+                &self.filter,
+                QueryExecutionResourceLimits::default(),
+                AnswerCancellation::default(),
+            )),
+            (None, Some(transaction)) => {
+                self.runtime.block_on(executor.exists_in_read_transaction(
+                    transaction,
+                    &self.filter,
+                    QueryExecutionResourceLimits::default(),
+                    AnswerCancellation::default(),
+                ))
+            }
+            _ => Err(SdkExecutionDiagnostic::internal_failure()),
+        }
+        .map_err(napi_sdk_diagnostic)
+    }
+}
+
+impl NodeProjectedManagerFilter {
+    fn execute_all(&self) -> napi::Result<Vec<Arc<ProjectedThing>>> {
+        let executor = ProjectedManagerFilterExecutor::new(self.package.projection.as_ref());
+        match (&self.database, &self.transaction) {
+            (Some(database), None) => self.runtime.block_on(executor.all(
+                database,
+                &self.filter,
+                QueryExecutionResourceLimits::default(),
+                AnswerCancellation::default(),
+            )),
+            (None, Some(transaction)) => self.runtime.block_on(executor.all_in_read_transaction(
+                transaction,
+                &self.filter,
+                QueryExecutionResourceLimits::default(),
+                AnswerCancellation::default(),
+            )),
+            _ => Err(SdkExecutionDiagnostic::internal_failure()),
+        }
+        .map_err(napi_sdk_diagnostic)
+    }
+
+    fn execute_first(&self) -> napi::Result<Option<Arc<ProjectedThing>>> {
+        let executor = ProjectedManagerFilterExecutor::new(self.package.projection.as_ref());
+        match (&self.database, &self.transaction) {
+            (Some(database), None) => self.runtime.block_on(executor.first(
+                database,
+                &self.filter,
+                QueryExecutionResourceLimits::default(),
+                AnswerCancellation::default(),
+            )),
+            (None, Some(transaction)) => self.runtime.block_on(executor.first_in_read_transaction(
+                transaction,
+                &self.filter,
+                QueryExecutionResourceLimits::default(),
+                AnswerCancellation::default(),
+            )),
+            _ => Err(SdkExecutionDiagnostic::internal_failure()),
+        }
+        .map_err(napi_sdk_diagnostic)
+    }
+}
+
 #[napi]
 impl NodeProjectedModelManager {
     /// Insert one ordered successor value through the common projected executor.
@@ -2432,6 +2605,55 @@ impl NodeProjectedModelManager {
             }
         }
         Ok(())
+    }
+
+    /// Start one immutable canonical field-token filter for an ordered package.
+    #[napi(js_name = "managerFilter")]
+    pub fn manager_filter(&self) -> napi::Result<NodeProjectedManagerFilter> {
+        self.require_successor_batch_runtime()?;
+        let filter =
+            ProjectedManagerFilter::try_new(self.package.projection.as_ref(), self.type_id.clone())
+                .map_err(napi_sdk_diagnostic)?;
+        Ok(NodeProjectedManagerFilter {
+            package: Arc::clone(&self.package),
+            filter,
+            database: self.database.clone(),
+            transaction: self.transaction.clone(),
+            runtime: Arc::clone(&self.runtime),
+        })
+    }
+
+    /// Preserve authored object-entry order for successor compatibility filters.
+    #[napi(js_name = "filterEntriesJson")]
+    pub fn filter_entries_json(&self, filters_json: String) -> napi::Result<Self> {
+        let filters: Vec<OrderedManagerFilterEntry> =
+            serde_json::from_str(&filters_json).map_err(|error| {
+                invalid_error(format!(
+                    "invalid ordered projected manager filters: {error}"
+                ))
+            })?;
+        let descriptor = self.descriptor()?;
+        let attributes = match &descriptor {
+            TypeDescriptor::Entity(descriptor) => &descriptor.owned_attributes,
+            TypeDescriptor::Relation(descriptor) => &descriptor.owned_attributes,
+        };
+        let mut combined = self.filters.clone();
+        for filter in filters {
+            combined.extend(lower_filter_values(
+                self.package.as_ref(),
+                attributes,
+                BTreeMap::from([(filter.name, filter.value)]),
+            )?);
+        }
+        Ok(Self {
+            package: Arc::clone(&self.package),
+            type_id: self.type_id.clone(),
+            database: self.database.clone(),
+            transaction: self.transaction.clone(),
+            successor_batch_marker: self.successor_batch_marker.clone(),
+            runtime: Arc::clone(&self.runtime),
+            filters: combined,
+        })
     }
 
     /// Return a new exact projected manager narrowed by generated attribute filters.
@@ -2868,6 +3090,13 @@ struct ProjectedWire {
     iid: Option<String>,
     value: Option<ScalarWire>,
     values: BTreeMap<String, Value>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OrderedManagerFilterEntry {
+    name: String,
+    value: Value,
 }
 
 fn projected_envelope(
@@ -4080,6 +4309,20 @@ fn lower_filter_values(
         });
     }
     Ok(lowered)
+}
+
+fn projected_manager_comparison(value: &str) -> napi::Result<ProjectedManagerComparison> {
+    match value {
+        "eq" => Ok(ProjectedManagerComparison::Eq),
+        "ne" => Ok(ProjectedManagerComparison::Ne),
+        "lt" => Ok(ProjectedManagerComparison::Lt),
+        "lte" => Ok(ProjectedManagerComparison::Lte),
+        "gt" => Ok(ProjectedManagerComparison::Gt),
+        "gte" => Ok(ProjectedManagerComparison::Gte),
+        _ => Err(invalid_error(
+            "projected manager comparison must be eq, ne, lt, lte, gt, or gte",
+        )),
+    }
 }
 
 fn projected_filter_attribute_value(
@@ -5731,6 +5974,62 @@ entities:
             value: Value::String("2023-02-29".into()),
         };
         assert!(scalar_to_attribute(&bad_date, ValueType::Date).is_err());
+    }
+
+    #[test]
+    fn canonical_manager_filter_is_immutable_and_rejects_token_mismatches_before_io() {
+        let runtime = ordered_runtime();
+        let person = TypeId::new(TypeKind::Entity, "person").unwrap();
+        let manager = manager_without_execution_target(&runtime, person.clone());
+        let root = manager.manager_filter().unwrap();
+        assert!(root.filter.is_empty());
+
+        let identifier = attribute_wire(
+            "identifier",
+            ValueTypeTag::String,
+            Value::String("alice".into()),
+        );
+        let filtered = root
+            .and_projected(
+                type_key(TypeKind::Entity, "person"),
+                "\"identifier\"".into(),
+                "eq".into(),
+                wire_json(&identifier).unwrap(),
+            )
+            .unwrap();
+        assert!(root.filter.is_empty());
+        assert_eq!(filtered.filter.len(), 1);
+
+        let wrong_owner = root
+            .and_projected(
+                type_key(TypeKind::Relation, "membership"),
+                "\"identifier\"".into(),
+                "eq".into(),
+                wire_json(&identifier).unwrap(),
+            )
+            .err()
+            .expect("wrong-owner field must reject");
+        let diagnostic: Value = serde_json::from_str(&wrong_owner.reason).unwrap();
+        assert_eq!(diagnostic["category"], "integrity");
+        assert_eq!(diagnostic["code"], "field_owner_mismatch");
+
+        let wrong_domain = root
+            .and_projected(
+                type_key(TypeKind::Entity, "person"),
+                "\"score\"".into(),
+                "eq".into(),
+                wire_json(&identifier).unwrap(),
+            )
+            .err()
+            .expect("wrong-domain value must reject");
+        let diagnostic: Value = serde_json::from_str(&wrong_domain.reason).unwrap();
+        assert_eq!(diagnostic["category"], "invalid_input");
+        assert_eq!(diagnostic["code"], "wrong_scalar_domain");
+
+        let foreign = root.reject_foreign_field_token().unwrap_err();
+        let diagnostic: Value = serde_json::from_str(&foreign.reason).unwrap();
+        assert_eq!(diagnostic["category"], "integrity");
+        assert_eq!(diagnostic["code"], "generated_token_package_mismatch");
     }
 
     #[test]

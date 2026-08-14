@@ -34,7 +34,9 @@ use super::context::TransactionContext;
 use super::transaction::Transaction;
 use crate::_registry::DescriptorRegistry;
 use crate::error::Result;
-use crate::match_request::selected_result_executor::SelectedResultExecutor;
+use crate::match_request::selected_result_executor::{
+    ManagerHydratedRoots, ManagerRootSelection, SelectedResultExecutor,
+};
 use crate::match_request::{MatchExecutionLimits, ValidatedMatchRequest, ValidatedMatchResult};
 #[cfg(feature = "typedb")]
 use crate::query_execution_limits::{QueryExecutionDeadline, QueryExecutionResourceLimits};
@@ -436,6 +438,18 @@ impl Database {
     ) -> Result<ValidatedMatchResult> {
         SelectedResultExecutor::new(registry, self.backend.match_capabilities(), limits)
             .execute_compatible_owned(self, validated)
+            .await
+    }
+
+    pub(crate) async fn execute_manager_roots_with_limits(
+        &self,
+        registry: &DescriptorRegistry,
+        validated: &ValidatedMatchRequest,
+        selection: ManagerRootSelection,
+        limits: MatchExecutionLimits,
+    ) -> Result<ManagerHydratedRoots> {
+        SelectedResultExecutor::new(registry, self.backend.match_capabilities(), limits)
+            .execute_manager_roots_owned(self, validated, selection)
             .await
     }
 

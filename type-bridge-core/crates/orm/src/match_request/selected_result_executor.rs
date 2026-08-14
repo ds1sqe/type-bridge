@@ -36,7 +36,8 @@ use super::result::{
 use super::result_validation::{
     MAX_COLLECTED_CONCEPTS, MAX_HYDRATED_ATTRIBUTE_VALUES, MAX_HYDRATED_THINGS,
     ResultValidationLimits, canonicalize_provider_attribute_value, exactly_one_cardinality_error,
-    validate_provider_result_with_limits, validated_match_result_from_v2,
+    validate_manager_things_with_limits, validate_provider_result_with_limits,
+    validated_match_result_from_v2,
 };
 use super::validation::ValidatedMatchRequest;
 #[cfg(test)]
@@ -435,6 +436,26 @@ pub(crate) struct SelectedResultExecutor<'a> {
     registry: &'a DescriptorRegistry,
     available_capabilities: CapabilitySet,
     limits: MatchExecutionLimits,
+}
+
+/// Private exhaustive or identity-proof root mode for generated managers.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ManagerRootSelection {
+    /// Scan every distinct matching exact-model IID to proven exhaustion.
+    All,
+    /// Scan at most two distinct matching IIDs to prove optional singularity.
+    First,
+}
+
+/// Completely validated raw hydration retained until projected materialization.
+pub(crate) struct ManagerHydratedRoots {
+    things: Vec<HydratedThing>,
+}
+
+impl ManagerHydratedRoots {
+    pub(crate) fn into_things(self) -> Vec<HydratedThing> {
+        self.things
+    }
 }
 
 impl<'a> SelectedResultExecutor<'a> {
@@ -852,6 +873,185 @@ impl<'a> SelectedResultExecutor<'a> {
         Ok(result)
     }
 
+    /// Execute the strict generated-manager root mode in one owned read
+    /// transaction. The validated request must be a one-binding exact
+    /// `CountBy`; the distinct-root scan is then privately reinterpreted as an
+    /// exhaustive or two-identity selection without widening the public match
+    /// algebra.
+    pub(crate) async fn execute_manager_roots_owned(
+        &self,
+        database: &Database,
+        validated: &ValidatedMatchRequest,
+        selection: ManagerRootSelection,
+    ) -> Result<ManagerHydratedRoots, OrmError> {
+        self.check_lifecycle_budget()?;
+        let (root, scan) = self.preflight_manager_roots(validated)?;
+        self.check_lifecycle_budget()?;
+        let deadline = self.limits.deadline();
+        let mut budget = ExecutionBudget::new(&self.limits, deadline);
+        let mut transaction = budget
+            .await_provider(async {
+                database
+                    .read_transaction()
+                    .await
+                    .map_err(provider_transaction_open_error)
+            })
+            .await?;
+        let execution = catch_execution_unwind(async {
+            self.collect_manager_roots_transaction(
+                &mut transaction,
+                validated,
+                root,
+                scan,
+                selection,
+                &mut budget,
+            )
+            .await
+        })
+        .await;
+        let result = match execution {
+            Err(payload) => {
+                close_after_execution_panic(transaction).await;
+                resume_unwind(payload);
+            }
+            Ok(Err(error)) => {
+                if let Some(Err(close_error)) = dispatch_failed_execution_close(transaction).await {
+                    tracing::warn!(
+                        %close_error,
+                        execution_error = %error,
+                        "owned manager execution failed and transaction cleanup also failed"
+                    );
+                }
+                return Err(error);
+            }
+            Ok(Ok(result)) => result,
+        };
+        let close = budget
+            .await_cleanup(async {
+                transaction
+                    .close()
+                    .await
+                    .map_err(provider_transaction_close_error)
+            })
+            .await;
+        match close {
+            Err(error) => Err(error),
+            Ok(()) => Ok(result),
+        }
+    }
+
+    /// Borrowed counterpart of [`Self::execute_manager_roots_owned`].
+    pub(crate) async fn execute_manager_roots_borrowed(
+        &self,
+        context: &TransactionContext,
+        validated: &ValidatedMatchRequest,
+        selection: ManagerRootSelection,
+    ) -> Result<ManagerHydratedRoots, OrmError> {
+        self.check_lifecycle_budget()?;
+        let (root, scan) = self.preflight_manager_roots(validated)?;
+        self.check_lifecycle_budget()?;
+        if context.tx_type() != TxType::Read {
+            return Err(MatchError::new(
+                MatchErrorCategory::InvalidPlan,
+                "borrowed_target_not_read_only",
+                "generated-manager execution requires a borrowed read transaction",
+            )
+            .at(MatchErrorPathSegment::Operation)
+            .into());
+        }
+        let deadline = self.limits.deadline();
+        let mut budget = ExecutionBudget::new(&self.limits, deadline);
+        self.collect_manager_roots_context(context, validated, root, scan, selection, &mut budget)
+            .await
+    }
+
+    fn preflight_manager_roots(
+        &self,
+        validated: &ValidatedMatchRequest,
+    ) -> Result<(BindingId, TypedRootScan), OrmError> {
+        let lowered = self.preflight(validated)?;
+        let LoweredMatchExecution::CountBy { root, scan } = lowered else {
+            return Err(MatchError::new(
+                MatchErrorCategory::InvalidPlan,
+                "manager_filter_query_shape_invalid",
+                "generated-manager root selection requires one validated CountBy request",
+            )
+            .at(MatchErrorPathSegment::Operation)
+            .into());
+        };
+        let [binding] = validated.request().plan.bindings.as_slice() else {
+            return Err(MatchError::new(
+                MatchErrorCategory::InvalidPlan,
+                "manager_filter_query_shape_invalid",
+                "generated-manager root selection requires exactly one binding",
+            )
+            .at(MatchErrorPathSegment::Plan)
+            .into());
+        };
+        if binding.id != root || binding.match_mode != super::model::MatchMode::Exact {
+            return Err(MatchError::new(
+                MatchErrorCategory::InvalidPlan,
+                "manager_filter_query_shape_invalid",
+                "generated-manager root selection requires one exact root binding",
+            )
+            .at(MatchErrorPathSegment::Plan)
+            .into());
+        }
+        Ok((root, scan))
+    }
+
+    async fn collect_manager_roots_transaction(
+        &self,
+        transaction: &mut Transaction,
+        validated: &ValidatedMatchRequest,
+        root: BindingId,
+        scan: TypedRootScan,
+        selection: ManagerRootSelection,
+        budget: &mut ExecutionBudget,
+    ) -> Result<ManagerHydratedRoots, OrmError> {
+        let roots = self
+            .scan_manager_roots_transaction(transaction, scan, root, selection, budget)
+            .await?;
+        let things = self
+            .hydrate_manager_roots_transaction(transaction, validated, root, &roots, budget)
+            .await?;
+        validate_manager_things_with_limits(
+            self.registry,
+            validated,
+            root,
+            &things,
+            self.limits.validation_limits(),
+        )?;
+        budget.check_before_await()?;
+        Ok(ManagerHydratedRoots { things })
+    }
+
+    async fn collect_manager_roots_context(
+        &self,
+        context: &TransactionContext,
+        validated: &ValidatedMatchRequest,
+        root: BindingId,
+        scan: TypedRootScan,
+        selection: ManagerRootSelection,
+        budget: &mut ExecutionBudget,
+    ) -> Result<ManagerHydratedRoots, OrmError> {
+        let roots = self
+            .scan_manager_roots_context(context, scan, root, selection, budget)
+            .await?;
+        let things = self
+            .hydrate_manager_roots_context(context, validated, root, &roots, budget)
+            .await?;
+        validate_manager_things_with_limits(
+            self.registry,
+            validated,
+            root,
+            &things,
+            self.limits.validation_limits(),
+        )?;
+        budget.check_before_await()?;
+        Ok(ManagerHydratedRoots { things })
+    }
+
     fn preflight(
         &self,
         validated: &ValidatedMatchRequest,
@@ -1248,8 +1448,10 @@ impl<'a> SelectedResultExecutor<'a> {
         budget: &mut ExecutionBudget,
     ) -> Result<Vec<String>, OrmError> {
         let scan_limit = budget.remaining_items();
-        if purpose == RootScanPurpose::Count {
-            scan.limit = Some(scan_limit.max(1));
+        match purpose {
+            RootScanPurpose::Count => scan.limit = Some(scan_limit.max(1)),
+            RootScanPurpose::ManagerFirst => scan.limit = Some(2),
+            RootScanPurpose::Exists | RootScanPurpose::Page => {}
         }
         let statement_limit = scan.limit.ok_or_else(|| {
             decode_error(
@@ -1275,12 +1477,17 @@ impl<'a> SelectedResultExecutor<'a> {
             })
             .await;
         let stats = draining.complete(stats, budget)?;
-        if purpose == RootScanPurpose::Count {
-            require_solution_scan_proof(stats, scan_limit)?;
-        } else {
-            require_provider_exhaustion(stats)?;
+        match purpose {
+            RootScanPurpose::Count => require_solution_scan_proof(stats, scan_limit)?,
+            RootScanPurpose::Exists | RootScanPurpose::Page | RootScanPurpose::ManagerFirst => {
+                require_provider_exhaustion(stats)?
+            }
         }
-        Ok(roots.finish())
+        let roots = roots.finish();
+        if purpose == RootScanPurpose::ManagerFirst && roots.len() > 1 {
+            return Err(manager_first_not_unique_error());
+        }
+        Ok(roots)
     }
 
     async fn scan_roots_context(
@@ -1292,8 +1499,10 @@ impl<'a> SelectedResultExecutor<'a> {
         budget: &mut ExecutionBudget,
     ) -> Result<Vec<String>, OrmError> {
         let scan_limit = budget.remaining_items();
-        if purpose == RootScanPurpose::Count {
-            scan.limit = Some(scan_limit.max(1));
+        match purpose {
+            RootScanPurpose::Count => scan.limit = Some(scan_limit.max(1)),
+            RootScanPurpose::ManagerFirst => scan.limit = Some(2),
+            RootScanPurpose::Exists | RootScanPurpose::Page => {}
         }
         let statement_limit = scan.limit.ok_or_else(|| {
             decode_error(
@@ -1319,12 +1528,127 @@ impl<'a> SelectedResultExecutor<'a> {
             })
             .await;
         let stats = draining.complete(stats, budget)?;
-        if purpose == RootScanPurpose::Count {
-            require_solution_scan_proof(stats, scan_limit)?;
-        } else {
+        match purpose {
+            RootScanPurpose::Count => require_solution_scan_proof(stats, scan_limit)?,
+            RootScanPurpose::Exists | RootScanPurpose::Page | RootScanPurpose::ManagerFirst => {
+                require_provider_exhaustion(stats)?
+            }
+        }
+        let roots = roots.finish();
+        if purpose == RootScanPurpose::ManagerFirst && roots.len() > 1 {
+            return Err(manager_first_not_unique_error());
+        }
+        Ok(roots)
+    }
+
+    async fn scan_manager_roots_transaction(
+        &self,
+        transaction: &mut Transaction,
+        scan: TypedRootScan,
+        root: BindingId,
+        selection: ManagerRootSelection,
+        budget: &mut ExecutionBudget,
+    ) -> Result<Vec<String>, OrmError> {
+        let purpose = match selection {
+            ManagerRootSelection::All => RootScanPurpose::Count,
+            ManagerRootSelection::First => RootScanPurpose::ManagerFirst,
+        };
+        self.scan_roots_transaction(transaction, scan, root, purpose, budget)
+            .await
+    }
+
+    async fn scan_manager_roots_context(
+        &self,
+        context: &TransactionContext,
+        scan: TypedRootScan,
+        root: BindingId,
+        selection: ManagerRootSelection,
+        budget: &mut ExecutionBudget,
+    ) -> Result<Vec<String>, OrmError> {
+        let purpose = match selection {
+            ManagerRootSelection::All => RootScanPurpose::Count,
+            ManagerRootSelection::First => RootScanPurpose::ManagerFirst,
+        };
+        self.scan_roots_context(context, scan, root, purpose, budget)
+            .await
+    }
+
+    async fn hydrate_manager_roots_transaction(
+        &self,
+        transaction: &mut Transaction,
+        validated: &ValidatedMatchRequest,
+        root: BindingId,
+        roots: &[String],
+        budget: &mut ExecutionBudget,
+    ) -> Result<Vec<HydratedThing>, OrmError> {
+        if roots.is_empty() {
+            return Ok(Vec::new());
+        }
+        let solutions = manager_unhydrated_solutions(root, roots)?;
+        let batches = hydration_batches(self.registry, validated, &solutions)?;
+        let mut hydration = HydrationConsumer::new(
+            self.registry,
+            validated,
+            &solutions,
+            self.limits.semantic_limits(),
+        )?;
+        for batch in batches {
+            let FiniteStatementLimits {
+                provider: limits,
+                resources,
+            } = budget.begin_statement(hydration_answer_limit(&batch)?)?;
+            let mut draining = DrainingConsumer::new(&mut hydration, resources);
+            let stats = budget
+                .await_provider(async {
+                    transaction
+                        .hydrate_typed_bounded(&batch, limits, &mut draining)
+                        .await
+                        .map_err(provider_statement_error)
+                })
+                .await;
+            let stats = draining.complete(stats, budget)?;
             require_provider_exhaustion(stats)?;
         }
-        Ok(roots.finish())
+        manager_hydrated_things(root, roots, hydration.finish()?)
+    }
+
+    async fn hydrate_manager_roots_context(
+        &self,
+        context: &TransactionContext,
+        validated: &ValidatedMatchRequest,
+        root: BindingId,
+        roots: &[String],
+        budget: &mut ExecutionBudget,
+    ) -> Result<Vec<HydratedThing>, OrmError> {
+        if roots.is_empty() {
+            return Ok(Vec::new());
+        }
+        let solutions = manager_unhydrated_solutions(root, roots)?;
+        let batches = hydration_batches(self.registry, validated, &solutions)?;
+        let mut hydration = HydrationConsumer::new(
+            self.registry,
+            validated,
+            &solutions,
+            self.limits.semantic_limits(),
+        )?;
+        for batch in batches {
+            let FiniteStatementLimits {
+                provider: limits,
+                resources,
+            } = budget.begin_statement(hydration_answer_limit(&batch)?)?;
+            let mut draining = DrainingConsumer::new(&mut hydration, resources);
+            let stats = budget
+                .await_provider(async {
+                    context
+                        .hydrate_typed_bounded(&batch, limits, &mut draining)
+                        .await
+                        .map_err(provider_statement_error)
+                })
+                .await;
+            let stats = draining.complete(stats, budget)?;
+            require_provider_exhaustion(stats)?;
+        }
+        manager_hydrated_things(root, roots, hydration.finish()?)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1746,6 +2070,17 @@ fn solution_scan_limit_error(max_items: u64) -> OrmError {
     .into()
 }
 
+fn manager_first_not_unique_error() -> OrmError {
+    MatchError::new(
+        MatchErrorCategory::ResultDecode,
+        "manager_first_identity_not_unique",
+        "identity-proven manager first matched more than one distinct exact-model IID",
+    )
+    .at(MatchErrorPathSegment::ProviderEvidence)
+    .with_detail("identity_count", 2_u64)
+    .into()
+}
+
 fn require_provider_exhaustion(
     stats: crate::session::backend::BoundedAnswerStats,
 ) -> Result<(), OrmError> {
@@ -2111,6 +2446,7 @@ enum RootScanPurpose {
     Count,
     Exists,
     Page,
+    ManagerFirst,
 }
 
 /// Preserve the first semantic/decode failure while making a bounded attempt
@@ -3481,6 +3817,58 @@ fn rows_evidence_from_hydration(
         })
         .collect::<Result<Vec<_>, OrmError>>()?;
     Ok(rows_evidence(validated, solutions))
+}
+
+fn manager_unhydrated_solutions(
+    root: BindingId,
+    roots: &[String],
+) -> Result<Vec<UnhydratedSolution>, OrmError> {
+    let mut solutions = Vec::new();
+    solutions.try_reserve_exact(roots.len()).map_err(|_| {
+        resource_error(
+            "manager_root_allocation_exhausted",
+            "generated-manager root selection could not reserve bounded identity storage",
+        )
+    })?;
+    for iid in roots {
+        let mut bindings = BTreeMap::new();
+        bindings.insert(root, iid.clone());
+        solutions.push(UnhydratedSolution {
+            bindings,
+            satisfied_role_edges: Vec::new(),
+        });
+    }
+    Ok(solutions)
+}
+
+fn manager_hydrated_things(
+    root: BindingId,
+    roots: &[String],
+    mut hydrated: BTreeMap<(BindingId, String), HydratedThing>,
+) -> Result<Vec<HydratedThing>, OrmError> {
+    let mut things = Vec::new();
+    things.try_reserve_exact(roots.len()).map_err(|_| {
+        resource_error(
+            "manager_hydration_allocation_exhausted",
+            "generated-manager hydration could not reserve bounded result storage",
+        )
+    })?;
+    for iid in roots {
+        let thing = hydrated.remove(&(root, iid.clone())).ok_or_else(|| {
+            decode_error(
+                "missing_hydrated_concept",
+                "generated-manager hydration omitted one selected exact-model IID",
+            )
+        })?;
+        things.push(thing);
+    }
+    if !hydrated.is_empty() {
+        return Err(decode_error(
+            "unexpected_hydrated_concept",
+            "generated-manager hydration returned an unselected binding/IID pair",
+        ));
+    }
+    Ok(things)
 }
 
 struct RoleEdgeContract<'a> {

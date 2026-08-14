@@ -93,6 +93,24 @@ impl<'db, S: Schema> ReadTransaction<'db, S> {
         })
     }
 
+    /// Create a read-only exact entity manager borrowing this transaction.
+    /// Every derived filter terminal reuses the retained read context.
+    pub fn entities<M>(&self) -> crate::projected_filter::ReadEntityManager<'_, S, M>
+    where
+        M: crate::__codegen::EntityModel<Schema = S> + crate::__codegen::CompleteModel,
+    {
+        crate::projected_filter::ReadEntityManager::new(&self.installed, &self.tx)
+    }
+
+    /// Create a read-only exact relation manager borrowing this transaction.
+    /// Every derived filter terminal reuses the retained read context.
+    pub fn relations<M>(&self) -> crate::projected_filter::ReadRelationManager<'_, S, M>
+    where
+        M: crate::__codegen::RelationModel<Schema = S> + crate::__codegen::CompleteModel,
+    {
+        crate::projected_filter::ReadRelationManager::new(&self.installed, &self.tx)
+    }
+
     /// Start one owner-branded query session borrowing this read context.
     #[must_use]
     pub fn query(&self) -> crate::query::QuerySession<'_, S> {
