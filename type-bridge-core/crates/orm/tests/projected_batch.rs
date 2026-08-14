@@ -7,6 +7,7 @@ use type_bridge_contract::sdk_diagnostic::{
 };
 use type_bridge_contract::temporal::{CanonicalDateTimeTz, TimeZoneDesignator};
 use type_bridge_contract::value::{CanonicalString, CanonicalValue, DecimalValue};
+use type_bridge_orm::projected_batch::ProjectedBatchBindingBudget;
 use type_bridge_orm::{
     AnswerCancellation, InstalledRuntimeProjection, MAX_QUERY_ITEMS,
     PreparedProjectedBatchInvocation, ProjectedAttributeValue, ProjectedBatch,
@@ -203,6 +204,663 @@ fn prepare<'a>(
         batch,
         ProjectedBatchInvocationControl::capture(limits, AnswerCancellation::default()),
     )
+}
+
+fn operation_rows(
+    installed: &InstalledRuntimeProjection,
+    model: &TypeId,
+    operation: ProjectedBatchOperation,
+) -> Vec<ProjectedBatchRow> {
+    let creates = if model.kind() == TypeKind::Entity {
+        ["first", "second"].map(|identifier| person_create(installed, identifier))
+    } else {
+        ["first", "second"].map(|identifier| membership_create(installed, identifier))
+    };
+    match operation {
+        ProjectedBatchOperation::Insert | ProjectedBatchOperation::Put => {
+            creates.into_iter().map(ProjectedBatchRow::Create).collect()
+        }
+        ProjectedBatchOperation::Update => ["0x10", "0x11"]
+            .into_iter()
+            .zip(creates)
+            .map(|(iid, replacement)| ProjectedBatchRow::Update {
+                iid: iid.to_owned(),
+                replacement,
+            })
+            .collect(),
+        ProjectedBatchOperation::Delete => ["0x10", "0x11"]
+            .into_iter()
+            .map(|iid| ProjectedBatchRow::Delete {
+                iid: iid.to_owned(),
+            })
+            .collect(),
+    }
+}
+
+fn mismatched_row(
+    installed: &InstalledRuntimeProjection,
+    model: &TypeId,
+    operation: ProjectedBatchOperation,
+) -> ProjectedBatchRow {
+    match operation {
+        ProjectedBatchOperation::Insert | ProjectedBatchOperation::Put => {
+            ProjectedBatchRow::Delete { iid: "0x12".into() }
+        }
+        ProjectedBatchOperation::Update | ProjectedBatchOperation::Delete => {
+            let create = if model.kind() == TypeKind::Entity {
+                person_create(installed, "mismatched")
+            } else {
+                membership_create(installed, "mismatched")
+            };
+            ProjectedBatchRow::Create(create)
+        }
+    }
+}
+
+#[test]
+fn binding_budget_matches_all_operation_model_prefixes_and_failure_ordinals() {
+    let installed = installed(BindingTarget::Python);
+    for model in [
+        type_id(TypeKind::Entity, "person"),
+        type_id(TypeKind::Relation, "membership"),
+    ] {
+        for operation in [
+            ProjectedBatchOperation::Insert,
+            ProjectedBatchOperation::Put,
+            ProjectedBatchOperation::Update,
+            ProjectedBatchOperation::Delete,
+        ] {
+            let rows = operation_rows(&installed, &model, operation);
+            let mut budget =
+                ProjectedBatchBindingBudget::try_new(&installed, model.clone(), operation).unwrap();
+            assert!(budget.is_empty());
+            assert_eq!(budget.resource_measure(), Default::default());
+
+            budget.try_add_row(&installed, &rows[0]).unwrap();
+            let prefix = ProjectedBatch::try_new(
+                &installed,
+                model.clone(),
+                operation,
+                vec![rows[0].clone()],
+            )
+            .unwrap();
+            assert_eq!(budget.len(), 1);
+            assert_eq!(budget.resource_measure(), prefix.resource_measure());
+
+            let wrong = mismatched_row(&installed, &model, operation);
+            let incremental_error = budget.try_add_row(&installed, &wrong).unwrap_err();
+            let full_error = ProjectedBatch::try_new(
+                &installed,
+                model.clone(),
+                operation,
+                vec![rows[0].clone(), wrong],
+            )
+            .unwrap_err();
+            assert_eq!(incremental_error, full_error);
+            assert_eq!(budget.len(), 1);
+            assert_eq!(budget.resource_measure(), prefix.resource_measure());
+
+            budget.try_add_row(&installed, &rows[1]).unwrap();
+            let complete =
+                ProjectedBatch::try_new(&installed, model.clone(), operation, rows.clone())
+                    .unwrap();
+            assert_eq!(budget.len(), rows.len());
+            assert_eq!(budget.resource_measure(), complete.resource_measure());
+            for (index, row) in rows.iter().enumerate() {
+                assert_eq!(complete.row_at(index), Some((index, row)));
+            }
+        }
+    }
+}
+
+#[test]
+fn binding_budget_authority_brand_and_row_model_match_full_construction() {
+    let python = installed(BindingTarget::Python);
+    let person = type_id(TypeKind::Entity, "person");
+    let constructor_cases = [
+        (
+            type_id(TypeKind::Attribute, "identifier"),
+            ProjectedBatchOperation::Delete,
+        ),
+        (
+            type_id(TypeKind::Entity, "missing"),
+            ProjectedBatchOperation::Delete,
+        ),
+        (
+            type_id(TypeKind::Entity, "abstract-item"),
+            ProjectedBatchOperation::Delete,
+        ),
+        (
+            type_id(TypeKind::Entity, "log"),
+            ProjectedBatchOperation::Put,
+        ),
+    ];
+    for (model, operation) in constructor_cases {
+        let incremental_error =
+            ProjectedBatchBindingBudget::try_new(&python, model.clone(), operation).unwrap_err();
+        let full_error = ProjectedBatch::try_new(&python, model, operation, vec![]).unwrap_err();
+        assert_eq!(incremental_error, full_error);
+    }
+
+    let rust = installed(BindingTarget::Rust);
+    let alternate_source = SCHEMA.replace(
+        "      tag: { card: { min: 0 } }",
+        "      tag: { card: { min: 0, max: 3 } }",
+    );
+    let alternate = installed_from(BindingTarget::Python, &alternate_source);
+    for foreign in [&rust, &alternate] {
+        let row = ProjectedBatchRow::Create(person_create(&python, "foreign"));
+        let mut budget = ProjectedBatchBindingBudget::try_new(
+            &python,
+            person.clone(),
+            ProjectedBatchOperation::Insert,
+        )
+        .unwrap();
+        let incremental_error = budget.try_add_row(foreign, &row).unwrap_err();
+        let full_error = ProjectedBatch::try_new(
+            foreign,
+            person.clone(),
+            ProjectedBatchOperation::Insert,
+            vec![row],
+        )
+        .unwrap_err();
+        assert_eq!(incremental_error, full_error);
+        assert!(budget.is_empty());
+    }
+
+    let first = ProjectedBatchRow::Create(person_create(&python, "first"));
+    let wrong_model = ProjectedBatchRow::Create(scalar_key_create(
+        &python,
+        "log",
+        "note",
+        CanonicalValue::String(CanonicalString::new("wrong").unwrap()),
+    ));
+    let mut budget = ProjectedBatchBindingBudget::try_new(
+        &python,
+        person.clone(),
+        ProjectedBatchOperation::Insert,
+    )
+    .unwrap();
+    budget.try_add_row(&python, &first).unwrap();
+    let prefix_measure = budget.resource_measure();
+    let incremental_error = budget.try_add_row(&python, &wrong_model).unwrap_err();
+    let full_error = ProjectedBatch::try_new(
+        &python,
+        person,
+        ProjectedBatchOperation::Insert,
+        vec![first, wrong_model],
+    )
+    .unwrap_err();
+    assert_eq!(incremental_error, full_error);
+    assert_eq!(budget.len(), 1);
+    assert_eq!(budget.resource_measure(), prefix_measure);
+}
+
+#[test]
+fn binding_budget_preserves_authority_control_and_row_precedence_before_brand_fence() {
+    let python = installed(BindingTarget::Python);
+    let rust = installed(BindingTarget::Rust);
+    let person = type_id(TypeKind::Entity, "person");
+
+    let mut wrong_form = ProjectedBatchBindingBudget::try_new(
+        &python,
+        person.clone(),
+        ProjectedBatchOperation::Insert,
+    )
+    .unwrap();
+    let row = ProjectedBatchRow::Delete { iid: "0x10".into() };
+    let incremental = wrong_form.try_add_row(&rust, &row).unwrap_err();
+    let authoritative = ProjectedBatch::try_new(
+        &rust,
+        person.clone(),
+        ProjectedBatchOperation::Insert,
+        vec![row],
+    )
+    .unwrap_err();
+    assert_eq!(incremental, authoritative);
+    assert_eq!(incremental.code().as_str(), "batch_row_operation_mismatch");
+    assert!(wrong_form.is_empty());
+
+    let unkeyed_source = SCHEMA.replace(
+        "      identifier: { key: true }\n      tag:",
+        "      identifier: { card: 1 }\n      tag:",
+    );
+    let unkeyed = installed_from(BindingTarget::Python, &unkeyed_source);
+    let mut put =
+        ProjectedBatchBindingBudget::try_new(&python, person.clone(), ProjectedBatchOperation::Put)
+            .unwrap();
+    let row = ProjectedBatchRow::Create(person_create(&unkeyed, "foreign"));
+    let incremental = put.try_add_row(&unkeyed, &row).unwrap_err();
+    let authoritative = ProjectedBatch::try_new(
+        &unkeyed,
+        person.clone(),
+        ProjectedBatchOperation::Put,
+        vec![row],
+    )
+    .unwrap_err();
+    assert_eq!(incremental, authoritative);
+    assert_eq!(incremental.code().as_str(), "put_requires_projected_key");
+    assert!(put.is_empty());
+
+    let cancellation = AnswerCancellation::default();
+    cancellation.cancel();
+    let control = ProjectedBatchInvocationControl::capture(full_limits(), cancellation);
+    let mut cancelled = ProjectedBatchBindingBudget::try_new_for_invocation(
+        &python,
+        person.clone(),
+        ProjectedBatchOperation::Delete,
+        &control,
+    )
+    .unwrap();
+    let error = cancelled
+        .try_add_row(&rust, &ProjectedBatchRow::Delete { iid: "0x10".into() })
+        .unwrap_err();
+    assert_eq!(error.code().as_str(), "provider_cancelled");
+    assert!(cancelled.is_empty());
+
+    let mut fenced = ProjectedBatchBindingBudget::try_new(
+        &python,
+        person.clone(),
+        ProjectedBatchOperation::Delete,
+    )
+    .unwrap();
+    let valid_foreign = ProjectedBatchRow::Delete { iid: "0x10".into() };
+    ProjectedBatch::try_new(
+        &rust,
+        person.clone(),
+        ProjectedBatchOperation::Delete,
+        vec![valid_foreign.clone()],
+    )
+    .unwrap();
+    let error = fenced.try_add_row(&rust, &valid_foreign).unwrap_err();
+    assert_eq!(error.code().as_str(), "generated_token_package_mismatch");
+    assert_eq!(
+        error.path(),
+        [
+            SdkDiagnosticPathSegment::Argument(name("rows")),
+            SdkDiagnosticPathSegment::Index(0),
+            SdkDiagnosticPathSegment::Type(person),
+        ]
+    );
+    assert!(fenced.is_empty());
+}
+
+#[test]
+fn binding_budget_defers_duplicate_identity_to_authoritative_construction() {
+    let installed = installed(BindingTarget::Python);
+    let person = type_id(TypeKind::Entity, "person");
+    let key_rows = vec![
+        ProjectedBatchRow::Create(person_create(&installed, "same")),
+        ProjectedBatchRow::Create(person_create(&installed, "same")),
+    ];
+    let mut key_budget = ProjectedBatchBindingBudget::try_new(
+        &installed,
+        person.clone(),
+        ProjectedBatchOperation::Insert,
+    )
+    .unwrap();
+    for row in &key_rows {
+        key_budget.try_add_row(&installed, row).unwrap();
+    }
+    assert_eq!(key_budget.len(), key_rows.len());
+    assert_eq!(
+        ProjectedBatch::try_new(
+            &installed,
+            person.clone(),
+            ProjectedBatchOperation::Insert,
+            key_rows,
+        )
+        .unwrap_err()
+        .code()
+        .as_str(),
+        "duplicate_batch_key"
+    );
+
+    let target_rows = vec![
+        ProjectedBatchRow::Delete { iid: "0xAb".into() },
+        ProjectedBatchRow::Delete { iid: "0xab".into() },
+    ];
+    let mut target_budget = ProjectedBatchBindingBudget::try_new(
+        &installed,
+        person.clone(),
+        ProjectedBatchOperation::Delete,
+    )
+    .unwrap();
+    for row in &target_rows {
+        target_budget.try_add_row(&installed, row).unwrap();
+    }
+    assert_eq!(target_budget.len(), target_rows.len());
+    assert_eq!(
+        ProjectedBatch::try_new(
+            &installed,
+            person,
+            ProjectedBatchOperation::Delete,
+            target_rows,
+        )
+        .unwrap_err()
+        .code()
+        .as_str(),
+        "duplicate_batch_target"
+    );
+}
+
+#[test]
+fn binding_budget_resource_crossing_precedes_duplicate_only_before_retention() {
+    let installed = installed(BindingTarget::Python);
+    let person = type_id(TypeKind::Entity, "person");
+    let row = ProjectedBatchRow::Create(person_create(&installed, "same"));
+    let prefix = ProjectedBatch::try_new(
+        &installed,
+        person.clone(),
+        ProjectedBatchOperation::Insert,
+        vec![row.clone()],
+    )
+    .unwrap();
+    let limits = QueryExecutionResourceLimits::tightened(
+        30_000,
+        MAX_QUERY_ITEMS,
+        prefix.resource_measure().bytes(),
+        u64::MAX,
+        u64::MAX,
+        u64::MAX,
+        u64::MAX,
+        3,
+    );
+    let control = ProjectedBatchInvocationControl::capture(limits, AnswerCancellation::default());
+    let mut budget = ProjectedBatchBindingBudget::try_new_for_invocation(
+        &installed,
+        person.clone(),
+        ProjectedBatchOperation::Insert,
+        &control,
+    )
+    .unwrap();
+    budget.try_add_row(&installed, &row).unwrap();
+    let retained_measure = budget.resource_measure();
+    let crossing = budget.try_add_row(&installed, &row).unwrap_err();
+    assert_eq!(crossing.code().as_str(), "batch_byte_limit");
+    assert_eq!(budget.len(), 1);
+    assert_eq!(budget.resource_measure(), retained_measure);
+
+    let authoritative = ProjectedBatch::try_new_for_invocation(
+        &installed,
+        person,
+        ProjectedBatchOperation::Insert,
+        vec![row.clone(), row],
+        &control,
+    )
+    .unwrap_err();
+    assert_eq!(authoritative.code().as_str(), "duplicate_batch_key");
+}
+
+#[test]
+fn binding_budget_matches_every_invocation_resource_crossing() {
+    let installed = installed(BindingTarget::Python);
+    let membership = type_id(TypeKind::Relation, "membership");
+    let rows = operation_rows(&installed, &membership, ProjectedBatchOperation::Insert);
+    let prefix = ProjectedBatch::try_new(
+        &installed,
+        membership.clone(),
+        ProjectedBatchOperation::Insert,
+        vec![rows[0].clone()],
+    )
+    .unwrap();
+    let complete = ProjectedBatch::try_new(
+        &installed,
+        membership.clone(),
+        ProjectedBatchOperation::Insert,
+        rows.clone(),
+    )
+    .unwrap();
+    let measure = complete.resource_measure();
+    let cases = [
+        (
+            "batch_item_limit",
+            QueryExecutionResourceLimits::tightened(
+                30_000,
+                measure.items() - 1,
+                u64::MAX,
+                u64::MAX,
+                u64::MAX,
+                u64::MAX,
+                u64::MAX,
+                3,
+            ),
+        ),
+        (
+            "batch_byte_limit",
+            QueryExecutionResourceLimits::tightened(
+                30_000,
+                u64::MAX,
+                measure.bytes() - 1,
+                u64::MAX,
+                u64::MAX,
+                u64::MAX,
+                u64::MAX,
+                3,
+            ),
+        ),
+        (
+            "batch_graph_node_limit",
+            QueryExecutionResourceLimits::tightened(
+                30_000,
+                u64::MAX,
+                u64::MAX,
+                measure.graph_nodes() - 1,
+                u64::MAX,
+                u64::MAX,
+                u64::MAX,
+                3,
+            ),
+        ),
+        (
+            "batch_attribute_value_limit",
+            QueryExecutionResourceLimits::tightened(
+                30_000,
+                u64::MAX,
+                u64::MAX,
+                u64::MAX,
+                measure.attribute_values() - 1,
+                u64::MAX,
+                u64::MAX,
+                3,
+            ),
+        ),
+        (
+            "batch_collection_member_limit",
+            QueryExecutionResourceLimits::tightened(
+                30_000,
+                u64::MAX,
+                u64::MAX,
+                u64::MAX,
+                u64::MAX,
+                measure.collection_members() - 1,
+                u64::MAX,
+                3,
+            ),
+        ),
+        (
+            "batch_role_player_limit",
+            QueryExecutionResourceLimits::tightened(
+                30_000,
+                u64::MAX,
+                u64::MAX,
+                u64::MAX,
+                u64::MAX,
+                u64::MAX,
+                measure.role_players() - 1,
+                3,
+            ),
+        ),
+    ];
+    for (code, limits) in cases {
+        let full_control =
+            ProjectedBatchInvocationControl::capture(limits, AnswerCancellation::default());
+        let full_error = ProjectedBatch::try_new_for_invocation(
+            &installed,
+            membership.clone(),
+            ProjectedBatchOperation::Insert,
+            rows.clone(),
+            &full_control,
+        )
+        .unwrap_err();
+        assert_eq!(full_error.code().as_str(), code);
+
+        let incremental_control =
+            ProjectedBatchInvocationControl::capture(limits, AnswerCancellation::default());
+        let mut budget = ProjectedBatchBindingBudget::try_new_for_invocation(
+            &installed,
+            membership.clone(),
+            ProjectedBatchOperation::Insert,
+            &incremental_control,
+        )
+        .unwrap();
+        budget.try_add_row(&installed, &rows[0]).unwrap();
+        let incremental_error = budget.try_add_row(&installed, &rows[1]).unwrap_err();
+        assert_eq!(incremental_error, full_error);
+        assert_eq!(budget.len(), 1);
+        assert_eq!(budget.resource_measure(), prefix.resource_measure());
+    }
+
+    let statement_limits = QueryExecutionResourceLimits::tightened(
+        30_000,
+        u64::MAX,
+        u64::MAX,
+        u64::MAX,
+        u64::MAX,
+        u64::MAX,
+        u64::MAX,
+        prefix.resource_measure().statements() - 1,
+    );
+    let full_control =
+        ProjectedBatchInvocationControl::capture(statement_limits, AnswerCancellation::default());
+    let full_error = ProjectedBatch::try_new_for_invocation(
+        &installed,
+        membership.clone(),
+        ProjectedBatchOperation::Insert,
+        vec![rows[0].clone()],
+        &full_control,
+    )
+    .unwrap_err();
+    assert_eq!(full_error.code().as_str(), "batch_statement_limit");
+    let incremental_control =
+        ProjectedBatchInvocationControl::capture(statement_limits, AnswerCancellation::default());
+    let mut budget = ProjectedBatchBindingBudget::try_new_for_invocation(
+        &installed,
+        membership,
+        ProjectedBatchOperation::Insert,
+        &incremental_control,
+    )
+    .unwrap();
+    let incremental_error = budget.try_add_row(&installed, &rows[0]).unwrap_err();
+    assert_eq!(incremental_error, full_error);
+    assert!(budget.is_empty());
+    assert_eq!(budget.resource_measure(), Default::default());
+}
+
+#[test]
+fn binding_budget_reuses_one_control_and_empty_skips_it() {
+    let installed = installed(BindingTarget::Python);
+    let person = type_id(TypeKind::Entity, "person");
+    let control =
+        ProjectedBatchInvocationControl::capture(full_limits(), AnswerCancellation::default());
+    let captured_deadline = control.deadline().instant();
+    let row = ProjectedBatchRow::Create(person_create(&installed, "ada"));
+    let mut budget = ProjectedBatchBindingBudget::try_new_for_invocation(
+        &installed,
+        person.clone(),
+        ProjectedBatchOperation::Insert,
+        &control,
+    )
+    .unwrap();
+    budget.checkpoint().unwrap();
+    budget.try_add_row(&installed, &row).unwrap();
+    assert_eq!(budget.len(), 1);
+
+    let batch = ProjectedBatch::try_new_for_invocation(
+        &installed,
+        person.clone(),
+        ProjectedBatchOperation::Insert,
+        vec![row],
+        &control,
+    )
+    .unwrap();
+    let prepared = PreparedProjectedBatchInvocation::try_new(&installed, &batch, control).unwrap();
+    assert_eq!(prepared.deadline().instant(), captured_deadline);
+
+    let cancelled = AnswerCancellation::default();
+    cancelled.cancel();
+    let cancelled_control = ProjectedBatchInvocationControl::capture(
+        QueryExecutionResourceLimits::tightened(0, 0, 0, 0, 0, 0, 0, 0),
+        cancelled,
+    );
+    let empty_budget = ProjectedBatchBindingBudget::try_new_for_invocation(
+        &installed,
+        person.clone(),
+        ProjectedBatchOperation::Delete,
+        &cancelled_control,
+    )
+    .unwrap();
+    assert!(empty_budget.is_empty());
+    assert_eq!(
+        empty_budget.checkpoint().unwrap_err().code().as_str(),
+        "provider_cancelled"
+    );
+    ProjectedBatch::try_new_for_invocation(
+        &installed,
+        person,
+        ProjectedBatchOperation::Delete,
+        vec![],
+        &cancelled_control,
+    )
+    .unwrap();
+}
+
+#[test]
+fn binding_budget_nonempty_cancellation_keeps_the_last_accepted_prefix() {
+    let installed = installed(BindingTarget::Python);
+    let person = type_id(TypeKind::Entity, "person");
+    let cancellation = AnswerCancellation::default();
+    let control = ProjectedBatchInvocationControl::capture(full_limits(), cancellation.clone());
+    let mut budget = ProjectedBatchBindingBudget::try_new_for_invocation(
+        &installed,
+        person,
+        ProjectedBatchOperation::Insert,
+        &control,
+    )
+    .unwrap();
+    let first = ProjectedBatchRow::Create(person_create(&installed, "first"));
+    budget.try_add_row(&installed, &first).unwrap();
+    let retained_measure = budget.resource_measure();
+
+    cancellation.cancel();
+    let error = budget
+        .try_add_row(
+            &installed,
+            &ProjectedBatchRow::Create(person_create(&installed, "second")),
+        )
+        .unwrap_err();
+    assert_eq!(error.code().as_str(), "provider_cancelled");
+    assert_eq!(budget.len(), 1);
+    assert_eq!(budget.resource_measure(), retained_measure);
+}
+
+#[test]
+fn plain_binding_budget_rejects_the_first_row_beyond_the_hard_item_cap() {
+    let installed = installed(BindingTarget::Python);
+    let person = type_id(TypeKind::Entity, "person");
+    let row = ProjectedBatchRow::Delete { iid: "0x10".into() };
+    let mut budget =
+        ProjectedBatchBindingBudget::try_new(&installed, person, ProjectedBatchOperation::Delete)
+            .unwrap();
+    let maximum = usize::try_from(MAX_QUERY_ITEMS).unwrap();
+    for _ in 0..maximum {
+        budget.try_add_row(&installed, &row).unwrap();
+    }
+    let retained_measure = budget.resource_measure();
+    let error = budget.try_add_row(&installed, &row).unwrap_err();
+    assert_eq!(error.code().as_str(), "batch_item_limit");
+    assert_eq!(budget.len(), maximum);
+    assert_eq!(budget.resource_measure(), retained_measure);
 }
 
 #[test]

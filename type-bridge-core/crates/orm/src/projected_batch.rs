@@ -157,6 +157,157 @@ pub struct ProjectedBatch {
     measure: ProjectedBatchResourceMeasure,
 }
 
+/// Non-retaining cumulative policy gate for binding-owned batch row storage.
+///
+/// A binding must call [`Self::try_add_row`] before it retains each lowered row,
+/// then construct the authoritative [`ProjectedBatch`] after every row has
+/// passed. This budget intentionally does not detect duplicate targets or keys;
+/// final batch construction remains mandatory. A control or resource failure
+/// at the first crossing row is returned before that row is retained, even when
+/// the rejected row would also duplicate an accepted prefix. This bounded
+/// ingress precedence is intentional; duplicate authority applies only after
+/// every row has passed the non-retaining gate.
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct ProjectedBatchBindingBudget<'control> {
+    brand: ProjectionBrand,
+    model: TypeId,
+    operation: ProjectedBatchOperation,
+    row_count: usize,
+    measure: ProjectedBatchResourceMeasure,
+    control: Option<&'control ProjectedBatchInvocationControl>,
+}
+
+impl ProjectedBatchBindingBudget<'static> {
+    /// Open a cumulative budget with the common hard/default policy.
+    pub fn try_new(
+        installed: &InstalledRuntimeProjection,
+        model: TypeId,
+        operation: ProjectedBatchOperation,
+    ) -> Result<Self, SdkExecutionDiagnostic> {
+        Self::try_new_internal(installed, model, operation, None)
+    }
+}
+
+impl<'control> ProjectedBatchBindingBudget<'control> {
+    /// Open a cumulative budget against one already captured invocation control.
+    ///
+    /// The binding must reuse this exact control for final batch construction
+    /// and execution so streamed lowering cannot restart the absolute deadline.
+    pub fn try_new_for_invocation(
+        installed: &InstalledRuntimeProjection,
+        model: TypeId,
+        operation: ProjectedBatchOperation,
+        control: &'control ProjectedBatchInvocationControl,
+    ) -> Result<Self, SdkExecutionDiagnostic> {
+        Self::try_new_internal(installed, model, operation, Some(control))
+    }
+
+    fn try_new_internal(
+        installed: &InstalledRuntimeProjection,
+        model: TypeId,
+        operation: ProjectedBatchOperation,
+        control: Option<&'control ProjectedBatchInvocationControl>,
+    ) -> Result<Self, SdkExecutionDiagnostic> {
+        require_batch_model(installed, &model, operation)?;
+        Ok(Self {
+            brand: ProjectionBrand::from_installed(installed),
+            model,
+            operation,
+            row_count: 0,
+            measure: ProjectedBatchResourceMeasure::default(),
+            control,
+        })
+    }
+
+    /// Recheck the captured cancellation owner and absolute deadline.
+    ///
+    /// Bindings use this allocation-free checkpoint while lowering a large row,
+    /// before a complete [`ProjectedBatchRow`] exists. Empty callers do not need
+    /// to checkpoint.
+    pub fn checkpoint(&self) -> Result<(), SdkExecutionDiagnostic> {
+        self.control
+            .map_or(Ok(()), ProjectedBatchInvocationControl::check)
+    }
+
+    /// Validate and charge one row before the binding retains it.
+    ///
+    /// Failure leaves the row ordinal and cumulative measure unchanged. A
+    /// successful call authorizes only binding-owned retention; it does not
+    /// replace final [`ProjectedBatch`] construction.
+    pub fn try_add_row(
+        &mut self,
+        installed: &InstalledRuntimeProjection,
+        row: &ProjectedBatchRow,
+    ) -> Result<(), SdkExecutionDiagnostic> {
+        let projected_model = require_batch_model(installed, &self.model, self.operation)?;
+        self.checkpoint()?;
+
+        let next_row_count = self.row_count.checked_add(1).ok_or_else(|| {
+            saturated_limit_failure(limit_failure(
+                "batch_item_limit",
+                "items",
+                u64::MAX,
+                self.control
+                    .map_or(MAX_QUERY_ITEMS, |control| control.limits.items),
+            ))
+        })?;
+        let limits = self
+            .control
+            .map_or(QueryExecutionResourceLimits::default(), |control| {
+                control.limits
+            });
+        let item_count = validate_row_count(next_row_count, limits.items)?;
+        self.checkpoint()?;
+        validate_row(installed, &self.model, self.operation, self.row_count, row)?;
+        // Keep one budget tied to the package that opened it, but preserve the
+        // authoritative constructor's model/control/row diagnostic precedence
+        // when a binding accidentally supplies another installed projection.
+        self.brand
+            .validate(installed, type_path(&self.model))
+            .map_err(|error| prefix_row(error, self.row_count))?;
+
+        let mut next_measure = self.measure;
+        charge_row(
+            projected_model,
+            &mut next_measure,
+            row,
+            self.row_count,
+            self.control,
+        )?;
+        next_measure.items = item_count;
+        next_measure.statements = statement_forecast(
+            self.operation,
+            next_measure.role_players > 0,
+            next_row_count,
+        );
+        self.checkpoint()?;
+        validate_limits(next_measure, limits)?;
+
+        self.row_count = next_row_count;
+        self.measure = next_measure;
+        Ok(())
+    }
+
+    /// Return the number of rows accepted for binding-owned retention.
+    #[must_use]
+    pub const fn len(&self) -> usize {
+        self.row_count
+    }
+
+    /// Report whether no row has been accepted.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.row_count == 0
+    }
+
+    /// Return the cumulative resource measure without allocation.
+    #[must_use]
+    pub const fn resource_measure(&self) -> ProjectedBatchResourceMeasure {
+        self.measure
+    }
+}
+
 impl ProjectedBatch {
     /// Construct the shared redacted diagnostic for binding-owned batch row
     /// storage that cannot be reserved.
@@ -1628,6 +1779,35 @@ plays:
         )
         .unwrap_err();
         assert_eq!(error.code().as_str(), "provider_cancelled");
+    }
+
+    #[test]
+    fn binding_budget_threads_control_through_each_reference_without_publishing_a_row() {
+        let installed = installed();
+        let control = ProjectedBatchInvocationControl::capture(
+            QueryExecutionResourceLimits::default(),
+            AnswerCancellation::default(),
+        );
+        control.cancel_after_reference_checks(1);
+        let mut budget = ProjectedBatchBindingBudget::try_new_for_invocation(
+            &installed,
+            TypeId::new(TypeKind::Relation, "membership").unwrap(),
+            ProjectedBatchOperation::Insert,
+            &control,
+        )
+        .unwrap();
+        let error = budget
+            .try_add_row(
+                &installed,
+                &ProjectedBatchRow::Create(relation_create(&installed)),
+            )
+            .unwrap_err();
+        assert_eq!(error.code().as_str(), "provider_cancelled");
+        assert!(budget.is_empty());
+        assert_eq!(
+            budget.resource_measure(),
+            ProjectedBatchResourceMeasure::default()
+        );
     }
 
     #[test]
