@@ -27,6 +27,8 @@ use std::time::Duration;
 
 use sha2::{Digest, Sha256};
 
+#[cfg(feature = "typedb")]
+use super::backend::AnswerCancellation;
 use super::backend::{DriverBackend, GivenRowsSpec, QueryResult, TxType};
 use super::context::TransactionContext;
 use super::transaction::Transaction;
@@ -34,6 +36,8 @@ use crate::_registry::DescriptorRegistry;
 use crate::error::Result;
 use crate::match_request::selected_result_executor::SelectedResultExecutor;
 use crate::match_request::{MatchExecutionLimits, ValidatedMatchRequest, ValidatedMatchResult};
+#[cfg(feature = "typedb")]
+use crate::query_execution_limits::{QueryExecutionDeadline, QueryExecutionResourceLimits};
 
 /// Primary connection handle wrapping a TypeDB driver.
 ///
@@ -303,6 +307,46 @@ impl Database {
             connection_authority: DatabaseConnectionAuthority::for_typedb_address(address),
             database_name: database.to_string(),
         })
+    }
+
+    /// Connect through prepared trust using one common bounded invocation.
+    ///
+    /// The caller must capture `deadline` before any credential resolution or
+    /// provider work. Only connection-applicable dimensions are forwarded:
+    /// items, bytes, and statements. Graph, attribute, collection, and role
+    /// ceilings remain uncharged because opening a connection performs none of
+    /// that work.
+    #[cfg(feature = "typedb")]
+    #[doc(hidden)]
+    #[allow(clippy::too_many_arguments)]
+    pub async fn connect_prepared_secure_with_control(
+        address: &str,
+        database: &str,
+        username: &str,
+        password: &str,
+        options: super::real_driver::PreparedSecureConnectOptions,
+        limits: QueryExecutionResourceLimits,
+        deadline: QueryExecutionDeadline,
+        cancellation: AnswerCancellation,
+    ) -> super::real_driver::SecureResult<Self> {
+        let limits = limits.effective();
+        let control = type_bridge_typedb_runtime::RuntimeConnectionControl::new(
+            limits.items,
+            limits.bytes,
+            limits.statements,
+            deadline.instant(),
+            type_bridge_typedb_runtime::RuntimeAnswerCancellation::from_shared(
+                cancellation.shared(),
+            ),
+        );
+        Self::connect_prepared_secure_with_options(
+            address,
+            database,
+            username,
+            password,
+            options.with_connection_control(control),
+        )
+        .await
     }
 
     /// Open a read transaction.
@@ -686,5 +730,90 @@ mod tests {
         ] {
             assert!(!is_identity_safe_provider_address(invalid), "{invalid}");
         }
+    }
+
+    #[cfg(feature = "typedb")]
+    #[tokio::test]
+    async fn controlled_prepared_connect_forwards_common_pre_dispatch_cancellation() {
+        const SENTINEL: &str = "TB_ORM_CONTROLLED_CONNECT_SECRET";
+        let options = super::super::real_driver::SecureConnectOptions {
+            http_port: 8123,
+            tls_mode: super::super::real_driver::TlsMode::Disabled,
+            server_version: Some(type_bridge_core_lib::version::Version::new(3, 12, 1)),
+        }
+        .prepare_transport()
+        .expect("prepare credential-free transport before controlled connect");
+        let limits = QueryExecutionResourceLimits::default();
+        let deadline = QueryExecutionDeadline::for_limits(limits);
+        let cancellation = AnswerCancellation::default();
+        cancellation.cancel();
+
+        let error = Database::connect_prepared_secure_with_control(
+            SENTINEL,
+            "database",
+            SENTINEL,
+            SENTINEL,
+            options,
+            limits,
+            deadline,
+            cancellation,
+        )
+        .await
+        .err()
+        .expect("pre-cancelled controlled connection must reject without provider I/O");
+
+        assert!(matches!(
+            error,
+            super::super::real_driver::SecureConnectError::Runtime(
+                type_bridge_typedb_runtime::RuntimeError::ResourceLimit {
+                    code: "provider_cancelled",
+                    ..
+                }
+            )
+        ));
+        assert!(!error.to_string().contains(SENTINEL));
+    }
+
+    #[cfg(feature = "typedb")]
+    #[tokio::test]
+    async fn controlled_prepared_connect_forwards_zero_statement_ceiling_before_credentials() {
+        const SENTINEL: &str = "TB_ORM_CONNECTION_CREDENTIAL_SECRET";
+        let options = super::super::real_driver::SecureConnectOptions {
+            http_port: 8123,
+            tls_mode: super::super::real_driver::TlsMode::Disabled,
+            server_version: Some(type_bridge_core_lib::version::Version::new(3, 12, 1)),
+        }
+        .prepare_transport()
+        .expect("prepare transport before supplying credentials");
+        let limits = QueryExecutionResourceLimits {
+            statements: 0,
+            ..QueryExecutionResourceLimits::default()
+        };
+        let deadline = QueryExecutionDeadline::for_limits(limits);
+
+        let error = Database::connect_prepared_secure_with_control(
+            "127.0.0.1:1",
+            "database",
+            SENTINEL,
+            SENTINEL,
+            options,
+            limits,
+            deadline,
+            AnswerCancellation::default(),
+        )
+        .await
+        .err()
+        .expect("zero statements must reject before driver credential construction");
+
+        assert!(matches!(
+            error,
+            super::super::real_driver::SecureConnectError::Runtime(
+                type_bridge_typedb_runtime::RuntimeError::ResourceLimit {
+                    code: "provider_statement_limit",
+                    ..
+                }
+            )
+        ));
+        assert!(!error.to_string().contains(SENTINEL));
     }
 }

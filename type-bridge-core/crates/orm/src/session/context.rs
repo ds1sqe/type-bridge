@@ -265,6 +265,26 @@ impl TransactionContext {
         tx.query_canonical(typeql).await
     }
 
+    /// Execute one canonical V2 provider-answer query through the bounded
+    /// streaming seam without consuming this transaction context.
+    ///
+    /// This is the read-only counterpart to the bounded methods on
+    /// [`TransactionContextMutationLease`]. The caller owns the absolute
+    /// deadline and cancellation token and must retain any cumulative
+    /// statement/output accounting around this single provider call.
+    #[doc(hidden)]
+    pub(crate) async fn query_v2_bounded(
+        &self,
+        typeql: &str,
+        limits: QueryV2AnswerLimits,
+        consumer: &mut dyn AnswerConsumer,
+    ) -> Result<BoundedAnswerStats> {
+        self.check_schema_annotation_support(typeql)?;
+        let mut guard = self.inner.lock().await;
+        let tx = active_transaction(&mut guard)?;
+        tx.query_v2_bounded(typeql, limits, consumer).await
+    }
+
     /// Export the schema under this transaction's provider-side schema fence,
     /// when supported by the backend.
     pub(crate) async fn schema_snapshot(&self) -> Result<Option<String>> {
@@ -1080,6 +1100,52 @@ mod tests {
         assert_eq!(
             context.lifecycle_state().await,
             TransactionContextState::Committed
+        );
+    }
+
+    #[tokio::test]
+    async fn bounded_v2_read_preserves_active_state_and_checks_control_before_query() {
+        let (context, calls) = active_context();
+        let mut consumer = |_item: super::super::backend::AnswerItem| {
+            Ok(super::super::backend::AnswerControl::Continue)
+        };
+        let cancellation = super::super::backend::AnswerCancellation::default();
+        cancellation.cancel();
+        let error = context
+            .query_v2_bounded(
+                "match $x isa thing; fetch { iid: iid($x) };",
+                QueryV2AnswerLimits {
+                    answer: BoundedAnswerLimits {
+                        cancellation,
+                        ..BoundedAnswerLimits::default()
+                    },
+                    max_collection_members: 1,
+                },
+                &mut consumer,
+            )
+            .await
+            .unwrap_err();
+
+        assert_eq!(calls.queries.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            context.lifecycle_state().await,
+            TransactionContextState::Active
+        );
+        assert!(matches!(error, OrmError::Match(_)));
+
+        let stats = context
+            .query_v2_bounded(
+                "match $x isa thing; fetch { iid: iid($x) };",
+                QueryV2AnswerLimits::default(),
+                &mut consumer,
+            )
+            .await
+            .unwrap();
+        assert_eq!(stats, BoundedAnswerStats::default());
+        assert_eq!(calls.queries.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            context.lifecycle_state().await,
+            TransactionContextState::Active
         );
     }
 }

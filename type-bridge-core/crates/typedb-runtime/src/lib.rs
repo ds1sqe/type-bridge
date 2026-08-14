@@ -298,6 +298,43 @@ impl RuntimeAnswerCancellation {
     }
 }
 
+/// Dependency-neutral limits and interruption state for one secure connection.
+///
+/// This type is doc-hidden because binding-neutral policy construction belongs
+/// to the ORM. The runtime receives only the applicable connection dimensions:
+/// admitted items, retained nonsecret version bytes, provider/probe dispatch
+/// statements, one absolute deadline, and one wakeable cancellation owner.
+#[doc(hidden)]
+#[derive(Debug, Clone)]
+pub struct RuntimeConnectionControl {
+    max_items: u64,
+    max_bytes: u64,
+    max_statements: u32,
+    deadline: Instant,
+    cancellation: RuntimeAnswerCancellation,
+}
+
+impl RuntimeConnectionControl {
+    /// Construct one connection control from already-tightened common limits.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn new(
+        max_items: u64,
+        max_bytes: u64,
+        max_statements: u32,
+        deadline: Instant,
+        cancellation: RuntimeAnswerCancellation,
+    ) -> Self {
+        Self {
+            max_items,
+            max_bytes,
+            max_statements,
+            deadline,
+            cancellation,
+        }
+    }
+}
+
 /// Hard limits checked while polling a real driver answer stream.
 #[derive(Debug, Clone)]
 pub struct RuntimeAnswerLimits {
@@ -599,6 +636,7 @@ impl SecureConnectOptions {
             http_port: self.http_port,
             server_version: self.server_version,
             resolved_tls: ResolvedTlsMode::from_configured_path(self.tls_mode.clone())?,
+            connection_control: None,
         })
     }
 
@@ -616,6 +654,7 @@ impl SecureConnectOptions {
             http_port: self.http_port,
             server_version: self.server_version,
             resolved_tls: ResolvedTlsMode::from_validated_physical_path(self.tls_mode.clone())?,
+            connection_control: None,
         })
     }
 
@@ -634,6 +673,7 @@ impl SecureConnectOptions {
             http_port: self.http_port,
             server_version: self.server_version,
             resolved_tls: ResolvedTlsMode::from_captured_custom_root(self.tls_mode.clone(), bytes)?,
+            connection_control: None,
         })
     }
 }
@@ -876,6 +916,231 @@ pub struct PreparedSecureConnectOptions {
     http_port: u16,
     server_version: Option<core_version::Version>,
     resolved_tls: ResolvedTlsMode,
+    connection_control: Option<RuntimeConnectionControl>,
+}
+
+impl PreparedSecureConnectOptions {
+    /// Attach one invocation's common control after trust preparation.
+    ///
+    /// Cloning the returned value shares cancellation and the exact absolute
+    /// deadline, but each connection invocation owns independent counters.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_connection_control(mut self, control: RuntimeConnectionControl) -> Self {
+        self.connection_control = Some(control);
+        self
+    }
+}
+
+#[derive(Debug)]
+struct ConnectionMeter {
+    control: Option<RuntimeConnectionControl>,
+    statements: u32,
+    response_bytes: u64,
+    admitted_items: u64,
+}
+
+impl ConnectionMeter {
+    fn new(control: RuntimeConnectionControl) -> Self {
+        Self {
+            control: Some(control),
+            statements: 0,
+            response_bytes: 0,
+            admitted_items: 0,
+        }
+    }
+
+    fn legacy() -> Self {
+        Self {
+            control: None,
+            statements: 0,
+            response_bytes: 0,
+            admitted_items: 0,
+        }
+    }
+
+    fn control(&self) -> Option<&RuntimeConnectionControl> {
+        self.control.as_ref()
+    }
+
+    fn check_interruption(&self) -> Result<()> {
+        let Some(control) = &self.control else {
+            return Ok(());
+        };
+        if control.cancellation.is_cancelled() {
+            return Err(RuntimeError::ResourceLimit {
+                code: "provider_cancelled",
+                message: "provider connection was cancelled",
+            });
+        }
+        if tokio::time::Instant::now() >= tokio::time::Instant::from_std(control.deadline) {
+            return Err(RuntimeError::ResourceLimit {
+                code: "transaction_deadline_exceeded",
+                message: "provider connection deadline expired",
+            });
+        }
+        Ok(())
+    }
+
+    fn require_possible_success(&self) -> Result<()> {
+        self.check_interruption()?;
+        if self
+            .control
+            .as_ref()
+            .is_some_and(|control| control.max_items == 0)
+        {
+            return Err(RuntimeError::ResourceLimit {
+                code: "processed_item_limit",
+                message: "provider connection item limit exceeded",
+            });
+        }
+        Ok(())
+    }
+
+    fn charge_statement(&mut self) -> Result<()> {
+        self.check_interruption()?;
+        let Some(control) = &self.control else {
+            return Ok(());
+        };
+        let next = self
+            .statements
+            .checked_add(1)
+            .ok_or(RuntimeError::ResourceLimit {
+                code: "provider_statement_counter_overflow",
+                message: "provider connection statement counter overflowed",
+            })?;
+        if next > control.max_statements {
+            return Err(RuntimeError::ResourceLimit {
+                code: "provider_statement_limit",
+                message: "provider connection statement limit exceeded",
+            });
+        }
+        self.statements = next;
+        Ok(())
+    }
+
+    fn charge_version_evidence(&mut self, version: core_version::Version) -> Result<()> {
+        let Some(control) = &self.control else {
+            return Ok(());
+        };
+        // Only the canonical version retained by TypeDBRuntime is public
+        // connection evidence. Provider errors, raw response framing, hosts,
+        // credentials, and trust material are deliberately never measured or
+        // reflected into a diagnostic.
+        let bytes =
+            u64::try_from(version.to_string().len()).map_err(|_| RuntimeError::ResourceLimit {
+                code: "response_byte_counter_overflow",
+                message: "provider connection response byte counter overflowed",
+            })?;
+        let next = self
+            .response_bytes
+            .checked_add(bytes)
+            .ok_or(RuntimeError::ResourceLimit {
+                code: "response_byte_counter_overflow",
+                message: "provider connection response byte counter overflowed",
+            })?;
+        if next > control.max_bytes {
+            return Err(RuntimeError::ResourceLimit {
+                code: "response_byte_limit",
+                message: "provider connection response byte limit exceeded",
+            });
+        }
+        self.response_bytes = next;
+        Ok(())
+    }
+
+    fn admit_connection(&mut self) -> Result<()> {
+        let Some(control) = &self.control else {
+            return Ok(());
+        };
+        let next = self
+            .admitted_items
+            .checked_add(1)
+            .ok_or(RuntimeError::ResourceLimit {
+                code: "processed_item_counter_overflow",
+                message: "provider connection item counter overflowed",
+            })?;
+        if next > control.max_items {
+            return Err(RuntimeError::ResourceLimit {
+                code: "processed_item_limit",
+                message: "provider connection item limit exceeded",
+            });
+        }
+        self.admitted_items = next;
+        Ok(())
+    }
+}
+
+async fn await_connection_work<T>(
+    future: impl Future<Output = T>,
+    control: Option<&RuntimeConnectionControl>,
+) -> Result<T> {
+    let Some(control) = control else {
+        return Ok(future.await);
+    };
+    tokio::pin!(future);
+    let cancellation = control.cancellation.cancelled();
+    tokio::pin!(cancellation);
+    let deadline = tokio::time::sleep_until(tokio::time::Instant::from_std(control.deadline));
+    tokio::pin!(deadline);
+
+    tokio::select! {
+        biased;
+        output = &mut future => Ok(output),
+        () = &mut cancellation => Err(RuntimeError::ResourceLimit {
+            code: "provider_cancelled",
+            message: "provider connection was cancelled",
+        }),
+        () = &mut deadline => Err(RuntimeError::ResourceLimit {
+            code: "transaction_deadline_exceeded",
+            message: "provider connection deadline expired",
+        }),
+    }
+}
+
+fn controlled_connection_error(error: SecureConnectError) -> SecureConnectError {
+    match error {
+        SecureConnectError::TlsConfiguration(
+            core_version::TlsConfigurationError::CustomRootCaNotFile { .. }
+            | core_version::TlsConfigurationError::CustomRootCaUnreadable { .. }
+            | core_version::TlsConfigurationError::CustomRootCaTooLarge { .. }
+            | core_version::TlsConfigurationError::CustomRootCaInvalidPem { .. },
+        ) => SecureConnectError::TlsConfiguration(
+            core_version::TlsConfigurationError::ClientConfiguration,
+        ),
+        SecureConnectError::Runtime(RuntimeError::UnsupportedVersion(
+            core_version::VersionError::Probe(_) | core_version::VersionError::Parse(_),
+        )) => SecureConnectError::Runtime(RuntimeError::Connection(
+            "TypeDB version discovery failed".to_owned(),
+        )),
+        SecureConnectError::Runtime(RuntimeError::Connection(_)) => SecureConnectError::Runtime(
+            RuntimeError::Connection("TypeDB connection failed".to_owned()),
+        ),
+        SecureConnectError::Runtime(RuntimeError::QueryExecution(_)) => {
+            SecureConnectError::Runtime(RuntimeError::QueryExecution(
+                "TypeDB connection query failed".to_owned(),
+            ))
+        }
+        SecureConnectError::Runtime(RuntimeError::Transaction(_)) => SecureConnectError::Runtime(
+            RuntimeError::Transaction("TypeDB connection transaction failed".to_owned()),
+        ),
+        other => other,
+    }
+}
+
+#[cfg(feature = "band8")]
+fn is_connection_control_error(error: &SecureConnectError) -> bool {
+    matches!(
+        error,
+        SecureConnectError::Runtime(RuntimeError::ResourceLimit { .. })
+    )
+}
+
+fn close_driver_preserving(driver: &DriverHandle, error: SecureConnectError) -> SecureConnectError {
+    if let Err(close_error) = driver.force_close() {
+        trace_driver_drop_close_failure(&close_error);
+    }
+    error
 }
 
 impl ResolvedTlsProbeMode {
@@ -1217,46 +1482,94 @@ where
         + Send
         + 'static,
 {
-    let PreparedSecureConnectOptions {
-        http_port,
-        server_version,
-        resolved_tls,
-    } = options;
+    let controlled = options.connection_control.is_some();
+    let result = async {
+        let PreparedSecureConnectOptions {
+            http_port,
+            server_version,
+            resolved_tls,
+            connection_control,
+        } = options;
+        let mut meter = connection_control
+            .map(ConnectionMeter::new)
+            .unwrap_or_else(ConnectionMeter::legacy);
+        // A zero item ceiling cannot admit the only public connection result.
+        // Reject it before a probe, address parse, credential construction, or
+        // driver host is attempted.
+        meter.require_possible_success()?;
 
-    if let Some(server_version) = server_version {
-        let driver =
-            driver_for_server_version(address, username, password, server_version, &resolved_tls)
-                .await?;
-        return Ok((driver, Some(server_version)));
-    }
-
-    // Probe the server version over HTTP (blocking I/O; offload to a dedicated
-    // thread so we don't block the async executor).
-    let address_owned = address.to_string();
-    let probe_mode = resolved_tls.probe_mode.clone();
-    let probe_result =
-        tokio::task::spawn_blocking(move || probe(&address_owned, http_port, &probe_mode))
-            .await
-            .map_err(|e| RuntimeError::Connection(format!("Version probe task panicked: {e}")))?;
-
-    match probe_result {
-        Ok(server_version) => {
+        let connected = if let Some(server_version) = server_version {
             let driver = driver_for_server_version(
                 address,
                 username,
                 password,
                 server_version,
                 &resolved_tls,
+                &mut meter,
             )
             .await?;
-            Ok((driver, Some(server_version)))
+            (driver, Some(server_version))
+        } else {
+            // The HTTP client is blocking, so dispatch it on the blocking pool
+            // and race its join handle against the same wakeable invocation
+            // control used for asynchronous driver construction.
+            meter.charge_statement()?;
+            let address_owned = address.to_string();
+            let probe_mode = resolved_tls.probe_mode.clone();
+            let probe_task =
+                tokio::task::spawn_blocking(move || probe(&address_owned, http_port, &probe_mode));
+            let probe_result = await_connection_work(probe_task, meter.control())
+                .await?
+                .map_err(|error| {
+                    RuntimeError::Connection(if controlled {
+                        "Version probe task failed".to_owned()
+                    } else {
+                        format!("Version probe task panicked: {error}")
+                    })
+                })?;
+
+            match probe_result {
+                Ok(server_version) => {
+                    meter.charge_version_evidence(server_version)?;
+                    let driver = driver_for_server_version(
+                        address,
+                        username,
+                        password,
+                        server_version,
+                        &resolved_tls,
+                        &mut meter,
+                    )
+                    .await?;
+                    (driver, Some(server_version))
+                }
+                Err(core_version::VersionProbeError::Probe(http_error)) => {
+                    grpc_fallback_driver(
+                        address,
+                        username,
+                        password,
+                        http_error,
+                        &resolved_tls,
+                        &mut meter,
+                    )
+                    .await?
+                }
+                Err(core_version::VersionProbeError::TlsConfiguration(error)) => {
+                    return Err(SecureConnectError::TlsConfiguration(error));
+                }
+            }
+        };
+
+        if let Err(error) = meter.admit_connection() {
+            return Err(close_driver_preserving(&connected.0, error.into()));
         }
-        Err(core_version::VersionProbeError::Probe(http_error)) => {
-            grpc_fallback_driver(address, username, password, http_error, &resolved_tls).await
-        }
-        Err(core_version::VersionProbeError::TlsConfiguration(error)) => {
-            Err(SecureConnectError::TlsConfiguration(error))
-        }
+        Ok(connected)
+    }
+    .await;
+
+    if controlled {
+        result.map_err(controlled_connection_error)
+    } else {
+        result
     }
 }
 
@@ -1283,6 +1596,7 @@ async fn driver_for_server_version(
     password: &str,
     server_version: core_version::Version,
     tls: &ResolvedTlsMode,
+    meter: &mut ConnectionMeter,
 ) -> SecureResult<DriverHandle> {
     let band = validate_server_band(&server_version)?;
 
@@ -1290,14 +1604,14 @@ async fn driver_for_server_version(
 
     #[cfg(feature = "band8")]
     if band == 8 {
-        return connect_band8_driver(address, username, password, tls)
+        return connect_band8_driver(address, username, password, tls, meter)
             .await
             .map(DriverHandle::band8);
     }
 
     #[cfg(feature = "band9")]
     if band == 9 {
-        return connect_band9_driver(address, username, password, tls)
+        return connect_band9_driver(address, username, password, tls, meter)
             .await
             .map(DriverHandle::band9);
     }
@@ -1318,16 +1632,23 @@ async fn connect_band8_driver(
     username: &str,
     password: &str,
     tls: &ResolvedTlsMode,
+    meter: &mut ConnectionMeter,
 ) -> SecureResult<B8Driver> {
     let addresses = Addresses::try_from_address_str(address)
         .map_err(|e| RuntimeError::Connection(format!("Invalid TypeDB address {address}: {e}")))?;
-    B8Driver::new(
-        addresses,
-        B8Credentials::new(username, password),
-        DriverOptions::new(tls.band8.clone()),
+    meter.charge_statement()?;
+    let result = await_connection_work(
+        B8Driver::new(
+            addresses,
+            B8Credentials::new(username, password),
+            DriverOptions::new(tls.band8.clone()),
+        ),
+        meter.control(),
     )
-    .await
-    .map_err(|e| RuntimeError::Connection(format!("Failed to connect to {address}: {e}")).into())
+    .await?;
+    result.map_err(|e| {
+        RuntimeError::Connection(format!("Failed to connect to {address}: {e}")).into()
+    })
 }
 
 #[cfg(feature = "band9")]
@@ -1336,16 +1657,23 @@ async fn connect_band9_driver(
     username: &str,
     password: &str,
     tls: &ResolvedTlsMode,
+    meter: &mut ConnectionMeter,
 ) -> SecureResult<B9Driver> {
     let addresses = B9Addresses::try_from_address_str(address)
         .map_err(|e| RuntimeError::Connection(format!("Invalid TypeDB address {address}: {e}")))?;
-    B9Driver::new(
-        addresses,
-        B9Credentials::new(username, password),
-        B9DriverOptions::new(tls.band9.clone()),
+    meter.charge_statement()?;
+    let result = await_connection_work(
+        B9Driver::new(
+            addresses,
+            B9Credentials::new(username, password),
+            B9DriverOptions::new(tls.band9.clone()),
+        ),
+        meter.control(),
     )
-    .await
-    .map_err(|e| RuntimeError::Connection(format!("Failed to connect to {address}: {e}")).into())
+    .await?;
+    result.map_err(|e| {
+        RuntimeError::Connection(format!("Failed to connect to {address}: {e}")).into()
+    })
 }
 
 async fn grpc_fallback_driver(
@@ -1354,9 +1682,10 @@ async fn grpc_fallback_driver(
     password: &str,
     http_error: core_version::VersionError,
     tls: &ResolvedTlsMode,
+    meter: &mut ConnectionMeter,
 ) -> SecureResult<(DriverHandle, Option<core_version::Version>)> {
     #[cfg(not(feature = "band8"))]
-    let _ = (address, username, password, tls);
+    let _ = (address, username, password, tls, meter);
     let mut failures = vec![format!("HTTP version probe failed: {http_error}")];
 
     // Band 9 is deliberately NOT probed blindly: a band-9 connection attempt
@@ -1366,18 +1695,20 @@ async fn grpc_fallback_driver(
     // band-9 protocol once the reported version proves the server accepts it.
     #[cfg(feature = "band8")]
     {
-        match connect_band8_driver(address, username, password, tls).await {
+        match connect_band8_driver(address, username, password, tls, meter).await {
             Ok(driver) => {
                 // Wrap the discovery candidate immediately so every error,
                 // retry, and native-band upgrade path deterministically closes
                 // it rather than relying on the upstream field-drop path.
                 let driver = DriverHandle::band8(driver);
                 let reported = match driver.inner() {
-                    DriverHandleInner::B8(driver) => driver
-                        .server_version()
-                        .await
-                        .map(|reported| reported.version().to_owned())
-                        .map_err(|error| error.to_string()),
+                    DriverHandleInner::B8(driver) => {
+                        meter.charge_statement()?;
+                        await_connection_work(driver.server_version(), meter.control())
+                            .await?
+                            .map(|reported| reported.version().to_owned())
+                            .map_err(|error| error.to_string())
+                    }
                     #[cfg(feature = "band9")]
                     _ => {
                         return Err(RuntimeError::Connection(
@@ -1395,6 +1726,9 @@ async fn grpc_fallback_driver(
                 };
                 match classification {
                     Band8GrpcVersion::Validated(server_version) => {
+                        if let Err(error) = meter.charge_version_evidence(server_version) {
+                            return Err(close_driver_preserving(&driver, error.into()));
+                        }
                         // Prefer the server's native band when this build embeds
                         // it. The authoritative band-8 version round trip makes a
                         // band-9 attempt safe; probing band 9 before this point can
@@ -1403,7 +1737,16 @@ async fn grpc_fallback_driver(
                         if core_version::negotiate_server_band(&server_version, EMBEDDED_BANDS)
                             == Some(9)
                         {
-                            match connect_band9_driver(address, username, password, tls).await {
+                            // The frozen common statement maximum is three.
+                            // HTTP failure, band-8 construction, and band-8
+                            // version discovery consume those three charges;
+                            // a controlled band-9 upgrade is therefore a real
+                            // fourth dispatch and fails closed at the meter.
+                            // The legacy path has no attached meter and keeps
+                            // its released upgrade behavior unchanged.
+                            match connect_band9_driver(address, username, password, tls, meter)
+                                .await
+                            {
                                 Ok(b9_driver) => {
                                     let b9_driver = DriverHandle::band9(b9_driver);
                                     driver.force_close().map_err(SecureConnectError::Runtime)?;
@@ -1411,6 +1754,9 @@ async fn grpc_fallback_driver(
                                     return Ok((b9_driver, Some(server_version)));
                                 }
                                 Err(error) => {
+                                    if is_connection_control_error(&error) {
+                                        return Err(close_driver_preserving(&driver, error));
+                                    }
                                     trace_band9_upgrade_failed(address, server_version, &error);
                                 }
                             }
@@ -1424,6 +1770,7 @@ async fn grpc_fallback_driver(
                     }
                 }
             }
+            Err(error) if is_connection_control_error(&error) => return Err(error),
             Err(error) => failures.push(format!("band-8 gRPC attempt failed: {error}")),
         }
     }
@@ -4392,6 +4739,288 @@ mod tests {
         assert_eq!(options.server_version, None);
     }
 
+    fn test_connection_control(
+        max_items: u64,
+        max_bytes: u64,
+        max_statements: u32,
+        cancellation: RuntimeAnswerCancellation,
+    ) -> RuntimeConnectionControl {
+        RuntimeConnectionControl::new(
+            max_items,
+            max_bytes,
+            max_statements,
+            Instant::now() + Duration::from_secs(5),
+            cancellation,
+        )
+    }
+
+    fn prepared_controlled_probe(
+        control: RuntimeConnectionControl,
+    ) -> PreparedSecureConnectOptions {
+        SecureConnectOptions {
+            http_port: 8123,
+            tls_mode: TlsMode::Disabled,
+            server_version: None,
+        }
+        .prepare_transport()
+        .expect("prepare plaintext test transport")
+        .with_connection_control(control)
+    }
+
+    #[test]
+    fn controlled_connection_meter_proves_direct_success_and_fallback_fourth_dispatch_failure() {
+        let version = core_version::Version::new(3, 12, 1);
+        let version_bytes = u64::try_from(version.to_string().len()).unwrap();
+
+        let mut direct = ConnectionMeter::new(test_connection_control(
+            1,
+            version_bytes,
+            3,
+            RuntimeAnswerCancellation::default(),
+        ));
+        direct.charge_statement().unwrap(); // HTTP version probe
+        direct.charge_version_evidence(version).unwrap();
+        direct.charge_statement().unwrap(); // authoritative band-9 constructor
+        direct.admit_connection().unwrap();
+        assert_eq!(direct.statements, 2);
+        assert_eq!(direct.response_bytes, version_bytes);
+        assert_eq!(direct.admitted_items, 1);
+
+        let mut fallback = ConnectionMeter::new(test_connection_control(
+            1,
+            version_bytes,
+            3,
+            RuntimeAnswerCancellation::default(),
+        ));
+        fallback.charge_statement().unwrap(); // failed HTTP version probe
+        fallback.charge_statement().unwrap(); // band-8 constructor
+        fallback.charge_statement().unwrap(); // band-8 version dispatch
+        fallback.charge_version_evidence(version).unwrap();
+        assert!(matches!(
+            fallback.charge_statement(), // validated band-9 constructor
+            Err(RuntimeError::ResourceLimit {
+                code: "provider_statement_limit",
+                ..
+            })
+        ));
+        assert_eq!(fallback.statements, 3);
+        assert_eq!(fallback.response_bytes, version_bytes);
+        assert_eq!(fallback.admitted_items, 0);
+
+        let mut bytes = ConnectionMeter::new(test_connection_control(
+            1,
+            version_bytes,
+            3,
+            RuntimeAnswerCancellation::default(),
+        ));
+        bytes.charge_version_evidence(version).unwrap();
+        assert!(matches!(
+            bytes.charge_version_evidence(version),
+            Err(RuntimeError::ResourceLimit {
+                code: "response_byte_limit",
+                ..
+            })
+        ));
+
+        let mut items = ConnectionMeter::new(test_connection_control(
+            1,
+            version_bytes,
+            3,
+            RuntimeAnswerCancellation::default(),
+        ));
+        items.admit_connection().unwrap();
+        assert!(matches!(
+            items.admit_connection(),
+            Err(RuntimeError::ResourceLimit {
+                code: "processed_item_limit",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn legacy_connection_meter_is_an_exact_uncontrolled_adapter() {
+        let mut meter = ConnectionMeter::legacy();
+        for _ in 0..16 {
+            meter.charge_statement().unwrap();
+            meter
+                .charge_version_evidence(core_version::Version::new(3, 12, 1))
+                .unwrap();
+            meter.admit_connection().unwrap();
+        }
+        assert_eq!(meter.statements, 0);
+        assert_eq!(meter.response_bytes, 0);
+        assert_eq!(meter.admitted_items, 0);
+    }
+
+    #[tokio::test]
+    async fn controlled_zero_item_and_statement_ceilings_reject_before_probe_dispatch() {
+        for (control, expected_code) in [
+            (
+                test_connection_control(0, 32, 3, RuntimeAnswerCancellation::default()),
+                "processed_item_limit",
+            ),
+            (
+                test_connection_control(1, 32, 0, RuntimeAnswerCancellation::default()),
+                "provider_statement_limit",
+            ),
+        ] {
+            let probe_called = Arc::new(Mutex::new(false));
+            let captured = Arc::clone(&probe_called);
+            let error = gated_driver_prepared_with_probe(
+                "endpoint must not be used",
+                "credential must not be used",
+                "credential must not be used",
+                prepared_controlled_probe(control),
+                move |_address, _port, _mode| {
+                    *captured.lock().unwrap() = true;
+                    Ok(core_version::Version::new(3, 12, 1))
+                },
+            )
+            .await
+            .err()
+            .expect("zero applicable ceiling must reject before probe dispatch");
+
+            assert!(!*probe_called.lock().unwrap());
+            assert!(matches!(
+                error,
+                SecureConnectError::Runtime(RuntimeError::ResourceLimit { code, .. })
+                    if code == expected_code
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn controlled_probe_bytes_are_bounded_before_driver_construction() {
+        let probe_called = Arc::new(Mutex::new(false));
+        let captured = Arc::clone(&probe_called);
+        let error = gated_driver_prepared_with_probe(
+            "endpoint must not reach a driver",
+            "credential must not be used",
+            "credential must not be used",
+            prepared_controlled_probe(test_connection_control(
+                1,
+                5,
+                2,
+                RuntimeAnswerCancellation::default(),
+            )),
+            move |_address, _port, _mode| {
+                *captured.lock().unwrap() = true;
+                Ok(core_version::Version::new(3, 12, 1))
+            },
+        )
+        .await
+        .err()
+        .expect("six retained version bytes must cross a five-byte ceiling");
+
+        assert!(*probe_called.lock().unwrap());
+        assert!(matches!(
+            error,
+            SecureConnectError::Runtime(RuntimeError::ResourceLimit {
+                code: "response_byte_limit",
+                ..
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn controlled_probe_cancellation_wakes_while_blocking_work_is_in_flight() {
+        let cancellation = RuntimeAnswerCancellation::default();
+        let prepared =
+            prepared_controlled_probe(test_connection_control(1, 32, 2, cancellation.clone()));
+        let (started_sender, started_receiver) = std::sync::mpsc::channel();
+        let (release_sender, release_receiver) = std::sync::mpsc::channel();
+        let connection = tokio::spawn(async move {
+            gated_driver_prepared_with_probe(
+                "pending endpoint",
+                "credential",
+                "credential",
+                prepared,
+                move |_address, _port, _mode| {
+                    started_sender.send(()).unwrap();
+                    release_receiver.recv().unwrap();
+                    Err(core_version::VersionProbeError::Probe(
+                        core_version::VersionError::Probe("released probe".to_owned()),
+                    ))
+                },
+            )
+            .await
+        });
+
+        tokio::task::spawn_blocking(move || started_receiver.recv().unwrap())
+            .await
+            .unwrap();
+        cancellation.cancel();
+        let error = tokio::time::timeout(Duration::from_secs(1), connection)
+            .await
+            .expect("cancellation must wake the pending connection")
+            .unwrap()
+            .err()
+            .expect("cancelled connection must fail");
+        release_sender.send(()).unwrap();
+
+        assert!(matches!(
+            error,
+            SecureConnectError::Runtime(RuntimeError::ResourceLimit {
+                code: "provider_cancelled",
+                ..
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn completed_provider_outcome_wins_an_already_ready_cancellation_branch() {
+        let cancellation = RuntimeAnswerCancellation::default();
+        cancellation.cancel();
+        let control = test_connection_control(1, 32, 1, cancellation);
+        assert_eq!(
+            await_connection_work(std::future::ready(17_u8), Some(&control))
+                .await
+                .unwrap(),
+            17
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn controlled_deadline_wakes_pending_provider_work() {
+        let control = RuntimeConnectionControl::new(
+            1,
+            32,
+            1,
+            Instant::now() + Duration::from_secs(1),
+            RuntimeAnswerCancellation::default(),
+        );
+        let pending = tokio::spawn(async move {
+            await_connection_work(std::future::pending::<()>(), Some(&control)).await
+        });
+        tokio::time::advance(Duration::from_secs(2)).await;
+        let error = pending
+            .await
+            .unwrap()
+            .expect_err("absolute deadline must wake pending provider work");
+        assert!(matches!(
+            error,
+            RuntimeError::ResourceLimit {
+                code: "transaction_deadline_exceeded",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn controlled_connection_errors_drop_provider_endpoint_and_parse_text() {
+        const SENTINEL: &str = "TB_CONTROLLED_CONNECT_SECRET";
+        for error in [
+            SecureConnectError::Runtime(RuntimeError::Connection(SENTINEL.to_owned())),
+            SecureConnectError::Runtime(RuntimeError::UnsupportedVersion(
+                core_version::VersionError::Parse(SENTINEL.to_owned()),
+            )),
+        ] {
+            let rendered = controlled_connection_error(error).to_string();
+            assert!(!rendered.contains(SENTINEL), "{rendered}");
+        }
+    }
+
     #[test]
     fn released_boolean_options_map_to_the_typed_tls_truth_table() {
         let disabled = SecureConnectOptions::from(ConnectOptions {
@@ -4642,7 +5271,14 @@ mod tests {
             "host must not be constructed",
             "credential must not be used",
             "credential must not be used",
-            prepared.clone(),
+            prepared
+                .clone()
+                .with_connection_control(test_connection_control(
+                    1,
+                    32,
+                    1,
+                    RuntimeAnswerCancellation::default(),
+                )),
             move |_address, port, mode| {
                 assert_eq!(port, 8123);
                 let ResolvedTlsProbeMode::CustomRootCa(material) = mode else {

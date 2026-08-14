@@ -155,6 +155,85 @@ pub struct ProjectedBatch {
     operation: ProjectedBatchOperation,
     rows: Vec<NormalizedProjectedBatchRow>,
     measure: ProjectedBatchResourceMeasure,
+    resource_ceiling: QueryExecutionResourceLimits,
+}
+
+#[derive(Debug)]
+struct ProjectedBatchBudgetState {
+    brand: ProjectionBrand,
+    model: TypeId,
+    operation: ProjectedBatchOperation,
+    row_count: usize,
+    measure: ProjectedBatchResourceMeasure,
+}
+
+impl ProjectedBatchBudgetState {
+    fn try_new(
+        installed: &InstalledRuntimeProjection,
+        model: TypeId,
+        operation: ProjectedBatchOperation,
+    ) -> Result<Self, SdkExecutionDiagnostic> {
+        require_batch_model(installed, &model, operation)?;
+        Ok(Self {
+            brand: ProjectionBrand::from_installed(installed),
+            model,
+            operation,
+            row_count: 0,
+            measure: ProjectedBatchResourceMeasure::default(),
+        })
+    }
+
+    fn try_add_row(
+        &mut self,
+        installed: &InstalledRuntimeProjection,
+        row: &ProjectedBatchRow,
+        control: Option<&ProjectedBatchInvocationControl>,
+    ) -> Result<(), SdkExecutionDiagnostic> {
+        let projected_model = require_batch_model(installed, &self.model, self.operation)?;
+        check_control(control)?;
+
+        let next_row_count = self.row_count.checked_add(1).ok_or_else(|| {
+            saturated_limit_failure(limit_failure(
+                "batch_item_limit",
+                "items",
+                u64::MAX,
+                control.map_or(MAX_QUERY_ITEMS, |control| control.limits.items),
+            ))
+        })?;
+        let limits = control.map_or(QueryExecutionResourceLimits::default(), |control| {
+            control.limits
+        });
+        let item_count = validate_row_count(next_row_count, limits.items)?;
+        check_control(control)?;
+        validate_row(installed, &self.model, self.operation, self.row_count, row)?;
+        // Keep one budget tied to the package that opened it, but preserve the
+        // authoritative constructor's model/control/row diagnostic precedence
+        // when a binding accidentally supplies another installed projection.
+        self.brand
+            .validate(installed, type_path(&self.model))
+            .map_err(|error| prefix_row(error, self.row_count))?;
+
+        let mut next_measure = self.measure;
+        charge_row(
+            projected_model,
+            &mut next_measure,
+            row,
+            self.row_count,
+            control,
+        )?;
+        next_measure.items = item_count;
+        next_measure.statements = statement_forecast(
+            self.operation,
+            next_measure.role_players > 0,
+            next_row_count,
+        );
+        check_control(control)?;
+        validate_limits(next_measure, limits)?;
+
+        self.row_count = next_row_count;
+        self.measure = next_measure;
+        Ok(())
+    }
 }
 
 /// Non-retaining cumulative policy gate for binding-owned batch row storage.
@@ -170,11 +249,7 @@ pub struct ProjectedBatch {
 #[doc(hidden)]
 #[derive(Debug)]
 pub struct ProjectedBatchBindingBudget<'control> {
-    brand: ProjectionBrand,
-    model: TypeId,
-    operation: ProjectedBatchOperation,
-    row_count: usize,
-    measure: ProjectedBatchResourceMeasure,
+    state: ProjectedBatchBudgetState,
     control: Option<&'control ProjectedBatchInvocationControl>,
 }
 
@@ -209,13 +284,8 @@ impl<'control> ProjectedBatchBindingBudget<'control> {
         operation: ProjectedBatchOperation,
         control: Option<&'control ProjectedBatchInvocationControl>,
     ) -> Result<Self, SdkExecutionDiagnostic> {
-        require_batch_model(installed, &model, operation)?;
         Ok(Self {
-            brand: ProjectionBrand::from_installed(installed),
-            model,
-            operation,
-            row_count: 0,
-            measure: ProjectedBatchResourceMeasure::default(),
+            state: ProjectedBatchBudgetState::try_new(installed, model, operation)?,
             control,
         })
     }
@@ -226,8 +296,7 @@ impl<'control> ProjectedBatchBindingBudget<'control> {
     /// before a complete [`ProjectedBatchRow`] exists. Empty callers do not need
     /// to checkpoint.
     pub fn checkpoint(&self) -> Result<(), SdkExecutionDiagnostic> {
-        self.control
-            .map_or(Ok(()), ProjectedBatchInvocationControl::check)
+        check_control(self.control)
     }
 
     /// Validate and charge one row before the binding retains it.
@@ -240,71 +309,150 @@ impl<'control> ProjectedBatchBindingBudget<'control> {
         installed: &InstalledRuntimeProjection,
         row: &ProjectedBatchRow,
     ) -> Result<(), SdkExecutionDiagnostic> {
-        let projected_model = require_batch_model(installed, &self.model, self.operation)?;
-        self.checkpoint()?;
-
-        let next_row_count = self.row_count.checked_add(1).ok_or_else(|| {
-            saturated_limit_failure(limit_failure(
-                "batch_item_limit",
-                "items",
-                u64::MAX,
-                self.control
-                    .map_or(MAX_QUERY_ITEMS, |control| control.limits.items),
-            ))
-        })?;
-        let limits = self
-            .control
-            .map_or(QueryExecutionResourceLimits::default(), |control| {
-                control.limits
-            });
-        let item_count = validate_row_count(next_row_count, limits.items)?;
-        self.checkpoint()?;
-        validate_row(installed, &self.model, self.operation, self.row_count, row)?;
-        // Keep one budget tied to the package that opened it, but preserve the
-        // authoritative constructor's model/control/row diagnostic precedence
-        // when a binding accidentally supplies another installed projection.
-        self.brand
-            .validate(installed, type_path(&self.model))
-            .map_err(|error| prefix_row(error, self.row_count))?;
-
-        let mut next_measure = self.measure;
-        charge_row(
-            projected_model,
-            &mut next_measure,
-            row,
-            self.row_count,
-            self.control,
-        )?;
-        next_measure.items = item_count;
-        next_measure.statements = statement_forecast(
-            self.operation,
-            next_measure.role_players > 0,
-            next_row_count,
-        );
-        self.checkpoint()?;
-        validate_limits(next_measure, limits)?;
-
-        self.row_count = next_row_count;
-        self.measure = next_measure;
-        Ok(())
+        self.state.try_add_row(installed, row, self.control)
     }
 
     /// Return the number of rows accepted for binding-owned retention.
     #[must_use]
     pub const fn len(&self) -> usize {
-        self.row_count
+        self.state.row_count
     }
 
     /// Report whether no row has been accepted.
     #[must_use]
     pub const fn is_empty(&self) -> bool {
-        self.row_count == 0
+        self.state.row_count == 0
     }
 
     /// Return the cumulative resource measure without allocation.
     #[must_use]
     pub const fn resource_measure(&self) -> ProjectedBatchResourceMeasure {
-        self.measure
+        self.state.measure
+    }
+}
+
+/// Owned multi-call policy and cumulative budget for a native batch builder.
+///
+/// The control captures one construction-only absolute deadline and clones the
+/// cancellation owner at builder open. A successful [`Self::try_add_row`]
+/// authorizes the caller to retain that row after it has already reserved its
+/// own storage; failure leaves the accepted ordinal and cumulative measure
+/// unchanged. Finalized batches retain only [`Self::resource_ceiling`], never
+/// this deadline or cancellation owner.
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct ProjectedBatchConstructionControl {
+    state: ProjectedBatchBudgetState,
+    control: ProjectedBatchInvocationControl,
+}
+
+impl ProjectedBatchConstructionControl {
+    /// Capture owned construction policy before validating builder authority.
+    pub fn try_new(
+        installed: &InstalledRuntimeProjection,
+        model: TypeId,
+        operation: ProjectedBatchOperation,
+        limits: QueryExecutionResourceLimits,
+        cancellation: &AnswerCancellation,
+    ) -> Result<Self, SdkExecutionDiagnostic> {
+        let control = ProjectedBatchInvocationControl::capture(limits, cancellation.clone());
+        Ok(Self {
+            state: ProjectedBatchBudgetState::try_new(installed, model, operation)?,
+            control,
+        })
+    }
+
+    /// Recheck the construction cancellation owner and absolute deadline.
+    pub fn checkpoint(&self) -> Result<(), SdkExecutionDiagnostic> {
+        self.control.check()
+    }
+
+    /// Validate and atomically charge one row before caller-owned retention.
+    pub fn try_add_row(
+        &mut self,
+        installed: &InstalledRuntimeProjection,
+        row: &ProjectedBatchRow,
+    ) -> Result<(), SdkExecutionDiagnostic> {
+        self.state.try_add_row(installed, row, Some(&self.control))
+    }
+
+    /// Recoverably finalize all accepted caller-owned rows.
+    ///
+    /// Every fallible reservation and validation completes before `rows` is
+    /// drained. Therefore any error leaves the caller's vector, this control,
+    /// and the unpublished batch state available for retry or close. Success
+    /// drains `rows` and returns an immutable batch that retains only the
+    /// construction resource ceiling.
+    pub fn try_finalize(
+        &self,
+        installed: &InstalledRuntimeProjection,
+        rows: &mut Vec<ProjectedBatchRow>,
+    ) -> Result<ProjectedBatch, SdkExecutionDiagnostic> {
+        self.validate_finalization_input(installed, rows)?;
+        ProjectedBatch::try_finalize_internal(
+            installed,
+            self.state.model.clone(),
+            self.state.operation,
+            rows,
+            Some(&self.control),
+            ProjectedBatchReservationProbe::default(),
+        )
+    }
+
+    #[cfg(test)]
+    fn try_finalize_with_reservation_probe(
+        &self,
+        installed: &InstalledRuntimeProjection,
+        rows: &mut Vec<ProjectedBatchRow>,
+        probe: ProjectedBatchReservationProbe,
+    ) -> Result<ProjectedBatch, SdkExecutionDiagnostic> {
+        self.validate_finalization_input(installed, rows)?;
+        ProjectedBatch::try_finalize_internal(
+            installed,
+            self.state.model.clone(),
+            self.state.operation,
+            rows,
+            Some(&self.control),
+            probe,
+        )
+    }
+
+    fn validate_finalization_input(
+        &self,
+        installed: &InstalledRuntimeProjection,
+        rows: &[ProjectedBatchRow],
+    ) -> Result<(), SdkExecutionDiagnostic> {
+        self.state
+            .brand
+            .validate(installed, type_path(&self.state.model))?;
+        if rows.len() != self.state.row_count {
+            return Err(SdkExecutionDiagnostic::internal_failure());
+        }
+        Ok(())
+    }
+
+    /// Return the number of rows admitted for caller-owned retention.
+    #[must_use]
+    pub const fn len(&self) -> usize {
+        self.state.row_count
+    }
+
+    /// Report whether no row has been admitted.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.state.row_count == 0
+    }
+
+    /// Return the cumulative admitted resource measure without allocation.
+    #[must_use]
+    pub const fn resource_measure(&self) -> ProjectedBatchResourceMeasure {
+        self.state.measure
+    }
+
+    /// Return the effective construction ceiling retained by a finished batch.
+    #[must_use]
+    pub const fn resource_ceiling(&self) -> QueryExecutionResourceLimits {
+        self.control.limits
     }
 }
 
@@ -395,12 +543,26 @@ impl ProjectedBatch {
         installed: &InstalledRuntimeProjection,
         model: TypeId,
         operation: ProjectedBatchOperation,
-        rows: Vec<ProjectedBatchRow>,
+        mut rows: Vec<ProjectedBatchRow>,
+        control: Option<&ProjectedBatchInvocationControl>,
+        probe: ProjectedBatchReservationProbe,
+    ) -> Result<Self, SdkExecutionDiagnostic> {
+        Self::try_finalize_internal(installed, model, operation, &mut rows, control, probe)
+    }
+
+    fn try_finalize_internal(
+        installed: &InstalledRuntimeProjection,
+        model: TypeId,
+        operation: ProjectedBatchOperation,
+        rows: &mut Vec<ProjectedBatchRow>,
         control: Option<&ProjectedBatchInvocationControl>,
         probe: ProjectedBatchReservationProbe,
     ) -> Result<Self, SdkExecutionDiagnostic> {
         let projected_model = require_batch_model(installed, &model, operation)?;
         let row_count = rows.len();
+        let resource_ceiling = control.map_or(QueryExecutionResourceLimits::default(), |control| {
+            control.limits
+        });
         if row_count == 0 {
             return Ok(Self {
                 brand: ProjectionBrand::from_installed(installed),
@@ -408,16 +570,13 @@ impl ProjectedBatch {
                 operation,
                 rows: Vec::new(),
                 measure: ProjectedBatchResourceMeasure::default(),
+                resource_ceiling,
             });
         }
-        if let Some(control) = control {
-            control.check()?;
-        }
+        check_control(control)?;
         let item_ceiling = control.map_or(MAX_QUERY_ITEMS, |control| control.limits.items);
         let item_count = validate_row_count(row_count, item_ceiling)?;
-        if let Some(control) = control {
-            control.check()?;
-        }
+        check_control(control)?;
         let mut normalized = reserved(row_count, ProjectedBatchReservationSite::Rows, probe)?;
         let target_capacity = if matches!(
             operation,
@@ -427,9 +586,7 @@ impl ProjectedBatch {
         } else {
             0
         };
-        if let Some(control) = control {
-            control.check()?;
-        }
+        check_control(control)?;
         let mut target_rows = reserved_nonempty(
             target_capacity,
             ProjectedBatchReservationSite::Targets,
@@ -447,56 +604,50 @@ impl ProjectedBatch {
         } else {
             0
         };
-        if let Some(control) = control {
-            control.check()?;
-        }
+        check_control(control)?;
         let mut key_rows =
             reserved_nonempty(key_capacity, ProjectedBatchReservationSite::Keys, probe)?;
         let mut measure = ProjectedBatchResourceMeasure::default();
 
-        for (ordinal, row) in rows.into_iter().enumerate() {
-            if let Some(control) = control {
-                control.check()?;
-            }
-            validate_row(installed, &model, operation, ordinal, &row)?;
-            charge_row(projected_model, &mut measure, &row, ordinal, control)?;
+        for (ordinal, row) in rows.iter().enumerate() {
+            check_control(control)?;
+            validate_row(installed, &model, operation, ordinal, row)?;
+            charge_row(projected_model, &mut measure, row, ordinal, control)?;
             if matches!(
                 row,
                 ProjectedBatchRow::Update { .. } | ProjectedBatchRow::Delete { .. }
             ) {
                 target_rows.push(ordinal);
             }
-            if has_effective_keys && row_create(&row).is_some() {
+            if has_effective_keys && row_create(row).is_some() {
                 key_rows.push(ordinal);
             }
-            normalized.push(NormalizedProjectedBatchRow { ordinal, row });
         }
-        if let Some(control) = control {
-            control.check()?;
-        }
-        reject_duplicate_targets(&normalized, &mut target_rows)?;
-        if let Some(control) = control {
-            control.check()?;
-        }
-        reject_duplicate_keys(projected_model, &normalized, &mut key_rows)?;
+        check_control(control)?;
+        reject_duplicate_targets(rows, &mut target_rows)?;
+        check_control(control)?;
+        reject_duplicate_keys(projected_model, rows, &mut key_rows)?;
         measure.items = item_count;
         measure.statements = statement_forecast(operation, measure.role_players > 0, row_count);
-        if let Some(control) = control {
-            control.check()?;
+        check_control(control)?;
+        validate_limits(measure, resource_ceiling)?;
+
+        // All operations above this point can report failure. The destination
+        // has exact reserved capacity, so moving accepted rows cannot allocate.
+        // Capture the owned brand before draining because its fingerprint
+        // clones may allocate.
+        let brand = ProjectionBrand::from_installed(installed);
+        for (ordinal, row) in rows.drain(..).enumerate() {
+            normalized.push(NormalizedProjectedBatchRow { ordinal, row });
         }
-        validate_limits(
-            measure,
-            control.map_or(QueryExecutionResourceLimits::default(), |control| {
-                control.limits
-            }),
-        )?;
 
         Ok(Self {
-            brand: ProjectionBrand::from_installed(installed),
+            brand,
             model,
             operation,
             rows: normalized,
             measure,
+            resource_ceiling,
         })
     }
 
@@ -530,6 +681,14 @@ impl ProjectedBatch {
     #[must_use]
     pub const fn resource_measure(&self) -> ProjectedBatchResourceMeasure {
         self.measure
+    }
+    /// Return the construction resource ceiling retained for every execution.
+    ///
+    /// Callers must intersect this ceiling before capturing each fresh
+    /// execution deadline and cancellation owner.
+    #[must_use]
+    pub const fn resource_ceiling(&self) -> QueryExecutionResourceLimits {
+        self.resource_ceiling
     }
     /// Return the semantic-schema brand.
     #[must_use]
@@ -592,7 +751,17 @@ impl ProjectedBatchInvocationControl {
         self.deadline
     }
 
-    fn check(&self) -> Result<(), SdkExecutionDiagnostic> {
+    /// Recheck this invocation's captured cancellation owner and deadline.
+    ///
+    /// Native bindings use this provider-free checkpoint before reserving a
+    /// complete result handle, then pass this same control into the executor so
+    /// allocation does not restart the absolute deadline.
+    #[doc(hidden)]
+    pub fn checkpoint(&self) -> Result<(), SdkExecutionDiagnostic> {
+        self.check()
+    }
+
+    pub(crate) fn check(&self) -> Result<(), SdkExecutionDiagnostic> {
         if self.cancellation.is_cancelled() {
             return Err(SdkExecutionDiagnostic::data_operation_cancelled());
         }
@@ -892,25 +1061,29 @@ fn charge_row(
     Ok(())
 }
 
+fn check_control(
+    control: Option<&ProjectedBatchInvocationControl>,
+) -> Result<(), SdkExecutionDiagnostic> {
+    control.map_or(Ok(()), ProjectedBatchInvocationControl::check)
+}
+
 fn reject_duplicate_targets(
-    rows: &[NormalizedProjectedBatchRow],
+    rows: &[ProjectedBatchRow],
     indices: &mut [usize],
 ) -> Result<(), SdkExecutionDiagnostic> {
     indices.sort_unstable_by(|&left, &right| {
         iid_cmp(
-            row_iid(&rows[left].row).expect("target index refers to IID row"),
-            row_iid(&rows[right].row).expect("target index refers to IID row"),
+            row_iid(&rows[left]).expect("target index refers to IID row"),
+            row_iid(&rows[right]).expect("target index refers to IID row"),
         )
         .then_with(|| left.cmp(&right))
     });
     let mut duplicate = None;
     for pair in indices.windows(2) {
         let [left, right] = pair else { continue };
-        if row_iid(&rows[*left].row)
+        if row_iid(&rows[*left])
             .expect("target index refers to IID row")
-            .eq_ignore_ascii_case(
-                row_iid(&rows[*right].row).expect("target index refers to IID row"),
-            )
+            .eq_ignore_ascii_case(row_iid(&rows[*right]).expect("target index refers to IID row"))
         {
             retain_earliest_conflict(&mut duplicate, (*left, *right));
         }
@@ -933,7 +1106,7 @@ fn iid_cmp(left: &str, right: &str) -> Ordering {
 
 fn reject_duplicate_keys(
     model: &ModelProjection,
-    rows: &[NormalizedProjectedBatchRow],
+    rows: &[ProjectedBatchRow],
     indices: &mut [usize],
 ) -> Result<(), SdkExecutionDiagnostic> {
     let key_fields = model.reference_read().key_fields();
@@ -943,16 +1116,16 @@ fn reject_duplicate_keys(
     indices.sort_unstable_by(|&left, &right| {
         effective_key_cmp(
             key_fields,
-            row_create(&rows[left].row).expect("key index refers to create row"),
-            row_create(&rows[right].row).expect("key index refers to create row"),
+            row_create(&rows[left]).expect("key index refers to create row"),
+            row_create(&rows[right]).expect("key index refers to create row"),
         )
         .then_with(|| left.cmp(&right))
     });
     let mut duplicate = None;
     for pair in indices.windows(2) {
         let [left, right] = pair else { continue };
-        let left_create = row_create(&rows[*left].row).expect("key index refers to create row");
-        let right_create = row_create(&rows[*right].row).expect("key index refers to create row");
+        let left_create = row_create(&rows[*left]).expect("key index refers to create row");
+        let right_create = row_create(&rows[*right]).expect("key index refers to create row");
         if effective_keys_equal(key_fields, left_create, right_create) {
             retain_earliest_conflict(&mut duplicate, (*left, *right));
         }
@@ -1808,6 +1981,271 @@ plays:
             budget.resource_measure(),
             ProjectedBatchResourceMeasure::default()
         );
+    }
+
+    #[test]
+    fn owned_construction_control_captures_once_and_charges_atomically() {
+        let installed = installed();
+        let keyed = TypeId::new(TypeKind::Entity, "keyed").unwrap();
+        let limits = QueryExecutionResourceLimits::tightened(
+            30_000,
+            1,
+            u64::MAX,
+            u64::MAX,
+            u64::MAX,
+            u64::MAX,
+            u64::MAX,
+            MAX_QUERY_STATEMENTS,
+        );
+        let cancellation = AnswerCancellation::default();
+        let mut control = ProjectedBatchConstructionControl::try_new(
+            &installed,
+            keyed,
+            ProjectedBatchOperation::Insert,
+            limits,
+            &cancellation,
+        )
+        .unwrap();
+        let captured_deadline = control.control.deadline().instant();
+        assert_eq!(control.resource_ceiling(), limits.effective());
+        control.checkpoint().unwrap();
+
+        let first = ProjectedBatchRow::Create(create(&installed, "keyed", "identifier"));
+        control.try_add_row(&installed, &first).unwrap();
+        let accepted_measure = control.resource_measure();
+        let error = control
+            .try_add_row(
+                &installed,
+                &ProjectedBatchRow::Create(create(&installed, "keyed", "identifier")),
+            )
+            .unwrap_err();
+        assert_eq!(error.code().as_str(), "batch_item_limit");
+        assert_eq!(control.len(), 1);
+        assert_eq!(control.resource_measure(), accepted_measure);
+        assert_eq!(control.control.deadline().instant(), captured_deadline);
+
+        cancellation.cancel();
+        assert_eq!(
+            control.checkpoint().unwrap_err().code().as_str(),
+            "provider_cancelled"
+        );
+        assert_eq!(control.len(), 1);
+        assert_eq!(control.resource_measure(), accepted_measure);
+    }
+
+    #[test]
+    fn recoverable_finalization_never_drains_rows_on_failure() {
+        let installed = installed();
+        let keyed = TypeId::new(TypeKind::Entity, "keyed").unwrap();
+        let cases = [
+            (
+                ProjectedBatchReservationSite::Rows,
+                ProjectedBatchOperation::Insert,
+                ProjectedBatchRow::Create(create(&installed, "keyed", "identifier")),
+            ),
+            (
+                ProjectedBatchReservationSite::Keys,
+                ProjectedBatchOperation::Insert,
+                ProjectedBatchRow::Create(create(&installed, "keyed", "identifier")),
+            ),
+            (
+                ProjectedBatchReservationSite::Targets,
+                ProjectedBatchOperation::Delete,
+                ProjectedBatchRow::Delete { iid: "0x10".into() },
+            ),
+        ];
+        for (site, operation, row) in cases {
+            let cancellation = AnswerCancellation::default();
+            let mut control = ProjectedBatchConstructionControl::try_new(
+                &installed,
+                keyed.clone(),
+                operation,
+                QueryExecutionResourceLimits::default(),
+                &cancellation,
+            )
+            .unwrap();
+            control.try_add_row(&installed, &row).unwrap();
+            let accepted_measure = control.resource_measure();
+            let mut rows = vec![row];
+            let expected = rows.clone();
+            let retained_storage = rows.as_ptr();
+            let retained_capacity = rows.capacity();
+            let captured_deadline = control.control.deadline().instant();
+            let retained_ceiling = control.resource_ceiling();
+            let error = control
+                .try_finalize_with_reservation_probe(
+                    &installed,
+                    &mut rows,
+                    ProjectedBatchReservationProbe::failing_at(site),
+                )
+                .unwrap_err();
+            assert_eq!(
+                error.code().as_str(),
+                "projected_batch_allocation_exhausted"
+            );
+            assert_eq!(rows, expected);
+            assert_eq!(rows.as_ptr(), retained_storage);
+            assert_eq!(rows.capacity(), retained_capacity);
+            assert_eq!(control.len(), 1);
+            assert_eq!(control.resource_measure(), accepted_measure);
+            assert_eq!(control.control.deadline().instant(), captured_deadline);
+            assert_eq!(control.resource_ceiling(), retained_ceiling);
+        }
+
+        let cancellation = AnswerCancellation::default();
+        let mut duplicates = ProjectedBatchConstructionControl::try_new(
+            &installed,
+            keyed.clone(),
+            ProjectedBatchOperation::Insert,
+            QueryExecutionResourceLimits::default(),
+            &cancellation,
+        )
+        .unwrap();
+        let mut rows = vec![
+            ProjectedBatchRow::Create(create(&installed, "keyed", "identifier")),
+            ProjectedBatchRow::Create(create(&installed, "keyed", "identifier")),
+        ];
+        for row in &rows {
+            duplicates.try_add_row(&installed, row).unwrap();
+        }
+        let expected = rows.clone();
+        let retained_storage = rows.as_ptr();
+        let retained_capacity = rows.capacity();
+        let accepted_measure = duplicates.resource_measure();
+        let captured_deadline = duplicates.control.deadline().instant();
+        let retained_ceiling = duplicates.resource_ceiling();
+        let error = duplicates.try_finalize(&installed, &mut rows).unwrap_err();
+        assert_eq!(error.code().as_str(), "duplicate_batch_key");
+        assert_eq!(rows, expected);
+        assert_eq!(rows.as_ptr(), retained_storage);
+        assert_eq!(rows.capacity(), retained_capacity);
+        assert_eq!(duplicates.len(), 2);
+        assert_eq!(duplicates.resource_measure(), accepted_measure);
+        assert_eq!(duplicates.control.deadline().instant(), captured_deadline);
+        assert_eq!(duplicates.resource_ceiling(), retained_ceiling);
+
+        let cancellation = AnswerCancellation::default();
+        let mut interrupted = ProjectedBatchConstructionControl::try_new(
+            &installed,
+            keyed,
+            ProjectedBatchOperation::Delete,
+            QueryExecutionResourceLimits::default(),
+            &cancellation,
+        )
+        .unwrap();
+        let mut rows = vec![ProjectedBatchRow::Delete { iid: "0x10".into() }];
+        interrupted.try_add_row(&installed, &rows[0]).unwrap();
+        let expected = rows.clone();
+        let retained_storage = rows.as_ptr();
+        let retained_capacity = rows.capacity();
+        let accepted_measure = interrupted.resource_measure();
+        let captured_deadline = interrupted.control.deadline().instant();
+        cancellation.cancel();
+        let error = interrupted.try_finalize(&installed, &mut rows).unwrap_err();
+        assert_eq!(error.code().as_str(), "provider_cancelled");
+        assert_eq!(rows, expected);
+        assert_eq!(rows.as_ptr(), retained_storage);
+        assert_eq!(rows.capacity(), retained_capacity);
+        assert_eq!(interrupted.resource_measure(), accepted_measure);
+        assert_eq!(interrupted.control.deadline().instant(), captured_deadline);
+
+        let cancellation = AnswerCancellation::default();
+        let mut expired = ProjectedBatchConstructionControl::try_new(
+            &installed,
+            TypeId::new(TypeKind::Entity, "keyed").unwrap(),
+            ProjectedBatchOperation::Delete,
+            QueryExecutionResourceLimits::default(),
+            &cancellation,
+        )
+        .unwrap();
+        let mut rows = vec![ProjectedBatchRow::Delete { iid: "0x10".into() }];
+        expired.try_add_row(&installed, &rows[0]).unwrap();
+        let expected = rows.clone();
+        let retained_storage = rows.as_ptr();
+        let retained_capacity = rows.capacity();
+        let accepted_measure = expired.resource_measure();
+        expired.control.deadline = QueryExecutionDeadline::from_timeout_milliseconds(0);
+        let captured_deadline = expired.control.deadline().instant();
+        let error = expired.try_finalize(&installed, &mut rows).unwrap_err();
+        assert_eq!(error.code().as_str(), "transaction_deadline_exceeded");
+        assert_eq!(rows, expected);
+        assert_eq!(rows.as_ptr(), retained_storage);
+        assert_eq!(rows.capacity(), retained_capacity);
+        assert_eq!(expired.resource_measure(), accepted_measure);
+        assert_eq!(expired.control.deadline().instant(), captured_deadline);
+    }
+
+    #[test]
+    fn successful_recoverable_finalization_drains_rows_and_retains_only_the_ceiling() {
+        let installed = installed();
+        let keyed = TypeId::new(TypeKind::Entity, "keyed").unwrap();
+        let limits = QueryExecutionResourceLimits::tightened(
+            17,
+            1,
+            u64::MAX,
+            u64::MAX,
+            u64::MAX,
+            u64::MAX,
+            u64::MAX,
+            MAX_QUERY_STATEMENTS,
+        );
+        let construction_cancellation = AnswerCancellation::default();
+        let mut control = ProjectedBatchConstructionControl::try_new(
+            &installed,
+            keyed.clone(),
+            ProjectedBatchOperation::Insert,
+            limits,
+            &construction_cancellation,
+        )
+        .unwrap();
+        let row = ProjectedBatchRow::Create(create(&installed, "keyed", "identifier"));
+        control.try_add_row(&installed, &row).unwrap();
+        let expected_measure = control.resource_measure();
+        let mut rows = vec![row.clone()];
+
+        let batch = control.try_finalize(&installed, &mut rows).unwrap();
+        assert!(rows.is_empty());
+        assert_eq!(batch.model(), &keyed);
+        assert_eq!(batch.operation(), ProjectedBatchOperation::Insert);
+        assert_eq!(batch.resource_measure(), expected_measure);
+        assert_eq!(batch.resource_ceiling(), limits.effective());
+        assert_eq!(batch.row_at(0), Some((0, &row)));
+
+        construction_cancellation.cancel();
+        PreparedProjectedBatchInvocation::try_new(
+            &installed,
+            &batch,
+            ProjectedBatchInvocationControl::capture(
+                batch.resource_ceiling(),
+                AnswerCancellation::default(),
+            ),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn empty_recoverable_finalization_skips_construction_control() {
+        let installed = installed();
+        let cancellation = AnswerCancellation::default();
+        cancellation.cancel();
+        let limits = QueryExecutionResourceLimits::tightened(0, 0, 0, 0, 0, 0, 0, 0);
+        let control = ProjectedBatchConstructionControl::try_new(
+            &installed,
+            TypeId::new(TypeKind::Entity, "keyed").unwrap(),
+            ProjectedBatchOperation::Delete,
+            limits,
+            &cancellation,
+        )
+        .unwrap();
+        assert!(control.is_empty());
+        assert_eq!(
+            control.checkpoint().unwrap_err().code().as_str(),
+            "provider_cancelled"
+        );
+        let mut rows = Vec::new();
+        let batch = control.try_finalize(&installed, &mut rows).unwrap();
+        assert!(batch.is_empty());
+        assert_eq!(batch.resource_ceiling(), limits.effective());
     }
 
     #[test]
