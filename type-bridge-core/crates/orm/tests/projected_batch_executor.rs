@@ -8,7 +8,9 @@ use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind};
 use type_bridge_contract::projection::{BindingTarget, ProjectionConfig, ProjectionHandler};
 use type_bridge_contract::schema::{DocumentId, OwnsFactId};
-use type_bridge_contract::sdk_diagnostic::{SdkDiagnosticCategory, SdkDiagnosticPathSegment};
+use type_bridge_contract::sdk_diagnostic::{
+    SdkDiagnosticCategory, SdkDiagnosticPathSegment, SdkExecutionDiagnostic,
+};
 use type_bridge_contract::temporal::CanonicalDuration;
 use type_bridge_contract::value::{CanonicalString, CanonicalValue};
 use type_bridge_core_lib::version::Version;
@@ -688,6 +690,45 @@ async fn first_middle_and_last_mapper_failures_roll_back_owned_execution_once() 
 }
 
 #[tokio::test]
+async fn owned_mapper_panic_rolls_back_once_before_resuming_the_original_panic() {
+    const PANIC_MESSAGE: &str = "owned mapper panic sentinel";
+
+    let installed = installed();
+    let batch = three_row_batch(&installed, BatchKind::Entity);
+    let (database, state) = fixture(
+        successful_responses(BatchKind::Entity),
+        Version::new(3, 12, 1),
+        true,
+        CommitBehavior::Success,
+    );
+
+    let task = tokio::spawn(async move {
+        ProjectedBatchExecutor::new(&installed)
+            .execute_mapped(
+                &database,
+                &batch,
+                control(),
+                (),
+                |_| -> std::result::Result<(), SdkExecutionDiagnostic> {
+                    std::panic::panic_any(PANIC_MESSAGE)
+                },
+            )
+            .await
+    });
+    let panic = task
+        .await
+        .expect_err("the original mapper panic must resume after cleanup")
+        .into_panic();
+    assert_eq!(panic.downcast_ref::<&str>(), Some(&PANIC_MESSAGE));
+
+    let state = state.lock().unwrap();
+    assert_eq!(state.calls.len(), 2);
+    assert_eq!(state.commits, 0);
+    assert_eq!(state.rollbacks, 1);
+    assert!(state.responses.is_empty());
+}
+
+#[tokio::test]
 async fn borrowed_mapper_failure_latches_the_exact_cause_and_rejects_commit() {
     let installed = installed();
     let batch = three_row_batch(&installed, BatchKind::Entity);
@@ -744,6 +785,77 @@ async fn borrowed_mapper_failure_latches_the_exact_cause_and_rejects_commit() {
     );
     let commit = transaction.commit_sdk().await.unwrap_err();
     assert_eq!(commit.code().as_str(), "transaction_rollback_only");
+    let state = state.lock().unwrap();
+    assert_eq!(state.calls.len(), 2);
+    assert_eq!(state.commits, 0);
+    assert_eq!(state.rollbacks, 0);
+}
+
+#[tokio::test]
+async fn borrowed_mapper_panic_poisons_before_resuming_the_original_panic() {
+    const PANIC_MESSAGE: &str = "borrowed mapper panic sentinel";
+
+    let installed = installed();
+    let batch = three_row_batch(&installed, BatchKind::Entity);
+    let (database, state) = fixture(
+        successful_responses(BatchKind::Entity),
+        Version::new(3, 12, 1),
+        true,
+        CommitBehavior::Success,
+    );
+    let transaction = database.transaction_context(TxType::Write).await.unwrap();
+    let inspected_transaction = transaction.clone();
+
+    let task = tokio::spawn(async move {
+        ProjectedBatchExecutor::new(&installed)
+            .execute_in_transaction_mapped(
+                &transaction,
+                &batch,
+                control(),
+                (),
+                |_| -> std::result::Result<(), SdkExecutionDiagnostic> {
+                    std::panic::panic_any(PANIC_MESSAGE)
+                },
+            )
+            .await
+    });
+    let panic = task
+        .await
+        .expect_err("the original mapper panic must resume after poisoning")
+        .into_panic();
+    assert_eq!(panic.downcast_ref::<&str>(), Some(&PANIC_MESSAGE));
+
+    assert_eq!(
+        inspected_transaction.lifecycle_state().await,
+        TransactionContextState::RollbackOnly
+    );
+    let cause = inspected_transaction
+        .rollback_only_cause()
+        .await
+        .expect("mapper panic must record a redacted rollback-only cause");
+    assert_eq!(cause.category(), SdkDiagnosticCategory::Integrity);
+    assert_eq!(
+        cause.code().as_str(),
+        "generated_model_materialization_failed"
+    );
+    assert_eq!(
+        cause.message().as_str(),
+        "The generated model could not materialize validated projected evidence"
+    );
+    assert!(cause.details().is_empty());
+    assert!(matches!(
+        cause.path(),
+        [SdkDiagnosticPathSegment::Argument(argument)] if argument.as_str() == "rows"
+    ));
+    assert_eq!(
+        inspected_transaction
+            .commit_sdk()
+            .await
+            .unwrap_err()
+            .code()
+            .as_str(),
+        "transaction_rollback_only"
+    );
     let state = state.lock().unwrap();
     assert_eq!(state.calls.len(), 2);
     assert_eq!(state.commits, 0);

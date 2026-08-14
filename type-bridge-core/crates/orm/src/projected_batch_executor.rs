@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
+use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 
 use serde_json::Value;
 use type_bridge_contract::id::{RoleId, TypeId, TypeKind, is_canonical_thing_iid};
@@ -40,6 +41,17 @@ use crate::value::AttributeValue;
 
 const COMPILER_CARDINALITY_MAX: u64 = u16::MAX as u64;
 const MAX_PROVIDER_IID_BYTES: u64 = (2 + type_bridge_contract::id::MAX_THING_IID_HEX_DIGITS) as u64;
+
+enum MappedExecutionFailure {
+    Diagnostic(SdkExecutionDiagnostic),
+    Panic(Box<dyn std::any::Any + Send + 'static>),
+}
+
+impl From<SdkExecutionDiagnostic> for MappedExecutionFailure {
+    fn from(diagnostic: SdkExecutionDiagnostic) -> Self {
+        Self::Diagnostic(diagnostic)
+    }
+}
 
 /// Result of one homogeneous projected mutation batch.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -83,6 +95,15 @@ impl<'projection> ProjectedBatchExecutor<'projection> {
         .unwrap_or_else(|_| SdkExecutionDiagnostic::internal_failure())
     }
 
+    fn binding_materialization_panic() -> SdkExecutionDiagnostic {
+        SdkExecutionDiagnostic::integrity(
+            code("generated_model_materialization_failed"),
+            message("The generated model could not materialize validated projected evidence"),
+        )
+        .try_at(SdkDiagnosticPathSegment::Argument(name("rows")))
+        .unwrap_or_else(|_| SdkExecutionDiagnostic::internal_failure())
+    }
+
     #[cfg(test)]
     fn failing_hydration_allocation_for_test(mut self) -> Self {
         self.fail_hydration_allocation = true;
@@ -117,6 +138,8 @@ impl<'projection> ProjectedBatchExecutor<'projection> {
     /// Its exact diagnostic is treated as a pre-commit failure: owned execution
     /// rolls back, while borrowed execution through
     /// [`Self::execute_in_transaction_mapped`] becomes rollback-only.
+    /// A mapper panic is recorded as the same redacted materialization failure;
+    /// the original panic resumes only after rollback or rollback-only latching.
     #[doc(hidden)]
     pub async fn execute_mapped<T, F>(
         &self,
@@ -173,7 +196,10 @@ impl<'projection> ProjectedBatchExecutor<'projection> {
             }
             Err(primary) => {
                 let _ = transaction.rollback().await;
-                Err(primary)
+                match primary {
+                    MappedExecutionFailure::Diagnostic(diagnostic) => Err(diagnostic),
+                    MappedExecutionFailure::Panic(payload) => resume_unwind(payload),
+                }
             }
         }
     }
@@ -205,6 +231,8 @@ impl<'projection> ProjectedBatchExecutor<'projection> {
     /// during mapping, so re-entry could self-deadlock.
     /// Its exact diagnostic becomes the transaction's first rollback-only
     /// cause after mutation dispatch.
+    /// A mapper panic is recorded as a redacted materialization failure before
+    /// the original panic resumes.
     #[doc(hidden)]
     pub async fn execute_in_transaction_mapped<T, F>(
         &self,
@@ -240,8 +268,14 @@ impl<'projection> ProjectedBatchExecutor<'projection> {
         let identity = transaction.execution_identity().clone();
         let plan = BatchPlan::compile(self.installed, &prepared, &identity)?;
         prepared.check_control()?;
-        self.execute_prepared_in_transaction(transaction, &prepared, plan, &identity, mapper)
+        match self
+            .execute_prepared_in_transaction(transaction, &prepared, plan, &identity, mapper)
             .await
+        {
+            Ok(value) => Ok(value),
+            Err(MappedExecutionFailure::Diagnostic(diagnostic)) => Err(diagnostic),
+            Err(MappedExecutionFailure::Panic(payload)) => resume_unwind(payload),
+        }
     }
 
     async fn execute_prepared_in_transaction<T, F>(
@@ -251,7 +285,7 @@ impl<'projection> ProjectedBatchExecutor<'projection> {
         mut plan: BatchPlan<'_>,
         identity: &DatabaseExecutionIdentity,
         mapper: F,
-    ) -> std::result::Result<T, SdkExecutionDiagnostic>
+    ) -> std::result::Result<T, MappedExecutionFailure>
     where
         F: FnOnce(ProjectedBatchResult) -> std::result::Result<T, SdkExecutionDiagnostic>,
     {
@@ -262,22 +296,32 @@ impl<'projection> ProjectedBatchExecutor<'projection> {
         )
         .await
         .map_err(|error| controlled_orm(error, SdkProviderOperation::Write, plan.model.id()))?;
-        let result = self
+        let result = match self
             .run_with_lease(&mut lease, prepared, &mut plan, identity)
             .await
-            .and_then(mapper)
-            .and_then(|value| {
-                prepared.check_control()?;
-                Ok(value)
-            });
+        {
+            Err(diagnostic) => Err(MappedExecutionFailure::Diagnostic(diagnostic)),
+            Ok(batch_result) => match catch_unwind(AssertUnwindSafe(|| mapper(batch_result))) {
+                Ok(Err(diagnostic)) => Err(MappedExecutionFailure::Diagnostic(diagnostic)),
+                Ok(Ok(value)) => prepared
+                    .check_control()
+                    .map(|()| value)
+                    .map_err(MappedExecutionFailure::Diagnostic),
+                Err(payload) => Err(MappedExecutionFailure::Panic(payload)),
+            },
+        };
         match result {
             Ok(value) => {
                 lease.complete_success();
                 Ok(value)
             }
-            Err(diagnostic) => {
+            Err(MappedExecutionFailure::Diagnostic(diagnostic)) => {
                 lease.record_failure(&diagnostic);
-                Err(diagnostic)
+                Err(MappedExecutionFailure::Diagnostic(diagnostic))
+            }
+            Err(MappedExecutionFailure::Panic(payload)) => {
+                lease.record_failure(&Self::binding_materialization_panic());
+                Err(MappedExecutionFailure::Panic(payload))
             }
         }
     }
