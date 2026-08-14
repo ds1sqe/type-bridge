@@ -1370,7 +1370,9 @@ fn compile_prerequisite(
                 field.attribute().label().as_str()
             ));
         }
-        branch.push_str(";\n}");
+        // `$actual-iid` is the shared scalar fetched after the disjunction.
+        // TypeQL requires every outer arm to bind a promoted value variable.
+        branch.push_str(";\n  let $actual-iid = iid($thing);\n}");
         branches.push(branch);
     }
     for (index, route) in routes.iter().enumerate() {
@@ -1386,9 +1388,7 @@ fn compile_prerequisite(
             }
         };
         let identity = match &route.key {
-            ReferenceRouteKey::Iid(_, _) => {
-                "let $actual-iid = iid($thing);\n  $actual-iid == $wanted-iid;".to_owned()
-            }
+            ReferenceRouteKey::Iid(_, _) => "$actual-iid == $wanted-iid;".to_owned(),
             ReferenceRouteKey::Key(_, _, field) => format!(
                 "$thing has {} == ${};",
                 field.attribute().label().as_str(),
@@ -1399,12 +1399,12 @@ fn compile_prerequisite(
             ),
         };
         branches.push(format!(
-            "{{\n  $kind == 1;\n  $route == {index};\n  {exact_type_route}\n  {identity}\n}}",
+            "{{\n  $kind == 1;\n  $route == {index};\n  {exact_type_route}\n  let $actual-iid = iid($thing);\n  {identity}\n}}",
         ));
     }
     source.push_str(&branches.join(" or "));
     source.push_str(
-        ";\n$thing isa! $thing-type;\nfetch {\n  \"kind\": $kind,\n  \"ordinal\": $ordinal,\n  \"reference_ordinal\": $reference-ordinal,\n  \"iid\": iid($thing),\n  \"type\": label($thing-type)\n};",
+        ";\n$thing isa! $thing-type;\nfetch {\n  \"kind\": $kind,\n  \"ordinal\": $ordinal,\n  \"reference_ordinal\": $reference-ordinal,\n  \"iid\": $actual-iid,\n  \"type\": label($thing-type)\n};",
     );
     Ok(Some(ProviderStatement {
         source,

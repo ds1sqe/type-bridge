@@ -1233,6 +1233,69 @@ async fn key_reference_uses_its_selected_key_and_scoped_roles_are_validated() {
 }
 
 #[tokio::test]
+async fn mixed_iid_and_key_reference_arms_bind_shared_iid_evidence() {
+    let installed = installed();
+    let membership = type_id(TypeKind::Relation, "membership");
+    let batch = ProjectedBatch::try_new(
+        &installed,
+        membership,
+        ProjectedBatchOperation::Insert,
+        vec![
+            ProjectedBatchRow::Create(membership_create(&installed, "m-iid", "0x10")),
+            ProjectedBatchRow::Create(membership_create_by_key(&installed, "m-key", "player-key")),
+        ],
+    )
+    .unwrap();
+    let scoped_document = |ordinal, iid: &str, key: &str, player: &str| {
+        let mut document = membership_document(ordinal, iid, key, player);
+        document["role_players"][0]["role"] = json!("membership:member");
+        document
+    };
+    let (database, state) = fixture(
+        vec![
+            Response::Documents(vec![
+                json!({"kind": 1, "ordinal": 1, "reference_ordinal": 1, "iid": "0x11", "type": "person"}),
+                json!({"kind": 1, "ordinal": 0, "reference_ordinal": 0, "iid": "0x10", "type": "person"}),
+            ]),
+            Response::Documents(vec![
+                json!({"ordinal": 1, "iid": "0x21"}),
+                json!({"ordinal": 0, "iid": "0x20"}),
+            ]),
+            Response::Documents(vec![
+                scoped_document(1, "0x21", "m-key", "0x11"),
+                scoped_document(0, "0x20", "m-iid", "0x10"),
+            ]),
+        ],
+        Version::new(3, 12, 1),
+        true,
+        CommitBehavior::Success,
+    );
+
+    ProjectedBatchExecutor::new(&installed)
+        .execute(&database, &batch, control())
+        .await
+        .unwrap();
+
+    let state = state.lock().unwrap();
+    assert_eq!(state.calls.len(), 3);
+    let prerequisite = &state.calls[0].0;
+    assert_eq!(
+        prerequisite
+            .matches("let $actual-iid = iid($thing);")
+            .count(),
+        2
+    );
+    assert!(prerequisite.contains(
+        "$route == 0;\n  $thing isa! person;\n  let $actual-iid = iid($thing);\n  $actual-iid == $wanted-iid;"
+    ));
+    assert!(prerequisite.contains(
+        "$route == 1;\n  $thing isa! person;\n  let $actual-iid = iid($thing);\n  $thing has identifier == $reference-key-1;"
+    ));
+    assert!(prerequisite.contains("\"iid\": $actual-iid"));
+    assert!(!prerequisite.contains("\"iid\": iid($thing)"));
+}
+
+#[tokio::test]
 async fn relation_put_is_three_calls_with_one_multirow_put_and_exact_replacement() {
     let installed = installed();
     let membership = type_id(TypeKind::Relation, "membership");
@@ -1285,6 +1348,17 @@ async fn relation_put_is_three_calls_with_one_multirow_put_and_exact_replacement
     let state = state.lock().unwrap();
     assert_eq!(state.calls.len(), 3);
     assert_eq!(state.calls[0].1.rows.len(), 4);
+    let prerequisite = &state.calls[0].0;
+    assert!(prerequisite.contains(
+        "$kind == 0;\n  $thing isa! membership, has identifier == $put-key-0;\n  let $actual-iid = iid($thing);"
+    ));
+    assert_eq!(
+        prerequisite
+            .matches("let $actual-iid = iid($thing);")
+            .count(),
+        2
+    );
+    assert!(prerequisite.contains("\"iid\": $actual-iid"));
     assert_eq!(state.calls[1].0.matches("\nput\n").count(), 1);
     assert_eq!(state.calls[1].1.rows.len(), 2);
     assert!(state.calls[1].0.contains("$thing isa! membership;"));
