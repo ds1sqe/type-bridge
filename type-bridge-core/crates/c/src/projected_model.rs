@@ -249,7 +249,7 @@ pub(crate) fn check_projected_reference_ranges(
     Ok(())
 }
 
-fn check_projected_create_ranges(
+pub(crate) fn check_projected_create_ranges(
     create: &ProjectedCreate,
     preflight: &DirectOutputPreflight,
 ) -> Result<(), TypeBridgeStatus> {

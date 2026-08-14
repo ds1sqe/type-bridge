@@ -16,6 +16,21 @@ pub(crate) enum AllocationSite {
     ProjectedThingHandle,
     ProjectedCreateBuilderHandle,
     ProjectedCreateBuilderChunk,
+    ProjectedBatchBuilderHandle,
+    ProjectedBatchBuilderRows,
+    ProjectedBatchBuilderIidBytes,
+    ProjectedBatchBuilderCreateClone,
+    ProjectedBatchFinishRows,
+    ProjectedBatchFinishTargets,
+    ProjectedBatchFinishKeys,
+    ProjectedBatchHandle,
+    ProjectedBatchResultThings,
+    ProjectedBatchResultThingStorage,
+    ProjectedBatchResultHandle,
+    ProjectedBatchResultThingHandle,
+    DatabaseHandle,
+    ReadTransactionHandle,
+    WriteTransactionHandle,
     SchemaPackageChunkAssembly,
     QuerySessionHandle,
     QueryBindingHandle,
@@ -66,7 +81,7 @@ std::thread_local! {
     };
 }
 
-fn allocation_checkpoint(_site: AllocationSite) -> Result<(), AllocationFailure> {
+pub(crate) fn allocation_checkpoint(_site: AllocationSite) -> Result<(), AllocationFailure> {
     #[cfg(test)]
     {
         let site = _site;

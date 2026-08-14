@@ -679,7 +679,22 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         limits: QueryExecutionResourceLimits,
         cancellation: AnswerCancellation,
     ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
-        let control = ProjectedBatchInvocationControl::capture(limits, cancellation);
+        self.insert_entity_controlled_with_control(
+            database,
+            input,
+            ProjectedBatchInvocationControl::capture(limits, cancellation),
+        )
+        .await
+    }
+
+    /// Execute one policy-aware entity insert with a pre-captured control.
+    #[doc(hidden)]
+    pub async fn insert_entity_controlled_with_control(
+        &self,
+        database: &Database,
+        input: &ProjectedCreate,
+        control: ProjectedBatchInvocationControl,
+    ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
         self.require_exact_model(input.type_id(), TypeKind::Entity)?;
         control.check()?;
         let batch = self.single_controlled_batch(
@@ -701,7 +716,22 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         limits: QueryExecutionResourceLimits,
         cancellation: AnswerCancellation,
     ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
-        let control = ProjectedBatchInvocationControl::capture(limits, cancellation);
+        self.insert_entity_in_transaction_controlled_with_control(
+            transaction,
+            input,
+            ProjectedBatchInvocationControl::capture(limits, cancellation),
+        )
+        .await
+    }
+
+    /// Execute one borrowed policy-aware entity insert with a pre-captured control.
+    #[doc(hidden)]
+    pub async fn insert_entity_in_transaction_controlled_with_control(
+        &self,
+        transaction: &TransactionContext,
+        input: &ProjectedCreate,
+        control: ProjectedBatchInvocationControl,
+    ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
         self.require_exact_model(input.type_id(), TypeKind::Entity)?;
         control.check()?;
         let batch = self.single_controlled_batch(
@@ -723,7 +753,22 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         limits: QueryExecutionResourceLimits,
         cancellation: AnswerCancellation,
     ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
-        let control = ProjectedBatchInvocationControl::capture(limits, cancellation);
+        self.put_entity_controlled_with_control(
+            database,
+            input,
+            ProjectedBatchInvocationControl::capture(limits, cancellation),
+        )
+        .await
+    }
+
+    /// Execute one policy-aware entity put with a pre-captured control.
+    #[doc(hidden)]
+    pub async fn put_entity_controlled_with_control(
+        &self,
+        database: &Database,
+        input: &ProjectedCreate,
+        control: ProjectedBatchInvocationControl,
+    ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
         self.require_exact_model(input.type_id(), TypeKind::Entity)?;
         control.check()?;
         let batch = self.single_controlled_batch(
@@ -745,7 +790,22 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         limits: QueryExecutionResourceLimits,
         cancellation: AnswerCancellation,
     ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
-        let control = ProjectedBatchInvocationControl::capture(limits, cancellation);
+        self.put_entity_in_transaction_controlled_with_control(
+            transaction,
+            input,
+            ProjectedBatchInvocationControl::capture(limits, cancellation),
+        )
+        .await
+    }
+
+    /// Execute one borrowed policy-aware entity put with a pre-captured control.
+    #[doc(hidden)]
+    pub async fn put_entity_in_transaction_controlled_with_control(
+        &self,
+        transaction: &TransactionContext,
+        input: &ProjectedCreate,
+        control: ProjectedBatchInvocationControl,
+    ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
         self.require_exact_model(input.type_id(), TypeKind::Entity)?;
         control.check()?;
         let batch = self.single_controlled_batch(
@@ -768,7 +828,24 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         limits: QueryExecutionResourceLimits,
         cancellation: AnswerCancellation,
     ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
-        let control = ProjectedBatchInvocationControl::capture(limits, cancellation);
+        self.update_entity_controlled_with_control(
+            database,
+            iid,
+            input,
+            ProjectedBatchInvocationControl::capture(limits, cancellation),
+        )
+        .await
+    }
+
+    /// Execute one policy-aware entity replacement with a pre-captured control.
+    #[doc(hidden)]
+    pub async fn update_entity_controlled_with_control(
+        &self,
+        database: &Database,
+        iid: &str,
+        input: &ProjectedCreate,
+        control: ProjectedBatchInvocationControl,
+    ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
         self.require_exact_model(input.type_id(), TypeKind::Entity)?;
         validate_iid(input.type_id(), iid)?;
         control.check()?;
@@ -795,7 +872,24 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         limits: QueryExecutionResourceLimits,
         cancellation: AnswerCancellation,
     ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
-        let control = ProjectedBatchInvocationControl::capture(limits, cancellation);
+        self.update_entity_in_transaction_controlled_with_control(
+            transaction,
+            iid,
+            input,
+            ProjectedBatchInvocationControl::capture(limits, cancellation),
+        )
+        .await
+    }
+
+    /// Execute one borrowed policy-aware entity replacement with a pre-captured control.
+    #[doc(hidden)]
+    pub async fn update_entity_in_transaction_controlled_with_control(
+        &self,
+        transaction: &TransactionContext,
+        iid: &str,
+        input: &ProjectedCreate,
+        control: ProjectedBatchInvocationControl,
+    ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
         self.require_exact_model(input.type_id(), TypeKind::Entity)?;
         validate_iid(input.type_id(), iid)?;
         control.check()?;
@@ -822,7 +916,24 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         limits: QueryExecutionResourceLimits,
         cancellation: AnswerCancellation,
     ) -> Result<(), SdkExecutionDiagnostic> {
-        let control = ProjectedBatchInvocationControl::capture(limits, cancellation);
+        self.delete_entity_by_iid_controlled_with_control(
+            database,
+            type_id,
+            iid,
+            ProjectedBatchInvocationControl::capture(limits, cancellation),
+        )
+        .await
+    }
+
+    /// Execute one policy-aware entity delete with a pre-captured control.
+    #[doc(hidden)]
+    pub async fn delete_entity_by_iid_controlled_with_control(
+        &self,
+        database: &Database,
+        type_id: &TypeId,
+        iid: &str,
+        control: ProjectedBatchInvocationControl,
+    ) -> Result<(), SdkExecutionDiagnostic> {
         self.require_exact_model(type_id, TypeKind::Entity)?;
         validate_iid(type_id, iid)?;
         control.check()?;
@@ -848,7 +959,24 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         limits: QueryExecutionResourceLimits,
         cancellation: AnswerCancellation,
     ) -> Result<(), SdkExecutionDiagnostic> {
-        let control = ProjectedBatchInvocationControl::capture(limits, cancellation);
+        self.delete_entity_by_iid_in_transaction_controlled_with_control(
+            transaction,
+            type_id,
+            iid,
+            ProjectedBatchInvocationControl::capture(limits, cancellation),
+        )
+        .await
+    }
+
+    /// Execute one borrowed policy-aware entity delete with a pre-captured control.
+    #[doc(hidden)]
+    pub async fn delete_entity_by_iid_in_transaction_controlled_with_control(
+        &self,
+        transaction: &TransactionContext,
+        type_id: &TypeId,
+        iid: &str,
+        control: ProjectedBatchInvocationControl,
+    ) -> Result<(), SdkExecutionDiagnostic> {
         self.require_exact_model(type_id, TypeKind::Entity)?;
         validate_iid(type_id, iid)?;
         control.check()?;
@@ -873,7 +1001,22 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         limits: QueryExecutionResourceLimits,
         cancellation: AnswerCancellation,
     ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
-        let control = ProjectedBatchInvocationControl::capture(limits, cancellation);
+        self.insert_relation_controlled_with_control(
+            database,
+            input,
+            ProjectedBatchInvocationControl::capture(limits, cancellation),
+        )
+        .await
+    }
+
+    /// Execute one policy-aware relation insert with a pre-captured control.
+    #[doc(hidden)]
+    pub async fn insert_relation_controlled_with_control(
+        &self,
+        database: &Database,
+        input: &ProjectedCreate,
+        control: ProjectedBatchInvocationControl,
+    ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
         self.require_exact_model(input.type_id(), TypeKind::Relation)?;
         control.check()?;
         let batch = self.single_controlled_batch(
@@ -895,7 +1038,22 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         limits: QueryExecutionResourceLimits,
         cancellation: AnswerCancellation,
     ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
-        let control = ProjectedBatchInvocationControl::capture(limits, cancellation);
+        self.insert_relation_in_transaction_controlled_with_control(
+            transaction,
+            input,
+            ProjectedBatchInvocationControl::capture(limits, cancellation),
+        )
+        .await
+    }
+
+    /// Execute one borrowed policy-aware relation insert with a pre-captured control.
+    #[doc(hidden)]
+    pub async fn insert_relation_in_transaction_controlled_with_control(
+        &self,
+        transaction: &TransactionContext,
+        input: &ProjectedCreate,
+        control: ProjectedBatchInvocationControl,
+    ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
         self.require_exact_model(input.type_id(), TypeKind::Relation)?;
         control.check()?;
         let batch = self.single_controlled_batch(
@@ -917,7 +1075,22 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         limits: QueryExecutionResourceLimits,
         cancellation: AnswerCancellation,
     ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
-        let control = ProjectedBatchInvocationControl::capture(limits, cancellation);
+        self.put_relation_controlled_with_control(
+            database,
+            input,
+            ProjectedBatchInvocationControl::capture(limits, cancellation),
+        )
+        .await
+    }
+
+    /// Execute one policy-aware relation put with a pre-captured control.
+    #[doc(hidden)]
+    pub async fn put_relation_controlled_with_control(
+        &self,
+        database: &Database,
+        input: &ProjectedCreate,
+        control: ProjectedBatchInvocationControl,
+    ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
         self.require_exact_model(input.type_id(), TypeKind::Relation)?;
         control.check()?;
         let batch = self.single_controlled_batch(
@@ -939,7 +1112,22 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         limits: QueryExecutionResourceLimits,
         cancellation: AnswerCancellation,
     ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
-        let control = ProjectedBatchInvocationControl::capture(limits, cancellation);
+        self.put_relation_in_transaction_controlled_with_control(
+            transaction,
+            input,
+            ProjectedBatchInvocationControl::capture(limits, cancellation),
+        )
+        .await
+    }
+
+    /// Execute one borrowed policy-aware relation put with a pre-captured control.
+    #[doc(hidden)]
+    pub async fn put_relation_in_transaction_controlled_with_control(
+        &self,
+        transaction: &TransactionContext,
+        input: &ProjectedCreate,
+        control: ProjectedBatchInvocationControl,
+    ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
         self.require_exact_model(input.type_id(), TypeKind::Relation)?;
         control.check()?;
         let batch = self.single_controlled_batch(
@@ -962,7 +1150,24 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         limits: QueryExecutionResourceLimits,
         cancellation: AnswerCancellation,
     ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
-        let control = ProjectedBatchInvocationControl::capture(limits, cancellation);
+        self.update_relation_controlled_with_control(
+            database,
+            iid,
+            input,
+            ProjectedBatchInvocationControl::capture(limits, cancellation),
+        )
+        .await
+    }
+
+    /// Execute one policy-aware relation replacement with a pre-captured control.
+    #[doc(hidden)]
+    pub async fn update_relation_controlled_with_control(
+        &self,
+        database: &Database,
+        iid: &str,
+        input: &ProjectedCreate,
+        control: ProjectedBatchInvocationControl,
+    ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
         self.require_exact_model(input.type_id(), TypeKind::Relation)?;
         validate_iid(input.type_id(), iid)?;
         control.check()?;
@@ -989,7 +1194,24 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         limits: QueryExecutionResourceLimits,
         cancellation: AnswerCancellation,
     ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
-        let control = ProjectedBatchInvocationControl::capture(limits, cancellation);
+        self.update_relation_in_transaction_controlled_with_control(
+            transaction,
+            iid,
+            input,
+            ProjectedBatchInvocationControl::capture(limits, cancellation),
+        )
+        .await
+    }
+
+    /// Execute one borrowed policy-aware relation replacement with a pre-captured control.
+    #[doc(hidden)]
+    pub async fn update_relation_in_transaction_controlled_with_control(
+        &self,
+        transaction: &TransactionContext,
+        iid: &str,
+        input: &ProjectedCreate,
+        control: ProjectedBatchInvocationControl,
+    ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
         self.require_exact_model(input.type_id(), TypeKind::Relation)?;
         validate_iid(input.type_id(), iid)?;
         control.check()?;
@@ -1016,7 +1238,24 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         limits: QueryExecutionResourceLimits,
         cancellation: AnswerCancellation,
     ) -> Result<(), SdkExecutionDiagnostic> {
-        let control = ProjectedBatchInvocationControl::capture(limits, cancellation);
+        self.delete_relation_by_iid_controlled_with_control(
+            database,
+            type_id,
+            iid,
+            ProjectedBatchInvocationControl::capture(limits, cancellation),
+        )
+        .await
+    }
+
+    /// Execute one policy-aware relation delete with a pre-captured control.
+    #[doc(hidden)]
+    pub async fn delete_relation_by_iid_controlled_with_control(
+        &self,
+        database: &Database,
+        type_id: &TypeId,
+        iid: &str,
+        control: ProjectedBatchInvocationControl,
+    ) -> Result<(), SdkExecutionDiagnostic> {
         self.require_exact_model(type_id, TypeKind::Relation)?;
         validate_iid(type_id, iid)?;
         control.check()?;
@@ -1042,7 +1281,24 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         limits: QueryExecutionResourceLimits,
         cancellation: AnswerCancellation,
     ) -> Result<(), SdkExecutionDiagnostic> {
-        let control = ProjectedBatchInvocationControl::capture(limits, cancellation);
+        self.delete_relation_by_iid_in_transaction_controlled_with_control(
+            transaction,
+            type_id,
+            iid,
+            ProjectedBatchInvocationControl::capture(limits, cancellation),
+        )
+        .await
+    }
+
+    /// Execute one borrowed policy-aware relation delete with a pre-captured control.
+    #[doc(hidden)]
+    pub async fn delete_relation_by_iid_in_transaction_controlled_with_control(
+        &self,
+        transaction: &TransactionContext,
+        type_id: &TypeId,
+        iid: &str,
+        control: ProjectedBatchInvocationControl,
+    ) -> Result<(), SdkExecutionDiagnostic> {
         self.require_exact_model(type_id, TypeKind::Relation)?;
         validate_iid(type_id, iid)?;
         control.check()?;
@@ -1068,7 +1324,24 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         limits: QueryExecutionResourceLimits,
         cancellation: AnswerCancellation,
     ) -> Result<Option<ProjectedThing>, SdkExecutionDiagnostic> {
-        let control = ControlledCrudInvocation::capture(limits, cancellation);
+        self.get_entity_by_iid_controlled_with_control(
+            database,
+            type_id,
+            iid,
+            ProjectedCrudInvocationControl::capture(limits, cancellation),
+        )
+        .await
+    }
+
+    /// Execute one policy-aware entity IID read with a pre-captured invocation control.
+    #[doc(hidden)]
+    pub async fn get_entity_by_iid_controlled_with_control(
+        &self,
+        database: &Database,
+        type_id: &TypeId,
+        iid: &str,
+        control: ProjectedCrudInvocationControl,
+    ) -> Result<Option<ProjectedThing>, SdkExecutionDiagnostic> {
         let prepared = self.prepare_entity_identity(type_id, iid)?;
         control.check(&prepared.type_id)?;
         let transaction = self
@@ -1090,7 +1363,24 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         limits: QueryExecutionResourceLimits,
         cancellation: AnswerCancellation,
     ) -> Result<Option<ProjectedThing>, SdkExecutionDiagnostic> {
-        let control = ControlledCrudInvocation::capture(limits, cancellation);
+        self.get_entity_by_iid_in_transaction_controlled_with_control(
+            transaction,
+            type_id,
+            iid,
+            ProjectedCrudInvocationControl::capture(limits, cancellation),
+        )
+        .await
+    }
+
+    /// Execute one borrowed policy-aware entity IID read with a pre-captured control.
+    #[doc(hidden)]
+    pub async fn get_entity_by_iid_in_transaction_controlled_with_control(
+        &self,
+        transaction: &TransactionContext,
+        type_id: &TypeId,
+        iid: &str,
+        control: ProjectedCrudInvocationControl,
+    ) -> Result<Option<ProjectedThing>, SdkExecutionDiagnostic> {
         let prepared = self.prepare_entity_identity(type_id, iid)?;
         require_transaction(transaction, TxType::Read, &prepared.type_id)?;
         self.get_entity_prepared_controlled(transaction, &prepared, &control)
@@ -1106,7 +1396,22 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         limits: QueryExecutionResourceLimits,
         cancellation: AnswerCancellation,
     ) -> Result<u64, SdkExecutionDiagnostic> {
-        let control = ControlledCrudInvocation::capture(limits, cancellation);
+        self.count_entities_controlled_with_control(
+            database,
+            type_id,
+            ProjectedCrudInvocationControl::capture(limits, cancellation),
+        )
+        .await
+    }
+
+    /// Execute one policy-aware exact entity count with a pre-captured control.
+    #[doc(hidden)]
+    pub async fn count_entities_controlled_with_control(
+        &self,
+        database: &Database,
+        type_id: &TypeId,
+        control: ProjectedCrudInvocationControl,
+    ) -> Result<u64, SdkExecutionDiagnostic> {
         let prepared = self.prepare_entity_type(type_id)?;
         control.check(&prepared.type_id)?;
         let transaction = self
@@ -1127,7 +1432,22 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         limits: QueryExecutionResourceLimits,
         cancellation: AnswerCancellation,
     ) -> Result<u64, SdkExecutionDiagnostic> {
-        let control = ControlledCrudInvocation::capture(limits, cancellation);
+        self.count_entities_in_transaction_controlled_with_control(
+            transaction,
+            type_id,
+            ProjectedCrudInvocationControl::capture(limits, cancellation),
+        )
+        .await
+    }
+
+    /// Execute one borrowed policy-aware entity count with a pre-captured control.
+    #[doc(hidden)]
+    pub async fn count_entities_in_transaction_controlled_with_control(
+        &self,
+        transaction: &TransactionContext,
+        type_id: &TypeId,
+        control: ProjectedCrudInvocationControl,
+    ) -> Result<u64, SdkExecutionDiagnostic> {
         let prepared = self.prepare_entity_type(type_id)?;
         require_transaction(transaction, TxType::Read, &prepared.type_id)?;
         self.count_entities_prepared_controlled(transaction, &prepared, &control)
@@ -1144,7 +1464,24 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         limits: QueryExecutionResourceLimits,
         cancellation: AnswerCancellation,
     ) -> Result<Option<ProjectedThing>, SdkExecutionDiagnostic> {
-        let control = ControlledCrudInvocation::capture(limits, cancellation);
+        self.get_relation_by_iid_controlled_with_control(
+            database,
+            type_id,
+            iid,
+            ProjectedCrudInvocationControl::capture(limits, cancellation),
+        )
+        .await
+    }
+
+    /// Execute one policy-aware relation IID read with a pre-captured control.
+    #[doc(hidden)]
+    pub async fn get_relation_by_iid_controlled_with_control(
+        &self,
+        database: &Database,
+        type_id: &TypeId,
+        iid: &str,
+        control: ProjectedCrudInvocationControl,
+    ) -> Result<Option<ProjectedThing>, SdkExecutionDiagnostic> {
         let prepared = self.prepare_relation_identity(type_id, iid)?;
         control.check(&prepared.type_id)?;
         let transaction = self
@@ -1166,7 +1503,24 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         limits: QueryExecutionResourceLimits,
         cancellation: AnswerCancellation,
     ) -> Result<Option<ProjectedThing>, SdkExecutionDiagnostic> {
-        let control = ControlledCrudInvocation::capture(limits, cancellation);
+        self.get_relation_by_iid_in_transaction_controlled_with_control(
+            transaction,
+            type_id,
+            iid,
+            ProjectedCrudInvocationControl::capture(limits, cancellation),
+        )
+        .await
+    }
+
+    /// Execute one borrowed policy-aware relation IID read with a pre-captured control.
+    #[doc(hidden)]
+    pub async fn get_relation_by_iid_in_transaction_controlled_with_control(
+        &self,
+        transaction: &TransactionContext,
+        type_id: &TypeId,
+        iid: &str,
+        control: ProjectedCrudInvocationControl,
+    ) -> Result<Option<ProjectedThing>, SdkExecutionDiagnostic> {
         let prepared = self.prepare_relation_identity(type_id, iid)?;
         require_transaction(transaction, TxType::Read, &prepared.type_id)?;
         self.get_relation_prepared_controlled(transaction, &prepared, &control)
@@ -1182,7 +1536,22 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         limits: QueryExecutionResourceLimits,
         cancellation: AnswerCancellation,
     ) -> Result<u64, SdkExecutionDiagnostic> {
-        let control = ControlledCrudInvocation::capture(limits, cancellation);
+        self.count_relations_controlled_with_control(
+            database,
+            type_id,
+            ProjectedCrudInvocationControl::capture(limits, cancellation),
+        )
+        .await
+    }
+
+    /// Execute one policy-aware exact relation count with a pre-captured control.
+    #[doc(hidden)]
+    pub async fn count_relations_controlled_with_control(
+        &self,
+        database: &Database,
+        type_id: &TypeId,
+        control: ProjectedCrudInvocationControl,
+    ) -> Result<u64, SdkExecutionDiagnostic> {
         let prepared = self.prepare_relation_type(type_id)?;
         control.check(&prepared.type_id)?;
         let transaction = self
@@ -1203,7 +1572,22 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         limits: QueryExecutionResourceLimits,
         cancellation: AnswerCancellation,
     ) -> Result<u64, SdkExecutionDiagnostic> {
-        let control = ControlledCrudInvocation::capture(limits, cancellation);
+        self.count_relations_in_transaction_controlled_with_control(
+            transaction,
+            type_id,
+            ProjectedCrudInvocationControl::capture(limits, cancellation),
+        )
+        .await
+    }
+
+    /// Execute one borrowed policy-aware relation count with a pre-captured control.
+    #[doc(hidden)]
+    pub async fn count_relations_in_transaction_controlled_with_control(
+        &self,
+        transaction: &TransactionContext,
+        type_id: &TypeId,
+        control: ProjectedCrudInvocationControl,
+    ) -> Result<u64, SdkExecutionDiagnostic> {
         let prepared = self.prepare_relation_type(type_id)?;
         require_transaction(transaction, TxType::Read, &prepared.type_id)?;
         self.count_relations_prepared_controlled(transaction, &prepared, &control)
@@ -1677,7 +2061,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         &self,
         database: &Database,
         type_id: &TypeId,
-        control: &ControlledCrudInvocation,
+        control: &ProjectedCrudInvocationControl,
     ) -> Result<TransactionContext, SdkExecutionDiagnostic> {
         await_crud_controlled(
             database.transaction_context(TxType::Read),
@@ -1694,7 +2078,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         &self,
         transaction: &TransactionContext,
         prepared: &PreparedEntityIdentity,
-        control: &ControlledCrudInvocation,
+        control: &ProjectedCrudInvocationControl,
     ) -> Result<Option<ProjectedThing>, SdkExecutionDiagnostic> {
         control.check(&prepared.type_id)?;
         let query = query_builder::build_dynamic_entity_fetch_by_iid_exact(
@@ -1757,7 +2141,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         &self,
         transaction: &TransactionContext,
         prepared: &PreparedEntityType,
-        control: &ControlledCrudInvocation,
+        control: &ProjectedCrudInvocationControl,
     ) -> Result<u64, SdkExecutionDiagnostic> {
         control.check(&prepared.type_id)?;
         let query = query_builder::build_dynamic_entity_count_exact(&prepared.descriptor, "$e")
@@ -1776,7 +2160,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         &self,
         transaction: &TransactionContext,
         prepared: &PreparedRelationIdentity,
-        control: &ControlledCrudInvocation,
+        control: &ProjectedCrudInvocationControl,
     ) -> Result<Option<ProjectedThing>, SdkExecutionDiagnostic> {
         control.check(&prepared.type_id)?;
         let query = query_builder::build_dynamic_relation_fetch_by_iid_exact(
@@ -1829,7 +2213,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         &self,
         transaction: &TransactionContext,
         prepared: &PreparedRelationType,
-        control: &ControlledCrudInvocation,
+        control: &ProjectedCrudInvocationControl,
     ) -> Result<u64, SdkExecutionDiagnostic> {
         control.check(&prepared.type_id)?;
         let query = query_builder::build_dynamic_relation_count_exact(&prepared.descriptor, "$r")
@@ -1851,7 +2235,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         transaction: &TransactionContext,
         type_id: &TypeId,
         query: &str,
-        control: &ControlledCrudInvocation,
+        control: &ProjectedCrudInvocationControl,
         input_bytes: u64,
     ) -> Result<u64, SdkExecutionDiagnostic> {
         let mut ledger = ControlledCrudLedger::try_new(control.limits, input_bytes)?;
@@ -1885,7 +2269,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         type_id: &TypeId,
         query: &str,
         expected: ControlledAnswerKind,
-        control: &ControlledCrudInvocation,
+        control: &ProjectedCrudInvocationControl,
         ledger: &mut ControlledCrudLedger,
     ) -> Result<QueryResult, SdkExecutionDiagnostic> {
         control.check(type_id)?;
@@ -3141,14 +3525,18 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
     }
 }
 
-struct ControlledCrudInvocation {
+/// One invocation policy captured before single-CRUD validation or allocation.
+#[doc(hidden)]
+pub struct ProjectedCrudInvocationControl {
     limits: QueryExecutionResourceLimits,
     deadline: QueryExecutionDeadline,
     cancellation: AnswerCancellation,
 }
 
-impl ControlledCrudInvocation {
-    fn capture(limits: QueryExecutionResourceLimits, cancellation: AnswerCancellation) -> Self {
+impl ProjectedCrudInvocationControl {
+    /// Capture effective limits, one absolute deadline, and cancellation owner.
+    #[must_use]
+    pub fn capture(limits: QueryExecutionResourceLimits, cancellation: AnswerCancellation) -> Self {
         let limits = limits.effective();
         Self {
             limits,
@@ -3157,7 +3545,8 @@ impl ControlledCrudInvocation {
         }
     }
 
-    fn check(&self, type_id: &TypeId) -> Result<(), SdkExecutionDiagnostic> {
+    /// Recheck the captured cancellation owner and deadline at one type path.
+    pub fn checkpoint(&self, type_id: &TypeId) -> Result<(), SdkExecutionDiagnostic> {
         let diagnostic = if self.cancellation.is_cancelled() {
             Some(SdkExecutionDiagnostic::data_operation_cancelled())
         } else if self.deadline.is_expired() {
@@ -3171,6 +3560,10 @@ impl ControlledCrudInvocation {
                 [SdkDiagnosticPathSegment::Type(type_id.clone())],
             ))
         })
+    }
+
+    fn check(&self, type_id: &TypeId) -> Result<(), SdkExecutionDiagnostic> {
+        self.checkpoint(type_id)
     }
 }
 
@@ -4826,7 +5219,7 @@ plays:
         let type_id = TypeId::new(TypeKind::Entity, "person").unwrap();
         let cancellation = AnswerCancellation::default();
         cancellation.cancel();
-        let control = ControlledCrudInvocation::capture(
+        let control = ProjectedCrudInvocationControl::capture(
             QueryExecutionResourceLimits::default(),
             cancellation,
         );

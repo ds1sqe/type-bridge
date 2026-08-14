@@ -9,9 +9,11 @@ use crate::runtime::{
     TypeBridgeWriteTransaction,
 };
 use crate::thing_crud::{
-    CrudKind, MemoryRange, ReadTarget, WriteTarget, prepare_count_outputs,
-    prepare_diagnostics_output, prepare_thing_outputs, run_count_call, run_delete_call,
-    run_get_call, run_put_call, run_write_thing_call,
+    CrudKind, LegacyPolicyTarget, MemoryRange, ReadTarget, WriteTarget,
+    prepare_count_outputs_for_legacy_policy_target,
+    prepare_diagnostics_output_for_legacy_policy_target,
+    prepare_thing_outputs_for_legacy_policy_target, run_count_call, run_delete_call, run_get_call,
+    run_put_call, run_write_thing_call,
 };
 
 /// Insert one exact projected relation using one owned write transaction and commit.
@@ -26,7 +28,8 @@ pub unsafe extern "C" fn type_bridge_database_relation_insert(
 ) -> TypeBridgeStatus {
     // SAFETY: all caller input ranges are described before any output write.
     let prepared = match unsafe {
-        prepare_thing_outputs(
+        prepare_thing_outputs_for_legacy_policy_target(
+            LegacyPolicyTarget::Database(database),
             &[
                 MemoryRange::of_object(database),
                 MemoryRange::of_object(model),
@@ -69,7 +72,8 @@ pub unsafe extern "C" fn type_bridge_database_relation_put(
 ) -> TypeBridgeStatus {
     // SAFETY: all caller input ranges are described before any output write.
     let prepared = match unsafe {
-        prepare_thing_outputs(
+        prepare_thing_outputs_for_legacy_policy_target(
+            LegacyPolicyTarget::Database(database),
             &[
                 MemoryRange::of_object(database),
                 MemoryRange::of_object(model),
@@ -111,7 +115,8 @@ pub unsafe extern "C" fn type_bridge_database_relation_get_by_iid(
 ) -> TypeBridgeStatus {
     // SAFETY: all caller input ranges are described before any output write.
     let prepared = match unsafe {
-        prepare_thing_outputs(
+        prepare_thing_outputs_for_legacy_policy_target(
+            LegacyPolicyTarget::Database(database),
             &[
                 MemoryRange::of_object(database),
                 MemoryRange::of_object(model),
@@ -154,7 +159,8 @@ pub unsafe extern "C" fn type_bridge_database_relation_update(
 ) -> TypeBridgeStatus {
     // SAFETY: all caller input ranges are described before any output write.
     let prepared = match unsafe {
-        prepare_thing_outputs(
+        prepare_thing_outputs_for_legacy_policy_target(
+            LegacyPolicyTarget::Database(database),
             &[
                 MemoryRange::of_object(database),
                 MemoryRange::of_object(model),
@@ -195,15 +201,19 @@ pub unsafe extern "C" fn type_bridge_database_relation_delete_by_iid(
     cancellation: *const TypeBridgeCancellation,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
-    let prepared = match prepare_diagnostics_output(
-        &[
-            MemoryRange::of_object(database),
-            MemoryRange::of_object(model),
-            MemoryRange::of_bytes(iid),
-            MemoryRange::of_object(cancellation),
-        ],
-        out_diagnostics,
-    ) {
+    // SAFETY: all caller input ranges and the complete target are retained until preparation.
+    let prepared = match unsafe {
+        prepare_diagnostics_output_for_legacy_policy_target(
+            LegacyPolicyTarget::Database(database),
+            &[
+                MemoryRange::of_object(database),
+                MemoryRange::of_object(model),
+                MemoryRange::of_bytes(iid),
+                MemoryRange::of_object(cancellation),
+            ],
+            out_diagnostics,
+        )
+    } {
         Ok(value) => value,
         Err(status) => return status,
     };
@@ -232,15 +242,19 @@ pub unsafe extern "C" fn type_bridge_database_relation_count(
     out_count: *mut u64,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
-    let prepared = match prepare_count_outputs(
-        &[
-            MemoryRange::of_object(database),
-            MemoryRange::of_object(model),
-            MemoryRange::of_object(cancellation),
-        ],
-        out_count,
-        out_diagnostics,
-    ) {
+    // SAFETY: all caller input ranges and the complete target are retained until preparation.
+    let prepared = match unsafe {
+        prepare_count_outputs_for_legacy_policy_target(
+            LegacyPolicyTarget::Database(database),
+            &[
+                MemoryRange::of_object(database),
+                MemoryRange::of_object(model),
+                MemoryRange::of_object(cancellation),
+            ],
+            out_count,
+            out_diagnostics,
+        )
+    } {
         Ok(value) => value,
         Err(status) => return status,
     };
@@ -271,7 +285,8 @@ pub unsafe extern "C" fn type_bridge_read_transaction_relation_get_by_iid(
 ) -> TypeBridgeStatus {
     // SAFETY: all caller input ranges are described before any output write.
     let prepared = match unsafe {
-        prepare_thing_outputs(
+        prepare_thing_outputs_for_legacy_policy_target(
+            LegacyPolicyTarget::ReadTransaction(transaction),
             &[
                 MemoryRange::of_object(transaction),
                 MemoryRange::of_object(model),
@@ -310,15 +325,19 @@ pub unsafe extern "C" fn type_bridge_read_transaction_relation_count(
     out_count: *mut u64,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
-    let prepared = match prepare_count_outputs(
-        &[
-            MemoryRange::of_object(transaction),
-            MemoryRange::of_object(model),
-            MemoryRange::of_object(cancellation),
-        ],
-        out_count,
-        out_diagnostics,
-    ) {
+    // SAFETY: all caller input ranges and the complete target are retained until preparation.
+    let prepared = match unsafe {
+        prepare_count_outputs_for_legacy_policy_target(
+            LegacyPolicyTarget::ReadTransaction(transaction),
+            &[
+                MemoryRange::of_object(transaction),
+                MemoryRange::of_object(model),
+                MemoryRange::of_object(cancellation),
+            ],
+            out_count,
+            out_diagnostics,
+        )
+    } {
         Ok(value) => value,
         Err(status) => return status,
     };
@@ -375,7 +394,8 @@ macro_rules! write_transaction_create_operation {
         ) -> TypeBridgeStatus {
             // SAFETY: all caller input ranges are described before any output write.
             let prepared = match unsafe {
-                prepare_thing_outputs(
+                prepare_thing_outputs_for_legacy_policy_target(
+                    LegacyPolicyTarget::WriteTransaction(transaction),
                     &[
                         MemoryRange::of_object(transaction),
                         MemoryRange::of_object(model),
@@ -425,7 +445,8 @@ pub unsafe extern "C" fn type_bridge_write_transaction_relation_update(
 ) -> TypeBridgeStatus {
     // SAFETY: all caller input ranges are described before any output write.
     let prepared = match unsafe {
-        prepare_thing_outputs(
+        prepare_thing_outputs_for_legacy_policy_target(
+            LegacyPolicyTarget::WriteTransaction(transaction),
             &[
                 MemoryRange::of_object(transaction),
                 MemoryRange::of_object(model),
@@ -469,7 +490,8 @@ pub unsafe extern "C" fn type_bridge_write_transaction_relation_get_by_iid(
 ) -> TypeBridgeStatus {
     // SAFETY: all caller input ranges are described before any output write.
     let prepared = match unsafe {
-        prepare_thing_outputs(
+        prepare_thing_outputs_for_legacy_policy_target(
+            LegacyPolicyTarget::WriteTransaction(transaction),
             &[
                 MemoryRange::of_object(transaction),
                 MemoryRange::of_object(model),
@@ -508,15 +530,19 @@ pub unsafe extern "C" fn type_bridge_write_transaction_relation_delete_by_iid(
     cancellation: *const TypeBridgeCancellation,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
-    let prepared = match prepare_diagnostics_output(
-        &[
-            MemoryRange::of_object(transaction),
-            MemoryRange::of_object(model),
-            MemoryRange::of_bytes(iid),
-            MemoryRange::of_object(cancellation),
-        ],
-        out_diagnostics,
-    ) {
+    // SAFETY: all caller input ranges and the complete target are retained until preparation.
+    let prepared = match unsafe {
+        prepare_diagnostics_output_for_legacy_policy_target(
+            LegacyPolicyTarget::WriteTransaction(transaction),
+            &[
+                MemoryRange::of_object(transaction),
+                MemoryRange::of_object(model),
+                MemoryRange::of_bytes(iid),
+                MemoryRange::of_object(cancellation),
+            ],
+            out_diagnostics,
+        )
+    } {
         Ok(value) => value,
         Err(status) => return status,
     };
@@ -545,15 +571,19 @@ pub unsafe extern "C" fn type_bridge_write_transaction_relation_count(
     out_count: *mut u64,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
-    let prepared = match prepare_count_outputs(
-        &[
-            MemoryRange::of_object(transaction),
-            MemoryRange::of_object(model),
-            MemoryRange::of_object(cancellation),
-        ],
-        out_count,
-        out_diagnostics,
-    ) {
+    // SAFETY: all caller input ranges and the complete target are retained until preparation.
+    let prepared = match unsafe {
+        prepare_count_outputs_for_legacy_policy_target(
+            LegacyPolicyTarget::WriteTransaction(transaction),
+            &[
+                MemoryRange::of_object(transaction),
+                MemoryRange::of_object(model),
+                MemoryRange::of_object(cancellation),
+            ],
+            out_count,
+            out_diagnostics,
+        )
+    } {
         Ok(value) => value,
         Err(status) => return status,
     };

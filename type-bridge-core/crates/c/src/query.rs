@@ -21,15 +21,19 @@ use type_bridge_orm::_registry::DescriptorRegistry;
 use type_bridge_orm::query_v2_prepared::QueryAuthority;
 use type_bridge_orm::{
     BindingHandle, FieldHandle, FunctionArgumentHandle, FunctionCallHandle, FunctionHandle,
-    FunctionValueHandle, MAX_QUERY_ATTRIBUTE_VALUES, MAX_QUERY_BYTES, MAX_QUERY_COLLECTION_MEMBERS,
-    MAX_QUERY_GRAPH_NODES, MAX_QUERY_ITEMS, MAX_QUERY_ROLE_PLAYERS, MAX_QUERY_STATEMENTS,
-    MAX_QUERY_TIMEOUT_MILLISECONDS, MatchMode, MissingOrder, OrderHandle, PredicateHandle,
+    FunctionValueHandle, MatchMode, MissingOrder, OrderHandle, PredicateHandle,
     ProjectedQueryMaterializationLimits, ProjectedQueryOrigin, ProjectedQueryResult,
     ProjectedQuerySlotValue, ProjectedQueryValue, ProjectedReducedValue, ProjectedReductionGroup,
     ProjectedReductionRow, QueryExecutionDeadline, QueryExecutionResourceLimits, QueryHandle,
     Reduction, RemoteModelQueryV2Error, RoleHandle, RowCardinality, SelectionHandle, SessionHandle,
     SortDirection, ValidatedMatchRequest, Window, lower_execution_error,
     materialize_projected_query_result_with_budget, prepare_remote_model_query_v2_with_budget,
+};
+#[cfg(test)]
+use type_bridge_orm::{
+    MAX_QUERY_ATTRIBUTE_VALUES, MAX_QUERY_BYTES, MAX_QUERY_COLLECTION_MEMBERS,
+    MAX_QUERY_GRAPH_NODES, MAX_QUERY_ITEMS, MAX_QUERY_ROLE_PLAYERS, MAX_QUERY_STATEMENTS,
+    MAX_QUERY_TIMEOUT_MILLISECONDS,
 };
 
 use crate::abi::{
@@ -41,6 +45,7 @@ use crate::execution_diagnostic::{
     TypeBridgeExecutionDiagnostics, initialize_execution_outputs, return_execution_error,
 };
 use crate::generated_preflight::{DirectOutputPreflight, direct_output_preflight};
+use crate::policy::{ParsedLimits, parse_common_limits, parse_limits_constrained};
 use crate::projected_model::{
     TypeBridgeProjectedThing, check_projected_attribute_value_ranges, check_projected_thing_ranges,
 };
@@ -51,6 +56,7 @@ use crate::projected_token::{
 use crate::projected_value::TypeBridgeProjectedValue;
 use crate::runtime::{
     TypeBridgeCancellation, TypeBridgeDatabase, TypeBridgeReadTransaction,
+    check_database_borrowed_ranges, check_read_transaction_borrowed_ranges,
     poisoned_transaction_diagnostic,
 };
 
@@ -3861,73 +3867,39 @@ pub unsafe extern "C" fn type_bridge_query_terminal_close(
     unsafe { close_box(terminal) }
 }
 
-struct ParsedLimits {
-    resources: QueryExecutionResourceLimits,
-    deadline: QueryExecutionDeadline,
-}
-
 struct ExecuteInvocationPreflight {
     outputs: DirectOutputPreflight,
     answer: type_bridge_orm::AnswerCancellation,
     parsed: Result<ParsedLimits, SdkExecutionDiagnostic>,
 }
 
-fn parse_common_limits(
-    value: Option<TypeBridgeQueryExecutionLimitsV1>,
-) -> Result<QueryExecutionResourceLimits, SdkExecutionDiagnostic> {
-    let value = value.unwrap_or(TypeBridgeQueryExecutionLimitsV1 {
-        struct_size: size_of::<TypeBridgeQueryExecutionLimitsV1>() as u32,
-        version: DESCRIPTOR_VERSION,
-        timeout_milliseconds: MAX_QUERY_TIMEOUT_MILLISECONDS,
-        items: MAX_QUERY_ITEMS,
-        bytes: MAX_QUERY_BYTES,
-        graph_nodes: MAX_QUERY_GRAPH_NODES,
-        attribute_values: MAX_QUERY_ATTRIBUTE_VALUES,
-        collection_members: MAX_QUERY_COLLECTION_MEMBERS,
-        role_players: MAX_QUERY_ROLE_PLAYERS,
-        statements: MAX_QUERY_STATEMENTS,
-        reserved0: 0,
-        reserved: [0; 4],
-    });
-    if !descriptor_layout::<TypeBridgeQueryExecutionLimitsV1>(
-        value.struct_size,
-        value.version,
-        value.reserved,
-    ) || value.reserved0 != 0
-    {
-        return Err(invalid(
-            "c_query_execution_limits_invalid",
-            "Typed-query limits must use the canonical version-1 descriptor layout",
-        ));
+fn check_database_query_borrowed_ranges(
+    preflight: &DirectOutputPreflight,
+    database: &TypeBridgeDatabase,
+) -> Result<(), TypeBridgeStatus> {
+    if database.policy_answer_ceiling().is_some() {
+        check_database_borrowed_ranges(preflight, database)
+    } else {
+        preflight.check_package_borrowed_ranges(database.package_state())
     }
-    Ok(QueryExecutionResourceLimits::tightened(
-        value.timeout_milliseconds,
-        value.items,
-        value.bytes,
-        value.graph_nodes,
-        value.attribute_values,
-        value.collection_members,
-        value.role_players,
-        value.statements,
-    ))
 }
 
-fn parse_limits(
-    value: Option<TypeBridgeQueryExecutionLimitsV1>,
-    cancellation: &type_bridge_orm::AnswerCancellation,
-) -> Result<ParsedLimits, SdkExecutionDiagnostic> {
-    let common = parse_common_limits(value)?;
-    let deadline = QueryExecutionDeadline::for_limits(common);
-    deadline.check(cancellation)?;
-    Ok(ParsedLimits {
-        resources: common,
-        deadline,
-    })
+fn check_read_transaction_query_borrowed_ranges(
+    preflight: &DirectOutputPreflight,
+    transaction: &TypeBridgeReadTransaction,
+) -> Result<(), TypeBridgeStatus> {
+    if transaction.policy_answer_ceiling().is_some() {
+        check_read_transaction_borrowed_ranges(preflight, transaction)
+    } else {
+        preflight.check_package_borrowed_ranges(transaction.package_state())
+    }
 }
 
+#[allow(clippy::too_many_arguments)]
 unsafe fn execute_preflight<T>(
     target: *const T,
-    target_package: impl FnOnce(&T) -> &Arc<SchemaPackageState>,
+    target_borrowed_ranges: impl FnOnce(&DirectOutputPreflight, &T) -> Result<(), TypeBridgeStatus>,
+    target_policy_ceiling: impl FnOnce(&T) -> Option<QueryExecutionResourceLimits>,
     terminal: *const TypeBridgeQueryTerminal,
     limits: *const TypeBridgeQueryExecutionLimitsV1,
     cancellation: *const TypeBridgeCancellation,
@@ -3957,10 +3929,18 @@ unsafe fn execute_preflight<T>(
         // caller retains it immutable throughout this invocation.
         unsafe { &*cancellation }.answer_cancellation()
     };
-    // Capture the one absolute invocation budget before any potentially large
-    // terminal/package borrowed-range walk. Interruption errors are retained
-    // until that read-only walk proves outputs cannot alias live input bytes.
-    let parsed = parse_limits(limits_snapshot, &answer);
+    let target_ceiling = if target.is_null() {
+        None
+    } else {
+        // SAFETY: complete-object preflight above proved the target readable;
+        // this snapshots only immutable policy before any provider work.
+        unsafe { target_policy_ceiling(&*target) }
+    };
+    // Capture the one absolute invocation budget after intersecting any V2
+    // target ceiling and before potentially large borrowed-range walks.
+    // Interruption errors are retained until those read-only walks prove
+    // outputs cannot alias live input bytes.
+    let parsed = parse_limits_constrained(limits_snapshot, &answer, target_ceiling);
     #[cfg(test)]
     QUERY_PREFLIGHT_DELAY_MILLISECONDS.with(|delay| {
         let delay = delay.replace(0);
@@ -3970,7 +3950,7 @@ unsafe fn execute_preflight<T>(
     });
     if !target.is_null() {
         // SAFETY: caller retains the complete immutable execution target.
-        preflight.check_package_borrowed_ranges(unsafe { target_package(&*target) })?;
+        target_borrowed_ranges(&preflight, unsafe { &*target })?;
     }
     if !terminal.is_null() {
         // SAFETY: caller retains the immutable terminal plan.
@@ -4158,7 +4138,8 @@ pub unsafe extern "C" fn type_bridge_database_query_execute_v1(
     let invocation = match unsafe {
         execute_preflight(
             database,
-            TypeBridgeDatabase::package_state,
+            check_database_query_borrowed_ranges,
+            TypeBridgeDatabase::policy_answer_ceiling,
             terminal,
             limits,
             cancellation,
@@ -4266,7 +4247,8 @@ pub unsafe extern "C" fn type_bridge_read_transaction_query_execute_v1(
     let invocation = match unsafe {
         execute_preflight(
             transaction,
-            TypeBridgeReadTransaction::package_state,
+            check_read_transaction_query_borrowed_ranges,
+            TypeBridgeReadTransaction::policy_answer_ceiling,
             terminal,
             limits,
             cancellation,
@@ -5970,8 +5952,8 @@ mod tests {
     };
     use crate::runtime::{
         type_bridge_cancellation_close, type_bridge_cancellation_open,
-        type_bridge_cancellation_request, type_bridge_read_transaction_close,
-        type_bridge_read_transaction_open,
+        type_bridge_cancellation_request, type_bridge_database_server_version,
+        type_bridge_read_transaction_close, type_bridge_read_transaction_open,
     };
 
     enum Response {
@@ -6216,6 +6198,33 @@ mod tests {
             value: Box::new(TypeBridgeDatabase::from_test_database(
                 Arc::clone(package.state()),
                 database,
+            )),
+            events,
+        }
+    }
+
+    fn fake_database_with_answer_ceiling(
+        package: &TypeBridgeSchemaPackage,
+        queries: Vec<Response>,
+        hydrations: Vec<Response>,
+        answer_ceiling: QueryExecutionResourceLimits,
+    ) -> FakeDatabase {
+        let events = Arc::new(Events::default());
+        let database = Database::with_backend(
+            Box::new(FakeBackend {
+                events: Arc::clone(&events),
+                queries: Arc::new(Mutex::new(queries.into())),
+                hydrations: Arc::new(Mutex::new(hydrations.into())),
+                close_failure: false,
+                open_pending: false,
+            }),
+            "query-c-abi-policy",
+        );
+        FakeDatabase {
+            value: Box::new(TypeBridgeDatabase::from_test_database_with_answer_ceiling(
+                Arc::clone(package.state()),
+                database,
+                Some(answer_ceiling),
             )),
             events,
         }
@@ -10859,6 +10868,90 @@ mod tests {
     }
 
     #[test]
+    fn legacy_query_execution_cannot_widen_a_v2_target_answer_ceiling() {
+        let package = package("querytargetceiling");
+        // SAFETY: fixture owns exact generated handles.
+        let built = unsafe { BuiltQuery::open(&package, TERMINAL_FIRST, ROWS_BOUNDED_MANY) };
+        let ceiling = QueryExecutionResourceLimits::tightened(
+            MAX_QUERY_TIMEOUT_MILLISECONDS,
+            MAX_QUERY_ITEMS,
+            MAX_QUERY_BYTES,
+            MAX_QUERY_GRAPH_NODES,
+            MAX_QUERY_ATTRIBUTE_VALUES,
+            MAX_QUERY_COLLECTION_MEMBERS,
+            MAX_QUERY_ROLE_PLAYERS,
+            0,
+        );
+        let database = fake_database_with_answer_ceiling(&package, Vec::new(), Vec::new(), ceiling);
+        let mut result = ptr::null_mut();
+        let mut diagnostics = ptr::null_mut();
+
+        assert_eq!(
+            unsafe {
+                type_bridge_database_query_execute_v1(
+                    &*database.value,
+                    built.terminal,
+                    TERMINAL_FIRST,
+                    ptr::null(),
+                    ptr::null(),
+                    &mut result,
+                    &mut diagnostics,
+                )
+            },
+            TypeBridgeStatus::ResourceLimit,
+        );
+        assert!(result.is_null());
+        assert_eq!(
+            unsafe { diagnostic_code(diagnostics) },
+            "statement_count_limit"
+        );
+        unsafe { close_diagnostics(&mut diagnostics) };
+        assert_eq!(database.events.opens.load(Ordering::Acquire), 0);
+
+        let transaction_database = fake_database(&package, Vec::new(), Vec::new());
+        let context = transaction_database
+            .value
+            .open_transaction_context(TxType::Read)
+            .expect("the fake read transaction opens");
+        let mut transaction = Box::into_raw(Box::new(
+            TypeBridgeReadTransaction::from_test_context_with_answer_ceiling(
+                &transaction_database.value,
+                context,
+                Some(ceiling),
+            ),
+        ));
+        assert_eq!(
+            unsafe {
+                type_bridge_read_transaction_query_execute_v1(
+                    transaction,
+                    built.terminal,
+                    TERMINAL_FIRST,
+                    ptr::null(),
+                    ptr::null(),
+                    &mut result,
+                    &mut diagnostics,
+                )
+            },
+            TypeBridgeStatus::ResourceLimit,
+        );
+        assert!(result.is_null());
+        assert_eq!(
+            unsafe { diagnostic_code(diagnostics) },
+            "statement_count_limit"
+        );
+        unsafe { close_diagnostics(&mut diagnostics) };
+        assert_eq!(
+            transaction_database.events.queries.load(Ordering::Acquire),
+            0
+        );
+        assert_eq!(
+            unsafe { type_bridge_read_transaction_close(&mut transaction, &mut diagnostics) },
+            TypeBridgeStatus::Ok,
+        );
+        assert!(diagnostics.is_null());
+    }
+
+    #[test]
     fn predispatch_fences_reject_limits_kind_cancel_and_equivalent_package() {
         let package_handle = package("queryfence");
         // SAFETY: fixture owns exact generated handles.
@@ -11035,6 +11128,88 @@ mod tests {
             unsafe { type_bridge_query_result_close(&mut result) },
             TypeBridgeStatus::Ok,
         );
+    }
+
+    #[test]
+    fn query_execution_rejects_outputs_aliased_into_target_borrowed_bytes() {
+        let package = package("querytargetdeepalias");
+        // SAFETY: fixture owns exact generated handles.
+        let built = unsafe { BuiltQuery::open(&package, TERMINAL_FIRST, ROWS_BOUNDED_MANY) };
+        let answer_ceiling = QueryExecutionResourceLimits::default();
+        let database =
+            fake_database_with_answer_ceiling(&package, Vec::new(), Vec::new(), answer_ceiling);
+        let mut version = TypeBridgeByteView {
+            data: ptr::null(),
+            length: 0,
+        };
+        assert_eq!(
+            unsafe { type_bridge_database_server_version(&*database.value, &mut version) },
+            TypeBridgeStatus::Ok,
+        );
+        assert!(!version.data.is_null());
+        assert_ne!(version.length, 0);
+        let expected_version =
+            unsafe { std::slice::from_raw_parts(version.data, version.length) }.to_vec();
+        let aliased_result = version.data.cast_mut().cast::<*mut TypeBridgeQueryResult>();
+        let mut diagnostics = ptr::null_mut();
+
+        assert_eq!(
+            unsafe {
+                type_bridge_database_query_execute_v1(
+                    &*database.value,
+                    built.terminal,
+                    TERMINAL_FIRST,
+                    ptr::null(),
+                    ptr::null(),
+                    aliased_result,
+                    &mut diagnostics,
+                )
+            },
+            TypeBridgeStatus::InvalidArgument,
+        );
+        assert!(diagnostics.is_null());
+        assert_eq!(
+            unsafe { std::slice::from_raw_parts(version.data, version.length) },
+            expected_version,
+        );
+        assert_eq!(database.events.opens.load(Ordering::Acquire), 0);
+
+        let context = database
+            .value
+            .open_transaction_context(TxType::Read)
+            .expect("the fake read transaction opens");
+        let mut transaction = Box::into_raw(Box::new(
+            TypeBridgeReadTransaction::from_test_context_with_answer_ceiling(
+                &database.value,
+                context,
+                Some(answer_ceiling),
+            ),
+        ));
+        assert_eq!(
+            unsafe {
+                type_bridge_read_transaction_query_execute_v1(
+                    transaction,
+                    built.terminal,
+                    TERMINAL_FIRST,
+                    ptr::null(),
+                    ptr::null(),
+                    aliased_result,
+                    &mut diagnostics,
+                )
+            },
+            TypeBridgeStatus::InvalidArgument,
+        );
+        assert!(diagnostics.is_null());
+        assert_eq!(
+            unsafe { std::slice::from_raw_parts(version.data, version.length) },
+            expected_version,
+        );
+        assert_eq!(database.events.queries.load(Ordering::Acquire), 0);
+        assert_eq!(
+            unsafe { type_bridge_read_transaction_close(&mut transaction, &mut diagnostics) },
+            TypeBridgeStatus::Ok,
+        );
+        assert!(diagnostics.is_null());
     }
 
     #[test]

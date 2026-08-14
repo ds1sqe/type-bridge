@@ -1,6 +1,7 @@
 //! Synchronous C runtime, database, transaction, and cancellation boundary.
 
 use std::future::Future;
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::ptr;
 use std::sync::Arc;
@@ -12,18 +13,26 @@ use type_bridge_contract::sdk_diagnostic::{
     SdkProviderOperation,
 };
 use type_bridge_orm::{
-    ConnectOptions, Database, OrmError, TransactionContext, TxType,
-    is_identity_safe_provider_address, lower_classified_commit_error, lower_execution_error,
+    AnswerCancellation, ConnectOptions, Database, OrmError, PreparedSecureConnectOptions,
+    QueryExecutionDeadline, QueryExecutionResourceLimits, SecureConnectError, SecureConnectOptions,
+    TlsMode, TransactionContext, TransactionContextState, TxType,
+    is_identity_safe_provider_address, lower_execution_error,
 };
 
 use crate::abi::{
     SchemaPackageState, TypeBridgeByteView, TypeBridgeSchemaPackage, TypeBridgeStatus, guarded,
     initialize_view,
 };
+use crate::allocation::{AllocationSite, ReservedBox, allocation_exhausted};
 use crate::execution_diagnostic::{
     TypeBridgeExecutionDiagnostics, execution_diagnostics_handle, return_execution_error,
 };
-use crate::generated_preflight::direct_output_preflight;
+use crate::generated_preflight::{DirectOutputPreflight, direct_output_preflight};
+use crate::policy::{
+    DATABASE_CONFIG_V2_VERSION, DATABASE_CUSTOM_ROOT_CA_BYTES_MAX, TLS_CUSTOM_ROOT_CA,
+    TLS_DISABLED, TLS_NATIVE_ROOTS, TypeBridgeDatabaseConfigV2, parse_common_limits,
+};
+use crate::query::TypeBridgeQueryExecutionLimitsV1;
 
 const RUNTIME_CONFIG_VERSION: u32 = 1;
 const DATABASE_CONFIG_VERSION: u32 = 1;
@@ -33,14 +42,16 @@ const MAX_ADDRESS_BYTES: usize = 4 * 1024;
 const MAX_DATABASE_NAME_BYTES: usize = 256;
 const MAX_USERNAME_BYTES: usize = 4 * 1024;
 const MAX_PASSWORD_BYTES: usize = 64 * 1024;
-const TLS_DISABLED: u32 = 0;
-const TLS_NATIVE_ROOTS: u32 = 1;
 const REQUIRED_SEMANTIC_PROFILE: &[u8] = b"typedb-3.12.1/v1";
 
 type ConnectFuture = Pin<Box<dyn Future<Output = Result<Database, OrmError>> + Send + 'static>>;
+type ControlledConnectFuture =
+    Pin<Box<dyn Future<Output = Result<Database, SdkExecutionDiagnostic>> + Send + 'static>>;
 
 trait DatabaseConnector: Send + Sync {
     fn connect(&self, input: DatabaseConnectInput) -> ConnectFuture;
+
+    fn connect_v2(&self, input: DatabaseConnectInputV2) -> ControlledConnectFuture;
 }
 
 struct TypeDbConnector;
@@ -60,6 +71,23 @@ impl DatabaseConnector for TypeDbConnector {
                 },
             )
             .await
+        })
+    }
+
+    fn connect_v2(&self, input: DatabaseConnectInputV2) -> ControlledConnectFuture {
+        Box::pin(async move {
+            Database::connect_prepared_secure_with_control(
+                &input.address,
+                &input.database,
+                &input.username,
+                &input.password,
+                input.transport,
+                input.limits,
+                input.deadline,
+                input.cancellation,
+            )
+            .await
+            .map_err(lower_secure_connect_error)
         })
     }
 }
@@ -125,6 +153,7 @@ pub(crate) struct DatabaseState {
     _package: Arc<SchemaPackageState>,
     database: Arc<Database>,
     server_version: Vec<u8>,
+    answer_ceiling: Option<QueryExecutionResourceLimits>,
     transaction_children: AtomicUsize,
 }
 
@@ -139,6 +168,7 @@ impl Drop for DatabaseState {
 struct TransactionState {
     database: Arc<DatabaseState>,
     context: Option<TransactionContext>,
+    answer_ceiling: Option<QueryExecutionResourceLimits>,
     poisoned: AtomicBool,
 }
 
@@ -179,6 +209,14 @@ impl TypeBridgeDatabase {
         &self.state.database
     }
 
+    pub(crate) fn answer_ceiling(&self) -> QueryExecutionResourceLimits {
+        self.state.answer_ceiling.unwrap_or_default()
+    }
+
+    pub(crate) fn policy_answer_ceiling(&self) -> Option<QueryExecutionResourceLimits> {
+        self.state.answer_ceiling
+    }
+
     pub(crate) fn open_transaction_context(
         &self,
         tx_type: TxType,
@@ -204,11 +242,20 @@ impl TypeBridgeDatabase {
         &self,
         context: &TransactionContext,
     ) -> Result<(), SdkExecutionDiagnostic> {
-        commit_context_classified(&self.state.runtime.runtime, context)
+        commit_context_sdk(&self.state.runtime.runtime, context)
     }
 
     #[cfg(test)]
     pub(crate) fn from_test_database(package: Arc<SchemaPackageState>, database: Database) -> Self {
+        Self::from_test_database_with_answer_ceiling(package, database, None)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_test_database_with_answer_ceiling(
+        package: Arc<SchemaPackageState>,
+        database: Database,
+        answer_ceiling: Option<QueryExecutionResourceLimits>,
+    ) -> Self {
         let runtime = Builder::new_current_thread()
             .enable_all()
             .build()
@@ -224,6 +271,7 @@ impl TypeBridgeDatabase {
                 _package: package,
                 database: Arc::new(database),
                 server_version: b"3.12.1".to_vec(),
+                answer_ceiling,
                 transaction_children: AtomicUsize::new(0),
             }),
         }
@@ -231,12 +279,38 @@ impl TypeBridgeDatabase {
 }
 
 impl TypeBridgeReadTransaction {
+    #[cfg(test)]
+    pub(crate) fn from_test_context_with_answer_ceiling(
+        database: &TypeBridgeDatabase,
+        context: TransactionContext,
+        answer_ceiling: Option<QueryExecutionResourceLimits>,
+    ) -> Self {
+        increment_child(&database.state.transaction_children)
+            .expect("the C ABI test transaction child count remains bounded");
+        Self {
+            state: TransactionState {
+                database: Arc::clone(&database.state),
+                context: Some(context),
+                answer_ceiling,
+                poisoned: AtomicBool::new(false),
+            },
+        }
+    }
+
     pub(crate) fn package_state(&self) -> &Arc<SchemaPackageState> {
         &self.state.database._package
     }
 
     pub(crate) fn context(&self) -> Option<&TransactionContext> {
         self.state.context.as_ref()
+    }
+
+    pub(crate) fn answer_ceiling(&self) -> QueryExecutionResourceLimits {
+        self.state.answer_ceiling.unwrap_or_default()
+    }
+
+    pub(crate) fn policy_answer_ceiling(&self) -> Option<QueryExecutionResourceLimits> {
+        self.state.answer_ceiling
     }
 
     pub(crate) fn is_poisoned(&self) -> bool {
@@ -253,12 +327,38 @@ impl TypeBridgeReadTransaction {
 }
 
 impl TypeBridgeWriteTransaction {
+    #[cfg(test)]
+    pub(crate) fn from_test_context_with_answer_ceiling(
+        database: &TypeBridgeDatabase,
+        context: TransactionContext,
+        answer_ceiling: Option<QueryExecutionResourceLimits>,
+    ) -> Self {
+        increment_child(&database.state.transaction_children)
+            .expect("the C ABI test transaction child count remains bounded");
+        Self {
+            state: TransactionState {
+                database: Arc::clone(&database.state),
+                context: Some(context),
+                answer_ceiling,
+                poisoned: AtomicBool::new(false),
+            },
+        }
+    }
+
     pub(crate) fn package_state(&self) -> &Arc<SchemaPackageState> {
         &self.state.database._package
     }
 
     pub(crate) fn context(&self) -> Option<&TransactionContext> {
         self.state.context.as_ref()
+    }
+
+    pub(crate) fn answer_ceiling(&self) -> QueryExecutionResourceLimits {
+        self.state.answer_ceiling.unwrap_or_default()
+    }
+
+    pub(crate) fn policy_answer_ceiling(&self) -> Option<QueryExecutionResourceLimits> {
+        self.state.answer_ceiling
     }
 
     pub(crate) fn is_poisoned(&self) -> bool {
@@ -284,15 +384,63 @@ impl TypeBridgeCancellation {
     }
 }
 
-fn commit_context_classified(
+fn rollback_only_commit_diagnostic(
+    runtime: &Runtime,
+    context: &TransactionContext,
+) -> Option<SdkExecutionDiagnostic> {
+    runtime.block_on(async {
+        if context.lifecycle_state().await != TransactionContextState::RollbackOnly {
+            return None;
+        }
+        Some(
+            context
+                .commit_sdk()
+                .await
+                .expect_err("a rollback-only context cannot dispatch provider commit"),
+        )
+    })
+}
+
+fn commit_context_sdk(
     runtime: &Runtime,
     context: &TransactionContext,
 ) -> Result<(), SdkExecutionDiagnostic> {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        runtime.block_on(context.commit_classified())
+        runtime.block_on(context.commit_sdk())
     })) {
         Ok(Ok(())) => Ok(()),
-        Ok(Err(error)) => Err(lower_classified_commit_error(error)),
+        Ok(Err(diagnostic)) => Err(diagnostic),
+        Err(_) => Err(SdkExecutionDiagnostic::commit_failure(
+            SdkCommitFailureOutcome::Unknown,
+        )),
+    }
+}
+
+fn commit_context_sdk_controlled(
+    runtime: &Runtime,
+    context: &TransactionContext,
+    deadline: QueryExecutionDeadline,
+    cancellation: &AnswerCancellation,
+) -> Result<(), SdkExecutionDiagnostic> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        runtime.block_on(async {
+            let future = context.commit_sdk();
+            tokio::pin!(future);
+            tokio::select! {
+                biased;
+                result = &mut future => result,
+                _ = cancellation.cancelled() => {
+                    cancellation.cancel();
+                    future.await
+                },
+                _ = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline.instant())) => {
+                    future.await
+                },
+            }
+        })
+    })) {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(diagnostic)) => Err(diagnostic),
         Err(_) => Err(SdkExecutionDiagnostic::commit_failure(
             SdkCommitFailureOutcome::Unknown,
         )),
@@ -306,6 +454,35 @@ struct DatabaseConnectInput {
     password: String,
     http_port: u16,
     tls_native_roots: bool,
+}
+
+struct DatabaseConnectInputV2 {
+    address: String,
+    database: String,
+    username: String,
+    password: String,
+    transport: PreparedSecureConnectOptions,
+    limits: QueryExecutionResourceLimits,
+    deadline: QueryExecutionDeadline,
+    cancellation: AnswerCancellation,
+}
+
+struct DatabaseConfigV2Preflight {
+    config: TypeBridgeDatabaseConfigV2,
+    connection_limits: QueryExecutionResourceLimits,
+    answer_limits: QueryExecutionResourceLimits,
+    deadline: QueryExecutionDeadline,
+}
+
+struct PreparedDatabaseConfigV2 {
+    address: String,
+    database: String,
+    username: String,
+    password: String,
+    transport: PreparedSecureConnectOptions,
+    connection_limits: QueryExecutionResourceLimits,
+    answer_limits: QueryExecutionResourceLimits,
+    deadline: QueryExecutionDeadline,
 }
 
 fn code(value: &'static str) -> SdkDiagnosticCode {
@@ -326,6 +503,42 @@ fn unsupported(code_value: &'static str, message_value: &'static str) -> SdkExec
 
 fn resource_limit(code_value: &'static str, message_value: &'static str) -> SdkExecutionDiagnostic {
     SdkExecutionDiagnostic::resource_limit(code(code_value), message(message_value))
+}
+
+fn lifecycle_statement_limit() -> SdkExecutionDiagnostic {
+    resource_limit(
+        "provider_statement_limit",
+        "The transaction lifecycle operation exceeds its provider dispatch ceiling",
+    )
+}
+
+fn require_lifecycle_dispatch(
+    limits: QueryExecutionResourceLimits,
+) -> Result<(), SdkExecutionDiagnostic> {
+    if limits.effective().statements == 0 {
+        Err(lifecycle_statement_limit())
+    } else {
+        Ok(())
+    }
+}
+
+fn tls_configuration_error(error: &SecureConnectError) -> SdkExecutionDiagnostic {
+    let code_value = error
+        .configuration_code()
+        .unwrap_or("c_database_tls_configuration_invalid");
+    SdkExecutionDiagnostic::invalid_input(
+        SdkDiagnosticCode::new(code_value)
+            .expect("typed TLS configuration codes are canonical SDK diagnostic codes"),
+        message("The database TLS policy or captured trust material is invalid"),
+    )
+}
+
+fn lower_secure_connect_error(error: SecureConnectError) -> SdkExecutionDiagnostic {
+    if error.configuration_code().is_some() {
+        return tls_configuration_error(&error);
+    }
+    let error: OrmError = error.into_runtime_error().into();
+    lower_execution_error(error, SdkProviderOperation::Connect)
 }
 
 fn in_use_diagnostic() -> SdkExecutionDiagnostic {
@@ -352,6 +565,240 @@ fn initialize_diagnostics_output(
     }
     // SAFETY: the C contract requires a writable output slot.
     unsafe { out_diagnostics.write(ptr::null_mut()) };
+    Ok(())
+}
+
+fn check_preflight_object<T>(
+    preflight: &DirectOutputPreflight,
+    pointer: *const T,
+) -> Result<(), TypeBridgeStatus> {
+    if pointer.is_null() {
+        Ok(())
+    } else {
+        preflight.check_bytes(pointer.cast(), size_of::<T>())
+    }
+}
+
+unsafe fn check_database_config_v2_ranges(
+    preflight: &DirectOutputPreflight,
+    config: *const TypeBridgeDatabaseConfigV2,
+) -> Result<(), TypeBridgeStatus> {
+    check_preflight_object(preflight, config)?;
+    if config.is_null() {
+        return Ok(());
+    }
+    // SAFETY: the complete outer descriptor was fenced before this unaligned read.
+    let config = unsafe { config.read_unaligned() };
+    for view in [
+        config.address,
+        config.database,
+        config.username,
+        config.password,
+        config.custom_root_ca_pem,
+    ] {
+        preflight.check_bytes(view.data.cast(), view.length)?;
+    }
+    Ok(())
+}
+
+unsafe fn check_package_ranges(
+    preflight: &DirectOutputPreflight,
+    package: *const TypeBridgeSchemaPackage,
+) -> Result<(), TypeBridgeStatus> {
+    check_preflight_object(preflight, package)?;
+    if !package.is_null() {
+        // SAFETY: the complete outer package handle was fenced above.
+        preflight.check_package_borrowed_ranges(unsafe { &*package }.state())?;
+    }
+    Ok(())
+}
+
+pub(crate) fn check_database_borrowed_ranges(
+    preflight: &DirectOutputPreflight,
+    database: &TypeBridgeDatabase,
+) -> Result<(), TypeBridgeStatus> {
+    preflight.check_package_borrowed_ranges(database.package_state())?;
+    preflight.check_bytes(
+        database.state.server_version.as_ptr().cast(),
+        database.state.server_version.len(),
+    )
+}
+
+pub(crate) fn check_read_transaction_borrowed_ranges(
+    preflight: &DirectOutputPreflight,
+    transaction: &TypeBridgeReadTransaction,
+) -> Result<(), TypeBridgeStatus> {
+    preflight.check_package_borrowed_ranges(transaction.package_state())?;
+    preflight.check_bytes(
+        transaction.state.database.server_version.as_ptr().cast(),
+        transaction.state.database.server_version.len(),
+    )
+}
+
+pub(crate) fn check_write_transaction_borrowed_ranges(
+    preflight: &DirectOutputPreflight,
+    transaction: &TypeBridgeWriteTransaction,
+) -> Result<(), TypeBridgeStatus> {
+    preflight.check_package_borrowed_ranges(transaction.package_state())?;
+    preflight.check_bytes(
+        transaction.state.database.server_version.as_ptr().cast(),
+        transaction.state.database.server_version.len(),
+    )
+}
+
+fn terminal_output_preflight<T>(
+    owner: *mut *mut T,
+    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+) -> Result<DirectOutputPreflight, TypeBridgeStatus> {
+    if owner.is_null() || out_diagnostics.is_null() {
+        return Err(TypeBridgeStatus::InvalidArgument);
+    }
+    direct_output_preflight(&[
+        (owner.cast(), size_of::<*mut T>()),
+        (
+            out_diagnostics.cast(),
+            size_of::<*mut TypeBridgeExecutionDiagnostics>(),
+        ),
+    ])
+}
+
+unsafe fn check_database_transaction_open_ranges<T>(
+    database: *const TypeBridgeDatabase,
+    cancellation: *const TypeBridgeCancellation,
+    out_transaction: *mut *mut T,
+    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+) -> Result<(), TypeBridgeStatus> {
+    if database.is_null()
+        // Preserve the released V1 equality-only alias contract when no live
+        // policy-bearing target exists.
+        || unsafe { &*database }.policy_answer_ceiling().is_none()
+    {
+        if aliases(database, out_transaction)
+            || aliases(database, out_diagnostics)
+            || aliases(cancellation, out_transaction)
+            || aliases(cancellation, out_diagnostics)
+        {
+            return Err(TypeBridgeStatus::InvalidArgument);
+        }
+        return Ok(());
+    }
+    let outputs = terminal_output_preflight(out_transaction, out_diagnostics)?;
+    check_preflight_object(&outputs, database)?;
+    check_preflight_object(&outputs, cancellation)?;
+    if !database.is_null() {
+        // SAFETY: the complete database handle was fenced above and remains
+        // immutable throughout the constructor call.
+        check_database_borrowed_ranges(&outputs, unsafe { &*database })?;
+    }
+    Ok(())
+}
+
+unsafe fn check_policy_terminal_ranges<T>(
+    owner: *mut *mut T,
+    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+    has_policy: impl FnOnce(&T) -> bool,
+    check_borrowed_ranges: impl FnOnce(&DirectOutputPreflight, &T) -> Result<(), TypeBridgeStatus>,
+) -> Result<(), TypeBridgeStatus> {
+    if owner.is_null() || out_diagnostics.is_null() {
+        return Err(TypeBridgeStatus::InvalidArgument);
+    }
+    if owner.cast::<()>() == out_diagnostics.cast::<()>() {
+        return Err(TypeBridgeStatus::InvalidArgument);
+    }
+    // SAFETY: a terminal caller promises one readable/writable owner slot.
+    let value = unsafe { owner.read_unaligned() };
+    if value.is_null() {
+        return Ok(());
+    }
+    // SAFETY: a non-null owner slot retains one live handle until dispatch.
+    let handle = unsafe { &*value };
+    if !has_policy(handle) {
+        return Ok(());
+    }
+    let outputs = terminal_output_preflight(owner, out_diagnostics)?;
+    check_preflight_object(&outputs, value)?;
+    check_borrowed_ranges(&outputs, handle)
+}
+
+unsafe fn check_policy_database_terminal_ranges(
+    database: *mut *mut TypeBridgeDatabase,
+    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+) -> Result<(), TypeBridgeStatus> {
+    // SAFETY: the shared helper performs no writes and fences a V2-origin
+    // database's complete retained graph before its terminal may write.
+    unsafe {
+        check_policy_terminal_ranges(
+            database,
+            out_diagnostics,
+            |value| value.policy_answer_ceiling().is_some(),
+            check_database_borrowed_ranges,
+        )
+    }
+}
+
+unsafe fn check_policy_read_transaction_terminal_ranges(
+    transaction: *mut *mut TypeBridgeReadTransaction,
+    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+) -> Result<(), TypeBridgeStatus> {
+    // SAFETY: the shared helper performs no writes and fences a V2-origin
+    // transaction's complete retained graph before its terminal may write.
+    unsafe {
+        check_policy_terminal_ranges(
+            transaction,
+            out_diagnostics,
+            |value| value.policy_answer_ceiling().is_some(),
+            check_read_transaction_borrowed_ranges,
+        )
+    }
+}
+
+unsafe fn check_policy_write_transaction_terminal_ranges(
+    transaction: *mut *mut TypeBridgeWriteTransaction,
+    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+) -> Result<(), TypeBridgeStatus> {
+    // SAFETY: the shared helper performs no writes and fences a V2-origin
+    // transaction's complete retained graph before its terminal may write.
+    unsafe {
+        check_policy_terminal_ranges(
+            transaction,
+            out_diagnostics,
+            |value| value.policy_answer_ceiling().is_some(),
+            check_write_transaction_borrowed_ranges,
+        )
+    }
+}
+
+unsafe fn check_write_transaction_commit_ranges(
+    transaction: *mut *mut TypeBridgeWriteTransaction,
+    cancellation: *const TypeBridgeCancellation,
+    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+) -> Result<(), TypeBridgeStatus> {
+    if transaction.is_null() || out_diagnostics.is_null() {
+        return Err(TypeBridgeStatus::InvalidArgument);
+    }
+    if transaction.cast::<()>() == out_diagnostics.cast::<()>()
+        || (!cancellation.is_null()
+            && (cancellation.cast::<()>() == transaction.cast::<()>()
+                || cancellation.cast::<()>() == out_diagnostics.cast::<()>()))
+    {
+        return Err(TypeBridgeStatus::InvalidArgument);
+    }
+    // SAFETY: a commit caller promises one readable/writable owner slot.
+    let value = unsafe { transaction.read_unaligned() };
+    if value.is_null()
+        // A null owner has no V2 policy graph; retain the released terminal path.
+        || unsafe { &*value }.policy_answer_ceiling().is_none()
+    {
+        return Ok(());
+    }
+    let outputs = terminal_output_preflight(transaction, out_diagnostics)?;
+    check_preflight_object(&outputs, cancellation)?;
+    check_preflight_object(&outputs, value)?;
+    if !value.is_null() {
+        // SAFETY: the complete live handle was fenced above and remains owned
+        // by the caller until all pre-dispatch checks have succeeded.
+        check_write_transaction_borrowed_ranges(&outputs, unsafe { &*value })?;
+    }
     Ok(())
 }
 
@@ -395,6 +842,49 @@ fn is_cancelled(cancellation: *const TypeBridgeCancellation) -> bool {
     }
     // SAFETY: the caller retains a live cancellation handle during this call.
     unsafe { &*cancellation }.requested.load(Ordering::Acquire)
+}
+
+fn invocation_cancellation(cancellation: *const TypeBridgeCancellation) -> AnswerCancellation {
+    if cancellation.is_null() {
+        return AnswerCancellation::default();
+    }
+    // SAFETY: callers retain the live cancellation handle for the invocation.
+    unsafe { &*cancellation }.answer_cancellation()
+}
+
+fn check_control(
+    deadline: QueryExecutionDeadline,
+    cancellation: &AnswerCancellation,
+) -> Result<(), SdkExecutionDiagnostic> {
+    if cancellation.is_cancelled() {
+        Err(SdkExecutionDiagnostic::data_operation_cancelled())
+    } else if deadline.is_expired() {
+        Err(SdkExecutionDiagnostic::data_operation_deadline_exceeded())
+    } else {
+        Ok(())
+    }
+}
+
+enum ControlledAwaitError<E> {
+    Interrupted(SdkExecutionDiagnostic),
+    Inner(E),
+}
+
+async fn await_controlled<F, T, E>(
+    future: F,
+    deadline: QueryExecutionDeadline,
+    cancellation: &AnswerCancellation,
+) -> Result<T, ControlledAwaitError<E>>
+where
+    F: Future<Output = Result<T, E>>,
+{
+    tokio::pin!(future);
+    tokio::select! {
+        biased;
+        result = &mut future => result.map_err(ControlledAwaitError::Inner),
+        _ = cancellation.cancelled() => Err(ControlledAwaitError::Interrupted(SdkExecutionDiagnostic::data_operation_cancelled())),
+        _ = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline.instant())) => Err(ControlledAwaitError::Interrupted(SdkExecutionDiagnostic::data_operation_deadline_exceeded())),
+    }
 }
 
 fn cancellation_error(
@@ -513,6 +1003,190 @@ unsafe fn snapshot_database_config(
         password: unsafe { copied_utf8(config.password, MAX_PASSWORD_BYTES, true) }?,
         http_port,
         tls_native_roots,
+    })
+}
+
+unsafe fn preflight_database_config_v2(
+    config: *const TypeBridgeDatabaseConfigV2,
+) -> Result<DatabaseConfigV2Preflight, SdkExecutionDiagnostic> {
+    if config.is_null() {
+        return Err(invalid_input(
+            "c_database_config_missing",
+            "The database configuration is required",
+        ));
+    }
+    // SAFETY: unaligned reads admit hostile-but-readable C descriptor storage.
+    let config = unsafe { config.read_unaligned() };
+    if config.struct_size as usize != size_of::<TypeBridgeDatabaseConfigV2>()
+        || config.version != DATABASE_CONFIG_V2_VERSION
+        || config.reserved != [0; 4]
+    {
+        return Err(invalid_input(
+            "c_database_config_layout_invalid",
+            "The database configuration layout is invalid",
+        ));
+    }
+    let connection_limits = parse_common_limits(Some(config.connection_limits))?;
+    let answer_limits = parse_common_limits(Some(config.answer_limits))?;
+    let deadline = QueryExecutionDeadline::for_limits(connection_limits);
+    Ok(DatabaseConfigV2Preflight {
+        config,
+        connection_limits,
+        answer_limits,
+        deadline,
+    })
+}
+
+unsafe fn parse_call_limits(
+    limits: *const TypeBridgeQueryExecutionLimitsV1,
+) -> Result<QueryExecutionResourceLimits, SdkExecutionDiagnostic> {
+    let value = if limits.is_null() {
+        None
+    } else {
+        // SAFETY: unaligned reads admit hostile-but-readable C descriptor storage.
+        Some(unsafe { limits.read_unaligned() })
+    };
+    parse_common_limits(value)
+}
+
+unsafe fn copied_custom_root(
+    view: TypeBridgeByteView,
+    tls_mode: u32,
+) -> Result<Option<Arc<[u8]>>, SdkExecutionDiagnostic> {
+    if tls_mode != TLS_CUSTOM_ROOT_CA {
+        if view.length != 0 || !view.data.is_null() {
+            return Err(invalid_input(
+                "c_database_custom_root_must_be_empty",
+                "Custom-root bytes must be canonical-empty outside custom-root TLS mode",
+            ));
+        }
+        return Ok(None);
+    }
+    if view.length == 0 {
+        return Err(invalid_input(
+            "c_database_custom_root_missing",
+            "Custom-root TLS mode requires a nonempty captured PEM bundle",
+        ));
+    }
+    if view.length > DATABASE_CUSTOM_ROOT_CA_BYTES_MAX {
+        return Err(resource_limit(
+            "c_database_custom_root_limit_exceeded",
+            "The captured custom-root PEM bundle exceeds its stable byte ceiling",
+        ));
+    }
+    if view.data.is_null() {
+        return Err(invalid_input(
+            "c_database_custom_root_view_invalid",
+            "The captured custom-root PEM byte view is invalid",
+        ));
+    }
+    // SAFETY: the caller promises a readable range and its length is now bounded.
+    let source = unsafe { std::slice::from_raw_parts(view.data, view.length) };
+    if std::str::from_utf8(source).is_err() {
+        return Err(invalid_input(
+            "tls_custom_root_ca_invalid_pem",
+            "The captured custom-root PEM bundle is not valid UTF-8 PEM",
+        ));
+    }
+    let mut copied = Vec::new();
+    copied.try_reserve_exact(source.len()).map_err(|_| {
+        resource_limit(
+            "c_allocation_exhausted",
+            "The C runtime could not allocate bounded database configuration storage",
+        )
+    })?;
+    copied.extend_from_slice(source);
+    Ok(Some(Arc::from(copied.into_boxed_slice())))
+}
+
+unsafe fn prepare_database_config_v2(
+    preflight: DatabaseConfigV2Preflight,
+    cancellation: Option<&AnswerCancellation>,
+) -> Result<PreparedDatabaseConfigV2, SdkExecutionDiagnostic> {
+    if let Some(cancellation) = cancellation {
+        check_control(preflight.deadline, cancellation)?;
+    }
+
+    let http_port = u16::try_from(preflight.config.http_port)
+        .ok()
+        .filter(|value| *value != 0)
+        .ok_or_else(|| {
+            invalid_input(
+                "c_database_config_http_port_invalid",
+                "The database HTTP probe port is invalid",
+            )
+        })?;
+    let tls_mode = match preflight.config.tls_mode {
+        TLS_DISABLED => TlsMode::Disabled,
+        TLS_NATIVE_ROOTS => TlsMode::NativeRoots,
+        TLS_CUSTOM_ROOT_CA => {
+            TlsMode::CustomRootCa(PathBuf::from("typebridge-c-captured-custom-root.pem"))
+        }
+        _ => {
+            return Err(invalid_input(
+                "c_database_config_tls_mode_invalid",
+                "The database TLS mode is invalid",
+            ));
+        }
+    };
+
+    // SAFETY: configuration text is copied under its stable ceiling before use.
+    let address = unsafe { copied_utf8(preflight.config.address, MAX_ADDRESS_BYTES, false) }?;
+    if !is_identity_safe_provider_address(&address) {
+        return Err(invalid_input(
+            "c_database_address_invalid",
+            "The database address is not a canonical credential-free provider endpoint",
+        ));
+    }
+    if address.contains(',') {
+        return Err(unsupported(
+            "c_database_multi_endpoint_unsupported",
+            "C database configuration version 2 supports exactly one provider endpoint",
+        ));
+    }
+    // SAFETY: the database name is copied under its stable ceiling before use.
+    let database =
+        unsafe { copied_utf8(preflight.config.database, MAX_DATABASE_NAME_BYTES, false) }?;
+
+    // SAFETY: custom trust is copied once before credentials are inspected.
+    let custom_root = unsafe {
+        copied_custom_root(
+            preflight.config.custom_root_ca_pem,
+            preflight.config.tls_mode,
+        )
+    }?;
+    let options = SecureConnectOptions {
+        http_port,
+        tls_mode,
+        server_version: None,
+    };
+    let transport = match custom_root {
+        Some(bytes) => options.prepare_transport_from_captured_custom_root(bytes),
+        None => options.prepare_transport(),
+    }
+    .map_err(|error| tls_configuration_error(&error))?;
+    if let Some(cancellation) = cancellation {
+        check_control(preflight.deadline, cancellation)?;
+    }
+
+    // Credential bytes are copied only after layout, limits, endpoint, and trust validation.
+    // SAFETY: both inputs are copied under stable ceilings before provider dispatch.
+    let username = unsafe { copied_utf8(preflight.config.username, MAX_USERNAME_BYTES, false) }?;
+    // SAFETY: an empty password remains an admitted exact copied value.
+    let password = unsafe { copied_utf8(preflight.config.password, MAX_PASSWORD_BYTES, true) }?;
+    if let Some(cancellation) = cancellation {
+        check_control(preflight.deadline, cancellation)?;
+    }
+
+    Ok(PreparedDatabaseConfigV2 {
+        address,
+        database,
+        username,
+        password,
+        transport,
+        connection_limits: preflight.connection_limits,
+        answer_limits: preflight.answer_limits,
+        deadline: preflight.deadline,
     })
 }
 
@@ -739,6 +1413,187 @@ pub unsafe extern "C" fn type_bridge_cancellation_close(
     })
 }
 
+/// Validate and snapshot one version-2 database policy without provider I/O.
+pub(crate) unsafe extern "C" fn type_bridge_database_config_validate_v2_impl(
+    config: *const TypeBridgeDatabaseConfigV2,
+    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+) -> TypeBridgeStatus {
+    let outputs = match direct_output_preflight(&[(
+        out_diagnostics.cast(),
+        size_of::<*mut TypeBridgeExecutionDiagnostics>(),
+    )]) {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    // SAFETY: the complete descriptor and every caller-owned byte view are
+    // fenced before the diagnostic slot is initialized.
+    if let Err(status) = unsafe { check_database_config_v2_ranges(&outputs, config) } {
+        return status;
+    }
+    if let Err(status) = initialize_diagnostics_output(out_diagnostics) {
+        return status;
+    }
+    guarded(|| {
+        // SAFETY: the caller retains every configuration byte view for this call.
+        let preflight = match unsafe { preflight_database_config_v2(config) } {
+            Ok(value) => value,
+            Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
+        };
+        // SAFETY: preparation copies all caller-owned bytes before returning.
+        // Validation deliberately does not execute the connection timeout: it
+        // performs no provider work and has no cancellation argument.
+        match unsafe { prepare_database_config_v2(preflight, None) } {
+            Ok(_) => TypeBridgeStatus::Ok,
+            Err(diagnostic) => return_execution_error(diagnostic, out_diagnostics),
+        }
+    })
+}
+
+/// Connect through one captured version-2 policy without activating its ABI export yet.
+pub(crate) unsafe extern "C" fn type_bridge_database_open_v2_impl(
+    runtime: *const TypeBridgeRuntime,
+    package: *const TypeBridgeSchemaPackage,
+    config: *const TypeBridgeDatabaseConfigV2,
+    cancellation: *const TypeBridgeCancellation,
+    out_database: *mut *mut TypeBridgeDatabase,
+    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+) -> TypeBridgeStatus {
+    let outputs = match direct_output_preflight(&[
+        (out_database.cast(), size_of::<*mut TypeBridgeDatabase>()),
+        (
+            out_diagnostics.cast(),
+            size_of::<*mut TypeBridgeExecutionDiagnostics>(),
+        ),
+    ]) {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    for result in [
+        check_preflight_object(&outputs, runtime),
+        // SAFETY: the complete package handle is checked before its retained bytes.
+        unsafe { check_package_ranges(&outputs, package) },
+        // SAFETY: the complete configuration is checked before its nested views.
+        unsafe { check_database_config_v2_ranges(&outputs, config) },
+        check_preflight_object(&outputs, cancellation),
+    ] {
+        if let Err(status) = result {
+            return status;
+        }
+    }
+    // SAFETY: independent output initialization is the constructor contract.
+    if let Err(status) = unsafe { initialize_handle_outputs(out_database, out_diagnostics) } {
+        return status;
+    }
+    guarded(|| {
+        if runtime.is_null() || package.is_null() {
+            return TypeBridgeStatus::InvalidArgument;
+        }
+        // Capture the sole absolute connection deadline before trust preparation,
+        // credential copying, or provider dispatch.
+        // SAFETY: caller retains the configuration and its nested views.
+        let preflight = match unsafe { preflight_database_config_v2(config) } {
+            Ok(value) => value,
+            Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
+        };
+        // SAFETY: caller retains both immutable parent handles during the call.
+        let runtime = unsafe { &*runtime };
+        let package = unsafe { &*package };
+        if !package_is_exact_for_database(package.state()) {
+            return return_execution_error(
+                unsupported(
+                    "c_database_semantic_profile_unsupported",
+                    "The verified schema package targets a semantic profile unsupported by C database configuration version 2",
+                ),
+                out_diagnostics,
+            );
+        }
+        let cancellation = invocation_cancellation(cancellation);
+        // SAFETY: preparation copies all caller-owned views before provider dispatch.
+        let prepared = match unsafe { prepare_database_config_v2(preflight, Some(&cancellation)) } {
+            Ok(value) => value,
+            Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
+        };
+        let deadline = prepared.deadline;
+        let answer_limits = prepared.answer_limits;
+        let connection_limits = prepared.connection_limits;
+        let handle_reservation = match ReservedBox::try_new(AllocationSite::DatabaseHandle) {
+            Ok(value) => value,
+            Err(_) => return return_execution_error(allocation_exhausted(), out_diagnostics),
+        };
+        if let Err(diagnostic) = check_control(deadline, &cancellation) {
+            return return_execution_error(diagnostic, out_diagnostics);
+        }
+        let future = runtime.state.connector.connect_v2(DatabaseConnectInputV2 {
+            address: prepared.address,
+            database: prepared.database,
+            username: prepared.username,
+            password: prepared.password,
+            transport: prepared.transport,
+            limits: connection_limits,
+            deadline,
+            cancellation: cancellation.clone(),
+        });
+        let database =
+            match runtime
+                .state
+                .runtime
+                .block_on(await_controlled(future, deadline, &cancellation))
+            {
+                Ok(value) => value,
+                Err(
+                    ControlledAwaitError::Interrupted(diagnostic)
+                    | ControlledAwaitError::Inner(diagnostic),
+                ) => {
+                    return return_execution_error(diagnostic, out_diagnostics);
+                }
+            };
+        if !database
+            .server_version()
+            .is_some_and(|version| version.major == 3 && version.minor == 12 && version.patch == 1)
+        {
+            let _ = database.close();
+            return return_execution_error(
+                unsupported(
+                    "c_database_server_version_not_exact",
+                    "The C database ABI requires an authoritative TypeDB 3.12.1 server",
+                ),
+                out_diagnostics,
+            );
+        }
+        if database.check_given_stage_support().is_err() {
+            let _ = database.close();
+            return return_execution_error(
+                unsupported(
+                    "c_database_given_rows_unsupported",
+                    "C database configuration version 2 requires the active band-9 GivenRows provider capability",
+                ),
+                out_diagnostics,
+            );
+        }
+        if let Err(diagnostic) = increment_child(&runtime.state.database_children) {
+            let _ = database.close();
+            return return_execution_error(diagnostic, out_diagnostics);
+        }
+        let state = DatabaseState {
+            runtime: Arc::clone(&runtime.state),
+            _package: Arc::clone(package.state()),
+            database: Arc::new(database),
+            server_version: b"3.12.1".to_vec(),
+            answer_ceiling: Some(answer_limits),
+            transaction_children: AtomicUsize::new(0),
+        };
+        // SAFETY: the initialized output remains writable.
+        unsafe {
+            out_database.write(Box::into_raw(handle_reservation.initialize(
+                TypeBridgeDatabase {
+                    state: Arc::new(state),
+                },
+            )))
+        };
+        TypeBridgeStatus::Ok
+    })
+}
+
 /// Connect and bind one exact TypeDB 3.12.1 database to a verified C package.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn type_bridge_database_open_v1(
@@ -825,6 +1680,7 @@ pub unsafe extern "C" fn type_bridge_database_open_v1(
             _package: Arc::clone(package.state()),
             database: Arc::new(database),
             server_version: b"3.12.1".to_vec(),
+            answer_ceiling: None,
             transaction_children: AtomicUsize::new(0),
         };
         // SAFETY: the initialized output remains writable.
@@ -883,6 +1739,12 @@ pub unsafe extern "C" fn type_bridge_database_close(
     if database.cast::<()>() == out_diagnostics.cast::<()>() {
         return TypeBridgeStatus::InvalidArgument;
     }
+    // SAFETY: V2-origin handles require their complete retained package and
+    // server-version bytes fenced before the diagnostic slot can be written.
+    if let Err(status) = unsafe { check_policy_database_terminal_ranges(database, out_diagnostics) }
+    {
+        return status;
+    }
     if let Err(status) = initialize_diagnostics_output(out_diagnostics) {
         return status;
     }
@@ -914,6 +1776,214 @@ pub unsafe extern "C" fn type_bridge_database_close(
     })
 }
 
+fn open_transaction_context_v2(
+    database: &TypeBridgeDatabase,
+    tx_type: TxType,
+    limits: QueryExecutionResourceLimits,
+    deadline: QueryExecutionDeadline,
+    cancellation: &AnswerCancellation,
+) -> Result<TransactionContext, SdkExecutionDiagnostic> {
+    check_control(deadline, cancellation)?;
+    require_lifecycle_dispatch(limits)?;
+    let operation = match tx_type {
+        TxType::Read => SdkProviderOperation::OpenReadTransaction,
+        TxType::Write => SdkProviderOperation::OpenWriteTransaction,
+        TxType::Schema => unreachable!("the C data runtime never opens schema transactions"),
+    };
+    match database.block_on(await_controlled(
+        database.orm_database().transaction_context(tx_type),
+        deadline,
+        cancellation,
+    )) {
+        Ok(value) => Ok(value),
+        Err(ControlledAwaitError::Interrupted(diagnostic)) => Err(diagnostic),
+        Err(ControlledAwaitError::Inner(error)) => Err(lower_execution_error(error, operation)),
+    }
+}
+
+/// Open one policy-aware read transaction without activating its ABI export yet.
+pub(crate) unsafe extern "C" fn type_bridge_read_transaction_open_v2_impl(
+    database: *const TypeBridgeDatabase,
+    limits: *const TypeBridgeQueryExecutionLimitsV1,
+    cancellation: *const TypeBridgeCancellation,
+    out_transaction: *mut *mut TypeBridgeReadTransaction,
+    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+) -> TypeBridgeStatus {
+    let outputs = match direct_output_preflight(&[
+        (
+            out_transaction.cast(),
+            size_of::<*mut TypeBridgeReadTransaction>(),
+        ),
+        (
+            out_diagnostics.cast(),
+            size_of::<*mut TypeBridgeExecutionDiagnostics>(),
+        ),
+    ]) {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    for result in [
+        check_preflight_object(&outputs, database),
+        check_preflight_object(&outputs, limits),
+        check_preflight_object(&outputs, cancellation),
+    ] {
+        if let Err(status) = result {
+            return status;
+        }
+    }
+    if !database.is_null()
+        // SAFETY: the complete outer database handle was fenced above.
+        && let Err(status) = check_database_borrowed_ranges(&outputs, unsafe { &*database })
+    {
+        return status;
+    }
+    // SAFETY: independent output initialization is the constructor contract.
+    if let Err(status) = unsafe { initialize_handle_outputs(out_transaction, out_diagnostics) } {
+        return status;
+    }
+    guarded(|| {
+        if database.is_null() {
+            return TypeBridgeStatus::InvalidArgument;
+        }
+        // SAFETY: caller retains the immutable database handle throughout the call.
+        let database = unsafe { &*database };
+        // SAFETY: an optional limits descriptor remains readable for this call.
+        let call_limits = match unsafe { parse_call_limits(limits) } {
+            Ok(value) => value,
+            Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
+        };
+        let effective = call_limits.constrained_by(database.answer_ceiling());
+        let deadline = QueryExecutionDeadline::for_limits(effective);
+        let cancellation = invocation_cancellation(cancellation);
+        if let Err(diagnostic) = check_control(deadline, &cancellation)
+            .and_then(|()| require_lifecycle_dispatch(effective))
+        {
+            return return_execution_error(diagnostic, out_diagnostics);
+        }
+        let handle_reservation = match ReservedBox::try_new(AllocationSite::ReadTransactionHandle) {
+            Ok(value) => value,
+            Err(_) => return return_execution_error(allocation_exhausted(), out_diagnostics),
+        };
+        let context = match open_transaction_context_v2(
+            database,
+            TxType::Read,
+            effective,
+            deadline,
+            &cancellation,
+        ) {
+            Ok(value) => value,
+            Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
+        };
+        if let Err(diagnostic) = increment_child(&database.state.transaction_children) {
+            let _ = database.close_transaction_context(&context);
+            return return_execution_error(diagnostic, out_diagnostics);
+        }
+        let transaction = TypeBridgeReadTransaction {
+            state: TransactionState {
+                database: Arc::clone(&database.state),
+                context: Some(context),
+                answer_ceiling: Some(effective),
+                poisoned: AtomicBool::new(false),
+            },
+        };
+        // SAFETY: the initialized output remains writable.
+        unsafe { out_transaction.write(Box::into_raw(handle_reservation.initialize(transaction))) };
+        TypeBridgeStatus::Ok
+    })
+}
+
+/// Open one policy-aware write transaction without activating its ABI export yet.
+pub(crate) unsafe extern "C" fn type_bridge_write_transaction_open_v2_impl(
+    database: *const TypeBridgeDatabase,
+    limits: *const TypeBridgeQueryExecutionLimitsV1,
+    cancellation: *const TypeBridgeCancellation,
+    out_transaction: *mut *mut TypeBridgeWriteTransaction,
+    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+) -> TypeBridgeStatus {
+    let outputs = match direct_output_preflight(&[
+        (
+            out_transaction.cast(),
+            size_of::<*mut TypeBridgeWriteTransaction>(),
+        ),
+        (
+            out_diagnostics.cast(),
+            size_of::<*mut TypeBridgeExecutionDiagnostics>(),
+        ),
+    ]) {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    for result in [
+        check_preflight_object(&outputs, database),
+        check_preflight_object(&outputs, limits),
+        check_preflight_object(&outputs, cancellation),
+    ] {
+        if let Err(status) = result {
+            return status;
+        }
+    }
+    if !database.is_null()
+        // SAFETY: the complete outer database handle was fenced above.
+        && let Err(status) = check_database_borrowed_ranges(&outputs, unsafe { &*database })
+    {
+        return status;
+    }
+    // SAFETY: independent output initialization is the constructor contract.
+    if let Err(status) = unsafe { initialize_handle_outputs(out_transaction, out_diagnostics) } {
+        return status;
+    }
+    guarded(|| {
+        if database.is_null() {
+            return TypeBridgeStatus::InvalidArgument;
+        }
+        // SAFETY: caller retains the immutable database handle throughout the call.
+        let database = unsafe { &*database };
+        // SAFETY: an optional limits descriptor remains readable for this call.
+        let call_limits = match unsafe { parse_call_limits(limits) } {
+            Ok(value) => value,
+            Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
+        };
+        let effective = call_limits.constrained_by(database.answer_ceiling());
+        let deadline = QueryExecutionDeadline::for_limits(effective);
+        let cancellation = invocation_cancellation(cancellation);
+        if let Err(diagnostic) = check_control(deadline, &cancellation)
+            .and_then(|()| require_lifecycle_dispatch(effective))
+        {
+            return return_execution_error(diagnostic, out_diagnostics);
+        }
+        let handle_reservation = match ReservedBox::try_new(AllocationSite::WriteTransactionHandle)
+        {
+            Ok(value) => value,
+            Err(_) => return return_execution_error(allocation_exhausted(), out_diagnostics),
+        };
+        let context = match open_transaction_context_v2(
+            database,
+            TxType::Write,
+            effective,
+            deadline,
+            &cancellation,
+        ) {
+            Ok(value) => value,
+            Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
+        };
+        if let Err(diagnostic) = increment_child(&database.state.transaction_children) {
+            let _ = database.rollback_transaction_context(&context);
+            return return_execution_error(diagnostic, out_diagnostics);
+        }
+        let transaction = TypeBridgeWriteTransaction {
+            state: TransactionState {
+                database: Arc::clone(&database.state),
+                context: Some(context),
+                answer_ceiling: Some(effective),
+                poisoned: AtomicBool::new(false),
+            },
+        };
+        // SAFETY: the initialized output remains writable.
+        unsafe { out_transaction.write(Box::into_raw(handle_reservation.initialize(transaction))) };
+        TypeBridgeStatus::Ok
+    })
+}
+
 /// Open one package-fenced read transaction.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn type_bridge_read_transaction_open(
@@ -922,12 +1992,17 @@ pub unsafe extern "C" fn type_bridge_read_transaction_open(
     out_transaction: *mut *mut TypeBridgeReadTransaction,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
-    if aliases(database, out_transaction)
-        || aliases(database, out_diagnostics)
-        || aliases(cancellation, out_transaction)
-        || aliases(cancellation, out_diagnostics)
-    {
-        return TypeBridgeStatus::InvalidArgument;
+    // SAFETY: complete outer handles and the database's borrowed byte graph
+    // are checked read-only before either constructor output is initialized.
+    if let Err(status) = unsafe {
+        check_database_transaction_open_ranges(
+            database,
+            cancellation,
+            out_transaction,
+            out_diagnostics,
+        )
+    } {
+        return status;
     }
     // We cannot delegate output allocation through `TransactionContext **`
     // because the public owner has a distinct opaque type. Initialize here and
@@ -944,19 +2019,47 @@ pub unsafe extern "C" fn type_bridge_read_transaction_open(
         if is_cancelled(cancellation) {
             return cancellation_error(out_diagnostics);
         }
-        let context = match database
-            .state
-            .runtime
-            .runtime
-            .block_on(database.state.database.transaction_context(TxType::Read))
-        {
-            Ok(value) => value,
-            Err(error) => {
-                return return_execution_error(
-                    lower_execution_error(error, SdkProviderOperation::OpenReadTransaction),
-                    out_diagnostics,
-                );
+        let (context, handle_reservation) = if let Some(limits) = database.policy_answer_ceiling() {
+            let deadline = QueryExecutionDeadline::for_limits(limits);
+            // ABI 1.3 cancellation remains pre-dispatch-only, but an inherited
+            // V2 timeout still bounds the provider await for every operation.
+            let in_flight_cancellation = AnswerCancellation::default();
+            if let Err(diagnostic) = check_control(deadline, &in_flight_cancellation)
+                .and_then(|()| require_lifecycle_dispatch(limits))
+            {
+                return return_execution_error(diagnostic, out_diagnostics);
             }
+            let reservation = match ReservedBox::try_new(AllocationSite::ReadTransactionHandle) {
+                Ok(value) => value,
+                Err(_) => return return_execution_error(allocation_exhausted(), out_diagnostics),
+            };
+            let context = match open_transaction_context_v2(
+                database,
+                TxType::Read,
+                limits,
+                deadline,
+                &in_flight_cancellation,
+            ) {
+                Ok(value) => value,
+                Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
+            };
+            (context, Some(reservation))
+        } else {
+            let context = match database
+                .state
+                .runtime
+                .runtime
+                .block_on(database.state.database.transaction_context(TxType::Read))
+            {
+                Ok(value) => value,
+                Err(error) => {
+                    return return_execution_error(
+                        lower_execution_error(error, SdkProviderOperation::OpenReadTransaction),
+                        out_diagnostics,
+                    );
+                }
+            };
+            (context, None)
         };
         if let Err(diagnostic) = increment_child(&database.state.transaction_children) {
             let _ = database.state.runtime.runtime.block_on(context.close());
@@ -966,10 +2069,15 @@ pub unsafe extern "C" fn type_bridge_read_transaction_open(
             state: TransactionState {
                 database: Arc::clone(&database.state),
                 context: Some(context),
+                answer_ceiling: database.state.answer_ceiling,
                 poisoned: AtomicBool::new(false),
             },
         };
-        unsafe { out_transaction.write(Box::into_raw(Box::new(transaction))) };
+        let transaction = match handle_reservation {
+            Some(reservation) => reservation.initialize(transaction),
+            None => Box::new(transaction),
+        };
+        unsafe { out_transaction.write(Box::into_raw(transaction)) };
         TypeBridgeStatus::Ok
     })
 }
@@ -982,12 +2090,17 @@ pub unsafe extern "C" fn type_bridge_write_transaction_open(
     out_transaction: *mut *mut TypeBridgeWriteTransaction,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
-    if aliases(database, out_transaction)
-        || aliases(database, out_diagnostics)
-        || aliases(cancellation, out_transaction)
-        || aliases(cancellation, out_diagnostics)
-    {
-        return TypeBridgeStatus::InvalidArgument;
+    // SAFETY: complete outer handles and the database's borrowed byte graph
+    // are checked read-only before either constructor output is initialized.
+    if let Err(status) = unsafe {
+        check_database_transaction_open_ranges(
+            database,
+            cancellation,
+            out_transaction,
+            out_diagnostics,
+        )
+    } {
+        return status;
     }
     // SAFETY: independent output initialization is the constructor contract.
     if let Err(status) = unsafe { initialize_handle_outputs(out_transaction, out_diagnostics) } {
@@ -1001,19 +2114,47 @@ pub unsafe extern "C" fn type_bridge_write_transaction_open(
         if is_cancelled(cancellation) {
             return cancellation_error(out_diagnostics);
         }
-        let context = match database
-            .state
-            .runtime
-            .runtime
-            .block_on(database.state.database.transaction_context(TxType::Write))
-        {
-            Ok(value) => value,
-            Err(error) => {
-                return return_execution_error(
-                    lower_execution_error(error, SdkProviderOperation::OpenWriteTransaction),
-                    out_diagnostics,
-                );
+        let (context, handle_reservation) = if let Some(limits) = database.policy_answer_ceiling() {
+            let deadline = QueryExecutionDeadline::for_limits(limits);
+            // ABI 1.3 cancellation remains pre-dispatch-only, but an inherited
+            // V2 timeout still bounds the provider await for every operation.
+            let in_flight_cancellation = AnswerCancellation::default();
+            if let Err(diagnostic) = check_control(deadline, &in_flight_cancellation)
+                .and_then(|()| require_lifecycle_dispatch(limits))
+            {
+                return return_execution_error(diagnostic, out_diagnostics);
             }
+            let reservation = match ReservedBox::try_new(AllocationSite::WriteTransactionHandle) {
+                Ok(value) => value,
+                Err(_) => return return_execution_error(allocation_exhausted(), out_diagnostics),
+            };
+            let context = match open_transaction_context_v2(
+                database,
+                TxType::Write,
+                limits,
+                deadline,
+                &in_flight_cancellation,
+            ) {
+                Ok(value) => value,
+                Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
+            };
+            (context, Some(reservation))
+        } else {
+            let context = match database
+                .state
+                .runtime
+                .runtime
+                .block_on(database.state.database.transaction_context(TxType::Write))
+            {
+                Ok(value) => value,
+                Err(error) => {
+                    return return_execution_error(
+                        lower_execution_error(error, SdkProviderOperation::OpenWriteTransaction),
+                        out_diagnostics,
+                    );
+                }
+            };
+            (context, None)
         };
         if let Err(diagnostic) = increment_child(&database.state.transaction_children) {
             let _ = database.state.runtime.runtime.block_on(context.close());
@@ -1023,10 +2164,15 @@ pub unsafe extern "C" fn type_bridge_write_transaction_open(
             state: TransactionState {
                 database: Arc::clone(&database.state),
                 context: Some(context),
+                answer_ceiling: database.state.answer_ceiling,
                 poisoned: AtomicBool::new(false),
             },
         };
-        unsafe { out_transaction.write(Box::into_raw(Box::new(transaction))) };
+        let transaction = match handle_reservation {
+            Some(reservation) => reservation.initialize(transaction),
+            None => Box::new(transaction),
+        };
+        unsafe { out_transaction.write(Box::into_raw(transaction)) };
         TypeBridgeStatus::Ok
     })
 }
@@ -1051,6 +2197,13 @@ pub unsafe extern "C" fn type_bridge_read_transaction_close(
     }
     if transaction.cast::<()>() == out_diagnostics.cast::<()>() {
         return TypeBridgeStatus::InvalidArgument;
+    }
+    // SAFETY: V2-origin handles require their complete retained package and
+    // server-version bytes fenced before the diagnostic slot can be written.
+    if let Err(status) =
+        unsafe { check_policy_read_transaction_terminal_ranges(transaction, out_diagnostics) }
+    {
+        return status;
     }
     if let Err(status) = initialize_diagnostics_output(out_diagnostics) {
         return status;
@@ -1094,15 +2247,12 @@ pub unsafe extern "C" fn type_bridge_write_transaction_commit(
     cancellation: *const TypeBridgeCancellation,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
-    if transaction.is_null() || out_diagnostics.is_null() {
-        return TypeBridgeStatus::InvalidArgument;
-    }
-    if transaction.cast::<()>() == out_diagnostics.cast::<()>()
-        || (!cancellation.is_null()
-            && (cancellation.cast::<()>() == transaction.cast::<()>()
-                || cancellation.cast::<()>() == out_diagnostics.cast::<()>()))
+    // SAFETY: the owner slot, live pointee, cancellation handle, and complete
+    // retained package/version graph are fenced before diagnostics can change.
+    if let Err(status) =
+        unsafe { check_write_transaction_commit_ranges(transaction, cancellation, out_diagnostics) }
     {
-        return TypeBridgeStatus::InvalidArgument;
+        return status;
     }
     if let Err(status) = initialize_diagnostics_output(out_diagnostics) {
         return status;
@@ -1115,13 +2265,36 @@ pub unsafe extern "C" fn type_bridge_write_transaction_commit(
         if value.is_null() {
             return TypeBridgeStatus::Ok;
         }
-        // SAFETY: the live handle remains caller-owned on this pre-dispatch rejection.
-        if unsafe { &*value }.state.poisoned.load(Ordering::Acquire) {
+        // SAFETY: the live handle remains caller-owned through every admission check.
+        let live = unsafe { &*value };
+        if live.state.poisoned.load(Ordering::Acquire) {
             return return_execution_error(poisoned_transaction_diagnostic(), out_diagnostics);
+        }
+        let context = live
+            .state
+            .context
+            .as_ref()
+            .expect("a live write handle retains one context");
+        if let Some(diagnostic) =
+            rollback_only_commit_diagnostic(&live.state.database.runtime.runtime, context)
+        {
+            return return_execution_error(diagnostic, out_diagnostics);
         }
         if is_cancelled(cancellation) {
             return cancellation_error(out_diagnostics);
         }
+        let policy_deadline = if let Some(limits) = live.policy_answer_ceiling() {
+            let deadline = QueryExecutionDeadline::for_limits(limits);
+            let cancellation = invocation_cancellation(cancellation);
+            if let Err(diagnostic) = check_control(deadline, &cancellation)
+                .and_then(|()| require_lifecycle_dispatch(limits))
+            {
+                return return_execution_error(diagnostic, out_diagnostics);
+            }
+            Some(deadline)
+        } else {
+            None
+        };
         // Cancellation was checked while the caller still owned a live handle.
         // From this point the terminal consumes its C slot even if provider
         // code panics. The stack-owned box releases the child count on unwind.
@@ -1132,8 +2305,18 @@ pub unsafe extern "C" fn type_bridge_write_transaction_commit(
             .context
             .take()
             .expect("a live write handle retains one context");
-        // Cancellation is deliberately not observed after this dispatch point.
-        let result = commit_context_classified(&handle.state.database.runtime.runtime, &context);
+        // Caller cancellation is deliberately not observed after this dispatch
+        // point. An inherited V2 deadline still requests internal cancellation,
+        // then waits for and reports the provider's classified actual outcome.
+        let result = match policy_deadline {
+            Some(deadline) => commit_context_sdk_controlled(
+                &handle.state.database.runtime.runtime,
+                &context,
+                deadline,
+                &AnswerCancellation::default(),
+            ),
+            None => commit_context_sdk(&handle.state.database.runtime.runtime, &context),
+        };
         drop(handle);
         match result {
             Ok(()) => TypeBridgeStatus::Ok,
@@ -1141,6 +2324,147 @@ pub unsafe extern "C" fn type_bridge_write_transaction_commit(
         }
     })
 }
+
+/// Commit one policy-aware write transaction without activating its ABI export yet.
+pub(crate) unsafe extern "C" fn type_bridge_write_transaction_commit_v2_impl(
+    transaction: *mut *mut TypeBridgeWriteTransaction,
+    limits: *const TypeBridgeQueryExecutionLimitsV1,
+    cancellation: *const TypeBridgeCancellation,
+    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+) -> TypeBridgeStatus {
+    let outputs = match direct_output_preflight(&[
+        (
+            transaction.cast(),
+            size_of::<*mut TypeBridgeWriteTransaction>(),
+        ),
+        (
+            out_diagnostics.cast(),
+            size_of::<*mut TypeBridgeExecutionDiagnostics>(),
+        ),
+    ]) {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    for result in [
+        check_preflight_object(&outputs, limits),
+        check_preflight_object(&outputs, cancellation),
+    ] {
+        if let Err(status) = result {
+            return status;
+        }
+    }
+    if !transaction.is_null() {
+        // SAFETY: the caller promises a readable/writable owner slot.
+        let value = unsafe { transaction.read_unaligned() };
+        if let Err(status) = check_preflight_object(&outputs, value) {
+            return status;
+        }
+        if !value.is_null()
+            // SAFETY: the complete live handle object was fenced above.
+            && let Err(status) =
+                check_write_transaction_borrowed_ranges(&outputs, unsafe { &*value })
+        {
+            return status;
+        }
+    }
+    if let Err(status) = initialize_diagnostics_output(out_diagnostics) {
+        return status;
+    }
+    guarded(|| {
+        if !terminal_outputs_valid(transaction, out_diagnostics) {
+            return TypeBridgeStatus::InvalidArgument;
+        }
+        // SAFETY: caller owns this exact handle slot for the terminal call.
+        let value = unsafe { transaction.read() };
+        if value.is_null() {
+            return TypeBridgeStatus::Ok;
+        }
+        // SAFETY: pre-dispatch rejection retains this exact live handle.
+        let live = unsafe { &*value };
+        if live.is_poisoned() {
+            return return_execution_error(poisoned_transaction_diagnostic(), out_diagnostics);
+        }
+        let context = live
+            .state
+            .context
+            .as_ref()
+            .expect("a live write handle retains one context");
+        if let Some(diagnostic) =
+            rollback_only_commit_diagnostic(&live.state.database.runtime.runtime, context)
+        {
+            return return_execution_error(diagnostic, out_diagnostics);
+        }
+        // SAFETY: an optional limits descriptor remains readable for this call.
+        let call_limits = match unsafe { parse_call_limits(limits) } {
+            Ok(value) => value,
+            Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
+        };
+        let effective = call_limits.constrained_by(live.answer_ceiling());
+        let deadline = QueryExecutionDeadline::for_limits(effective);
+        let cancellation = invocation_cancellation(cancellation);
+        if let Err(diagnostic) = check_control(deadline, &cancellation)
+            .and_then(|()| require_lifecycle_dispatch(effective))
+        {
+            return return_execution_error(diagnostic, out_diagnostics);
+        }
+
+        // This dispatch point consumes the only public owner. Interruption after
+        // it requests cooperative cancellation but cannot relabel the provider's
+        // classified actual commit outcome.
+        let mut handle = unsafe { Box::from_raw(value) };
+        // SAFETY: caller supplied the unique writable owner slot.
+        unsafe { transaction.write(ptr::null_mut()) };
+        let context = handle
+            .state
+            .context
+            .take()
+            .expect("a live write handle retains one context");
+        let result = commit_context_sdk_controlled(
+            &handle.state.database.runtime.runtime,
+            &context,
+            deadline,
+            &cancellation,
+        );
+        drop(handle);
+        match result {
+            Ok(()) => TypeBridgeStatus::Ok,
+            Err(diagnostic) => return_execution_error(diagnostic, out_diagnostics),
+        }
+    })
+}
+
+const _: unsafe extern "C" fn(
+    *const TypeBridgeDatabaseConfigV2,
+    *mut *mut TypeBridgeExecutionDiagnostics,
+) -> TypeBridgeStatus = type_bridge_database_config_validate_v2_impl;
+const _: unsafe extern "C" fn(
+    *const TypeBridgeRuntime,
+    *const TypeBridgeSchemaPackage,
+    *const TypeBridgeDatabaseConfigV2,
+    *const TypeBridgeCancellation,
+    *mut *mut TypeBridgeDatabase,
+    *mut *mut TypeBridgeExecutionDiagnostics,
+) -> TypeBridgeStatus = type_bridge_database_open_v2_impl;
+const _: unsafe extern "C" fn(
+    *const TypeBridgeDatabase,
+    *const TypeBridgeQueryExecutionLimitsV1,
+    *const TypeBridgeCancellation,
+    *mut *mut TypeBridgeReadTransaction,
+    *mut *mut TypeBridgeExecutionDiagnostics,
+) -> TypeBridgeStatus = type_bridge_read_transaction_open_v2_impl;
+const _: unsafe extern "C" fn(
+    *const TypeBridgeDatabase,
+    *const TypeBridgeQueryExecutionLimitsV1,
+    *const TypeBridgeCancellation,
+    *mut *mut TypeBridgeWriteTransaction,
+    *mut *mut TypeBridgeExecutionDiagnostics,
+) -> TypeBridgeStatus = type_bridge_write_transaction_open_v2_impl;
+const _: unsafe extern "C" fn(
+    *mut *mut TypeBridgeWriteTransaction,
+    *const TypeBridgeQueryExecutionLimitsV1,
+    *const TypeBridgeCancellation,
+    *mut *mut TypeBridgeExecutionDiagnostics,
+) -> TypeBridgeStatus = type_bridge_write_transaction_commit_v2_impl;
 
 /// Roll back one write transaction exactly once and clear its owner slot.
 #[unsafe(no_mangle)]
@@ -1153,6 +2477,13 @@ pub unsafe extern "C" fn type_bridge_write_transaction_rollback(
     }
     if transaction.cast::<()>() == out_diagnostics.cast::<()>() {
         return TypeBridgeStatus::InvalidArgument;
+    }
+    // SAFETY: V2-origin handles require their complete retained package and
+    // server-version bytes fenced before rollback or close consumes the owner.
+    if let Err(status) =
+        unsafe { check_policy_write_transaction_terminal_ranges(transaction, out_diagnostics) }
+    {
+        return status;
     }
     if let Err(status) = initialize_diagnostics_output(out_diagnostics) {
         return status;
@@ -1205,7 +2536,7 @@ mod tests {
     use std::collections::VecDeque;
     use std::mem::{MaybeUninit, size_of};
     use std::sync::Mutex;
-    use std::sync::atomic::{AtomicBool, AtomicU8};
+    use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64};
 
     use type_bridge_contract::capability::{CapabilityId, CapabilitySet};
     use type_bridge_contract::codec::to_canonical_json;
@@ -1226,6 +2557,7 @@ mod tests {
 
     use super::*;
     use crate::abi::{TypeBridgeSchemaPackageDescriptorV1, type_bridge_schema_package_close};
+    use crate::allocation::inject_failure;
     use crate::execution_diagnostic::{
         TypeBridgeExecutionDiagnosticCategory, TypeBridgeExecutionDiagnosticDetailViewV1,
         TypeBridgeExecutionDiagnosticPathViewV1, TypeBridgeExecutionDiagnosticViewV1,
@@ -1258,9 +2590,13 @@ entities:
         fail_connect: AtomicBool,
         fail_version_probe: AtomicBool,
         fail_open: AtomicBool,
+        pending_open: AtomicBool,
+        supports_given_rows: AtomicBool,
         panic_transaction_close: AtomicBool,
         panic_rollback: AtomicBool,
         commit: AtomicU8,
+        commit_delay_milliseconds: AtomicU64,
+        commit_started: AtomicBool,
         inputs: Mutex<VecDeque<DatabaseConnectInput>>,
     }
 
@@ -1303,6 +2639,42 @@ entities:
                 ))
             })
         }
+
+        fn connect_v2(&self, input: DatabaseConnectInputV2) -> ControlledConnectFuture {
+            let state = Arc::clone(&self.state);
+            let version = self.version;
+            Box::pin(async move {
+                check_control(input.deadline, &input.cancellation)?;
+                if input.limits.effective().statements == 0 {
+                    return Err(lifecycle_statement_limit());
+                }
+                state.connects.fetch_add(1, Ordering::AcqRel);
+                state
+                    .inputs
+                    .lock()
+                    .unwrap()
+                    .push_back(DatabaseConnectInput {
+                        address: input.address.clone(),
+                        database: input.database.clone(),
+                        username: input.username.clone(),
+                        password: input.password.clone(),
+                        http_port: 0,
+                        tls_native_roots: false,
+                    });
+                let _transport = input.transport;
+                if state.fail_version_probe.load(Ordering::Acquire)
+                    || state.fail_connect.load(Ordering::Acquire)
+                {
+                    return Err(SdkExecutionDiagnostic::provider_failure(
+                        SdkProviderOperation::Connect,
+                    ));
+                }
+                Ok(Database::with_backend(
+                    Box::new(FakeBackend { state, version }),
+                    input.database,
+                ))
+            })
+        }
     }
 
     struct FakeBackend {
@@ -1319,6 +2691,9 @@ entities:
             self.state.opens.fetch_add(1, Ordering::AcqRel);
             let state = Arc::clone(&self.state);
             Box::pin(async move {
+                if state.pending_open.load(Ordering::Acquire) {
+                    std::future::pending::<()>().await;
+                }
                 if state.fail_open.load(Ordering::Acquire) {
                     return Err(OrmError::Connection(
                         "provider endpoint=/private credential=secret".into(),
@@ -1340,6 +2715,10 @@ entities:
         fn server_version(&self) -> Option<Version> {
             Some(self.version)
         }
+
+        fn supports_given_rows(&self) -> bool {
+            self.state.supports_given_rows.load(Ordering::Acquire)
+        }
     }
 
     struct FakeTransaction {
@@ -1360,6 +2739,11 @@ entities:
             let state = Arc::clone(&self.state);
             Box::pin(async move {
                 state.commits.fetch_add(1, Ordering::AcqRel);
+                state.commit_started.store(true, Ordering::Release);
+                let delay = state.commit_delay_milliseconds.load(Ordering::Acquire);
+                if delay != 0 {
+                    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                }
                 match state.commit.load(Ordering::Acquire) {
                     COMMIT_SUCCESS => Ok(()),
                     COMMIT_ABORTED => Err(ClassifiedCommitError::Driver {
@@ -1505,6 +2889,85 @@ entities:
         (address, database, username, password, config)
     }
 
+    fn limits_descriptor(limits: QueryExecutionResourceLimits) -> TypeBridgeQueryExecutionLimitsV1 {
+        TypeBridgeQueryExecutionLimitsV1 {
+            struct_size: size_of::<TypeBridgeQueryExecutionLimitsV1>() as u32,
+            version: 1,
+            timeout_milliseconds: limits.timeout_milliseconds,
+            items: limits.items,
+            bytes: limits.bytes,
+            graph_nodes: limits.graph_nodes,
+            attribute_values: limits.attribute_values,
+            collection_members: limits.collection_members,
+            role_players: limits.role_players,
+            statements: limits.statements,
+            reserved0: 0,
+            reserved: [0; 4],
+        }
+    }
+
+    struct DatabaseConfigV2Fixture {
+        _address: Vec<u8>,
+        _database: Vec<u8>,
+        _username: Vec<u8>,
+        _password: Vec<u8>,
+        _custom_root: Vec<u8>,
+        config: TypeBridgeDatabaseConfigV2,
+    }
+
+    impl DatabaseConfigV2Fixture {
+        fn new(
+            tls_mode: u32,
+            custom_root: Vec<u8>,
+            connection_limits: QueryExecutionResourceLimits,
+            answer_limits: QueryExecutionResourceLimits,
+        ) -> Self {
+            let address = b"localhost:1729".to_vec();
+            let database = b"workforce".to_vec();
+            let username = b"admin".to_vec();
+            let password = b"private-password".to_vec();
+            let custom_root_view = if custom_root.is_empty() {
+                TypeBridgeByteView {
+                    data: ptr::null(),
+                    length: 0,
+                }
+            } else {
+                view(&custom_root)
+            };
+            let config = TypeBridgeDatabaseConfigV2 {
+                struct_size: size_of::<TypeBridgeDatabaseConfigV2>() as u32,
+                version: DATABASE_CONFIG_V2_VERSION,
+                address: view(&address),
+                database: view(&database),
+                username: view(&username),
+                password: view(&password),
+                http_port: 8000,
+                tls_mode,
+                custom_root_ca_pem: custom_root_view,
+                connection_limits: limits_descriptor(connection_limits),
+                answer_limits: limits_descriptor(answer_limits),
+                reserved: [0; 4],
+            };
+            Self {
+                _address: address,
+                _database: database,
+                _username: username,
+                _password: password,
+                _custom_root: custom_root,
+                config,
+            }
+        }
+
+        fn plaintext(answer_limits: QueryExecutionResourceLimits) -> Self {
+            Self::new(
+                TLS_DISABLED,
+                Vec::new(),
+                QueryExecutionResourceLimits::default(),
+                answer_limits,
+            )
+        }
+    }
+
     unsafe fn open_database(
         runtime: *mut TypeBridgeRuntime,
         package: *mut TypeBridgeSchemaPackage,
@@ -1523,6 +2986,32 @@ entities:
                 runtime,
                 package,
                 &config,
+                cancellation,
+                &mut database,
+                &mut diagnostics,
+            )
+        };
+        (database, diagnostics, status)
+    }
+
+    unsafe fn open_database_v2(
+        runtime: *mut TypeBridgeRuntime,
+        package: *mut TypeBridgeSchemaPackage,
+        config: &TypeBridgeDatabaseConfigV2,
+        cancellation: *const TypeBridgeCancellation,
+    ) -> (
+        *mut TypeBridgeDatabase,
+        *mut TypeBridgeExecutionDiagnostics,
+        TypeBridgeStatus,
+    ) {
+        let mut database = ptr::null_mut();
+        let mut diagnostics = ptr::null_mut();
+        // SAFETY: all handles and descriptor views remain live for the call.
+        let status = unsafe {
+            type_bridge_database_open_v2_impl(
+                runtime,
+                package,
+                config,
                 cancellation,
                 &mut database,
                 &mut diagnostics,
@@ -1634,6 +3123,1417 @@ entities:
             TypeBridgeStatus::Ok
         );
         unsafe { diagnostic.assume_init() }.category
+    }
+
+    #[test]
+    fn v2_configuration_validates_captured_custom_root_without_provider_io_or_disclosure() {
+        let valid_root = include_bytes!("../../core/tests/fixtures/valid-root.pem").to_vec();
+        let valid = DatabaseConfigV2Fixture::new(
+            TLS_CUSTOM_ROOT_CA,
+            valid_root.clone(),
+            QueryExecutionResourceLimits::default(),
+            QueryExecutionResourceLimits::default(),
+        );
+        let mut diagnostics = ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                type_bridge_database_config_validate_v2_impl(&valid.config, &mut diagnostics)
+            },
+            TypeBridgeStatus::Ok
+        );
+        assert!(diagnostics.is_null());
+
+        let zero_timeout = QueryExecutionResourceLimits {
+            timeout_milliseconds: 0,
+            ..QueryExecutionResourceLimits::default()
+        };
+        let expired_but_provider_free = DatabaseConfigV2Fixture::new(
+            TLS_CUSTOM_ROOT_CA,
+            valid_root,
+            zero_timeout,
+            QueryExecutionResourceLimits::default(),
+        );
+        assert_eq!(
+            unsafe {
+                type_bridge_database_config_validate_v2_impl(
+                    &expired_but_provider_free.config,
+                    &mut diagnostics,
+                )
+            },
+            TypeBridgeStatus::Ok
+        );
+        assert!(diagnostics.is_null());
+
+        let aliased = DatabaseConfigV2Fixture::plaintext(QueryExecutionResourceLimits::default());
+        let preserved_address = aliased._address.clone();
+        // SAFETY: the deliberately hostile slot remains within the readable
+        // address allocation, and successful preflight must reject before writing it.
+        let nested_output = unsafe { aliased.config.address.data.add(1) }
+            .cast_mut()
+            .cast::<*mut TypeBridgeExecutionDiagnostics>();
+        assert_eq!(
+            unsafe { type_bridge_database_config_validate_v2_impl(&aliased.config, nested_output) },
+            TypeBridgeStatus::InvalidArgument
+        );
+        assert_eq!(aliased._address, preserved_address);
+
+        let invalid = DatabaseConfigV2Fixture::new(
+            TLS_CUSTOM_ROOT_CA,
+            b"private-password trust-byte-sentinel-9912".to_vec(),
+            QueryExecutionResourceLimits::default(),
+            QueryExecutionResourceLimits::default(),
+        );
+        assert_eq!(
+            unsafe {
+                type_bridge_database_config_validate_v2_impl(&invalid.config, &mut diagnostics)
+            },
+            TypeBridgeStatus::InvalidArgument
+        );
+        assert_eq!(
+            unsafe { diagnostic_code(diagnostics) },
+            "tls_custom_root_ca_invalid_pem"
+        );
+        let components = unsafe { diagnostic_components(diagnostics) };
+        let exposed = String::from_utf8_lossy(&components);
+        assert!(!exposed.contains("private-password"));
+        assert!(!exposed.contains("trust-byte-sentinel-9912"));
+        unsafe { close_diagnostics(&mut diagnostics) };
+
+        let mut noncanonical =
+            DatabaseConfigV2Fixture::plaintext(QueryExecutionResourceLimits::default());
+        let marker = [0_u8];
+        noncanonical.config.custom_root_ca_pem = TypeBridgeByteView {
+            data: marker.as_ptr(),
+            length: 0,
+        };
+        assert_eq!(
+            unsafe {
+                type_bridge_database_config_validate_v2_impl(&noncanonical.config, &mut diagnostics)
+            },
+            TypeBridgeStatus::InvalidArgument
+        );
+        assert_eq!(
+            unsafe { diagnostic_code(diagnostics) },
+            "c_database_custom_root_must_be_empty"
+        );
+        unsafe { close_diagnostics(&mut diagnostics) };
+    }
+
+    #[test]
+    fn v2_result_handle_allocation_failures_precede_provider_dispatch() {
+        let state = Arc::new(FakeState::default());
+        state.supports_given_rows.store(true, Ordering::Release);
+        let mut runtime = runtime(Arc::clone(&state), Version::new(3, 12, 1));
+        let mut package = Box::into_raw(Box::new(package("typedb-3.12.1/v1", "v2allocation")));
+        let fixture = DatabaseConfigV2Fixture::plaintext(QueryExecutionResourceLimits::default());
+
+        let expired_connection_limits = QueryExecutionResourceLimits {
+            timeout_milliseconds: 0,
+            ..QueryExecutionResourceLimits::default()
+        };
+        let expired_connection = DatabaseConfigV2Fixture::new(
+            TLS_DISABLED,
+            Vec::new(),
+            expired_connection_limits,
+            QueryExecutionResourceLimits::default(),
+        );
+        let (database, mut diagnostics, status) =
+            unsafe { open_database_v2(runtime, package, &expired_connection.config, ptr::null()) };
+        assert_eq!(status, TypeBridgeStatus::ResourceLimit);
+        assert!(database.is_null());
+        assert_eq!(state.connects.load(Ordering::Acquire), 0);
+        assert_eq!(
+            unsafe { diagnostic_code(diagnostics) },
+            "transaction_deadline_exceeded"
+        );
+        unsafe { close_diagnostics(&mut diagnostics) };
+
+        let zero_statement_connection_limits = QueryExecutionResourceLimits {
+            statements: 0,
+            ..QueryExecutionResourceLimits::default()
+        };
+        let zero_statement_connection = DatabaseConfigV2Fixture::new(
+            TLS_DISABLED,
+            Vec::new(),
+            zero_statement_connection_limits,
+            QueryExecutionResourceLimits::default(),
+        );
+        let (database, mut diagnostics, status) = unsafe {
+            open_database_v2(
+                runtime,
+                package,
+                &zero_statement_connection.config,
+                ptr::null(),
+            )
+        };
+        assert_eq!(status, TypeBridgeStatus::ResourceLimit);
+        assert!(database.is_null());
+        assert_eq!(state.connects.load(Ordering::Acquire), 0);
+        assert_eq!(
+            unsafe { diagnostic_code(diagnostics) },
+            "provider_statement_limit"
+        );
+        unsafe { close_diagnostics(&mut diagnostics) };
+
+        let (database, mut diagnostics, status) = {
+            let _failure = inject_failure(AllocationSite::DatabaseHandle, 0);
+            unsafe { open_database_v2(runtime, package, &fixture.config, ptr::null()) }
+        };
+        assert_eq!(status, TypeBridgeStatus::ResourceLimit);
+        assert!(database.is_null());
+        assert_eq!(state.connects.load(Ordering::Acquire), 0);
+        assert_eq!(
+            unsafe { diagnostic_code(diagnostics) },
+            "c_allocation_exhausted"
+        );
+        unsafe { close_diagnostics(&mut diagnostics) };
+
+        let (mut database, mut diagnostics, status) =
+            unsafe { open_database(runtime, package, ptr::null()) };
+        assert_eq!(status, TypeBridgeStatus::Ok);
+        let descriptor = limits_descriptor(QueryExecutionResourceLimits::default());
+
+        let opens_before = state.opens.load(Ordering::Acquire);
+        let mut read = ptr::null_mut();
+        let status = {
+            let _failure = inject_failure(AllocationSite::ReadTransactionHandle, 0);
+            unsafe {
+                type_bridge_read_transaction_open_v2_impl(
+                    database,
+                    &descriptor,
+                    ptr::null(),
+                    &mut read,
+                    &mut diagnostics,
+                )
+            }
+        };
+        assert_eq!(status, TypeBridgeStatus::ResourceLimit);
+        assert!(read.is_null());
+        assert_eq!(state.opens.load(Ordering::Acquire), opens_before);
+        assert_eq!(
+            unsafe { diagnostic_code(diagnostics) },
+            "c_allocation_exhausted"
+        );
+        unsafe { close_diagnostics(&mut diagnostics) };
+
+        let mut write = ptr::null_mut();
+        let status = {
+            let _failure = inject_failure(AllocationSite::WriteTransactionHandle, 0);
+            unsafe {
+                type_bridge_write_transaction_open_v2_impl(
+                    database,
+                    &descriptor,
+                    ptr::null(),
+                    &mut write,
+                    &mut diagnostics,
+                )
+            }
+        };
+        assert_eq!(status, TypeBridgeStatus::ResourceLimit);
+        assert!(write.is_null());
+        assert_eq!(state.opens.load(Ordering::Acquire), opens_before);
+        assert_eq!(
+            unsafe { diagnostic_code(diagnostics) },
+            "c_allocation_exhausted"
+        );
+        unsafe { close_diagnostics(&mut diagnostics) };
+
+        assert_eq!(
+            unsafe { type_bridge_database_close(&mut database, &mut diagnostics) },
+            TypeBridgeStatus::Ok
+        );
+        assert_eq!(
+            unsafe { type_bridge_runtime_close(&mut runtime, &mut diagnostics) },
+            TypeBridgeStatus::Ok
+        );
+        assert_eq!(
+            unsafe { type_bridge_schema_package_close(&mut package) },
+            TypeBridgeStatus::Ok
+        );
+    }
+
+    #[test]
+    fn v2_output_preflight_fences_nested_and_live_handle_storage_before_writes() {
+        let state = Arc::new(FakeState::default());
+        state.supports_given_rows.store(true, Ordering::Release);
+        let mut runtime = runtime(Arc::clone(&state), Version::new(3, 12, 1));
+        let mut package = Box::into_raw(Box::new(package("typedb-3.12.1/v1", "v2alias")));
+        let fixture = DatabaseConfigV2Fixture::plaintext(QueryExecutionResourceLimits::default());
+        let preserved_address = fixture._address.clone();
+        // SAFETY: this hostile output starts inside the readable address bytes;
+        // correct preflight rejects it without attempting an unaligned write.
+        let nested_database_output = unsafe { fixture.config.address.data.add(1) }
+            .cast_mut()
+            .cast::<*mut TypeBridgeDatabase>();
+        let mut diagnostics = ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                type_bridge_database_open_v2_impl(
+                    runtime,
+                    package,
+                    &fixture.config,
+                    ptr::null(),
+                    nested_database_output,
+                    &mut diagnostics,
+                )
+            },
+            TypeBridgeStatus::InvalidArgument
+        );
+        assert!(diagnostics.is_null());
+        assert_eq!(fixture._address, preserved_address);
+        assert_eq!(state.connects.load(Ordering::Acquire), 0);
+
+        let (mut database, mut diagnostics, status) =
+            unsafe { open_database(runtime, package, ptr::null()) };
+        assert_eq!(status, TypeBridgeStatus::Ok);
+        let preserved_profile = unsafe { &*database }
+            .package_state()
+            .semantic_profile
+            .clone();
+        let profile_pointer = unsafe { &*database }
+            .package_state()
+            .semantic_profile
+            .as_ptr();
+        // SAFETY: the output range is deliberately forged into retained
+        // package bytes and must be rejected before provider dispatch.
+        let nested_transaction_output = unsafe { profile_pointer.add(1) }
+            .cast_mut()
+            .cast::<*mut TypeBridgeReadTransaction>();
+        let descriptor = limits_descriptor(QueryExecutionResourceLimits::default());
+        assert_eq!(
+            unsafe {
+                type_bridge_read_transaction_open_v2_impl(
+                    database,
+                    &descriptor,
+                    ptr::null(),
+                    nested_transaction_output,
+                    &mut diagnostics,
+                )
+            },
+            TypeBridgeStatus::InvalidArgument
+        );
+        assert!(diagnostics.is_null());
+        assert_eq!(
+            unsafe { &*database }.package_state().semantic_profile,
+            preserved_profile
+        );
+        assert_eq!(state.opens.load(Ordering::Acquire), 0);
+
+        let mut write = ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                type_bridge_write_transaction_open(
+                    database,
+                    ptr::null(),
+                    &mut write,
+                    &mut diagnostics,
+                )
+            },
+            TypeBridgeStatus::Ok
+        );
+        let write_before = write;
+        // SAFETY: the hostile diagnostic slot lies within the live transaction
+        // object; complete-handle preflight must reject it without consuming.
+        let nested_diagnostics =
+            unsafe { write.cast::<u8>().add(1) }.cast::<*mut TypeBridgeExecutionDiagnostics>();
+        assert_eq!(
+            unsafe {
+                type_bridge_write_transaction_commit_v2_impl(
+                    &mut write,
+                    &descriptor,
+                    ptr::null(),
+                    nested_diagnostics,
+                )
+            },
+            TypeBridgeStatus::InvalidArgument
+        );
+        assert_eq!(write, write_before);
+        assert_eq!(state.commits.load(Ordering::Acquire), 0);
+        assert_eq!(
+            unsafe { type_bridge_write_transaction_close(&mut write, &mut diagnostics) },
+            TypeBridgeStatus::Ok
+        );
+
+        assert_eq!(
+            unsafe { type_bridge_database_close(&mut database, &mut diagnostics) },
+            TypeBridgeStatus::Ok
+        );
+        assert_eq!(
+            unsafe { type_bridge_runtime_close(&mut runtime, &mut diagnostics) },
+            TypeBridgeStatus::Ok
+        );
+        assert_eq!(
+            unsafe { type_bridge_schema_package_close(&mut package) },
+            TypeBridgeStatus::Ok
+        );
+    }
+
+    #[test]
+    fn legacy_preflight_routes_v1_exact_aliases_and_v2_complete_retained_graphs() {
+        let package = package("typedb-3.12.1/v1", "legacyrouting");
+        let state = Arc::new(FakeState::default());
+        let mut v1_database = Box::into_raw(Box::new(TypeBridgeDatabase::from_test_database(
+            Arc::clone(package.state()),
+            Database::with_backend(
+                Box::new(FakeBackend {
+                    state: Arc::clone(&state),
+                    version: Version::new(3, 12, 1),
+                }),
+                "legacy-routing-v1",
+            ),
+        )));
+        let mut v2_database = Box::into_raw(Box::new(
+            TypeBridgeDatabase::from_test_database_with_answer_ceiling(
+                Arc::clone(package.state()),
+                Database::with_backend(
+                    Box::new(FakeBackend {
+                        state: Arc::clone(&state),
+                        version: Version::new(3, 12, 1),
+                    }),
+                    "legacy-routing-v2",
+                ),
+                Some(QueryExecutionResourceLimits::default()),
+            ),
+        ));
+        let mut diagnostics = ptr::null_mut();
+        let nested_profile_output = unsafe { package.state().semantic_profile.as_ptr().add(1) }
+            .cast_mut()
+            .cast::<*mut TypeBridgeReadTransaction>();
+        assert_eq!(
+            unsafe {
+                check_database_transaction_open_ranges(
+                    v1_database,
+                    ptr::null(),
+                    nested_profile_output,
+                    &mut diagnostics,
+                )
+            },
+            Ok(())
+        );
+        assert_eq!(
+            unsafe {
+                check_database_transaction_open_ranges(
+                    v2_database,
+                    ptr::null(),
+                    nested_profile_output,
+                    &mut diagnostics,
+                )
+            },
+            Err(TypeBridgeStatus::InvalidArgument)
+        );
+
+        let nested_v1_database_output =
+            unsafe { v1_database.cast::<u8>().add(1) }.cast::<*mut TypeBridgeWriteTransaction>();
+        let nested_v2_database_output =
+            unsafe { v2_database.cast::<u8>().add(1) }.cast::<*mut TypeBridgeWriteTransaction>();
+        assert_eq!(
+            unsafe {
+                check_database_transaction_open_ranges(
+                    v1_database,
+                    ptr::null(),
+                    nested_v1_database_output,
+                    &mut diagnostics,
+                )
+            },
+            Ok(())
+        );
+        assert_eq!(
+            unsafe {
+                check_database_transaction_open_ranges(
+                    v2_database,
+                    ptr::null(),
+                    nested_v2_database_output,
+                    &mut diagnostics,
+                )
+            },
+            Err(TypeBridgeStatus::InvalidArgument)
+        );
+
+        let v1_context = unsafe { &*v1_database }
+            .open_transaction_context(TxType::Write)
+            .unwrap();
+        let mut v1_transaction = Box::into_raw(Box::new(
+            TypeBridgeWriteTransaction::from_test_context_with_answer_ceiling(
+                unsafe { &*v1_database },
+                v1_context,
+                None,
+            ),
+        ));
+        let v2_context = unsafe { &*v2_database }
+            .open_transaction_context(TxType::Write)
+            .unwrap();
+        let mut v2_transaction = Box::into_raw(Box::new(
+            TypeBridgeWriteTransaction::from_test_context_with_answer_ceiling(
+                unsafe { &*v2_database },
+                v2_context,
+                Some(QueryExecutionResourceLimits::default()),
+            ),
+        ));
+        let nested_profile_diagnostics =
+            unsafe { package.state().semantic_profile.as_ptr().add(1) }
+                .cast_mut()
+                .cast::<*mut TypeBridgeExecutionDiagnostics>();
+        assert_eq!(
+            unsafe {
+                check_write_transaction_commit_ranges(
+                    &mut v1_transaction,
+                    ptr::null(),
+                    nested_profile_diagnostics,
+                )
+            },
+            Ok(())
+        );
+        assert_eq!(
+            unsafe {
+                check_write_transaction_commit_ranges(
+                    &mut v2_transaction,
+                    ptr::null(),
+                    nested_profile_diagnostics,
+                )
+            },
+            Err(TypeBridgeStatus::InvalidArgument)
+        );
+        let nested_v1_transaction_diagnostics = unsafe { v1_transaction.cast::<u8>().add(1) }
+            .cast::<*mut TypeBridgeExecutionDiagnostics>();
+        let nested_v2_transaction_diagnostics = unsafe { v2_transaction.cast::<u8>().add(1) }
+            .cast::<*mut TypeBridgeExecutionDiagnostics>();
+        assert_eq!(
+            unsafe {
+                check_write_transaction_commit_ranges(
+                    &mut v1_transaction,
+                    ptr::null(),
+                    nested_v1_transaction_diagnostics,
+                )
+            },
+            Ok(())
+        );
+        assert_eq!(
+            unsafe {
+                check_write_transaction_commit_ranges(
+                    &mut v2_transaction,
+                    ptr::null(),
+                    nested_v2_transaction_diagnostics,
+                )
+            },
+            Err(TypeBridgeStatus::InvalidArgument)
+        );
+
+        assert_eq!(
+            unsafe { type_bridge_write_transaction_close(&mut v1_transaction, &mut diagnostics) },
+            TypeBridgeStatus::Ok
+        );
+        assert_eq!(
+            unsafe { type_bridge_write_transaction_close(&mut v2_transaction, &mut diagnostics) },
+            TypeBridgeStatus::Ok
+        );
+        assert_eq!(
+            unsafe { type_bridge_database_close(&mut v1_database, &mut diagnostics) },
+            TypeBridgeStatus::Ok
+        );
+        assert_eq!(
+            unsafe { type_bridge_database_close(&mut v2_database, &mut diagnostics) },
+            TypeBridgeStatus::Ok
+        );
+    }
+
+    #[test]
+    fn legacy_lifecycle_on_v2_handles_deep_fences_every_retained_input_before_writes() {
+        let state = Arc::new(FakeState::default());
+        state.supports_given_rows.store(true, Ordering::Release);
+        let mut runtime = runtime(Arc::clone(&state), Version::new(3, 12, 1));
+        let mut package = Box::into_raw(Box::new(package("typedb-3.12.1/v1", "legacydeep")));
+        let fixture = DatabaseConfigV2Fixture::plaintext(QueryExecutionResourceLimits::default());
+        let (mut database, mut diagnostics, status) =
+            unsafe { open_database_v2(runtime, package, &fixture.config, ptr::null()) };
+        assert_eq!(status, TypeBridgeStatus::Ok);
+        assert!(diagnostics.is_null());
+
+        let database_before = database;
+        let preserved_profile = unsafe { &*database }
+            .package_state()
+            .semantic_profile
+            .clone();
+        let profile_pointer = unsafe { &*database }
+            .package_state()
+            .semantic_profile
+            .as_ptr();
+        let preserved_version = unsafe { &*database }.state.server_version.clone();
+        let version_pointer = unsafe { &*database }.state.server_version.as_ptr();
+        let opens_before = state.opens.load(Ordering::Acquire);
+
+        let nested_read_output = unsafe { profile_pointer.add(1) }
+            .cast_mut()
+            .cast::<*mut TypeBridgeReadTransaction>();
+        diagnostics = ptr::dangling_mut();
+        assert_eq!(
+            unsafe {
+                type_bridge_read_transaction_open(
+                    database,
+                    ptr::null(),
+                    nested_read_output,
+                    &mut diagnostics,
+                )
+            },
+            TypeBridgeStatus::InvalidArgument
+        );
+        assert_eq!(diagnostics, ptr::dangling_mut());
+        assert_eq!(state.opens.load(Ordering::Acquire), opens_before);
+
+        let nested_version_diagnostics = version_pointer
+            .cast_mut()
+            .cast::<*mut TypeBridgeExecutionDiagnostics>();
+        let mut write = ptr::dangling_mut();
+        assert_eq!(
+            unsafe {
+                type_bridge_write_transaction_open(
+                    database,
+                    ptr::null(),
+                    &mut write,
+                    nested_version_diagnostics,
+                )
+            },
+            TypeBridgeStatus::InvalidArgument
+        );
+        assert_eq!(write, ptr::dangling_mut());
+        assert_eq!(state.opens.load(Ordering::Acquire), opens_before);
+        assert_eq!(
+            unsafe { &*database }.package_state().semantic_profile,
+            preserved_profile
+        );
+        assert_eq!(
+            unsafe { &*database }.state.server_version,
+            preserved_version
+        );
+
+        diagnostics = ptr::null_mut();
+        let mut read = ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                type_bridge_read_transaction_open(
+                    database,
+                    ptr::null(),
+                    &mut read,
+                    &mut diagnostics,
+                )
+            },
+            TypeBridgeStatus::Ok
+        );
+        let read_before = read;
+        let nested_profile_diagnostics = unsafe { profile_pointer.add(1) }
+            .cast_mut()
+            .cast::<*mut TypeBridgeExecutionDiagnostics>();
+        assert_eq!(
+            unsafe { type_bridge_database_close(&mut database, nested_profile_diagnostics) },
+            TypeBridgeStatus::InvalidArgument
+        );
+        assert_eq!(database, database_before);
+        assert_eq!(read, read_before);
+        assert_eq!(state.database_closes.load(Ordering::Acquire), 0);
+        assert_eq!(
+            unsafe { type_bridge_read_transaction_close(&mut read, nested_version_diagnostics) },
+            TypeBridgeStatus::InvalidArgument
+        );
+        assert_eq!(read, read_before);
+        assert_eq!(state.transaction_closes.load(Ordering::Acquire), 0);
+        assert_eq!(
+            unsafe { type_bridge_read_transaction_close(&mut read, &mut diagnostics) },
+            TypeBridgeStatus::Ok
+        );
+        assert!(read.is_null());
+        assert_eq!(state.transaction_closes.load(Ordering::Acquire), 1);
+
+        write = ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                type_bridge_write_transaction_open(
+                    database,
+                    ptr::null(),
+                    &mut write,
+                    &mut diagnostics,
+                )
+            },
+            TypeBridgeStatus::Ok
+        );
+        let write_before = write;
+        assert_eq!(
+            unsafe {
+                type_bridge_write_transaction_rollback(&mut write, nested_profile_diagnostics)
+            },
+            TypeBridgeStatus::InvalidArgument
+        );
+        assert_eq!(write, write_before);
+        assert_eq!(state.rollbacks.load(Ordering::Acquire), 0);
+        assert_eq!(
+            unsafe { type_bridge_write_transaction_close(&mut write, nested_version_diagnostics) },
+            TypeBridgeStatus::InvalidArgument
+        );
+        assert_eq!(write, write_before);
+        assert_eq!(state.rollbacks.load(Ordering::Acquire), 0);
+
+        let nested_handle_diagnostics =
+            unsafe { write.cast::<u8>().add(1) }.cast::<*mut TypeBridgeExecutionDiagnostics>();
+        assert_eq!(
+            unsafe {
+                type_bridge_write_transaction_commit(
+                    &mut write,
+                    ptr::null(),
+                    nested_handle_diagnostics,
+                )
+            },
+            TypeBridgeStatus::InvalidArgument
+        );
+        assert_eq!(write, write_before);
+        assert_eq!(state.commits.load(Ordering::Acquire), 0);
+        assert_eq!(
+            unsafe {
+                type_bridge_write_transaction_commit(
+                    &mut write,
+                    ptr::null(),
+                    nested_profile_diagnostics,
+                )
+            },
+            TypeBridgeStatus::InvalidArgument
+        );
+        assert_eq!(write, write_before);
+        assert_eq!(state.commits.load(Ordering::Acquire), 0);
+
+        let mut cancellation = ptr::null_mut();
+        assert_eq!(
+            unsafe { type_bridge_cancellation_open(&mut cancellation) },
+            TypeBridgeStatus::Ok
+        );
+        let nested_cancellation_diagnostics = unsafe { cancellation.cast::<u8>().add(1) }
+            .cast::<*mut TypeBridgeExecutionDiagnostics>();
+        assert_eq!(
+            unsafe {
+                type_bridge_write_transaction_commit(
+                    &mut write,
+                    cancellation,
+                    nested_cancellation_diagnostics,
+                )
+            },
+            TypeBridgeStatus::InvalidArgument
+        );
+        assert_eq!(write, write_before);
+        assert_eq!(state.commits.load(Ordering::Acquire), 0);
+        assert_eq!(
+            unsafe { type_bridge_cancellation_close(&mut cancellation) },
+            TypeBridgeStatus::Ok
+        );
+        assert_eq!(
+            unsafe { type_bridge_write_transaction_close(&mut write, &mut diagnostics) },
+            TypeBridgeStatus::Ok
+        );
+        assert!(write.is_null());
+        assert_eq!(state.rollbacks.load(Ordering::Acquire), 1);
+        assert_eq!(
+            unsafe { &*database }.package_state().semantic_profile,
+            preserved_profile
+        );
+        assert_eq!(
+            unsafe { &*database }.state.server_version,
+            preserved_version
+        );
+
+        assert_eq!(
+            unsafe { type_bridge_database_close(&mut database, &mut diagnostics) },
+            TypeBridgeStatus::Ok
+        );
+        assert_eq!(
+            unsafe { type_bridge_runtime_close(&mut runtime, &mut diagnostics) },
+            TypeBridgeStatus::Ok
+        );
+        assert_eq!(
+            unsafe { type_bridge_schema_package_close(&mut package) },
+            TypeBridgeStatus::Ok
+        );
+    }
+
+    #[test]
+    fn v2_database_requires_band9_and_transactions_intersect_and_inherit_answer_policy() {
+        let state = Arc::new(FakeState::default());
+        let mut runtime = runtime(Arc::clone(&state), Version::new(3, 12, 1));
+        let mut package = Box::into_raw(Box::new(package("typedb-3.12.1/v1", "v2policy")));
+        let answer_limits =
+            QueryExecutionResourceLimits::tightened(9_000, 11, 101, 13, 17, 19, 23, 2);
+        let fixture = DatabaseConfigV2Fixture::plaintext(answer_limits);
+
+        let (rejected, mut diagnostics, status) =
+            unsafe { open_database_v2(runtime, package, &fixture.config, ptr::null()) };
+        assert_eq!(status, TypeBridgeStatus::Unsupported);
+        assert!(rejected.is_null());
+        assert_eq!(state.connects.load(Ordering::Acquire), 1);
+        assert_eq!(state.database_closes.load(Ordering::Acquire), 1);
+        assert_eq!(
+            unsafe { diagnostic_code(diagnostics) },
+            "c_database_given_rows_unsupported"
+        );
+        unsafe { close_diagnostics(&mut diagnostics) };
+
+        state.supports_given_rows.store(true, Ordering::Release);
+        let (mut database, mut diagnostics, status) =
+            unsafe { open_database_v2(runtime, package, &fixture.config, ptr::null()) };
+        assert_eq!(status, TypeBridgeStatus::Ok);
+        assert!(diagnostics.is_null());
+        assert_eq!(
+            unsafe { &*database }.policy_answer_ceiling(),
+            Some(answer_limits)
+        );
+
+        let call_limits = QueryExecutionResourceLimits::tightened(8_000, 7, 97, 11, 13, 17, 19, 1);
+        let call_descriptor = limits_descriptor(call_limits);
+        let expected = call_limits.constrained_by(answer_limits);
+        let mut read = ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                type_bridge_read_transaction_open_v2_impl(
+                    database,
+                    &call_descriptor,
+                    ptr::null(),
+                    &mut read,
+                    &mut diagnostics,
+                )
+            },
+            TypeBridgeStatus::Ok
+        );
+        assert_eq!(unsafe { &*read }.policy_answer_ceiling(), Some(expected));
+        assert_eq!(
+            unsafe { type_bridge_read_transaction_close(&mut read, &mut diagnostics) },
+            TypeBridgeStatus::Ok
+        );
+
+        let mut write = ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                type_bridge_write_transaction_open(
+                    database,
+                    ptr::null(),
+                    &mut write,
+                    &mut diagnostics,
+                )
+            },
+            TypeBridgeStatus::Ok
+        );
+        assert_eq!(
+            unsafe { &*write }.policy_answer_ceiling(),
+            Some(answer_limits)
+        );
+        assert_eq!(
+            unsafe { type_bridge_write_transaction_close(&mut write, &mut diagnostics) },
+            TypeBridgeStatus::Ok
+        );
+
+        assert_eq!(
+            unsafe { type_bridge_database_close(&mut database, &mut diagnostics) },
+            TypeBridgeStatus::Ok
+        );
+
+        let zero_statement_answer = QueryExecutionResourceLimits {
+            statements: 0,
+            ..QueryExecutionResourceLimits::default()
+        };
+        let zero_statement_fixture = DatabaseConfigV2Fixture::plaintext(zero_statement_answer);
+        let (mut zero_statement_database, mut diagnostics, status) = unsafe {
+            open_database_v2(
+                runtime,
+                package,
+                &zero_statement_fixture.config,
+                ptr::null(),
+            )
+        };
+        assert_eq!(status, TypeBridgeStatus::Ok);
+        let opens_before = state.opens.load(Ordering::Acquire);
+        assert_eq!(
+            unsafe {
+                type_bridge_read_transaction_open(
+                    zero_statement_database,
+                    ptr::null(),
+                    &mut read,
+                    &mut diagnostics,
+                )
+            },
+            TypeBridgeStatus::ResourceLimit
+        );
+        assert!(read.is_null());
+        assert_eq!(state.opens.load(Ordering::Acquire), opens_before);
+        assert_eq!(
+            unsafe { diagnostic_code(diagnostics) },
+            "provider_statement_limit"
+        );
+        unsafe { close_diagnostics(&mut diagnostics) };
+        assert_eq!(
+            unsafe { type_bridge_database_close(&mut zero_statement_database, &mut diagnostics) },
+            TypeBridgeStatus::Ok
+        );
+        assert_eq!(
+            unsafe { type_bridge_runtime_close(&mut runtime, &mut diagnostics) },
+            TypeBridgeStatus::Ok
+        );
+        assert_eq!(
+            unsafe { type_bridge_schema_package_close(&mut package) },
+            TypeBridgeStatus::Ok
+        );
+    }
+
+    #[test]
+    fn v2_transaction_open_wakes_for_cancellation_and_deadline() {
+        let state = Arc::new(FakeState::default());
+        let mut runtime = runtime(Arc::clone(&state), Version::new(3, 12, 1));
+        let mut package = Box::into_raw(Box::new(package("typedb-3.12.1/v1", "v2opencontrol")));
+        let (mut database, mut diagnostics, status) =
+            unsafe { open_database(runtime, package, ptr::null()) };
+        assert_eq!(status, TypeBridgeStatus::Ok);
+        state.pending_open.store(true, Ordering::Release);
+
+        let mut cancellation = ptr::null_mut();
+        assert_eq!(
+            unsafe { type_bridge_cancellation_open(&mut cancellation) },
+            TypeBridgeStatus::Ok
+        );
+        let cancellation_address = cancellation as usize;
+        let observed = Arc::clone(&state);
+        let requester = std::thread::spawn(move || {
+            while observed.opens.load(Ordering::Acquire) == 0 {
+                std::thread::yield_now();
+            }
+            assert_eq!(
+                unsafe {
+                    type_bridge_cancellation_request(
+                        cancellation_address as *const TypeBridgeCancellation,
+                    )
+                },
+                TypeBridgeStatus::Ok
+            );
+        });
+        let limits = limits_descriptor(QueryExecutionResourceLimits::default());
+        let mut read = ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                type_bridge_read_transaction_open_v2_impl(
+                    database,
+                    &limits,
+                    cancellation,
+                    &mut read,
+                    &mut diagnostics,
+                )
+            },
+            TypeBridgeStatus::Cancelled
+        );
+        requester.join().unwrap();
+        assert!(read.is_null());
+        assert_eq!(
+            unsafe { diagnostic_code(diagnostics) },
+            "provider_cancelled"
+        );
+        unsafe { close_diagnostics(&mut diagnostics) };
+        assert_eq!(
+            unsafe { type_bridge_cancellation_close(&mut cancellation) },
+            TypeBridgeStatus::Ok
+        );
+
+        let timeout_limits = QueryExecutionResourceLimits {
+            timeout_milliseconds: 1,
+            ..QueryExecutionResourceLimits::default()
+        };
+        let timeout_descriptor = limits_descriptor(timeout_limits);
+        assert_eq!(
+            unsafe {
+                type_bridge_read_transaction_open_v2_impl(
+                    database,
+                    &timeout_descriptor,
+                    ptr::null(),
+                    &mut read,
+                    &mut diagnostics,
+                )
+            },
+            TypeBridgeStatus::ResourceLimit
+        );
+        assert!(read.is_null());
+        assert_eq!(
+            unsafe { diagnostic_code(diagnostics) },
+            "transaction_deadline_exceeded"
+        );
+        unsafe { close_diagnostics(&mut diagnostics) };
+        state.pending_open.store(false, Ordering::Release);
+
+        assert_eq!(
+            unsafe { type_bridge_database_close(&mut database, &mut diagnostics) },
+            TypeBridgeStatus::Ok
+        );
+
+        state.supports_given_rows.store(true, Ordering::Release);
+        let inherited_timeout = DatabaseConfigV2Fixture::plaintext(timeout_limits);
+        let (mut database, mut diagnostics, status) =
+            unsafe { open_database_v2(runtime, package, &inherited_timeout.config, ptr::null()) };
+        assert_eq!(status, TypeBridgeStatus::Ok);
+        state.pending_open.store(true, Ordering::Release);
+        let opens_before = state.opens.load(Ordering::Acquire);
+        assert_eq!(
+            unsafe {
+                type_bridge_read_transaction_open(
+                    database,
+                    ptr::null(),
+                    &mut read,
+                    &mut diagnostics,
+                )
+            },
+            TypeBridgeStatus::ResourceLimit
+        );
+        assert!(read.is_null());
+        assert_eq!(
+            unsafe { diagnostic_code(diagnostics) },
+            "transaction_deadline_exceeded"
+        );
+        unsafe { close_diagnostics(&mut diagnostics) };
+
+        let mut write = ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                type_bridge_write_transaction_open(
+                    database,
+                    ptr::null(),
+                    &mut write,
+                    &mut diagnostics,
+                )
+            },
+            TypeBridgeStatus::ResourceLimit
+        );
+        assert!(write.is_null());
+        assert_eq!(
+            unsafe { diagnostic_code(diagnostics) },
+            "transaction_deadline_exceeded"
+        );
+        assert_eq!(state.opens.load(Ordering::Acquire), opens_before + 2);
+        unsafe { close_diagnostics(&mut diagnostics) };
+        state.pending_open.store(false, Ordering::Release);
+        assert_eq!(
+            unsafe { type_bridge_database_close(&mut database, &mut diagnostics) },
+            TypeBridgeStatus::Ok
+        );
+        assert_eq!(
+            unsafe { type_bridge_runtime_close(&mut runtime, &mut diagnostics) },
+            TypeBridgeStatus::Ok
+        );
+        assert_eq!(
+            unsafe { type_bridge_schema_package_close(&mut package) },
+            TypeBridgeStatus::Ok
+        );
+    }
+
+    #[test]
+    fn rollback_only_commit_is_exact_pre_dispatch_and_retains_legacy_and_v2_owners() {
+        let state = Arc::new(FakeState::default());
+        state.supports_given_rows.store(true, Ordering::Release);
+        let mut runtime = runtime(Arc::clone(&state), Version::new(3, 12, 1));
+        let mut package = Box::into_raw(Box::new(package("typedb-3.12.1/v1", "rollbackonly")));
+        let fixture = DatabaseConfigV2Fixture::plaintext(QueryExecutionResourceLimits::default());
+        let (mut database, mut diagnostics, status) =
+            unsafe { open_database_v2(runtime, package, &fixture.config, ptr::null()) };
+        assert_eq!(status, TypeBridgeStatus::Ok);
+        let cause = SdkExecutionDiagnostic::provider_failure(SdkProviderOperation::Write);
+
+        let legacy_context = unsafe { &*database }
+            .open_transaction_context(TxType::Write)
+            .unwrap();
+        unsafe { &*database }.block_on(legacy_context.latch_rollback_only(&cause));
+        let mut legacy = Box::into_raw(Box::new(
+            TypeBridgeWriteTransaction::from_test_context_with_answer_ceiling(
+                unsafe { &*database },
+                legacy_context,
+                unsafe { &*database }.policy_answer_ceiling(),
+            ),
+        ));
+        let legacy_before = legacy;
+        assert_eq!(
+            unsafe {
+                type_bridge_write_transaction_commit(&mut legacy, ptr::null(), &mut diagnostics)
+            },
+            TypeBridgeStatus::ExecutionFailed
+        );
+        assert_eq!(legacy, legacy_before);
+        assert_eq!(state.commits.load(Ordering::Acquire), 0);
+        assert_eq!(
+            unsafe { diagnostic_code(diagnostics) },
+            "transaction_rollback_only"
+        );
+        unsafe { close_diagnostics(&mut diagnostics) };
+        assert_eq!(
+            unsafe {
+                (&*legacy).block_on(
+                    (&*legacy)
+                        .context()
+                        .expect("the rejected owner retains its context")
+                        .lifecycle_state(),
+                )
+            },
+            TransactionContextState::RollbackOnly
+        );
+
+        let v2_context = unsafe { &*database }
+            .open_transaction_context(TxType::Write)
+            .unwrap();
+        unsafe { &*database }.block_on(v2_context.latch_rollback_only(&cause));
+        let mut v2 = Box::into_raw(Box::new(
+            TypeBridgeWriteTransaction::from_test_context_with_answer_ceiling(
+                unsafe { &*database },
+                v2_context,
+                unsafe { &*database }.policy_answer_ceiling(),
+            ),
+        ));
+        let v2_before = v2;
+        let descriptor = limits_descriptor(QueryExecutionResourceLimits::default());
+        assert_eq!(
+            unsafe {
+                type_bridge_write_transaction_commit_v2_impl(
+                    &mut v2,
+                    &descriptor,
+                    ptr::null(),
+                    &mut diagnostics,
+                )
+            },
+            TypeBridgeStatus::ExecutionFailed
+        );
+        assert_eq!(v2, v2_before);
+        assert_eq!(state.commits.load(Ordering::Acquire), 0);
+        assert_eq!(
+            unsafe { diagnostic_code(diagnostics) },
+            "transaction_rollback_only"
+        );
+        unsafe { close_diagnostics(&mut diagnostics) };
+        assert_eq!(
+            unsafe {
+                (&*v2).block_on(
+                    (&*v2)
+                        .context()
+                        .expect("the rejected owner retains its context")
+                        .lifecycle_state(),
+                )
+            },
+            TransactionContextState::RollbackOnly
+        );
+
+        assert_eq!(
+            unsafe { type_bridge_write_transaction_close(&mut legacy, &mut diagnostics) },
+            TypeBridgeStatus::Ok
+        );
+        assert_eq!(
+            unsafe { type_bridge_write_transaction_close(&mut v2, &mut diagnostics) },
+            TypeBridgeStatus::Ok
+        );
+        assert_eq!(state.rollbacks.load(Ordering::Acquire), 2);
+        assert_eq!(state.commits.load(Ordering::Acquire), 0);
+        assert_eq!(
+            unsafe { type_bridge_database_close(&mut database, &mut diagnostics) },
+            TypeBridgeStatus::Ok
+        );
+        assert_eq!(
+            unsafe { type_bridge_runtime_close(&mut runtime, &mut diagnostics) },
+            TypeBridgeStatus::Ok
+        );
+        assert_eq!(
+            unsafe { type_bridge_schema_package_close(&mut package) },
+            TypeBridgeStatus::Ok
+        );
+    }
+
+    #[test]
+    fn v2_and_inherited_legacy_commits_reject_before_dispatch_but_actual_outcome_wins() {
+        let state = Arc::new(FakeState::default());
+        let mut runtime = runtime(Arc::clone(&state), Version::new(3, 12, 1));
+        let mut package = Box::into_raw(Box::new(package("typedb-3.12.1/v1", "v2commit")));
+        let (mut database, mut diagnostics, status) =
+            unsafe { open_database(runtime, package, ptr::null()) };
+        assert_eq!(status, TypeBridgeStatus::Ok);
+
+        let context = unsafe { &*database }
+            .open_transaction_context(TxType::Write)
+            .unwrap();
+        let zero_statement = QueryExecutionResourceLimits {
+            statements: 0,
+            ..QueryExecutionResourceLimits::default()
+        };
+        let mut inherited = Box::into_raw(Box::new(
+            TypeBridgeWriteTransaction::from_test_context_with_answer_ceiling(
+                unsafe { &*database },
+                context,
+                Some(zero_statement),
+            ),
+        ));
+        let inherited_before = inherited;
+        assert_eq!(
+            unsafe {
+                type_bridge_write_transaction_commit(&mut inherited, ptr::null(), &mut diagnostics)
+            },
+            TypeBridgeStatus::ResourceLimit
+        );
+        assert_eq!(inherited, inherited_before);
+        assert_eq!(state.commits.load(Ordering::Acquire), 0);
+        assert_eq!(
+            unsafe { diagnostic_code(diagnostics) },
+            "provider_statement_limit"
+        );
+        unsafe { close_diagnostics(&mut diagnostics) };
+        assert_eq!(
+            unsafe { type_bridge_write_transaction_close(&mut inherited, &mut diagnostics) },
+            TypeBridgeStatus::Ok
+        );
+
+        let context = unsafe { &*database }
+            .open_transaction_context(TxType::Write)
+            .unwrap();
+        let zero_timeout = QueryExecutionResourceLimits {
+            timeout_milliseconds: 0,
+            ..QueryExecutionResourceLimits::default()
+        };
+        let mut inherited = Box::into_raw(Box::new(
+            TypeBridgeWriteTransaction::from_test_context_with_answer_ceiling(
+                unsafe { &*database },
+                context,
+                Some(zero_timeout),
+            ),
+        ));
+        let inherited_before = inherited;
+        assert_eq!(
+            unsafe {
+                type_bridge_write_transaction_commit(&mut inherited, ptr::null(), &mut diagnostics)
+            },
+            TypeBridgeStatus::ResourceLimit
+        );
+        assert_eq!(inherited, inherited_before);
+        assert_eq!(state.commits.load(Ordering::Acquire), 0);
+        assert_eq!(
+            unsafe { diagnostic_code(diagnostics) },
+            "transaction_deadline_exceeded"
+        );
+        unsafe { close_diagnostics(&mut diagnostics) };
+        assert_eq!(
+            unsafe { type_bridge_write_transaction_close(&mut inherited, &mut diagnostics) },
+            TypeBridgeStatus::Ok
+        );
+
+        let mut write = ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                type_bridge_write_transaction_open(
+                    database,
+                    ptr::null(),
+                    &mut write,
+                    &mut diagnostics,
+                )
+            },
+            TypeBridgeStatus::Ok
+        );
+        let zero_statement_descriptor = limits_descriptor(zero_statement);
+        let write_before = write;
+        assert_eq!(
+            unsafe {
+                type_bridge_write_transaction_commit_v2_impl(
+                    &mut write,
+                    &zero_statement_descriptor,
+                    ptr::null(),
+                    &mut diagnostics,
+                )
+            },
+            TypeBridgeStatus::ResourceLimit
+        );
+        assert_eq!(write, write_before);
+        assert_eq!(state.commits.load(Ordering::Acquire), 0);
+        unsafe { close_diagnostics(&mut diagnostics) };
+
+        let zero_timeout_descriptor = limits_descriptor(zero_timeout);
+        assert_eq!(
+            unsafe {
+                type_bridge_write_transaction_commit_v2_impl(
+                    &mut write,
+                    &zero_timeout_descriptor,
+                    ptr::null(),
+                    &mut diagnostics,
+                )
+            },
+            TypeBridgeStatus::ResourceLimit
+        );
+        assert_eq!(write, write_before);
+        assert_eq!(
+            unsafe { diagnostic_code(diagnostics) },
+            "transaction_deadline_exceeded"
+        );
+        unsafe { close_diagnostics(&mut diagnostics) };
+        assert_eq!(
+            unsafe { type_bridge_write_transaction_close(&mut write, &mut diagnostics) },
+            TypeBridgeStatus::Ok
+        );
+
+        assert_eq!(
+            unsafe {
+                type_bridge_write_transaction_open(
+                    database,
+                    ptr::null(),
+                    &mut write,
+                    &mut diagnostics,
+                )
+            },
+            TypeBridgeStatus::Ok
+        );
+        state.commit_delay_milliseconds.store(50, Ordering::Release);
+        state.commit_started.store(false, Ordering::Release);
+        let mut cancellation = ptr::null_mut();
+        assert_eq!(
+            unsafe { type_bridge_cancellation_open(&mut cancellation) },
+            TypeBridgeStatus::Ok
+        );
+        let cancellation_address = cancellation as usize;
+        let observed = Arc::clone(&state);
+        let requester = std::thread::spawn(move || {
+            while !observed.commit_started.load(Ordering::Acquire) {
+                std::thread::yield_now();
+            }
+            assert_eq!(
+                unsafe {
+                    type_bridge_cancellation_request(
+                        cancellation_address as *const TypeBridgeCancellation,
+                    )
+                },
+                TypeBridgeStatus::Ok
+            );
+        });
+        let default_descriptor = limits_descriptor(QueryExecutionResourceLimits::default());
+        assert_eq!(
+            unsafe {
+                type_bridge_write_transaction_commit_v2_impl(
+                    &mut write,
+                    &default_descriptor,
+                    cancellation,
+                    &mut diagnostics,
+                )
+            },
+            TypeBridgeStatus::Ok
+        );
+        requester.join().unwrap();
+        assert!(write.is_null());
+        assert!(diagnostics.is_null());
+        assert_eq!(state.commits.load(Ordering::Acquire), 1);
+        assert_eq!(
+            unsafe { type_bridge_cancellation_close(&mut cancellation) },
+            TypeBridgeStatus::Ok
+        );
+
+        assert_eq!(
+            unsafe { type_bridge_database_close(&mut database, &mut diagnostics) },
+            TypeBridgeStatus::Ok
+        );
+        assert_eq!(
+            unsafe { type_bridge_runtime_close(&mut runtime, &mut diagnostics) },
+            TypeBridgeStatus::Ok
+        );
+        assert_eq!(
+            unsafe { type_bridge_schema_package_close(&mut package) },
+            TypeBridgeStatus::Ok
+        );
+    }
+
+    #[test]
+    fn v2_commit_deadline_awaits_actual_outcome_without_cancelling_reusable_token() {
+        let state = Arc::new(FakeState::default());
+        let mut runtime = runtime(Arc::clone(&state), Version::new(3, 12, 1));
+        let mut package = Box::into_raw(Box::new(package("typedb-3.12.1/v1", "commitdeadline")));
+        let (mut database, mut diagnostics, status) =
+            unsafe { open_database(runtime, package, ptr::null()) };
+        assert_eq!(status, TypeBridgeStatus::Ok);
+
+        let mut write = ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                type_bridge_write_transaction_open(
+                    database,
+                    ptr::null(),
+                    &mut write,
+                    &mut diagnostics,
+                )
+            },
+            TypeBridgeStatus::Ok
+        );
+        state.commit_delay_milliseconds.store(75, Ordering::Release);
+        state.commit_started.store(false, Ordering::Release);
+        let mut cancellation = ptr::null_mut();
+        assert_eq!(
+            unsafe { type_bridge_cancellation_open(&mut cancellation) },
+            TypeBridgeStatus::Ok
+        );
+        let answer = unsafe { &*cancellation }.answer_cancellation();
+        let observed = Arc::clone(&state);
+        let observer = std::thread::spawn(move || {
+            while !observed.commit_started.load(Ordering::Acquire) {
+                std::thread::yield_now();
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            answer.is_cancelled()
+        });
+        let deadline_limits = QueryExecutionResourceLimits {
+            timeout_milliseconds: 5,
+            ..QueryExecutionResourceLimits::default()
+        };
+        let deadline_descriptor = limits_descriptor(deadline_limits);
+        assert_eq!(
+            unsafe {
+                type_bridge_write_transaction_commit_v2_impl(
+                    &mut write,
+                    &deadline_descriptor,
+                    cancellation,
+                    &mut diagnostics,
+                )
+            },
+            TypeBridgeStatus::Ok
+        );
+        assert!(!observer.join().unwrap());
+        assert!(write.is_null());
+        assert!(diagnostics.is_null());
+        assert_eq!(state.commits.load(Ordering::Acquire), 1);
+        let mut requested = 1;
+        assert_eq!(
+            unsafe { type_bridge_cancellation_is_requested(cancellation, &mut requested) },
+            TypeBridgeStatus::Ok
+        );
+        assert_eq!(requested, 0);
+        assert!(
+            !unsafe { &*cancellation }
+                .answer_cancellation()
+                .is_cancelled()
+        );
+
+        let mut read = ptr::null_mut();
+        let default_descriptor = limits_descriptor(QueryExecutionResourceLimits::default());
+        assert_eq!(
+            unsafe {
+                type_bridge_read_transaction_open_v2_impl(
+                    database,
+                    &default_descriptor,
+                    cancellation,
+                    &mut read,
+                    &mut diagnostics,
+                )
+            },
+            TypeBridgeStatus::Ok
+        );
+        assert_eq!(
+            unsafe { type_bridge_read_transaction_close(&mut read, &mut diagnostics) },
+            TypeBridgeStatus::Ok
+        );
+        assert_eq!(
+            unsafe { type_bridge_cancellation_close(&mut cancellation) },
+            TypeBridgeStatus::Ok
+        );
+        assert_eq!(
+            unsafe { type_bridge_database_close(&mut database, &mut diagnostics) },
+            TypeBridgeStatus::Ok
+        );
+        assert_eq!(
+            unsafe { type_bridge_runtime_close(&mut runtime, &mut diagnostics) },
+            TypeBridgeStatus::Ok
+        );
+        assert_eq!(
+            unsafe { type_bridge_schema_package_close(&mut package) },
+            TypeBridgeStatus::Ok
+        );
     }
 
     #[test]

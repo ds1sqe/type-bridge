@@ -4,10 +4,13 @@
 
 mod abi;
 mod allocation;
+mod crud_v2;
 mod diagnostic;
 mod entity_crud;
 mod execution_diagnostic;
 mod generated_preflight;
+mod policy;
+mod projected_batch;
 mod projected_create_builder;
 mod projected_model;
 mod projected_token;

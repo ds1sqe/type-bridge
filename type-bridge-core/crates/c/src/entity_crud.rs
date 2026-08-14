@@ -9,9 +9,11 @@ use crate::runtime::{
     TypeBridgeWriteTransaction,
 };
 use crate::thing_crud::{
-    CrudKind, MemoryRange, ReadTarget, WriteTarget, prepare_count_outputs,
-    prepare_diagnostics_output, prepare_thing_outputs, run_count_call, run_delete_call,
-    run_get_call, run_put_call, run_write_thing_call,
+    CrudKind, LegacyPolicyTarget, MemoryRange, ReadTarget, WriteTarget,
+    prepare_count_outputs_for_legacy_policy_target,
+    prepare_diagnostics_output_for_legacy_policy_target,
+    prepare_thing_outputs_for_legacy_policy_target, run_count_call, run_delete_call, run_get_call,
+    run_put_call, run_write_thing_call,
 };
 
 /// Insert one exact projected entity using one owned write transaction and commit.
@@ -26,7 +28,8 @@ pub unsafe extern "C" fn type_bridge_database_entity_insert(
 ) -> TypeBridgeStatus {
     // SAFETY: all caller input ranges are described before any output write.
     let prepared = match unsafe {
-        prepare_thing_outputs(
+        prepare_thing_outputs_for_legacy_policy_target(
+            LegacyPolicyTarget::Database(database),
             &[
                 MemoryRange::of_object(database),
                 MemoryRange::of_object(model),
@@ -75,8 +78,10 @@ pub(crate) mod tests {
     };
     use type_bridge_contract::schema::{DocumentId, OwnsFactId, encode_declared_schema};
     use type_bridge_contract::value::{CanonicalString, CanonicalValue};
+    use type_bridge_core_lib::version::Version;
     use type_bridge_orm::session::backend::{
-        BoxFuture, DriverBackend, QueryResult, TransactionOps,
+        AnswerConsumer, AnswerControl, AnswerItem, BoundedAnswerLimits, BoundedAnswerReader,
+        BoundedAnswerStats, BoxFuture, DriverBackend, GivenRowsSpec, QueryResult, TransactionOps,
     };
     use type_bridge_orm::{
         ClassifiedCommitError, CommitFailureCertainty, Database, OrmError, ProjectedAttributeValue,
@@ -145,24 +150,26 @@ functions:
     body: { typeql: "match $person has identifier $identifier; return first $identifier;" }
 "#;
 
-    const COMMIT_SUCCESS: u8 = 0;
+    pub(crate) const COMMIT_SUCCESS: u8 = 0;
     const COMMIT_ABORTED: u8 = 1;
     const COMMIT_UNKNOWN: u8 = 2;
     const COMMIT_PANIC: u8 = 3;
 
-    enum Response {
+    pub(crate) enum Response {
         Result(QueryResult),
         Error,
         Panic,
+        Pending,
+        Delayed(QueryResult),
     }
 
-    struct FakeState {
+    pub(crate) struct FakeState {
         responses: Mutex<VecDeque<Response>>,
         opens: Mutex<Vec<TxType>>,
         queries: Mutex<Vec<String>>,
-        commits: AtomicUsize,
-        rollbacks: AtomicUsize,
-        closes: AtomicUsize,
+        pub(crate) commits: AtomicUsize,
+        pub(crate) rollbacks: AtomicUsize,
+        pub(crate) closes: AtomicUsize,
         commit: AtomicU8,
     }
 
@@ -179,8 +186,12 @@ functions:
             })
         }
 
-        fn query_count(&self) -> usize {
+        pub(crate) fn query_count(&self) -> usize {
             self.queries.lock().unwrap().len()
+        }
+
+        pub(crate) fn opened_transactions(&self) -> Vec<TxType> {
+            self.opens.lock().unwrap().clone()
         }
     }
 
@@ -204,6 +215,14 @@ functions:
         fn is_open(&self) -> bool {
             true
         }
+
+        fn server_version(&self) -> Option<Version> {
+            Some(Version::new(3, 12, 1))
+        }
+
+        fn supports_given_rows(&self) -> bool {
+            true
+        }
     }
 
     struct FakeTransaction {
@@ -211,6 +230,10 @@ functions:
     }
 
     impl TransactionOps for FakeTransaction {
+        fn supports_given_rows(&self) -> bool {
+            true
+        }
+
         fn query(&mut self, _typeql: &str) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
             panic!("entity CRUD must use canonical query execution")
         }
@@ -235,7 +258,66 @@ functions:
                     ))
                 }),
                 Response::Panic => panic!("fake provider query panic"),
+                Response::Pending => Box::pin(std::future::pending()),
+                Response::Delayed(value) => Box::pin(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                    Ok(value)
+                }),
             }
+        }
+
+        fn query_with_rows(
+            &mut self,
+            typeql: &str,
+            _rows: GivenRowsSpec,
+        ) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
+            self.state.queries.lock().unwrap().push(typeql.to_owned());
+            let response = self
+                .state
+                .responses
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("the C entity CRUD test issued an unexpected provider query");
+            match response {
+                Response::Result(value) => Box::pin(async move { Ok(value) }),
+                Response::Error => Box::pin(async {
+                    Err(OrmError::QueryExecution(
+                        "provider-secret-query-shape".to_owned(),
+                    ))
+                }),
+                Response::Panic => panic!("fake provider query panic"),
+                Response::Pending => Box::pin(std::future::pending()),
+                Response::Delayed(value) => Box::pin(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                    Ok(value)
+                }),
+            }
+        }
+
+        fn query_bounded<'a>(
+            &'a mut self,
+            typeql: &'a str,
+            limits: BoundedAnswerLimits,
+            consumer: &'a mut dyn AnswerConsumer,
+        ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
+            Box::pin(async move {
+                let mut reader = BoundedAnswerReader::new(limits);
+                reader.check_before_read()?;
+                let items = match self.query_canonical(typeql).await? {
+                    QueryResult::Ok => Vec::new(),
+                    QueryResult::Rows(rows) => rows.into_iter().map(AnswerItem::Row).collect(),
+                    QueryResult::Documents(documents) => {
+                        documents.into_iter().map(AnswerItem::Document).collect()
+                    }
+                };
+                for item in items {
+                    if reader.accept(item, consumer)? == AnswerControl::Stop {
+                        break;
+                    }
+                }
+                Ok(reader.stats())
+            })
         }
 
         fn commit(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
@@ -301,7 +383,7 @@ functions:
         }
     }
 
-    fn byte_view(value: &[u8]) -> TypeBridgeByteView {
+    pub(crate) fn byte_view(value: &[u8]) -> TypeBridgeByteView {
         TypeBridgeByteView {
             data: value.as_ptr(),
             length: value.len(),
@@ -401,7 +483,7 @@ functions:
         })
     }
 
-    fn person_document(iid: &str) -> serde_json::Value {
+    pub(crate) fn person_document(iid: &str) -> serde_json::Value {
         serde_json::json!({
             "_iid": iid,
             "_type": "person",
@@ -409,25 +491,33 @@ functions:
         })
     }
 
-    fn insert_iid(iid: &str) -> Response {
+    pub(crate) fn insert_iid(iid: &str) -> Response {
         Response::Result(QueryResult::Documents(vec![
             serde_json::json!({"iid": iid}),
         ]))
     }
 
-    fn documents(values: Vec<serde_json::Value>) -> Response {
+    pub(crate) fn documents(values: Vec<serde_json::Value>) -> Response {
         Response::Result(QueryResult::Documents(values))
     }
 
-    struct Fixture {
-        database: Box<TypeBridgeDatabase>,
-        package: TypeBridgeSchemaPackage,
-        token: TypeBridgeProjectedTokenV1,
-        create: Box<TypeBridgeProjectedCreate>,
-        state: Arc<FakeState>,
+    pub(crate) struct Fixture {
+        pub(crate) database: Box<TypeBridgeDatabase>,
+        pub(crate) package: TypeBridgeSchemaPackage,
+        pub(crate) token: TypeBridgeProjectedTokenV1,
+        pub(crate) create: Box<TypeBridgeProjectedCreate>,
+        pub(crate) state: Arc<FakeState>,
     }
 
-    fn fixture(responses: Vec<Response>, commit: u8) -> Fixture {
+    pub(crate) fn fixture(responses: Vec<Response>, commit: u8) -> Fixture {
+        fixture_with_answer_ceiling(responses, commit, None)
+    }
+
+    pub(crate) fn fixture_with_answer_ceiling(
+        responses: Vec<Response>,
+        commit: u8,
+        answer_ceiling: Option<type_bridge_orm::QueryExecutionResourceLimits>,
+    ) -> Fixture {
         let package = package("entitycrud");
         let token = model_token(&package, TypeId::new(TypeKind::Entity, "person").unwrap());
         let create = person_create(&package);
@@ -438,9 +528,10 @@ functions:
             }),
             "workforce",
         );
-        let database = Box::new(TypeBridgeDatabase::from_test_database(
+        let database = Box::new(TypeBridgeDatabase::from_test_database_with_answer_ceiling(
             Arc::clone(&package.state),
             database,
+            answer_ceiling,
         ));
         Fixture {
             database,
@@ -482,7 +573,7 @@ functions:
         })
     }
 
-    fn membership_document(iid: &str) -> serde_json::Value {
+    pub(crate) fn membership_document(iid: &str) -> serde_json::Value {
         serde_json::json!({
             "_iid": iid,
             "_type": "membership",
@@ -504,15 +595,23 @@ functions:
         })
     }
 
-    struct RelationFixture {
-        database: Box<TypeBridgeDatabase>,
-        package: TypeBridgeSchemaPackage,
-        token: TypeBridgeProjectedTokenV1,
-        create: Box<TypeBridgeProjectedCreate>,
-        state: Arc<FakeState>,
+    pub(crate) struct RelationFixture {
+        pub(crate) database: Box<TypeBridgeDatabase>,
+        pub(crate) package: TypeBridgeSchemaPackage,
+        pub(crate) token: TypeBridgeProjectedTokenV1,
+        pub(crate) create: Box<TypeBridgeProjectedCreate>,
+        pub(crate) state: Arc<FakeState>,
     }
 
-    fn relation_fixture(responses: Vec<Response>, commit: u8) -> RelationFixture {
+    pub(crate) fn relation_fixture(responses: Vec<Response>, commit: u8) -> RelationFixture {
+        relation_fixture_with_answer_ceiling(responses, commit, None)
+    }
+
+    pub(crate) fn relation_fixture_with_answer_ceiling(
+        responses: Vec<Response>,
+        commit: u8,
+        answer_ceiling: Option<type_bridge_orm::QueryExecutionResourceLimits>,
+    ) -> RelationFixture {
         let package = package("relationcrud");
         let token = model_token(
             &package,
@@ -526,9 +625,10 @@ functions:
             }),
             "workforce",
         );
-        let database = Box::new(TypeBridgeDatabase::from_test_database(
+        let database = Box::new(TypeBridgeDatabase::from_test_database_with_answer_ceiling(
             Arc::clone(&package.state),
             database,
+            answer_ceiling,
         ));
         RelationFixture {
             database,
@@ -547,7 +647,7 @@ functions:
         unsafe { std::slice::from_raw_parts(view.data, view.length) }.to_vec()
     }
 
-    fn diagnostic(
+    pub(crate) fn diagnostic(
         diagnostics: *mut TypeBridgeExecutionDiagnostics,
     ) -> (TypeBridgeExecutionDiagnosticCategory, String, String) {
         assert!(!diagnostics.is_null());
@@ -580,7 +680,7 @@ functions:
         )
     }
 
-    fn close_diagnostics(diagnostics: &mut *mut TypeBridgeExecutionDiagnostics) {
+    pub(crate) fn close_diagnostics(diagnostics: &mut *mut TypeBridgeExecutionDiagnostics) {
         assert_eq!(
             // SAFETY: the slot owns either null or one diagnostics handle.
             unsafe { type_bridge_execution_diagnostics_close(diagnostics) },
@@ -589,7 +689,7 @@ functions:
         assert!(diagnostics.is_null());
     }
 
-    fn close_thing(thing: &mut *mut TypeBridgeProjectedThing) {
+    pub(crate) fn close_thing(thing: &mut *mut TypeBridgeProjectedThing) {
         assert_eq!(
             // SAFETY: the slot owns either null or one thing handle.
             unsafe { type_bridge_projected_thing_close(thing) },
@@ -2778,7 +2878,8 @@ pub unsafe extern "C" fn type_bridge_database_entity_put(
 ) -> TypeBridgeStatus {
     // SAFETY: all caller input ranges are described before any output write.
     let prepared = match unsafe {
-        prepare_thing_outputs(
+        prepare_thing_outputs_for_legacy_policy_target(
+            LegacyPolicyTarget::Database(database),
             &[
                 MemoryRange::of_object(database),
                 MemoryRange::of_object(model),
@@ -2820,7 +2921,8 @@ pub unsafe extern "C" fn type_bridge_database_entity_get_by_iid(
 ) -> TypeBridgeStatus {
     // SAFETY: all caller input ranges are described before any output write.
     let prepared = match unsafe {
-        prepare_thing_outputs(
+        prepare_thing_outputs_for_legacy_policy_target(
+            LegacyPolicyTarget::Database(database),
             &[
                 MemoryRange::of_object(database),
                 MemoryRange::of_object(model),
@@ -2863,7 +2965,8 @@ pub unsafe extern "C" fn type_bridge_database_entity_update(
 ) -> TypeBridgeStatus {
     // SAFETY: all caller input ranges are described before any output write.
     let prepared = match unsafe {
-        prepare_thing_outputs(
+        prepare_thing_outputs_for_legacy_policy_target(
+            LegacyPolicyTarget::Database(database),
             &[
                 MemoryRange::of_object(database),
                 MemoryRange::of_object(model),
@@ -2904,15 +3007,19 @@ pub unsafe extern "C" fn type_bridge_database_entity_delete_by_iid(
     cancellation: *const TypeBridgeCancellation,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
-    let prepared = match prepare_diagnostics_output(
-        &[
-            MemoryRange::of_object(database),
-            MemoryRange::of_object(model),
-            MemoryRange::of_bytes(iid),
-            MemoryRange::of_object(cancellation),
-        ],
-        out_diagnostics,
-    ) {
+    // SAFETY: all caller input ranges and the complete target are retained until preparation.
+    let prepared = match unsafe {
+        prepare_diagnostics_output_for_legacy_policy_target(
+            LegacyPolicyTarget::Database(database),
+            &[
+                MemoryRange::of_object(database),
+                MemoryRange::of_object(model),
+                MemoryRange::of_bytes(iid),
+                MemoryRange::of_object(cancellation),
+            ],
+            out_diagnostics,
+        )
+    } {
         Ok(value) => value,
         Err(status) => return status,
     };
@@ -2941,15 +3048,19 @@ pub unsafe extern "C" fn type_bridge_database_entity_count(
     out_count: *mut u64,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
-    let prepared = match prepare_count_outputs(
-        &[
-            MemoryRange::of_object(database),
-            MemoryRange::of_object(model),
-            MemoryRange::of_object(cancellation),
-        ],
-        out_count,
-        out_diagnostics,
-    ) {
+    // SAFETY: all caller input ranges and the complete target are retained until preparation.
+    let prepared = match unsafe {
+        prepare_count_outputs_for_legacy_policy_target(
+            LegacyPolicyTarget::Database(database),
+            &[
+                MemoryRange::of_object(database),
+                MemoryRange::of_object(model),
+                MemoryRange::of_object(cancellation),
+            ],
+            out_count,
+            out_diagnostics,
+        )
+    } {
         Ok(value) => value,
         Err(status) => return status,
     };
@@ -2980,7 +3091,8 @@ pub unsafe extern "C" fn type_bridge_read_transaction_entity_get_by_iid(
 ) -> TypeBridgeStatus {
     // SAFETY: all caller input ranges are described before any output write.
     let prepared = match unsafe {
-        prepare_thing_outputs(
+        prepare_thing_outputs_for_legacy_policy_target(
+            LegacyPolicyTarget::ReadTransaction(transaction),
             &[
                 MemoryRange::of_object(transaction),
                 MemoryRange::of_object(model),
@@ -3019,15 +3131,19 @@ pub unsafe extern "C" fn type_bridge_read_transaction_entity_count(
     out_count: *mut u64,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
-    let prepared = match prepare_count_outputs(
-        &[
-            MemoryRange::of_object(transaction),
-            MemoryRange::of_object(model),
-            MemoryRange::of_object(cancellation),
-        ],
-        out_count,
-        out_diagnostics,
-    ) {
+    // SAFETY: all caller input ranges and the complete target are retained until preparation.
+    let prepared = match unsafe {
+        prepare_count_outputs_for_legacy_policy_target(
+            LegacyPolicyTarget::ReadTransaction(transaction),
+            &[
+                MemoryRange::of_object(transaction),
+                MemoryRange::of_object(model),
+                MemoryRange::of_object(cancellation),
+            ],
+            out_count,
+            out_diagnostics,
+        )
+    } {
         Ok(value) => value,
         Err(status) => return status,
     };
@@ -3084,7 +3200,8 @@ macro_rules! write_transaction_create_operation {
         ) -> TypeBridgeStatus {
             // SAFETY: all caller input ranges are described before any output write.
             let prepared = match unsafe {
-                prepare_thing_outputs(
+                prepare_thing_outputs_for_legacy_policy_target(
+                    LegacyPolicyTarget::WriteTransaction(transaction),
                     &[
                         MemoryRange::of_object(transaction),
                         MemoryRange::of_object(model),
@@ -3134,7 +3251,8 @@ pub unsafe extern "C" fn type_bridge_write_transaction_entity_update(
 ) -> TypeBridgeStatus {
     // SAFETY: all caller input ranges are described before any output write.
     let prepared = match unsafe {
-        prepare_thing_outputs(
+        prepare_thing_outputs_for_legacy_policy_target(
+            LegacyPolicyTarget::WriteTransaction(transaction),
             &[
                 MemoryRange::of_object(transaction),
                 MemoryRange::of_object(model),
@@ -3178,7 +3296,8 @@ pub unsafe extern "C" fn type_bridge_write_transaction_entity_get_by_iid(
 ) -> TypeBridgeStatus {
     // SAFETY: all caller input ranges are described before any output write.
     let prepared = match unsafe {
-        prepare_thing_outputs(
+        prepare_thing_outputs_for_legacy_policy_target(
+            LegacyPolicyTarget::WriteTransaction(transaction),
             &[
                 MemoryRange::of_object(transaction),
                 MemoryRange::of_object(model),
@@ -3217,15 +3336,19 @@ pub unsafe extern "C" fn type_bridge_write_transaction_entity_delete_by_iid(
     cancellation: *const TypeBridgeCancellation,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
-    let prepared = match prepare_diagnostics_output(
-        &[
-            MemoryRange::of_object(transaction),
-            MemoryRange::of_object(model),
-            MemoryRange::of_bytes(iid),
-            MemoryRange::of_object(cancellation),
-        ],
-        out_diagnostics,
-    ) {
+    // SAFETY: all caller input ranges and the complete target are retained until preparation.
+    let prepared = match unsafe {
+        prepare_diagnostics_output_for_legacy_policy_target(
+            LegacyPolicyTarget::WriteTransaction(transaction),
+            &[
+                MemoryRange::of_object(transaction),
+                MemoryRange::of_object(model),
+                MemoryRange::of_bytes(iid),
+                MemoryRange::of_object(cancellation),
+            ],
+            out_diagnostics,
+        )
+    } {
         Ok(value) => value,
         Err(status) => return status,
     };
@@ -3254,15 +3377,19 @@ pub unsafe extern "C" fn type_bridge_write_transaction_entity_count(
     out_count: *mut u64,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
-    let prepared = match prepare_count_outputs(
-        &[
-            MemoryRange::of_object(transaction),
-            MemoryRange::of_object(model),
-            MemoryRange::of_object(cancellation),
-        ],
-        out_count,
-        out_diagnostics,
-    ) {
+    // SAFETY: all caller input ranges and the complete target are retained until preparation.
+    let prepared = match unsafe {
+        prepare_count_outputs_for_legacy_policy_target(
+            LegacyPolicyTarget::WriteTransaction(transaction),
+            &[
+                MemoryRange::of_object(transaction),
+                MemoryRange::of_object(model),
+                MemoryRange::of_object(cancellation),
+            ],
+            out_count,
+            out_diagnostics,
+        )
+    } {
         Ok(value) => value,
         Err(status) => return status,
     };
