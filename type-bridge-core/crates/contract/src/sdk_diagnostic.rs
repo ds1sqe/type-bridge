@@ -76,7 +76,7 @@ pub enum SdkDiagnosticCategory {
     Provider,
     /// Transaction lifecycle or commit certainty prevents a successful result.
     Transaction,
-    /// The operation was cancelled before provider dispatch.
+    /// The operation was cancelled before or during execution.
     Cancelled,
     /// TypeBridge failed internally without exposing implementation state.
     Internal,
@@ -807,6 +807,26 @@ impl SdkExecutionDiagnostic {
         )
     }
 
+    /// Construct the fixed data-operation cancellation diagnostic.
+    #[must_use]
+    pub fn data_operation_cancelled() -> Self {
+        Self::stable(
+            SdkDiagnosticCategory::Cancelled,
+            static_code("provider_cancelled"),
+            static_message("The data operation was cancelled"),
+        )
+    }
+
+    /// Construct the fixed absolute data-operation deadline diagnostic.
+    #[must_use]
+    pub fn data_operation_deadline_exceeded() -> Self {
+        Self::stable(
+            SdkDiagnosticCategory::ResourceLimit,
+            static_code("transaction_deadline_exceeded"),
+            static_message("The data operation exceeded its absolute execution deadline"),
+        )
+    }
+
     /// Construct a redacted internal failure with no implementation details.
     #[must_use]
     pub fn internal_failure() -> Self {
@@ -826,6 +846,28 @@ impl SdkExecutionDiagnostic {
             return Err(SdkDiagnosticBuildError::PathLimitExceeded);
         }
         self.path.push(segment);
+        Ok(self)
+    }
+
+    /// Prepend a bounded typed path while preserving the complete diagnostic.
+    ///
+    /// Execution layers use this when a validated child value fails beneath a
+    /// containing argument or collection item. The original category, code,
+    /// message, path suffix, and typed details remain unchanged.
+    pub fn try_with_path_prefix<I>(mut self, prefix: I) -> Result<Self, SdkDiagnosticBuildError>
+    where
+        I: IntoIterator<Item = SdkDiagnosticPathSegment>,
+    {
+        let mut bounded = Vec::new();
+        for segment in prefix {
+            if bounded.len().saturating_add(self.path.len()) == MAX_SDK_DIAGNOSTIC_PATH_SEGMENTS {
+                return Err(SdkDiagnosticBuildError::PathLimitExceeded);
+            }
+            bounded.push(segment);
+        }
+        for segment in bounded.into_iter().rev() {
+            self.path.insert(0, segment);
+        }
         Ok(self)
     }
 

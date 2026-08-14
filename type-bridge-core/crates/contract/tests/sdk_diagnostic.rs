@@ -271,6 +271,26 @@ fn fixed_cancellation_and_internal_failures_expose_no_runtime_context() {
         internal.to_string(),
         "internal [internal_failure]: The operation failed inside the TypeBridge runtime"
     );
+
+    let data_cancelled = SdkExecutionDiagnostic::data_operation_cancelled();
+    assert_eq!(data_cancelled.category(), SdkDiagnosticCategory::Cancelled);
+    assert_eq!(data_cancelled.code().as_str(), "provider_cancelled");
+    assert!(data_cancelled.path().is_empty());
+    assert!(data_cancelled.details().is_empty());
+    assert_eq!(
+        data_cancelled.to_string(),
+        "cancelled [provider_cancelled]: The data operation was cancelled"
+    );
+
+    let deadline = SdkExecutionDiagnostic::data_operation_deadline_exceeded();
+    assert_eq!(deadline.category(), SdkDiagnosticCategory::ResourceLimit);
+    assert_eq!(deadline.code().as_str(), "transaction_deadline_exceeded");
+    assert!(deadline.path().is_empty());
+    assert!(deadline.details().is_empty());
+    assert_eq!(
+        deadline.to_string(),
+        "resource_limit [transaction_deadline_exceeded]: The data operation exceeded its absolute execution deadline"
+    );
 }
 
 #[test]
@@ -347,4 +367,99 @@ fn query_identity_text_is_bounded_and_rejects_free_text_channels() {
             SdkDiagnosticBuildError::InvalidName
         );
     }
+}
+
+#[test]
+fn path_prefix_preserves_diagnostic_and_orders_container_before_child() {
+    let original = SdkExecutionDiagnostic::invalid_input(
+        code("child_failure"),
+        message("The child value is invalid"),
+    )
+    .try_at(SdkDiagnosticPathSegment::Type(
+        TypeId::new(TypeKind::Entity, "person").unwrap(),
+    ))
+    .unwrap()
+    .try_with_detail(name("actual_count"), SdkDiagnosticDetailValue::Count(2))
+    .unwrap();
+
+    let prefixed = original
+        .clone()
+        .try_with_path_prefix([
+            SdkDiagnosticPathSegment::Argument(name("rows")),
+            SdkDiagnosticPathSegment::Index(1),
+        ])
+        .unwrap();
+
+    assert_eq!(prefixed.category(), original.category());
+    assert_eq!(prefixed.code(), original.code());
+    assert_eq!(prefixed.message(), original.message());
+    assert_eq!(prefixed.details(), original.details());
+    assert_eq!(
+        prefixed.path(),
+        [
+            SdkDiagnosticPathSegment::Argument(name("rows")),
+            SdkDiagnosticPathSegment::Index(1),
+            SdkDiagnosticPathSegment::Type(TypeId::new(TypeKind::Entity, "person").unwrap(),),
+        ]
+    );
+}
+
+#[test]
+fn path_prefix_enforces_the_combined_path_ceiling_atomically() {
+    let mut diagnostic = SdkExecutionDiagnostic::invalid_input(
+        code("child_failure"),
+        message("The child value is invalid"),
+    );
+    for index in 0..MAX_SDK_DIAGNOSTIC_PATH_SEGMENTS {
+        diagnostic = diagnostic
+            .try_at(SdkDiagnosticPathSegment::Index(index as u64))
+            .unwrap();
+    }
+    let original = diagnostic.clone();
+
+    assert_eq!(
+        diagnostic.try_with_path_prefix([SdkDiagnosticPathSegment::Index(99)]),
+        Err(SdkDiagnosticBuildError::PathLimitExceeded)
+    );
+    assert_eq!(original.path().len(), MAX_SDK_DIAGNOSTIC_PATH_SEGMENTS);
+}
+
+#[test]
+fn path_prefix_does_not_trust_an_underreported_iterator_length() {
+    struct HostilePrefix {
+        remaining: usize,
+    }
+
+    impl Iterator for HostilePrefix {
+        type Item = SdkDiagnosticPathSegment;
+
+        fn next(&mut self) -> Option<Self::Item> {
+            if self.remaining == 0 {
+                return None;
+            }
+            self.remaining -= 1;
+            Some(SdkDiagnosticPathSegment::Index(self.remaining as u64))
+        }
+
+        fn size_hint(&self) -> (usize, Option<usize>) {
+            (0, Some(0))
+        }
+    }
+
+    impl ExactSizeIterator for HostilePrefix {
+        fn len(&self) -> usize {
+            0
+        }
+    }
+
+    let diagnostic = SdkExecutionDiagnostic::invalid_input(
+        code("child_failure"),
+        message("The child value is invalid"),
+    );
+    assert_eq!(
+        diagnostic.try_with_path_prefix(HostilePrefix {
+            remaining: MAX_SDK_DIAGNOSTIC_PATH_SEGMENTS + 1,
+        }),
+        Err(SdkDiagnosticBuildError::PathLimitExceeded)
+    );
 }

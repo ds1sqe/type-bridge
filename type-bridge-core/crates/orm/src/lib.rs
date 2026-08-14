@@ -44,6 +44,7 @@ pub mod filter;
 pub mod hooks;
 pub mod match_request;
 pub mod migration_assertion;
+pub mod projected_batch;
 pub mod projected_crud;
 pub mod projected_model;
 mod projected_query;
@@ -128,6 +129,11 @@ pub use hooks::{
     CrudOperation, HookContext, HookError, HookRunner, LifecycleHook, PreHookResult, TypeKind,
 };
 pub use match_request::*;
+#[doc(hidden)]
+pub use projected_batch::{PreparedProjectedBatchInvocation, ProjectedBatchInvocationControl};
+pub use projected_batch::{
+    ProjectedBatch, ProjectedBatchOperation, ProjectedBatchResourceMeasure, ProjectedBatchRow,
+};
 pub use projected_crud::ProjectedCrudExecutor;
 #[doc(hidden)]
 pub use projected_crud::{

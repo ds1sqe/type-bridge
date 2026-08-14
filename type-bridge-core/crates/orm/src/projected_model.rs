@@ -30,7 +30,7 @@ pub const MAX_PROJECTED_MODEL_MEMBERS: usize = MAX_CANONICAL_COLLECTION_LEN;
 pub const MAX_PROJECTED_MODEL_BYTES: usize = MAX_CANONICAL_BYTES;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct ProjectionBrand {
+pub(crate) struct ProjectionBrand {
     semantic: SemanticSchemaFingerprint,
     target: BindingTarget,
     projection: BindingProjectionFingerprint,
@@ -63,7 +63,7 @@ impl std::fmt::Debug for ProjectedReferenceOrigin {
 }
 
 impl ProjectionBrand {
-    fn from_installed(installed: &InstalledRuntimeProjection) -> Self {
+    pub(crate) fn from_installed(installed: &InstalledRuntimeProjection) -> Self {
         Self {
             semantic: installed.projection().semantic_fingerprint().clone(),
             target: installed.projection().target(),
@@ -71,7 +71,7 @@ impl ProjectionBrand {
         }
     }
 
-    fn validate(
+    pub(crate) fn validate(
         &self,
         installed: &InstalledRuntimeProjection,
         path: Vec<SdkDiagnosticPathSegment>,
@@ -96,6 +96,18 @@ impl ProjectionBrand {
             ));
         }
         Ok(())
+    }
+
+    pub(crate) const fn semantic(&self) -> &SemanticSchemaFingerprint {
+        &self.semantic
+    }
+
+    pub(crate) const fn target(&self) -> BindingTarget {
+        self.target
+    }
+
+    pub(crate) const fn projection(&self) -> &BindingProjectionFingerprint {
+        &self.projection
     }
 }
 
