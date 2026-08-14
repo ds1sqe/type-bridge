@@ -27,6 +27,12 @@ const SCHEMA: &str = include_str!("acceptance/schema.yaml");
 const PROVIDER_SCHEMA: &str = include_str!("acceptance/provider-3.12.1.tql");
 const SETUP: &str = include_str!("c_projection_live/setup.rs");
 const CONSUMER: &str = include_str!("c_projection_live/consumer.c");
+const PHASE4_SCHEMA: &str =
+    include_str!("../../../../tests/contracts/sdk_conformance/workforce-v3/schema-v3.yaml");
+const PHASE4_PROVIDER_SCHEMA: &str =
+    include_str!("../../../../tests/contracts/sdk_conformance/workforce-v3/provider-3.12.1-v3.tql");
+const PHASE4_PACKAGE: &str = include_str!("c_projection_live/phase4_package.c");
+const PHASE4_CONSUMER: &str = include_str!("c_projection_live/phase4_consumer.c");
 const DATABASE_CREATED_MARKER: &str = "generated C isolated database created";
 const WORKFORCE_V2_FACT_PREFIX: &str = "TYPE_BRIDGE_C_V2_FACT\t";
 const WORKFORCE_MANIFEST_PATH: &str = "tests/contracts/sdk_conformance/manifest-v1.json";
@@ -306,6 +312,34 @@ fn emitted_package_authority_and_fingerprints() -> (GeneratedPackage, Vec<u8>, V
     )
 }
 
+fn emitted_phase4_package() -> GeneratedPackage {
+    let emitter = CEmitter::new();
+    let documents = SchemaDocumentSet::parse([(
+        DocumentId::new("workforce-v3.yaml").expect("Workforce V3 document ID is valid"),
+        PHASE4_SCHEMA,
+    )])
+    .expect("exact Workforce V3 schema parses");
+    let declared = normalize_documents(&documents).expect("exact Workforce V3 schema normalizes");
+    let profile = SemanticProfileId::new(support::TEST_PROFILE).expect("test profile is valid");
+    let resolved = resolve(&declared, &profile).expect("exact Workforce V3 schema resolves");
+    let resources = emitter
+        .code_resources_for(&resolved)
+        .expect("ordered C resources hash");
+    let projection = project(
+        &resolved,
+        BindingTarget::C,
+        &ProjectionConfig::c(CSymbolPrefix::new("fixture").expect("fixture prefix is valid")),
+        &emitter.generator_handlers_for(&resolved),
+        &resources,
+    )
+    .expect("exact Workforce V3 schema projects to ordered C");
+    let authority =
+        support::authority_for_declared(&declared, "workforce-v3-c-phase4", support::TEST_PROFILE);
+    emitter
+        .emit(&projection, &authority)
+        .expect("exact Workforce V3 ordered C package emits")
+}
+
 fn write_package(package: &GeneratedPackage, root: &Path) {
     for (relative, contents) in package.files() {
         let path = root.join(relative);
@@ -324,6 +358,13 @@ fn command_exists(program: &str) -> bool {
 
 fn c_compilers() -> Vec<&'static str> {
     ["gcc", "clang"]
+        .into_iter()
+        .filter(|compiler| command_exists(compiler))
+        .collect()
+}
+
+fn cpp_compilers() -> Vec<&'static str> {
+    ["g++", "clang++"]
         .into_iter()
         .filter(|compiler| command_exists(compiler))
         .collect()
@@ -369,6 +410,94 @@ fn exact_live_consumer_is_strict_c17_against_the_shared_generated_schema() {
             "{compiler} rejected the exact generated C17 live consumer:\nstdout:\n{}\nstderr:\n{}",
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr),
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn phase4_successor_consumers_compile_as_strict_c17_and_cpp17() {
+    let c_compilers = c_compilers();
+    let cpp_compilers = cpp_compilers();
+    assert!(!c_compilers.is_empty(), "GCC or Clang is required");
+    assert!(
+        !cpp_compilers.is_empty(),
+        "G++ or Clang++ is required for generated C++17 checks"
+    );
+    let stage = TempDirectory::new();
+    write_package(&emitted_phase4_package(), stage.path());
+    let package_source = stage.path().join("phase4_package.c");
+    let c_source = stage.path().join("phase4_consumer.c");
+    let cpp_source = stage.path().join("phase4_consumer.cpp");
+    fs::write(&package_source, PHASE4_PACKAGE).expect("Phase4 package shim is staged");
+    fs::write(&c_source, PHASE4_CONSUMER).expect("Phase4 C17 consumer is staged");
+    fs::write(&cpp_source, PHASE4_CONSUMER).expect("Phase4 C++17 consumer is staged");
+
+    for compiler in c_compilers {
+        for (source, output) in [
+            (
+                &package_source,
+                stage.path().join(format!("phase4-package-{compiler}.o")),
+            ),
+            (
+                &c_source,
+                stage.path().join(format!("phase4-consumer-{compiler}.o")),
+            ),
+        ] {
+            let compiled = Command::new(compiler)
+                .args([
+                    "-std=c17",
+                    "-O2",
+                    "-Wall",
+                    "-Wextra",
+                    "-Werror",
+                    "-pedantic-errors",
+                    "-c",
+                ])
+                .arg("-I")
+                .arg(runtime_include())
+                .arg("-I")
+                .arg(stage.path().join("include"))
+                .arg("-I")
+                .arg(stage.path())
+                .arg(source)
+                .arg("-o")
+                .arg(output)
+                .output()
+                .unwrap_or_else(|error| panic!("failed to launch {compiler}: {error}"));
+            assert!(
+                compiled.status.success(),
+                "{compiler} rejected a strict Phase4 C17 source:\nstdout:\n{}\nstderr:\n{}",
+                String::from_utf8_lossy(&compiled.stdout),
+                String::from_utf8_lossy(&compiled.stderr),
+            );
+        }
+    }
+    for compiler in cpp_compilers {
+        let compiled = Command::new(compiler)
+            .args([
+                "-std=c++17",
+                "-O2",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+                "-pedantic-errors",
+                "-c",
+            ])
+            .arg("-I")
+            .arg(runtime_include())
+            .arg("-I")
+            .arg(stage.path().join("include"))
+            .arg(&cpp_source)
+            .arg("-o")
+            .arg(stage.path().join(format!("phase4-consumer-{compiler}.o")))
+            .output()
+            .unwrap_or_else(|error| panic!("failed to launch {compiler}: {error}"));
+        assert!(
+            compiled.status.success(),
+            "{compiler} rejected the strict Phase4 C++17 consumer:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&compiled.stdout),
+            String::from_utf8_lossy(&compiled.stderr),
         );
     }
 }
@@ -1516,5 +1645,213 @@ fn live_c17_generated_person_and_membership_crud_round_trips_exact_3_12_1() {
             projection_fingerprint,
             &workforce_v2_observations,
         );
+    }
+}
+
+/// Phase4 activation gate for the ordered C-v3/ABI-1.4 surface. The same
+/// source is compiled and executed as strict C17 and C++17. It deliberately
+/// leaves ordered attributes and ordered role-player lists empty because exact
+/// TypeDB 3.12.1 cannot supply list-instance evidence.
+#[cfg(unix)]
+#[test]
+#[ignore = "requires an isolated exact TypeDB 3.12.1 server and C shared library"]
+fn live_c17_and_cpp17_generated_successor_batches_round_trip_exact_3_12_1() {
+    let c_compiler = c_compilers()
+        .into_iter()
+        .next()
+        .expect("GCC or Clang is required for exact generated C acceptance");
+    let cpp_compiler = cpp_compilers()
+        .into_iter()
+        .next()
+        .expect("G++ or Clang++ is required for exact generated C++ acceptance");
+    let native_library = native_library();
+    let address = required_live_environment("TYPEDB_ADDRESS");
+    let http_port = required_live_environment("TYPEDB_HTTP_PORT");
+    http_port
+        .parse::<u16>()
+        .ok()
+        .filter(|port| *port != 0)
+        .expect("TYPEDB_HTTP_PORT must be an integer from 1 through 65535");
+    let database = required_live_environment("TYPE_BRIDGE_C_PHASE4_INTG_DATABASE");
+    let username = env::var("TYPEDB_USERNAME").unwrap_or_else(|_| "admin".to_owned());
+    let password = env::var("TYPEDB_PASSWORD").unwrap_or_else(|_| "password".to_owned());
+
+    let stage = TempDirectory::new();
+    write_package(&emitted_phase4_package(), stage.path());
+    let package_source = stage.path().join("phase4_package.c");
+    let package_object = stage.path().join("phase4_package.o");
+    let c_source = stage.path().join("phase4_consumer.c");
+    let cpp_source = stage.path().join("phase4_consumer.cpp");
+    let c_executable = stage.path().join("generated-phase4-c17-live");
+    let cpp_executable = stage.path().join("generated-phase4-cpp17-live");
+    fs::write(&package_source, PHASE4_PACKAGE).expect("Phase4 package shim is staged");
+    fs::write(&c_source, PHASE4_CONSUMER).expect("Phase4 C17 consumer is staged");
+    fs::write(&cpp_source, PHASE4_CONSUMER).expect("Phase4 C++17 consumer is staged");
+    let include_arguments = [runtime_include(), stage.path().join("include")];
+    let native_directory = native_library
+        .parent()
+        .expect("native C library has a parent directory");
+
+    let package_compile = Command::new(c_compiler)
+        .args([
+            "-std=c17",
+            "-O2",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-pedantic-errors",
+            "-c",
+        ])
+        .arg("-I")
+        .arg(&include_arguments[0])
+        .arg("-I")
+        .arg(&include_arguments[1])
+        .arg("-I")
+        .arg(stage.path())
+        .arg(&package_source)
+        .arg("-o")
+        .arg(&package_object)
+        .output()
+        .unwrap_or_else(|error| panic!("failed to launch {c_compiler}: {error}"));
+    assert!(
+        package_compile.status.success(),
+        "{c_compiler} rejected the exact generated Phase4 package:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&package_compile.stdout),
+        String::from_utf8_lossy(&package_compile.stderr),
+    );
+
+    for (compiler, standard, source, executable, language) in [
+        (c_compiler, "-std=c17", &c_source, &c_executable, "C17"),
+        (
+            cpp_compiler,
+            "-std=c++17",
+            &cpp_source,
+            &cpp_executable,
+            "C++17",
+        ),
+    ] {
+        let compiled = Command::new(compiler)
+            .args([
+                standard,
+                "-O2",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+                "-pedantic-errors",
+            ])
+            .arg("-I")
+            .arg(&include_arguments[0])
+            .arg("-I")
+            .arg(&include_arguments[1])
+            .arg(source)
+            .arg(&package_object)
+            .arg("-L")
+            .arg(native_directory)
+            .arg("-ltype_bridge_c")
+            .arg(format!("-Wl,-rpath,{}", native_directory.display()))
+            .arg("-o")
+            .arg(executable)
+            .output()
+            .unwrap_or_else(|error| panic!("failed to launch {compiler}: {error}"));
+        assert!(
+            compiled.status.success(),
+            "{compiler} rejected the exact generated {language} Phase4 consumer:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&compiled.stdout),
+            String::from_utf8_lossy(&compiled.stderr),
+        );
+    }
+
+    let setup_root = stage.path().join("phase4-setup");
+    fs::create_dir_all(setup_root.join("c_projection_live"))
+        .expect("Phase4 setup source directory is created");
+    fs::create_dir_all(setup_root.join("acceptance"))
+        .expect("Phase4 provider fixture directory is created");
+    fs::write(setup_root.join("c_projection_live/setup.rs"), SETUP)
+        .expect("Phase4 database setup source is staged");
+    fs::write(
+        setup_root.join("acceptance/provider-3.12.1.tql"),
+        PHASE4_PROVIDER_SCHEMA,
+    )
+    .expect("exact Workforce V3 provider fixture is staged byte-for-byte");
+    let orm = Path::new(env!("CARGO_MANIFEST_DIR")).join("../orm");
+    let manifest = setup_root.join("Cargo.toml");
+    fs::write(
+        &manifest,
+        format!(
+            "[package]\nname = \"type-bridge-c-phase4-live-setup\"\nversion = \"0.0.0\"\nedition = \"2024\"\npublish = false\n\n[[bin]]\nname = \"setup\"\npath = \"c_projection_live/setup.rs\"\n\n[dependencies]\ntype-bridge-orm = {{ path = \"{}\" }}\ntokio = {{ version = \"1\", features = [\"macros\", \"rt-multi-thread\"] }}\n\n[workspace]\n",
+            manifest_path(&orm),
+        ),
+    )
+    .expect("Phase4 database setup manifest is staged");
+    let environment = vec![
+        ("TYPEDB_ADDRESS".to_owned(), address),
+        ("TYPEDB_HTTP_PORT".to_owned(), http_port),
+        (
+            "TYPE_BRIDGE_C_PROJECTION_INTG_DATABASE".to_owned(),
+            database,
+        ),
+        ("TYPEDB_USERNAME".to_owned(), username),
+        ("TYPEDB_PASSWORD".to_owned(), password),
+    ];
+    let mut isolated = IsolatedDatabase {
+        cargo: env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo")),
+        manifest,
+        target: env::var_os("ACCEPTANCE_TARGET_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| stage.path().join("phase4-target")),
+        environment: environment.clone(),
+        active: false,
+    };
+    isolated.setup();
+
+    let run = |executable: &Path| {
+        let mut command = Command::new(executable);
+        for (name, value) in &environment {
+            command.env(name, value);
+        }
+        command
+            .output()
+            .expect("exact generated Phase4 consumer launches")
+    };
+    let c_output = run(&c_executable);
+    let cpp_output = run(&cpp_executable);
+
+    /* Cleanup is intentionally completed before any consumer assertion so a
+     * failing native journey cannot strand the caller-named database. */
+    let cleanup = isolated.cleanup();
+    assert!(
+        cleanup.status.success()
+            && String::from_utf8_lossy(&cleanup.stdout)
+                .contains("generated C isolated database cleanup: passed"),
+        "generated Phase4 database cleanup failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&cleanup.stdout),
+        String::from_utf8_lossy(&cleanup.stderr),
+    );
+
+    let markers = PHASE4_CONSUMER
+        .lines()
+        .filter_map(|line| {
+            line.trim()
+                .strip_prefix("puts(\"")
+                .and_then(|value| value.strip_suffix("\");"))
+                .filter(|value| value.ends_with(": passed"))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(markers.len(), 8, "Phase4 live marker inventory drifted");
+    for (language, output) in [("C17", c_output), ("C++17", cpp_output)] {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success(),
+            "exact generated {language} Phase4 consumer failed with {}:\nstdout:\n{}\nstderr:\n{}",
+            output.status,
+            stdout,
+            String::from_utf8_lossy(&output.stderr),
+        );
+        for marker in &markers {
+            assert!(
+                stdout.contains(marker),
+                "{language} Phase4 consumer omitted {marker}"
+            );
+        }
     }
 }

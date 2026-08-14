@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use sha2::{Digest, Sha256};
 use type_bridge_contract::codec::to_canonical_json;
 use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::id::{TypeId, TypeKind};
@@ -120,6 +121,8 @@ functions:
     body: { typeql: "match $event isa event; return { $event };" }
 "#;
 
+const ORDERED_SUCCESSOR_SOURCE: &str = include_str!("c_abi_1_4/schema.yaml");
+
 fn projected(resources: &[CodeResourceDigest]) -> (RuntimeProjection, VerifiedSchemaAuthority) {
     let documents = SchemaDocumentSet::parse([(
         DocumentId::new("c-emitter.yaml").expect("fixture document ID is valid"),
@@ -138,6 +141,29 @@ fn projected(resources: &[CodeResourceDigest]) -> (RuntimeProjection, VerifiedSc
     )
     .expect("C emitter fixture projects");
     (projection, support::authority(SOURCE))
+}
+
+fn ordered_successor_projected() -> (RuntimeProjection, VerifiedSchemaAuthority) {
+    let documents = SchemaDocumentSet::parse([(
+        DocumentId::new("c-emitter-ordered.yaml").expect("fixture document ID is valid"),
+        ORDERED_SUCCESSOR_SOURCE,
+    )])
+    .expect("ordered C emitter fixture parses");
+    let declared = normalize_documents(&documents).expect("ordered C emitter fixture normalizes");
+    let profile = SemanticProfileId::new(support::TEST_PROFILE).expect("test profile is valid");
+    let resolved = resolve(&declared, &profile).expect("ordered C emitter fixture resolves");
+    let emitter = CEmitter::new();
+    let projection = project(
+        &resolved,
+        BindingTarget::C,
+        &ProjectionConfig::c(CSymbolPrefix::new("acme_v3").expect("test prefix is valid")),
+        &emitter.generator_handlers_for(&resolved),
+        &emitter
+            .code_resources_for(&resolved)
+            .expect("ordered C resources hash"),
+    )
+    .expect("ordered C emitter fixture projects");
+    (projection, support::authority(ORDERED_SUCCESSOR_SOURCE))
 }
 
 fn embedded_array(source: &str, name: &str) -> Vec<u8> {
@@ -264,6 +290,560 @@ fn emitted_function_parameter_counts(header: &str) -> Vec<(&str, usize)> {
             (name.trim(), count)
         })
         .collect()
+}
+
+fn emitted_function_definition<'header>(header: &'header str, name: &str) -> &'header str {
+    let marker = format!("static inline type_bridge_status_t TYPE_BRIDGE_CALL {name}(");
+    let start = header
+        .find(&marker)
+        .unwrap_or_else(|| panic!("generated header omitted inline function {name}"));
+    let open = header[start..]
+        .find('{')
+        .map(|offset| start + offset)
+        .unwrap_or_else(|| panic!("generated inline function {name} has no body"));
+    let mut depth = 0_usize;
+    for (offset, byte) in header.as_bytes()[open..].iter().copied().enumerate() {
+        match byte {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return &header[start..=open + offset];
+                }
+            }
+            _ => {}
+        }
+    }
+    panic!("generated inline function {name} has an unterminated body")
+}
+
+fn emitted_function_model_token<'header>(header: &'header str, name: &str) -> &'header str {
+    const MARKER: &str = "TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_TOKEN, &";
+    let body = emitted_function_definition(header, name);
+    let tail = body
+        .split_once(MARKER)
+        .unwrap_or_else(|| panic!("generated inline function {name} omits its model token"))
+        .1;
+    tail.split(|character: char| !(character.is_ascii_alphanumeric() || character == '_'))
+        .next()
+        .expect("generated model token has an identifier")
+}
+
+#[test]
+fn unordered_c_v2_five_file_package_remains_byte_exact() {
+    let emitter = CEmitter::new();
+    let resources = emitter.code_resources().expect("C resources hash");
+    let (projection, authority) = projected(&resources);
+    let package = emitter
+        .emit(&projection, &authority)
+        .expect("C package emits");
+    let actual = package
+        .files()
+        .iter()
+        .map(|(path, bytes)| format!("{path} {:x}", Sha256::digest(bytes)))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        actual,
+        [
+            "CMakeLists.txt 04af839fb3caa4234c17af6c2820da09c2cf1e32d4ab38b6e7dda906e6eec30a",
+            "acme.pc.in 69a197ee74e47e9181184c214944227fad207cda5da286b5d51543414614e9a7",
+            "acmeConfig.cmake.in dcf6298f6ea3427c9c4976d5e8deb3ad2a27fd9ce4405a6dc5a78b21a9235ce7",
+            "include/acme/models.h 01ab3f24a6f05768294a63a3c87d73ce077f66d2a95606d8088b23096ebcfd33",
+            "src/models.c 12c81896dbb83925de4dc51b3e6f3a76d2fa01f63b1c2d4235585e4470675a7d",
+        ],
+        "unordered C-v2 generated resources and embedded ABI 1.3 metadata changed",
+    );
+    for forbidden in [
+        "type_bridge_abi_1_4.h",
+        "_schema_package_open_v2",
+        "_batch_builder_open",
+        "_database_insert_v2",
+    ] {
+        assert!(
+            package
+                .files()
+                .values()
+                .all(|bytes| !String::from_utf8_lossy(bytes).contains(forbidden)),
+            "unordered C-v2 package gained successor surface {forbidden}",
+        );
+    }
+}
+
+#[test]
+fn ordered_c_v3_emits_exact_abi_1_4_admission_crud_batch_and_package_metadata() {
+    let emitter = CEmitter::new();
+    let (projection, authority) = ordered_successor_projected();
+    let package = emitter
+        .emit(&projection, &authority)
+        .expect("ordered C-v3 package emits");
+    assert_eq!(
+        package
+            .files()
+            .keys()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from([
+            "CMakeLists.txt",
+            "acme_v3.pc.in",
+            "acme_v3Config.cmake.in",
+            "include/acme_v3/models.h",
+            "src/models.c",
+        ]),
+    );
+
+    let header = std::str::from_utf8(package.get("include/acme_v3/models.h").unwrap()).unwrap();
+    let source = std::str::from_utf8(package.get("src/models.c").unwrap()).unwrap();
+    let cmake = std::str::from_utf8(package.get("CMakeLists.txt").unwrap()).unwrap();
+    let package_config =
+        std::str::from_utf8(package.get("acme_v3Config.cmake.in").unwrap()).unwrap();
+    let pkg_config = std::str::from_utf8(package.get("acme_v3.pc.in").unwrap()).unwrap();
+
+    assert!(header.contains("#include <typebridge/type_bridge_abi_1_4.h>"));
+    assert!(!header.contains("#include <typebridge/type_bridge.h>"));
+    assert!(
+        source
+            .contains("sizeof(type_bridge_schema_package_chunked_descriptor_v1_t),\n  1u,\n  4u,"),
+        "ordered descriptor must require literal ABI 1.4",
+    );
+    assert!(!source.contains("TYPE_BRIDGE_C_ABI_MINOR"));
+    assert!(source.contains("type_bridge_schema_package_open_chunked_v1("));
+    assert!(source.contains("type_bridge_schema_package_open_chunked_v2("));
+    assert!(header.contains("acme_v3_schema_package_open("));
+    assert!(header.contains("acme_v3_schema_package_open_v2("));
+    assert!(header.contains("type_bridge_execution_diagnostics_t **out_diagnostics"));
+    assert!(cmake.contains("find_package(TypeBridge 1.4 CONFIG REQUIRED)"));
+    assert!(package_config.contains("find_dependency(TypeBridge 1.4 CONFIG)"));
+    assert!(pkg_config.contains("Requires: type-bridge >= 1.4.0, type-bridge < 2.0.0"));
+    assert!(!cmake.contains("TypeBridge 1.3"));
+    assert!(!package_config.contains("TypeBridge 1.3"));
+    assert!(!pkg_config.contains("type-bridge >= 1.3.0"));
+
+    for nominal in [
+        "acme_v3_keyed_insert_batch_builder",
+        "acme_v3_keyed_insert_batch",
+        "acme_v3_keyed_insert_batch_result",
+        "acme_v3_membership_put_batch_builder",
+        "acme_v3_unkeyed_delete_batch_result",
+        "acme_v3_gathering_update_batch",
+    ] {
+        assert!(
+            header.contains(&format!("typedef struct {nominal} {nominal};")),
+            "ordered header omitted nominal batch type {nominal}",
+        );
+    }
+    for wrapper in [
+        "acme_v3_keyed_database_insert_v2",
+        "acme_v3_keyed_database_put_v2",
+        "acme_v3_keyed_read_transaction_get_by_iid_v2",
+        "acme_v3_keyed_write_transaction_update_v2",
+        "acme_v3_membership_write_transaction_delete_by_iid_v2",
+        "acme_v3_membership_database_count_v2",
+        "acme_v3_keyed_insert_batch_builder_open",
+        "acme_v3_keyed_insert_batch_builder_add",
+        "acme_v3_keyed_insert_batch_builder_finish",
+        "acme_v3_keyed_insert_batch_builder_close",
+        "acme_v3_keyed_insert_batch_close",
+        "acme_v3_keyed_database_insert_batch_execute",
+        "acme_v3_keyed_write_transaction_insert_batch_execute",
+        "acme_v3_keyed_insert_batch_result_count",
+        "acme_v3_keyed_insert_batch_result_thing_at",
+        "acme_v3_keyed_insert_batch_result_close",
+        "acme_v3_gathering_delete_batch_builder_add",
+        "acme_v3_gathering_delete_batch_result_count",
+        "acme_v3_gathering_delete_batch_result_close",
+    ] {
+        assert!(
+            header.contains(&format!("TYPE_BRIDGE_CALL {wrapper}(")),
+            "ordered header omitted successor wrapper {wrapper}",
+        );
+        assert!(
+            header.contains(&format!(
+                "static inline type_bridge_status_t TYPE_BRIDGE_CALL {wrapper}("
+            )),
+            "successor wrapper {wrapper} does not have header-local static-inline linkage",
+        );
+    }
+    for forbidden in [
+        "acme_v3_unkeyed_database_put_v2",
+        "acme_v3_unkeyed_write_transaction_put_v2",
+        "acme_v3_unkeyed_put_batch",
+        "acme_v3_gathering_database_put_v2",
+        "acme_v3_gathering_write_transaction_put_v2",
+        "acme_v3_gathering_put_batch",
+        "acme_v3_keyed_delete_batch_result_thing_at",
+        "acme_v3_unkeyed_delete_batch_result_thing_at",
+        "acme_v3_membership_delete_batch_result_thing_at",
+        "acme_v3_gathering_delete_batch_result_thing_at",
+    ] {
+        assert!(
+            !header.contains(forbidden),
+            "ordered header emitted forbidden nominal successor name {forbidden}",
+        );
+    }
+    for generic in [
+        "type_bridge_database_entity_insert_v2(",
+        "type_bridge_read_transaction_entity_count_v2(",
+        "type_bridge_write_transaction_relation_update_v2(",
+        "type_bridge_projected_batch_builder_open_v1(",
+        "type_bridge_projected_batch_builder_add_v1(",
+        "type_bridge_projected_batch_builder_finish(",
+        "type_bridge_database_projected_batch_execute_v1(",
+        "type_bridge_write_transaction_projected_batch_execute_v1(",
+        "type_bridge_projected_batch_result_count(",
+        "type_bridge_projected_batch_result_thing_at(",
+        "type_bridge_projected_batch_result_close(",
+    ] {
+        assert!(
+            header.contains(generic),
+            "successor facade does not delegate through frozen generic ABI call {generic}",
+        );
+    }
+    assert!(
+        !source.contains("acme_v3_keyed_database_insert_v2(")
+            && !source.contains("acme_v3_keyed_insert_batch_builder_open("),
+        "nominal CRUD and batch successors must not add generated source exports",
+    );
+
+    let crud_insert = emitted_function_definition(header, "acme_v3_keyed_database_insert_v2");
+    for input in [
+        "TYPE_BRIDGE_GENERATED_INPUT_DATABASE",
+        "TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_TOKEN",
+        "TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_CREATE",
+        "TYPE_BRIDGE_GENERATED_INPUT_BYTES, limits, sizeof(*limits)",
+        "TYPE_BRIDGE_GENERATED_INPUT_CANCELLATION",
+    ] {
+        assert!(
+            crud_insert.contains(input),
+            "CRUD preflight omitted {input}"
+        );
+    }
+    assert!(crud_insert.contains("type_bridge_projected_thing_t *generic_entity = NULL;"));
+    assert!(crud_insert.contains("&generic_entity, out_diagnostics);"));
+    assert!(crud_insert.contains("*out_entity = (acme_v3_keyed *)generic_entity;"));
+    assert!(!crud_insert.contains("(type_bridge_projected_thing_t **)out_entity"));
+
+    let batch_open = emitted_function_definition(header, "acme_v3_keyed_insert_batch_builder_open");
+    for input in [
+        "TYPE_BRIDGE_GENERATED_INPUT_SCHEMA_PACKAGE",
+        "TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_TOKEN",
+        "TYPE_BRIDGE_GENERATED_INPUT_BYTES, construction_limits",
+        "TYPE_BRIDGE_GENERATED_INPUT_CANCELLATION",
+    ] {
+        assert!(
+            batch_open.contains(input),
+            "batch-open preflight omitted {input}"
+        );
+    }
+    assert!(batch_open.contains("type_bridge_projected_batch_builder_t *generic_builder = NULL;"));
+    assert!(batch_open.contains("&generic_builder, out_diagnostics);"));
+    assert!(!batch_open.contains("(type_bridge_projected_batch_builder_t **)out_builder"));
+
+    let batch_add = emitted_function_definition(header, "acme_v3_keyed_insert_batch_builder_add");
+    assert!(batch_add.contains("TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_BATCH_BUILDER"));
+    assert!(batch_add.contains("TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_CREATE"));
+    assert!(batch_add.contains("acme_v3_generated_alias_preflight_v1("));
+
+    let batch_finish =
+        emitted_function_definition(header, "acme_v3_keyed_insert_batch_builder_finish");
+    assert_eq!(
+        batch_finish
+            .matches("acme_v3_generated_alias_preflight_v1(")
+            .count(),
+        2,
+        "three finish outputs require the frozen two-call alias fence",
+    );
+    assert_eq!(
+        batch_finish
+            .matches("TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_BATCH_BUILDER")
+            .count(),
+        2,
+    );
+    assert!(batch_finish.contains("TYPE_BRIDGE_GENERATED_INPUT_BYTES, builder, sizeof(*builder)"));
+    assert!(
+        batch_finish.contains("TYPE_BRIDGE_GENERATED_INPUT_BYTES, out_batch, sizeof(*out_batch)")
+    );
+    assert!(batch_finish.contains("type_bridge_projected_batch_t *generic_batch = NULL;"));
+    let assign_builder = batch_finish
+        .find("*builder = (acme_v3_keyed_insert_batch_builder *)generic_builder;")
+        .expect("finish assigns generic ownership state back to the nominal builder slot");
+    let success_branch = batch_finish
+        .find("if (status == TYPE_BRIDGE_STATUS_OK)")
+        .expect("finish publishes its nominal batch only on success");
+    assert!(
+        assign_builder < success_branch,
+        "failed finish must retain the builder"
+    );
+    assert!(!batch_finish.contains("(type_bridge_projected_batch_builder_t **)builder"));
+    assert!(!batch_finish.contains("(type_bridge_projected_batch_t **)out_batch"));
+
+    let batch_execute =
+        emitted_function_definition(header, "acme_v3_keyed_database_insert_batch_execute");
+    assert!(batch_execute.contains("TYPE_BRIDGE_GENERATED_INPUT_DATABASE"));
+    assert!(batch_execute.contains("TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_BATCH"));
+    assert!(batch_execute.contains("TYPE_BRIDGE_GENERATED_INPUT_BYTES, limits, sizeof(*limits)"));
+    assert!(batch_execute.contains("type_bridge_projected_batch_result_t *generic_result = NULL;"));
+    assert!(!batch_execute.contains("(type_bridge_projected_batch_result_t **)out_result"));
+
+    let result_count =
+        emitted_function_definition(header, "acme_v3_keyed_insert_batch_result_count");
+    assert!(result_count.contains("TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_BATCH_RESULT"));
+    assert!(result_count.contains("TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_TOKEN"));
+    assert!(result_count.contains("TYPE_BRIDGE_PROJECTED_BATCH_OPERATION_INSERT"));
+
+    let thing_at =
+        emitted_function_definition(header, "acme_v3_keyed_insert_batch_result_thing_at");
+    assert!(thing_at.contains("TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_BATCH_RESULT"));
+    assert!(thing_at.contains("type_bridge_projected_thing_t *generic_entity = NULL;"));
+    assert!(!thing_at.contains("(type_bridge_projected_thing_t **)out_entity"));
+
+    for (wrapper, input_kind, generic_type) in [
+        (
+            "acme_v3_keyed_insert_batch_builder_close",
+            "TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_BATCH_BUILDER",
+            "type_bridge_projected_batch_builder_t *generic_builder",
+        ),
+        (
+            "acme_v3_keyed_insert_batch_close",
+            "TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_BATCH",
+            "type_bridge_projected_batch_t *generic_batch",
+        ),
+        (
+            "acme_v3_keyed_insert_batch_result_close",
+            "TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_BATCH_RESULT",
+            "type_bridge_projected_batch_result_t *generic_result",
+        ),
+    ] {
+        let body = emitted_function_definition(header, wrapper);
+        assert!(
+            body.contains(input_kind),
+            "{wrapper} omitted its exact handle tag"
+        );
+        assert!(
+            body.contains(generic_type),
+            "{wrapper} omitted local ownership marshalling"
+        );
+        assert!(body.contains("acme_v3_generated_alias_preflight_v1("));
+    }
+
+    let names = emitted_function_names(header);
+    assert_eq!(
+        names.iter().copied().collect::<BTreeSet<_>>().len(),
+        names.len(),
+        "ordered generated function identifiers must be unique",
+    );
+    assert!(
+        names.iter().all(|name| name.len() <= 255),
+        "ordered generated function identifiers exceed the C hosted minimum",
+    );
+    assert!(
+        emitted_function_parameter_counts(header)
+            .iter()
+            .all(|(_, count)| *count <= 127),
+        "ordered generated function parameters exceed the C hosted minimum",
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn ordered_c_v3_nominal_successors_compile_strictly_and_reject_cross_model_or_omitted_names() {
+    let emitter = CEmitter::new();
+    let (projection, authority) = ordered_successor_projected();
+    let package = emitter
+        .emit(&projection, &authority)
+        .expect("ordered C-v3 package emits");
+    let stage = TempDirectory::new();
+    write_package(&package, stage.path());
+    let runtime_include = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("c/include");
+
+    let positive = include_str!("c_abi_1_4/positive.c");
+    let wrong_model = include_str!("c_abi_1_4/wrong_model.c");
+    let keyless_put = include_str!("c_abi_1_4/keyless_put.c");
+    let delete_thing = include_str!("c_abi_1_4/delete_thing.c");
+    for (name, contents) in [
+        ("positive.c", positive),
+        ("positive.cpp", positive),
+        ("wrong-model.c", wrong_model),
+        ("wrong-model.cpp", wrong_model),
+        ("keyless-put.c", keyless_put),
+        ("keyless-put.cpp", keyless_put),
+        ("delete-thing.c", delete_thing),
+        ("delete-thing.cpp", delete_thing),
+    ] {
+        fs::write(stage.path().join(name), contents).expect("ordered compiler probe is written");
+    }
+
+    let mut c_compilers = 0usize;
+    for compiler in ["cc", "clang"] {
+        if !command_exists(compiler) {
+            continue;
+        }
+        c_compilers += 1;
+        let source_output = Command::new(compiler)
+            .args(["-std=c17", "-Wall", "-Wextra", "-Werror", "-pedantic"])
+            .arg("-I")
+            .arg(stage.path().join("include"))
+            .arg("-I")
+            .arg(&runtime_include)
+            .arg("-c")
+            .arg(stage.path().join("src/models.c"))
+            .arg("-o")
+            .arg(stage.path().join(format!("models-{compiler}.o")))
+            .output()
+            .expect("ordered generated C source compiler launches");
+        assert!(
+            source_output.status.success(),
+            "{compiler} rejected ordered generated source:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&source_output.stdout),
+            String::from_utf8_lossy(&source_output.stderr),
+        );
+        let positive_output = Command::new(compiler)
+            .args(["-std=c17", "-Wall", "-Wextra", "-Werror", "-pedantic"])
+            .arg("-I")
+            .arg(stage.path().join("include"))
+            .arg("-I")
+            .arg(&runtime_include)
+            .arg("-c")
+            .arg(stage.path().join("positive.c"))
+            .arg("-o")
+            .arg(stage.path().join(format!("positive-{compiler}.o")))
+            .output()
+            .expect("ordered positive C compiler launches");
+        assert!(
+            positive_output.status.success(),
+            "{compiler} rejected ordered positive C probe:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&positive_output.stdout),
+            String::from_utf8_lossy(&positive_output.stderr),
+        );
+        for negative in ["wrong-model.c", "keyless-put.c", "delete-thing.c"] {
+            let output = Command::new(compiler)
+                .args(["-std=c17", "-Wall", "-Wextra", "-Werror", "-pedantic"])
+                .arg("-I")
+                .arg(stage.path().join("include"))
+                .arg("-I")
+                .arg(&runtime_include)
+                .arg("-c")
+                .arg(stage.path().join(negative))
+                .arg("-o")
+                .arg(stage.path().join(format!("negative-{compiler}.o")))
+                .output()
+                .expect("ordered negative C compiler launches");
+            assert!(
+                !output.status.success(),
+                "{compiler} accepted forbidden ordered C probe {negative}",
+            );
+        }
+    }
+    assert!(c_compilers > 0, "one strict C17 compiler is required");
+
+    let mut cpp_compilers = 0usize;
+    for compiler in ["c++", "clang++"] {
+        if !command_exists(compiler) {
+            continue;
+        }
+        cpp_compilers += 1;
+        let positive_output = Command::new(compiler)
+            .args(["-std=c++17", "-Wall", "-Wextra", "-Werror", "-pedantic"])
+            .arg("-I")
+            .arg(stage.path().join("include"))
+            .arg("-I")
+            .arg(&runtime_include)
+            .arg("-c")
+            .arg(stage.path().join("positive.cpp"))
+            .arg("-o")
+            .arg(stage.path().join(format!("positive-{compiler}.o")))
+            .output()
+            .expect("ordered positive C++ compiler launches");
+        assert!(
+            positive_output.status.success(),
+            "{compiler} rejected ordered positive C++ probe:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&positive_output.stdout),
+            String::from_utf8_lossy(&positive_output.stderr),
+        );
+        for negative in ["wrong-model.cpp", "keyless-put.cpp", "delete-thing.cpp"] {
+            let output = Command::new(compiler)
+                .args(["-std=c++17", "-Wall", "-Wextra", "-Werror", "-pedantic"])
+                .arg("-I")
+                .arg(stage.path().join("include"))
+                .arg("-I")
+                .arg(&runtime_include)
+                .arg("-c")
+                .arg(stage.path().join(negative))
+                .arg("-o")
+                .arg(stage.path().join(format!("negative-{compiler}.o")))
+                .output()
+                .expect("ordered negative C++ compiler launches");
+            assert!(
+                !output.status.success(),
+                "{compiler} accepted forbidden ordered C++ probe {negative}",
+            );
+        }
+    }
+    assert!(cpp_compilers > 0, "one strict C++17 compiler is required");
+}
+
+#[cfg(unix)]
+#[test]
+fn ordered_c_v3_nominal_alias_and_recovery_wrappers_execute_provider_free() {
+    let emitter = CEmitter::new();
+    let (projection, authority) = ordered_successor_projected();
+    let package = emitter
+        .emit(&projection, &authority)
+        .expect("ordered C-v3 package emits");
+    let stage = TempDirectory::new();
+    write_package(&package, stage.path());
+    let runtime_include = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("c/include");
+    let header = std::str::from_utf8(package.get("include/acme_v3/models.h").unwrap()).unwrap();
+    let model_token = emitted_function_model_token(header, "acme_v3_keyed_database_insert_v2");
+    let probe = include_str!("c_abi_1_4/recovery.c").replace("@MODEL_TOKEN@", model_token);
+    assert!(!probe.contains("@MODEL_TOKEN@"));
+    fs::write(stage.path().join("recovery.c"), probe).expect("recovery probe is written");
+
+    let mut invocations = 0usize;
+    for compiler in ["cc", "clang"] {
+        if !command_exists(compiler) {
+            continue;
+        }
+        invocations += 1;
+        let executable = stage.path().join(format!("recovery-{compiler}"));
+        let mut command = Command::new(compiler);
+        command
+            .args(["-std=c17", "-Wall", "-Wextra", "-Werror", "-pedantic"])
+            .args(DEAD_STRIP_COMPILE_FLAGS)
+            .arg("-I")
+            .arg(stage.path().join("include"))
+            .arg("-I")
+            .arg(&runtime_include)
+            .arg(stage.path().join("recovery.c"))
+            .arg(DEAD_STRIP_LINK_FLAG)
+            .arg("-o")
+            .arg(&executable);
+        let output = command
+            .output()
+            .unwrap_or_else(|error| panic!("failed to launch {compiler}: {error}"));
+        assert!(
+            output.status.success(),
+            "{compiler} rejected the generated recovery probe:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        let output = Command::new(&executable)
+            .output()
+            .unwrap_or_else(|error| panic!("failed to run {compiler} recovery probe: {error}"));
+        assert!(
+            output.status.success(),
+            "{compiler} recovery probe failed with {}:\nstdout:\n{}\nstderr:\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+    assert!(invocations > 0, "one strict C17 compiler is required");
 }
 
 #[test]
@@ -2006,7 +2586,7 @@ fn generated_header_and_source_are_strict_c11_and_c17_for_installed_compilers() 
         r#"#include <acme/models.h>
 
 _Static_assert(TYPE_BRIDGE_C_ABI_MAJOR == 1u, "C ABI major changed");
-_Static_assert(TYPE_BRIDGE_C_ABI_MINOR == 3u, "C ABI minor changed");
+_Static_assert(TYPE_BRIDGE_C_ABI_MINOR == 4u, "C ABI minor changed");
 _Static_assert(sizeof(acme_membership_member_player_kind_t) == sizeof(uint32_t),
                "role-player kind ABI is not fixed-width");
 
@@ -2337,24 +2917,13 @@ fn generated_header_source_and_frame_are_strict_msvc_c17() {
 }
 
 #[cfg(unix)]
-#[test]
-fn generated_cmake_requires_runtime_abi_1_3_or_newer_within_major_one() {
-    assert!(
-        command_exists("cmake"),
-        "CMake is required for C emitter acceptance"
-    );
-    let emitter = CEmitter::new();
-    let resources = emitter.code_resources().expect("C resources hash");
-    let (projection, authority) = projected(&resources);
-    let package = emitter
-        .emit(&projection, &authority)
-        .expect("C package emits");
+fn assert_generated_cmake_runtime_floor(package: &GeneratedPackage, cases: &[(&str, bool)]) {
     let stage = TempDirectory::new();
     let generated = stage.path().join("generated");
     fs::create_dir(&generated).expect("generated package root is created");
-    write_package(&package, &generated);
+    write_package(package, &generated);
 
-    for (version, should_succeed) in [("1.2.0", false), ("1.3.0", true)] {
+    for (version, should_succeed) in cases {
         let runtime = stage.path().join(format!("runtime-{version}"));
         fs::create_dir(&runtime).expect("fake runtime package directory is created");
         fs::write(
@@ -2388,12 +2957,46 @@ fn generated_cmake_requires_runtime_abi_1_3_or_newer_within_major_one() {
             .expect("generated CMake configure launches");
         assert_eq!(
             output.status.success(),
-            should_succeed,
+            *should_succeed,
             "generated CMake runtime requirement behaved incorrectly for {version}:\nstdout:\n{}\nstderr:\n{}",
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr),
         );
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn generated_cmake_requires_runtime_abi_1_3_or_newer_within_major_one() {
+    assert!(
+        command_exists("cmake"),
+        "CMake is required for C emitter acceptance"
+    );
+    let emitter = CEmitter::new();
+    let resources = emitter.code_resources().expect("C resources hash");
+    let (projection, authority) = projected(&resources);
+    let package = emitter
+        .emit(&projection, &authority)
+        .expect("C package emits");
+    assert_generated_cmake_runtime_floor(&package, &[("1.2.0", false), ("1.3.0", true)]);
+}
+
+#[cfg(unix)]
+#[test]
+fn ordered_generated_cmake_requires_runtime_abi_1_4_or_newer_within_major_one() {
+    assert!(
+        command_exists("cmake"),
+        "CMake is required for C emitter acceptance"
+    );
+    let emitter = CEmitter::new();
+    let (projection, authority) = ordered_successor_projected();
+    let package = emitter
+        .emit(&projection, &authority)
+        .expect("ordered C-v3 package emits");
+    assert_generated_cmake_runtime_floor(
+        &package,
+        &[("1.3.0", false), ("1.4.0", true), ("1.9.0", true)],
+    );
 }
 
 #[test]
@@ -4226,7 +4829,7 @@ fn generated_header_is_strict_cpp17_for_installed_compilers() {
         r#"#include <acme/models.h>
 
 static_assert(TYPE_BRIDGE_C_ABI_MAJOR == 1u, "C ABI major changed");
-static_assert(TYPE_BRIDGE_C_ABI_MINOR == 3u, "C ABI minor changed");
+static_assert(TYPE_BRIDGE_C_ABI_MINOR == 4u, "C ABI minor changed");
 static_assert(sizeof(acme_membership_member_player_kind_t) == sizeof(uint32_t),
               "role-player kind ABI is not fixed-width");
 

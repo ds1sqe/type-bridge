@@ -143,6 +143,11 @@ run_c() {
         cargo test --locked --manifest-path type-bridge-core/Cargo.toml \
         -p type-bridge-schema-codegen --test c_emitter
 
+    run_step "generated ABI 1.4 successor C17 and C++17 consumers" \
+        cargo test --locked --manifest-path type-bridge-core/Cargo.toml \
+        -p type-bridge-schema-codegen --test c_projection_live \
+        phase4_successor_consumers_compile_as_strict_c17_and_cpp17 -- --exact
+
     run_step "C runtime, transaction, and cancellation ABI" \
         cargo test --locked --manifest-path type-bridge-core/Cargo.toml \
         -p type-bridge-c --lib --test execution_abi
@@ -158,6 +163,11 @@ run_c() {
     run_step "build the C ABI shared library" \
         cargo build --locked --manifest-path type-bridge-core/Cargo.toml \
         -p type-bridge-c --lib
+
+    run_step "C ABI 1.4 additive header, export, and package ledger" \
+        env TYPE_BRIDGE_C_REQUIRE_SHARED_CONSUMER=1 \
+        cargo test --locked --manifest-path type-bridge-core/Cargo.toml \
+        -p type-bridge-c --test abi_1_4
 
     run_step "C provider-free Phase-2 parity producer" \
         env TYPE_BRIDGE_C_REQUIRE_SHARED_CONSUMER=1 \

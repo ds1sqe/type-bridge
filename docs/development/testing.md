@@ -85,17 +85,19 @@ Clang/clang++ are available on macOS, or both MSVC and clang-cl are available
 on Windows. Current accepted evidence covers the native-host run; the
 configured hosted macOS and Windows lanes remain unverified and cannot support
 platform claims. Linux additionally runs address/undefined-behavior sanitizers
-and checks the Rust-owned C boundary on MSRV 1.88. ABI 1.3 coverage
-includes verified schema packages, projected values/models, synchronous
-runtime, database, distinct read/write transactions, cancellation, classified
-commit outcomes, parent/child ownership, and generated nominal exact entity and
-relation CRUD/count with closed role-player unions. It also covers chunked
-schema-package resources, bounded generated create arguments, and the native
-streaming create builder, plus the generated nominal query, reduction,
-schema-function, and caller-owned remote-transport facade. The full integration
-suite additionally runs the ordinary generated C17 CRUD and typed-query
-consumer against exact TypeDB 3.12.1. These checks do not make C a supported
-SDK or release artifact.
+and checks the Rust-owned C boundary on MSRV 1.88. ABI 1.4 coverage includes
+verified flat and chunked schema packages, projected values/models, synchronous
+runtime, policy-aware database and distinct read/write transactions,
+cancellation, classified commit outcomes, parent/child ownership, generated
+nominal exact entity and relation CRUD/count, homogeneous atomic mutation
+batches, and closed role-player unions. It also covers bounded generated create
+arguments and the native streaming create builder, plus the generated nominal
+query, reduction, schema-function, and caller-owned remote-transport facade.
+The full integration suite runs the ordinary generated C17 CRUD and typed-query
+consumer and strict generated C17/C++17 ABI-1.4 successor consumers against
+exact TypeDB 3.12.1. The successor lane leaves ordered attributes and ordered
+role-player lists empty and therefore does not claim live list-instance
+evidence. These checks do not make C a supported SDK or release artifact.
 
 ### Live integration
 
@@ -115,8 +117,12 @@ C17 consumer exercises the exact Person and Membership database/read/write
 CRUD paths, immutable typed queries, reductions and grouping, schema-function
 calls, caller-owned remote transport, structured diagnostics, cancellation,
 limits, and explicit query-resource close; it ends with every created resource
-deleted. Both remain internal foundation evidence, not a public C support or
-distribution claim.
+deleted. The ABI-1.4 successor lane compiles one generated consumer as both C17
+and C++17, exercises both package-admission forms, policy entries, keyed entity
+and relation batches, unkeyed IID lifecycles, and later-row rollback, then
+removes its isolated database before evaluating process assertions. These
+remain internal foundation evidence, not a public C support or distribution
+claim.
 
 Both server bands run the same generated application assertions. The 3.11.5
 lane emits from `schema-3.11.5.yaml` and defines `provider-3.11.5.tql`; an

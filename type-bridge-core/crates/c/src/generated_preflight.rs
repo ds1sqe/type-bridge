@@ -10,6 +10,9 @@ use crate::abi::{
     SchemaPackageState, TypeBridgeDiagnostics, TypeBridgeSchemaPackage, TypeBridgeStatus, guarded,
 };
 use crate::execution_diagnostic::TypeBridgeExecutionDiagnostics;
+use crate::projected_batch::{
+    TypeBridgeProjectedBatch, TypeBridgeProjectedBatchBuilder, TypeBridgeProjectedBatchResult,
+};
 use crate::projected_model::{
     TypeBridgeProjectedCreate, TypeBridgeProjectedReference, TypeBridgeProjectedThing,
 };
@@ -96,6 +99,12 @@ pub const GENERATED_INPUT_QUERY_FUNCTION: u32 = 31;
 pub const GENERATED_INPUT_QUERY_FUNCTION_VALUE: u32 = 32;
 /// Immutable scalar schema-function call input kind.
 pub const GENERATED_INPUT_QUERY_FUNCTION_CALL: u32 = 33;
+/// Projected-batch construction builder handle input kind.
+pub const GENERATED_INPUT_PROJECTED_BATCH_BUILDER: u32 = 34;
+/// Immutable reusable projected-batch handle input kind.
+pub const GENERATED_INPUT_PROJECTED_BATCH: u32 = 35;
+/// Immutable projected-batch result handle input kind.
+pub const GENERATED_INPUT_PROJECTED_BATCH_RESULT: u32 = 36;
 
 /// Frozen generated create-argument graph layout version.
 pub const GENERATED_CREATE_GRAPH_VERSION: u32 = 1;
@@ -387,6 +396,11 @@ fn object_size(kind: u32) -> Option<usize> {
         GENERATED_INPUT_QUERY_FUNCTION => Some(size_of::<TypeBridgeQueryFunction>()),
         GENERATED_INPUT_QUERY_FUNCTION_VALUE => Some(size_of::<TypeBridgeQueryFunctionValue>()),
         GENERATED_INPUT_QUERY_FUNCTION_CALL => Some(size_of::<TypeBridgeQueryFunctionCall>()),
+        GENERATED_INPUT_PROJECTED_BATCH_BUILDER => {
+            Some(size_of::<TypeBridgeProjectedBatchBuilder>())
+        }
+        GENERATED_INPUT_PROJECTED_BATCH => Some(size_of::<TypeBridgeProjectedBatch>()),
+        GENERATED_INPUT_PROJECTED_BATCH_RESULT => Some(size_of::<TypeBridgeProjectedBatchResult>()),
         _ => None,
     }
 }
@@ -564,6 +578,20 @@ unsafe fn check_deep_object_ranges(
         GENERATED_INPUT_QUERY_FUNCTION_CALL => {
             // SAFETY: the complete function-call handle was checked before dispatch.
             unsafe { &*pointer.cast::<TypeBridgeQueryFunctionCall>() }
+                .check_borrowed_ranges(outputs)
+        }
+        GENERATED_INPUT_PROJECTED_BATCH_BUILDER => {
+            // SAFETY: the complete projected-batch builder was checked before dispatch.
+            unsafe { &*pointer.cast::<TypeBridgeProjectedBatchBuilder>() }
+                .check_borrowed_ranges(outputs)
+        }
+        GENERATED_INPUT_PROJECTED_BATCH => {
+            // SAFETY: the complete immutable projected batch was checked before dispatch.
+            unsafe { &*pointer.cast::<TypeBridgeProjectedBatch>() }.check_borrowed_ranges(outputs)
+        }
+        GENERATED_INPUT_PROJECTED_BATCH_RESULT => {
+            // SAFETY: the complete projected-batch result was checked before dispatch.
+            unsafe { &*pointer.cast::<TypeBridgeProjectedBatchResult>() }
                 .check_borrowed_ranges(outputs)
         }
         _ => Ok(()),
@@ -1168,6 +1196,66 @@ mod tests {
             length,
             reserved: [0; 4],
         }
+    }
+
+    #[test]
+    fn legacy_object_sizes_remain_exact_and_batch_kinds_extend_the_closed_table() {
+        let legacy_sizes = [
+            None,
+            Some(size_of::<TypeBridgeProjectedTokenV1>()),
+            Some(size_of::<TypeBridgeSchemaPackage>()),
+            Some(size_of::<TypeBridgeRuntime>()),
+            Some(size_of::<TypeBridgeDatabase>()),
+            Some(size_of::<TypeBridgeReadTransaction>()),
+            Some(size_of::<TypeBridgeWriteTransaction>()),
+            Some(size_of::<TypeBridgeCancellation>()),
+            Some(size_of::<TypeBridgeProjectedValue>()),
+            Some(size_of::<TypeBridgeProjectedReference>()),
+            Some(size_of::<TypeBridgeProjectedCreate>()),
+            Some(size_of::<TypeBridgeProjectedThing>()),
+            None,
+            None,
+            Some(size_of::<TypeBridgeDiagnostics>()),
+            Some(size_of::<TypeBridgeExecutionDiagnostics>()),
+            None,
+            Some(size_of::<TypeBridgeQuerySession>()),
+            Some(size_of::<TypeBridgeQueryBinding>()),
+            Some(size_of::<TypeBridgeQueryField>()),
+            Some(size_of::<TypeBridgeQueryRole>()),
+            Some(size_of::<TypeBridgeQueryPredicate>()),
+            Some(size_of::<TypeBridgeQueryOrder>()),
+            Some(size_of::<TypeBridgeQuerySelection>()),
+            Some(size_of::<TypeBridgeQuery>()),
+            Some(size_of::<TypeBridgeQueryTerminal>()),
+            Some(size_of::<TypeBridgeQueryResult>()),
+            Some(size_of::<TypeBridgeQueryRemoteContext>()),
+            Some(size_of::<TypeBridgeQueryRemotePending>()),
+            Some(size_of::<TypeBridgeQueryRemoteClaim>()),
+            Some(size_of::<TypeBridgeQueryFunction>()),
+            Some(size_of::<TypeBridgeQueryFunctionValue>()),
+            Some(size_of::<TypeBridgeQueryFunctionCall>()),
+        ];
+        for (index, expected) in legacy_sizes.into_iter().enumerate() {
+            assert_eq!(object_size(index as u32 + 1), expected);
+        }
+
+        assert_eq!(GENERATED_INPUT_PROJECTED_BATCH_BUILDER, 34);
+        assert_eq!(GENERATED_INPUT_PROJECTED_BATCH, 35);
+        assert_eq!(GENERATED_INPUT_PROJECTED_BATCH_RESULT, 36);
+        assert_eq!(
+            object_size(GENERATED_INPUT_PROJECTED_BATCH_BUILDER),
+            Some(size_of::<TypeBridgeProjectedBatchBuilder>()),
+        );
+        assert_eq!(
+            object_size(GENERATED_INPUT_PROJECTED_BATCH),
+            Some(size_of::<TypeBridgeProjectedBatch>()),
+        );
+        assert_eq!(
+            object_size(GENERATED_INPUT_PROJECTED_BATCH_RESULT),
+            Some(size_of::<TypeBridgeProjectedBatchResult>()),
+        );
+        assert_eq!(object_size(37), None);
+        assert_eq!(object_size(u32::MAX), None);
     }
 
     #[test]

@@ -1414,6 +1414,7 @@ pub unsafe extern "C" fn type_bridge_cancellation_close(
 }
 
 /// Validate and snapshot one version-2 database policy without provider I/O.
+#[unsafe(export_name = "type_bridge_database_config_validate_v2")]
 pub(crate) unsafe extern "C" fn type_bridge_database_config_validate_v2_impl(
     config: *const TypeBridgeDatabaseConfigV2,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
@@ -1449,7 +1450,8 @@ pub(crate) unsafe extern "C" fn type_bridge_database_config_validate_v2_impl(
     })
 }
 
-/// Connect through one captured version-2 policy without activating its ABI export yet.
+/// Connect through one captured version-2 policy.
+#[unsafe(export_name = "type_bridge_database_open_v2")]
 pub(crate) unsafe extern "C" fn type_bridge_database_open_v2_impl(
     runtime: *const TypeBridgeRuntime,
     package: *const TypeBridgeSchemaPackage,
@@ -1801,7 +1803,8 @@ fn open_transaction_context_v2(
     }
 }
 
-/// Open one policy-aware read transaction without activating its ABI export yet.
+/// Open one policy-aware read transaction.
+#[unsafe(export_name = "type_bridge_read_transaction_open_v2")]
 pub(crate) unsafe extern "C" fn type_bridge_read_transaction_open_v2_impl(
     database: *const TypeBridgeDatabase,
     limits: *const TypeBridgeQueryExecutionLimitsV1,
@@ -1892,7 +1895,8 @@ pub(crate) unsafe extern "C" fn type_bridge_read_transaction_open_v2_impl(
     })
 }
 
-/// Open one policy-aware write transaction without activating its ABI export yet.
+/// Open one policy-aware write transaction.
+#[unsafe(export_name = "type_bridge_write_transaction_open_v2")]
 pub(crate) unsafe extern "C" fn type_bridge_write_transaction_open_v2_impl(
     database: *const TypeBridgeDatabase,
     limits: *const TypeBridgeQueryExecutionLimitsV1,
@@ -2325,7 +2329,8 @@ pub unsafe extern "C" fn type_bridge_write_transaction_commit(
     })
 }
 
-/// Commit one policy-aware write transaction without activating its ABI export yet.
+/// Commit one policy-aware write transaction.
+#[unsafe(export_name = "type_bridge_write_transaction_commit_v2")]
 pub(crate) unsafe extern "C" fn type_bridge_write_transaction_commit_v2_impl(
     transaction: *mut *mut TypeBridgeWriteTransaction,
     limits: *const TypeBridgeQueryExecutionLimitsV1,

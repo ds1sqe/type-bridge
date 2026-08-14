@@ -34,8 +34,8 @@ const MAX_C_SYMBOL_PREFIX_BYTES: usize = 63;
 
 /// ABI major required by C packages emitted under the C-v1 projection contract.
 pub const TYPE_BRIDGE_C_ABI_MAJOR: u32 = 1;
-/// Minimum ABI minor required by C packages emitted under the C-v1 projection contract.
-pub const TYPE_BRIDGE_C_ABI_MINOR: u32 = 3;
+/// Current aggregate ABI minor supported by the native C runtime.
+pub const TYPE_BRIDGE_C_ABI_MINOR: u32 = 4;
 /// Generated-only projection-token layout version consumed by native SDK facades.
 pub const TYPE_BRIDGE_PROJECTED_TOKEN_VERSION: u32 = 1;
 /// Maximum generated C create fields on one projected model.

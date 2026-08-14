@@ -1,0 +1,11 @@
+prefix=${pcfiledir}/@TYPE_BRIDGE_PC_PREFIX_FROM_PCDIR@
+exec_prefix=${prefix}
+libdir=${prefix}/@CMAKE_INSTALL_LIBDIR@
+includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@
+
+Name: @TYPE_BRIDGE_C_SYMBOL_PREFIX@ schema
+Description: Generated TypeBridge C schema package with ordered-collection ABI 1.4 support
+Version: @PROJECT_VERSION@
+Requires: type-bridge >= 1.4.0, type-bridge < 2.0.0
+Libs: -L${libdir} -l@TYPE_BRIDGE_C_SYMBOL_PREFIX@_schema
+Cflags: -I${includedir}

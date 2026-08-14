@@ -3,14 +3,16 @@
 Rust-owned semantic engine and native product workspace for **TypeBridge**.
 It implements schema, query, migration, validation, code generation, ORM, and
 provider behavior shared by the Python, TypeScript/Node, generated Rust, CLI,
-and server surfaces. An internal generated C ABI 1.3 foundation covers verified
-schema packages, projected values/models, synchronous database/transaction
-lifecycle, nominal exact single-entity and single-relation CRUD/count, and
-closed typed role-player unions. It also carries a generated nominal typed-query
-facade over the compact Rust-owned generic ABI, schema-function calls, reductions,
-and caller-owned remote transport. Chunked package resources and a streaming
-create builder keep generated objects within the hosted C11 portability floors;
-C is not yet a supported SDK.
+and server surfaces. An internal generated C ABI 1.4 foundation covers verified
+flat and chunked schema packages, projected values/models, policy-aware
+synchronous database/transaction lifecycle, nominal exact single-entity and
+single-relation CRUD/count, homogeneous atomic mutation batches, and closed
+typed role-player unions. It also carries a generated nominal typed-query facade
+over the compact Rust-owned generic ABI, schema-function calls, reductions, and
+caller-owned remote transport. Chunked package resources and a streaming create
+builder keep generated objects within the hosted C11 portability floors. Exact
+TypeDB 3.12.1 acceptance deliberately leaves ordered values empty and does not
+claim live list-instance evidence; C is not yet a supported SDK.
 
 ## Workspace structure
 
@@ -37,9 +39,10 @@ schema-migration crates own the canonical V2 semantics; `schema-compat` and
 product surfaces. The private `c` crate exposes the internal projected-value,
 runtime, exact-3.12.1 database, transaction, cancellation, and exact
 single-entity and single-relation CRUD ABI foundation, with generated nominal
-wrappers and closed typed role-player unions. ABI 1.3 additionally provides the
-internal generated typed-query, reduction, function, and remote-transport
-foundation.
+wrappers and closed typed role-player unions. ABI 1.4 additionally provides
+typed flat/chunked package admission, policy-aware database and transaction
+entries, generated atomic mutation batches, and the internal generated
+typed-query, reduction, function, and remote-transport foundation.
 The released core, migration reader, and TOML converter remain separate
 compatibility boundaries.
 

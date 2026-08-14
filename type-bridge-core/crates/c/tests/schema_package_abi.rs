@@ -13,16 +13,17 @@ use type_bridge_c::{
     TypeBridgeExecutionDiagnosticCategory, TypeBridgeExecutionDiagnosticDetailKind,
     TypeBridgeExecutionDiagnosticDetailViewV1, TypeBridgeExecutionDiagnosticPathKind,
     TypeBridgeExecutionDiagnosticPathViewV1, TypeBridgeExecutionDiagnosticViewV1,
-    TypeBridgeGeneratedCreateArgsGraphV1, TypeBridgeGeneratedCreateHandleChunkV1,
-    TypeBridgeGeneratedCreateMemberV1, TypeBridgeGeneratedOpaqueInputV1,
-    TypeBridgeGeneratedOutputRangeV1, TypeBridgeProjectedCreateDescriptorV1,
-    TypeBridgeProjectedFieldInputV1, TypeBridgeProjectedReferenceDescriptorV1,
-    TypeBridgeProjectedRoleInputV1, TypeBridgeProjectedThingDescriptorV1,
-    TypeBridgeProjectedTokenV1, TypeBridgeQueryDescriptorV1, TypeBridgeQueryExecutionLimitsV1,
-    TypeBridgeQueryFieldReferenceV1, TypeBridgeQueryFunctionArgumentMemberV1,
-    TypeBridgeQueryFunctionArgumentV1, TypeBridgeQueryFunctionArgumentsGraphV1,
-    TypeBridgeQueryFunctionArgumentsHeaderV1, TypeBridgeQueryOrderDescriptorV1,
-    TypeBridgeQueryPageMetadataV1, TypeBridgeQueryReducedValueMetadataV1, TypeBridgeQueryReducerV1,
+    TypeBridgeExecutionDiagnostics, TypeBridgeGeneratedCreateArgsGraphV1,
+    TypeBridgeGeneratedCreateHandleChunkV1, TypeBridgeGeneratedCreateMemberV1,
+    TypeBridgeGeneratedOpaqueInputV1, TypeBridgeGeneratedOutputRangeV1,
+    TypeBridgeProjectedCreateDescriptorV1, TypeBridgeProjectedFieldInputV1,
+    TypeBridgeProjectedReferenceDescriptorV1, TypeBridgeProjectedRoleInputV1,
+    TypeBridgeProjectedThingDescriptorV1, TypeBridgeProjectedTokenV1, TypeBridgeQueryDescriptorV1,
+    TypeBridgeQueryExecutionLimitsV1, TypeBridgeQueryFieldReferenceV1,
+    TypeBridgeQueryFunctionArgumentMemberV1, TypeBridgeQueryFunctionArgumentV1,
+    TypeBridgeQueryFunctionArgumentsGraphV1, TypeBridgeQueryFunctionArgumentsHeaderV1,
+    TypeBridgeQueryOrderDescriptorV1, TypeBridgeQueryPageMetadataV1,
+    TypeBridgeQueryReducedValueMetadataV1, TypeBridgeQueryReducerV1,
     TypeBridgeQuerySelectionDescriptorV1, TypeBridgeQueryShapeSlotV1,
     TypeBridgeQueryTerminalDescriptorV1, TypeBridgeSchemaPackage,
     TypeBridgeSchemaPackageChunkedDescriptorV1, TypeBridgeSchemaPackageDescriptorV1,
@@ -139,7 +140,7 @@ plays:
     base-activity:
       participant: { card: { min: 0, max: 3 } }
 "#;
-const EXPORTED_SYMBOLS: [&str; 180] = [
+const ABI_1_3_EXPORTED_SYMBOLS: [&str; 180] = [
     "type_bridge_c_abi_major",
     "type_bridge_c_abi_minor",
     "type_bridge_cancellation_close",
@@ -322,6 +323,54 @@ const EXPORTED_SYMBOLS: [&str; 180] = [
     "type_bridge_write_transaction_rollback",
 ];
 
+const ABI_1_4_ADDED_EXPORTED_SYMBOLS: [&str; 45] = [
+    "type_bridge_database_config_validate_v2",
+    "type_bridge_database_entity_count_v2",
+    "type_bridge_database_entity_delete_by_iid_v2",
+    "type_bridge_database_entity_get_by_iid_v2",
+    "type_bridge_database_entity_insert_v2",
+    "type_bridge_database_entity_put_v2",
+    "type_bridge_database_entity_update_v2",
+    "type_bridge_database_open_v2",
+    "type_bridge_database_projected_batch_execute_v1",
+    "type_bridge_database_relation_count_v2",
+    "type_bridge_database_relation_delete_by_iid_v2",
+    "type_bridge_database_relation_get_by_iid_v2",
+    "type_bridge_database_relation_insert_v2",
+    "type_bridge_database_relation_put_v2",
+    "type_bridge_database_relation_update_v2",
+    "type_bridge_projected_batch_builder_add_v1",
+    "type_bridge_projected_batch_builder_close",
+    "type_bridge_projected_batch_builder_finish",
+    "type_bridge_projected_batch_builder_open_v1",
+    "type_bridge_projected_batch_close",
+    "type_bridge_projected_batch_result_close",
+    "type_bridge_projected_batch_result_count",
+    "type_bridge_projected_batch_result_thing_at",
+    "type_bridge_read_transaction_entity_count_v2",
+    "type_bridge_read_transaction_entity_get_by_iid_v2",
+    "type_bridge_read_transaction_open_v2",
+    "type_bridge_read_transaction_relation_count_v2",
+    "type_bridge_read_transaction_relation_get_by_iid_v2",
+    "type_bridge_schema_package_open_chunked_v2",
+    "type_bridge_schema_package_open_v2",
+    "type_bridge_write_transaction_commit_v2",
+    "type_bridge_write_transaction_entity_count_v2",
+    "type_bridge_write_transaction_entity_delete_by_iid_v2",
+    "type_bridge_write_transaction_entity_get_by_iid_v2",
+    "type_bridge_write_transaction_entity_insert_v2",
+    "type_bridge_write_transaction_entity_put_v2",
+    "type_bridge_write_transaction_entity_update_v2",
+    "type_bridge_write_transaction_open_v2",
+    "type_bridge_write_transaction_projected_batch_execute_v1",
+    "type_bridge_write_transaction_relation_count_v2",
+    "type_bridge_write_transaction_relation_delete_by_iid_v2",
+    "type_bridge_write_transaction_relation_get_by_iid_v2",
+    "type_bridge_write_transaction_relation_insert_v2",
+    "type_bridge_write_transaction_relation_put_v2",
+    "type_bridge_write_transaction_relation_update_v2",
+];
+
 // ABI 1.3 is append-only over this exact ABI 1.2 surface. Keep this ledger
 // independent of the current export list so a removal or rename cannot be
 // hidden by merely updating the latest-version inventory.
@@ -452,6 +501,16 @@ unsafe extern "C" {
         out_package: *mut *mut TypeBridgeSchemaPackage,
         out_diagnostics: *mut *mut TypeBridgeDiagnostics,
     ) -> TypeBridgeStatus;
+    fn type_bridge_schema_package_open_v2(
+        descriptor: *const TypeBridgeSchemaPackageDescriptorV1,
+        out_package: *mut *mut TypeBridgeSchemaPackage,
+        out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+    ) -> TypeBridgeStatus;
+    fn type_bridge_schema_package_open_chunked_v2(
+        descriptor: *const TypeBridgeSchemaPackageChunkedDescriptorV1,
+        out_package: *mut *mut TypeBridgeSchemaPackage,
+        out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+    ) -> TypeBridgeStatus;
     fn type_bridge_schema_package_close(
         package: *mut *mut TypeBridgeSchemaPackage,
     ) -> TypeBridgeStatus;
@@ -485,6 +544,30 @@ unsafe extern "C" {
     ) -> TypeBridgeStatus;
     fn type_bridge_diagnostics_close(
         diagnostics: *mut *mut TypeBridgeDiagnostics,
+    ) -> TypeBridgeStatus;
+    fn type_bridge_execution_diagnostics_count(
+        diagnostics: *const TypeBridgeExecutionDiagnostics,
+        out_count: *mut usize,
+    ) -> TypeBridgeStatus;
+    fn type_bridge_execution_diagnostics_get_v1(
+        diagnostics: *const TypeBridgeExecutionDiagnostics,
+        index: usize,
+        out_diagnostic: *mut TypeBridgeExecutionDiagnosticViewV1,
+    ) -> TypeBridgeStatus;
+    fn type_bridge_execution_diagnostics_path_get_v1(
+        diagnostics: *const TypeBridgeExecutionDiagnostics,
+        diagnostic_index: usize,
+        path_index: usize,
+        out_path: *mut TypeBridgeExecutionDiagnosticPathViewV1,
+    ) -> TypeBridgeStatus;
+    fn type_bridge_execution_diagnostics_detail_get_v1(
+        diagnostics: *const TypeBridgeExecutionDiagnostics,
+        diagnostic_index: usize,
+        detail_index: usize,
+        out_detail: *mut TypeBridgeExecutionDiagnosticDetailViewV1,
+    ) -> TypeBridgeStatus;
+    fn type_bridge_execution_diagnostics_close(
+        diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
     ) -> TypeBridgeStatus;
 }
 
@@ -1014,7 +1097,7 @@ fn native_import_library(native_library: &Path) -> PathBuf {
 fn rust_abi_layout() -> Vec<usize> {
     let mut layout = vec![
         1,
-        3,
+        4,
         TypeBridgeStatus::Ok as usize,
         TypeBridgeStatus::InvalidArgument as usize,
         TypeBridgeStatus::SchemaPackageRejected as usize,
@@ -1546,27 +1629,63 @@ fn parse_layout(output: &[u8], compiler: &str) -> Vec<usize> {
 }
 
 fn expected_exported_symbols() -> BTreeSet<String> {
-    EXPORTED_SYMBOLS.into_iter().map(str::to_owned).collect()
+    ABI_1_3_EXPORTED_SYMBOLS
+        .into_iter()
+        .chain(ABI_1_4_ADDED_EXPORTED_SYMBOLS)
+        .map(str::to_owned)
+        .collect()
 }
 
 #[test]
-fn abi_1_3_preserves_the_exact_frozen_abi_1_2_export_subset() {
+fn abi_1_4_preserves_the_exact_frozen_abi_1_2_and_abi_1_3_export_subsets() {
     let current = expected_exported_symbols();
-    let legacy = ABI_1_2_EXPORTED_SYMBOLS
+    let abi_1_3 = ABI_1_3_EXPORTED_SYMBOLS
         .into_iter()
         .map(str::to_owned)
         .collect::<BTreeSet<_>>();
-    assert_eq!(legacy.len(), 109, "ABI 1.2 export ledger has duplicates");
-    assert_eq!(current.len(), 180, "ABI 1.3 export ledger has duplicates");
-    let missing = legacy.difference(&current).cloned().collect::<Vec<_>>();
+    let abi_1_2 = ABI_1_2_EXPORTED_SYMBOLS
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<BTreeSet<_>>();
+    let additions = ABI_1_4_ADDED_EXPORTED_SYMBOLS
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<BTreeSet<_>>();
+    assert_eq!(abi_1_2.len(), 109, "ABI 1.2 export ledger has duplicates");
+    assert_eq!(abi_1_3.len(), 180, "ABI 1.3 export ledger has duplicates");
+    assert_eq!(
+        additions.len(),
+        45,
+        "ABI 1.4 addition ledger has duplicates"
+    );
+    assert_eq!(current.len(), 225, "ABI 1.4 export ledger has duplicates");
+
+    let missing = abi_1_2.difference(&abi_1_3).cloned().collect::<Vec<_>>();
     assert!(
         missing.is_empty(),
         "ABI 1.3 removed or renamed ABI 1.2 exports: {missing:?}",
     );
     assert_eq!(
-        current.difference(&legacy).count(),
+        abi_1_3.difference(&abi_1_2).count(),
         71,
         "ABI 1.3 must remain exactly 71 additive exports over ABI 1.2",
+    );
+    let missing = abi_1_3.difference(&current).cloned().collect::<Vec<_>>();
+    assert!(
+        missing.is_empty(),
+        "ABI 1.4 removed or renamed ABI 1.3 exports: {missing:?}",
+    );
+    assert!(
+        additions.is_disjoint(&abi_1_3),
+        "ABI 1.4 additions must not rename predecessor exports",
+    );
+    assert_eq!(
+        current
+            .difference(&abi_1_3)
+            .cloned()
+            .collect::<BTreeSet<_>>(),
+        additions,
+        "ABI 1.4 must remain exactly the frozen 45-function addition",
     );
 }
 
@@ -1628,6 +1747,212 @@ unsafe fn diagnostic_text(diagnostics: *const TypeBridgeDiagnostics) -> String {
     // SAFETY: the successful accessor returns live UTF-8 diagnostic JSON.
     String::from_utf8(unsafe { std::slice::from_raw_parts(output.data, output.length) }.to_vec())
         .expect("diagnostic JSON is UTF-8")
+}
+
+unsafe fn execution_view_text(view: TypeBridgeByteView) -> String {
+    if view.length == 0 {
+        assert!(view.data.is_null());
+        return String::new();
+    }
+    assert!(!view.data.is_null());
+    // SAFETY: the view borrows a live execution-diagnostic handle for this assertion.
+    String::from_utf8(unsafe { std::slice::from_raw_parts(view.data, view.length) }.to_vec())
+        .expect("execution-diagnostic text is UTF-8")
+}
+
+unsafe fn one_execution_diagnostic(
+    diagnostics: *const TypeBridgeExecutionDiagnostics,
+) -> TypeBridgeExecutionDiagnosticViewV1 {
+    let mut count = usize::MAX;
+    // SAFETY: the diagnostics handle remains live and `count` is writable.
+    assert_eq!(
+        unsafe { type_bridge_execution_diagnostics_count(diagnostics, &mut count) },
+        TypeBridgeStatus::Ok,
+    );
+    assert_eq!(count, 1);
+    let mut view = std::mem::MaybeUninit::<TypeBridgeExecutionDiagnosticViewV1>::uninit();
+    // SAFETY: the diagnostics handle remains live and the output storage is writable.
+    assert_eq!(
+        unsafe { type_bridge_execution_diagnostics_get_v1(diagnostics, 0, view.as_mut_ptr()) },
+        TypeBridgeStatus::Ok,
+    );
+    // SAFETY: a successful accessor initialized the complete view.
+    unsafe { view.assume_init() }
+}
+
+unsafe fn close_execution_diagnostics(diagnostics: &mut *mut TypeBridgeExecutionDiagnostics) {
+    // SAFETY: this slot exclusively owns the execution-diagnostic handle.
+    assert_eq!(
+        unsafe { type_bridge_execution_diagnostics_close(diagnostics) },
+        TypeBridgeStatus::Ok,
+    );
+    assert!(diagnostics.is_null());
+    // SAFETY: repeated close of the now-null slot is explicitly idempotent.
+    assert_eq!(
+        unsafe { type_bridge_execution_diagnostics_close(diagnostics) },
+        TypeBridgeStatus::Ok,
+    );
+}
+
+unsafe fn assert_missing_semantic_fingerprint_diagnostic(
+    diagnostics: *const TypeBridgeExecutionDiagnostics,
+) {
+    // SAFETY: the caller retains the live diagnostic handle for every borrowed view below.
+    let view = unsafe { one_execution_diagnostic(diagnostics) };
+    assert_eq!(
+        view.category,
+        TypeBridgeExecutionDiagnosticCategory::Integrity
+    );
+    // SAFETY: the diagnostic handle remains live while this text is copied.
+    assert_eq!(
+        unsafe { execution_view_text(view.code) },
+        "projection_evidence_mismatch"
+    );
+    assert_eq!(view.path_count, 3);
+    assert_eq!(view.detail_count, 3);
+
+    for (index, kind, expected_index, expected_primary) in [
+        (
+            0,
+            TypeBridgeExecutionDiagnosticPathKind::Argument,
+            0,
+            "projection_evidence",
+        ),
+        (1, TypeBridgeExecutionDiagnosticPathKind::Index, 0, ""),
+        (
+            2,
+            TypeBridgeExecutionDiagnosticPathKind::ContractIdentity,
+            0,
+            "semantic_schema_fingerprint",
+        ),
+    ] {
+        let mut path = std::mem::MaybeUninit::<TypeBridgeExecutionDiagnosticPathViewV1>::uninit();
+        // SAFETY: the diagnostics handle remains live and the output storage is writable.
+        assert_eq!(
+            unsafe {
+                type_bridge_execution_diagnostics_path_get_v1(
+                    diagnostics,
+                    0,
+                    index,
+                    path.as_mut_ptr(),
+                )
+            },
+            TypeBridgeStatus::Ok,
+        );
+        // SAFETY: a successful accessor initialized the complete path view.
+        let path = unsafe { path.assume_init() };
+        assert_eq!(path.kind, kind);
+        assert_eq!(path.index, expected_index);
+        // SAFETY: the diagnostic handle remains live while this text is copied.
+        assert_eq!(
+            unsafe { execution_view_text(path.primary) },
+            expected_primary
+        );
+    }
+
+    for (index, key, kind, boolean_value, unsigned_value) in [
+        (
+            0,
+            "actual_occurrence_count",
+            TypeBridgeExecutionDiagnosticDetailKind::Count,
+            0,
+            0,
+        ),
+        (
+            1,
+            "expected_occurrence_count",
+            TypeBridgeExecutionDiagnosticDetailKind::Count,
+            0,
+            1,
+        ),
+        (
+            2,
+            "foreign_package",
+            TypeBridgeExecutionDiagnosticDetailKind::Boolean,
+            0,
+            0,
+        ),
+    ] {
+        let mut detail =
+            std::mem::MaybeUninit::<TypeBridgeExecutionDiagnosticDetailViewV1>::uninit();
+        // SAFETY: the diagnostics handle remains live and the output storage is writable.
+        assert_eq!(
+            unsafe {
+                type_bridge_execution_diagnostics_detail_get_v1(
+                    diagnostics,
+                    0,
+                    index,
+                    detail.as_mut_ptr(),
+                )
+            },
+            TypeBridgeStatus::Ok,
+        );
+        // SAFETY: a successful accessor initialized the complete detail view.
+        let detail = unsafe { detail.assume_init() };
+        assert_eq!(detail.kind, kind);
+        assert_eq!(detail.boolean_value, boolean_value);
+        assert_eq!(detail.unsigned_value, unsigned_value);
+        // SAFETY: the diagnostic handle remains live while this text is copied.
+        assert_eq!(unsafe { execution_view_text(detail.key) }, key);
+    }
+}
+
+fn assert_v2_flat_rejected(
+    descriptor: &TypeBridgeSchemaPackageDescriptorV1,
+    status: TypeBridgeStatus,
+    category: TypeBridgeExecutionDiagnosticCategory,
+    code: &str,
+    path_count: usize,
+    detail_count: usize,
+) {
+    let mut package = NonNull::<TypeBridgeSchemaPackage>::dangling().as_ptr();
+    let mut diagnostics = NonNull::<TypeBridgeExecutionDiagnostics>::dangling().as_ptr();
+    // SAFETY: the descriptor and both output slots remain live for the complete call.
+    assert_eq!(
+        unsafe { type_bridge_schema_package_open_v2(descriptor, &mut package, &mut diagnostics) },
+        status,
+    );
+    assert!(package.is_null());
+    assert!(!diagnostics.is_null());
+    // SAFETY: the failed call returned one live typed-diagnostic handle.
+    let view = unsafe { one_execution_diagnostic(diagnostics) };
+    assert_eq!(view.category, category);
+    assert_eq!(view.path_count, path_count);
+    assert_eq!(view.detail_count, detail_count);
+    // SAFETY: the diagnostic handle remains live while its borrowed code is copied.
+    assert_eq!(unsafe { execution_view_text(view.code) }, code);
+    // SAFETY: this slot uniquely owns the returned diagnostic handle.
+    unsafe { close_execution_diagnostics(&mut diagnostics) };
+}
+
+fn assert_v2_chunked_rejected(
+    descriptor: &TypeBridgeSchemaPackageChunkedDescriptorV1,
+    status: TypeBridgeStatus,
+    category: TypeBridgeExecutionDiagnosticCategory,
+    code: &str,
+    path_count: usize,
+    detail_count: usize,
+) {
+    let mut package = NonNull::<TypeBridgeSchemaPackage>::dangling().as_ptr();
+    let mut diagnostics = NonNull::<TypeBridgeExecutionDiagnostics>::dangling().as_ptr();
+    // SAFETY: the descriptor graph and both output slots remain live for the complete call.
+    assert_eq!(
+        unsafe {
+            type_bridge_schema_package_open_chunked_v2(descriptor, &mut package, &mut diagnostics)
+        },
+        status,
+    );
+    assert!(package.is_null());
+    assert!(!diagnostics.is_null());
+    // SAFETY: the failed call returned one live typed-diagnostic handle.
+    let view = unsafe { one_execution_diagnostic(diagnostics) };
+    assert_eq!(view.category, category);
+    assert_eq!(view.path_count, path_count);
+    assert_eq!(view.detail_count, detail_count);
+    // SAFETY: the diagnostic handle remains live while its borrowed code is copied.
+    assert_eq!(unsafe { execution_view_text(view.code) }, code);
+    // SAFETY: this slot uniquely owns the returned diagnostic handle.
+    unsafe { close_execution_diagnostics(&mut diagnostics) };
 }
 
 fn assert_rejected(
@@ -2608,7 +2933,7 @@ find_package(TypeBridge 1.2.0 EXACT CONFIG REQUIRED)
         .expect("old-ABI rejection configure launches");
     assert!(
         !output.status.success(),
-        "the installed ABI 1.3 package incorrectly satisfied an exact ABI 1.2 request"
+        "the installed ABI 1.4 package incorrectly satisfied an exact ABI 1.2 request"
     );
 
     let output = Command::new("cmake")
@@ -2692,7 +3017,7 @@ find_package(TypeBridge 1.2.0 EXACT CONFIG REQUIRED)
         r#"cmake_minimum_required(VERSION 3.20)
 project(type_bridge_clean_consumer LANGUAGES C CXX)
 
-find_package(TypeBridge 1.3.0 EXACT CONFIG REQUIRED)
+find_package(TypeBridge 1.4.0 EXACT CONFIG REQUIRED)
 find_package(fixture 1.0.0 EXACT CONFIG REQUIRED)
 
 add_executable(type_bridge_clean_consumer main.c)
@@ -3125,7 +3450,7 @@ fn clean_staged_pkg_config_consumer_supports_nested_library_directories() {
         );
     }
 
-    for (package, expected_version) in [("type-bridge", "1.3.0"), ("fixture", "1.0.0")] {
+    for (package, expected_version) in [("type-bridge", "1.4.0"), ("fixture", "1.0.0")] {
         let output = Command::new("pkg-config")
             .args(["--modversion", package])
             .env("PKG_CONFIG_LIBDIR", &pkg_config_directory)
@@ -5102,6 +5427,339 @@ fn hostile_descriptors_fail_closed_with_initialized_outputs_and_diagnostics() {
 }
 
 #[test]
+fn schema_package_open_v2_accepts_exact_flat_and_chunked_v1_descriptor_layouts() {
+    let fixture = emitted_fixture();
+
+    let mut flat = fixture.bytes.descriptor();
+    flat.abi_minor = 4;
+    let mut package = ptr::dangling_mut();
+    let mut diagnostics = ptr::dangling_mut();
+    assert_eq!(
+        // SAFETY: the descriptor backing bytes and both output slots remain live.
+        unsafe { type_bridge_schema_package_open_v2(&flat, &mut package, &mut diagnostics) },
+        TypeBridgeStatus::Ok,
+    );
+    assert!(!package.is_null());
+    assert!(diagnostics.is_null());
+    // SAFETY: the returned package owns the exact copied projection bytes.
+    assert_eq!(
+        unsafe { copied_view(package, type_bridge_schema_package_projection_json) },
+        fixture.bytes.projection,
+    );
+    // SAFETY: this slot uniquely owns the returned package handle.
+    assert_eq!(
+        unsafe { type_bridge_schema_package_close(&mut package) },
+        TypeBridgeStatus::Ok,
+    );
+
+    let parts = fixture.bytes.chunked_parts(17);
+    let mut chunked = parts.descriptor();
+    chunked.abi_minor = 4;
+    package = ptr::dangling_mut();
+    diagnostics = ptr::dangling_mut();
+    assert_eq!(
+        // SAFETY: every chunk table/data range and both output slots remain live.
+        unsafe {
+            type_bridge_schema_package_open_chunked_v2(&chunked, &mut package, &mut diagnostics)
+        },
+        TypeBridgeStatus::Ok,
+    );
+    assert!(!package.is_null());
+    assert!(diagnostics.is_null());
+    // SAFETY: the returned package owns the exact reassembled authority bytes.
+    assert_eq!(
+        unsafe { copied_view(package, type_bridge_schema_package_authority_json) },
+        fixture.bytes.authority,
+    );
+    // SAFETY: this slot uniquely owns the returned package handle.
+    assert_eq!(
+        unsafe { type_bridge_schema_package_close(&mut package) },
+        TypeBridgeStatus::Ok,
+    );
+}
+
+#[test]
+fn schema_package_open_v2_classifies_all_seven_nonempty_hostile_evidence_slots() {
+    let fixture = emitted_fixture().bytes;
+    let mutations: [fn(&mut EmittedDescriptorBytes); 7] = [
+        |bytes| bytes.authority = b"{".to_vec(),
+        |bytes| bytes.declared.push(b' '),
+        |bytes| bytes.projection = b"{".to_vec(),
+        |bytes| bytes.semantic = b"{".to_vec(),
+        |bytes| bytes.binding = b"{".to_vec(),
+        |bytes| bytes.scope.extend_from_slice(b"-foreign"),
+        |bytes| bytes.profile = b"typedb-3.11.5/v1".to_vec(),
+    ];
+
+    for mutate in mutations {
+        let mut hostile = fixture.clone();
+        mutate(&mut hostile);
+        let mut descriptor = hostile.descriptor();
+        descriptor.abi_minor = 4;
+        assert_v2_flat_rejected(
+            &descriptor,
+            TypeBridgeStatus::ExecutionFailed,
+            TypeBridgeExecutionDiagnosticCategory::Integrity,
+            "projection_evidence_mismatch",
+            1,
+            0,
+        );
+    }
+}
+
+#[test]
+fn schema_package_open_v2_retains_the_exact_missing_semantic_evidence_representative() {
+    let fixture = emitted_fixture();
+    let mut flat = fixture.bytes.descriptor();
+    flat.abi_minor = 4;
+    flat.semantic_fingerprint_json = TypeBridgeByteView {
+        data: ptr::null(),
+        length: 0,
+    };
+    let mut package = ptr::dangling_mut();
+    let mut diagnostics = ptr::dangling_mut();
+    assert_eq!(
+        // SAFETY: all nonempty descriptor views and both output slots remain live.
+        unsafe { type_bridge_schema_package_open_v2(&flat, &mut package, &mut diagnostics) },
+        TypeBridgeStatus::ExecutionFailed,
+    );
+    assert!(package.is_null());
+    assert!(!diagnostics.is_null());
+    // SAFETY: the failed admission returned one live common diagnostic handle.
+    unsafe { assert_missing_semantic_fingerprint_diagnostic(diagnostics) };
+    // SAFETY: this slot uniquely owns the returned diagnostic handle.
+    unsafe { close_execution_diagnostics(&mut diagnostics) };
+
+    let parts = fixture.bytes.chunked_parts(19);
+    let mut chunked = parts.descriptor();
+    chunked.abi_minor = 4;
+    chunked.semantic_fingerprint_json = TypeBridgeChunkedByteViewV1 {
+        struct_size: size_of::<TypeBridgeChunkedByteViewV1>() as u32,
+        version: 1,
+        chunks: ptr::null(),
+        chunk_count: 0,
+        total_length: 0,
+        reserved: [0; 4],
+    };
+    package = ptr::dangling_mut();
+    diagnostics = ptr::dangling_mut();
+    assert_eq!(
+        // SAFETY: every nonempty chunk graph and both output slots remain live.
+        unsafe {
+            type_bridge_schema_package_open_chunked_v2(&chunked, &mut package, &mut diagnostics)
+        },
+        TypeBridgeStatus::ExecutionFailed,
+    );
+    assert!(package.is_null());
+    assert!(!diagnostics.is_null());
+    // SAFETY: the failed admission returned one live common diagnostic handle.
+    unsafe { assert_missing_semantic_fingerprint_diagnostic(diagnostics) };
+    // SAFETY: this slot uniquely owns the returned diagnostic handle.
+    unsafe { close_execution_diagnostics(&mut diagnostics) };
+}
+
+#[test]
+fn schema_package_open_v2_preserves_narrow_structural_statuses() {
+    let fixture = emitted_fixture();
+
+    let mut flat_layout = fixture.bytes.descriptor();
+    flat_layout.abi_minor = 4;
+    flat_layout.struct_size -= 1;
+    assert_v2_flat_rejected(
+        &flat_layout,
+        TypeBridgeStatus::InvalidArgument,
+        TypeBridgeExecutionDiagnosticCategory::InvalidInput,
+        "c_schema_descriptor_layout_mismatch",
+        0,
+        0,
+    );
+
+    let mut flat_abi = fixture.bytes.descriptor();
+    flat_abi.abi_minor = 4;
+    flat_abi.abi_major += 1;
+    assert_v2_flat_rejected(
+        &flat_abi,
+        TypeBridgeStatus::Unsupported,
+        TypeBridgeExecutionDiagnosticCategory::UnsupportedCapability,
+        "c_schema_descriptor_abi_unsupported",
+        0,
+        0,
+    );
+
+    let mut flat_view = fixture.bytes.descriptor();
+    flat_view.abi_minor = 4;
+    flat_view.declared_schema_json.data = ptr::null();
+    assert_v2_flat_rejected(
+        &flat_view,
+        TypeBridgeStatus::InvalidArgument,
+        TypeBridgeExecutionDiagnosticCategory::InvalidInput,
+        "c_schema_descriptor_invalid_view",
+        0,
+        0,
+    );
+
+    let mut flat_resource = fixture.bytes.descriptor();
+    flat_resource.abi_minor = 4;
+    flat_resource.runtime_projection_json = TypeBridgeByteView {
+        data: NonNull::<u8>::dangling().as_ptr(),
+        length: MAX_CANONICAL_BYTES + 1,
+    };
+    assert_v2_flat_rejected(
+        &flat_resource,
+        TypeBridgeStatus::ResourceLimit,
+        TypeBridgeExecutionDiagnosticCategory::ResourceLimit,
+        "c_schema_package_resource_limit",
+        0,
+        0,
+    );
+
+    let parts = fixture.bytes.chunked_parts(23);
+    let mut chunked_layout = parts.descriptor();
+    chunked_layout.abi_minor = 4;
+    chunked_layout.reserved0 = 1;
+    assert_v2_chunked_rejected(
+        &chunked_layout,
+        TypeBridgeStatus::InvalidArgument,
+        TypeBridgeExecutionDiagnosticCategory::InvalidInput,
+        "c_schema_chunked_descriptor_layout_mismatch",
+        0,
+        0,
+    );
+
+    let mut chunked_view = parts.descriptor();
+    chunked_view.abi_minor = 4;
+    chunked_view.declared_schema_json.version += 1;
+    assert_v2_chunked_rejected(
+        &chunked_view,
+        TypeBridgeStatus::InvalidArgument,
+        TypeBridgeExecutionDiagnosticCategory::InvalidInput,
+        "c_schema_descriptor_invalid_view",
+        0,
+        0,
+    );
+
+    let mut chunked_resource = parts.descriptor();
+    chunked_resource.abi_minor = 4;
+    chunked_resource.runtime_projection_json.total_length = MAX_CANONICAL_BYTES + 1;
+    assert_v2_chunked_rejected(
+        &chunked_resource,
+        TypeBridgeStatus::ResourceLimit,
+        TypeBridgeExecutionDiagnosticCategory::ResourceLimit,
+        "c_schema_package_resource_limit",
+        0,
+        0,
+    );
+}
+
+#[test]
+fn schema_package_open_v2_rejects_aliases_before_writes_and_initializes_valid_outputs() {
+    let fixture = emitted_fixture();
+    let mut flat = fixture.bytes.descriptor();
+    flat.abi_minor = 4;
+    let flat_before = unsafe {
+        std::slice::from_raw_parts(
+            (&flat as *const TypeBridgeSchemaPackageDescriptorV1).cast::<u8>(),
+            size_of::<TypeBridgeSchemaPackageDescriptorV1>(),
+        )
+        .to_vec()
+    };
+    let descriptor_output = (&mut flat.schema_authority_json.data as *mut *const u8)
+        .cast::<*mut TypeBridgeSchemaPackage>();
+    let mut diagnostics = NonNull::<TypeBridgeExecutionDiagnostics>::dangling().as_ptr();
+    assert_eq!(
+        // SAFETY: the hostile package output intentionally targets descriptor storage.
+        unsafe { type_bridge_schema_package_open_v2(&flat, descriptor_output, &mut diagnostics) },
+        TypeBridgeStatus::InvalidArgument,
+    );
+    assert_eq!(diagnostics, NonNull::dangling().as_ptr());
+    let flat_after = unsafe {
+        std::slice::from_raw_parts(
+            (&flat as *const TypeBridgeSchemaPackageDescriptorV1).cast::<u8>(),
+            size_of::<TypeBridgeSchemaPackageDescriptorV1>(),
+        )
+    };
+    assert_eq!(flat_after, flat_before);
+
+    let mut shared_slot = NonNull::<TypeBridgeSchemaPackage>::dangling().as_ptr();
+    let package_slot = &mut shared_slot as *mut *mut TypeBridgeSchemaPackage;
+    let diagnostics_slot = package_slot.cast::<*mut TypeBridgeExecutionDiagnostics>();
+    assert_eq!(
+        // SAFETY: one writable pointer slot is intentionally supplied for both outputs.
+        unsafe { type_bridge_schema_package_open_v2(&flat, package_slot, diagnostics_slot) },
+        TypeBridgeStatus::InvalidArgument,
+    );
+    assert_eq!(shared_slot, NonNull::dangling().as_ptr());
+
+    let parts = fixture.bytes.chunked_parts(29);
+    let mut chunked = parts.descriptor();
+    chunked.abi_minor = 4;
+    let chunked_before = unsafe {
+        std::slice::from_raw_parts(
+            (&chunked as *const TypeBridgeSchemaPackageChunkedDescriptorV1).cast::<u8>(),
+            size_of::<TypeBridgeSchemaPackageChunkedDescriptorV1>(),
+        )
+        .to_vec()
+    };
+    let chunked_output = (&mut chunked.schema_authority_json.chunks
+        as *mut *const TypeBridgeByteView)
+        .cast::<*mut TypeBridgeSchemaPackage>();
+    assert_eq!(
+        // SAFETY: the hostile package output intentionally targets descriptor storage.
+        unsafe {
+            type_bridge_schema_package_open_chunked_v2(&chunked, chunked_output, &mut diagnostics)
+        },
+        TypeBridgeStatus::InvalidArgument,
+    );
+    assert_eq!(diagnostics, NonNull::dangling().as_ptr());
+    let chunked_after = unsafe {
+        std::slice::from_raw_parts(
+            (&chunked as *const TypeBridgeSchemaPackageChunkedDescriptorV1).cast::<u8>(),
+            size_of::<TypeBridgeSchemaPackageChunkedDescriptorV1>(),
+        )
+    };
+    assert_eq!(chunked_after, chunked_before);
+
+    let mut package = NonNull::<TypeBridgeSchemaPackage>::dangling().as_ptr();
+    assert_eq!(
+        // SAFETY: the package slot is writable and the diagnostics output is intentionally null.
+        unsafe { type_bridge_schema_package_open_v2(&flat, &mut package, ptr::null_mut()) },
+        TypeBridgeStatus::InvalidArgument,
+    );
+    assert!(package.is_null());
+
+    diagnostics = NonNull::<TypeBridgeExecutionDiagnostics>::dangling().as_ptr();
+    assert_eq!(
+        // SAFETY: the diagnostics slot is writable and the package output is intentionally null.
+        unsafe { type_bridge_schema_package_open_v2(&flat, ptr::null_mut(), &mut diagnostics) },
+        TypeBridgeStatus::InvalidArgument,
+    );
+    assert!(diagnostics.is_null());
+
+    package = NonNull::<TypeBridgeSchemaPackage>::dangling().as_ptr();
+    diagnostics = NonNull::<TypeBridgeExecutionDiagnostics>::dangling().as_ptr();
+    assert_eq!(
+        // SAFETY: both writable outputs are valid and null is an intentional descriptor input.
+        unsafe { type_bridge_schema_package_open_v2(ptr::null(), &mut package, &mut diagnostics) },
+        TypeBridgeStatus::InvalidArgument,
+    );
+    assert!(package.is_null());
+    assert!(!diagnostics.is_null());
+    // SAFETY: the failed call returned one live typed diagnostic handle.
+    let view = unsafe { one_execution_diagnostic(diagnostics) };
+    assert_eq!(
+        view.category,
+        TypeBridgeExecutionDiagnosticCategory::InvalidInput
+    );
+    // SAFETY: the diagnostic handle remains live while its code is copied.
+    assert_eq!(
+        unsafe { execution_view_text(view.code) },
+        "c_schema_descriptor_null"
+    );
+    // SAFETY: this slot uniquely owns the returned diagnostic handle.
+    unsafe { close_execution_diagnostics(&mut diagnostics) };
+}
+
+#[test]
 fn chunked_schema_package_open_reassembles_exact_bytes_and_rejects_aliases_read_only() {
     let fixture = emitted_fixture();
     let parts = fixture.bytes.chunked_parts(17);
@@ -5683,7 +6341,7 @@ fn abi_metadata_and_null_handle_paths_are_stable_and_initialize_views() {
     // SAFETY: these ABI metadata functions take no caller-owned inputs.
     assert_eq!(unsafe { type_bridge_c_abi_major() }, 1);
     // SAFETY: these ABI metadata functions take no caller-owned inputs.
-    assert_eq!(unsafe { type_bridge_c_abi_minor() }, 3);
+    assert_eq!(unsafe { type_bridge_c_abi_minor() }, 4);
 
     let mut version = TypeBridgeByteView {
         data: ptr::null(),

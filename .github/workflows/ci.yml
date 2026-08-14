@@ -130,6 +130,15 @@ jobs:
           exact_live_consumer_is_strict_c17_against_the_shared_generated_schema
           -- --exact
 
+      - name: Check generated ABI 1.4 successor C17 and C++17 consumers
+        if: runner.os != 'Windows'
+        working-directory: type-bridge-core
+        run: >-
+          cargo test --locked -p type-bridge-schema-codegen
+          --test c_projection_live
+          phase4_successor_consumers_compile_as_strict_c17_and_cpp17
+          -- --exact
+
       - name: Check C runtime, transaction, and cancellation ABI
         working-directory: type-bridge-core
         run: cargo test --locked -p type-bridge-c --lib --test execution_abi
@@ -154,6 +163,13 @@ jobs:
         env:
           TYPE_BRIDGE_C_REQUIRE_SHARED_CONSUMER: "1"
         run: cargo test --locked -p type-bridge-c --test phase2_projection_parity
+
+      - name: Check additive C ABI 1.4 header, export, and package ledger
+        if: runner.os != 'Windows'
+        working-directory: type-bridge-core
+        env:
+          TYPE_BRIDGE_C_REQUIRE_SHARED_CONSUMER: "1"
+        run: cargo test --locked -p type-bridge-c --test abi_1_4
 
       - name: Check C ABI and standalone consumer
         if: runner.os != 'Windows'
@@ -180,6 +196,8 @@ jobs:
           cargo build --locked -p type-bridge-c --lib
           if errorlevel 1 exit /b 1
           set "TYPE_BRIDGE_C_REQUIRE_SHARED_CONSUMER=1"
+          cargo test --locked -p type-bridge-c --test abi_1_4
+          if errorlevel 1 exit /b 1
           cargo test --locked -p type-bridge-c --test schema_package_abi
 
       - name: Install generated Rust MSRV
@@ -1299,6 +1317,19 @@ jobs:
         run: >-
           bash scripts/ci/run_exact_ignored_rust_test.sh
           live_c17_generated_person_and_membership_crud_round_trips_exact_3_12_1
+          --locked --manifest-path type-bridge-core/Cargo.toml
+          -p type-bridge-schema-codegen --test c_projection_live
+
+      - name: Run generated C17 and C++17 ABI 1.4 successor live smoke
+        if: matrix.typedb-server == 'typedb/typedb:3.12.1'
+        env:
+          TYPEDB_ADDRESS: localhost:1729
+          TYPEDB_HTTP_PORT: "8000"
+          TYPE_BRIDGE_C_PHASE4_INTG_DATABASE: type_bridge_c_phase4_live_${{ github.run_id }}_${{ github.run_attempt }}
+          ACCEPTANCE_TARGET_DIR: ${{ runner.temp }}/typebridge-c-phase4-live-target
+        run: >-
+          bash scripts/ci/run_exact_ignored_rust_test.sh
+          live_c17_and_cpp17_generated_successor_batches_round_trip_exact_3_12_1
           --locked --manifest-path type-bridge-core/Cargo.toml
           -p type-bridge-schema-codegen --test c_projection_live
 

@@ -139,8 +139,9 @@ mod tests {
 
     use super::*;
 
+    #[cfg(target_pointer_width = "64")]
     #[test]
-    fn database_config_v2_native_layout_matches_the_frozen_lp64_contract() {
+    fn database_config_v2_native_layout_matches_the_frozen_lp64_or_llp64_contract() {
         assert_eq!(size_of::<TypeBridgeDatabaseConfigV2>(), 336);
         assert_eq!(offset_of!(TypeBridgeDatabaseConfigV2, struct_size), 0);
         assert_eq!(offset_of!(TypeBridgeDatabaseConfigV2, version), 4);
@@ -160,5 +161,29 @@ mod tests {
         );
         assert_eq!(offset_of!(TypeBridgeDatabaseConfigV2, answer_limits), 200);
         assert_eq!(offset_of!(TypeBridgeDatabaseConfigV2, reserved), 304);
+    }
+
+    #[cfg(target_pointer_width = "32")]
+    #[test]
+    fn database_config_v2_native_layout_matches_the_frozen_ilp32_contract() {
+        assert_eq!(size_of::<TypeBridgeDatabaseConfigV2>(), 296);
+        assert_eq!(offset_of!(TypeBridgeDatabaseConfigV2, struct_size), 0);
+        assert_eq!(offset_of!(TypeBridgeDatabaseConfigV2, version), 4);
+        assert_eq!(offset_of!(TypeBridgeDatabaseConfigV2, address), 8);
+        assert_eq!(offset_of!(TypeBridgeDatabaseConfigV2, database), 16);
+        assert_eq!(offset_of!(TypeBridgeDatabaseConfigV2, username), 24);
+        assert_eq!(offset_of!(TypeBridgeDatabaseConfigV2, password), 32);
+        assert_eq!(offset_of!(TypeBridgeDatabaseConfigV2, http_port), 40);
+        assert_eq!(offset_of!(TypeBridgeDatabaseConfigV2, tls_mode), 44);
+        assert_eq!(
+            offset_of!(TypeBridgeDatabaseConfigV2, custom_root_ca_pem),
+            48
+        );
+        assert_eq!(
+            offset_of!(TypeBridgeDatabaseConfigV2, connection_limits),
+            56
+        );
+        assert_eq!(offset_of!(TypeBridgeDatabaseConfigV2, answer_limits), 160);
+        assert_eq!(offset_of!(TypeBridgeDatabaseConfigV2, reserved), 264);
     }
 }

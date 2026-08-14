@@ -1,0 +1,36 @@
+format: typebridge.schema/v2
+attributes:
+  identifier: { value: string }
+  tag: { value: string }
+entities:
+  keyed:
+    owns:
+      identifier: { key: true }
+      tag:
+        card: { min: 0, max: 3 }
+        ordered: true
+  unkeyed:
+    owns:
+      tag:
+        card: { min: 0, max: 3 }
+        ordered: true
+relations:
+  membership:
+    owns:
+      identifier: { key: true }
+    relates:
+      member:
+        card: { min: 0, max: 3 }
+        ordered: true
+  gathering:
+    relates:
+      member:
+        card: { min: 0, max: 3 }
+        ordered: true
+plays:
+  keyed:
+    membership: [member]
+    gathering: [member]
+  unkeyed:
+    membership: [member]
+    gathering: [member]

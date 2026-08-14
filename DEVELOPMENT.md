@@ -63,16 +63,19 @@ duplicated directory snapshot here.
 - Python and Node bindings marshal typed values and expose language-native
   facades; they do not reimplement schema, query, migration, or ORM rules.
 - The generated C package and native C ABI are an internal foundation under
-  development. ABI 1.3 verifies schema-package evidence and provides opaque
+  development. ABI 1.4 verifies flat and chunked schema-package evidence and provides opaque
   projected values/models plus synchronous runtime, exact-3.12.1 database,
-  read/write transaction, and pre-dispatch cancellation handles, together with
-  generated nominal exact single-entity and single-relation CRUD/count plus
-  closed typed role-player unions. The same internal boundary now includes a
+  policy-aware read/write transaction, and pre-dispatch cancellation handles,
+  together with generated nominal exact single-entity and single-relation
+  CRUD/count, homogeneous atomic mutation batches, and closed typed role-player
+  unions. The same internal boundary includes a
   generated nominal typed-query facade, reductions, schema-function calls, and
   caller-owned remote transport over Rust-owned query semantics. Its chunked
   package resources and streaming create builder keep generated objects within
-  the hosted C11 portability floors. C is not yet a supported SDK or release
-  artifact.
+  the hosted C11 portability floors. Ordered C-v3 packages select this successor
+  surface, but exact TypeDB 3.12.1 live acceptance leaves ordered attributes and
+  ordered role-player lists empty and makes no list-instance evidence claim. C
+  is not yet a supported SDK or release artifact.
 - Generated files are projections of canonical schema authority and must not be
   edited by hand.
 - Separately retained V1 query surfaces stay available unless an exact future

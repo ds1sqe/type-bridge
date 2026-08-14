@@ -83,23 +83,26 @@ Cargo package index:
 | --- | --- | --- |
 | `type-bridge-core` | PyO3 native engine for the Python product | Private Cargo crate; shipped inside Python artifacts |
 | `type-bridge-node` | N-API native engine for the TypeScript/Node product | Private Cargo crate; shipped inside npm artifacts |
-| `type-bridge-c` | ABI 1.3 projected-value, provider-lifecycle, and typed-query foundation for generated C | Internal foundation under development; not published or packaged |
+| `type-bridge-c` | ABI 1.4 projected-value, provider-lifecycle, typed-query, and atomic-batch foundation for generated C | Internal foundation under development; not published or packaged |
 
 The C entry is not a support claim. The internal ABI now covers verified schema
 packages, projected values/models, synchronous runtime, an exact-TypeDB-3.12.1
 database connection, distinct read/write transactions, cancellation, and
 classified commit outcomes, plus generated nominal exact single-entity and
-single-relation CRUD/count with closed typed role-player unions. ABI 1.3 also
-includes the internal generated nominal typed-query, reduction,
-schema-function, and caller-owned remote-transport facade, plus chunked
-schema-package resources and a streaming create builder so generated C objects
-remain within the hosted C11 portability floors. Multi-endpoint connection
-policy and the support/distribution contract remain incomplete before C can
-become a public SDK. The source workspace can emit the internal C schema package
-for development probes; that capability is not described as part of the linked
-2.1.0 crates.io artifact.
+single-relation CRUD/count with closed typed role-player unions. ABI 1.4 also
+includes typed flat and chunked schema-package admission, policy-aware database
+and transaction entries, homogeneous atomic mutation batches, and the internal
+generated nominal typed-query, reduction, schema-function, and caller-owned
+remote-transport facade. Chunked schema-package resources and a streaming create
+builder keep generated C objects within the hosted C11 portability floors.
+Ordered C-v3 live acceptance on exact TypeDB 3.12.1 leaves ordered values empty
+and does not claim list-instance evidence. Multi-endpoint connection policy and
+the support/distribution contract remain incomplete before C can become a public
+SDK. The source workspace can emit the internal C schema package for development
+probes; that capability is not described as part of the linked 2.1.0 crates.io
+artifact.
 
-The internal runtime CMake and pkg-config package version is `1.3.0`, the C ABI
+The internal runtime CMake and pkg-config package version is `1.4.0`, the C ABI
 version. It is intentionally distinct from the TypeBridge product version
 reported by `type_bridge_runtime_version` (`2.1.0` in this source line).
 

@@ -105,17 +105,19 @@ Do not add target-language schema declarations or a facade-local semantic
 implementation. Split-YAML is the only active authoring authority, and the Rust
 engine owns lowering and validation.
 
-The generated C package and ABI 1.3 currently carry verified schema/projection
-evidence, projected values/models, and synchronous runtime, exact-3.12.1
-database, read/write transaction, and cancellation handles, plus generated
-nominal exact single-entity and single-relation CRUD/count with closed typed
-role-player unions. The internal ABI also carries generated nominal typed-query,
-reduction, schema-function, and caller-owned remote-transport wrappers without
-duplicating Rust-owned query semantics. Chunked package resources and a
-streaming create builder bound large generated objects to the C11 hosted-
-implementation portability floors. This remains an internal development target,
-not a supported SDK or published artifact; multi-endpoint connection policy and
-a C distribution contract remain future work.
+The generated C package and ABI 1.4 currently carry verified flat/chunked
+schema/projection evidence, projected values/models, synchronous runtime,
+exact-3.12.1 policy-aware database/read/write transaction and cancellation
+handles, plus generated nominal exact single-entity and single-relation
+CRUD/count, homogeneous atomic mutation batches, and closed typed role-player
+unions. The internal ABI also carries generated nominal typed-query, reduction,
+schema-function, and caller-owned remote-transport wrappers without duplicating
+Rust-owned query semantics. Chunked package resources and a streaming create
+builder bound large generated objects to the C11 hosted-implementation
+portability floors. Exact TypeDB 3.12.1 acceptance leaves ordered values empty
+and makes no live list-instance evidence claim. This remains an internal
+development target, not a supported SDK or published artifact; multi-endpoint
+connection policy and a C distribution contract remain future work.
 
 ## Logging and debugging
 

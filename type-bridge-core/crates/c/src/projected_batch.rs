@@ -240,7 +240,7 @@ fn check_row_ranges(
 }
 
 impl TypeBridgeProjectedBatchBuilder {
-    fn check_borrowed_ranges(
+    pub(crate) fn check_borrowed_ranges(
         &self,
         preflight: &DirectOutputPreflight,
     ) -> Result<(), TypeBridgeStatus> {
@@ -258,7 +258,7 @@ impl TypeBridgeProjectedBatchBuilder {
 }
 
 impl TypeBridgeProjectedBatch {
-    fn check_borrowed_ranges(
+    pub(crate) fn check_borrowed_ranges(
         &self,
         preflight: &DirectOutputPreflight,
     ) -> Result<(), TypeBridgeStatus> {
@@ -279,7 +279,7 @@ impl TypeBridgeProjectedBatch {
 }
 
 impl TypeBridgeProjectedBatchResult {
-    fn check_borrowed_ranges(
+    pub(crate) fn check_borrowed_ranges(
         &self,
         preflight: &DirectOutputPreflight,
     ) -> Result<(), TypeBridgeStatus> {
@@ -637,7 +637,8 @@ fn validate_result_fence(
     Ok(())
 }
 
-/// Open one exact-model projected batch builder without activating an ABI export.
+/// Open one exact-model projected batch builder.
+#[unsafe(export_name = "type_bridge_projected_batch_builder_open_v1")]
 pub(crate) unsafe extern "C" fn type_bridge_projected_batch_builder_open_v1_impl(
     package: *const TypeBridgeSchemaPackage,
     model: *const TypeBridgeProjectedTokenV1,
@@ -725,7 +726,8 @@ pub(crate) unsafe extern "C" fn type_bridge_projected_batch_builder_open_v1_impl
     })
 }
 
-/// Add one copied row without activating an ABI export.
+/// Add one copied row.
+#[unsafe(export_name = "type_bridge_projected_batch_builder_add_v1")]
 pub(crate) unsafe extern "C" fn type_bridge_projected_batch_builder_add_v1_impl(
     builder: *mut TypeBridgeProjectedBatchBuilder,
     iid: TypeBridgeByteView,
@@ -788,7 +790,8 @@ pub(crate) unsafe extern "C" fn type_bridge_projected_batch_builder_add_v1_impl(
     })
 }
 
-/// Recoverably finish one builder without activating an ABI export.
+/// Recoverably finish one builder.
+#[unsafe(export_name = "type_bridge_projected_batch_builder_finish")]
 pub(crate) unsafe extern "C" fn type_bridge_projected_batch_builder_finish_impl(
     builder: *mut *mut TypeBridgeProjectedBatchBuilder,
     out_batch: *mut *mut TypeBridgeProjectedBatch,
@@ -860,7 +863,8 @@ pub(crate) unsafe extern "C" fn type_bridge_projected_batch_builder_finish_impl(
     })
 }
 
-/// Close one builder without activating an ABI export.
+/// Close one builder.
+#[unsafe(export_name = "type_bridge_projected_batch_builder_close")]
 pub(crate) unsafe extern "C" fn type_bridge_projected_batch_builder_close_impl(
     builder: *mut *mut TypeBridgeProjectedBatchBuilder,
 ) -> TypeBridgeStatus {
@@ -868,7 +872,8 @@ pub(crate) unsafe extern "C" fn type_bridge_projected_batch_builder_close_impl(
     unsafe { close_box(builder) }
 }
 
-/// Close one immutable batch without activating an ABI export.
+/// Close one immutable batch.
+#[unsafe(export_name = "type_bridge_projected_batch_close")]
 pub(crate) unsafe extern "C" fn type_bridge_projected_batch_close_impl(
     batch: *mut *mut TypeBridgeProjectedBatch,
 ) -> TypeBridgeStatus {
@@ -1041,7 +1046,8 @@ unsafe fn execute_input_preflight(
     Ok(())
 }
 
-/// Execute one batch through an owned database transaction without activating an ABI export.
+/// Execute one batch through an owned database transaction.
+#[unsafe(export_name = "type_bridge_database_projected_batch_execute_v1")]
 pub(crate) unsafe extern "C" fn type_bridge_database_projected_batch_execute_v1_impl(
     database: *const TypeBridgeDatabase,
     batch: *const TypeBridgeProjectedBatch,
@@ -1097,7 +1103,8 @@ pub(crate) unsafe extern "C" fn type_bridge_database_projected_batch_execute_v1_
     }
 }
 
-/// Execute one batch through a borrowed write transaction without activating an ABI export.
+/// Execute one batch through a borrowed write transaction.
+#[unsafe(export_name = "type_bridge_write_transaction_projected_batch_execute_v1")]
 pub(crate) unsafe extern "C" fn type_bridge_write_transaction_projected_batch_execute_v1_impl(
     transaction: *const TypeBridgeWriteTransaction,
     batch: *const TypeBridgeProjectedBatch,
@@ -1157,7 +1164,8 @@ pub(crate) unsafe extern "C" fn type_bridge_write_transaction_projected_batch_ex
     }
 }
 
-/// Return the immutable input cardinality without activating an ABI export.
+/// Return the immutable input cardinality.
+#[unsafe(export_name = "type_bridge_projected_batch_result_count")]
 pub(crate) unsafe extern "C" fn type_bridge_projected_batch_result_count_impl(
     result: *const TypeBridgeProjectedBatchResult,
     expected_model: *const TypeBridgeProjectedTokenV1,
@@ -1199,7 +1207,8 @@ pub(crate) unsafe extern "C" fn type_bridge_projected_batch_result_count_impl(
     })
 }
 
-/// Clone one projected result thing without activating an ABI export.
+/// Clone one projected result thing.
+#[unsafe(export_name = "type_bridge_projected_batch_result_thing_at")]
 pub(crate) unsafe extern "C" fn type_bridge_projected_batch_result_thing_at_impl(
     result: *const TypeBridgeProjectedBatchResult,
     expected_model: *const TypeBridgeProjectedTokenV1,
@@ -1258,7 +1267,8 @@ pub(crate) unsafe extern "C" fn type_bridge_projected_batch_result_thing_at_impl
     })
 }
 
-/// Close one projected batch result without activating an ABI export.
+/// Close one projected batch result.
+#[unsafe(export_name = "type_bridge_projected_batch_result_close")]
 pub(crate) unsafe extern "C" fn type_bridge_projected_batch_result_close_impl(
     result: *mut *mut TypeBridgeProjectedBatchResult,
 ) -> TypeBridgeStatus {
@@ -1266,8 +1276,7 @@ pub(crate) unsafe extern "C" fn type_bridge_projected_batch_result_close_impl(
     unsafe { close_box(result) }
 }
 
-// Keep the complete dormant ABI contract compiler-checked in production
-// builds before the atomic extension-header/export activation.
+// Keep the complete ABI contract compiler-checked in production builds.
 const _: unsafe extern "C" fn(
     *const TypeBridgeSchemaPackage,
     *const TypeBridgeProjectedTokenV1,
@@ -1359,6 +1368,11 @@ mod tests {
     use crate::allocation::{AllocationSite, inject_failure};
     use crate::entity_crud::tests::{
         byte_view, close_diagnostics, close_thing, diagnostic, model_token,
+    };
+    use crate::generated_preflight::{
+        GENERATED_INPUT_PROJECTED_BATCH, GENERATED_INPUT_PROJECTED_BATCH_BUILDER,
+        GENERATED_INPUT_PROJECTED_BATCH_RESULT, TypeBridgeGeneratedOpaqueInputV1,
+        TypeBridgeGeneratedOutputRangeV1, type_bridge_generated_opaque_alias_preflight_v1,
     };
     use crate::runtime::{
         type_bridge_cancellation_close, type_bridge_cancellation_open,
@@ -1873,6 +1887,33 @@ plays:
             TypeBridgeStatus::Ok
         );
         assert!(result.is_null());
+    }
+
+    fn generated_batch_preflight(
+        kind: u32,
+        pointer: *const c_void,
+        count: usize,
+        output: *mut c_void,
+        output_length: usize,
+    ) -> TypeBridgeStatus {
+        let input = TypeBridgeGeneratedOpaqueInputV1 {
+            struct_size: size_of::<TypeBridgeGeneratedOpaqueInputV1>() as u32,
+            version: 1,
+            kind,
+            reserved0: 0,
+            pointer,
+            count,
+            reserved: [0; 4],
+        };
+        let output = TypeBridgeGeneratedOutputRangeV1 {
+            struct_size: size_of::<TypeBridgeGeneratedOutputRangeV1>() as u32,
+            version: 1,
+            pointer: output,
+            length: output_length,
+            reserved: [0; 4],
+        };
+        // SAFETY: the caller of this test helper retains every described range.
+        unsafe { type_bridge_generated_opaque_alias_preflight_v1(&input, 1, &output, 1) }
     }
 
     fn assert_result_and_close(
@@ -3062,6 +3103,210 @@ plays:
     }
 
     #[test]
+    fn generated_preflight_accepts_batch_kinds_and_fences_each_retained_graph() {
+        let package = make_package("batchgeneratedpreflight");
+        let token = model_token(&package, type_id(TypeKind::Entity));
+        let creates = [
+            create(&package, TypeKind::Entity, "alpha", "0x10"),
+            create(&package, TypeKind::Entity, "beta", "0x10"),
+        ];
+        let builder = open_builder(
+            &package,
+            &token,
+            ProjectedBatchOperation::Update,
+            ptr::null(),
+            ptr::null(),
+        );
+        for (ordinal, create) in creates.iter().enumerate() {
+            add_row(
+                builder,
+                ProjectedBatchOperation::Update,
+                &target_iid(TypeKind::Entity, ordinal),
+                &**create,
+            )
+            .unwrap();
+        }
+
+        let mut caller_output = 0xa5_u8;
+        assert_eq!(
+            generated_batch_preflight(
+                GENERATED_INPUT_PROJECTED_BATCH_BUILDER,
+                builder.cast(),
+                1,
+                (&mut caller_output as *mut u8).cast(),
+                1,
+            ),
+            TypeBridgeStatus::Ok,
+        );
+        let builder_last_byte = unsafe {
+            builder
+                .cast::<u8>()
+                .add(size_of::<TypeBridgeProjectedBatchBuilder>() - 1)
+                .cast()
+        };
+        assert_eq!(
+            generated_batch_preflight(
+                GENERATED_INPUT_PROJECTED_BATCH_BUILDER,
+                builder.cast(),
+                1,
+                builder_last_byte,
+                1,
+            ),
+            TypeBridgeStatus::InvalidArgument,
+        );
+        // SAFETY: this test exclusively owns the live builder and only borrows
+        // one retained IID for a read-only hostile output-range probe.
+        let builder_iid = match &unsafe { &*builder }.rows[0] {
+            ProjectedBatchRow::Update { iid, .. } => iid,
+            _ => panic!("update builder retained the wrong row form"),
+        };
+        assert_eq!(
+            generated_batch_preflight(
+                GENERATED_INPUT_PROJECTED_BATCH_BUILDER,
+                builder.cast(),
+                1,
+                builder_iid.as_ptr().cast_mut().cast(),
+                1,
+            ),
+            TypeBridgeStatus::InvalidArgument,
+        );
+        assert_eq!(
+            generated_batch_preflight(
+                37,
+                builder.cast(),
+                1,
+                (&mut caller_output as *mut u8).cast(),
+                1,
+            ),
+            TypeBridgeStatus::InvalidArgument,
+        );
+        assert_eq!(
+            generated_batch_preflight(
+                GENERATED_INPUT_PROJECTED_BATCH_BUILDER,
+                builder.cast(),
+                2,
+                (&mut caller_output as *mut u8).cast(),
+                1,
+            ),
+            TypeBridgeStatus::InvalidArgument,
+        );
+
+        let (mut batch, consumed_builder) = finish_builder(builder);
+        assert!(consumed_builder.is_null());
+        assert_eq!(
+            generated_batch_preflight(
+                GENERATED_INPUT_PROJECTED_BATCH,
+                batch.cast(),
+                1,
+                (&mut caller_output as *mut u8).cast(),
+                1,
+            ),
+            TypeBridgeStatus::Ok,
+        );
+        let batch_last_byte = unsafe {
+            batch
+                .cast::<u8>()
+                .add(size_of::<TypeBridgeProjectedBatch>() - 1)
+                .cast()
+        };
+        assert_eq!(
+            generated_batch_preflight(
+                GENERATED_INPUT_PROJECTED_BATCH,
+                batch.cast(),
+                1,
+                batch_last_byte,
+                1,
+            ),
+            TypeBridgeStatus::InvalidArgument,
+        );
+        // SAFETY: the immutable batch remains live for this read-only nested probe.
+        let (_, batch_row) = unsafe { &*batch }
+            .value
+            .row_at(0)
+            .expect("finished update batch retains its first row");
+        let batch_iid = match batch_row {
+            ProjectedBatchRow::Update { iid, .. } => iid,
+            _ => panic!("finished update batch retained the wrong row form"),
+        };
+        assert_eq!(
+            generated_batch_preflight(
+                GENERATED_INPUT_PROJECTED_BATCH,
+                batch.cast(),
+                1,
+                batch_iid.as_ptr().cast_mut().cast(),
+                1,
+            ),
+            TypeBridgeStatus::InvalidArgument,
+        );
+
+        let (database, _) = make_database(
+            &package,
+            responses(TypeKind::Entity, ProjectedBatchOperation::Update),
+            CommitBehavior::Success,
+            None,
+        );
+        let mut result = ptr::dangling_mut();
+        let mut diagnostics = ptr::dangling_mut();
+        assert_eq!(
+            // SAFETY: every retained input and both outputs are live and disjoint.
+            unsafe {
+                type_bridge_database_projected_batch_execute_v1_impl(
+                    &*database,
+                    batch,
+                    ptr::null(),
+                    ptr::null(),
+                    &mut result,
+                    &mut diagnostics,
+                )
+            },
+            TypeBridgeStatus::Ok,
+        );
+        assert!(diagnostics.is_null());
+        assert_eq!(
+            generated_batch_preflight(
+                GENERATED_INPUT_PROJECTED_BATCH_RESULT,
+                result.cast(),
+                1,
+                (&mut caller_output as *mut u8).cast(),
+                1,
+            ),
+            TypeBridgeStatus::Ok,
+        );
+        let result_last_byte = unsafe {
+            result
+                .cast::<u8>()
+                .add(size_of::<TypeBridgeProjectedBatchResult>() - 1)
+                .cast()
+        };
+        assert_eq!(
+            generated_batch_preflight(
+                GENERATED_INPUT_PROJECTED_BATCH_RESULT,
+                result.cast(),
+                1,
+                result_last_byte,
+                1,
+            ),
+            TypeBridgeStatus::InvalidArgument,
+        );
+        // SAFETY: the immutable result remains live for this read-only nested probe.
+        let result_iid = unsafe { &*result }.things[0].iid();
+        assert_eq!(
+            generated_batch_preflight(
+                GENERATED_INPUT_PROJECTED_BATCH_RESULT,
+                result.cast(),
+                1,
+                result_iid.as_ptr().cast_mut().cast(),
+                1,
+            ),
+            TypeBridgeStatus::InvalidArgument,
+        );
+        assert_eq!(caller_output, 0xa5);
+
+        close_result(&mut result);
+        close_batch(&mut batch);
+    }
+
+    #[test]
     fn private_adapter_operation_tags_are_exact_and_closed() {
         assert_eq!(
             operation_to_c(ProjectedBatchOperation::Insert),
@@ -3090,10 +3335,31 @@ plays:
     }
 
     #[test]
-    fn source_keeps_all_ten_adapter_entries_private_until_atomic_activation() {
+    fn source_activates_exactly_the_ten_compiler_anchored_batch_entries() {
         let source = include_str!("projected_batch.rs");
-        let marker = ["unsafe", "(no_mangle)"].concat();
-        assert!(!source.contains(&marker));
+        for name in [
+            "type_bridge_projected_batch_builder_open_v1",
+            "type_bridge_projected_batch_builder_add_v1",
+            "type_bridge_projected_batch_builder_finish",
+            "type_bridge_projected_batch_builder_close",
+            "type_bridge_projected_batch_close",
+            "type_bridge_database_projected_batch_execute_v1",
+            "type_bridge_write_transaction_projected_batch_execute_v1",
+            "type_bridge_projected_batch_result_count",
+            "type_bridge_projected_batch_result_thing_at",
+            "type_bridge_projected_batch_result_close",
+        ] {
+            assert!(
+                source.contains(&format!("#[unsafe(export_name = \"{name}\")]")),
+                "missing exact projected-batch export {name}",
+            );
+        }
+        assert_eq!(
+            source
+                .matches("#[unsafe(export_name = \"type_bridge_")
+                .count(),
+            10
+        );
         assert_eq!(
             source
                 .matches("pub(crate) unsafe extern \"C\" fn type_bridge_")

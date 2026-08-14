@@ -542,7 +542,8 @@ unsafe fn count_impl(
 }
 
 macro_rules! define_database_create {
-    ($name:ident, $kind:expr, $operation:expr) => {
+    ($name:ident, $export_name:literal, $kind:expr, $operation:expr) => {
+        #[unsafe(export_name = $export_name)]
         pub(crate) unsafe extern "C" fn $name(
             database: *const TypeBridgeDatabase,
             model: *const TypeBridgeProjectedTokenV1,
@@ -580,7 +581,8 @@ macro_rules! define_database_create {
 }
 
 macro_rules! define_write_transaction_create {
-    ($name:ident, $kind:expr, $operation:expr) => {
+    ($name:ident, $export_name:literal, $kind:expr, $operation:expr) => {
+        #[unsafe(export_name = $export_name)]
         pub(crate) unsafe extern "C" fn $name(
             transaction: *const TypeBridgeWriteTransaction,
             model: *const TypeBridgeProjectedTokenV1,
@@ -618,7 +620,8 @@ macro_rules! define_write_transaction_create {
 }
 
 macro_rules! define_update {
-    ($name:ident, $kind:expr, $target_type:ty, $target:ident) => {
+    ($name:ident, $export_name:literal, $kind:expr, $target_type:ty, $target:ident) => {
+        #[unsafe(export_name = $export_name)]
         pub(crate) unsafe extern "C" fn $name(
             target: *const $target_type,
             model: *const TypeBridgeProjectedTokenV1,
@@ -658,7 +661,8 @@ macro_rules! define_update {
 }
 
 macro_rules! define_get {
-    ($name:ident, $kind:expr, $target_type:ty, $target:ident) => {
+    ($name:ident, $export_name:literal, $kind:expr, $target_type:ty, $target:ident) => {
+        #[unsafe(export_name = $export_name)]
         pub(crate) unsafe extern "C" fn $name(
             target: *const $target_type,
             model: *const TypeBridgeProjectedTokenV1,
@@ -695,7 +699,8 @@ macro_rules! define_get {
 }
 
 macro_rules! define_delete {
-    ($name:ident, $kind:expr, $target_type:ty, $target:ident) => {
+    ($name:ident, $export_name:literal, $kind:expr, $target_type:ty, $target:ident) => {
+        #[unsafe(export_name = $export_name)]
         pub(crate) unsafe extern "C" fn $name(
             target: *const $target_type,
             model: *const TypeBridgeProjectedTokenV1,
@@ -729,7 +734,8 @@ macro_rules! define_delete {
 }
 
 macro_rules! define_count {
-    ($name:ident, $kind:expr, $target_type:ty, $target:ident) => {
+    ($name:ident, $export_name:literal, $kind:expr, $target_type:ty, $target:ident) => {
+        #[unsafe(export_name = $export_name)]
         pub(crate) unsafe extern "C" fn $name(
             target: *const $target_type,
             model: *const TypeBridgeProjectedTokenV1,
@@ -764,80 +770,94 @@ macro_rules! define_count {
 
 define_database_create!(
     type_bridge_database_entity_insert_v2_impl,
+    "type_bridge_database_entity_insert_v2",
     CrudKind::Entity,
     CreateOperation::Insert
 );
 define_database_create!(
     type_bridge_database_entity_put_v2_impl,
+    "type_bridge_database_entity_put_v2",
     CrudKind::Entity,
     CreateOperation::Put
 );
 define_get!(
     type_bridge_database_entity_get_by_iid_v2_impl,
+    "type_bridge_database_entity_get_by_iid_v2",
     CrudKind::Entity,
     TypeBridgeDatabase,
     Database
 );
 define_update!(
     type_bridge_database_entity_update_v2_impl,
+    "type_bridge_database_entity_update_v2",
     CrudKind::Entity,
     TypeBridgeDatabase,
     Database
 );
 define_delete!(
     type_bridge_database_entity_delete_by_iid_v2_impl,
+    "type_bridge_database_entity_delete_by_iid_v2",
     CrudKind::Entity,
     TypeBridgeDatabase,
     Database
 );
 define_count!(
     type_bridge_database_entity_count_v2_impl,
+    "type_bridge_database_entity_count_v2",
     CrudKind::Entity,
     TypeBridgeDatabase,
     Database
 );
 define_get!(
     type_bridge_read_transaction_entity_get_by_iid_v2_impl,
+    "type_bridge_read_transaction_entity_get_by_iid_v2",
     CrudKind::Entity,
     TypeBridgeReadTransaction,
     ReadTransaction
 );
 define_count!(
     type_bridge_read_transaction_entity_count_v2_impl,
+    "type_bridge_read_transaction_entity_count_v2",
     CrudKind::Entity,
     TypeBridgeReadTransaction,
     ReadTransaction
 );
 define_write_transaction_create!(
     type_bridge_write_transaction_entity_insert_v2_impl,
+    "type_bridge_write_transaction_entity_insert_v2",
     CrudKind::Entity,
     CreateOperation::Insert
 );
 define_write_transaction_create!(
     type_bridge_write_transaction_entity_put_v2_impl,
+    "type_bridge_write_transaction_entity_put_v2",
     CrudKind::Entity,
     CreateOperation::Put
 );
 define_get!(
     type_bridge_write_transaction_entity_get_by_iid_v2_impl,
+    "type_bridge_write_transaction_entity_get_by_iid_v2",
     CrudKind::Entity,
     TypeBridgeWriteTransaction,
     WriteTransaction
 );
 define_update!(
     type_bridge_write_transaction_entity_update_v2_impl,
+    "type_bridge_write_transaction_entity_update_v2",
     CrudKind::Entity,
     TypeBridgeWriteTransaction,
     Transaction
 );
 define_delete!(
     type_bridge_write_transaction_entity_delete_by_iid_v2_impl,
+    "type_bridge_write_transaction_entity_delete_by_iid_v2",
     CrudKind::Entity,
     TypeBridgeWriteTransaction,
     Transaction
 );
 define_count!(
     type_bridge_write_transaction_entity_count_v2_impl,
+    "type_bridge_write_transaction_entity_count_v2",
     CrudKind::Entity,
     TypeBridgeWriteTransaction,
     WriteTransaction
@@ -845,80 +865,94 @@ define_count!(
 
 define_database_create!(
     type_bridge_database_relation_insert_v2_impl,
+    "type_bridge_database_relation_insert_v2",
     CrudKind::Relation,
     CreateOperation::Insert
 );
 define_database_create!(
     type_bridge_database_relation_put_v2_impl,
+    "type_bridge_database_relation_put_v2",
     CrudKind::Relation,
     CreateOperation::Put
 );
 define_get!(
     type_bridge_database_relation_get_by_iid_v2_impl,
+    "type_bridge_database_relation_get_by_iid_v2",
     CrudKind::Relation,
     TypeBridgeDatabase,
     Database
 );
 define_update!(
     type_bridge_database_relation_update_v2_impl,
+    "type_bridge_database_relation_update_v2",
     CrudKind::Relation,
     TypeBridgeDatabase,
     Database
 );
 define_delete!(
     type_bridge_database_relation_delete_by_iid_v2_impl,
+    "type_bridge_database_relation_delete_by_iid_v2",
     CrudKind::Relation,
     TypeBridgeDatabase,
     Database
 );
 define_count!(
     type_bridge_database_relation_count_v2_impl,
+    "type_bridge_database_relation_count_v2",
     CrudKind::Relation,
     TypeBridgeDatabase,
     Database
 );
 define_get!(
     type_bridge_read_transaction_relation_get_by_iid_v2_impl,
+    "type_bridge_read_transaction_relation_get_by_iid_v2",
     CrudKind::Relation,
     TypeBridgeReadTransaction,
     ReadTransaction
 );
 define_count!(
     type_bridge_read_transaction_relation_count_v2_impl,
+    "type_bridge_read_transaction_relation_count_v2",
     CrudKind::Relation,
     TypeBridgeReadTransaction,
     ReadTransaction
 );
 define_write_transaction_create!(
     type_bridge_write_transaction_relation_insert_v2_impl,
+    "type_bridge_write_transaction_relation_insert_v2",
     CrudKind::Relation,
     CreateOperation::Insert
 );
 define_write_transaction_create!(
     type_bridge_write_transaction_relation_put_v2_impl,
+    "type_bridge_write_transaction_relation_put_v2",
     CrudKind::Relation,
     CreateOperation::Put
 );
 define_get!(
     type_bridge_write_transaction_relation_get_by_iid_v2_impl,
+    "type_bridge_write_transaction_relation_get_by_iid_v2",
     CrudKind::Relation,
     TypeBridgeWriteTransaction,
     WriteTransaction
 );
 define_update!(
     type_bridge_write_transaction_relation_update_v2_impl,
+    "type_bridge_write_transaction_relation_update_v2",
     CrudKind::Relation,
     TypeBridgeWriteTransaction,
     Transaction
 );
 define_delete!(
     type_bridge_write_transaction_relation_delete_by_iid_v2_impl,
+    "type_bridge_write_transaction_relation_delete_by_iid_v2",
     CrudKind::Relation,
     TypeBridgeWriteTransaction,
     Transaction
 );
 define_count!(
     type_bridge_write_transaction_relation_count_v2_impl,
+    "type_bridge_write_transaction_relation_count_v2",
     CrudKind::Relation,
     TypeBridgeWriteTransaction,
     WriteTransaction

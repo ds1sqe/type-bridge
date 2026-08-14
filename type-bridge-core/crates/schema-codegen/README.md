@@ -1,9 +1,9 @@
 # type-bridge-schema-codegen
 
-Deterministic Python, TypeScript, and Rust package emitters over validated,
-binding-neutral TypeBridge model projections. It is a supporting generator
-crate; application code should run `type-bridge schema generate` and consume
-the generated package rather than constructing emitters itself.
+Deterministic Python, TypeScript, Rust, and internal C package emitters over
+validated, binding-neutral TypeBridge model projections. It is a supporting
+generator crate; application code should run `type-bridge schema generate` and
+consume the generated package rather than constructing emitters itself.
 
 ## Dependency
 
@@ -12,10 +12,18 @@ the generated package rather than constructing emitters itself.
 type-bridge-schema-codegen = "2.1.0"
 ```
 
-Generator integrations begin with `PythonEmitter`, `TypeScriptEmitter`, or
-`RustEmitter` from the [crate API](https://docs.rs/type-bridge-schema-codegen/2.1.0).
-Only pass projections produced by the canonical schema engine, and write every
-file in the returned `GeneratedPackage` as one atomic generation operation.
+Generator integrations begin with `PythonEmitter`, `TypeScriptEmitter`,
+`RustEmitter`, or the internal `CEmitter` from the
+[crate API](https://docs.rs/type-bridge-schema-codegen/2.1.0). Only pass
+projections produced by the canonical schema engine, and write every file in
+the returned `GeneratedPackage` as one atomic generation operation.
+
+The C emitter feature-selects its compatibility surface. Unordered C-v2
+packages retain their five generated files byte-for-byte, including ABI 1.3
+descriptor and dependency metadata. Ordered C-v3 packages include the additive
+ABI 1.4 header and emit policy-aware nominal CRUD and operation-branded batch
+wrappers. The C package remains an unpublished, unsupported foundation until
+the C SDK plans are complete.
 
 This crate has no optional features. It is released in lockstep with TypeBridge
 2.1.0 and requires Rust 1.88+. Generated runtime packages follow the TypeBridge
