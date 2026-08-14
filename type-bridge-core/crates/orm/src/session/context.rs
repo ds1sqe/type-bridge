@@ -2,11 +2,11 @@
 
 use std::sync::Arc;
 
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, OwnedMutexGuard};
 
 use super::backend::{
     AnswerConsumer, BoundedAnswerLimits, BoundedAnswerStats, GivenRowsSpec, QueryResult,
-    TransactionOps, TxType,
+    QueryV2AnswerLimits, TransactionOps, TxType,
 };
 use super::database::DatabaseExecutionIdentity;
 use crate::_registry::DescriptorRegistry;
@@ -80,6 +80,103 @@ pub struct TransactionContext {
     execution_identity: DatabaseExecutionIdentity,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MutationLeasePhase {
+    PreDispatch,
+    PossibleEffect,
+    Finished,
+}
+
+/// Private exclusive transaction lease for one common atomic mutation.
+///
+/// Holding the owned guard keeps ordinary queries and lifecycle transitions on
+/// every context clone behind the same mutex for the whole multi-statement
+/// operation. The type deliberately has no public re-export: the first and
+/// only consumer is the common projected batch executor.
+pub(crate) struct TransactionContextMutationLease {
+    inner: OwnedMutexGuard<TransactionContextInner>,
+    phase: MutationLeasePhase,
+    exact_failure: Option<SdkExecutionDiagnostic>,
+}
+
+impl TransactionContextMutationLease {
+    fn transaction(&mut self) -> Result<&mut Box<dyn TransactionOps>> {
+        active_transaction(&mut self.inner)
+    }
+
+    /// Execute a bounded scalar-`given` prerequisite while retaining the
+    /// exclusive lifecycle fence. This does not arm rollback-only because no
+    /// mutation has yet been dispatched.
+    pub(crate) async fn query_v2_with_rows_bounded(
+        &mut self,
+        typeql: &str,
+        rows: GivenRowsSpec,
+        limits: QueryV2AnswerLimits,
+        consumer: &mut dyn AnswerConsumer,
+    ) -> Result<BoundedAnswerStats> {
+        if self.phase != MutationLeasePhase::PreDispatch {
+            return Err(OrmError::Transaction(
+                "Mutation prerequisites must precede mutation dispatch".into(),
+            ));
+        }
+        self.transaction()?
+            .query_v2_with_rows_bounded(typeql, rows, limits, consumer)
+            .await
+    }
+
+    /// Arm the cancellation-safe poison latch synchronously, then dispatch one
+    /// bounded mutation. Every later provider call remains inside the armed
+    /// lease through complete hydration and output construction.
+    pub(crate) async fn mutate_v2_with_rows_bounded(
+        &mut self,
+        typeql: &str,
+        rows: GivenRowsSpec,
+        limits: QueryV2AnswerLimits,
+        consumer: &mut dyn AnswerConsumer,
+    ) -> Result<BoundedAnswerStats> {
+        if self.phase == MutationLeasePhase::Finished {
+            return Err(OrmError::Transaction(
+                "Completed mutation lease cannot dispatch provider work".into(),
+            ));
+        }
+        if self.phase == MutationLeasePhase::PreDispatch {
+            self.phase = MutationLeasePhase::PossibleEffect;
+        }
+        self.transaction()?
+            .query_v2_with_rows_bounded(typeql, rows, limits, consumer)
+            .await
+    }
+
+    /// Retain the first exact redacted failure observed after mutation became
+    /// possible. It supersedes the interruption fallback used only by Drop.
+    pub(crate) fn record_failure(&mut self, diagnostic: &SdkExecutionDiagnostic) {
+        if self.phase == MutationLeasePhase::PossibleEffect && self.exact_failure.is_none() {
+            self.exact_failure = Some(diagnostic.clone());
+        }
+    }
+
+    /// Mark a fully hydrated, fully reserved borrowed result reusable.
+    pub(crate) fn complete_success(mut self) {
+        self.phase = MutationLeasePhase::Finished;
+    }
+}
+
+impl Drop for TransactionContextMutationLease {
+    fn drop(&mut self) {
+        if self.phase != MutationLeasePhase::PossibleEffect
+            || self.inner.state != TransactionContextState::Active
+        {
+            return;
+        }
+        self.inner.state = TransactionContextState::RollbackOnly;
+        self.inner.rollback_only_cause = Some(
+            self.exact_failure
+                .clone()
+                .unwrap_or_else(SdkExecutionDiagnostic::internal_failure),
+        );
+    }
+}
+
 impl TransactionContext {
     pub(crate) fn new(
         inner: Box<dyn TransactionOps>,
@@ -103,6 +200,24 @@ impl TransactionContext {
 
     pub(crate) const fn execution_identity(&self) -> &DatabaseExecutionIdentity {
         &self.execution_identity
+    }
+
+    /// Acquire the private whole-mutation lifecycle fence.
+    pub(crate) async fn acquire_mutation_lease(&self) -> Result<TransactionContextMutationLease> {
+        if self.tx_type != TxType::Write {
+            return Err(OrmError::Transaction(
+                "Projected batch mutations require a write transaction".into(),
+            ));
+        }
+        let inner = Arc::clone(&self.inner).lock_owned().await;
+        if inner.state != TransactionContextState::Active || inner.transaction.is_none() {
+            return Err(consumed_error());
+        }
+        Ok(TransactionContextMutationLease {
+            inner,
+            phase: MutationLeasePhase::PreDispatch,
+            exact_failure: None,
+        })
     }
 
     /// Return the lifecycle state shared by all clones.
@@ -867,5 +982,104 @@ mod tests {
             TransactionContextState::Closed
         );
         assert_eq!(calls.closes.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn mutation_lease_predispatch_drop_and_completed_success_leave_active() {
+        let (context, _) = active_context();
+        drop(context.acquire_mutation_lease().await.unwrap());
+        assert_eq!(
+            context.lifecycle_state().await,
+            TransactionContextState::Active
+        );
+
+        context
+            .acquire_mutation_lease()
+            .await
+            .unwrap()
+            .complete_success();
+        assert_eq!(
+            context.lifecycle_state().await,
+            TransactionContextState::Active
+        );
+        assert!(context.rollback_only_cause().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn mutation_lease_possible_effect_drop_latches_first_exact_redacted_cause() {
+        let (context, _) = active_context();
+        let exact = SdkExecutionDiagnostic::provider_failure(SdkProviderOperation::Write);
+        {
+            let mut lease = context.acquire_mutation_lease().await.unwrap();
+            lease.phase = MutationLeasePhase::PossibleEffect;
+            lease.record_failure(&exact);
+            lease.record_failure(&SdkExecutionDiagnostic::internal_failure());
+        }
+        assert_eq!(
+            context.lifecycle_state().await,
+            TransactionContextState::RollbackOnly
+        );
+        assert_eq!(context.rollback_only_cause().await, Some(exact));
+    }
+
+    #[tokio::test]
+    async fn cancelled_or_panicking_armed_lease_synchronously_poison_clones() {
+        let (context, _) = active_context();
+        let entered = Arc::new(Notify::new());
+        let task = tokio::spawn({
+            let context = context.clone();
+            let entered = Arc::clone(&entered);
+            async move {
+                let mut lease = context.acquire_mutation_lease().await.unwrap();
+                lease.phase = MutationLeasePhase::PossibleEffect;
+                entered.notify_one();
+                pending::<()>().await;
+            }
+        });
+        entered.notified().await;
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert_eq!(
+            context.lifecycle_state().await,
+            TransactionContextState::RollbackOnly
+        );
+        assert_eq!(
+            context.rollback_only_cause().await.unwrap().code().as_str(),
+            "internal_failure"
+        );
+
+        let (context, _) = active_context();
+        let task = tokio::spawn({
+            let context = context.clone();
+            async move {
+                let mut lease = context.acquire_mutation_lease().await.unwrap();
+                lease.phase = MutationLeasePhase::PossibleEffect;
+                panic!("test panic while mutation effect is possible");
+            }
+        });
+        assert!(task.await.unwrap_err().is_panic());
+        assert_eq!(
+            context.lifecycle_state().await,
+            TransactionContextState::RollbackOnly
+        );
+    }
+
+    #[tokio::test]
+    async fn clone_commit_waits_for_the_same_mutation_mutex() {
+        let (context, calls) = active_context();
+        let lease = context.acquire_mutation_lease().await.unwrap();
+        let commit = tokio::spawn({
+            let context = context.clone();
+            async move { context.commit_sdk().await }
+        });
+        tokio::task::yield_now().await;
+        assert_eq!(calls.classified_commits.load(Ordering::SeqCst), 0);
+        drop(lease);
+        commit.await.unwrap().unwrap();
+        assert_eq!(calls.classified_commits.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            context.lifecycle_state().await,
+            TransactionContextState::Committed
+        );
     }
 }

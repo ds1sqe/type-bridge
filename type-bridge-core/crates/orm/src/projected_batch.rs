@@ -638,6 +638,18 @@ fn validate_row(
                 },
             ));
         }
+        if model.kind() == TypeKind::Relation
+            && !matches!(operation, ProjectedBatchOperation::Delete)
+            && create.roles().values().all(Vec::is_empty)
+        {
+            let mut path = row_path(ordinal);
+            path.push(SdkDiagnosticPathSegment::Type(model.clone()));
+            return Err(invalid(
+                "relation_requires_role_player",
+                "Projected relation writes require at least one final role player",
+                path,
+            ));
+        }
     }
     if let Some(iid) = row_iid(row)
         && !is_canonical_thing_iid(iid)
