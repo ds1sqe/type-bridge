@@ -6,8 +6,11 @@
 
 use std::future::Future;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
+use crate::match_runtime::py_sdk_diagnostic;
 use crate::version::VersionError;
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyString};
@@ -66,6 +69,39 @@ where
             });
         }
         drive_provider_future(runtime, future)
+    })
+}
+
+/// Drive one successor-batch future while a dedicated worker owns the GIL.
+///
+/// The callback and its root future are both created on the scoped worker.
+/// The worker acquires the GIL before the callback runs and does not release it
+/// until the callback, root future, and every interior unwind guard have been
+/// destroyed. The inert `T` crosses the worker-release/join interval and is
+/// observed only after the caller reacquires the GIL; consequently `T` must not
+/// require Python access or Python-visible drop side effects while unbound.
+/// This narrow helper is reserved for the Python-V2 many-operation adapter,
+/// whose provider path is native-only and whose Python facade publication must
+/// be linearized with the terminal owned commit.
+pub(crate) fn provider_block_on_with_gil<T, F>(
+    py: Python<'_>,
+    runtime: &ProviderRuntimeOwner,
+    operation: F,
+) -> T
+where
+    T: Send,
+    F: for<'py> FnOnce(Python<'py>) -> Pin<Box<dyn Future<Output = T> + 'py>> + Send,
+{
+    py.allow_threads(move || {
+        std::thread::scope(|scope| {
+            match scope
+                .spawn(move || Python::with_gil(|py| drive_provider_future(runtime, operation(py))))
+                .join()
+            {
+                Ok(output) => output,
+                Err(panic) => std::panic::resume_unwind(panic),
+            }
+        })
     })
 }
 
@@ -706,6 +742,7 @@ impl PyRustDatabase {
         Ok(PyRustTransactionContext {
             context,
             runtime: Arc::clone(&self.runtime),
+            successor_batch_invoked: Arc::new(AtomicBool::new(false)),
         })
     }
 }
@@ -715,11 +752,28 @@ impl PyRustDatabase {
 pub struct PyRustTransactionContext {
     context: TransactionContext,
     runtime: Arc<ProviderRuntimeOwner>,
+    successor_batch_invoked: Arc<AtomicBool>,
 }
 
 impl PyRustTransactionContext {
     pub(crate) fn handles(&self) -> (TransactionContext, Arc<ProviderRuntimeOwner>) {
         (self.context.clone(), Arc::clone(&self.runtime))
+    }
+
+    pub(crate) fn successor_batch_marker(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.successor_batch_invoked)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_parts_for_test(
+        context: TransactionContext,
+        runtime: Arc<ProviderRuntimeOwner>,
+    ) -> Self {
+        Self {
+            context,
+            runtime,
+            successor_batch_invoked: Arc::new(AtomicBool::new(false)),
+        }
     }
 }
 
@@ -758,7 +812,13 @@ impl PyRustTransactionContext {
 
     /// Commit this Rust transaction.
     fn commit(&self, py: Python<'_>) -> PyResult<()> {
-        provider_block_on(py, self.runtime.as_ref(), self.context.commit()).map_err(py_orm_error)
+        if self.successor_batch_invoked.load(Ordering::Acquire) {
+            provider_block_on(py, self.runtime.as_ref(), self.context.commit_sdk())
+                .map_err(py_sdk_diagnostic)
+        } else {
+            provider_block_on(py, self.runtime.as_ref(), self.context.commit())
+                .map_err(py_orm_error)
+        }
     }
 
     /// Roll back this Rust transaction.
@@ -2012,6 +2072,37 @@ mod provider_wait_tests {
     fn provider_block_on_survives_a_nested_multi_thread_runtime() {
         let outer = Runtime::new().expect("multi-thread host runtime should start");
         assert_provider_wait_survives_nested_runtime(outer);
+    }
+
+    fn assert_exclusive_gil_provider_wait_survives_nested_runtime(outer: Runtime) {
+        pyo3::prepare_freethreaded_python();
+        let output = outer.block_on(async {
+            let provider = ProviderRuntimeOwner::new().expect("provider runtime should start");
+            Python::with_gil(|py| {
+                provider_block_on_with_gil(py, &provider, |worker_py| {
+                    Box::pin(async move {
+                        let none = worker_py.None();
+                        assert!(none.bind(worker_py).is_none());
+                        43_u8
+                    })
+                })
+            })
+        });
+        assert_eq!(output, 43);
+    }
+
+    #[test]
+    fn exclusive_gil_provider_wait_survives_a_nested_current_thread_runtime() {
+        let outer = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("current-thread host runtime should start");
+        assert_exclusive_gil_provider_wait_survives_nested_runtime(outer);
+    }
+
+    #[test]
+    fn exclusive_gil_provider_wait_survives_a_nested_multi_thread_runtime() {
+        let outer = Runtime::new().expect("multi-thread host runtime should start");
+        assert_exclusive_gil_provider_wait_survives_nested_runtime(outer);
     }
 
     #[test]

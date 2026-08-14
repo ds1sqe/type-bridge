@@ -1,27 +1,37 @@
 //! Verified package-scoped runtime projections for generated Python models.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use pyo3::prelude::*;
+#[cfg(test)]
+use pyo3::types::PyWeakrefMethods;
 use pyo3::types::{
     PyAny, PyBool, PyBytes, PyCFunction, PyDict, PyFloat, PyInt, PyList, PyString, PyTuple, PyType,
-    PyWeakrefMethods, PyWeakrefReference,
+    PyWeakrefReference,
 };
 use pythonize::pythonize;
 use type_bridge_contract::codec::to_canonical_json;
+use type_bridge_contract::decimal::parse_decimal;
 use type_bridge_contract::id::{TypeId, TypeKind, is_canonical_thing_iid};
+use type_bridge_contract::limits::MAX_CANONICAL_STRING_BYTES;
 use type_bridge_contract::projection::{
     BindingTarget, ProjectedContainer, ProjectedModelForm, ProjectedModelUse,
     ProjectedMultiplicity, ProjectionConfig, RuntimeProjection,
 };
 use type_bridge_contract::projection_wire::decode_runtime_projection_verified;
 use type_bridge_contract::sdk_diagnostic::{
-    SdkDiagnosticCode, SdkDiagnosticMessage, SdkDiagnosticPathSegment, SdkExecutionDiagnostic,
-    SdkProjectionEvidenceSlotPresence,
+    SdkDiagnosticCode, SdkDiagnosticDetailValue, SdkDiagnosticMessage, SdkDiagnosticName,
+    SdkDiagnosticPathSegment, SdkExecutionDiagnostic, SdkProjectionEvidenceSlotPresence,
 };
-use type_bridge_contract::temporal::CanonicalDuration;
-use type_bridge_contract::value::ValueTypeTag;
+use type_bridge_contract::temporal::{
+    CanonicalDate, CanonicalDateTime, CanonicalDateTimeTz, CanonicalDuration, CanonicalTime,
+    TimeZoneDesignator,
+};
+use type_bridge_contract::value::{
+    CanonicalDouble, CanonicalString, CanonicalValue, DecimalValue, ValueTypeTag,
+};
 use type_bridge_core_lib::ast::{Clause, Constraint, Pattern, RolePlayer, Statement};
 use type_bridge_core_lib::compiler::QueryCompiler;
 use type_bridge_orm::_attribute::ValueType;
@@ -33,11 +43,16 @@ use type_bridge_orm::_dynamic::{
     DynamicRolePlayer, DynamicRolePlayerInput,
 };
 use type_bridge_orm::_manager::{DynamicEntityManager, DynamicRelationManager};
-use type_bridge_orm::session::{Database, TransactionContext};
+use type_bridge_orm::projected_batch::ProjectedBatchBindingBudget;
+use type_bridge_orm::session::{Database, TransactionContext, TransactionContextState};
 use type_bridge_orm::value::AttributeValue;
 use type_bridge_orm::{
-    HydratedAttribute, HydratedRolePlayer, HydratedThing, ProjectedAttributeValue, ProjectedCreate,
-    ProjectedCrudExecutor, ProjectedReference, ProjectedRolePlayer, ProjectedThing, ThingKind,
+    AnswerCancellation, HydratedAttribute, HydratedRolePlayer, HydratedThing,
+    ProjectedAttributeValue, ProjectedBatch, ProjectedBatchExecutor,
+    ProjectedBatchInvocationControl, ProjectedBatchOperation, ProjectedBatchResult,
+    ProjectedBatchRow, ProjectedCreate, ProjectedCreateBudget, ProjectedCrudExecutor,
+    ProjectedReference, ProjectedReferenceOrigin, ProjectedRolePlayer, ProjectedThing,
+    QueryExecutionResourceLimits, ThingKind,
 };
 use type_bridge_orm::{InstalledRuntimeProjection, ProviderRuntimeOwner};
 use type_bridge_schema::{decode_schema_authority, schema_authority_capability_vocabulary};
@@ -46,12 +61,16 @@ use type_bridge_schema_codegen::{PythonEmitter, verify_projection_evidence};
 use crate::match_runtime::{
     PyMatchSessionHandle, PyQueryCancellation, PyQueryExecutionResourceLimits, py_sdk_diagnostic,
 };
-use crate::orm_runtime::{PyRustDatabase, PyRustTransactionContext, provider_block_on};
+use crate::orm_runtime::{
+    PyRustDatabase, PyRustTransactionContext, provider_block_on, provider_block_on_with_gil,
+};
 use crate::validated_result_runtime::PyValidatedMatchThingHandle;
 
 struct RegisteredModel {
     complete: Py<PyType>,
     reference: Option<Py<PyType>>,
+    batch_slots: Option<Arc<ProjectedFacadeSlots>>,
+    batch_reference_slots: Option<Arc<ProjectedFacadeSlots>>,
 }
 
 struct InstalledPackage {
@@ -60,11 +79,73 @@ struct InstalledPackage {
     types_by_label: BTreeMap<String, TypeId>,
     facade_origins: FacadeOriginRegistry,
     named_zone_marker: Option<Py<PyType>>,
+    named_zone_slots: Option<ProjectedNamedZoneSlots>,
+    scalar_hydration: Option<ProjectedScalarHydration>,
+}
+
+struct ProjectedScalarHydration {
+    date_type: Py<PyType>,
+    datetime_type: Py<PyType>,
+    datetime_replace: PyObject,
+    tzinfo_key: PyObject,
+    timedelta_type: Py<PyType>,
+    timezone_type: Py<PyType>,
+    zoneinfo_type: Py<PyType>,
+    decimal_type: Py<PyType>,
+}
+
+struct ProjectedNamedZoneSlots {
+    class: Py<PyType>,
+    offset: ProjectedFacadeSlot,
+    zone: ProjectedFacadeSlot,
+    heap_allocator: Arc<ProjectedHeapAllocator>,
+    allocator: ProjectedNamedZoneAllocator,
+    trusted_mro: Vec<ProjectedTypeLayout>,
+}
+
+struct ProjectedHeapAllocator {
+    object_new: PyObject,
+    trusted_deallocator: usize,
+    trusted_constructor: usize,
+    trusted_free: usize,
+    trusted_traverse: usize,
+    trusted_clear: usize,
+    trusted_is_gc: usize,
+    trusted_gc_flags: std::ffi::c_ulong,
+}
+
+struct ProjectedNamedZoneAllocator {
+    constructor: PyObject,
+    trusted_constructor: usize,
+    base: Py<PyType>,
+}
+
+struct ProjectedTypeLayout {
+    class: Py<PyType>,
+    flags: std::ffi::c_ulong,
+    basicsize: isize,
+    itemsize: isize,
+    dictoffset: isize,
+    weakrefoffset: isize,
 }
 
 struct FacadeOriginEntry {
     facade: Py<PyWeakrefReference>,
+    active: Option<FacadeProjectionProof>,
+    pending: Option<PendingFacadeProof>,
+    retired: Option<ProjectedFacadeSnapshot>,
+}
+
+struct PendingFacadeProof {
+    token: u64,
     proof: FacadeProjectionProof,
+    retired: Option<ProjectedFacadeSnapshot>,
+}
+
+#[derive(Clone, Copy)]
+struct PendingFacadeActivation {
+    pointer: usize,
+    token: u64,
 }
 
 struct PreparedFacadeOrigin {
@@ -72,18 +153,331 @@ struct PreparedFacadeOrigin {
     facade: Py<PyWeakrefReference>,
 }
 
+impl PreparedFacadeOrigin {
+    fn clone_ref(&self, py: Python<'_>) -> Self {
+        Self {
+            pointer: self.pointer,
+            facade: self.facade.clone_ref(py),
+        }
+    }
+}
+
 struct ProjectedFacadeSnapshot {
     iid: PyObject,
     values: PyObject,
+}
+
+impl ProjectedFacadeSnapshot {
+    fn clone_ref(&self, py: Python<'_>) -> Self {
+        Self {
+            iid: self.iid.clone_ref(py),
+            values: self.values.clone_ref(py),
+        }
+    }
+}
+
+struct PreparedBatchFacade {
+    instance: PyObject,
+    origin: PreparedFacadeOrigin,
+    snapshot: ProjectedFacadeSnapshot,
+}
+
+struct StagedBatchFacade {
+    instance: PyObject,
+    snapshot: ProjectedFacadeSnapshot,
+}
+
+struct PendingFacadeOrigin {
+    origin: PreparedFacadeOrigin,
+    proof: FacadeProjectionProof,
+}
+
+struct StagedBatchHydration {
+    projected: Arc<ProjectedThing>,
+    _instance: PyObject,
+    replacement: ProjectedFacadeSnapshot,
+}
+
+struct PendingActivationGuard {
+    registry: FacadeOriginRegistry,
+    activations: Vec<PendingFacadeActivation>,
+    armed: bool,
+}
+
+struct BatchHydrationPoolState {
+    objects: Vec<PyObject>,
+    overflow: Option<PyObject>,
+    identities: HashSet<usize>,
+    limit: usize,
+    reserved: bool,
+}
+
+struct BatchHydrationPool {
+    state: Mutex<BatchHydrationPoolState>,
+}
+
+impl PendingActivationGuard {
+    fn new(
+        registry: FacadeOriginRegistry,
+        capacity: usize,
+    ) -> Result<Self, SdkExecutionDiagnostic> {
+        Ok(Self {
+            registry,
+            activations: reserved_binding_rows(capacity)?,
+            armed: true,
+        })
+    }
+
+    fn stage(
+        &mut self,
+        py: Python<'_>,
+        origin: PreparedFacadeOrigin,
+        proof: FacadeProjectionProof,
+        retired: Option<ProjectedFacadeSnapshot>,
+    ) -> PyResult<()> {
+        let activation = self.registry.stage(py, origin, proof, retired)?;
+        self.activations.push(activation);
+        Ok(())
+    }
+
+    fn into_activations(mut self) -> Vec<PendingFacadeActivation> {
+        self.armed = false;
+        std::mem::take(&mut self.activations)
+    }
+}
+
+impl BatchHydrationPool {
+    fn try_new(facades: &[StagedBatchFacade]) -> Result<Self, SdkExecutionDiagnostic> {
+        let mut identities = HashSet::new();
+        identities
+            .try_reserve(facades.len())
+            .map_err(|_| ProjectedBatch::binding_allocation_failure())?;
+        for facade in facades {
+            identities.insert(facade.instance.as_ptr() as usize);
+        }
+        Ok(Self {
+            state: Mutex::new(BatchHydrationPoolState {
+                objects: Vec::new(),
+                overflow: None,
+                identities,
+                limit: 0,
+                reserved: false,
+            }),
+        })
+    }
+
+    fn reserve_exact(&self, count: usize) -> Result<(), SdkExecutionDiagnostic> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.reserved {
+            return Err(SdkExecutionDiagnostic::internal_failure());
+        }
+        state
+            .objects
+            .try_reserve_exact(count)
+            .map_err(|_| ProjectedBatch::binding_allocation_failure())?;
+        state
+            .identities
+            .try_reserve(count)
+            .map_err(|_| ProjectedBatch::binding_allocation_failure())?;
+        state.limit = count;
+        state.reserved = true;
+        Ok(())
+    }
+
+    fn retain_fresh(&self, value: &Bound<'_, PyAny>, expected: &Bound<'_, PyType>) -> PyResult<()> {
+        let pointer = value.as_ptr() as usize;
+        // SAFETY: both objects are live under the GIL. Raw type identity does
+        // not create an owned Bound whose DECREF could occur under the pool
+        // mutex.
+        let exact = unsafe { pyo3::ffi::Py_TYPE(value.as_ptr()) } == expected.as_ptr().cast();
+        let retained = value.clone().unbind();
+        let unique = {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if !state.reserved || state.objects.len() >= state.limit {
+                if state.overflow.is_some() {
+                    fatal_batch_invariant(pyo3::ffi::c_str!(
+                        "projected hydration retained more than one overflow object"
+                    ));
+                }
+                state.overflow = Some(retained);
+                None
+            } else {
+                // Retain before validation: a hostile wrong-class or aliased
+                // result cannot deallocate until common rollback/poison and
+                // lease cleanup have completed on the outer worker frame.
+                state.objects.push(retained);
+                Some(state.identities.insert(pointer))
+            }
+        };
+        let Some(unique) = unique else {
+            return Err(py_runtime_error(
+                "projected hydration exceeded its prevalidated object forecast",
+            ));
+        };
+        if !exact {
+            return Err(py_runtime_error(
+                "trusted successor allocator returned the wrong exact class",
+            ));
+        }
+        if !unique {
+            return Err(py_runtime_error(
+                "trusted successor allocator returned an input or repeated object identity",
+            ));
+        }
+        Ok(())
+    }
+
+    fn verify_fully_consumed(&self) -> Result<(), SdkExecutionDiagnostic> {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !state.reserved || state.objects.len() != state.limit || state.overflow.is_some() {
+            return Err(SdkExecutionDiagnostic::internal_failure());
+        }
+        Ok(())
+    }
+}
+
+impl Drop for PendingActivationGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            self.registry.abort(&self.activations);
+        }
+    }
+}
+
+struct BatchPublicationGuard<'py> {
+    py: Python<'py>,
+    package: Arc<InstalledPackage>,
+    slots: Arc<ProjectedFacadeSlots>,
+    facades: Vec<PreparedBatchFacade>,
+    _hydrated: Vec<StagedBatchHydration>,
+    output: Option<PyObject>,
+    activations: Vec<PendingFacadeActivation>,
+    published: usize,
+    armed: bool,
+}
+
+struct SuccessorBatchGcGuard<'py> {
+    _py: Python<'py>,
+    restore_enabled: bool,
+}
+
+impl<'py> SuccessorBatchGcGuard<'py> {
+    fn disable(py: Python<'py>) -> Self {
+        // SAFETY: called only on the dedicated worker while it owns the GIL.
+        let restore_enabled = unsafe { pyo3::ffi::PyGC_Disable() } != 0;
+        Self {
+            _py: py,
+            restore_enabled,
+        }
+    }
+}
+
+impl Drop for SuccessorBatchGcGuard<'_> {
+    fn drop(&mut self) {
+        if self.restore_enabled {
+            // SAFETY: the guard is destroyed on the same worker under the GIL,
+            // after mapped executor cleanup and publication/rollback finish.
+            unsafe {
+                pyo3::ffi::PyGC_Enable();
+            }
+        } else {
+            // Restore an already-disabled caller state even if interior code
+            // accidentally enabled collection while the guard was active.
+            unsafe {
+                pyo3::ffi::PyGC_Disable();
+            }
+        }
+    }
+}
+
+enum BatchMappedOutput<'py> {
+    Empty(PyObject),
+    Publication(BatchPublicationGuard<'py>),
+}
+
+impl BatchMappedOutput<'_> {
+    fn finish(self) -> PyObject {
+        match self {
+            Self::Empty(output) => output,
+            Self::Publication(guard) => guard.finish(),
+        }
+    }
+}
+
+impl BatchPublicationGuard<'_> {
+    fn finish(mut self) -> PyObject {
+        self.package.facade_origins.activate(&self.activations);
+        self.armed = false;
+        self.output
+            .take()
+            .expect("a successful nonempty mapped batch retains its output list")
+    }
+}
+
+impl Drop for BatchPublicationGuard<'_> {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        for facade in self.facades.iter().take(self.published) {
+            self.slots
+                .replace_infallible(self.py, facade.instance.bind(self.py), &facade.snapshot);
+        }
+        self.package.facade_origins.abort(&self.activations);
+    }
+}
+
+struct ProjectedFacadeSlot {
+    name: &'static str,
+    descriptor: PyObject,
+    owner: Py<PyType>,
+    getter: pyo3::ffi::descrgetfunc,
+    setter: pyo3::ffi::descrsetfunc,
+}
+
+struct ProjectedFacadeSlots {
+    class: Py<PyType>,
+    values: ProjectedFacadeSlot,
+    iid: ProjectedFacadeSlot,
+    attribute_value: Option<ProjectedFacadeSlot>,
+    allocator: Arc<ProjectedHeapAllocator>,
+    trusted_mro: Vec<ProjectedTypeLayout>,
 }
 
 #[derive(Clone)]
 enum FacadeProjectionProof {
     Thing(Arc<ProjectedThing>),
     Reference(Arc<ProjectedReference>),
+    RolePlayer {
+        parent: Arc<ProjectedThing>,
+        role_ordinal: usize,
+        player_ordinal: usize,
+    },
 }
 
 impl FacadeProjectionProof {
+    fn retained_role_player(
+        parent: &ProjectedThing,
+        role_ordinal: usize,
+        player_ordinal: usize,
+    ) -> Result<&ProjectedRolePlayer, SdkExecutionDiagnostic> {
+        parent
+            .roles()
+            .values()
+            .nth(role_ordinal)
+            .and_then(|players| players.get(player_ordinal))
+            .ok_or_else(SdkExecutionDiagnostic::internal_failure)
+    }
+
     fn reference(
         &self,
         installed: &InstalledRuntimeProjection,
@@ -91,22 +485,106 @@ impl FacadeProjectionProof {
         match self {
             Self::Thing(thing) => thing.try_to_reference(installed),
             Self::Reference(reference) => Ok(reference.as_ref().clone()),
+            Self::RolePlayer {
+                parent,
+                role_ordinal,
+                player_ordinal,
+            } => {
+                let player =
+                    Self::retained_role_player(parent.as_ref(), *role_ordinal, *player_ordinal)?;
+                player.validate_for(installed)?;
+                Ok(player.reference().clone())
+            }
+        }
+    }
+
+    fn origin_carrier(&self) -> Result<Option<ProjectedReferenceOrigin>, SdkExecutionDiagnostic> {
+        match self {
+            Self::Thing(thing) => Ok(thing.origin_carrier()),
+            Self::Reference(reference) => Ok(reference.origin_carrier()),
+            Self::RolePlayer {
+                parent,
+                role_ordinal,
+                player_ordinal,
+            } => Ok(
+                Self::retained_role_player(parent.as_ref(), *role_ordinal, *player_ordinal)?
+                    .reference()
+                    .origin_carrier(),
+            ),
         }
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct FacadeOriginRegistry {
-    entries: Arc<Mutex<BTreeMap<usize, FacadeOriginEntry>>>,
+    entries: Arc<Mutex<HashMap<usize, FacadeOriginEntry>>>,
+    next_pending_token: Arc<AtomicU64>,
+    callback: Arc<PyObject>,
+}
+
+fn retained_weakref_target(
+    py: Python<'_>,
+    reference: &Bound<'_, PyWeakrefReference>,
+) -> Option<PyObject> {
+    let mut target = std::ptr::null_mut();
+    // SAFETY: the registry stores only exact live weakref.ReferenceType
+    // objects. PyWeakref_GetRef is Stable ABI and returns one owned target
+    // reference when the referent remains live.
+    match unsafe { pyo3::ffi::compat::PyWeakref_GetRef(reference.as_ptr(), &mut target) } {
+        0 => None,
+        1..=std::os::raw::c_int::MAX => {
+            // SAFETY: the successful call returned one owned reference.
+            Some(unsafe { PyObject::from_owned_ptr(py, target) })
+        }
+        _ => fatal_batch_invariant(pyo3::ffi::c_str!(
+            "projected facade registry retained an invalid weak reference"
+        )),
+    }
 }
 
 impl FacadeOriginRegistry {
-    fn retain_thing(&self, value: &Bound<'_, PyAny>, thing: Arc<ProjectedThing>) -> PyResult<()> {
-        let prepared = self.prepare(value)?;
-        self.install(prepared, FacadeProjectionProof::Thing(thing));
-        Ok(())
+    fn new(py: Python<'_>) -> PyResult<Self> {
+        let entries = Arc::new(Mutex::new(HashMap::<usize, FacadeOriginEntry>::new()));
+        let callback_entries = Arc::downgrade(&entries);
+        let callback =
+            PyCFunction::new_closure(py, None, None, move |args, _kwargs| -> PyResult<()> {
+                let Some(entries) = callback_entries.upgrade() else {
+                    return Ok(());
+                };
+                let expired = args.get_item(0)?;
+                let expired = expired.downcast::<PyWeakrefReference>()?;
+                if let Some(live) = retained_weakref_target(expired.py(), expired) {
+                    // A caller can obtain and invoke the shared callback. A
+                    // live weakref is never eligible for registry cleanup.
+                    drop(live);
+                    return Ok(());
+                }
+                let removed = {
+                    let mut entries = entries
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let pointer = entries.iter().find_map(|(pointer, entry)| {
+                        entry
+                            .facade
+                            .bind(expired.py())
+                            .is(expired)
+                            .then_some(*pointer)
+                    });
+                    pointer.and_then(|pointer| entries.remove(&pointer))
+                };
+                // Dropping retired Python referents may run finalizers. Never
+                // hold the origin-registry mutex across their decrefs.
+                drop(removed);
+                Ok(())
+            })?;
+        Ok(Self {
+            entries,
+            next_pending_token: Arc::new(AtomicU64::new(1)),
+            callback: Arc::new(callback.into_any().unbind()),
+        })
     }
 
+    #[cfg(test)]
     fn retain_reference(
         &self,
         value: &Bound<'_, PyAny>,
@@ -120,61 +598,233 @@ impl FacadeOriginRegistry {
     fn prepare(&self, value: &Bound<'_, PyAny>) -> PyResult<PreparedFacadeOrigin> {
         let pointer = value.as_ptr() as usize;
         let py = value.py();
-        let entries = Arc::downgrade(&self.entries);
-        let callback =
-            PyCFunction::new_closure(py, None, None, move |args, _kwargs| -> PyResult<()> {
-                let Some(entries) = entries.upgrade() else {
-                    return Ok(());
-                };
-                let expired = args.get_item(0)?;
-                let mut entries = entries
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                if entries.get(&pointer).is_some_and(|entry| {
-                    let facade = entry.facade.bind(expired.py());
-                    facade.is(&expired) && facade.upgrade().is_none()
-                }) {
-                    entries.remove(&pointer);
-                }
-                Ok(())
-            })?;
-        let facade = PyWeakrefReference::new_with(value, &callback)?.unbind();
+        let facade = PyWeakrefReference::new_with(value, self.callback.bind(py))?.unbind();
         Ok(PreparedFacadeOrigin { pointer, facade })
     }
 
     fn install(&self, prepared: PreparedFacadeOrigin, proof: FacadeProjectionProof) {
+        let removed = {
+            let mut entries = self
+                .entries
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut removed = entries.remove(&prepared.pointer);
+            let retired = removed.as_mut().and_then(|entry| entry.retired.take());
+            entries.insert(
+                prepared.pointer,
+                FacadeOriginEntry {
+                    facade: prepared.facade,
+                    active: Some(proof),
+                    pending: None,
+                    retired,
+                },
+            );
+            removed
+        };
+        // The removed weakref/pending state may own Python finalizers.
+        drop(removed);
+    }
+
+    fn stage(
+        &self,
+        py: Python<'_>,
+        prepared: PreparedFacadeOrigin,
+        proof: FacadeProjectionProof,
+        retired: Option<ProjectedFacadeSnapshot>,
+    ) -> PyResult<PendingFacadeActivation> {
+        let token = self.next_pending_token.fetch_add(1, Ordering::Relaxed);
+        if token == 0 {
+            return Err(py_runtime_error(
+                "projected facade pending-origin token space was exhausted",
+            ));
+        }
+        let activation = PendingFacadeActivation {
+            pointer: prepared.pointer,
+            token,
+        };
+        let (status, upgraded, removed) = {
+            let mut entries = self
+                .entries
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let upgraded = entries
+                .get(&prepared.pointer)
+                .and_then(|entry| retained_weakref_target(py, entry.facade.bind(py)));
+            let same_facade = upgraded
+                .as_ref()
+                .is_some_and(|facade| facade.as_ptr() as usize == prepared.pointer);
+            if same_facade {
+                let entry = entries
+                    .get_mut(&prepared.pointer)
+                    .expect("the matching facade entry remains present while locked");
+                let status = if entry.pending.is_some() {
+                    1
+                } else if entry.retired.is_some() && retired.is_some() {
+                    2
+                } else {
+                    entry.pending = Some(PendingFacadeProof {
+                        token,
+                        proof,
+                        retired,
+                    });
+                    0
+                };
+                (status, upgraded, None)
+            } else if entries.try_reserve(1).is_err() {
+                (3, upgraded, None)
+            } else {
+                let removed = entries.remove(&prepared.pointer);
+                entries.insert(
+                    prepared.pointer,
+                    FacadeOriginEntry {
+                        facade: prepared.facade,
+                        active: None,
+                        pending: Some(PendingFacadeProof {
+                            token,
+                            proof,
+                            retired,
+                        }),
+                        retired: None,
+                    },
+                );
+                (0, upgraded, removed)
+            }
+        };
+        // Both the upgraded facade and any replaced entry own Python refs.
+        // Release them only after the origin-registry mutex is unlocked.
+        drop(upgraded);
+        drop(removed);
+        match status {
+            0 => Ok(activation),
+            1 => Err(py_runtime_error(
+                "projected facade already has a pending origin proof",
+            )),
+            2 => Err(py_runtime_error(
+                "projected facade retained slots were not drained before staging",
+            )),
+            _ => Err(py_sdk_diagnostic(
+                ProjectedBatch::binding_allocation_failure(),
+            )),
+        }
+    }
+
+    fn activate(&self, activations: &[PendingFacadeActivation]) {
         let mut entries = self
             .entries
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        entries.insert(
-            prepared.pointer,
-            FacadeOriginEntry {
-                facade: prepared.facade,
-                proof,
-            },
-        );
+        for activation in activations {
+            let Some(entry) = entries.get_mut(&activation.pointer) else {
+                fatal_batch_invariant(pyo3::ffi::c_str!(
+                    "pending projected facade origin disappeared"
+                ));
+            };
+            let Some(pending) = entry.pending.take() else {
+                fatal_batch_invariant(pyo3::ffi::c_str!(
+                    "pending projected facade origin was not staged"
+                ));
+            };
+            if pending.token != activation.token {
+                fatal_batch_invariant(pyo3::ffi::c_str!(
+                    "pending projected facade origin token changed"
+                ));
+            }
+            entry.active = Some(pending.proof);
+            if let Some(retired) = pending.retired {
+                if entry.retired.is_some() {
+                    fatal_batch_invariant(pyo3::ffi::c_str!(
+                        "projected facade retained slots were replaced before draining"
+                    ));
+                }
+                entry.retired = Some(retired);
+            }
+        }
+    }
+
+    fn abort(&self, activations: &[PendingFacadeActivation]) {
+        for activation in activations {
+            let (pending, removed) = {
+                let mut entries = self
+                    .entries
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let pending = entries.get_mut(&activation.pointer).and_then(|entry| {
+                    entry
+                        .pending
+                        .as_ref()
+                        .is_some_and(|pending| pending.token == activation.token)
+                        .then(|| entry.pending.take())
+                        .flatten()
+                });
+                let remove = entries
+                    .get(&activation.pointer)
+                    .is_some_and(|entry| entry.active.is_none() && entry.pending.is_none());
+                let removed = remove
+                    .then(|| entries.remove(&activation.pointer))
+                    .flatten();
+                (pending, removed)
+            };
+            // A retired snapshot may contain the last reference to hostile
+            // generated values. Never decref it while the mutex is held.
+            drop(pending);
+            drop(removed);
+        }
     }
 
     fn proof(&self, value: &Bound<'_, PyAny>) -> Option<FacadeProjectionProof> {
         let pointer = value.as_ptr() as usize;
         let py = value.py();
-        let mut entries = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let retained = entries.get(&pointer).and_then(|entry| {
-            entry
-                .facade
-                .bind(py)
-                .upgrade()
-                .filter(|facade| facade.is(value))
-                .map(|_| entry.proof.clone())
-        });
-        if retained.is_none() {
-            entries.remove(&pointer);
-        }
+        let (retained, upgraded, removed) = {
+            let mut entries = self
+                .entries
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let upgraded = entries
+                .get(&pointer)
+                .and_then(|entry| retained_weakref_target(py, entry.facade.bind(py)));
+            let live = upgraded
+                .as_ref()
+                .is_some_and(|facade| facade.bind(py).is(value));
+            let retained = live
+                .then(|| entries.get(&pointer).and_then(|entry| entry.active.clone()))
+                .flatten();
+            let removed = (!live).then(|| entries.remove(&pointer)).flatten();
+            (retained, upgraded, removed)
+        };
+        drop(upgraded);
+        drop(removed);
         retained
+    }
+
+    fn take_retired(&self, value: &Bound<'_, PyAny>) -> Option<ProjectedFacadeSnapshot> {
+        let pointer = value.as_ptr() as usize;
+        let py = value.py();
+        let (retired, upgraded, removed) = {
+            let mut entries = self
+                .entries
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let upgraded = entries
+                .get(&pointer)
+                .and_then(|entry| retained_weakref_target(py, entry.facade.bind(py)));
+            let live = upgraded
+                .as_ref()
+                .is_some_and(|facade| facade.bind(py).is(value));
+            if live {
+                (
+                    entries
+                        .get_mut(&pointer)
+                        .and_then(|entry| entry.retired.take()),
+                    upgraded,
+                    None,
+                )
+            } else {
+                (None, upgraded, entries.remove(&pointer))
+            }
+        };
+        drop(upgraded);
+        drop(removed);
+        retired
     }
 
     #[cfg(test)]
@@ -182,7 +832,9 @@ impl FacadeOriginRegistry {
         self.entries
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .len()
+            .values()
+            .filter(|entry| entry.active.is_some())
+            .count()
     }
 }
 
@@ -233,6 +885,50 @@ impl InstalledPackage {
                 py_runtime_error("projection requested an unregistered reference class")
             }),
         }
+    }
+
+    fn batch_slots(&self, id: &TypeId) -> PyResult<Arc<ProjectedFacadeSlots>> {
+        self.models
+            .get(id)
+            .and_then(|registered| registered.batch_slots.as_ref())
+            .cloned()
+            .ok_or_else(|| {
+                py_runtime_error("successor batch facade slots were not installed for the model")
+            })
+    }
+
+    fn batch_slots_for(
+        &self,
+        id: &TypeId,
+        form: ProjectedModelForm,
+    ) -> PyResult<Arc<ProjectedFacadeSlots>> {
+        let registered = self
+            .models
+            .get(id)
+            .ok_or_else(|| py_runtime_error("projection model class is not installed"))?;
+        match form {
+            ProjectedModelForm::Complete => registered.batch_slots.as_ref(),
+            ProjectedModelForm::Reference => registered.batch_reference_slots.as_ref(),
+        }
+        .cloned()
+        .ok_or_else(|| {
+            py_runtime_error("successor hydration slots were not installed for the model form")
+        })
+    }
+
+    fn validate_batch_hydration_layouts(&self, py: Python<'_>) -> PyResult<()> {
+        for registered in self.models.values() {
+            if let Some(slots) = &registered.batch_slots {
+                slots.validate_layout(py)?;
+            }
+            if let Some(slots) = &registered.batch_reference_slots {
+                slots.validate_layout(py)?;
+            }
+        }
+        if let Some(slots) = &self.named_zone_slots {
+            slots.validate_layout(py)?;
+        }
+        Ok(())
     }
 
     fn type_by_label(&self, label: &str, kind: TypeKind) -> PyResult<&TypeId> {
@@ -294,6 +990,7 @@ impl PyRuntimeProjection {
             type_id,
             database: Some(database),
             transaction: None,
+            successor_batch_marker: None,
             runtime,
             filters: vec![],
         })
@@ -308,12 +1005,14 @@ impl PyRuntimeProjection {
     ) -> PyResult<PyProjectedModelManager> {
         let type_id = self.package.model_id_for_class(py, &model)?;
         ensure_manageable(self.package.as_ref(), &type_id)?;
+        let successor_batch_marker = transaction.successor_batch_marker();
         let (transaction, runtime) = transaction.handles();
         Ok(PyProjectedModelManager {
             package: Arc::clone(&self.package),
             type_id,
             database: None,
             transaction: Some(transaction),
+            successor_batch_marker: Some(successor_batch_marker),
             runtime,
             filters: vec![],
         })
@@ -658,6 +1357,7 @@ pub struct PyProjectedModelManager {
     type_id: TypeId,
     database: Option<Arc<Database>>,
     transaction: Option<TransactionContext>,
+    successor_batch_marker: Option<Arc<AtomicBool>>,
     runtime: Arc<ProviderRuntimeOwner>,
     filters: Vec<DynamicExpr>,
 }
@@ -715,8 +1415,15 @@ impl PyProjectedModelManager {
     }
 
     /// Insert exact generated models atomically and attach IIDs in input order.
-    fn insert_many(&self, py: Python<'_>, instances: Vec<PyObject>) -> PyResult<PyObject> {
-        self.write_many(py, instances, false)
+    fn insert_many(&self, py: Python<'_>, instances: Bound<'_, PyAny>) -> PyResult<PyObject> {
+        if self.uses_successor_runtime() {
+            return self.write_many_projected(
+                py,
+                bounded_projected_facades(&instances)?,
+                ProjectedBatchOperation::Insert,
+            );
+        }
+        self.write_many(py, instances.extract()?, false)
     }
 
     /// Insert or update one exact generated model and attach its TypeDB IID.
@@ -770,8 +1477,15 @@ impl PyProjectedModelManager {
     }
 
     /// Put exact generated models atomically and attach IIDs in input order.
-    fn put_many(&self, py: Python<'_>, instances: Vec<PyObject>) -> PyResult<PyObject> {
-        self.write_many(py, instances, true)
+    fn put_many(&self, py: Python<'_>, instances: Bound<'_, PyAny>) -> PyResult<PyObject> {
+        if self.uses_successor_runtime() {
+            return self.write_many_projected(
+                py,
+                bounded_projected_facades(&instances)?,
+                ProjectedBatchOperation::Put,
+            );
+        }
+        self.write_many(py, instances.extract()?, true)
     }
 
     /// Replace one exact generated model already identified by its TypeDB IID.
@@ -836,7 +1550,15 @@ impl PyProjectedModelManager {
     }
 
     /// Replace exact generated models atomically and rehydrate them in input order.
-    fn update_many(&self, py: Python<'_>, instances: Vec<PyObject>) -> PyResult<PyObject> {
+    fn update_many(&self, py: Python<'_>, instances: Bound<'_, PyAny>) -> PyResult<PyObject> {
+        if self.uses_successor_runtime() {
+            return self.write_many_projected(
+                py,
+                bounded_projected_facades(&instances)?,
+                ProjectedBatchOperation::Update,
+            );
+        }
+        let instances: Vec<PyObject> = instances.extract()?;
         if instances.is_empty() {
             return Ok(PyList::empty(py).into_any().unbind());
         }
@@ -1052,7 +1774,11 @@ impl PyProjectedModelManager {
     }
 
     /// Delete exact generated models atomically by canonical IID.
-    fn delete_many(&self, py: Python<'_>, iids: Vec<String>) -> PyResult<()> {
+    fn delete_many(&self, py: Python<'_>, iids: Bound<'_, PyAny>) -> PyResult<()> {
+        if self.uses_successor_runtime() {
+            return self.delete_many_projected(py, bounded_projected_iids(&iids)?);
+        }
+        let iids: Vec<String> = iids.extract()?;
         match self.descriptor()? {
             TypeDescriptor::Entity(descriptor) => {
                 let manager = self.entity_manager(Arc::new(descriptor))?;
@@ -1096,6 +1822,7 @@ impl PyProjectedModelManager {
             type_id: self.type_id.clone(),
             database: self.database.clone(),
             transaction: self.transaction.clone(),
+            successor_batch_marker: self.successor_batch_marker.clone(),
             runtime: Arc::clone(&self.runtime),
             filters: combined,
         })
@@ -1272,7 +1999,8 @@ impl PyProjectedModelManager {
 
 impl PyProjectedModelManager {
     fn uses_successor_runtime(&self) -> bool {
-        projection_uses_ordered_collections(self.package.projection.projection())
+        self.package.projection.projection().generator_handlers()
+            == [type_bridge_contract::projection::ProjectionHandler::python_v2()]
     }
 
     fn insert_projected(
@@ -1513,6 +2241,363 @@ impl PyProjectedModelManager {
         Ok(PyList::new(py, &instances)?.into_any().unbind())
     }
 
+    fn write_many_projected(
+        &self,
+        py: Python<'_>,
+        instances: Vec<PyObject>,
+        operation: ProjectedBatchOperation,
+    ) -> PyResult<PyObject> {
+        debug_assert!(matches!(
+            operation,
+            ProjectedBatchOperation::Insert
+                | ProjectedBatchOperation::Put
+                | ProjectedBatchOperation::Update
+        ));
+        ProjectedBatch::validate_binding_row_count(instances.len()).map_err(py_sdk_diagnostic)?;
+        let package = Arc::clone(&self.package);
+        let type_id = self.type_id.clone();
+        let slots = self.package.batch_slots(&self.type_id)?;
+        let database = self.database.clone();
+        let transaction = self.transaction.clone();
+        let successor_batch_marker = self.successor_batch_marker.clone();
+        let runtime = Arc::clone(&self.runtime);
+        provider_block_on_with_gil(py, runtime.as_ref(), move |py| {
+            Box::pin(async move {
+                let mut retired =
+                    reserved_binding_rows(instances.len()).map_err(py_sdk_diagnostic)?;
+                for instance in &instances {
+                    if let Some(snapshot) = package.facade_origins.take_retired(instance.bind(py)) {
+                        retired.push(snapshot);
+                    }
+                }
+                // Retired values can own hostile finalizers. Drain them before
+                // snapshots, lowering, GC fencing, or mutation-lease entry.
+                drop(retired);
+                let control = ProjectedBatchInvocationControl::capture(
+                    QueryExecutionResourceLimits::default(),
+                    AnswerCancellation::default(),
+                );
+                let mut budget = ProjectedBatchBindingBudget::try_new_for_invocation(
+                    package.projection.as_ref(),
+                    type_id.clone(),
+                    operation,
+                    &control,
+                )
+                .map_err(py_sdk_diagnostic)?;
+                let mut staged_facades =
+                    reserved_binding_rows(instances.len()).map_err(py_sdk_diagnostic)?;
+                let mut rows = reserved_binding_rows(instances.len()).map_err(py_sdk_diagnostic)?;
+                let mut identities =
+                    reserved_binding_rows(instances.len()).map_err(py_sdk_diagnostic)?;
+
+                for (ordinal, instance) in instances.into_iter().enumerate() {
+                    budget.checkpoint().map_err(py_sdk_diagnostic)?;
+                    let instance = instance.bind(py);
+                    ensure_batch_instance_at(py, package.as_ref(), &type_id, instance, ordinal)?;
+                    let snapshot = slots.snapshot(py, instance).map_err(|_| {
+                        py_sdk_diagnostic(batch_input_shape_diagnostic(
+                            "generated_model_layout_mismatch",
+                            "The exact generated model no longer has its installed runtime slots",
+                            &projected_batch_row_path(ordinal),
+                        ))
+                    })?;
+                    let path = projected_batch_row_path(ordinal);
+                    let replacement = project_create_from_snapshot_at(
+                        py,
+                        package.as_ref(),
+                        &type_id,
+                        &snapshot,
+                        &path,
+                        &budget,
+                    )?;
+                    let row = if operation == ProjectedBatchOperation::Update {
+                        ProjectedBatchRow::Update {
+                            iid: projected_iid_from_snapshot(py, &snapshot, ordinal)?,
+                            replacement,
+                        }
+                    } else {
+                        ProjectedBatchRow::Create(replacement)
+                    };
+                    budget
+                        .try_add_row(package.projection.as_ref(), &row)
+                        .map_err(py_sdk_diagnostic)?;
+                    rows.push(row);
+                    identities.push((instance.as_ptr() as usize, ordinal));
+                    staged_facades.push(StagedBatchFacade {
+                        snapshot,
+                        instance: instance.clone().unbind(),
+                    });
+                }
+                drop(budget);
+                let batch = ProjectedBatch::try_new_for_invocation(
+                    package.projection.as_ref(),
+                    type_id.clone(),
+                    operation,
+                    rows,
+                    &control,
+                )
+                .map_err(py_sdk_diagnostic)?;
+                // Common duplicate-key/target precedence is authoritative.
+                // Only aliases that survive it are binding-unrepresentable.
+                reject_duplicate_batch_facades(&mut identities)?;
+                if batch.is_empty() {
+                    let empty = fallible_python_empty_list(py)?;
+                    let executor = ProjectedBatchExecutor::new(package.projection.as_ref());
+                    let result = match (&database, &transaction) {
+                        (Some(database), None) => {
+                            executor
+                                .execute_mapped(database.as_ref(), &batch, control, empty, |_| {
+                                    Err(SdkExecutionDiagnostic::internal_failure())
+                                })
+                                .await
+                        }
+                        (None, Some(transaction)) => {
+                            executor
+                                .execute_in_transaction_mapped(
+                                    transaction,
+                                    &batch,
+                                    control,
+                                    empty,
+                                    |_| Err(SdkExecutionDiagnostic::internal_failure()),
+                                )
+                                .await
+                        }
+                        _ => Err(SdkExecutionDiagnostic::internal_failure()),
+                    };
+                    return result.map_err(py_sdk_diagnostic);
+                }
+                let _gc_guard = SuccessorBatchGcGuard::disable(py);
+                let hydration_pool =
+                    BatchHydrationPool::try_new(&staged_facades).map_err(py_sdk_diagnostic)?;
+                package.validate_batch_hydration_layouts(py).map_err(|_| {
+                    py_sdk_diagnostic(batch_input_shape_diagnostic(
+                        "generated_model_layout_mismatch",
+                        "An installed successor hydration class changed before execution",
+                        &[SdkDiagnosticPathSegment::Argument(
+                            SdkDiagnosticName::new("rows")
+                                .expect("the fixed batch argument is canonical"),
+                        )],
+                    ))
+                })?;
+                validate_staged_batch_facades_after_lowering(py, slots.as_ref(), &staged_facades)?;
+                let mut facades =
+                    reserved_binding_rows(staged_facades.len()).map_err(py_sdk_diagnostic)?;
+                for staged in staged_facades {
+                    let instance = staged.instance.bind(py);
+                    facades.push(PreparedBatchFacade {
+                        origin: package.facade_origins.prepare(instance)?,
+                        snapshot: staged.snapshot,
+                        instance: instance.clone().unbind(),
+                    });
+                }
+
+                let empty = BatchMappedOutput::Empty(fallible_python_empty_list(py)?);
+                let binding_error = Mutex::new(None);
+                let mapper_package = Arc::clone(&package);
+                let mapper_slots = Arc::clone(&slots);
+                let mapper_error = &binding_error;
+                let mapper_marker = successor_batch_marker.clone();
+                let mapper_pool = &hydration_pool;
+                let mapper = move |result| {
+                    // Mapper entry proves nonempty mutation dispatch. The
+                    // exclusive worker GIL keeps the marker unobservable until
+                    // success/error/panic cleanup has made the state terminal.
+                    if let Some(marker) = &mapper_marker {
+                        marker.store(true, Ordering::Release);
+                    }
+                    materialize_projected_batch(
+                        py,
+                        mapper_package,
+                        mapper_slots,
+                        facades,
+                        result,
+                        mapper_error,
+                        mapper_pool,
+                    )
+                    .map(BatchMappedOutput::Publication)
+                };
+                let executor = ProjectedBatchExecutor::new(package.projection.as_ref());
+                let nonempty = !batch.is_empty();
+                let result = match (&database, &transaction) {
+                    (Some(database), None) => {
+                        executor
+                            .execute_mapped(database.as_ref(), &batch, control, empty, mapper)
+                            .await
+                    }
+                    (None, Some(transaction)) => {
+                        let prior_state = if nonempty {
+                            Some(transaction.lifecycle_state().await)
+                        } else {
+                            None
+                        };
+                        let result = executor
+                            .execute_in_transaction_mapped(
+                                transaction,
+                                &batch,
+                                control,
+                                empty,
+                                mapper,
+                            )
+                            .await;
+                        let mark =
+                            if !nonempty || prior_state != Some(TransactionContextState::Active) {
+                                false
+                            } else if result.is_ok() {
+                                true
+                            } else {
+                                transaction.lifecycle_state().await
+                                    == TransactionContextState::RollbackOnly
+                            };
+                        if mark && let Some(marker) = &successor_batch_marker {
+                            marker.store(true, Ordering::Release);
+                        }
+                        result
+                    }
+                    _ => Err(SdkExecutionDiagnostic::internal_failure()),
+                };
+                let output = match result {
+                    Ok(mapped) => Ok(mapped.finish()),
+                    Err(diagnostic) => match take_binding_materialization_error(&binding_error) {
+                        Some(error) => Err(error),
+                        None => Err(py_sdk_diagnostic(diagnostic)),
+                    },
+                };
+                // This outer owner survives mapper-capture unwind and common
+                // rollback/poison. Any unpublished generated objects are
+                // released only now, under this worker's still-held GIL.
+                drop(hydration_pool);
+                output
+            })
+        })
+    }
+
+    fn delete_many_projected(&self, py: Python<'_>, iids: Vec<String>) -> PyResult<()> {
+        ProjectedBatch::validate_binding_row_count(iids.len()).map_err(py_sdk_diagnostic)?;
+        let control = ProjectedBatchInvocationControl::capture(
+            QueryExecutionResourceLimits::default(),
+            AnswerCancellation::default(),
+        );
+        let mut budget = ProjectedBatchBindingBudget::try_new_for_invocation(
+            self.package.projection.as_ref(),
+            self.type_id.clone(),
+            ProjectedBatchOperation::Delete,
+            &control,
+        )
+        .map_err(py_sdk_diagnostic)?;
+        let mut rows = reserved_binding_rows(iids.len()).map_err(py_sdk_diagnostic)?;
+        for iid in iids {
+            let row = ProjectedBatchRow::Delete { iid };
+            budget
+                .try_add_row(self.package.projection.as_ref(), &row)
+                .map_err(py_sdk_diagnostic)?;
+            rows.push(row);
+        }
+        drop(budget);
+        let batch = ProjectedBatch::try_new_for_invocation(
+            self.package.projection.as_ref(),
+            self.type_id.clone(),
+            ProjectedBatchOperation::Delete,
+            rows,
+            &control,
+        )
+        .map_err(py_sdk_diagnostic)?;
+        if !batch.is_empty()
+            && let Some(transaction) = &self.transaction
+        {
+            let transaction = transaction.clone();
+            let runtime = Arc::clone(&self.runtime);
+            let package = Arc::clone(&self.package);
+            let marker = self.successor_batch_marker.clone();
+            return provider_block_on_with_gil(py, runtime.as_ref(), move |_py| {
+                Box::pin(async move {
+                    let prior_state = transaction.lifecycle_state().await;
+                    let executor = ProjectedBatchExecutor::new(package.projection.as_ref());
+                    let result = executor
+                        .execute_in_transaction_mapped(
+                            &transaction,
+                            &batch,
+                            control,
+                            (),
+                            |result| match result {
+                                ProjectedBatchResult::Deleted => Ok(()),
+                                ProjectedBatchResult::Things(_) => {
+                                    Err(SdkExecutionDiagnostic::internal_failure())
+                                }
+                                _ => Err(SdkExecutionDiagnostic::internal_failure()),
+                            },
+                        )
+                        .await;
+                    let mark = prior_state == TransactionContextState::Active
+                        && (result.is_ok()
+                            || transaction.lifecycle_state().await
+                                == TransactionContextState::RollbackOnly);
+                    if mark && let Some(marker) = marker {
+                        marker.store(true, Ordering::Release);
+                    }
+                    result.map_err(py_sdk_diagnostic)
+                })
+            });
+        }
+        self.execute_projected_batch(py, &batch, control, (), |result| match result {
+            ProjectedBatchResult::Deleted => Ok(()),
+            ProjectedBatchResult::Things(_) => Err(SdkExecutionDiagnostic::internal_failure()),
+            _ => Err(SdkExecutionDiagnostic::internal_failure()),
+        })
+        .map_err(py_sdk_diagnostic)
+    }
+
+    fn execute_projected_batch<T, F>(
+        &self,
+        py: Python<'_>,
+        batch: &ProjectedBatch,
+        control: ProjectedBatchInvocationControl,
+        empty: T,
+        mapper: F,
+    ) -> Result<T, SdkExecutionDiagnostic>
+    where
+        T: Send,
+        F: FnOnce(ProjectedBatchResult) -> Result<T, SdkExecutionDiagnostic> + Send,
+    {
+        let executor = ProjectedBatchExecutor::new(self.package.projection.as_ref());
+        match (&self.database, &self.transaction) {
+            (Some(database), None) => provider_block_on(
+                py,
+                self.runtime.as_ref(),
+                executor.execute_mapped(database.as_ref(), batch, control, empty, mapper),
+            ),
+            (None, Some(transaction)) => {
+                let prior_state = (!batch.is_empty()).then(|| {
+                    provider_block_on(py, self.runtime.as_ref(), transaction.lifecycle_state())
+                });
+                let result = provider_block_on(
+                    py,
+                    self.runtime.as_ref(),
+                    executor.execute_in_transaction_mapped(
+                        transaction,
+                        batch,
+                        control,
+                        empty,
+                        mapper,
+                    ),
+                );
+                let mark =
+                    if batch.is_empty() || prior_state != Some(TransactionContextState::Active) {
+                        false
+                    } else if result.is_ok() {
+                        true
+                    } else {
+                        provider_block_on(py, self.runtime.as_ref(), transaction.lifecycle_state())
+                            == TransactionContextState::RollbackOnly
+                    };
+                if mark && let Some(marker) = &self.successor_batch_marker {
+                    marker.store(true, Ordering::Release);
+                }
+                result
+            }
+            _ => Err(SdkExecutionDiagnostic::internal_failure()),
+        }
+    }
+
     fn descriptor(&self) -> PyResult<TypeDescriptor> {
         self.package
             .projection
@@ -1572,6 +2657,1070 @@ impl PyProjectedModelManager {
             descriptor,
         ))
     }
+}
+
+fn ensure_batch_instance_at(
+    py: Python<'_>,
+    package: &InstalledPackage,
+    type_id: &TypeId,
+    value: &Bound<'_, PyAny>,
+    ordinal: usize,
+) -> PyResult<()> {
+    let expected = package.class(type_id, ProjectedModelForm::Complete)?;
+    if value.get_type().as_ptr() != expected.bind(py).as_ptr() {
+        return Err(py_sdk_diagnostic(generated_token_package_mismatch_at([
+            SdkDiagnosticPathSegment::Argument(
+                SdkDiagnosticName::new("rows").expect("the fixed batch argument is canonical"),
+            ),
+            SdkDiagnosticPathSegment::Index(projected_index(ordinal)),
+            SdkDiagnosticPathSegment::Type(type_id.clone()),
+        ])));
+    }
+    Ok(())
+}
+
+fn bounded_projected_facades(values: &Bound<'_, PyAny>) -> PyResult<Vec<PyObject>> {
+    if !supports_python_iteration(values) {
+        return Err(py_sdk_diagnostic(batch_input_shape_diagnostic(
+            "batch_rows_not_iterable",
+            "Successor batch rows must be an iterable of exact generated model objects",
+            &projected_batch_rows_path(),
+        )));
+    }
+    let mut facades = Vec::new();
+    let iterator = values.try_iter()?;
+    for (ordinal, value) in iterator.enumerate() {
+        let value = value?;
+        ProjectedBatch::validate_binding_row_count(ordinal.saturating_add(1))
+            .map_err(py_sdk_diagnostic)?;
+        facades
+            .try_reserve(1)
+            .map_err(|_| py_sdk_diagnostic(ProjectedBatch::binding_allocation_failure()))?;
+        facades.push(value.unbind());
+    }
+    Ok(facades)
+}
+
+fn bounded_projected_iids(values: &Bound<'_, PyAny>) -> PyResult<Vec<String>> {
+    if !supports_python_iteration(values) {
+        return Err(py_sdk_diagnostic(batch_input_shape_diagnostic(
+            "batch_rows_not_iterable",
+            "Successor delete rows must be an iterable of exact strings",
+            &projected_batch_rows_path(),
+        )));
+    }
+    let mut iids = Vec::new();
+    let iterator = values.try_iter()?;
+    for (ordinal, value) in iterator.enumerate() {
+        let value = value?;
+        ProjectedBatch::validate_binding_row_count(ordinal.saturating_add(1))
+            .map_err(py_sdk_diagnostic)?;
+        let path = projected_batch_iid_path(ordinal);
+        let value = value.downcast_exact::<PyString>().map_err(|_| {
+            py_sdk_diagnostic(batch_input_shape_diagnostic(
+                "batch_iid_type_mismatch",
+                "Successor delete rows require exact string IIDs",
+                &path,
+            ))
+        })?;
+        let text = value.to_str().map_err(|_| {
+            py_sdk_diagnostic(batch_input_shape_diagnostic(
+                "batch_iid_type_mismatch",
+                "Successor delete rows require UTF-8 string IIDs",
+                &path,
+            ))
+        })?;
+        let iid = copy_canonical_batch_iid(text, ordinal)?;
+        iids.try_reserve(1)
+            .map_err(|_| py_sdk_diagnostic(ProjectedBatch::binding_allocation_failure()))?;
+        iids.push(iid);
+    }
+    Ok(iids)
+}
+
+fn supports_python_iteration(value: &Bound<'_, PyAny>) -> bool {
+    let class = value.get_type();
+    !type_slot(&class, pyo3::ffi::Py_tp_iter).is_null()
+        // SAFETY: the value is live under the GIL. PySequence_Check is a
+        // non-callbacking type-slot predicate used by PyObject_GetIter itself.
+        || unsafe { pyo3::ffi::PySequence_Check(value.as_ptr()) } != 0
+}
+
+fn projected_batch_rows_path() -> [SdkDiagnosticPathSegment; 1] {
+    [SdkDiagnosticPathSegment::Argument(
+        SdkDiagnosticName::new("rows").expect("the fixed batch argument is canonical"),
+    )]
+}
+
+fn reserved_binding_rows<T>(capacity: usize) -> Result<Vec<T>, SdkExecutionDiagnostic> {
+    let mut rows = Vec::new();
+    rows.try_reserve_exact(capacity)
+        .map_err(|_| ProjectedBatch::binding_allocation_failure())?;
+    Ok(rows)
+}
+
+fn reject_duplicate_batch_facades(identities: &mut [(usize, usize)]) -> PyResult<()> {
+    identities.sort_unstable();
+    let mut conflict: Option<(usize, usize)> = None;
+    for pair in identities.windows(2) {
+        let [(left_pointer, left_ordinal), (right_pointer, right_ordinal)] = pair else {
+            continue;
+        };
+        if left_pointer == right_pointer {
+            let candidate = (
+                (*left_ordinal).min(*right_ordinal),
+                (*left_ordinal).max(*right_ordinal),
+            );
+            if conflict.is_none_or(|current| (candidate.1, candidate.0) < (current.1, current.0)) {
+                conflict = Some(candidate);
+            }
+        }
+    }
+    let Some((first, duplicate)) = conflict else {
+        return Ok(());
+    };
+    let diagnostic = SdkExecutionDiagnostic::invalid_input(
+        SdkDiagnosticCode::new("duplicate_batch_input_identity")
+            .expect("the static duplicate-facade code is canonical"),
+        SdkDiagnosticMessage::new(
+            "The same generated Python model object appears more than once in the batch",
+        )
+        .expect("the static duplicate-facade message is canonical"),
+    )
+    .try_at(SdkDiagnosticPathSegment::Argument(
+        SdkDiagnosticName::new("rows").expect("the fixed batch argument is canonical"),
+    ))
+    .and_then(|diagnostic| {
+        diagnostic.try_at(SdkDiagnosticPathSegment::Index(projected_index(duplicate)))
+    })
+    .and_then(|diagnostic| {
+        diagnostic.try_with_detail(
+            SdkDiagnosticName::new("first_conflicting_index")
+                .expect("the fixed conflict detail is canonical"),
+            SdkDiagnosticDetailValue::Count(projected_index(first)),
+        )
+    })
+    .unwrap_or_else(|_| SdkExecutionDiagnostic::internal_failure());
+    Err(py_sdk_diagnostic(diagnostic))
+}
+
+fn validate_staged_batch_facades_after_lowering(
+    py: Python<'_>,
+    slots: &ProjectedFacadeSlots,
+    facades: &[StagedBatchFacade],
+) -> PyResult<()> {
+    for (ordinal, facade) in facades.iter().enumerate() {
+        let current = slots.snapshot(py, facade.instance.bind(py)).map_err(|_| {
+            py_sdk_diagnostic(batch_input_shape_diagnostic(
+                "generated_model_layout_mismatch",
+                "The generated model layout changed during successor batch lowering",
+                &projected_batch_row_path(ordinal),
+            ))
+        })?;
+        if !current.values.bind(py).is(facade.snapshot.values.bind(py))
+            || !current.iid.bind(py).is(facade.snapshot.iid.bind(py))
+        {
+            return Err(py_sdk_diagnostic(batch_input_shape_diagnostic(
+                "generated_model_changed_during_batch",
+                "A generated model changed during successor batch lowering",
+                &projected_batch_row_path(ordinal),
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn projected_batch_row_path(ordinal: usize) -> [SdkDiagnosticPathSegment; 2] {
+    [
+        SdkDiagnosticPathSegment::Argument(
+            SdkDiagnosticName::new("rows").expect("the fixed batch argument is canonical"),
+        ),
+        SdkDiagnosticPathSegment::Index(projected_index(ordinal)),
+    ]
+}
+
+fn projected_batch_iid_path(ordinal: usize) -> [SdkDiagnosticPathSegment; 3] {
+    [
+        SdkDiagnosticPathSegment::Argument(
+            SdkDiagnosticName::new("rows").expect("the fixed batch argument is canonical"),
+        ),
+        SdkDiagnosticPathSegment::Index(projected_index(ordinal)),
+        SdkDiagnosticPathSegment::Argument(
+            SdkDiagnosticName::new("iid").expect("the fixed IID argument is canonical"),
+        ),
+    ]
+}
+
+fn batch_input_shape_diagnostic(
+    code: &'static str,
+    message: &'static str,
+    path: &[SdkDiagnosticPathSegment],
+) -> SdkExecutionDiagnostic {
+    path.iter().cloned().fold(
+        SdkExecutionDiagnostic::invalid_input(
+            SdkDiagnosticCode::new(code).expect("the static batch-shape code is canonical"),
+            SdkDiagnosticMessage::new(message)
+                .expect("the static batch-shape message is canonical"),
+        ),
+        |diagnostic, segment| {
+            diagnostic
+                .try_at(segment)
+                .unwrap_or_else(|_| SdkExecutionDiagnostic::internal_failure())
+        },
+    )
+}
+
+fn add_projected_attribute_pool_objects<'a>(
+    total: &mut usize,
+    values: impl Iterator<Item = &'a ProjectedAttributeValue>,
+) -> Result<(), SdkExecutionDiagnostic> {
+    for value in values {
+        let named_zone = matches!(
+            value.value(),
+            CanonicalValue::DateTimeTz(value)
+                if matches!(value.zone(), TimeZoneDesignator::Named(_))
+        );
+        *total = total
+            .checked_add(1 + usize::from(named_zone))
+            .ok_or_else(ProjectedBatch::binding_allocation_failure)?;
+    }
+    Ok(())
+}
+
+fn projected_batch_hydration_pool_capacity(
+    things: &[ProjectedThing],
+) -> Result<usize, SdkExecutionDiagnostic> {
+    let mut total = 0_usize;
+    for thing in things {
+        total = total
+            .checked_add(1)
+            .ok_or_else(ProjectedBatch::binding_allocation_failure)?;
+        add_projected_attribute_pool_objects(
+            &mut total,
+            thing.fields().values().flat_map(|values| values.iter()),
+        )?;
+        for player in thing.roles().values().flat_map(|players| players.iter()) {
+            total = total
+                .checked_add(1)
+                .ok_or_else(ProjectedBatch::binding_allocation_failure)?;
+            match player.exact_form() {
+                Some(ProjectedModelForm::Complete) => add_projected_attribute_pool_objects(
+                    &mut total,
+                    player.fields().values().flat_map(|values| values.iter()),
+                )?,
+                Some(ProjectedModelForm::Reference) => {
+                    add_projected_attribute_pool_objects(&mut total, player.keys().values())?
+                }
+                None => {}
+            }
+        }
+    }
+    Ok(total)
+}
+
+fn materialize_projected_batch<'py>(
+    py: Python<'py>,
+    package: Arc<InstalledPackage>,
+    slots: Arc<ProjectedFacadeSlots>,
+    facades: Vec<PreparedBatchFacade>,
+    result: ProjectedBatchResult,
+    binding_error: &Mutex<Option<PyErr>>,
+    pool: &BatchHydrationPool,
+) -> Result<BatchPublicationGuard<'py>, SdkExecutionDiagnostic> {
+    materialize_projected_batch_with_probe(
+        py,
+        package,
+        slots,
+        facades,
+        result,
+        binding_error,
+        pool,
+        BatchMaterializationProbe::default(),
+    )
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct BatchMaterializationProbe {
+    fail_output_allocation: bool,
+    fail_publication_at: Option<usize>,
+    #[cfg(test)]
+    panic_publication_at: Option<usize>,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn materialize_projected_batch_with_probe<'py>(
+    py: Python<'py>,
+    package: Arc<InstalledPackage>,
+    slots: Arc<ProjectedFacadeSlots>,
+    facades: Vec<PreparedBatchFacade>,
+    result: ProjectedBatchResult,
+    binding_error: &Mutex<Option<PyErr>>,
+    pool: &BatchHydrationPool,
+    probe: BatchMaterializationProbe,
+) -> Result<BatchPublicationGuard<'py>, SdkExecutionDiagnostic> {
+    let ProjectedBatchResult::Things(things) = result else {
+        return Err(SdkExecutionDiagnostic::internal_failure());
+    };
+    if things.len() != facades.len() {
+        return Err(ProjectedBatchExecutor::binding_materialization_failure(0));
+    }
+    pool.reserve_exact(projected_batch_hydration_pool_capacity(&things)?)?;
+
+    let nested_origin_capacity = things
+        .iter()
+        .try_fold(0_usize, |count, thing| {
+            thing
+                .roles()
+                .values()
+                .try_fold(count, |count, players| count.checked_add(players.len()))
+        })
+        .ok_or_else(ProjectedBatch::binding_allocation_failure)?;
+    let mut pending_origins = reserved_binding_rows(nested_origin_capacity)?;
+    let mut hydrated = reserved_binding_rows(things.len())?;
+    for (ordinal, projected) in things.into_iter().enumerate() {
+        let projected = Arc::new(projected);
+        let value = hydrate_projected_thing_value_staged(
+            py,
+            package.as_ref(),
+            projected.as_ref(),
+            Some(&projected),
+            &mut pending_origins,
+            true,
+            Some(pool),
+        )
+        .map_err(|error| {
+            record_binding_materialization_error(binding_error, error);
+            ProjectedBatchExecutor::binding_materialization_failure(projected_index(ordinal))
+        })?;
+        let replacement = slots
+            .snapshot_after_fence(py, value.bind(py))
+            .map_err(|error| {
+                record_binding_materialization_error(binding_error, error);
+                ProjectedBatchExecutor::binding_materialization_failure(projected_index(ordinal))
+            })?;
+        hydrated.push(StagedBatchHydration {
+            projected,
+            _instance: value,
+            replacement,
+        });
+    }
+    pool.verify_fully_consumed()?;
+
+    if probe.fail_output_allocation {
+        return Err(ProjectedBatch::binding_allocation_failure());
+    }
+    let output = match PyList::new(py, facades.iter().map(|facade| facade.instance.bind(py))) {
+        Ok(output) => output.into_any().unbind(),
+        Err(error) => {
+            record_binding_materialization_error(binding_error, error);
+            return Err(ProjectedBatchExecutor::binding_materialization_failure(0));
+        }
+    };
+    for (ordinal, facade) in facades.iter().enumerate() {
+        let current = slots
+            .snapshot_after_fence(py, facade.instance.bind(py))
+            .map_err(|_| {
+                let error = py_sdk_diagnostic(batch_input_shape_diagnostic(
+                    "generated_model_layout_mismatch",
+                    "The generated model layout changed while its successor batch was executing",
+                    &projected_batch_row_path(ordinal),
+                ));
+                record_binding_materialization_error(binding_error, error);
+                ProjectedBatchExecutor::binding_materialization_failure(projected_index(ordinal))
+            })?;
+        if !current.values.bind(py).is(facade.snapshot.values.bind(py))
+            || !current.iid.bind(py).is(facade.snapshot.iid.bind(py))
+        {
+            record_binding_materialization_error(
+                binding_error,
+                py_sdk_diagnostic(batch_input_shape_diagnostic(
+                    "generated_model_changed_during_batch",
+                    "A generated model changed while its successor batch was executing",
+                    &projected_batch_row_path(ordinal),
+                )),
+            );
+            return Err(ProjectedBatchExecutor::binding_materialization_failure(
+                projected_index(ordinal),
+            ));
+        }
+    }
+    let activation_capacity = nested_origin_capacity
+        .checked_add(facades.len())
+        .ok_or_else(ProjectedBatch::binding_allocation_failure)?;
+    let mut activation_guard =
+        PendingActivationGuard::new(package.facade_origins.clone(), activation_capacity)?;
+    for origin in pending_origins {
+        if let Err(error) = activation_guard.stage(py, origin.origin, origin.proof, None) {
+            record_binding_materialization_error(binding_error, error);
+            return Err(ProjectedBatchExecutor::binding_materialization_failure(0));
+        }
+    }
+    for (facade, hydrated) in facades.iter().zip(hydrated.iter()) {
+        if let Err(error) = activation_guard.stage(
+            py,
+            facade.origin.clone_ref(py),
+            FacadeProjectionProof::Thing(Arc::clone(&hydrated.projected)),
+            Some(facade.snapshot.clone_ref(py)),
+        ) {
+            record_binding_materialization_error(binding_error, error);
+            return Err(ProjectedBatchExecutor::binding_materialization_failure(0));
+        }
+    }
+    let activations = activation_guard.into_activations();
+
+    let mut guard = BatchPublicationGuard {
+        py,
+        package,
+        slots,
+        facades,
+        _hydrated: hydrated,
+        output: Some(output),
+        activations,
+        published: 0,
+        armed: true,
+    };
+    for ordinal in 0..guard.facades.len() {
+        #[cfg(test)]
+        if probe.panic_publication_at == Some(ordinal) {
+            panic!("injected projected batch mapper panic at row {ordinal}");
+        }
+        if probe.fail_publication_at == Some(ordinal) {
+            record_binding_materialization_error(
+                binding_error,
+                py_runtime_error("injected projected batch publication failure"),
+            );
+            return Err(ProjectedBatchExecutor::binding_materialization_failure(
+                projected_index(ordinal),
+            ));
+        }
+        let facade = &guard.facades[ordinal];
+        let replacement = &guard._hydrated[ordinal].replacement;
+        let instance = facade.instance.bind(py);
+        if let Err(error) = guard
+            .slots
+            .values
+            .set(py, instance, replacement.values.bind(py))
+        {
+            record_binding_materialization_error(binding_error, error);
+            return Err(ProjectedBatchExecutor::binding_materialization_failure(
+                projected_index(ordinal),
+            ));
+        }
+        if let Err(error) = guard.slots.iid.set(py, instance, replacement.iid.bind(py)) {
+            guard
+                .slots
+                .values
+                .set_infallible(py, instance, facade.snapshot.values.bind(py));
+            record_binding_materialization_error(binding_error, error);
+            return Err(ProjectedBatchExecutor::binding_materialization_failure(
+                projected_index(ordinal),
+            ));
+        }
+        guard.published = ordinal.saturating_add(1);
+    }
+    Ok(guard)
+}
+
+fn record_binding_materialization_error(binding_error: &Mutex<Option<PyErr>>, error: PyErr) {
+    let mut retained = binding_error
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if retained.is_none() {
+        *retained = Some(error);
+    }
+}
+
+fn take_binding_materialization_error(binding_error: &Mutex<Option<PyErr>>) -> Option<PyErr> {
+    binding_error
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take()
+}
+
+fn fatal_batch_invariant(message: &std::ffi::CStr) -> ! {
+    // SAFETY: the message is a process-lifetime C string. Reaching this path
+    // means a Stable-ABI member slot changed applicability while one worker
+    // held the GIL continuously after the final pre-I/O validation.
+    unsafe { pyo3::ffi::Py_FatalError(message.as_ptr()) }
+}
+
+fn exact_type_mro_attribute(
+    py: Python<'_>,
+    class: &Bound<'_, PyType>,
+    name: &'static str,
+) -> PyResult<PyObject> {
+    // SAFETY: the live class is GIL-bound. Requiring the exact built-in `type`
+    // metaclass makes `__mro__` and each `__dict__` lookup non-overridable.
+    if unsafe {
+        pyo3::ffi::Py_IS_TYPE(
+            class.as_ptr(),
+            std::ptr::addr_of_mut!(pyo3::ffi::PyType_Type),
+        )
+    } == 0
+    {
+        return Err(py_type_error(
+            "successor generated classes require the exact built-in type metaclass",
+        ));
+    }
+    let mro = py_getattr_cstr(py, class.as_any(), pyo3::ffi::c_str!("__mro__"))?
+        .into_bound(py)
+        .downcast_into::<PyTuple>()
+        .map_err(|_| py_type_error("successor generated class MRO is not an exact tuple"))?;
+    for base in mro.iter() {
+        let base = base.downcast_into::<PyType>().map_err(|_| {
+            py_type_error("successor generated class MRO contains a non-type entry")
+        })?;
+        // SAFETY: the live MRO entry is GIL-bound.
+        if unsafe {
+            pyo3::ffi::Py_IS_TYPE(
+                base.as_ptr(),
+                std::ptr::addr_of_mut!(pyo3::ffi::PyType_Type),
+            )
+        } == 0
+        {
+            return Err(py_type_error(
+                "successor generated class MRO uses a custom metaclass",
+            ));
+        }
+        let dictionary = py_getattr_cstr(py, base.as_any(), pyo3::ffi::c_str!("__dict__"))?;
+        // SAFETY: the exact built-in `type` data descriptor returned the
+        // class's live mappingproxy. PyMapping_Items is Stable ABI and yields
+        // raw key/value pairs without looking up the projected descriptor.
+        let items = unsafe { pyo3::ffi::PyMapping_Items(dictionary.bind(py).as_ptr()) };
+        // SAFETY: a non-null result is one owned list reference.
+        let items = unsafe { Bound::<PyAny>::from_owned_ptr_or_err(py, items) }?
+            .downcast_into::<PyList>()
+            .map_err(|_| py_type_error("successor generated class dictionary items are invalid"))?;
+        let mut found = None;
+        for item in items.iter() {
+            let item = item.downcast_into_exact::<PyTuple>().map_err(|_| {
+                py_type_error("successor generated class dictionary contains an invalid item")
+            })?;
+            if item.len() != 2 {
+                return Err(py_type_error(
+                    "successor generated class dictionary contains an invalid item",
+                ));
+            }
+            let key = item.get_item(0)?;
+            let key = key.downcast_into_exact::<PyString>().map_err(|_| {
+                py_type_error("successor generated class dictionaries require exact string keys")
+            })?;
+            if key.to_str()? == name {
+                found = Some(item.get_item(1)?.unbind());
+            }
+        }
+        if let Some(found) = found {
+            return Ok(found);
+        }
+    }
+    Err(py_type_error(format!(
+        "successor generated class MRO does not define {name}"
+    )))
+}
+
+fn py_getattr_cstr(
+    py: Python<'_>,
+    value: &Bound<'_, PyAny>,
+    name: &std::ffi::CStr,
+) -> PyResult<PyObject> {
+    // SAFETY: value and the process-lifetime C string are valid under the GIL.
+    let result = unsafe { pyo3::ffi::PyObject_GetAttrString(value.as_ptr(), name.as_ptr()) };
+    // SAFETY: a non-null result is one owned reference; null preserves PyErr.
+    unsafe { Bound::<PyAny>::from_owned_ptr_or_err(py, result) }.map(Bound::unbind)
+}
+
+impl ProjectedFacadeSlot {
+    fn capture(py: Python<'_>, class: &Bound<'_, PyType>, name: &'static str) -> PyResult<Self> {
+        let descriptor = exact_type_mro_attribute(py, class, name)?.into_bound(py);
+        // SAFETY: both pointers are live while the GIL is held. The static
+        // member-descriptor type, PyType_GetSlot, and these two slot IDs are
+        // part of the CPython Stable ABI supported by abi3-py312.
+        if unsafe {
+            pyo3::ffi::Py_IS_TYPE(
+                descriptor.as_ptr(),
+                std::ptr::addr_of_mut!(pyo3::ffi::PyMemberDescr_Type),
+            )
+        } == 0
+        {
+            return Err(py_type_error(format!(
+                "successor model {name} storage is not a canonical member descriptor"
+            )));
+        }
+        let descriptor_name: String =
+            py_getattr_cstr(py, &descriptor, pyo3::ffi::c_str!("__name__"))?
+                .bind(py)
+                .extract()?;
+        if descriptor_name != name {
+            return Err(py_type_error(format!(
+                "successor model member descriptor has the wrong name for {name}"
+            )));
+        }
+        let owner = py_getattr_cstr(py, &descriptor, pyo3::ffi::c_str!("__objclass__"))?
+            .into_bound(py)
+            .downcast_into::<PyType>()
+            .map_err(|_| py_type_error("successor model member descriptor owner is not a type"))?;
+        // SAFETY: class and owner are live exact PyType objects under the GIL.
+        if unsafe {
+            pyo3::ffi::PyType_IsSubtype(
+                class.as_ptr().cast(),
+                owner.as_ptr().cast::<pyo3::ffi::PyTypeObject>(),
+            )
+        } == 0
+        {
+            return Err(py_type_error(format!(
+                "successor model class does not carry the canonical {name} slot"
+            )));
+        }
+        let descriptor_type = descriptor.get_type();
+        // SAFETY: the exact descriptor type is live under the GIL and the
+        // queried slots are Stable-ABI type slots.
+        let getter = unsafe {
+            pyo3::ffi::PyType_GetSlot(descriptor_type.as_ptr().cast(), pyo3::ffi::Py_tp_descr_get)
+        };
+        // SAFETY: same justification as for the getter.
+        let setter = unsafe {
+            pyo3::ffi::PyType_GetSlot(descriptor_type.as_ptr().cast(), pyo3::ffi::Py_tp_descr_set)
+        };
+        if getter.is_null() || setter.is_null() {
+            return Err(py_type_error(
+                "successor model member descriptor lacks stable get/set slots",
+            ));
+        }
+        // SAFETY: PyType_GetSlot returned the function pointer associated with
+        // the exact slot ID and the Stable-ABI function signature.
+        let getter = unsafe {
+            std::mem::transmute::<*mut std::ffi::c_void, pyo3::ffi::descrgetfunc>(getter)
+        };
+        // SAFETY: same, for Py_tp_descr_set.
+        let setter = unsafe {
+            std::mem::transmute::<*mut std::ffi::c_void, pyo3::ffi::descrsetfunc>(setter)
+        };
+        Ok(Self {
+            name,
+            descriptor: descriptor.unbind(),
+            owner: owner.unbind(),
+            getter,
+            setter,
+        })
+    }
+
+    fn validate_owner(&self, py: Python<'_>, class: &Bound<'_, PyType>) -> PyResult<()> {
+        // SAFETY: class and the retained owner are live PyType objects under
+        // the uninterrupted worker GIL.
+        if unsafe {
+            pyo3::ffi::PyType_IsSubtype(class.as_ptr().cast(), self.owner.bind(py).as_ptr().cast())
+        } == 0
+        {
+            return Err(py_type_error(
+                "successor model slot owner is no longer in the exact class MRO",
+            ));
+        }
+        if !exact_type_mro_attribute(py, class, self.name)?
+            .bind(py)
+            .is(self.descriptor.bind(py))
+        {
+            return Err(py_type_error(
+                "successor model effective member descriptor changed after installation",
+            ));
+        }
+        Ok(())
+    }
+
+    fn get(&self, py: Python<'_>, instance: &Bound<'_, PyAny>) -> PyResult<PyObject> {
+        let value = unsafe {
+            (self.getter)(
+                self.descriptor.bind(py).as_ptr(),
+                instance.as_ptr(),
+                instance.get_type().as_ptr(),
+            )
+        };
+        if value.is_null() {
+            Err(PyErr::fetch(py))
+        } else {
+            // SAFETY: a non-null descriptor-get result is one owned reference.
+            Ok(unsafe { PyObject::from_owned_ptr(py, value) })
+        }
+    }
+
+    fn set(
+        &self,
+        py: Python<'_>,
+        instance: &Bound<'_, PyAny>,
+        value: &Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        // SAFETY: the retained exact descriptor, compatible facade, and value
+        // are alive under the GIL. Final validation established applicability.
+        let status = unsafe {
+            (self.setter)(
+                self.descriptor.bind(py).as_ptr(),
+                instance.as_ptr(),
+                value.as_ptr(),
+            )
+        };
+        if status == 0 {
+            Ok(())
+        } else {
+            Err(PyErr::fetch(py))
+        }
+    }
+
+    fn set_infallible(
+        &self,
+        py: Python<'_>,
+        instance: &Bound<'_, PyAny>,
+        value: &Bound<'_, PyAny>,
+    ) {
+        if self.set(py, instance, value).is_err() {
+            fatal_batch_invariant(pyo3::ffi::c_str!(
+                "validated projected facade member assignment failed"
+            ));
+        }
+    }
+}
+
+impl ProjectedFacadeSlots {
+    fn capture(
+        py: Python<'_>,
+        class: &Py<PyType>,
+        attribute_value: bool,
+        allocator: Arc<ProjectedHeapAllocator>,
+    ) -> PyResult<Self> {
+        let class = class.bind(py);
+        let trusted_mro = exact_type_mro(py, class)?;
+        validate_projected_generic_layout(py, class, allocator.as_ref(), &trusted_mro)?;
+        let slots = Self {
+            class: class.clone().unbind(),
+            values: ProjectedFacadeSlot::capture(py, class, "_values")?,
+            iid: ProjectedFacadeSlot::capture(py, class, "_iid")?,
+            attribute_value: attribute_value
+                .then(|| ProjectedFacadeSlot::capture(py, class, "_attribute_value"))
+                .transpose()?,
+            allocator,
+            trusted_mro,
+        };
+        slots.validate_layout(py)?;
+        slots.probe_storage(py)?;
+        Ok(slots)
+    }
+
+    fn validate_layout(&self, py: Python<'_>) -> PyResult<()> {
+        let class = self.class.bind(py);
+        validate_projected_generic_layout(py, class, self.allocator.as_ref(), &self.trusted_mro)?;
+        self.values.validate_owner(py, class)?;
+        self.iid.validate_owner(py, class)?;
+        if let Some(attribute_value) = &self.attribute_value {
+            attribute_value.validate_owner(py, class)?;
+        }
+        Ok(())
+    }
+
+    fn probe_storage(&self, py: Python<'_>) -> PyResult<()> {
+        let mut members = vec![&self.values, &self.iid];
+        if let Some(attribute_value) = &self.attribute_value {
+            members.push(attribute_value);
+        }
+        probe_projected_object_members(
+            py,
+            self.class.bind(py),
+            self.allocator.object_new.bind(py),
+            &members,
+        )
+    }
+
+    fn snapshot(
+        &self,
+        py: Python<'_>,
+        instance: &Bound<'_, PyAny>,
+    ) -> PyResult<ProjectedFacadeSnapshot> {
+        let class = self.class.bind(py);
+        if instance.get_type().as_ptr() != class.as_ptr() {
+            return Err(py_type_error(
+                "successor batch requires the manager's exact registered class",
+            ));
+        }
+        self.validate_layout(py)?;
+        Ok(ProjectedFacadeSnapshot {
+            iid: self.iid.get(py, instance)?,
+            values: self.values.get(py, instance)?,
+        })
+    }
+
+    fn snapshot_after_fence(
+        &self,
+        py: Python<'_>,
+        instance: &Bound<'_, PyAny>,
+    ) -> PyResult<ProjectedFacadeSnapshot> {
+        if instance.get_type().as_ptr() != self.class.bind(py).as_ptr() {
+            return Err(py_type_error(
+                "successor batch facade class changed after its pre-provider layout fence",
+            ));
+        }
+        Ok(ProjectedFacadeSnapshot {
+            iid: self.iid.get(py, instance)?,
+            values: self.values.get(py, instance)?,
+        })
+    }
+
+    fn allocate_fresh<'py>(
+        &self,
+        py: Python<'py>,
+        pool: &BatchHydrationPool,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let class = self.class.bind(py);
+        // The full static-MRO/allocator/finalizer fence ran immediately before
+        // provider polling while this worker already held the uninterrupted
+        // GIL. Mapper hydration contains no Python callbacks, so the retained
+        // exact heap type and its layout cannot change before this call.
+        let instance = self.allocator.object_new.bind(py).call1((class,))?;
+        pool.retain_fresh(&instance, class)?;
+        Ok(instance)
+    }
+
+    fn allocate_initialized_after_fence(
+        &self,
+        py: Python<'_>,
+        values: &Bound<'_, PyAny>,
+        iid: &Bound<'_, PyAny>,
+        attribute_value: Option<&Bound<'_, PyAny>>,
+        pool: &BatchHydrationPool,
+    ) -> PyResult<PyObject> {
+        if self.attribute_value.is_some() != attribute_value.is_some() {
+            return Err(py_runtime_error(
+                "successor generated hydration slot form was inconsistent",
+            ));
+        }
+        // Every fallible replacement object is fully built before the exact
+        // object allocation. The remaining T_OBJECT_EX writes cannot allocate
+        // or invoke Python while all displaced values remain retained.
+        let instance = self.allocate_fresh(py, pool)?;
+        self.values.set_infallible(py, &instance, values);
+        self.iid.set_infallible(py, &instance, iid);
+        if let (Some(slot), Some(value)) = (&self.attribute_value, attribute_value) {
+            slot.set_infallible(py, &instance, value);
+        }
+        Ok(instance.unbind())
+    }
+
+    fn replace_infallible(
+        &self,
+        py: Python<'_>,
+        instance: &Bound<'_, PyAny>,
+        replacement: &ProjectedFacadeSnapshot,
+    ) {
+        self.values
+            .set_infallible(py, instance, replacement.values.bind(py));
+        self.iid
+            .set_infallible(py, instance, replacement.iid.bind(py));
+    }
+}
+
+const PROJECTED_LAYOUT_FLAG_MASK: std::ffi::c_ulong = pyo3::ffi::Py_TPFLAGS_HEAPTYPE
+    | pyo3::ffi::Py_TPFLAGS_HAVE_GC
+    | pyo3::ffi::Py_TPFLAGS_IS_ABSTRACT
+    | pyo3::ffi::Py_TPFLAGS_IMMUTABLETYPE
+    | pyo3::ffi::Py_TPFLAGS_ITEMS_AT_END;
+
+fn exact_type_layout_int(
+    py: Python<'_>,
+    class: &Bound<'_, PyType>,
+    name: &std::ffi::CStr,
+) -> PyResult<isize> {
+    py_getattr_cstr(py, class.as_any(), name)?
+        .bind(py)
+        .extract()
+}
+
+fn exact_type_mro(py: Python<'_>, class: &Bound<'_, PyType>) -> PyResult<Vec<ProjectedTypeLayout>> {
+    if unsafe {
+        pyo3::ffi::Py_IS_TYPE(
+            class.as_ptr(),
+            std::ptr::addr_of_mut!(pyo3::ffi::PyType_Type),
+        )
+    } == 0
+    {
+        return Err(py_type_error(
+            "successor generated classes require the exact built-in type metaclass",
+        ));
+    }
+    let mro = py_getattr_cstr(py, class.as_any(), pyo3::ffi::c_str!("__mro__"))?
+        .into_bound(py)
+        .downcast_into_exact::<PyTuple>()
+        .map_err(|_| py_type_error("successor generated class MRO is not an exact tuple"))?;
+    let mut retained = Vec::new();
+    retained
+        .try_reserve_exact(mro.len())
+        .map_err(|_| py_sdk_diagnostic(ProjectedBatch::binding_allocation_failure()))?;
+    for base in mro.iter() {
+        let base = base.downcast_into::<PyType>().map_err(|_| {
+            py_type_error("successor generated class MRO contains a non-type entry")
+        })?;
+        if unsafe {
+            pyo3::ffi::Py_IS_TYPE(
+                base.as_ptr(),
+                std::ptr::addr_of_mut!(pyo3::ffi::PyType_Type),
+            )
+        } == 0
+        {
+            return Err(py_type_error(
+                "successor generated class MRO uses a custom metaclass",
+            ));
+        }
+        let flags = unsafe { pyo3::ffi::PyType_GetFlags(base.as_ptr().cast()) }
+            & PROJECTED_LAYOUT_FLAG_MASK;
+        let basicsize = exact_type_layout_int(py, &base, pyo3::ffi::c_str!("__basicsize__"))?;
+        let itemsize = exact_type_layout_int(py, &base, pyo3::ffi::c_str!("__itemsize__"))?;
+        let dictoffset = exact_type_layout_int(py, &base, pyo3::ffi::c_str!("__dictoffset__"))?;
+        let weakrefoffset =
+            exact_type_layout_int(py, &base, pyo3::ffi::c_str!("__weakrefoffset__"))?;
+        retained.push(ProjectedTypeLayout {
+            class: base.unbind(),
+            flags,
+            basicsize,
+            itemsize,
+            dictoffset,
+            weakrefoffset,
+        });
+    }
+    Ok(retained)
+}
+
+fn validate_exact_type_mro(
+    py: Python<'_>,
+    class: &Bound<'_, PyType>,
+    trusted_mro: &[ProjectedTypeLayout],
+) -> PyResult<()> {
+    let current = exact_type_mro(py, class)?;
+    if current.len() != trusted_mro.len()
+        || current.iter().zip(trusted_mro).any(|(current, trusted)| {
+            !current.class.bind(py).is(trusted.class.bind(py))
+                || current.flags != trusted.flags
+                || current.basicsize != trusted.basicsize
+                || current.itemsize != trusted.itemsize
+                || current.dictoffset != trusted.dictoffset
+                || current.weakrefoffset != trusted.weakrefoffset
+        })
+    {
+        return Err(py_type_error(
+            "successor generated class MRO changed after projection installation",
+        ));
+    }
+    Ok(())
+}
+
+fn type_slot(class: &Bound<'_, PyType>, slot: i32) -> *mut std::ffi::c_void {
+    // SAFETY: class is a live exact type under the GIL and callers use only
+    // Stable-ABI slot identifiers supported by the abi3-py312 floor.
+    unsafe { pyo3::ffi::PyType_GetSlot(class.as_ptr().cast(), slot) }
+}
+
+fn probe_projected_object_members(
+    py: Python<'_>,
+    class: &Bound<'_, PyType>,
+    constructor: &Bound<'_, PyAny>,
+    members: &[&ProjectedFacadeSlot],
+) -> PyResult<()> {
+    let instance = constructor.call1((class,))?;
+    // SAFETY: exact pointer identity under the GIL without creating an owned
+    // type wrapper during this installation-only behavior probe.
+    if unsafe { pyo3::ffi::Py_TYPE(instance.as_ptr()) } != class.as_ptr().cast() {
+        return Err(py_type_error(
+            "trusted successor constructor returned the wrong exact class",
+        ));
+    }
+    let mut sentinels = Vec::new();
+    sentinels
+        .try_reserve_exact(members.len())
+        .map_err(|_| py_sdk_diagnostic(ProjectedBatch::binding_allocation_failure()))?;
+    for member in members {
+        let sentinel = fallible_python_dict(py)?.into_any().unbind();
+        member.set(py, &instance, sentinel.bind(py))?;
+        sentinels.push(sentinel);
+    }
+    for (member, sentinel) in members.iter().zip(&sentinels) {
+        let observed = member.get(py, &instance)?;
+        if !observed.bind(py).is(sentinel.bind(py)) {
+            return Err(py_type_error(
+                "successor generated member descriptors do not expose distinct writable object slots",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_projected_generic_layout(
+    py: Python<'_>,
+    class: &Bound<'_, PyType>,
+    trusted: &ProjectedHeapAllocator,
+    trusted_mro: &[ProjectedTypeLayout],
+) -> PyResult<()> {
+    validate_exact_type_mro(py, class, trusted_mro)?;
+    if trusted_mro.last().is_none_or(|base| {
+        base.class.bind(py).as_ptr()
+            != std::ptr::addr_of_mut!(pyo3::ffi::PyBaseObject_Type).cast::<pyo3::ffi::PyObject>()
+    }) {
+        return Err(py_type_error(
+            "successor generated classes must retain the exact object-rooted MRO",
+        ));
+    }
+    for (index, base) in trusted_mro.iter().enumerate() {
+        let layout = base;
+        let base = layout.class.bind(py);
+        if base.as_ptr()
+            == std::ptr::addr_of_mut!(pyo3::ffi::PyBaseObject_Type).cast::<pyo3::ffi::PyObject>()
+        {
+            continue;
+        }
+        let flags = unsafe { pyo3::ffi::PyType_GetFlags(base.as_ptr().cast()) };
+        if flags & pyo3::ffi::Py_TPFLAGS_HEAPTYPE == 0
+            || flags & pyo3::ffi::Py_TPFLAGS_HAVE_GC == 0
+            || (index == 0 && flags & pyo3::ffi::Py_TPFLAGS_IS_ABSTRACT != 0)
+            || flags & pyo3::ffi::Py_TPFLAGS_IMMUTABLETYPE != 0
+            || flags & pyo3::ffi::Py_TPFLAGS_ITEMS_AT_END != 0
+            || layout.itemsize != 0
+            || layout.dictoffset != 0
+        {
+            return Err(py_type_error(
+                "successor generated classes require an exact concrete Python heap MRO",
+            ));
+        }
+        let generic_allocator =
+            pyo3::ffi::PyType_GenericAlloc as *const () as *mut std::ffi::c_void;
+        if type_slot(base, pyo3::ffi::Py_tp_alloc) != generic_allocator {
+            return Err(py_type_error(
+                "successor generated classes require the canonical generic allocator",
+            ));
+        }
+        if type_slot(base, pyo3::ffi::Py_tp_dealloc) as usize != trusted.trusted_deallocator {
+            return Err(py_type_error(
+                "successor generated classes require the trusted Python heap deallocator",
+            ));
+        }
+        if type_slot(base, pyo3::ffi::Py_tp_new) as usize != trusted.trusted_constructor {
+            return Err(py_type_error(
+                "successor generated classes require the exact object constructor family",
+            ));
+        }
+        if type_slot(base, pyo3::ffi::Py_tp_free) as usize != trusted.trusted_free
+            || type_slot(base, pyo3::ffi::Py_tp_traverse) as usize != trusted.trusted_traverse
+            || type_slot(base, pyo3::ffi::Py_tp_clear) as usize != trusted.trusted_clear
+            || type_slot(base, pyo3::ffi::Py_tp_is_gc) as usize != trusted.trusted_is_gc
+            || flags & (pyo3::ffi::Py_TPFLAGS_HAVE_GC | pyo3::ffi::Py_TPFLAGS_ITEMS_AT_END)
+                != trusted.trusted_gc_flags
+            || layout.basicsize <= 0
+        {
+            return Err(py_type_error(
+                "successor generated classes left the trusted Python heap lifecycle family",
+            ));
+        }
+        if !type_slot(base, pyo3::ffi::Py_tp_finalize).is_null()
+            || !type_slot(base, pyo3::ffi::Py_tp_del).is_null()
+        {
+            return Err(py_type_error(
+                "successor generated classes cannot define Python finalizers",
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn install_projection(
@@ -1638,6 +3787,12 @@ fn install_projection(
             models.len()
         )));
     }
+    let ordered_projection = projection_uses_ordered_collections(&runtime);
+    let successor_batch = runtime.generator_handlers()
+        == [type_bridge_contract::projection::ProjectionHandler::python_v2()];
+    let trusted_type_slots = successor_batch
+        .then(|| trusted_python_heap_type_slots(py))
+        .transpose()?;
     let mut registered = BTreeMap::new();
     let mut pointers = BTreeSet::new();
     for (complete, reference) in models {
@@ -1654,11 +3809,49 @@ fn install_projection(
             (Some(_), None) => return Err(py_value_error("projection reference class is missing")),
             (None, Some(_)) => return Err(py_value_error("unexpected projection reference class")),
         }
+        let batch_slots = successor_batch
+            .then(|| {
+                ProjectedFacadeSlots::capture(
+                    py,
+                    &complete,
+                    id.kind() == TypeKind::Attribute,
+                    Arc::clone(
+                        trusted_type_slots
+                            .as_ref()
+                            .expect("successor installation captured trusted type slots"),
+                    ),
+                )
+            })
+            .transpose()?
+            .map(Arc::new);
+        let batch_reference_slots = successor_batch
+            .then(|| {
+                reference
+                    .as_ref()
+                    .map(|reference| {
+                        ProjectedFacadeSlots::capture(
+                            py,
+                            reference,
+                            false,
+                            Arc::clone(
+                                trusted_type_slots
+                                    .as_ref()
+                                    .expect("successor installation captured trusted type slots"),
+                            ),
+                        )
+                    })
+                    .transpose()
+            })
+            .transpose()?
+            .flatten()
+            .map(Arc::new);
         registered.insert(
             id,
             RegisteredModel {
                 complete,
                 reference,
+                batch_slots,
+                batch_reference_slots,
             },
         );
     }
@@ -1667,15 +3860,484 @@ fn install_projection(
             "projection model registration coverage is incomplete",
         ));
     }
-    let successor = projection_uses_ordered_collections(&runtime);
     let installed = Arc::new(InstalledRuntimeProjection::try_new(runtime).map_err(py_orm_error)?);
+    let named_zone_marker = ordered_projection
+        .then(|| named_zone_marker_class(py))
+        .transpose()?;
+    let named_zone_slots = match (successor_batch, named_zone_marker.as_ref()) {
+        (true, Some(marker)) => Some(ProjectedNamedZoneSlots::capture(
+            py,
+            marker,
+            Arc::clone(
+                trusted_type_slots
+                    .as_ref()
+                    .expect("successor installation captured trusted type slots"),
+            ),
+        )?),
+        _ => None,
+    };
+    let scalar_hydration = successor_batch
+        .then(|| ProjectedScalarHydration::capture(py))
+        .transpose()?;
     Ok(Arc::new(InstalledPackage {
         projection: installed,
         models: registered,
         types_by_label,
-        facade_origins: FacadeOriginRegistry::default(),
-        named_zone_marker: successor.then(|| named_zone_marker_class(py)).transpose()?,
+        facade_origins: FacadeOriginRegistry::new(py)?,
+        named_zone_marker,
+        named_zone_slots,
+        scalar_hydration,
     }))
+}
+
+fn trusted_python_heap_type_slots(py: Python<'_>) -> PyResult<Arc<ProjectedHeapAllocator>> {
+    // Anchor directly to the immutable Stable-ABI type objects. Importing
+    // `builtins` would allow pre-install monkeypatching to supply both the
+    // alleged allocator and its probe family.
+    let type_fn = unsafe {
+        Bound::<PyAny>::from_borrowed_ptr(py, std::ptr::addr_of_mut!(pyo3::ffi::PyType_Type).cast())
+    }
+    .downcast_into::<PyType>()?;
+    let object = unsafe {
+        Bound::<PyAny>::from_borrowed_ptr(
+            py,
+            std::ptr::addr_of_mut!(pyo3::ffi::PyBaseObject_Type).cast(),
+        )
+    }
+    .downcast_into::<PyType>()?;
+    let object_new = py_getattr_cstr(py, object.as_any(), pyo3::ffi::c_str!("__new__"))?;
+    let bases = PyTuple::new(py, [object.as_any()])?;
+    let namespace = PyDict::new(py);
+    let slots_name = fallible_python_string(py, "__slots__")?;
+    namespace.set_item(slots_name.bind(py), PyTuple::empty(py))?;
+    let probe_name = fallible_python_string(py, "_TypeBridgeGeneratedLayoutProbe")?;
+    let probe = type_fn
+        .call1((probe_name.bind(py), bases, namespace))?
+        .downcast_into::<PyType>()?;
+    // SAFETY: the exact probe type is live under the GIL and both IDs are
+    // Stable-ABI type slots.
+    let deallocator = unsafe {
+        pyo3::ffi::PyType_GetSlot(
+            probe.as_ptr().cast::<pyo3::ffi::PyTypeObject>(),
+            pyo3::ffi::Py_tp_dealloc,
+        )
+    } as usize;
+    let constructor = type_slot(&object, pyo3::ffi::Py_tp_new) as usize;
+    let trusted_free = type_slot(&probe, pyo3::ffi::Py_tp_free) as usize;
+    let trusted_traverse = type_slot(&probe, pyo3::ffi::Py_tp_traverse) as usize;
+    let trusted_clear = type_slot(&probe, pyo3::ffi::Py_tp_clear) as usize;
+    let trusted_is_gc = type_slot(&probe, pyo3::ffi::Py_tp_is_gc) as usize;
+    let trusted_gc_flags = unsafe { pyo3::ffi::PyType_GetFlags(probe.as_ptr().cast()) }
+        & (pyo3::ffi::Py_TPFLAGS_HAVE_GC | pyo3::ffi::Py_TPFLAGS_ITEMS_AT_END);
+    if deallocator == 0 || constructor == 0 {
+        return Err(py_runtime_error(
+            "trusted Python heap layout probe omitted required type slots",
+        ));
+    }
+    Ok(Arc::new(ProjectedHeapAllocator {
+        object_new,
+        trusted_deallocator: deallocator,
+        trusted_constructor: constructor,
+        trusted_free,
+        trusted_traverse,
+        trusted_clear,
+        trusted_is_gc,
+        trusted_gc_flags,
+    }))
+}
+
+impl ProjectedScalarHydration {
+    fn capture(py: Python<'_>) -> PyResult<Self> {
+        let datetime = py.import("datetime")?;
+        let date_type = exact_immutable_stdlib_type(&datetime, "date", "datetime")?;
+        let datetime_type = exact_immutable_stdlib_type(&datetime, "datetime", "datetime")?;
+        let timedelta_type = exact_immutable_stdlib_type(&datetime, "timedelta", "datetime")?;
+        let timezone_type = exact_immutable_stdlib_type(&datetime, "timezone", "datetime")?;
+        let zoneinfo = py.import("zoneinfo")?;
+        let zoneinfo_type = exact_immutable_stdlib_type(&zoneinfo, "ZoneInfo", "zoneinfo")?;
+        let decimal = py.import("decimal")?;
+        let decimal_type = exact_immutable_stdlib_type(&decimal, "Decimal", "decimal")?;
+        Ok(Self {
+            datetime_replace: py_getattr_cstr(
+                py,
+                datetime_type.bind(py).as_any(),
+                pyo3::ffi::c_str!("replace"),
+            )?,
+            tzinfo_key: fallible_python_string(py, "tzinfo")?,
+            date_type,
+            datetime_type,
+            timedelta_type,
+            timezone_type,
+            zoneinfo_type,
+            decimal_type,
+        })
+    }
+
+    fn projected_to_py(
+        &self,
+        py: Python<'_>,
+        value: &CanonicalValue,
+        named_zone: Option<&ProjectedNamedZoneSlots>,
+        pool: &BatchHydrationPool,
+    ) -> PyResult<PyObject> {
+        match value {
+            CanonicalValue::String(value) => fallible_python_string(py, value.as_str()),
+            CanonicalValue::Long(value) => fallible_python_i64(py, *value),
+            CanonicalValue::Double(value) => {
+                // SAFETY: Stable-ABI primitive constructor under the GIL.
+                let value = unsafe { pyo3::ffi::PyFloat_FromDouble(value.get()) };
+                // SAFETY: non-null is one owned exact-float reference.
+                unsafe { Bound::<PyAny>::from_owned_ptr_or_err(py, value) }.map(Bound::unbind)
+            }
+            CanonicalValue::Boolean(value) => {
+                // SAFETY: Stable-ABI primitive constructor under the GIL.
+                let value = unsafe { pyo3::ffi::PyBool_FromLong(i64::from(*value)) };
+                // SAFETY: non-null is one owned exact-bool reference.
+                unsafe { Bound::<PyAny>::from_owned_ptr_or_err(py, value) }.map(Bound::unbind)
+            }
+            CanonicalValue::Date(value) => self.date_from_canonical(py, *value),
+            CanonicalValue::DateTime(value) => self.datetime_from_canonical(py, *value),
+            CanonicalValue::DateTimeTz(value) => {
+                self.datetime_tz_from_canonical(py, value, named_zone, pool)
+            }
+            CanonicalValue::Decimal(value) => {
+                let value = fallible_python_string(py, value.as_str())?;
+                self.decimal_type
+                    .bind(py)
+                    .call1((value.bind(py),))
+                    .map(Bound::unbind)
+            }
+            CanonicalValue::Duration(value) => self.duration_from_canonical(py, *value),
+        }
+    }
+
+    fn date_from_canonical(&self, py: Python<'_>, value: CanonicalDate) -> PyResult<PyObject> {
+        let (year, month, day) = value.components();
+        let year = fallible_python_i64(py, i64::from(year))?;
+        let month = fallible_python_i64(py, i64::from(month))?;
+        let day = fallible_python_i64(py, i64::from(day))?;
+        let value = self
+            .date_type
+            .bind(py)
+            .call1((year.bind(py), month.bind(py), day.bind(py)))?;
+        if !value.get_type().is(self.date_type.bind(py)) {
+            return Err(py_runtime_error("trusted date constructor changed type"));
+        }
+        Ok(value.unbind())
+    }
+
+    fn datetime_from_canonical(
+        &self,
+        py: Python<'_>,
+        value: CanonicalDateTime,
+    ) -> PyResult<PyObject> {
+        let (year, month, day) = value.date().components();
+        let (hour, minute, second, nanosecond) = value.time().components();
+        if nanosecond % 1_000 != 0 {
+            return Err(py_value_error(
+                "datetime hydration requires microsecond precision",
+            ));
+        }
+        let year = fallible_python_i64(py, i64::from(year))?;
+        let month = fallible_python_i64(py, i64::from(month))?;
+        let day = fallible_python_i64(py, i64::from(day))?;
+        let hour = fallible_python_i64(py, i64::from(hour))?;
+        let minute = fallible_python_i64(py, i64::from(minute))?;
+        let second = fallible_python_i64(py, i64::from(second))?;
+        let microsecond = fallible_python_i64(py, i64::from(nanosecond / 1_000))?;
+        let value = self.datetime_type.bind(py).call1((
+            year.bind(py),
+            month.bind(py),
+            day.bind(py),
+            hour.bind(py),
+            minute.bind(py),
+            second.bind(py),
+            microsecond.bind(py),
+        ))?;
+        if !value.get_type().is(self.datetime_type.bind(py)) {
+            return Err(py_runtime_error(
+                "trusted datetime constructor changed type",
+            ));
+        }
+        Ok(value.unbind())
+    }
+
+    fn timedelta_from_components(
+        &self,
+        py: Python<'_>,
+        days: i64,
+        seconds: i64,
+        micros: i64,
+    ) -> PyResult<PyObject> {
+        let days = fallible_python_i64(py, days)?;
+        let seconds = fallible_python_i64(py, seconds)?;
+        let micros = fallible_python_i64(py, micros)?;
+        let value = self.timedelta_type.bind(py).call1((
+            days.bind(py),
+            seconds.bind(py),
+            micros.bind(py),
+        ))?;
+        if !value.get_type().is(self.timedelta_type.bind(py)) {
+            return Err(py_runtime_error(
+                "trusted timedelta constructor changed type",
+            ));
+        }
+        Ok(value.unbind())
+    }
+
+    fn duration_from_canonical(
+        &self,
+        py: Python<'_>,
+        value: CanonicalDuration,
+    ) -> PyResult<PyObject> {
+        let (negative, months, days, seconds, nanosecond) = value.components();
+        if negative || months != 0 || nanosecond % 1_000 != 0 {
+            return Err(py_value_error(
+                "duration hydration requires a nonnegative day-time value at microsecond precision",
+            ));
+        }
+        let days = i64::try_from(days)
+            .map_err(|_| py_value_error("duration hydration day count exceeds the Python range"))?;
+        let seconds = i64::try_from(seconds).map_err(|_| {
+            py_value_error("duration hydration second count exceeds the Python range")
+        })?;
+        self.timedelta_from_components(py, days, seconds, i64::from(nanosecond / 1_000))
+    }
+
+    fn datetime_tz_from_canonical(
+        &self,
+        py: Python<'_>,
+        value: &CanonicalDateTimeTz,
+        named_zone: Option<&ProjectedNamedZoneSlots>,
+        pool: &BatchHydrationPool,
+    ) -> PyResult<PyObject> {
+        let resolved = self.datetime_from_canonical(py, value.local())?;
+        let offset =
+            self.timedelta_from_components(py, 0, i64::from(value.effective_offset_seconds()), 0)?;
+        let offset = offset.into_bound(py);
+        let timezone = match value.zone() {
+            TimeZoneDesignator::Named(zone) => named_zone
+                .ok_or_else(|| {
+                    py_runtime_error("named-zone hydration requires installed successor slots")
+                })?
+                .allocate(py, offset.clone(), zone, pool)?,
+            TimeZoneDesignator::Utc | TimeZoneDesignator::OffsetSeconds(_) => {
+                let timezone = self.timezone_type.bind(py).call1((offset,))?;
+                if !timezone.get_type().is(self.timezone_type.bind(py)) {
+                    return Err(py_runtime_error(
+                        "trusted timezone constructor changed type",
+                    ));
+                }
+                timezone.unbind()
+            }
+        };
+        let kwargs = fallible_python_dict(py)?;
+        kwargs.set_item(self.tzinfo_key.bind(py), timezone)?;
+        let replaced = self
+            .datetime_replace
+            .bind(py)
+            .call((resolved.bind(py),), Some(&kwargs))?;
+        if !replaced.get_type().is(self.datetime_type.bind(py)) {
+            return Err(py_runtime_error(
+                "trusted datetime replacement changed type",
+            ));
+        }
+        Ok(replaced.unbind())
+    }
+}
+
+impl ProjectedNamedZoneSlots {
+    fn capture(
+        py: Python<'_>,
+        class: &Py<PyType>,
+        heap_allocator: Arc<ProjectedHeapAllocator>,
+    ) -> PyResult<Self> {
+        let datetime = py.import("datetime")?;
+        let base = exact_immutable_stdlib_type(&datetime, "tzinfo", "datetime")?;
+        let constructor =
+            py_getattr_cstr(py, base.bind(py).as_any(), pyo3::ffi::c_str!("__new__"))?;
+        let trusted_constructor = type_slot(base.bind(py), pyo3::ffi::Py_tp_new) as usize;
+        if trusted_constructor == 0 {
+            return Err(py_runtime_error(
+                "trusted datetime.tzinfo constructor slot is absent",
+            ));
+        }
+        let allocator = ProjectedNamedZoneAllocator {
+            constructor,
+            trusted_constructor,
+            base,
+        };
+        let trusted_mro = exact_type_mro(py, class.bind(py))?;
+        validate_projected_named_zone_layout(
+            py,
+            class.bind(py),
+            heap_allocator.as_ref(),
+            &allocator,
+            &trusted_mro,
+        )?;
+        let slots = Self {
+            class: class.clone_ref(py),
+            offset: ProjectedFacadeSlot::capture(py, class.bind(py), "_offset")?,
+            zone: ProjectedFacadeSlot::capture(py, class.bind(py), "_type_bridge_zone")?,
+            heap_allocator,
+            allocator,
+            trusted_mro,
+        };
+        slots.validate_layout(py)?;
+        probe_projected_object_members(
+            py,
+            slots.class.bind(py),
+            slots.allocator.constructor.bind(py),
+            &[&slots.offset, &slots.zone],
+        )?;
+        Ok(slots)
+    }
+
+    fn validate_layout(&self, py: Python<'_>) -> PyResult<()> {
+        let class = self.class.bind(py);
+        validate_projected_named_zone_layout(
+            py,
+            class,
+            self.heap_allocator.as_ref(),
+            &self.allocator,
+            &self.trusted_mro,
+        )?;
+        self.offset.validate_owner(py, class)?;
+        self.zone.validate_owner(py, class)
+    }
+
+    fn allocate(
+        &self,
+        py: Python<'_>,
+        offset: Bound<'_, PyAny>,
+        zone: &str,
+        pool: &BatchHydrationPool,
+    ) -> PyResult<PyObject> {
+        let zone = fallible_python_string(py, zone)?;
+        // The all-model layout fence ran before provider polling and the GIL
+        // has remained held without Python callbacks since then.
+        let class = self.class.bind(py);
+        let instance = self.allocator.constructor.bind(py).call1((class,))?;
+        pool.retain_fresh(&instance, class)?;
+        self.offset.set_infallible(py, &instance, &offset);
+        self.zone.set_infallible(py, &instance, zone.bind(py));
+        Ok(instance.unbind())
+    }
+}
+
+fn validate_projected_named_zone_layout(
+    py: Python<'_>,
+    class: &Bound<'_, PyType>,
+    heap: &ProjectedHeapAllocator,
+    allocator: &ProjectedNamedZoneAllocator,
+    trusted_mro: &[ProjectedTypeLayout],
+) -> PyResult<()> {
+    validate_exact_type_mro(py, class, trusted_mro)?;
+    let object_pointer =
+        std::ptr::addr_of_mut!(pyo3::ffi::PyBaseObject_Type).cast::<pyo3::ffi::PyObject>();
+    if trusted_mro.len() != 3
+        || !trusted_mro[0].class.bind(py).is(class)
+        || !trusted_mro[1].class.bind(py).is(allocator.base.bind(py))
+        || trusted_mro[2].class.bind(py).as_ptr() != object_pointer
+    {
+        return Err(py_type_error(
+            "successor named-zone class changed its exact datetime.tzinfo MRO",
+        ));
+    }
+    let flags = unsafe { pyo3::ffi::PyType_GetFlags(class.as_ptr().cast()) };
+    if flags & pyo3::ffi::Py_TPFLAGS_HEAPTYPE == 0
+        || flags & pyo3::ffi::Py_TPFLAGS_IS_ABSTRACT != 0
+        || flags & pyo3::ffi::Py_TPFLAGS_HAVE_GC == 0
+        || flags & pyo3::ffi::Py_TPFLAGS_IMMUTABLETYPE != 0
+        || flags & pyo3::ffi::Py_TPFLAGS_ITEMS_AT_END != 0
+        || trusted_mro[0].itemsize != 0
+        || trusted_mro[0].dictoffset != 0
+    {
+        return Err(py_type_error(
+            "successor named-zone class must remain a concrete heap type",
+        ));
+    }
+    let generic_allocator = pyo3::ffi::PyType_GenericAlloc as *const () as *mut std::ffi::c_void;
+    if type_slot(class, pyo3::ffi::Py_tp_alloc) != generic_allocator
+        || type_slot(class, pyo3::ffi::Py_tp_dealloc) as usize != heap.trusted_deallocator
+        || type_slot(class, pyo3::ffi::Py_tp_new) as usize != allocator.trusted_constructor
+        || type_slot(class, pyo3::ffi::Py_tp_free) as usize != heap.trusted_free
+        || type_slot(class, pyo3::ffi::Py_tp_traverse) as usize != heap.trusted_traverse
+        || type_slot(class, pyo3::ffi::Py_tp_clear) as usize != heap.trusted_clear
+        || type_slot(class, pyo3::ffi::Py_tp_is_gc) as usize != heap.trusted_is_gc
+        || flags & (pyo3::ffi::Py_TPFLAGS_HAVE_GC | pyo3::ffi::Py_TPFLAGS_ITEMS_AT_END)
+            != heap.trusted_gc_flags
+        || !type_slot(class, pyo3::ffi::Py_tp_finalize).is_null()
+        || !type_slot(class, pyo3::ffi::Py_tp_del).is_null()
+    {
+        return Err(py_type_error(
+            "successor named-zone class left its trusted datetime.tzinfo allocation family",
+        ));
+    }
+    Ok(())
+}
+
+fn exact_immutable_stdlib_type(
+    module: &Bound<'_, PyModule>,
+    name: &'static str,
+    module_name: &'static str,
+) -> PyResult<Py<PyType>> {
+    let py = module.py();
+    let class = module.getattr(name)?.downcast_into::<PyType>()?;
+    // SAFETY: exact type pointer under the GIL; Stable-ABI flag query.
+    let flags =
+        unsafe { pyo3::ffi::PyType_GetFlags(class.as_ptr().cast::<pyo3::ffi::PyTypeObject>()) };
+    if flags & pyo3::ffi::Py_TPFLAGS_IMMUTABLETYPE == 0 {
+        return Err(py_type_error(format!(
+            "successor scalar type {module_name}.{name} is not immutable",
+        )));
+    }
+    let actual_name: String = py_getattr_cstr(py, class.as_any(), pyo3::ffi::c_str!("__name__"))?
+        .bind(py)
+        .extract()?;
+    let actual_module: String =
+        py_getattr_cstr(py, class.as_any(), pyo3::ffi::c_str!("__module__"))?
+            .bind(py)
+            .extract()?;
+    if actual_name != name || actual_module != module_name {
+        return Err(py_type_error(format!(
+            "successor scalar type {module_name}.{name} has untrusted identity",
+        )));
+    }
+    Ok(class.unbind())
+}
+
+fn fallible_python_string(py: Python<'_>, value: &str) -> PyResult<PyObject> {
+    let length = pyo3::ffi::Py_ssize_t::try_from(value.len())
+        .map_err(|_| py_value_error("Python string exceeds Py_ssize_t"))?;
+    // SAFETY: UTF-8 bytes remain live for the call; explicit length permits
+    // embedded NUL and the Stable-ABI constructor copies them.
+    let value = unsafe { pyo3::ffi::PyUnicode_FromStringAndSize(value.as_ptr().cast(), length) };
+    // SAFETY: non-null is one owned exact-str reference.
+    unsafe { Bound::<PyAny>::from_owned_ptr_or_err(py, value) }.map(Bound::unbind)
+}
+
+fn fallible_python_i64(py: Python<'_>, value: i64) -> PyResult<PyObject> {
+    // SAFETY: Stable-ABI exact-int constructor under the GIL.
+    let value = unsafe { pyo3::ffi::PyLong_FromLongLong(value) };
+    // SAFETY: non-null is one owned exact-int reference.
+    unsafe { Bound::<PyAny>::from_owned_ptr_or_err(py, value) }.map(Bound::unbind)
+}
+
+fn fallible_python_dict(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
+    // SAFETY: Stable-ABI exact-dict constructor under the GIL.
+    let value = unsafe { pyo3::ffi::PyDict_New() };
+    // SAFETY: non-null is one owned exact-dict reference.
+    unsafe { Bound::<PyAny>::from_owned_ptr_or_err(py, value) }?
+        .downcast_into_exact::<PyDict>()
+        .map_err(Into::into)
+}
+
+fn fallible_python_empty_list(py: Python<'_>) -> PyResult<PyObject> {
+    // SAFETY: Stable-ABI exact-list constructor under the GIL.
+    let value = unsafe { pyo3::ffi::PyList_New(0) };
+    // SAFETY: non-null is one owned exact-list reference.
+    unsafe { Bound::<PyAny>::from_owned_ptr_or_err(py, value) }.map(Bound::unbind)
 }
 
 fn named_zone_marker_class(py: Python<'_>) -> PyResult<Py<PyType>> {
@@ -1872,71 +4534,194 @@ fn project_create(
     id: &TypeId,
     instance: &Bound<'_, PyAny>,
 ) -> PyResult<ProjectedCreate> {
+    project_create_at(py, package, id, instance, &[])
+}
+
+fn project_create_at(
+    py: Python<'_>,
+    package: &InstalledPackage,
+    id: &TypeId,
+    instance: &Bound<'_, PyAny>,
+    operation_path: &[SdkDiagnosticPathSegment],
+) -> PyResult<ProjectedCreate> {
+    let values = py_getattr_cstr(py, instance, pyo3::ffi::c_str!("runtime_values"))?;
+    let values = values.bind(py).call0()?;
+    let values = values.downcast::<PyDict>()?;
+    project_create_from_values_at(py, package, id, values, operation_path, None)
+}
+
+fn project_create_from_snapshot_at(
+    py: Python<'_>,
+    package: &InstalledPackage,
+    id: &TypeId,
+    snapshot: &ProjectedFacadeSnapshot,
+    operation_path: &[SdkDiagnosticPathSegment],
+    batch_budget: &ProjectedBatchBindingBudget<'_>,
+) -> PyResult<ProjectedCreate> {
+    let values_path =
+        extended_projected_path(operation_path, [SdkDiagnosticPathSegment::Type(id.clone())])?;
+    let values = snapshot
+        .values
+        .bind(py)
+        .downcast_exact::<PyDict>()
+        .map_err(|_| {
+            py_sdk_diagnostic(batch_input_shape_diagnostic(
+                "generated_model_values_type_mismatch",
+                "The generated model runtime values slot must contain an exact dictionary",
+                &values_path,
+            ))
+        })?;
+    project_create_from_values_at(py, package, id, values, operation_path, Some(batch_budget))
+}
+
+fn project_create_from_values_at(
+    py: Python<'_>,
+    package: &InstalledPackage,
+    id: &TypeId,
+    values: &Bound<'_, PyDict>,
+    operation_path: &[SdkDiagnosticPathSegment],
+    batch_budget: Option<&ProjectedBatchBindingBudget<'_>>,
+) -> PyResult<ProjectedCreate> {
     let projection = package.projection.projection();
     let model = projection
         .models()
         .get(id)
         .ok_or_else(|| py_runtime_error("projection model is absent"))?;
-    let values = instance.call_method0("runtime_values")?;
-    let values = values.downcast::<PyDict>()?;
+    let mut create_budget =
+        ProjectedCreateBudget::try_new(&package.projection, id).map_err(|diagnostic| {
+            py_sdk_diagnostic(prefix_projected_diagnostic(diagnostic, operation_path))
+        })?;
 
-    let mut fields = Vec::with_capacity(model.create().fields().len());
+    let mut fields = Vec::new();
+    fields
+        .try_reserve_exact(model.create().fields().len())
+        .map_err(|_| py_sdk_diagnostic(ProjectedBatch::binding_allocation_failure()))?;
     for field in model.create().fields() {
+        if let Some(batch_budget) = batch_budget {
+            batch_budget.checkpoint().map_err(py_sdk_diagnostic)?;
+        }
         let token = model
             .query_tokens()
             .fields()
             .get(field.token())
             .ok_or_else(|| py_runtime_error("projected create field has no query token"))?;
-        let value = values.get_item(token.target_name().as_str())?;
-        let projected = projected_items(value.as_ref(), field.multiplicity())?
-            .into_iter()
-            .enumerate()
-            .map(|(index, value)| {
-                project_attribute_value(
-                    py,
-                    package,
-                    &value,
-                    &[
-                        SdkDiagnosticPathSegment::Type(id.clone()),
-                        SdkDiagnosticPathSegment::Field(field.token().clone()),
-                        SdkDiagnosticPathSegment::Index(projected_index(index)),
-                    ],
-                )
-            })
-            .collect::<PyResult<Vec<_>>>()?;
+        let target_name = fallible_python_string(py, token.target_name().as_str())?;
+        let value = values.get_item(target_name.bind(py))?;
+        let collection_path = extended_projected_path(
+            operation_path,
+            [
+                SdkDiagnosticPathSegment::Type(id.clone()),
+                SdkDiagnosticPathSegment::Field(field.token().clone()),
+            ],
+        )?;
+        let mut projected = Vec::new();
+        visit_projected_items(
+            value.as_ref(),
+            field.multiplicity(),
+            &collection_path,
+            |index, value| {
+                if let Some(batch_budget) = batch_budget {
+                    batch_budget.checkpoint().map_err(py_sdk_diagnostic)?;
+                }
+                let path = extended_projected_path(
+                    &collection_path,
+                    [SdkDiagnosticPathSegment::Index(projected_index(index))],
+                )?;
+                let value = project_attribute_value(py, package, &value, &path)?;
+                create_budget
+                    .try_add_field_value(&package.projection, field.token(), index, &value)
+                    .map_err(|diagnostic| {
+                        py_sdk_diagnostic(prefix_projected_diagnostic(diagnostic, operation_path))
+                    })?;
+                projected
+                    .try_reserve(1)
+                    .map_err(|_| py_sdk_diagnostic(ProjectedBatch::binding_allocation_failure()))?;
+                projected.push(value);
+                Ok(())
+            },
+        )?;
         fields.push((field.token().clone(), projected));
     }
 
-    let mut roles = Vec::with_capacity(model.create().roles().len());
+    let mut roles = Vec::new();
+    roles
+        .try_reserve_exact(model.create().roles().len())
+        .map_err(|_| py_sdk_diagnostic(ProjectedBatch::binding_allocation_failure()))?;
     for (role_id, role) in model.create().roles() {
+        if let Some(batch_budget) = batch_budget {
+            batch_budget.checkpoint().map_err(py_sdk_diagnostic)?;
+        }
         let token = model
             .query_tokens()
             .roles()
             .get(role_id)
             .ok_or_else(|| py_runtime_error("projected create role has no query token"))?;
-        let value = values.get_item(token.target_name().as_str())?;
-        let projected = projected_items(value.as_ref(), role.multiplicity())?
-            .into_iter()
-            .enumerate()
-            .map(|(index, value)| {
-                project_reference(
-                    py,
-                    package,
-                    &value,
-                    role.players(),
-                    &[
-                        SdkDiagnosticPathSegment::Type(id.clone()),
-                        SdkDiagnosticPathSegment::Role(role_id.clone()),
-                        SdkDiagnosticPathSegment::Index(projected_index(index)),
-                    ],
-                )
-            })
-            .collect::<PyResult<Vec<_>>>()?;
+        let target_name = fallible_python_string(py, token.target_name().as_str())?;
+        let value = values.get_item(target_name.bind(py))?;
+        let collection_path = extended_projected_path(
+            operation_path,
+            [
+                SdkDiagnosticPathSegment::Type(id.clone()),
+                SdkDiagnosticPathSegment::Role(role_id.clone()),
+            ],
+        )?;
+        let mut projected = Vec::new();
+        visit_projected_items(
+            value.as_ref(),
+            role.multiplicity(),
+            &collection_path,
+            |index, value| {
+                if let Some(batch_budget) = batch_budget {
+                    batch_budget.checkpoint().map_err(py_sdk_diagnostic)?;
+                }
+                let path = extended_projected_path(
+                    &collection_path,
+                    [SdkDiagnosticPathSegment::Index(projected_index(index))],
+                )?;
+                let reference = project_reference(py, package, &value, role.players(), &path)?;
+                create_budget
+                    .try_add_role_reference(&package.projection, role_id, index, &reference)
+                    .map_err(|diagnostic| {
+                        py_sdk_diagnostic(prefix_projected_diagnostic(diagnostic, operation_path))
+                    })?;
+                projected
+                    .try_reserve(1)
+                    .map_err(|_| py_sdk_diagnostic(ProjectedBatch::binding_allocation_failure()))?;
+                projected.push(reference);
+                Ok(())
+            },
+        )?;
         roles.push((role_id.clone(), projected));
     }
 
-    ProjectedCreate::try_new(&package.projection, id.clone(), fields, roles)
-        .map_err(py_sdk_diagnostic)
+    ProjectedCreate::try_new(&package.projection, id.clone(), fields, roles).map_err(|diagnostic| {
+        py_sdk_diagnostic(prefix_projected_diagnostic(diagnostic, operation_path))
+    })
+}
+
+fn extended_projected_path<const N: usize>(
+    prefix: &[SdkDiagnosticPathSegment],
+    suffix: [SdkDiagnosticPathSegment; N],
+) -> PyResult<Vec<SdkDiagnosticPathSegment>> {
+    let capacity = prefix
+        .len()
+        .checked_add(N)
+        .ok_or_else(|| py_sdk_diagnostic(ProjectedBatch::binding_allocation_failure()))?;
+    let mut path = Vec::new();
+    path.try_reserve_exact(capacity)
+        .map_err(|_| py_sdk_diagnostic(ProjectedBatch::binding_allocation_failure()))?;
+    path.extend(prefix.iter().cloned());
+    path.extend(suffix);
+    Ok(path)
+}
+
+fn prefix_projected_diagnostic(
+    diagnostic: SdkExecutionDiagnostic,
+    prefix: &[SdkDiagnosticPathSegment],
+) -> SdkExecutionDiagnostic {
+    diagnostic
+        .try_with_path_prefix(prefix.iter().cloned())
+        .unwrap_or_else(|_| SdkExecutionDiagnostic::internal_failure())
 }
 
 fn project_attribute_value(
@@ -1951,9 +4736,11 @@ fn project_attribute_value(
         ))
     })?;
     if attribute_id.kind() != TypeKind::Attribute || form != ProjectedModelForm::Complete {
-        return Err(py_type_error(
-            "projected field value is not an exact complete attribute wrapper",
-        ));
+        return Err(py_sdk_diagnostic(batch_input_shape_diagnostic(
+            "projected_field_value_form_mismatch",
+            "Projected field values must use an exact complete attribute wrapper",
+            operation_path,
+        )));
     }
     let attribute = package
         .projection
@@ -1965,15 +4752,36 @@ fn project_attribute_value(
         .declaration()
         .value_type()
         .ok_or_else(|| py_runtime_error("projection field attribute has no scalar domain"))?;
-    let scalar = value.call_method0("runtime_attribute_value")?;
-    let scalar = canonical_attribute_value_from_py(
+    let slots = package.batch_slots_for(&attribute_id, ProjectedModelForm::Complete)?;
+    let scalar = slots
+        .attribute_value
+        .as_ref()
+        .ok_or_else(|| py_runtime_error("successor attribute storage slot was not installed"))?
+        .get(py, value)
+        .map_err(|_| {
+            py_sdk_diagnostic(batch_input_shape_diagnostic(
+                "projected_attribute_value_slot_uninitialized",
+                "Projected field attribute storage is not initialized",
+                operation_path,
+            ))
+        })?;
+    let scalar = scalar.bind(py);
+    let scalar_hydration = package
+        .scalar_hydration
+        .as_ref()
+        .ok_or_else(|| py_runtime_error("successor scalar hydration plan was not installed"))?;
+    let scalar = canonical_projected_value_from_py_at(
         py,
-        &scalar,
+        scalar,
         projected_value_type(value_type),
+        scalar_hydration,
         package.named_zone_marker.as_ref(),
+        package.named_zone_slots.as_ref(),
+        operation_path,
     )?;
-    ProjectedAttributeValue::try_from_attribute_value(&package.projection, attribute_id, &scalar)
-        .map_err(py_sdk_diagnostic)
+    ProjectedAttributeValue::try_new(&package.projection, attribute_id, scalar).map_err(
+        |diagnostic| py_sdk_diagnostic(prefix_projected_diagnostic(diagnostic, operation_path)),
+    )
 }
 
 fn project_reference(
@@ -1989,17 +4797,21 @@ fn project_reference(
         ))
     })?;
     if !matches!(id.kind(), TypeKind::Entity | TypeKind::Relation) {
-        return Err(py_type_error(
-            "projected role player is not an exact entity or relation value",
-        ));
+        return Err(py_sdk_diagnostic(batch_input_shape_diagnostic(
+            "projected_role_player_kind_mismatch",
+            "Projected role players must use an exact entity or relation model",
+            operation_path,
+        )));
     }
     if !allowed_players
         .iter()
         .any(|player| player.id() == &id && player.form() == form)
     {
-        return Err(py_type_error(
-            "projected role player has an incompatible generated model form",
-        ));
+        return Err(py_sdk_diagnostic(batch_input_shape_diagnostic(
+            "projected_role_player_form_mismatch",
+            "Projected role player uses a generated model form outside this exact role",
+            operation_path,
+        )));
     }
     let model = package
         .projection
@@ -2007,8 +4819,24 @@ fn project_reference(
         .models()
         .get(&id)
         .ok_or_else(|| py_runtime_error("projection role-player model is absent"))?;
-    let values = value.call_method0("runtime_values")?;
-    let values = values.downcast::<PyDict>()?;
+    let slots = package.batch_slots_for(&id, form)?;
+    let values_path =
+        extended_projected_path(operation_path, [SdkDiagnosticPathSegment::Type(id.clone())])?;
+    let values = slots.values.get(py, value).map_err(|_| {
+        py_sdk_diagnostic(batch_input_shape_diagnostic(
+            "projected_role_player_values_slot_uninitialized",
+            "Projected role-player runtime values storage is not initialized",
+            &values_path,
+        ))
+    })?;
+    let values = values.bind(py);
+    let values = values.downcast_exact::<PyDict>().map_err(|_| {
+        py_sdk_diagnostic(batch_input_shape_diagnostic(
+            "projected_role_player_values_type_mismatch",
+            "Projected role-player runtime values must be an exact dictionary",
+            &values_path,
+        ))
+    })?;
     let mut keys = Vec::new();
     for key_id in model.reference_read().key_fields() {
         let token = model
@@ -2022,49 +4850,105 @@ fn project_reference(
             .iter()
             .find(|field| field.token() == key_id)
             .ok_or_else(|| py_runtime_error("projected reference key has no read field"))?;
-        let key = values.get_item(token.target_name().as_str())?;
-        for (index, item) in projected_items(key.as_ref(), read.multiplicity())?
-            .into_iter()
-            .enumerate()
-        {
-            let mut key_path = operation_path.to_vec();
-            key_path.extend([
+        let target_name = fallible_python_string(py, token.target_name().as_str())?;
+        let key = values.get_item(target_name.bind(py))?;
+        let key_collection_path = extended_projected_path(
+            operation_path,
+            [
                 SdkDiagnosticPathSegment::Type(id.clone()),
                 SdkDiagnosticPathSegment::Field(key_id.clone()),
-                SdkDiagnosticPathSegment::Index(projected_index(index)),
-            ]);
-            keys.push((
-                key_id.clone(),
-                project_attribute_value(py, package, &item, &key_path)?,
-            ));
-        }
+            ],
+        )?;
+        visit_projected_items(
+            key.as_ref(),
+            read.multiplicity(),
+            &key_collection_path,
+            |index, item| {
+                let key_path = extended_projected_path(
+                    &key_collection_path,
+                    [SdkDiagnosticPathSegment::Index(projected_index(index))],
+                )?;
+                let projected = project_attribute_value(py, package, &item, &key_path)?;
+                keys.try_reserve(1)
+                    .map_err(|_| py_sdk_diagnostic(ProjectedBatch::binding_allocation_failure()))?;
+                keys.push((key_id.clone(), projected));
+                Ok(())
+            },
+        )?;
     }
-    let visible = ProjectedReference::try_new(
-        &package.projection,
-        id.clone(),
-        projected_iid(value)?,
-        keys.clone(),
-    )
-    .map_err(py_sdk_diagnostic)?;
-    let Some(proof) = package.facade_origins.proof(value) else {
-        return Ok(visible);
+    let iid = projected_reference_iid(py, value, &id, slots.as_ref(), operation_path)?;
+    let proof = package.facade_origins.proof(value);
+    let Some(proof) = proof else {
+        return ProjectedReference::try_new(&package.projection, id, iid, keys).map_err(
+            |diagnostic| py_sdk_diagnostic(prefix_projected_diagnostic(diagnostic, operation_path)),
+        );
     };
-    let expected = proof
-        .reference(&package.projection)
-        .map_err(py_sdk_diagnostic)?;
+    let origin = proof.origin_carrier().map_err(|diagnostic| {
+        py_sdk_diagnostic(prefix_projected_diagnostic(diagnostic, operation_path))
+    })?;
+    let visible =
+        ProjectedReference::try_new_with_origin_carrier(&package.projection, id, iid, keys, origin)
+            .map_err(|diagnostic| {
+                py_sdk_diagnostic(prefix_projected_diagnostic(diagnostic, operation_path))
+            })?;
+    let expected = proof.reference(&package.projection).map_err(|diagnostic| {
+        py_sdk_diagnostic(prefix_projected_diagnostic(diagnostic, operation_path))
+    })?;
     if visible != expected {
         return Err(py_sdk_diagnostic(facade_projection_evidence_mismatch(
             operation_path,
         )));
     }
-    ProjectedReference::try_new_with_origin_carrier(
-        &package.projection,
-        id,
-        visible.iid().map(str::to_owned),
-        keys,
-        expected.origin_carrier(),
+    Ok(visible)
+}
+
+fn projected_reference_iid(
+    py: Python<'_>,
+    value: &Bound<'_, PyAny>,
+    id: &TypeId,
+    slots: &ProjectedFacadeSlots,
+    operation_path: &[SdkDiagnosticPathSegment],
+) -> PyResult<Option<String>> {
+    let iid_path = extended_projected_path(
+        operation_path,
+        [
+            SdkDiagnosticPathSegment::Type(id.clone()),
+            SdkDiagnosticPathSegment::Argument(
+                SdkDiagnosticName::new("iid").expect("the fixed IID argument is canonical"),
+            ),
+        ],
+    )?;
+    let iid = slots.iid.get(py, value).map_err(|_| {
+        py_sdk_diagnostic(batch_input_shape_diagnostic(
+            "reference_iid_slot_uninitialized",
+            "Projected role-player IID storage is not initialized",
+            &iid_path,
+        ))
+    })?;
+    let iid = iid.bind(py);
+    if iid.is_none() {
+        return Ok(None);
+    }
+    let iid = iid.downcast_exact::<PyString>().map_err(|_| {
+        py_sdk_diagnostic(batch_input_shape_diagnostic(
+            "reference_iid_type_mismatch",
+            "Projected role-player IIDs must be exact strings",
+            &iid_path,
+        ))
+    })?;
+    let iid = iid.to_str().map_err(|_| {
+        py_sdk_diagnostic(batch_input_shape_diagnostic(
+            "reference_iid_type_mismatch",
+            "Projected role-player IIDs must be UTF-8 strings",
+            &iid_path,
+        ))
+    })?;
+    copy_canonical_iid_at(
+        iid,
+        &iid_path,
+        "The reference IID is not canonical TypeDB identity text",
     )
-    .map_err(py_sdk_diagnostic)
+    .map(Some)
 }
 
 fn project_hydrated_thing(
@@ -2235,12 +5119,14 @@ fn project_hydrated_reference(
             .into_iter()
             .enumerate()
         {
-            let mut key_path = operation_path.to_vec();
-            key_path.extend([
-                SdkDiagnosticPathSegment::Type(id.clone()),
-                SdkDiagnosticPathSegment::Field(key_id.clone()),
-                SdkDiagnosticPathSegment::Index(projected_index(index)),
-            ]);
+            let key_path = extended_projected_path(
+                operation_path,
+                [
+                    SdkDiagnosticPathSegment::Type(id.clone()),
+                    SdkDiagnosticPathSegment::Field(key_id.clone()),
+                    SdkDiagnosticPathSegment::Index(projected_index(index)),
+                ],
+            )?;
             keys.push((
                 key_id.clone(),
                 project_hydrated_attribute_value(py, package, &item, &key_path)?,
@@ -2265,6 +5151,34 @@ fn projected_items<'py>(
             .downcast::<PyTuple>()
             .map_err(|_| py_type_error("projected sequence input is not normalized as a tuple"))
             .map(|values| values.iter().collect()),
+    }
+}
+
+fn visit_projected_items<'py>(
+    value: Option<&Bound<'py, PyAny>>,
+    multiplicity: ProjectedMultiplicity,
+    path: &[SdkDiagnosticPathSegment],
+    mut visitor: impl FnMut(usize, Bound<'py, PyAny>) -> PyResult<()>,
+) -> PyResult<()> {
+    match value {
+        None => Ok(()),
+        Some(value) if value.is_none() => Ok(()),
+        Some(value) if multiplicity.container() == ProjectedContainer::Scalar => {
+            visitor(0, value.clone())
+        }
+        Some(value) => {
+            let values = value.downcast_exact::<PyTuple>().map_err(|_| {
+                py_sdk_diagnostic(batch_input_shape_diagnostic(
+                    "projected_collection_container_mismatch",
+                    "Projected sequence input must use the generated exact tuple container",
+                    path,
+                ))
+            })?;
+            for (index, value) in values.iter().enumerate() {
+                visitor(index, value)?;
+            }
+            Ok(())
+        }
     }
 }
 
@@ -2602,6 +5516,69 @@ fn projected_iid(value: &Bound<'_, PyAny>) -> PyResult<Option<String>> {
     }
 }
 
+fn projected_iid_from_snapshot(
+    py: Python<'_>,
+    snapshot: &ProjectedFacadeSnapshot,
+    ordinal: usize,
+) -> PyResult<String> {
+    let iid = snapshot.iid.bind(py);
+    if iid.is_none() {
+        return Ok(String::new());
+    }
+    let iid = iid.downcast_exact::<PyString>().map_err(|_| {
+        py_sdk_diagnostic(batch_input_shape_diagnostic(
+            "batch_iid_type_mismatch",
+            "Successor update rows require an exact string IID slot",
+            &projected_batch_iid_path(ordinal),
+        ))
+    })?;
+    let iid = iid.to_str().map_err(|_| {
+        py_sdk_diagnostic(batch_input_shape_diagnostic(
+            "batch_iid_type_mismatch",
+            "Successor update rows require a UTF-8 string IID slot",
+            &projected_batch_iid_path(ordinal),
+        ))
+    })?;
+    copy_canonical_batch_iid(iid, ordinal)
+}
+
+fn copy_canonical_batch_iid(iid: &str, ordinal: usize) -> PyResult<String> {
+    copy_canonical_iid_at(
+        iid,
+        &projected_batch_iid_path(ordinal),
+        "The batch target IID is not canonical TypeDB identity text",
+    )
+}
+
+fn copy_canonical_iid_at(
+    iid: &str,
+    path: &[SdkDiagnosticPathSegment],
+    message: &'static str,
+) -> PyResult<String> {
+    if !is_canonical_thing_iid(iid) {
+        let diagnostic = path.iter().cloned().fold(
+            SdkExecutionDiagnostic::invalid_input(
+                SdkDiagnosticCode::new("noncanonical_iid")
+                    .expect("the static noncanonical-IID code is canonical"),
+                SdkDiagnosticMessage::new(message)
+                    .expect("the static noncanonical-IID message is canonical"),
+            ),
+            |diagnostic, segment| {
+                diagnostic
+                    .try_at(segment)
+                    .unwrap_or_else(|_| SdkExecutionDiagnostic::internal_failure())
+            },
+        );
+        return Err(py_sdk_diagnostic(diagnostic));
+    }
+    let mut retained = String::new();
+    retained
+        .try_reserve_exact(iid.len())
+        .map_err(|_| py_sdk_diagnostic(ProjectedBatch::binding_allocation_failure()))?;
+    retained.push_str(iid);
+    Ok(retained)
+}
+
 fn required_projected_iid(value: &Bound<'_, PyAny>) -> PyResult<String> {
     projected_iid(value)?.ok_or_else(|| {
         py_value_error("generated manager update and delete require an attached TypeDB IID")
@@ -2673,10 +5650,25 @@ fn hydrate_projected_thing(
     package: &InstalledPackage,
     projected: Arc<ProjectedThing>,
 ) -> PyResult<PyObject> {
-    let instance = hydrate_projected_thing_value(py, package, projected.as_ref())?;
+    let mut pending_origins = pending_projected_origins(projected.as_ref())?;
+    let instance = hydrate_projected_thing_value_staged(
+        py,
+        package,
+        projected.as_ref(),
+        None,
+        &mut pending_origins,
+        false,
+        None,
+    )?;
+    let origin = package.facade_origins.prepare(instance.bind(py))?;
+    for pending in pending_origins {
+        package
+            .facade_origins
+            .install(pending.origin, pending.proof);
+    }
     package
         .facade_origins
-        .retain_thing(instance.bind(py), projected)?;
+        .install(origin, FacadeProjectionProof::Thing(projected));
     Ok(instance)
 }
 
@@ -2685,16 +5677,65 @@ fn hydrate_projected_thing_value(
     package: &InstalledPackage,
     projected: &ProjectedThing,
 ) -> PyResult<PyObject> {
-    projected
-        .validate_for(package.projection.as_ref())
-        .map_err(py_sdk_diagnostic)?;
+    let mut pending_origins = pending_projected_origins(projected)?;
+    let instance = hydrate_projected_thing_value_staged(
+        py,
+        package,
+        projected,
+        None,
+        &mut pending_origins,
+        false,
+        None,
+    )?;
+    for pending in pending_origins {
+        package
+            .facade_origins
+            .install(pending.origin, pending.proof);
+    }
+    Ok(instance)
+}
+
+fn pending_projected_origins(projected: &ProjectedThing) -> PyResult<Vec<PendingFacadeOrigin>> {
+    let capacity = projected
+        .roles()
+        .values()
+        .try_fold(0_usize, |count, players| count.checked_add(players.len()))
+        .ok_or_else(|| py_runtime_error("projected role-player count exceeds usize"))?;
+    let mut pending = Vec::new();
+    pending
+        .try_reserve_exact(capacity)
+        .map_err(|_| py_runtime_error("projected role-player origin allocation failed"))?;
+    Ok(pending)
+}
+
+fn hydrate_projected_thing_value_staged(
+    py: Python<'_>,
+    package: &InstalledPackage,
+    projected: &ProjectedThing,
+    parent_proof: Option<&Arc<ProjectedThing>>,
+    pending_origins: &mut Vec<PendingFacadeOrigin>,
+    callback_free: bool,
+    pool: Option<&BatchHydrationPool>,
+) -> PyResult<PyObject> {
+    if !callback_free {
+        projected
+            .validate_for(package.projection.as_ref())
+            .map_err(py_sdk_diagnostic)?;
+    }
     let id = projected.type_id();
     if !matches!(id.kind(), TypeKind::Entity | TypeKind::Relation) {
         return Err(py_runtime_error(
             "projected thing hydration requires an entity or relation",
         ));
     }
-    let values = hydrate_projected_fields(py, package, id, projected.fields(), false)?;
+    let values = hydrate_projected_fields(
+        py,
+        package,
+        id,
+        HydratedProjectedFields::Complete(projected.fields()),
+        callback_free,
+        pool,
+    )?;
     if id.kind() == TypeKind::Relation {
         let model = package
             .projection
@@ -2702,7 +5743,7 @@ fn hydrate_projected_thing_value(
             .models()
             .get(id)
             .ok_or_else(|| py_runtime_error("projected relation model is absent"))?;
-        for (role_id, read) in model.complete_read().roles() {
+        for (role_ordinal, (role_id, read)) in model.complete_read().roles().iter().enumerate() {
             let token = model.query_tokens().roles().get(role_id).ok_or_else(|| {
                 py_runtime_error("projected relation read role has no query token")
             })?;
@@ -2713,8 +5754,18 @@ fn hydrate_projected_thing_value(
             hydrated
                 .try_reserve(players.len())
                 .map_err(|_| py_runtime_error("projected relation role allocation failed"))?;
-            for player in players {
-                hydrated.push(hydrate_projected_player(py, package, player)?);
+            for (player_ordinal, player) in players.iter().enumerate() {
+                hydrated.push(hydrate_projected_player(
+                    py,
+                    package,
+                    player,
+                    parent_proof,
+                    role_ordinal,
+                    player_ordinal,
+                    pending_origins,
+                    callback_free,
+                    pool,
+                )?);
             }
             set_projected_hydrated_values(
                 py,
@@ -2729,18 +5780,37 @@ fn hydrate_projected_thing_value(
             "projected entity unexpectedly contains relation roles",
         ));
     }
-    allocate_projected_complete(py, package, id, &values, projected.iid())
+    if callback_free {
+        allocate_projected_complete_callback_free(
+            py,
+            package,
+            id,
+            &values,
+            projected.iid(),
+            pool.expect("successor callback-free hydration retains its outer pool"),
+        )
+    } else {
+        allocate_projected_complete(py, package, id, &values, projected.iid())
+    }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn hydrate_projected_player(
     py: Python<'_>,
     package: &InstalledPackage,
     player: &ProjectedRolePlayer,
+    parent_proof: Option<&Arc<ProjectedThing>>,
+    role_ordinal: usize,
+    player_ordinal: usize,
+    pending_origins: &mut Vec<PendingFacadeOrigin>,
+    callback_free: bool,
+    pool: Option<&BatchHydrationPool>,
 ) -> PyResult<PyObject> {
-    player
-        .validate_for(package.projection.as_ref())
-        .map_err(py_sdk_diagnostic)?;
-    let reference = Arc::new(player.reference().clone());
+    if !callback_free {
+        player
+            .validate_for(package.projection.as_ref())
+            .map_err(py_sdk_diagnostic)?;
+    }
     let instance = match player.exact_form() {
         Some(ProjectedModelForm::Complete) => {
             if player.type_id().kind() != TypeKind::Entity {
@@ -2748,18 +5818,48 @@ fn hydrate_projected_player(
                     player.type_id(),
                 )));
             }
-            let values =
-                hydrate_projected_fields(py, package, player.type_id(), player.fields(), false)?;
-            allocate_projected_complete(py, package, player.type_id(), &values, player.iid())?
+            let values = hydrate_projected_fields(
+                py,
+                package,
+                player.type_id(),
+                HydratedProjectedFields::Complete(player.fields()),
+                callback_free,
+                pool,
+            )?;
+            if callback_free {
+                allocate_projected_complete_callback_free(
+                    py,
+                    package,
+                    player.type_id(),
+                    &values,
+                    player.iid(),
+                    pool.expect("successor callback-free hydration retains its outer pool"),
+                )?
+            } else {
+                allocate_projected_complete(py, package, player.type_id(), &values, player.iid())?
+            }
         }
         Some(ProjectedModelForm::Reference) => {
-            let fields = player
-                .keys()
-                .iter()
-                .map(|(field, value)| (field.clone(), vec![value.clone()]))
-                .collect::<BTreeMap<_, _>>();
-            let values = hydrate_projected_fields(py, package, player.type_id(), &fields, true)?;
-            allocate_projected_reference(py, package, player.type_id(), &values, player.iid())?
+            let values = hydrate_projected_fields(
+                py,
+                package,
+                player.type_id(),
+                HydratedProjectedFields::Reference(player.keys()),
+                callback_free,
+                pool,
+            )?;
+            if callback_free {
+                allocate_projected_reference_callback_free(
+                    py,
+                    package,
+                    player.type_id(),
+                    &values,
+                    player.iid(),
+                    pool.expect("successor callback-free hydration retains its outer pool"),
+                )?
+            } else {
+                allocate_projected_reference(py, package, player.type_id(), &values, player.iid())?
+            }
         }
         None => {
             return Err(py_sdk_diagnostic(projected_role_player_form_missing(
@@ -2767,18 +5867,50 @@ fn hydrate_projected_player(
             )));
         }
     };
-    package
-        .facade_origins
-        .retain_reference(instance.bind(py), reference)?;
+    let proof = if callback_free {
+        FacadeProjectionProof::RolePlayer {
+            parent: Arc::clone(parent_proof.ok_or_else(|| {
+                py_runtime_error("successor nested hydration omitted its retained parent proof")
+            })?),
+            role_ordinal,
+            player_ordinal,
+        }
+    } else {
+        FacadeProjectionProof::Reference(Arc::new(player.reference().clone()))
+    };
+    pending_origins.push(PendingFacadeOrigin {
+        origin: package.facade_origins.prepare(instance.bind(py))?,
+        proof,
+    });
     Ok(instance)
+}
+
+#[derive(Clone, Copy)]
+enum HydratedProjectedFields<'a> {
+    Complete(&'a BTreeMap<type_bridge_contract::schema::OwnsFactId, Vec<ProjectedAttributeValue>>),
+    Reference(&'a BTreeMap<type_bridge_contract::schema::OwnsFactId, ProjectedAttributeValue>),
+}
+
+impl HydratedProjectedFields<'_> {
+    fn len(self) -> usize {
+        match self {
+            Self::Complete(fields) => fields.len(),
+            Self::Reference(fields) => fields.len(),
+        }
+    }
+
+    fn is_reference(self) -> bool {
+        matches!(self, Self::Reference(_))
+    }
 }
 
 fn hydrate_projected_fields<'py>(
     py: Python<'py>,
     package: &InstalledPackage,
     id: &TypeId,
-    fields: &BTreeMap<type_bridge_contract::schema::OwnsFactId, Vec<ProjectedAttributeValue>>,
-    reference: bool,
+    fields: HydratedProjectedFields<'_>,
+    callback_free: bool,
+    pool: Option<&BatchHydrationPool>,
 ) -> PyResult<Bound<'py, PyDict>> {
     let model = package
         .projection
@@ -2790,19 +5922,28 @@ fn hydrate_projected_fields<'py>(
         TypeDescriptor::Entity(descriptor) => &descriptor.owned_attributes,
         TypeDescriptor::Relation(descriptor) => &descriptor.owned_attributes,
     };
-    let selected = model
+    let reference = fields.is_reference();
+    let selected_count = model
         .complete_read()
         .fields()
         .iter()
         .filter(|field| !reference || model.reference_read().key_fields().contains(field.token()))
-        .collect::<Vec<_>>();
-    if fields.len() != selected.len() {
+        .count();
+    if fields.len() != selected_count {
         return Err(py_runtime_error(
             "projected hydrated fields do not match the selected model form",
         ));
     }
-    let values = PyDict::new(py);
-    for read in selected {
+    let values = if callback_free {
+        fallible_python_dict(py)?
+    } else {
+        PyDict::new(py)
+    };
+    for read in
+        model.complete_read().fields().iter().filter(|field| {
+            !reference || model.reference_read().key_fields().contains(field.token())
+        })
+    {
         let field_id = read.token();
         let token = model
             .query_tokens()
@@ -2816,25 +5957,57 @@ fn hydrate_projected_fields<'py>(
                     && descriptor.attr_name == field_id.attribute().label().as_str()
             })
             .ok_or_else(|| py_runtime_error("projected hydrated field has no descriptor"))?;
-        let projected_values = fields
-            .get(field_id)
-            .ok_or_else(|| py_runtime_error("projected hydrated model omitted a selected field"))?;
+        let projected_values_len = match fields {
+            HydratedProjectedFields::Complete(fields) => {
+                fields.get(field_id).map(Vec::len).ok_or_else(|| {
+                    py_runtime_error("projected hydrated model omitted a selected field")
+                })?
+            }
+            HydratedProjectedFields::Reference(fields) => {
+                usize::from(fields.contains_key(field_id))
+            }
+        };
+        if projected_values_len == 0 && matches!(fields, HydratedProjectedFields::Reference(_)) {
+            return Err(py_runtime_error(
+                "projected hydrated model omitted a selected field",
+            ));
+        }
         let mut hydrated = Vec::new();
         hydrated
-            .try_reserve(projected_values.len())
+            .try_reserve(projected_values_len)
             .map_err(|_| py_runtime_error("projected hydrated field allocation failed"))?;
-        for value in projected_values {
+        let mut hydrate_value = |value: &ProjectedAttributeValue| -> PyResult<()> {
             if value.attribute_type().label().as_str() != descriptor.attr_name {
                 return Err(py_runtime_error(
                     "projected hydrated scalar has the wrong attribute type",
                 ));
             }
-            hydrated.push(hydrate_attribute(
-                py,
-                package,
-                descriptor,
-                &value.to_attribute_value(),
-            )?);
+            hydrated.push(if callback_free {
+                hydrate_projected_attribute_callback_free(
+                    py,
+                    package,
+                    descriptor,
+                    value,
+                    pool.expect("successor callback-free hydration retains its outer pool"),
+                )?
+            } else {
+                hydrate_attribute(py, package, descriptor, &value.to_attribute_value())?
+            });
+            Ok(())
+        };
+        match fields {
+            HydratedProjectedFields::Complete(fields) => {
+                for value in fields.get(field_id).ok_or_else(|| {
+                    py_runtime_error("projected hydrated model omitted a selected field")
+                })? {
+                    hydrate_value(value)?;
+                }
+            }
+            HydratedProjectedFields::Reference(fields) => {
+                hydrate_value(fields.get(field_id).ok_or_else(|| {
+                    py_runtime_error("projected hydrated model omitted a selected field")
+                })?)?;
+            }
         }
         set_projected_hydrated_values(
             py,
@@ -2862,12 +6035,13 @@ fn set_projected_hydrated_values(
             "projected hydrated value violates its projected cardinality",
         ));
     }
+    let name = fallible_python_string(py, name)?;
     match multiplicity.container() {
         ProjectedContainer::Scalar => match items.into_iter().next() {
-            Some(value) => values.set_item(name, value),
-            None => values.set_item(name, py.None()),
+            Some(value) => values.set_item(name.bind(py), value),
+            None => values.set_item(name.bind(py), py.None()),
         },
-        ProjectedContainer::Sequence => values.set_item(name, PyTuple::new(py, items)?),
+        ProjectedContainer::Sequence => values.set_item(name.bind(py), PyTuple::new(py, items)?),
     }
 }
 
@@ -2884,6 +6058,19 @@ fn allocate_projected_complete(
     Ok(instance.unbind())
 }
 
+fn allocate_projected_complete_callback_free(
+    py: Python<'_>,
+    package: &InstalledPackage,
+    id: &TypeId,
+    values: &Bound<'_, PyDict>,
+    iid: &str,
+    pool: &BatchHydrationPool,
+) -> PyResult<PyObject> {
+    let slots = package.batch_slots_for(id, ProjectedModelForm::Complete)?;
+    let iid = fallible_python_string(py, iid)?;
+    slots.allocate_initialized_after_fence(py, values.as_any(), iid.bind(py), None, pool)
+}
+
 fn allocate_projected_reference(
     py: Python<'_>,
     package: &InstalledPackage,
@@ -2894,6 +6081,19 @@ fn allocate_projected_reference(
     let instance = allocate(py, package.class(id, ProjectedModelForm::Reference)?)?;
     instance.call_method1("initialize_runtime_reference", (iid, values))?;
     Ok(instance.unbind())
+}
+
+fn allocate_projected_reference_callback_free(
+    py: Python<'_>,
+    package: &InstalledPackage,
+    id: &TypeId,
+    values: &Bound<'_, PyDict>,
+    iid: &str,
+    pool: &BatchHydrationPool,
+) -> PyResult<PyObject> {
+    let slots = package.batch_slots_for(id, ProjectedModelForm::Reference)?;
+    let iid = fallible_python_string(py, iid)?;
+    slots.allocate_initialized_after_fence(py, values.as_any(), iid.bind(py), None, pool)
 }
 
 fn projected_role_player_form_missing(type_id: &TypeId) -> SdkExecutionDiagnostic {
@@ -3285,6 +6485,48 @@ fn hydrate_attribute(
     class.bind(py).call1((scalar,)).map(Bound::unbind)
 }
 
+fn hydrate_projected_attribute_callback_free(
+    py: Python<'_>,
+    package: &InstalledPackage,
+    descriptor: &OwnedAttributeDescriptor,
+    value: &ProjectedAttributeValue,
+    pool: &BatchHydrationPool,
+) -> PyResult<PyObject> {
+    let id = package.type_by_label(&descriptor.attr_name, TypeKind::Attribute)?;
+    let projection = package.projection.projection();
+    if value.attribute_type() != id
+        || projected_value_type(value.value().value_type()) != descriptor.value_type
+        || value.semantic_fingerprint() != projection.semantic_fingerprint()
+        || value.binding_target() != projection.target()
+        || value.projection_fingerprint() != projection.projection_fingerprint()
+    {
+        return Err(py_runtime_error(
+            "projected hydrated scalar has the wrong attribute type or projection brand",
+        ));
+    }
+    let scalar_hydration = package
+        .scalar_hydration
+        .as_ref()
+        .ok_or_else(|| py_runtime_error("successor scalar hydration plan was not installed"))?;
+    let scalar = scalar_hydration.projected_to_py(
+        py,
+        value.value(),
+        package.named_zone_slots.as_ref(),
+        pool,
+    )?;
+    let values = fallible_python_dict(py)?;
+    let iid = py.None();
+    package
+        .batch_slots_for(id, ProjectedModelForm::Complete)?
+        .allocate_initialized_after_fence(
+            py,
+            values.as_any(),
+            iid.bind(py),
+            Some(scalar.bind(py)),
+            pool,
+        )
+}
+
 fn set_hydrated_values(
     py: Python<'_>,
     values: &Bound<'_, PyDict>,
@@ -3403,6 +6645,358 @@ fn canonical_attribute_value_from_py(
     value_type: ValueType,
     named_zone_marker: Option<&Py<PyType>>,
 ) -> PyResult<AttributeValue> {
+    canonical_attribute_value_from_py_at(py, value, value_type, named_zone_marker, &[])
+}
+
+fn canonical_projected_value_from_py_at(
+    py: Python<'_>,
+    value: &Bound<'_, PyAny>,
+    value_type: ValueType,
+    hydration: &ProjectedScalarHydration,
+    named_zone_marker: Option<&Py<PyType>>,
+    named_zone_slots: Option<&ProjectedNamedZoneSlots>,
+    operation_path: &[SdkDiagnosticPathSegment],
+) -> PyResult<CanonicalValue> {
+    let wrong = || py_sdk_diagnostic(wrong_scalar_diagnostic(operation_path));
+    match value_type {
+        ValueType::String => {
+            let text = value.downcast_exact::<PyString>().map_err(|_| wrong())?;
+            let retained =
+                copy_projected_text(text, MAX_CANONICAL_STRING_BYTES, |_| true, operation_path)?;
+            CanonicalString::new(retained)
+                .map(CanonicalValue::String)
+                .map_err(|_| wrong())
+        }
+        ValueType::Long => value
+            .downcast_exact::<PyInt>()
+            .map_err(|_| wrong())?
+            .extract::<i64>()
+            .map(CanonicalValue::Long)
+            .map_err(|_| wrong()),
+        ValueType::Double => {
+            let value = value
+                .downcast_exact::<PyFloat>()
+                .map_err(|_| wrong())?
+                .extract::<f64>()
+                .map_err(|_| wrong())?;
+            CanonicalDouble::new(value)
+                .map(CanonicalValue::Double)
+                .map_err(|_| wrong())
+        }
+        ValueType::Boolean => value
+            .downcast_exact::<PyBool>()
+            .map_err(|_| wrong())?
+            .extract::<bool>()
+            .map(CanonicalValue::Boolean)
+            .map_err(|_| wrong()),
+        ValueType::Date => canonical_projected_date(py, value, hydration)
+            .map(CanonicalValue::Date)
+            .map_err(|_| wrong()),
+        ValueType::DateTime => {
+            let local = canonical_projected_datetime(py, value, hydration).map_err(|_| wrong())?;
+            let offset = projected_datetime_offset(py, value).map_err(|_| wrong())?;
+            if !offset.is_none() {
+                return Err(wrong());
+            }
+            Ok(CanonicalValue::DateTime(local))
+        }
+        ValueType::DateTimeTz => canonical_projected_datetime_tz(
+            py,
+            value,
+            hydration,
+            named_zone_marker,
+            named_zone_slots,
+            operation_path,
+        )
+        .map(CanonicalValue::DateTimeTz),
+        ValueType::Decimal => canonical_projected_decimal(py, value, hydration, operation_path)
+            .map(CanonicalValue::Decimal),
+        ValueType::Duration => canonical_projected_duration(py, value, hydration)
+            .map(CanonicalValue::Duration)
+            .map_err(|_| wrong()),
+    }
+}
+
+fn copy_projected_text(
+    value: &Bound<'_, PyString>,
+    maximum: usize,
+    valid: impl FnOnce(&str) -> bool,
+    operation_path: &[SdkDiagnosticPathSegment],
+) -> PyResult<String> {
+    let text = value
+        .to_str()
+        .map_err(|_| py_sdk_diagnostic(wrong_scalar_diagnostic(operation_path)))?;
+    if text.len() > maximum || !valid(text) {
+        return Err(py_sdk_diagnostic(wrong_scalar_diagnostic(operation_path)));
+    }
+    let mut retained = String::new();
+    retained
+        .try_reserve_exact(text.len())
+        .map_err(|_| py_sdk_diagnostic(ProjectedBatch::binding_allocation_failure()))?;
+    retained.push_str(text);
+    Ok(retained)
+}
+
+fn projected_i32_attribute(
+    py: Python<'_>,
+    value: &Bound<'_, PyAny>,
+    name: &std::ffi::CStr,
+) -> PyResult<i32> {
+    py_getattr_cstr(py, value, name)?.bind(py).extract()
+}
+
+fn canonical_projected_date(
+    py: Python<'_>,
+    value: &Bound<'_, PyAny>,
+    hydration: &ProjectedScalarHydration,
+) -> PyResult<CanonicalDate> {
+    if !value.get_type().is(hydration.date_type.bind(py)) {
+        return Err(py_type_error("attribute value requires an exact date"));
+    }
+    let year = projected_i32_attribute(py, value, pyo3::ffi::c_str!("year"))?;
+    let month = u8::try_from(projected_i32_attribute(
+        py,
+        value,
+        pyo3::ffi::c_str!("month"),
+    )?)
+    .map_err(|_| py_value_error("date month exceeds u8"))?;
+    let day = u8::try_from(projected_i32_attribute(
+        py,
+        value,
+        pyo3::ffi::c_str!("day"),
+    )?)
+    .map_err(|_| py_value_error("date day exceeds u8"))?;
+    CanonicalDate::new(year, month, day).map_err(py_diagnostic)
+}
+
+fn canonical_projected_datetime(
+    py: Python<'_>,
+    value: &Bound<'_, PyAny>,
+    hydration: &ProjectedScalarHydration,
+) -> PyResult<CanonicalDateTime> {
+    if !value.get_type().is(hydration.datetime_type.bind(py)) {
+        return Err(py_type_error("attribute value requires an exact datetime"));
+    }
+    let date = CanonicalDate::new(
+        projected_i32_attribute(py, value, pyo3::ffi::c_str!("year"))?,
+        u8::try_from(projected_i32_attribute(
+            py,
+            value,
+            pyo3::ffi::c_str!("month"),
+        )?)
+        .map_err(|_| py_value_error("datetime month exceeds u8"))?,
+        u8::try_from(projected_i32_attribute(
+            py,
+            value,
+            pyo3::ffi::c_str!("day"),
+        )?)
+        .map_err(|_| py_value_error("datetime day exceeds u8"))?,
+    )
+    .map_err(py_diagnostic)?;
+    let microsecond = u32::try_from(projected_i32_attribute(
+        py,
+        value,
+        pyo3::ffi::c_str!("microsecond"),
+    )?)
+    .map_err(|_| py_value_error("datetime microsecond exceeds u32"))?;
+    let time = CanonicalTime::new(
+        u8::try_from(projected_i32_attribute(
+            py,
+            value,
+            pyo3::ffi::c_str!("hour"),
+        )?)
+        .map_err(|_| py_value_error("datetime hour exceeds u8"))?,
+        u8::try_from(projected_i32_attribute(
+            py,
+            value,
+            pyo3::ffi::c_str!("minute"),
+        )?)
+        .map_err(|_| py_value_error("datetime minute exceeds u8"))?,
+        u8::try_from(projected_i32_attribute(
+            py,
+            value,
+            pyo3::ffi::c_str!("second"),
+        )?)
+        .map_err(|_| py_value_error("datetime second exceeds u8"))?,
+        microsecond
+            .checked_mul(1_000)
+            .ok_or_else(|| py_value_error("datetime nanosecond conversion overflowed"))?,
+    )
+    .map_err(py_diagnostic)?;
+    Ok(CanonicalDateTime::new(date, time))
+}
+
+fn projected_datetime_offset<'py>(
+    py: Python<'py>,
+    value: &Bound<'py, PyAny>,
+) -> PyResult<Bound<'py, PyAny>> {
+    py_getattr_cstr(py, value, pyo3::ffi::c_str!("utcoffset"))?
+        .into_bound(py)
+        .call0()
+}
+
+fn projected_timedelta_integral_seconds(
+    py: Python<'_>,
+    value: &Bound<'_, PyAny>,
+    hydration: &ProjectedScalarHydration,
+) -> PyResult<i32> {
+    if !value.get_type().is(hydration.timedelta_type.bind(py)) {
+        return Err(py_type_error("timezone offset requires an exact timedelta"));
+    }
+    let days = projected_i32_attribute(py, value, pyo3::ffi::c_str!("days"))?;
+    let seconds = projected_i32_attribute(py, value, pyo3::ffi::c_str!("seconds"))?;
+    let microseconds = projected_i32_attribute(py, value, pyo3::ffi::c_str!("microseconds"))?;
+    if microseconds != 0 {
+        return Err(py_value_error(
+            "timezone offsets must resolve to an integral number of seconds",
+        ));
+    }
+    days.checked_mul(86_400)
+        .and_then(|days| days.checked_add(seconds))
+        .ok_or_else(|| py_value_error("timezone offset exceeds the supported range"))
+}
+
+fn canonical_projected_datetime_tz(
+    py: Python<'_>,
+    value: &Bound<'_, PyAny>,
+    hydration: &ProjectedScalarHydration,
+    named_zone_marker: Option<&Py<PyType>>,
+    named_zone_slots: Option<&ProjectedNamedZoneSlots>,
+    operation_path: &[SdkDiagnosticPathSegment],
+) -> PyResult<CanonicalDateTimeTz> {
+    let wrong = || py_sdk_diagnostic(wrong_scalar_diagnostic(operation_path));
+    let local = canonical_projected_datetime(py, value, hydration).map_err(|_| wrong())?;
+    let offset = projected_datetime_offset(py, value).map_err(|_| wrong())?;
+    if offset.is_none() {
+        return Err(wrong());
+    }
+    let offset_seconds =
+        projected_timedelta_integral_seconds(py, &offset, hydration).map_err(|_| wrong())?;
+    let timezone = py_getattr_cstr(py, value, pyo3::ffi::c_str!("tzinfo"))?.into_bound(py);
+    let named = if named_zone_marker.is_some_and(|marker| timezone.get_type().is(marker.bind(py))) {
+        let slots = named_zone_slots.ok_or_else(|| {
+            py_runtime_error("named-zone scalar storage slots were not installed")
+        })?;
+        let zone = slots.zone.get(py, &timezone).map_err(|_| wrong())?;
+        let zone = zone
+            .bind(py)
+            .downcast_exact::<PyString>()
+            .map_err(|_| wrong())?;
+        Some(copy_projected_text(
+            zone,
+            255,
+            valid_projected_zone_name,
+            operation_path,
+        )?)
+    } else if timezone.get_type().is(hydration.zoneinfo_type.bind(py)) {
+        let key = py_getattr_cstr(py, &timezone, pyo3::ffi::c_str!("key"))?;
+        let key = key
+            .bind(py)
+            .downcast_exact::<PyString>()
+            .map_err(|_| wrong())?;
+        Some(copy_projected_text(
+            key,
+            255,
+            valid_projected_zone_name,
+            operation_path,
+        )?)
+    } else {
+        None
+    };
+    match named {
+        Some(zone) => CanonicalDateTimeTz::new_named_resolved(local, zone, offset_seconds)
+            .map_err(|_| wrong()),
+        None => CanonicalDateTimeTz::new_fixed(
+            local,
+            if offset_seconds == 0 {
+                TimeZoneDesignator::Utc
+            } else {
+                TimeZoneDesignator::OffsetSeconds(offset_seconds)
+            },
+        )
+        .map_err(|_| wrong()),
+    }
+}
+
+fn valid_projected_zone_name(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'_' | b'-' | b'+'))
+}
+
+fn canonical_projected_decimal(
+    py: Python<'_>,
+    value: &Bound<'_, PyAny>,
+    hydration: &ProjectedScalarHydration,
+    operation_path: &[SdkDiagnosticPathSegment],
+) -> PyResult<DecimalValue> {
+    const MAX_DECIMAL_INPUT_BYTES: usize = 43;
+    let wrong = || py_sdk_diagnostic(wrong_scalar_diagnostic(operation_path));
+    if !value.get_type().is(hydration.decimal_type.bind(py)) {
+        return Err(wrong());
+    }
+    let rendered = value.str().map_err(|_| wrong())?;
+    let text = rendered.to_str().map_err(|_| wrong())?;
+    if text.len() > MAX_DECIMAL_INPUT_BYTES || parse_decimal(text).is_none() {
+        return Err(wrong());
+    }
+    DecimalValue::new(text).map_err(|_| wrong())
+}
+
+fn canonical_projected_duration(
+    py: Python<'_>,
+    value: &Bound<'_, PyAny>,
+    hydration: &ProjectedScalarHydration,
+) -> PyResult<CanonicalDuration> {
+    if !value.get_type().is(hydration.timedelta_type.bind(py)) {
+        return Err(py_type_error("attribute value requires an exact timedelta"));
+    }
+    let days = projected_i32_attribute(py, value, pyo3::ffi::c_str!("days"))?;
+    let seconds = projected_i32_attribute(py, value, pyo3::ffi::c_str!("seconds"))?;
+    let microseconds = projected_i32_attribute(py, value, pyo3::ffi::c_str!("microseconds"))?;
+    if days < 0 || seconds < 0 || microseconds < 0 {
+        return Err(py_value_error(
+            "negative projected durations are not representable losslessly",
+        ));
+    }
+    CanonicalDuration::new(
+        false,
+        0,
+        u64::try_from(days).map_err(|_| py_value_error("duration days exceed u64"))?,
+        u64::try_from(seconds).map_err(|_| py_value_error("duration seconds exceed u64"))?,
+        u32::try_from(microseconds)
+            .map_err(|_| py_value_error("duration microseconds exceed u32"))?
+            .checked_mul(1_000)
+            .ok_or_else(|| py_value_error("duration nanosecond conversion overflowed"))?,
+    )
+    .map_err(py_diagnostic)
+}
+
+fn canonical_attribute_value_from_py_at(
+    py: Python<'_>,
+    value: &Bound<'_, PyAny>,
+    value_type: ValueType,
+    named_zone_marker: Option<&Py<PyType>>,
+    operation_path: &[SdkDiagnosticPathSegment],
+) -> PyResult<AttributeValue> {
+    if value_type == ValueType::String {
+        let value = value
+            .downcast_exact::<PyString>()
+            .map_err(|_| py_sdk_diagnostic(wrong_scalar_diagnostic(operation_path)))?;
+        let value = value
+            .to_str()
+            .map_err(|_| py_sdk_diagnostic(wrong_scalar_diagnostic(operation_path)))?;
+        if value.len() > MAX_CANONICAL_STRING_BYTES {
+            return Err(py_sdk_diagnostic(wrong_scalar_diagnostic(operation_path)));
+        }
+        let mut retained = String::new();
+        retained
+            .try_reserve_exact(value.len())
+            .map_err(|_| py_sdk_diagnostic(ProjectedBatch::binding_allocation_failure()))?;
+        retained.push_str(value);
+        return Ok(AttributeValue::String(retained));
+    }
     let value = match value_type {
         ValueType::DateTime => exact_temporal_string(py, value, "datetime", false)
             .map(|value| AttributeValue::DateTime(canonical_python_datetime(&value, false))),
@@ -3413,16 +7007,22 @@ fn canonical_attribute_value_from_py(
         ValueType::DateTimeTz => exact_temporal_string(py, value, "datetime", true)
             .map(|value| AttributeValue::DateTimeTZ(canonical_python_datetime(&value, true))),
         ValueType::Duration => canonical_duration_from_py(py, value).map(AttributeValue::Duration),
+        ValueType::String => unreachable!("the bounded string branch returned above"),
         _ => attribute_value_from_py(py, value, value_type),
     };
-    value.map_err(|_| {
-        py_sdk_diagnostic(SdkExecutionDiagnostic::invalid_input(
+    value.map_err(|_| py_sdk_diagnostic(wrong_scalar_diagnostic(operation_path)))
+}
+
+fn wrong_scalar_diagnostic(operation_path: &[SdkDiagnosticPathSegment]) -> SdkExecutionDiagnostic {
+    prefix_projected_diagnostic(
+        SdkExecutionDiagnostic::invalid_input(
             SdkDiagnosticCode::new("wrong_scalar_domain")
                 .expect("static projected-value code is canonical"),
             SdkDiagnosticMessage::new("projected scalar has the wrong canonical domain")
                 .expect("static projected-value message is canonical"),
-        ))
-    })
+        ),
+        operation_path,
+    )
 }
 
 fn canonical_python_datetime_tz(
@@ -3835,12 +7435,14 @@ mod tests {
     use type_bridge_core_lib::ast::{TypedFetchRows, TypedHydrateThings};
     use type_bridge_orm::session::backend::{
         AnswerConsumer, AnswerControl, AnswerItem, BoundedAnswerLimits, BoundedAnswerReader,
-        BoundedAnswerStats, BoxFuture, DriverBackend, QueryResult, TransactionOps,
+        BoundedAnswerStats, BoxFuture, DriverBackend, GivenRowsSpec, GivenValue, QueryResult,
+        TransactionOps,
     };
     use type_bridge_orm::{
         AnswerCancellation, ClassifiedCommitError, DatabaseConnectionAuthority, OrmError,
         ProjectedQueryMaterializationLimits, ProjectedQueryOrigin, QueryExecutionDeadline,
-        QueryExecutionResourceLimits, RowCardinality, SessionHandle, TxType, Window,
+        QueryExecutionResourceLimits, RowCardinality, SessionHandle, TransactionContextState,
+        TxType, Window,
     };
     use type_bridge_schema::{
         BUILTIN_SCHEMA_CAPABILITY_IDS, ManagedDeltaContext, SchemaDocumentSet,
@@ -3915,6 +7517,37 @@ plays:
     container: [item]
 "#;
 
+    const BATCH_SCHEMA: &str = r#"format: typebridge.schema/v2
+attributes:
+  identifier: { value: string }
+  tag:
+    value:
+      type: string
+      regex: "^.+$"
+entities:
+  person:
+    owns:
+      identifier: { key: true }
+      tag:
+        card: { min: 0, max: 4 }
+        ordered: true
+        distinct: true
+  memo: {}
+relations:
+  membership:
+    owns:
+      identifier: { key: true }
+    relates:
+      member: { card: 1 }
+  link:
+    relates:
+      member: { card: 1 }
+plays:
+  person:
+    membership: [member]
+    link: [member]
+"#;
+
     #[derive(Debug, Default)]
     struct OriginRecordingState {
         opens: Vec<TxType>,
@@ -3927,6 +7560,75 @@ plays:
     struct OriginRecordingBackend {
         responses: Arc<Mutex<VecDeque<QueryResult>>>,
         state: Arc<Mutex<OriginRecordingState>>,
+    }
+
+    #[derive(Debug, Default)]
+    struct BatchRecordingState {
+        opens: Vec<TxType>,
+        calls: Vec<(String, type_bridge_orm::GivenRowsSpec)>,
+        responses: VecDeque<BatchResponse>,
+        legacy_commits: usize,
+        commits: usize,
+        rollbacks: usize,
+    }
+
+    #[derive(Debug)]
+    enum BatchResponse {
+        Documents(Vec<serde_json::Value>),
+        Error,
+    }
+
+    struct BatchRecordingBackend {
+        state: Arc<Mutex<BatchRecordingState>>,
+        fail_commit: bool,
+        gate: Option<Arc<BatchProviderGate>>,
+    }
+
+    #[derive(Debug, Default)]
+    struct LegacyBatchRecordingState {
+        opens: Vec<TxType>,
+        queries: Vec<String>,
+        responses: VecDeque<QueryResult>,
+        legacy_commits: usize,
+        sdk_commits: usize,
+        rollbacks: usize,
+    }
+
+    struct LegacyBatchRecordingBackend {
+        state: Arc<Mutex<LegacyBatchRecordingState>>,
+    }
+
+    #[derive(Default)]
+    struct BatchProviderGate {
+        entered: (Mutex<bool>, std::sync::Condvar),
+        released: (Mutex<bool>, std::sync::Condvar),
+    }
+
+    impl BatchProviderGate {
+        fn enter_and_wait(&self) {
+            {
+                let mut entered = self.entered.0.lock().unwrap();
+                *entered = true;
+                self.entered.1.notify_all();
+            }
+            let mut released = self.released.0.lock().unwrap();
+            while !*released {
+                released = self.released.1.wait(released).unwrap();
+            }
+        }
+
+        fn wait_until_entered(&self) {
+            let mut entered = self.entered.0.lock().unwrap();
+            while !*entered {
+                entered = self.entered.1.wait(entered).unwrap();
+            }
+        }
+
+        fn release(&self) {
+            let mut released = self.released.0.lock().unwrap();
+            *released = true;
+            self.released.1.notify_all();
+        }
     }
 
     #[derive(Debug, Default)]
@@ -4199,6 +7901,283 @@ plays:
         }
     }
 
+    impl BatchRecordingBackend {
+        fn fixture(
+            responses: Vec<BatchResponse>,
+            fail_commit: bool,
+        ) -> (Arc<Database>, Arc<Mutex<BatchRecordingState>>) {
+            let state = Arc::new(Mutex::new(BatchRecordingState {
+                responses: responses.into(),
+                ..BatchRecordingState::default()
+            }));
+            (
+                Arc::new(Database::with_backend(
+                    Box::new(Self {
+                        state: Arc::clone(&state),
+                        fail_commit,
+                        gate: None,
+                    }),
+                    "python-projected-batch",
+                )),
+                state,
+            )
+        }
+
+        fn gated_fixture(
+            responses: Vec<BatchResponse>,
+        ) -> (
+            Arc<Database>,
+            Arc<Mutex<BatchRecordingState>>,
+            Arc<BatchProviderGate>,
+        ) {
+            let state = Arc::new(Mutex::new(BatchRecordingState {
+                responses: responses.into(),
+                ..BatchRecordingState::default()
+            }));
+            let gate = Arc::new(BatchProviderGate::default());
+            (
+                Arc::new(Database::with_backend(
+                    Box::new(Self {
+                        state: Arc::clone(&state),
+                        fail_commit: false,
+                        gate: Some(Arc::clone(&gate)),
+                    }),
+                    "python-projected-batch-gated",
+                )),
+                state,
+                gate,
+            )
+        }
+    }
+
+    impl LegacyBatchRecordingBackend {
+        fn fixture(
+            responses: Vec<QueryResult>,
+        ) -> (Arc<Database>, Arc<Mutex<LegacyBatchRecordingState>>) {
+            let state = Arc::new(Mutex::new(LegacyBatchRecordingState {
+                responses: responses.into(),
+                ..LegacyBatchRecordingState::default()
+            }));
+            (
+                Arc::new(Database::with_backend(
+                    Box::new(Self {
+                        state: Arc::clone(&state),
+                    }),
+                    "python-predecessor-batch",
+                )),
+                state,
+            )
+        }
+    }
+
+    impl DriverBackend for LegacyBatchRecordingBackend {
+        fn open_transaction(
+            &self,
+            _database: &str,
+            tx_type: TxType,
+        ) -> BoxFuture<'_, Result<Box<dyn TransactionOps>, OrmError>> {
+            self.state.lock().unwrap().opens.push(tx_type);
+            let transaction = LegacyBatchRecordingTransaction {
+                state: Arc::clone(&self.state),
+            };
+            Box::pin(async move { Ok(Box::new(transaction) as Box<dyn TransactionOps>) })
+        }
+
+        fn is_open(&self) -> bool {
+            true
+        }
+
+        fn server_version(&self) -> Option<type_bridge_orm::_ProviderVersion> {
+            Some(type_bridge_orm::_ProviderVersion::new(3, 12, 1))
+        }
+
+        fn supports_given_rows(&self) -> bool {
+            false
+        }
+    }
+
+    struct LegacyBatchRecordingTransaction {
+        state: Arc<Mutex<LegacyBatchRecordingState>>,
+    }
+
+    impl TransactionOps for LegacyBatchRecordingTransaction {
+        fn query(&mut self, typeql: &str) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
+            let response = {
+                let mut state = self.state.lock().unwrap();
+                state.queries.push(typeql.to_owned());
+                state
+                    .responses
+                    .pop_front()
+                    .expect("predecessor Python batch issued unexpected provider I/O")
+            };
+            Box::pin(async move { Ok(response) })
+        }
+
+        fn query_with_rows(
+            &mut self,
+            _typeql: &str,
+            _rows: GivenRowsSpec,
+        ) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
+            Box::pin(async {
+                panic!("predecessor Python batch touched the successor GivenRows seam")
+            })
+        }
+
+        fn query_with_rows_bounded<'a>(
+            &'a mut self,
+            _typeql: &'a str,
+            _rows: GivenRowsSpec,
+            _limits: BoundedAnswerLimits,
+            _consumer: &'a mut dyn AnswerConsumer,
+        ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
+            Box::pin(async {
+                panic!("predecessor Python batch touched the bounded successor GivenRows seam")
+            })
+        }
+
+        fn supports_given_rows(&self) -> bool {
+            false
+        }
+
+        fn commit(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
+            self.state.lock().unwrap().legacy_commits += 1;
+            Box::pin(async { Ok(()) })
+        }
+
+        fn commit_classified(&mut self) -> BoxFuture<'_, Result<(), ClassifiedCommitError>> {
+            self.state.lock().unwrap().sdk_commits += 1;
+            Box::pin(async { Ok(()) })
+        }
+
+        fn rollback(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
+            self.state.lock().unwrap().rollbacks += 1;
+            Box::pin(async { Ok(()) })
+        }
+
+        fn close(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    impl DriverBackend for BatchRecordingBackend {
+        fn open_transaction(
+            &self,
+            _database: &str,
+            tx_type: TxType,
+        ) -> BoxFuture<'_, Result<Box<dyn TransactionOps>, OrmError>> {
+            self.state.lock().unwrap().opens.push(tx_type);
+            let transaction = BatchRecordingTransaction {
+                state: Arc::clone(&self.state),
+                fail_commit: self.fail_commit,
+                gate: self.gate.clone(),
+            };
+            Box::pin(async move { Ok(Box::new(transaction) as Box<dyn TransactionOps>) })
+        }
+
+        fn is_open(&self) -> bool {
+            true
+        }
+
+        fn server_version(&self) -> Option<type_bridge_orm::_ProviderVersion> {
+            Some(type_bridge_orm::_ProviderVersion::new(3, 12, 1))
+        }
+
+        fn supports_given_rows(&self) -> bool {
+            true
+        }
+    }
+
+    struct BatchRecordingTransaction {
+        state: Arc<Mutex<BatchRecordingState>>,
+        fail_commit: bool,
+        gate: Option<Arc<BatchProviderGate>>,
+    }
+
+    impl TransactionOps for BatchRecordingTransaction {
+        fn query(&mut self, _typeql: &str) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
+            Box::pin(async { panic!("Python projected batch used a raw query seam") })
+        }
+
+        fn query_with_rows(
+            &mut self,
+            _typeql: &str,
+            _rows: type_bridge_orm::GivenRowsSpec,
+        ) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
+            Box::pin(async { panic!("Python projected batch used an unbounded GivenRows seam") })
+        }
+
+        fn query_with_rows_bounded<'a>(
+            &'a mut self,
+            typeql: &'a str,
+            rows: type_bridge_orm::GivenRowsSpec,
+            limits: BoundedAnswerLimits,
+            consumer: &'a mut dyn AnswerConsumer,
+        ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
+            let gate = self.gate.clone();
+            let response = {
+                let mut state = self.state.lock().unwrap();
+                state.calls.push((typeql.to_owned(), rows));
+                state
+                    .responses
+                    .pop_front()
+                    .expect("Python projected batch issued unexpected provider I/O")
+            };
+            Box::pin(async move {
+                if let Some(gate) = gate {
+                    gate.enter_and_wait();
+                }
+                let BatchResponse::Documents(documents) = response else {
+                    return Err(OrmError::QueryExecution(
+                        "injected batch failure".to_owned(),
+                    ));
+                };
+                let mut reader = BoundedAnswerReader::new(limits);
+                reader.check_before_read()?;
+                for document in documents {
+                    if reader.accept(AnswerItem::Document(document), consumer)?
+                        == AnswerControl::Stop
+                    {
+                        break;
+                    }
+                }
+                Ok(reader.stats())
+            })
+        }
+
+        fn supports_given_rows(&self) -> bool {
+            true
+        }
+
+        fn commit(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
+            self.state.lock().unwrap().legacy_commits += 1;
+            Box::pin(async { Ok(()) })
+        }
+
+        fn commit_classified(&mut self) -> BoxFuture<'_, Result<(), ClassifiedCommitError>> {
+            self.state.lock().unwrap().commits += 1;
+            let fail = self.fail_commit;
+            Box::pin(async move {
+                if fail {
+                    Err(ClassifiedCommitError::Driver {
+                        certainty: type_bridge_orm::CommitFailureCertainty::DefinitelyAborted,
+                        message: "injected commit failure".to_owned(),
+                    })
+                } else {
+                    Ok(())
+                }
+            })
+        }
+
+        fn rollback(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
+            self.state.lock().unwrap().rollbacks += 1;
+            Box::pin(async { Ok(()) })
+        }
+
+        fn close(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
     fn authority(source: &str, document: &str) -> VerifiedSchemaAuthority {
         let documents =
             SchemaDocumentSet::parse([(DocumentId::new(document).unwrap(), source)]).unwrap();
@@ -4373,6 +8352,7 @@ plays:
             ffi::c_str!(
                 r#"
 class Complete:
+    __slots__ = ("_values", "_iid", "__weakref__")
     __model_form__ = "complete"
     def __init__(self, **values):
         self._values = dict(values)
@@ -4389,6 +8369,7 @@ class Complete:
         self._iid = iid
 
 class Attribute(Complete):
+    __slots__ = ("_attribute_value",)
     def __init__(self, value):
         super().__init__()
         self._attribute_value = value
@@ -4396,6 +8377,7 @@ class Attribute(Complete):
         return self._attribute_value
 
 class Reference:
+    __slots__ = ("_values", "_iid", "__weakref__")
     __model_form__ = "reference"
     def __init__(self, iid, **values):
         self.initialize_runtime_reference(iid, values)
@@ -4429,6 +8411,7 @@ class Reference:
                     .set_item("__type_id__", canonical_id(id).unwrap())
                     .unwrap();
                 attrs.set_item("__model_form__", "complete").unwrap();
+                attrs.set_item("__slots__", PyTuple::empty(py)).unwrap();
                 let bases = PyTuple::new(py, [module.getattr(base).unwrap()]).unwrap();
                 let complete = type_fn
                     .call1((model.target_name().as_str(), bases, attrs))
@@ -4442,6 +8425,7 @@ class Reference:
                         .set_item("__type_id__", canonical_id(id).unwrap())
                         .unwrap();
                     attrs.set_item("__model_form__", "reference").unwrap();
+                    attrs.set_item("__slots__", PyTuple::empty(py)).unwrap();
                     let bases = PyTuple::new(py, [module.getattr("Reference").unwrap()]).unwrap();
                     type_fn
                         .call1((name.as_str(), bases, attrs))
@@ -4479,6 +8463,29 @@ class Reference:
 
     fn install_ordered(py: Python<'_>) -> (RuntimeProjection, Arc<InstalledPackage>) {
         let authority = authority(ORDERED_SCHEMA, "python-ordered-native.yaml");
+        let authority_bytes = encode_schema_authority(&authority);
+        let projection = python_projection(&authority);
+        let projection_json = String::from_utf8(to_canonical_json(&projection).unwrap()).unwrap();
+        let semantic =
+            String::from_utf8(to_canonical_json(projection.semantic_fingerprint()).unwrap())
+                .unwrap();
+        let fingerprint =
+            String::from_utf8(to_canonical_json(projection.projection_fingerprint()).unwrap())
+                .unwrap();
+        let package = install_projection(
+            py,
+            &projection_json,
+            &semantic,
+            &fingerprint,
+            classes(py, &projection),
+            Some(&authority_bytes),
+        )
+        .unwrap();
+        (projection, package)
+    }
+
+    fn install_batch(py: Python<'_>) -> (RuntimeProjection, Arc<InstalledPackage>) {
+        let authority = authority(BATCH_SCHEMA, "python-batch-native.yaml");
         let authority_bytes = encode_schema_authority(&authority);
         let projection = python_projection(&authority);
         let projection_json = String::from_utf8(to_canonical_json(&projection).unwrap()).unwrap();
@@ -4540,6 +8547,645 @@ class Reference:
         })
     }
 
+    fn batch_person(
+        py: Python<'_>,
+        package: &InstalledPackage,
+        identifier: &str,
+        tag: &str,
+        iid: Option<&str>,
+    ) -> PyObject {
+        let person_id = package.type_by_label("person", TypeKind::Entity).unwrap();
+        let identifier_id = package
+            .type_by_label("identifier", TypeKind::Attribute)
+            .unwrap();
+        let tag_id = package.type_by_label("tag", TypeKind::Attribute).unwrap();
+        let identifier = package
+            .class(identifier_id, ProjectedModelForm::Complete)
+            .unwrap()
+            .bind(py)
+            .call1((identifier,))
+            .unwrap();
+        let tag = package
+            .class(tag_id, ProjectedModelForm::Complete)
+            .unwrap()
+            .bind(py)
+            .call1((tag,))
+            .unwrap();
+        let kwargs = PyDict::new(py);
+        kwargs.set_item("identifier", identifier).unwrap();
+        kwargs
+            .set_item("tag", PyTuple::new(py, [tag]).unwrap())
+            .unwrap();
+        let person = package
+            .class(person_id, ProjectedModelForm::Complete)
+            .unwrap()
+            .bind(py)
+            .call((), Some(&kwargs))
+            .unwrap();
+        if let Some(iid) = iid {
+            person.call_method1("attach_runtime_iid", (iid,)).unwrap();
+        }
+        person.unbind()
+    }
+
+    fn batch_membership(
+        py: Python<'_>,
+        package: &InstalledPackage,
+        identifier: &str,
+        player: &PyObject,
+        iid: Option<&str>,
+    ) -> PyObject {
+        let membership_id = package
+            .type_by_label("membership", TypeKind::Relation)
+            .unwrap();
+        let identifier_id = package
+            .type_by_label("identifier", TypeKind::Attribute)
+            .unwrap();
+        let identifier = package
+            .class(identifier_id, ProjectedModelForm::Complete)
+            .unwrap()
+            .bind(py)
+            .call1((identifier,))
+            .unwrap();
+        let kwargs = PyDict::new(py);
+        kwargs.set_item("identifier", identifier).unwrap();
+        kwargs.set_item("member", player.bind(py)).unwrap();
+        let relation = package
+            .class(membership_id, ProjectedModelForm::Complete)
+            .unwrap()
+            .bind(py)
+            .call((), Some(&kwargs))
+            .unwrap();
+        if let Some(iid) = iid {
+            relation.call_method1("attach_runtime_iid", (iid,)).unwrap();
+        }
+        relation.unbind()
+    }
+
+    fn legacy_person(
+        py: Python<'_>,
+        package: &InstalledPackage,
+        identifier: &str,
+        iid: Option<&str>,
+    ) -> PyObject {
+        let person_id = package.type_by_label("person", TypeKind::Entity).unwrap();
+        let identifier_id = package
+            .type_by_label("identifier", TypeKind::Attribute)
+            .unwrap();
+        let identifier = package
+            .class(identifier_id, ProjectedModelForm::Complete)
+            .unwrap()
+            .bind(py)
+            .call1((identifier,))
+            .unwrap();
+        let kwargs = PyDict::new(py);
+        kwargs.set_item("identifier", identifier).unwrap();
+        let person = package
+            .class(person_id, ProjectedModelForm::Complete)
+            .unwrap()
+            .bind(py)
+            .call((), Some(&kwargs))
+            .unwrap();
+        if let Some(iid) = iid {
+            person.call_method1("attach_runtime_iid", (iid,)).unwrap();
+        }
+        person.unbind()
+    }
+
+    fn legacy_membership(
+        py: Python<'_>,
+        package: &InstalledPackage,
+        player: &PyObject,
+        iid: Option<&str>,
+    ) -> PyObject {
+        let membership_id = package
+            .type_by_label("membership", TypeKind::Relation)
+            .unwrap();
+        let kwargs = PyDict::new(py);
+        kwargs.set_item("member", player.bind(py)).unwrap();
+        let membership = package
+            .class(membership_id, ProjectedModelForm::Complete)
+            .unwrap()
+            .bind(py)
+            .call((), Some(&kwargs))
+            .unwrap();
+        if let Some(iid) = iid {
+            membership
+                .call_method1("attach_runtime_iid", (iid,))
+                .unwrap();
+        }
+        membership.unbind()
+    }
+
+    fn legacy_person_document(iid: &str, identifier: &str) -> serde_json::Value {
+        serde_json::json!({
+            "_iid": iid,
+            "_type": "person",
+            "attributes": {"identifier": [{"value": identifier}]},
+        })
+    }
+
+    fn legacy_membership_document(
+        iid: &str,
+        player_iid: &str,
+        player_identifier: &str,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "_iid": iid,
+            "_type": "membership",
+            "attributes": {},
+            "role_players": [{
+                "role_name": "member",
+                "player_iid": player_iid,
+                "player_type_name": "person",
+                "attributes": {"identifier": [{"value": player_identifier}]},
+            }],
+        })
+    }
+
+    fn batch_person_document(
+        ordinal: usize,
+        iid: &str,
+        identifier: &str,
+        tag: &str,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "ordinal": ordinal,
+            "_iid": iid,
+            "_type": "person",
+            "attributes": {
+                "identifier": [{"value": identifier}],
+                "tag": [{"value": tag}],
+            },
+        })
+    }
+
+    fn batch_membership_document(
+        ordinal: usize,
+        iid: &str,
+        identifier: &str,
+        player_iid: &str,
+        player_identifier: &str,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "ordinal": ordinal,
+            "_iid": iid,
+            "_type": "membership",
+            "attributes": {"identifier": [{"value": identifier}]},
+            "role_players": [{
+                "role": "membership:member",
+                "iid": player_iid,
+                "type_name": "person",
+                "attributes": {
+                    "identifier": [{"value": player_identifier}],
+                },
+            }],
+        })
+    }
+
+    fn entity_batch_responses(operation: ProjectedBatchOperation) -> Vec<BatchResponse> {
+        let mut responses = Vec::new();
+        if operation == ProjectedBatchOperation::Put {
+            responses.push(BatchResponse::Documents(vec![]));
+        }
+        if operation == ProjectedBatchOperation::Delete {
+            responses.push(BatchResponse::Documents(vec![
+                serde_json::json!({"ordinal": 1}),
+                serde_json::json!({"ordinal": 0}),
+            ]));
+            return responses;
+        }
+        responses.push(BatchResponse::Documents(vec![
+            serde_json::json!({"ordinal": 1, "iid": "0x21"}),
+            serde_json::json!({"ordinal": 0, "iid": "0x20"}),
+        ]));
+        responses.push(BatchResponse::Documents(vec![
+            batch_person_document(1, "0x21", "person-1", "normalized-1"),
+            batch_person_document(0, "0x20", "person-0", "normalized-0"),
+        ]));
+        responses
+    }
+
+    fn entity_insert_responses(count: usize) -> Vec<BatchResponse> {
+        vec![
+            BatchResponse::Documents(
+                (0..count)
+                    .rev()
+                    .map(|ordinal| {
+                        serde_json::json!({
+                            "ordinal": ordinal,
+                            "iid": format!("0x2{ordinal}"),
+                        })
+                    })
+                    .collect(),
+            ),
+            BatchResponse::Documents(
+                (0..count)
+                    .rev()
+                    .map(|ordinal| {
+                        batch_person_document(
+                            ordinal,
+                            &format!("0x2{ordinal}"),
+                            &format!("person-{ordinal}"),
+                            &format!("normalized-{ordinal}"),
+                        )
+                    })
+                    .collect(),
+            ),
+        ]
+    }
+
+    fn relation_batch_responses(operation: ProjectedBatchOperation) -> Vec<BatchResponse> {
+        if operation == ProjectedBatchOperation::Delete {
+            return vec![BatchResponse::Documents(vec![
+                serde_json::json!({"ordinal": 1}),
+                serde_json::json!({"ordinal": 0, "iid": "0x30"}),
+            ])];
+        }
+        vec![
+            BatchResponse::Documents(vec![
+                serde_json::json!({
+                    "kind": 1,
+                    "ordinal": 1,
+                    "reference_ordinal": 1,
+                    "iid": "0x11",
+                    "type": "person",
+                }),
+                serde_json::json!({
+                    "kind": 1,
+                    "ordinal": 0,
+                    "reference_ordinal": 0,
+                    "iid": "0x10",
+                    "type": "person",
+                }),
+            ]),
+            BatchResponse::Documents(vec![
+                serde_json::json!({"ordinal": 1, "iid": "0x31"}),
+                serde_json::json!({"ordinal": 0, "iid": "0x30"}),
+            ]),
+            BatchResponse::Documents(vec![
+                batch_membership_document(1, "0x31", "membership-1", "0x11", "player-1"),
+                batch_membership_document(0, "0x30", "membership-0", "0x10", "player-0"),
+            ]),
+        ]
+    }
+
+    fn assert_successor_batch_route_fingerprint(
+        kind: TypeKind,
+        operation: ProjectedBatchOperation,
+        calls: &[(String, GivenRowsSpec)],
+    ) {
+        let label = if kind == TypeKind::Entity {
+            "person"
+        } else {
+            "membership"
+        };
+        let has_prerequisite = (kind == TypeKind::Relation
+            && operation != ProjectedBatchOperation::Delete)
+            || operation == ProjectedBatchOperation::Put;
+        let mutation_index = usize::from(has_prerequisite);
+        let (mutation, rows) = &calls[mutation_index];
+
+        match operation {
+            ProjectedBatchOperation::Insert => {
+                assert!(
+                    mutation.contains(&format!("insert\n$thing isa {label};")),
+                    "insert batch reached the wrong mutation compiler: {mutation}",
+                );
+                assert!(!mutation.contains("\nput\n"));
+                assert_eq!(rows.variables, ["ordinal"]);
+                assert_eq!(
+                    rows.rows,
+                    [vec![GivenValue::Integer(0)], vec![GivenValue::Integer(1)],],
+                );
+            }
+            ProjectedBatchOperation::Put => {
+                assert_eq!(mutation.matches("\nput\n").count(), 1);
+                assert!(mutation.contains(&format!("$thing isa {label}")));
+                assert!(mutation.contains("has identifier == $put-key-0"));
+                assert_eq!(rows.variables, ["ordinal", "put-key-0"]);
+                let prefix = if kind == TypeKind::Entity {
+                    "person"
+                } else {
+                    "membership"
+                };
+                assert_eq!(
+                    rows.rows,
+                    [
+                        vec![
+                            GivenValue::Integer(0),
+                            GivenValue::String(format!("{prefix}-0")),
+                        ],
+                        vec![
+                            GivenValue::Integer(1),
+                            GivenValue::String(format!("{prefix}-1")),
+                        ],
+                    ],
+                );
+            }
+            ProjectedBatchOperation::Update => {
+                assert!(mutation.contains(&format!("$thing isa! {label};")));
+                assert!(mutation.contains("$actual-iid == $target-iid;"));
+                assert!(mutation.contains("has $old-attribute-0 of $thing"));
+                assert!(!mutation.contains("\nput\n"));
+                if kind == TypeKind::Relation {
+                    assert!(
+                        mutation
+                            .contains("delete try { links (member: $old-player-0) of $thing; }",),
+                        "relation update did not clear the authored role: {mutation}",
+                    );
+                }
+                assert_eq!(rows.variables, ["ordinal", "target-iid"]);
+                let base = if kind == TypeKind::Entity { 0x20 } else { 0x30 };
+                assert_eq!(
+                    rows.rows,
+                    [
+                        vec![
+                            GivenValue::Integer(0),
+                            GivenValue::String(format!("0x{base:x}")),
+                        ],
+                        vec![
+                            GivenValue::Integer(1),
+                            GivenValue::String(format!("0x{:x}", base + 1)),
+                        ],
+                    ],
+                );
+            }
+            ProjectedBatchOperation::Delete => {
+                assert!(mutation.contains(&format!("$thing isa! {label};")));
+                assert!(mutation.contains("delete try { $thing; }"));
+                assert!(!mutation.contains("\nput\n"));
+                assert_eq!(rows.variables, ["ordinal", "target-iid"]);
+                let base = if kind == TypeKind::Entity { 0x20 } else { 0x30 };
+                assert_eq!(
+                    rows.rows,
+                    [
+                        vec![
+                            GivenValue::Integer(0),
+                            GivenValue::String(format!("0x{base:x}")),
+                        ],
+                        vec![
+                            GivenValue::Integer(1),
+                            GivenValue::String(format!("0x{:x}", base + 1)),
+                        ],
+                    ],
+                );
+            }
+        }
+
+        if has_prerequisite {
+            let (prerequisite, rows) = &calls[0];
+            assert_eq!(
+                &rows.variables[..5],
+                [
+                    "kind",
+                    "ordinal",
+                    "reference-ordinal",
+                    "route",
+                    "wanted-iid"
+                ],
+            );
+            if operation == ProjectedBatchOperation::Put {
+                assert!(prerequisite.contains("$kind == 0;"));
+                assert!(prerequisite.contains("has identifier == $put-key-0"));
+                assert_eq!(
+                    rows.rows
+                        .iter()
+                        .filter(|row| row[0] == GivenValue::Integer(0))
+                        .count(),
+                    2,
+                );
+            }
+            if kind == TypeKind::Relation {
+                assert!(prerequisite.contains("$kind == 1;"));
+                assert_eq!(
+                    rows.rows
+                        .iter()
+                        .filter(|row| row[0] == GivenValue::Integer(1))
+                        .count(),
+                    2,
+                );
+            }
+        }
+
+        if operation != ProjectedBatchOperation::Delete {
+            let (attach, rows) = calls.last().expect("non-delete batch has an attach stage");
+            assert!(attach.contains(&format!("$thing isa! {label};")));
+            assert_eq!(&rows.variables[..2], ["ordinal", "target-iid"]);
+            assert!(rows.rows.iter().any(|row| {
+                row[0] == GivenValue::Integer(0)
+                    && row[1]
+                        == GivenValue::String(if kind == TypeKind::Entity {
+                            "0x20".to_owned()
+                        } else {
+                            "0x30".to_owned()
+                        })
+            }));
+            if kind == TypeKind::Relation {
+                assert!(attach.contains("$thing links (member:"));
+                assert!(
+                    rows.variables
+                        .iter()
+                        .any(|variable| variable.starts_with("player-iid-")),
+                );
+            }
+        }
+    }
+
+    fn prepared_batch_facades(
+        py: Python<'_>,
+        package: &InstalledPackage,
+        facades: Vec<PyObject>,
+    ) -> Vec<PreparedBatchFacade> {
+        let person_id = package.type_by_label("person", TypeKind::Entity).unwrap();
+        let slots = package.batch_slots(person_id).unwrap();
+        facades
+            .into_iter()
+            .map(|instance| PreparedBatchFacade {
+                origin: package.facade_origins.prepare(instance.bind(py)).unwrap(),
+                snapshot: slots.snapshot(py, instance.bind(py)).unwrap(),
+                instance,
+            })
+            .collect()
+    }
+
+    fn hydration_pool_for_prepared(
+        py: Python<'_>,
+        facades: &[PreparedBatchFacade],
+    ) -> BatchHydrationPool {
+        let staged = facades
+            .iter()
+            .map(|facade| StagedBatchFacade {
+                instance: facade.instance.clone_ref(py),
+                snapshot: facade.snapshot.clone_ref(py),
+            })
+            .collect::<Vec<_>>();
+        BatchHydrationPool::try_new(&staged).unwrap()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn execute_batch_with_materialization_probe(
+        py: Python<'_>,
+        package: Arc<InstalledPackage>,
+        type_id: TypeId,
+        database: Option<Arc<Database>>,
+        transaction: Option<TransactionContext>,
+        successor_batch_marker: Option<Arc<AtomicBool>>,
+        runtime: Arc<ProviderRuntimeOwner>,
+        instances: Vec<PyObject>,
+        probe: BatchMaterializationProbe,
+    ) -> PyResult<PyObject> {
+        provider_block_on_with_gil(py, runtime.as_ref(), move |py| {
+            Box::pin(async move {
+                let slots = package.batch_slots(&type_id)?;
+                let mut rows = reserved_binding_rows(instances.len()).map_err(py_sdk_diagnostic)?;
+                let mut staged_facades =
+                    reserved_binding_rows(instances.len()).map_err(py_sdk_diagnostic)?;
+                for (ordinal, instance) in instances.into_iter().enumerate() {
+                    let instance = instance.bind(py);
+                    ensure_batch_instance_at(py, package.as_ref(), &type_id, instance, ordinal)?;
+                    let snapshot = slots.snapshot(py, instance).map_err(|_| {
+                        py_sdk_diagnostic(batch_input_shape_diagnostic(
+                            "generated_model_layout_mismatch",
+                            "The exact generated model no longer has its installed runtime slots",
+                            &projected_batch_row_path(ordinal),
+                        ))
+                    })?;
+                    rows.push(ProjectedBatchRow::Create(project_create(
+                        py,
+                        package.as_ref(),
+                        &type_id,
+                        instance,
+                    )?));
+                    staged_facades.push(StagedBatchFacade {
+                        snapshot,
+                        instance: instance.clone().unbind(),
+                    });
+                }
+                let batch = ProjectedBatch::try_new(
+                    package.projection.as_ref(),
+                    type_id,
+                    ProjectedBatchOperation::Insert,
+                    rows,
+                )
+                .map_err(py_sdk_diagnostic)?;
+                let _gc_guard = SuccessorBatchGcGuard::disable(py);
+                let hydration_pool =
+                    BatchHydrationPool::try_new(&staged_facades).map_err(py_sdk_diagnostic)?;
+                package.validate_batch_hydration_layouts(py).map_err(|_| {
+                    py_sdk_diagnostic(batch_input_shape_diagnostic(
+                        "generated_model_layout_mismatch",
+                        "An installed successor hydration class changed before execution",
+                        &projected_batch_rows_path(),
+                    ))
+                })?;
+                validate_staged_batch_facades_after_lowering(py, slots.as_ref(), &staged_facades)?;
+                let mut facades =
+                    reserved_binding_rows(staged_facades.len()).map_err(py_sdk_diagnostic)?;
+                for staged in staged_facades {
+                    let instance = staged.instance.bind(py);
+                    facades.push(PreparedBatchFacade {
+                        origin: package.facade_origins.prepare(instance)?,
+                        snapshot: staged.snapshot,
+                        instance: instance.clone().unbind(),
+                    });
+                }
+
+                let empty = BatchMappedOutput::Empty(fallible_python_empty_list(py)?);
+                let binding_error = Mutex::new(None);
+                let mapper_package = Arc::clone(&package);
+                let mapper_error = &binding_error;
+                let mapper_pool = &hydration_pool;
+                let mapper_marker = successor_batch_marker.clone();
+                let mapper = move |result| {
+                    if let Some(marker) = &mapper_marker {
+                        marker.store(true, Ordering::Release);
+                    }
+                    materialize_projected_batch_with_probe(
+                        py,
+                        mapper_package,
+                        slots,
+                        facades,
+                        result,
+                        mapper_error,
+                        mapper_pool,
+                        probe,
+                    )
+                    .map(BatchMappedOutput::Publication)
+                };
+                let executor = ProjectedBatchExecutor::new(package.projection.as_ref());
+                let control = ProjectedBatchInvocationControl::capture(
+                    QueryExecutionResourceLimits::default(),
+                    AnswerCancellation::default(),
+                );
+                let result = match (&database, &transaction) {
+                    (Some(database), None) => {
+                        executor
+                            .execute_mapped(database.as_ref(), &batch, control, empty, mapper)
+                            .await
+                    }
+                    (None, Some(transaction)) => {
+                        executor
+                            .execute_in_transaction_mapped(
+                                transaction,
+                                &batch,
+                                control,
+                                empty,
+                                mapper,
+                            )
+                            .await
+                    }
+                    _ => Err(SdkExecutionDiagnostic::internal_failure()),
+                };
+                let output = match result {
+                    Ok(mapped) => Ok(mapped.finish()),
+                    Err(diagnostic) => match take_binding_materialization_error(&binding_error) {
+                        Some(error) => Err(error),
+                        None => Err(py_sdk_diagnostic(diagnostic)),
+                    },
+                };
+                drop(hydration_pool);
+                output
+            })
+        })
+    }
+
+    fn projected_batch_people(
+        py: Python<'_>,
+        package: &InstalledPackage,
+        count: usize,
+    ) -> Vec<ProjectedThing> {
+        let person_id = package
+            .type_by_label("person", TypeKind::Entity)
+            .unwrap()
+            .clone();
+        (0..count)
+            .map(|ordinal| {
+                let facade = batch_person(
+                    py,
+                    package,
+                    &format!("provider-{ordinal}"),
+                    &format!("normalized-{ordinal}"),
+                    Some(&format!("0x2{ordinal}")),
+                );
+                let values = facade
+                    .bind(py)
+                    .call_method0("runtime_values")
+                    .unwrap()
+                    .downcast_into::<PyDict>()
+                    .unwrap();
+                project_hydrated_thing(
+                    py,
+                    package,
+                    &person_id,
+                    &values,
+                    Some(&format!("0x2{ordinal}")),
+                )
+                .unwrap()
+            })
+            .collect()
+    }
+
     fn origin_manager(
         package: Arc<InstalledPackage>,
         type_id: TypeId,
@@ -4547,11 +9193,15 @@ class Reference:
         transaction: Option<TransactionContext>,
         runtime: Arc<ProviderRuntimeOwner>,
     ) -> PyProjectedModelManager {
+        let successor_batch_marker = transaction
+            .as_ref()
+            .map(|_| Arc::new(AtomicBool::new(false)));
         PyProjectedModelManager {
             package,
             type_id,
             database,
             transaction,
+            successor_batch_marker,
             runtime,
             filters: vec![],
         }
@@ -4824,6 +9474,7 @@ class Reference:
                 type_id: person_id,
                 database: None,
                 transaction: None,
+                successor_batch_marker: None,
                 runtime: Arc::new(
                     ProviderRuntimeOwner::new().expect("provider runtime should start"),
                 ),
@@ -5227,6 +9878,244 @@ class Reference:
     }
 
     #[test]
+    fn facade_origin_pending_lookup_activation_abort_and_shared_callback_are_atomic() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            let (_, package) = install_ordered(py);
+            let person_id = package
+                .type_by_label("person", TypeKind::Entity)
+                .unwrap()
+                .clone();
+            let reference = Arc::new(
+                ProjectedReference::try_new(
+                    package.projection.as_ref(),
+                    person_id.clone(),
+                    Some("0xa1".into()),
+                    vec![],
+                )
+                .unwrap(),
+            );
+            let values = PyDict::new(py);
+
+            let activated =
+                hydrate_reference(py, package.as_ref(), &person_id, &values, "0xa1").unwrap();
+            let activation = package
+                .facade_origins
+                .stage(
+                    py,
+                    package.facade_origins.prepare(activated.bind(py)).unwrap(),
+                    FacadeProjectionProof::Reference(Arc::clone(&reference)),
+                    None,
+                )
+                .unwrap();
+            assert!(package.facade_origins.proof(activated.bind(py)).is_none());
+            assert_eq!(package.facade_origins.len(), 0);
+            package.facade_origins.activate(&[activation]);
+            assert!(matches!(
+                package.facade_origins.proof(activated.bind(py)),
+                Some(FacadeProjectionProof::Reference(proof))
+                    if Arc::ptr_eq(&proof, &reference)
+            ));
+
+            let live_manual = PyWeakrefReference::new(activated.bind(py)).unwrap();
+            package
+                .facade_origins
+                .callback
+                .bind(py)
+                .call1((live_manual,))
+                .unwrap();
+            assert!(package.facade_origins.proof(activated.bind(py)).is_some());
+
+            // Exercise the dead-target callback branch without depending on
+            // allocator pointer reuse. Install the old shared weakref under
+            // the replacement facade's pointer, expire it, then install the
+            // live replacement under that same synthetic key. Replaying the
+            // retained stale callback must compare weakref identity and leave
+            // the replacement proof intact.
+            let expired =
+                hydrate_reference(py, package.as_ref(), &person_id, &values, "0xa4").unwrap();
+            let expired_origin = package.facade_origins.prepare(expired.bind(py)).unwrap();
+            let expired_weakref = expired_origin.facade.clone_ref(py);
+            let replacement =
+                hydrate_reference(py, package.as_ref(), &person_id, &values, "0xa5").unwrap();
+            let replacement_origin = package
+                .facade_origins
+                .prepare(replacement.bind(py))
+                .unwrap();
+            let synthetic_key = replacement.bind(py).as_ptr() as usize;
+            assert_eq!(replacement_origin.pointer, synthetic_key);
+            {
+                let mut entries = package
+                    .facade_origins
+                    .entries
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                assert!(
+                    entries
+                        .insert(
+                            synthetic_key,
+                            FacadeOriginEntry {
+                                facade: expired_origin.facade,
+                                active: Some(FacadeProjectionProof::Reference(Arc::clone(
+                                    &reference,
+                                ))),
+                                pending: None,
+                                retired: None,
+                            },
+                        )
+                        .is_none(),
+                );
+            }
+            drop(expired);
+            py.import("gc").unwrap().call_method0("collect").unwrap();
+            assert!(expired_weakref.bind(py).upgrade().is_none());
+            assert!(
+                package
+                    .facade_origins
+                    .entries
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .get(&synthetic_key)
+                    .is_none(),
+            );
+            {
+                let mut entries = package
+                    .facade_origins
+                    .entries
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                assert!(
+                    entries
+                        .insert(
+                            synthetic_key,
+                            FacadeOriginEntry {
+                                facade: replacement_origin.facade,
+                                active: Some(FacadeProjectionProof::Reference(Arc::clone(
+                                    &reference,
+                                ))),
+                                pending: None,
+                                retired: None,
+                            },
+                        )
+                        .is_none(),
+                );
+            }
+            package
+                .facade_origins
+                .callback
+                .bind(py)
+                .call1((expired_weakref.bind(py),))
+                .unwrap();
+            assert!(matches!(
+                package.facade_origins.proof(replacement.bind(py)),
+                Some(FacadeProjectionProof::Reference(proof))
+                    if Arc::ptr_eq(&proof, &reference)
+            ));
+
+            let aborted =
+                hydrate_reference(py, package.as_ref(), &person_id, &values, "0xa2").unwrap();
+            let aborted_activation = package
+                .facade_origins
+                .stage(
+                    py,
+                    package.facade_origins.prepare(aborted.bind(py)).unwrap(),
+                    FacadeProjectionProof::Reference(Arc::clone(&reference)),
+                    None,
+                )
+                .unwrap();
+            assert!(package.facade_origins.proof(aborted.bind(py)).is_none());
+            package.facade_origins.abort(&[aborted_activation]);
+            assert!(package.facade_origins.proof(aborted.bind(py)).is_none());
+
+            let retry = package
+                .facade_origins
+                .stage(
+                    py,
+                    package.facade_origins.prepare(aborted.bind(py)).unwrap(),
+                    FacadeProjectionProof::Reference(Arc::clone(&reference)),
+                    None,
+                )
+                .unwrap();
+            assert!(package.facade_origins.proof(aborted.bind(py)).is_none());
+            package.facade_origins.activate(&[retry]);
+            assert!(package.facade_origins.proof(aborted.bind(py)).is_some());
+
+            let helper = PyModule::from_code(
+                py,
+                ffi::c_str!(
+                    r#"
+class ReenterOnDrop:
+    def __init__(self, callback, weakref, seen):
+        self.callback = callback
+        self.weakref = weakref
+        self.seen = seen
+    def __del__(self):
+        self.seen.append("dropped")
+        self.callback(self.weakref)
+"#
+                ),
+                ffi::c_str!("python_origin_drop.py"),
+                ffi::c_str!("python_origin_drop"),
+            )
+            .unwrap();
+            let retired_facade =
+                hydrate_reference(py, package.as_ref(), &person_id, &values, "0xa3").unwrap();
+            let unrelated_weakref = PyWeakrefReference::new(retired_facade.bind(py)).unwrap();
+            let seen = PyList::empty(py);
+            let finalizer = helper
+                .getattr("ReenterOnDrop")
+                .unwrap()
+                .call1((
+                    package.facade_origins.callback.bind(py),
+                    unrelated_weakref,
+                    &seen,
+                ))
+                .unwrap()
+                .unbind();
+            let retired_activation = package
+                .facade_origins
+                .stage(
+                    py,
+                    package
+                        .facade_origins
+                        .prepare(retired_facade.bind(py))
+                        .unwrap(),
+                    FacadeProjectionProof::Reference(reference),
+                    Some(ProjectedFacadeSnapshot {
+                        iid: py.None(),
+                        values: finalizer,
+                    }),
+                )
+                .unwrap();
+            assert!(
+                package
+                    .facade_origins
+                    .proof(retired_facade.bind(py))
+                    .is_none()
+            );
+            package.facade_origins.abort(&[retired_activation]);
+            assert_eq!(seen.len(), 1);
+            assert_eq!(
+                seen.get_item(0).unwrap().extract::<String>().unwrap(),
+                "dropped"
+            );
+            assert!(
+                package
+                    .facade_origins
+                    .proof(retired_facade.bind(py))
+                    .is_none()
+            );
+
+            drop(activated);
+            drop(aborted);
+            drop(replacement);
+            drop(retired_facade);
+            py.import("gc").unwrap().call_method0("collect").unwrap();
+            assert_eq!(package.facade_origins.len(), 0);
+        });
+    }
+
+    #[test]
     fn hydrated_facade_origin_is_absent_from_python_introspection_and_serialization() {
         pyo3::prepare_freethreaded_python();
         Python::with_gil(|py| {
@@ -5284,10 +10173,19 @@ class Reference:
                 assert!(!facade.bind(py).hasattr(name).unwrap());
             }
 
-            let visible = builtins
+            let vars_error = builtins
                 .call_method1("vars", (facade.bind(py),))
-                .unwrap()
-                .downcast_into::<PyDict>()
+                .unwrap_err();
+            assert!(vars_error.is_instance_of::<pyo3::exceptions::PyTypeError>(py));
+            let visible = PyDict::new(py);
+            visible
+                .set_item("_iid", facade.bind(py).getattr("iid").unwrap())
+                .unwrap();
+            visible
+                .set_item(
+                    "_values",
+                    facade.bind(py).call_method0("runtime_values").unwrap(),
+                )
                 .unwrap();
             let mut keys = visible
                 .keys()
@@ -5298,9 +10196,23 @@ class Reference:
             assert_eq!(keys, ["_iid", "_values"]);
 
             let json = py.import("json").unwrap();
+            let public_adapter = PyModule::from_code(
+                py,
+                ffi::c_str!(
+                    r#"
+def public_state(value):
+    if hasattr(value, "runtime_attribute_value"):
+        return value.runtime_attribute_value()
+    return {"_iid": value.iid, "_values": value.runtime_values()}
+"#
+                ),
+                ffi::c_str!("python_public_projection_state.py"),
+                ffi::c_str!("python_public_projection_state"),
+            )
+            .unwrap();
             let options = PyDict::new(py);
             options
-                .set_item("default", builtins.getattr("vars").unwrap())
+                .set_item("default", public_adapter.getattr("public_state").unwrap())
                 .unwrap();
             options.set_item("sort_keys", true).unwrap();
             let serialized = json
@@ -6089,7 +11001,7 @@ class Reference:
     fn retained_reference_key_mutation_is_not_silently_rebound() {
         pyo3::prepare_freethreaded_python();
         Python::with_gil(|py| {
-            let (_, package) = install(py);
+            let (_, package) = install_batch(py);
             let person_id = package
                 .type_by_label("person", TypeKind::Entity)
                 .unwrap()
@@ -6115,9 +11027,16 @@ class Reference:
                 )
                 .unwrap(),
             );
-            let fields = BTreeMap::from([(key_id.clone(), vec![key])]);
-            let values =
-                hydrate_projected_fields(py, package.as_ref(), &person_id, &fields, true).unwrap();
+            let fields = BTreeMap::from([(key_id.clone(), key)]);
+            let values = hydrate_projected_fields(
+                py,
+                package.as_ref(),
+                &person_id,
+                HydratedProjectedFields::Reference(&fields),
+                false,
+                None,
+            )
+            .unwrap();
             let facade =
                 allocate_projected_reference(py, package.as_ref(), &person_id, &values, "0xaa")
                     .unwrap();
@@ -6261,6 +11180,9 @@ class Reference:
                     FacadeProjectionProof::Thing(proof) => proof,
                     FacadeProjectionProof::Reference(_) => {
                         panic!("insert/put retained a reference proof")
+                    }
+                    FacadeProjectionProof::RolePlayer { .. } => {
+                        panic!("insert/put retained a nested role-player proof")
                     }
                 };
                 let field_id = package.projection.projection().models()[&person_id]
@@ -6472,6 +11394,9 @@ def failing_initialize(target, original):
             let prior_proof = match package.facade_origins.proof(instance.bind(py)).unwrap() {
                 FacadeProjectionProof::Thing(proof) => proof,
                 FacadeProjectionProof::Reference(_) => panic!("manager get retained a reference"),
+                FacadeProjectionProof::RolePlayer { .. } => {
+                    panic!("manager get retained a nested role-player proof")
+                }
             };
             let class = package
                 .class(&person_id, ProjectedModelForm::Complete)
@@ -6506,6 +11431,9 @@ def failing_initialize(target, original):
             let after_proof = match package.facade_origins.proof(instance.bind(py)).unwrap() {
                 FacadeProjectionProof::Thing(proof) => proof,
                 FacadeProjectionProof::Reference(_) => panic!("update retained a reference"),
+                FacadeProjectionProof::RolePlayer { .. } => {
+                    panic!("update retained a nested role-player proof")
+                }
             };
             assert!(Arc::ptr_eq(&prior_proof, &after_proof));
             let state = state.lock().unwrap();
@@ -6514,6 +11442,2198 @@ def failing_initialize(target, original):
             assert_eq!(state.commits, 1);
             assert_eq!(state.rollbacks, 0);
             assert_eq!(state.closes, 1);
+        });
+    }
+
+    #[test]
+    fn successor_entity_batches_route_all_operations_for_owned_and_borrowed_targets() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            for borrowed in [false, true] {
+                for operation in [
+                    ProjectedBatchOperation::Insert,
+                    ProjectedBatchOperation::Put,
+                    ProjectedBatchOperation::Update,
+                    ProjectedBatchOperation::Delete,
+                ] {
+                    let (_, package) = install_batch(py);
+                    let (database, state) =
+                        BatchRecordingBackend::fixture(entity_batch_responses(operation), false);
+                    let runtime = Arc::new(
+                        ProviderRuntimeOwner::new().expect("provider runtime should start"),
+                    );
+                    let transaction = borrowed.then(|| {
+                        runtime
+                            .block_on(database.transaction_context(TxType::Write))
+                            .unwrap()
+                    });
+                    let manager = origin_manager(
+                        Arc::clone(&package),
+                        package
+                            .type_by_label("person", TypeKind::Entity)
+                            .unwrap()
+                            .clone(),
+                        (!borrowed).then(|| Arc::clone(&database)),
+                        transaction.clone(),
+                        Arc::clone(&runtime),
+                    );
+                    let instances = (0..2)
+                        .map(|ordinal| {
+                            batch_person(
+                                py,
+                                package.as_ref(),
+                                &format!("person-{ordinal}"),
+                                &format!("authored-{ordinal}"),
+                                (operation == ProjectedBatchOperation::Update)
+                                    .then_some(if ordinal == 0 { "0x20" } else { "0x21" }),
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    let pointers = instances
+                        .iter()
+                        .map(|instance| instance.bind(py).as_ptr())
+                        .collect::<Vec<_>>();
+                    if operation == ProjectedBatchOperation::Delete {
+                        let iids = PyList::new(py, ["0x20", "0x21"]).unwrap();
+                        manager.delete_many(py, iids.into_any()).unwrap();
+                    } else {
+                        let rows =
+                            PyList::new(py, instances.iter().map(|instance| instance.bind(py)))
+                                .unwrap()
+                                .into_any();
+                        let output = match operation {
+                            ProjectedBatchOperation::Insert => manager.insert_many(py, rows),
+                            ProjectedBatchOperation::Put => manager.put_many(py, rows),
+                            ProjectedBatchOperation::Update => manager.update_many(py, rows),
+                            ProjectedBatchOperation::Delete => unreachable!(),
+                        }
+                        .unwrap();
+                        let output = output.bind(py).downcast::<PyList>().unwrap();
+                        assert_eq!(output.len(), 2);
+                        for (ordinal, pointer) in pointers.iter().enumerate() {
+                            assert_eq!(output.get_item(ordinal).unwrap().as_ptr(), *pointer);
+                            assert_eq!(
+                                output
+                                    .get_item(ordinal)
+                                    .unwrap()
+                                    .getattr("iid")
+                                    .unwrap()
+                                    .extract::<String>()
+                                    .unwrap(),
+                                if ordinal == 0 { "0x20" } else { "0x21" },
+                            );
+                        }
+                    }
+                    if let Some(transaction) = transaction {
+                        assert_eq!(
+                            runtime.block_on(transaction.lifecycle_state()),
+                            TransactionContextState::Active,
+                        );
+                    }
+                    let state = state.lock().unwrap();
+                    assert!(state.responses.is_empty());
+                    assert_eq!(state.opens, [TxType::Write]);
+                    assert_eq!(state.rollbacks, 0);
+                    assert_eq!(state.legacy_commits, 0);
+                    assert_eq!(state.commits, usize::from(!borrowed));
+                    let expected_calls = match operation {
+                        ProjectedBatchOperation::Put => 3,
+                        ProjectedBatchOperation::Delete => 1,
+                        ProjectedBatchOperation::Insert | ProjectedBatchOperation::Update => 2,
+                    };
+                    assert_eq!(state.calls.len(), expected_calls);
+                    assert_successor_batch_route_fingerprint(
+                        TypeKind::Entity,
+                        operation,
+                        &state.calls,
+                    );
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn successor_relation_batches_route_all_operations_for_owned_and_borrowed_targets() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            for borrowed in [false, true] {
+                for operation in [
+                    ProjectedBatchOperation::Insert,
+                    ProjectedBatchOperation::Put,
+                    ProjectedBatchOperation::Update,
+                    ProjectedBatchOperation::Delete,
+                ] {
+                    let (_, package) = install_batch(py);
+                    let (database, state) =
+                        BatchRecordingBackend::fixture(relation_batch_responses(operation), false);
+                    let runtime = Arc::new(
+                        ProviderRuntimeOwner::new().expect("provider runtime should start"),
+                    );
+                    let transaction = borrowed.then(|| {
+                        runtime
+                            .block_on(database.transaction_context(TxType::Write))
+                            .unwrap()
+                    });
+                    let manager = origin_manager(
+                        Arc::clone(&package),
+                        package
+                            .type_by_label("membership", TypeKind::Relation)
+                            .unwrap()
+                            .clone(),
+                        (!borrowed).then(|| Arc::clone(&database)),
+                        transaction.clone(),
+                        Arc::clone(&runtime),
+                    );
+                    let players = (0..2)
+                        .map(|ordinal| {
+                            batch_person(
+                                py,
+                                package.as_ref(),
+                                &format!("player-{ordinal}"),
+                                &format!("player-tag-{ordinal}"),
+                                None,
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    let instances = players
+                        .iter()
+                        .enumerate()
+                        .map(|(ordinal, player)| {
+                            batch_membership(
+                                py,
+                                package.as_ref(),
+                                &format!("membership-{ordinal}"),
+                                player,
+                                (operation == ProjectedBatchOperation::Update)
+                                    .then_some(if ordinal == 0 { "0x30" } else { "0x31" }),
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    let pointers = instances
+                        .iter()
+                        .map(|instance| instance.bind(py).as_ptr())
+                        .collect::<Vec<_>>();
+                    if operation == ProjectedBatchOperation::Delete {
+                        let iids = PyList::new(py, ["0x30", "0x31"]).unwrap();
+                        manager.delete_many(py, iids.into_any()).unwrap();
+                    } else {
+                        let rows =
+                            PyList::new(py, instances.iter().map(|instance| instance.bind(py)))
+                                .unwrap()
+                                .into_any();
+                        let output = match operation {
+                            ProjectedBatchOperation::Insert => manager.insert_many(py, rows),
+                            ProjectedBatchOperation::Put => manager.put_many(py, rows),
+                            ProjectedBatchOperation::Update => manager.update_many(py, rows),
+                            ProjectedBatchOperation::Delete => unreachable!(),
+                        }
+                        .unwrap();
+                        let output = output.bind(py).downcast::<PyList>().unwrap();
+                        assert_eq!(output.len(), 2);
+                        for (ordinal, pointer) in pointers.iter().enumerate() {
+                            let value = output.get_item(ordinal).unwrap();
+                            assert_eq!(value.as_ptr(), *pointer);
+                            assert_eq!(
+                                value.getattr("iid").unwrap().extract::<String>().unwrap(),
+                                if ordinal == 0 { "0x30" } else { "0x31" },
+                            );
+                        }
+                    }
+                    if let Some(transaction) = transaction {
+                        assert_eq!(
+                            runtime.block_on(transaction.lifecycle_state()),
+                            TransactionContextState::Active,
+                        );
+                    }
+                    let state = state.lock().unwrap();
+                    assert!(state.responses.is_empty());
+                    assert_eq!(state.opens, [TxType::Write]);
+                    assert_eq!(state.rollbacks, 0);
+                    assert_eq!(state.legacy_commits, 0);
+                    assert_eq!(state.commits, usize::from(!borrowed));
+                    assert_eq!(
+                        state.calls.len(),
+                        if operation == ProjectedBatchOperation::Delete {
+                            1
+                        } else {
+                            3
+                        },
+                    );
+                    assert_successor_batch_route_fingerprint(
+                        TypeKind::Relation,
+                        operation,
+                        &state.calls,
+                    );
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn successor_empty_batches_validate_without_mapper_or_provider_work() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            let (_, package) = install_batch(py);
+            let unrelated_attribute = package
+                .class(
+                    package.type_by_label("tag", TypeKind::Attribute).unwrap(),
+                    ProjectedModelForm::Complete,
+                )
+                .unwrap()
+                .bind(py);
+            unrelated_attribute
+                .setattr("_attribute_value", py.None())
+                .unwrap();
+            for kind in [TypeKind::Entity, TypeKind::Relation] {
+                for borrowed in [false, true] {
+                    for operation in [
+                        ProjectedBatchOperation::Insert,
+                        ProjectedBatchOperation::Put,
+                        ProjectedBatchOperation::Update,
+                        ProjectedBatchOperation::Delete,
+                    ] {
+                        let (database, state) = BatchRecordingBackend::fixture(vec![], false);
+                        let runtime = Arc::new(
+                            ProviderRuntimeOwner::new().expect("provider runtime should start"),
+                        );
+                        let transaction = borrowed.then(|| {
+                            runtime
+                                .block_on(database.transaction_context(TxType::Write))
+                                .unwrap()
+                        });
+                        let manager = origin_manager(
+                            Arc::clone(&package),
+                            package
+                                .type_by_label(
+                                    if kind == TypeKind::Entity {
+                                        "person"
+                                    } else {
+                                        "membership"
+                                    },
+                                    kind,
+                                )
+                                .unwrap()
+                                .clone(),
+                            (!borrowed).then(|| Arc::clone(&database)),
+                            transaction.clone(),
+                            Arc::clone(&runtime),
+                        );
+                        let marker = manager.successor_batch_marker.clone();
+                        if operation == ProjectedBatchOperation::Delete {
+                            manager
+                                .delete_many(py, PyList::empty(py).into_any())
+                                .unwrap();
+                        } else {
+                            let rows = PyList::empty(py).into_any();
+                            let output = match operation {
+                                ProjectedBatchOperation::Insert => manager.insert_many(py, rows),
+                                ProjectedBatchOperation::Put => manager.put_many(py, rows),
+                                ProjectedBatchOperation::Update => manager.update_many(py, rows),
+                                ProjectedBatchOperation::Delete => unreachable!(),
+                            }
+                            .unwrap();
+                            assert_eq!(output.bind(py).downcast::<PyList>().unwrap().len(), 0);
+                        }
+                        if let Some(transaction) = transaction {
+                            assert_eq!(
+                                runtime.block_on(transaction.lifecycle_state()),
+                                TransactionContextState::Active,
+                            );
+                            assert!(!marker.unwrap().load(Ordering::Acquire));
+                        } else {
+                            assert!(marker.is_none());
+                        }
+                        let state = state.lock().unwrap();
+                        assert!(state.responses.is_empty());
+                        assert_eq!(
+                            state.opens,
+                            if borrowed {
+                                vec![TxType::Write]
+                            } else {
+                                vec![]
+                            },
+                        );
+                        assert!(state.calls.is_empty());
+                        assert_eq!(state.legacy_commits, 0);
+                        assert_eq!(state.commits, 0);
+                        assert_eq!(state.rollbacks, 0);
+                    }
+                }
+            }
+            assert_eq!(package.facade_origins.len(), 0);
+            unrelated_attribute.delattr("_attribute_value").unwrap();
+        });
+    }
+
+    #[test]
+    fn borrowed_successor_nonempty_preflight_failure_keeps_legacy_commit_marker_unset() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            for operation in [
+                ProjectedBatchOperation::Insert,
+                ProjectedBatchOperation::Delete,
+            ] {
+                let (_, package) = install_batch(py);
+                let (database, state) = BatchRecordingBackend::fixture(vec![], false);
+                let runtime =
+                    Arc::new(ProviderRuntimeOwner::new().expect("provider runtime should start"));
+                let transaction = runtime
+                    .block_on(database.transaction_context(TxType::Read))
+                    .unwrap();
+                let context = PyRustTransactionContext::from_parts_for_test(
+                    transaction.clone(),
+                    Arc::clone(&runtime),
+                );
+                let marker = context.successor_batch_marker();
+                let manager = PyProjectedModelManager {
+                    package: Arc::clone(&package),
+                    type_id: package
+                        .type_by_label("person", TypeKind::Entity)
+                        .unwrap()
+                        .clone(),
+                    database: None,
+                    transaction: Some(transaction.clone()),
+                    successor_batch_marker: Some(Arc::clone(&marker)),
+                    runtime: Arc::clone(&runtime),
+                    filters: Vec::new(),
+                };
+                let error = if operation == ProjectedBatchOperation::Insert {
+                    let input = batch_person(py, package.as_ref(), "person-0", "authored-0", None);
+                    manager
+                        .insert_many(py, PyList::new(py, [input.bind(py)]).unwrap().into_any())
+                        .unwrap_err()
+                } else {
+                    manager
+                        .delete_many(py, PyList::new(py, ["0x20"]).unwrap().into_any())
+                        .unwrap_err()
+                };
+                let value = error.value(py);
+                assert_eq!(
+                    value
+                        .getattr("sdk_category")
+                        .unwrap()
+                        .extract::<String>()
+                        .unwrap(),
+                    "invalid_input",
+                );
+                assert_eq!(
+                    value.getattr("code").unwrap().extract::<String>().unwrap(),
+                    "transaction_type_mismatch",
+                );
+                assert_eq!(
+                    runtime.block_on(transaction.lifecycle_state()),
+                    TransactionContextState::Active,
+                );
+                assert!(!marker.load(Ordering::Acquire));
+                {
+                    let state = state.lock().unwrap();
+                    assert_eq!(state.opens, [TxType::Read]);
+                    assert!(state.responses.is_empty());
+                    assert!(state.calls.is_empty());
+                    assert_eq!(state.legacy_commits, 0);
+                    assert_eq!(state.commits, 0);
+                    assert_eq!(state.rollbacks, 0);
+                }
+
+                Py::new(py, context)
+                    .unwrap()
+                    .bind(py)
+                    .call_method0("commit")
+                    .unwrap();
+                let state = state.lock().unwrap();
+                assert_eq!(state.legacy_commits, 1);
+                assert_eq!(state.commits, 0);
+                assert_eq!(state.rollbacks, 0);
+            }
+        });
+    }
+
+    #[test]
+    fn predecessor_public_borrowed_nonempty_batches_keep_legacy_routes_and_commit_seam() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            for kind in [TypeKind::Entity, TypeKind::Relation] {
+                for operation in [
+                    ProjectedBatchOperation::Insert,
+                    ProjectedBatchOperation::Put,
+                    ProjectedBatchOperation::Update,
+                    ProjectedBatchOperation::Delete,
+                ] {
+                    let (_, package) = install(py);
+                    let responses = match (kind, operation) {
+                        (TypeKind::Entity, ProjectedBatchOperation::Insert) => {
+                            vec![QueryResult::Documents(vec![serde_json::json!({
+                                "iid": "0x20",
+                            })])]
+                        }
+                        (TypeKind::Entity, ProjectedBatchOperation::Put) => vec![
+                            QueryResult::Documents(vec![]),
+                            QueryResult::Documents(vec![serde_json::json!({"iid": "0x20"})]),
+                        ],
+                        (TypeKind::Entity, ProjectedBatchOperation::Update) => vec![
+                            QueryResult::Ok,
+                            QueryResult::Documents(vec![legacy_person_document(
+                                "0x20",
+                                "legacy-person",
+                            )]),
+                        ],
+                        (TypeKind::Entity, ProjectedBatchOperation::Delete) => {
+                            vec![QueryResult::Ok]
+                        }
+                        (TypeKind::Relation, ProjectedBatchOperation::Insert) => {
+                            vec![QueryResult::Documents(vec![serde_json::json!({
+                                "iid": "0x30",
+                            })])]
+                        }
+                        (TypeKind::Relation, ProjectedBatchOperation::Put) => vec![
+                            QueryResult::Documents(vec![serde_json::json!({"iid": "0x10"})]),
+                            QueryResult::Documents(vec![serde_json::json!({"iid": "0x30"})]),
+                        ],
+                        (TypeKind::Relation, ProjectedBatchOperation::Update) => vec![
+                            QueryResult::Documents(vec![serde_json::json!({"iid": "0x10"})]),
+                            QueryResult::Ok,
+                            QueryResult::Ok,
+                            QueryResult::Documents(vec![legacy_membership_document(
+                                "0x30",
+                                "0x10",
+                                "legacy-player",
+                            )]),
+                        ],
+                        (TypeKind::Relation, ProjectedBatchOperation::Delete) => {
+                            vec![QueryResult::Ok]
+                        }
+                        _ => unreachable!(),
+                    };
+                    let expected_queries = responses.len();
+                    let (database, state) = LegacyBatchRecordingBackend::fixture(responses);
+                    let runtime = Arc::new(
+                        ProviderRuntimeOwner::new().expect("provider runtime should start"),
+                    );
+                    let transaction = runtime
+                        .block_on(database.transaction_context(TxType::Write))
+                        .unwrap();
+                    let context = PyRustTransactionContext::from_parts_for_test(
+                        transaction.clone(),
+                        Arc::clone(&runtime),
+                    );
+                    let marker = context.successor_batch_marker();
+                    let label = if kind == TypeKind::Entity {
+                        "person"
+                    } else {
+                        "membership"
+                    };
+                    let manager = PyProjectedModelManager {
+                        package: Arc::clone(&package),
+                        type_id: package.type_by_label(label, kind).unwrap().clone(),
+                        database: None,
+                        transaction: Some(transaction.clone()),
+                        successor_batch_marker: Some(Arc::clone(&marker)),
+                        runtime: Arc::clone(&runtime),
+                        filters: Vec::new(),
+                    };
+                    assert!(!manager.uses_successor_runtime());
+
+                    let player = (kind == TypeKind::Relation)
+                        .then(|| legacy_person(py, package.as_ref(), "legacy-player", None));
+                    let input = if kind == TypeKind::Entity {
+                        legacy_person(
+                            py,
+                            package.as_ref(),
+                            "legacy-person",
+                            (operation == ProjectedBatchOperation::Update).then_some("0x20"),
+                        )
+                    } else {
+                        legacy_membership(
+                            py,
+                            package.as_ref(),
+                            player.as_ref().unwrap(),
+                            (operation == ProjectedBatchOperation::Update).then_some("0x30"),
+                        )
+                    };
+                    let pointer = input.bind(py).as_ptr();
+                    if operation == ProjectedBatchOperation::Delete {
+                        let iid = if kind == TypeKind::Entity {
+                            "0x20"
+                        } else {
+                            "0x30"
+                        };
+                        manager
+                            .delete_many(py, PyList::new(py, [iid]).unwrap().into_any())
+                            .unwrap();
+                    } else {
+                        let rows = PyList::new(py, [input.bind(py)]).unwrap().into_any();
+                        let output = match operation {
+                            ProjectedBatchOperation::Insert => manager.insert_many(py, rows),
+                            ProjectedBatchOperation::Put => manager.put_many(py, rows),
+                            ProjectedBatchOperation::Update => manager.update_many(py, rows),
+                            ProjectedBatchOperation::Delete => unreachable!(),
+                        }
+                        .unwrap();
+                        let output = output.bind(py).downcast::<PyList>().unwrap();
+                        assert_eq!(output.len(), 1);
+                        assert_eq!(output.get_item(0).unwrap().as_ptr(), pointer);
+                        assert_eq!(
+                            output
+                                .get_item(0)
+                                .unwrap()
+                                .getattr("iid")
+                                .unwrap()
+                                .extract::<String>()
+                                .unwrap(),
+                            if kind == TypeKind::Entity {
+                                "0x20"
+                            } else {
+                                "0x30"
+                            },
+                        );
+                    }
+                    assert_eq!(
+                        runtime.block_on(transaction.lifecycle_state()),
+                        TransactionContextState::Active,
+                    );
+                    assert!(!marker.load(Ordering::Acquire));
+                    {
+                        let state = state.lock().unwrap();
+                        assert!(state.responses.is_empty());
+                        assert_eq!(state.opens, [TxType::Write]);
+                        assert_eq!(state.queries.len(), expected_queries);
+                        match operation {
+                            ProjectedBatchOperation::Insert => {
+                                assert!(state.queries.iter().any(|query| query.contains("insert")));
+                            }
+                            ProjectedBatchOperation::Put => {
+                                assert!(state.queries.len() >= 2);
+                                assert!(state.queries.last().unwrap().contains("insert"));
+                            }
+                            ProjectedBatchOperation::Update => {
+                                assert!(state.queries.iter().any(|query| query.contains("delete")));
+                                assert!(state.queries.last().unwrap().contains("fetch"));
+                            }
+                            ProjectedBatchOperation::Delete => {
+                                assert!(state.queries[0].contains("delete"));
+                            }
+                        }
+                        assert_eq!(state.legacy_commits, 0);
+                        assert_eq!(state.sdk_commits, 0);
+                        assert_eq!(state.rollbacks, 0);
+                    }
+
+                    Py::new(py, context)
+                        .unwrap()
+                        .bind(py)
+                        .call_method0("commit")
+                        .unwrap();
+                    let state = state.lock().unwrap();
+                    assert_eq!(state.legacy_commits, 1);
+                    assert_eq!(state.sdk_commits, 0);
+                    assert_eq!(state.rollbacks, 0);
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn borrowed_successor_batch_marks_clone_shared_public_commit_sdk() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            for fail_commit in [false, true] {
+                let (_, package) = install_batch(py);
+                let (database, state) = BatchRecordingBackend::fixture(
+                    entity_batch_responses(ProjectedBatchOperation::Insert),
+                    fail_commit,
+                );
+                let runtime =
+                    Arc::new(ProviderRuntimeOwner::new().expect("provider runtime should start"));
+                let transaction = runtime
+                    .block_on(database.transaction_context(TxType::Write))
+                    .unwrap();
+                let context = PyRustTransactionContext::from_parts_for_test(
+                    transaction.clone(),
+                    Arc::clone(&runtime),
+                );
+                let marker = context.successor_batch_marker();
+                let manager = PyProjectedModelManager {
+                    package: Arc::clone(&package),
+                    type_id: package
+                        .type_by_label("person", TypeKind::Entity)
+                        .unwrap()
+                        .clone(),
+                    database: None,
+                    transaction: Some(transaction),
+                    successor_batch_marker: Some(Arc::clone(&marker)),
+                    runtime: Arc::clone(&runtime),
+                    filters: Vec::new(),
+                };
+                let filtered = manager.filter(py, None).unwrap();
+                let instances = (0..2)
+                    .map(|ordinal| {
+                        batch_person(
+                            py,
+                            package.as_ref(),
+                            &format!("person-{ordinal}"),
+                            &format!("authored-{ordinal}"),
+                            None,
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                let rows =
+                    PyList::new(py, instances.iter().map(|instance| instance.bind(py))).unwrap();
+                let output = filtered.insert_many(py, rows.into_any()).unwrap();
+                assert_eq!(output.bind(py).downcast::<PyList>().unwrap().len(), 2);
+                assert!(marker.load(Ordering::Acquire));
+
+                let context = Py::new(py, context).unwrap();
+                let commit = context.bind(py).call_method0("commit");
+                if fail_commit {
+                    let error = commit.unwrap_err();
+                    assert_eq!(
+                        error
+                            .value(py)
+                            .getattr("code")
+                            .unwrap()
+                            .extract::<String>()
+                            .unwrap(),
+                        "commit_definitely_aborted",
+                    );
+                    assert!(!error.to_string().contains("injected commit failure"));
+                } else {
+                    commit.unwrap();
+                }
+
+                let state = state.lock().unwrap();
+                assert!(state.responses.is_empty());
+                assert_eq!(state.opens, [TxType::Write]);
+                assert_eq!(state.calls.len(), 2);
+                assert_eq!(state.legacy_commits, 0);
+                assert_eq!(state.commits, 1);
+                assert_eq!(state.rollbacks, 0);
+            }
+        });
+    }
+
+    #[test]
+    fn borrowed_successor_write_and_delete_publish_marker_before_concurrent_commit() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            for operation in [
+                ProjectedBatchOperation::Insert,
+                ProjectedBatchOperation::Delete,
+            ] {
+                let (_, package) = install_batch(py);
+                let (database, state, gate) =
+                    BatchRecordingBackend::gated_fixture(entity_batch_responses(operation));
+                let runtime =
+                    Arc::new(ProviderRuntimeOwner::new().expect("provider runtime should start"));
+                let transaction = runtime
+                    .block_on(database.transaction_context(TxType::Write))
+                    .unwrap();
+                let context = PyRustTransactionContext::from_parts_for_test(
+                    transaction.clone(),
+                    Arc::clone(&runtime),
+                );
+                let marker = context.successor_batch_marker();
+                let manager = PyProjectedModelManager {
+                    package: Arc::clone(&package),
+                    type_id: package
+                        .type_by_label("person", TypeKind::Entity)
+                        .unwrap()
+                        .clone(),
+                    database: None,
+                    transaction: Some(transaction),
+                    successor_batch_marker: Some(Arc::clone(&marker)),
+                    runtime: Arc::clone(&runtime),
+                    filters: Vec::new(),
+                };
+                let context = Py::new(py, context).unwrap();
+                let commit_context = context.clone_ref(py);
+                let commit_gate = Arc::clone(&gate);
+                let (attempted_tx, attempted_rx) = std::sync::mpsc::sync_channel(0);
+                let commit_thread = std::thread::spawn(move || {
+                    commit_gate.wait_until_entered();
+                    attempted_tx.send(()).unwrap();
+                    Python::with_gil(|py| {
+                        commit_context
+                            .bind(py)
+                            .call_method0("commit")
+                            .map(|_| ())
+                            .map_err(|error| error.to_string())
+                    })
+                });
+                let release_gate = Arc::clone(&gate);
+                let release_state = Arc::clone(&state);
+                let release_marker = Arc::clone(&marker);
+                let release_thread = std::thread::spawn(move || {
+                    release_gate.wait_until_entered();
+                    attempted_rx.recv().unwrap();
+                    assert!(!release_marker.load(Ordering::Acquire));
+                    let state = release_state.lock().unwrap();
+                    assert_eq!(state.legacy_commits, 0);
+                    assert_eq!(state.commits, 0);
+                    drop(state);
+                    release_gate.release();
+                });
+
+                match operation {
+                    ProjectedBatchOperation::Insert => {
+                        let instances = (0..2)
+                            .map(|ordinal| {
+                                batch_person(
+                                    py,
+                                    package.as_ref(),
+                                    &format!("person-{ordinal}"),
+                                    &format!("authored-{ordinal}"),
+                                    None,
+                                )
+                            })
+                            .collect::<Vec<_>>();
+                        let rows =
+                            PyList::new(py, instances.iter().map(|instance| instance.bind(py)))
+                                .unwrap();
+                        let output = manager.insert_many(py, rows.into_any()).unwrap();
+                        assert_eq!(output.bind(py).downcast::<PyList>().unwrap().len(), 2);
+                    }
+                    ProjectedBatchOperation::Delete => manager
+                        .delete_many(py, PyList::new(py, ["0x20", "0x21"]).unwrap().into_any())
+                        .unwrap(),
+                    _ => unreachable!(),
+                }
+                let commit = py.allow_threads(move || {
+                    release_thread.join().unwrap();
+                    commit_thread.join().unwrap()
+                });
+                commit.unwrap();
+                assert!(marker.load(Ordering::Acquire));
+
+                let state = state.lock().unwrap();
+                assert!(state.responses.is_empty());
+                assert_eq!(state.opens, [TxType::Write]);
+                assert_eq!(state.legacy_commits, 0);
+                assert_eq!(state.commits, 1);
+                assert_eq!(state.rollbacks, 0);
+                assert_eq!(
+                    state.calls.len(),
+                    if operation == ProjectedBatchOperation::Insert {
+                        2
+                    } else {
+                        1
+                    },
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn successor_public_iterators_preserve_errors_and_enforce_the_hard_cap() {
+        use pythonize::depythonize;
+
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            let (_, package) = install_batch(py);
+            let (database, state) = BatchRecordingBackend::fixture(vec![], false);
+            let manager = origin_manager(
+                Arc::clone(&package),
+                package
+                    .type_by_label("person", TypeKind::Entity)
+                    .unwrap()
+                    .clone(),
+                Some(database),
+                None,
+                Arc::new(ProviderRuntimeOwner::new().expect("provider runtime should start")),
+            );
+            let helpers = PyModule::from_code(
+                py,
+                ffi::c_str!(
+                    r#"
+class IteratorSentinel(Exception):
+    pass
+
+class IterTypeError:
+    def __iter__(self):
+        raise TypeError("injected __iter__ TypeError")
+
+class BoundaryIterator:
+    def __init__(self, value, count, message):
+        self.value = value
+        self.count = count
+        self.message = message
+        self.seen = 0
+    def __iter__(self):
+        return self
+    def __next__(self):
+        if self.seen < self.count:
+            self.seen += 1
+            return self.value
+        raise IteratorSentinel(self.message)
+"#
+                ),
+                ffi::c_str!("python_batch_iterators.py"),
+                ffi::c_str!("python_batch_iterators"),
+            )
+            .unwrap();
+
+            for delete in [false, true] {
+                let error = if delete {
+                    manager.delete_many(py, py.None().into_bound(py))
+                } else {
+                    manager
+                        .insert_many(py, py.None().into_bound(py))
+                        .map(|_| ())
+                }
+                .unwrap_err();
+                assert_eq!(
+                    error
+                        .value(py)
+                        .getattr("code")
+                        .unwrap()
+                        .extract::<String>()
+                        .unwrap(),
+                    "batch_rows_not_iterable",
+                );
+                let path: serde_json::Value =
+                    depythonize(&error.value(py).getattr("path").unwrap()).unwrap();
+                assert_eq!(
+                    path,
+                    serde_json::json!([{"kind": "argument", "value": "rows"}]),
+                );
+
+                let hostile = helpers.getattr("IterTypeError").unwrap().call0().unwrap();
+                let error = if delete {
+                    manager.delete_many(py, hostile)
+                } else {
+                    manager.insert_many(py, hostile).map(|_| ())
+                }
+                .unwrap_err();
+                assert!(error.is_instance_of::<pyo3::exceptions::PyTypeError>(py));
+                assert!(error.to_string().contains("injected __iter__ TypeError"));
+                assert!(error.value(py).getattr("code").is_err());
+            }
+
+            let maximum = usize::try_from(type_bridge_orm::MAX_QUERY_ITEMS).unwrap();
+            let facade = batch_person(py, package.as_ref(), "boundary", "boundary", None);
+            for (delete, item, message) in [
+                (false, facade.clone_ref(py), "facade boundary"),
+                (
+                    true,
+                    "0x20".into_pyobject(py).unwrap().into_any().unbind(),
+                    "iid boundary",
+                ),
+            ] {
+                let boundary = helpers
+                    .getattr("BoundaryIterator")
+                    .unwrap()
+                    .call1((item.bind(py), maximum, message))
+                    .unwrap();
+                let error = if delete {
+                    manager.delete_many(py, boundary)
+                } else {
+                    manager.insert_many(py, boundary).map(|_| ())
+                }
+                .unwrap_err();
+                assert_eq!(error.get_type(py).name().unwrap(), "IteratorSentinel");
+                assert!(error.to_string().contains(message));
+                assert!(error.value(py).getattr("code").is_err());
+
+                let over_limit = helpers
+                    .getattr("BoundaryIterator")
+                    .unwrap()
+                    .call1((item.bind(py), maximum + 1, "unreachable sentinel"))
+                    .unwrap();
+                let error = if delete {
+                    manager.delete_many(py, over_limit)
+                } else {
+                    manager.insert_many(py, over_limit).map(|_| ())
+                }
+                .unwrap_err();
+                assert_eq!(
+                    error
+                        .value(py)
+                        .getattr("code")
+                        .unwrap()
+                        .extract::<String>()
+                        .unwrap(),
+                    "batch_item_limit",
+                );
+                let path: serde_json::Value =
+                    depythonize(&error.value(py).getattr("path").unwrap()).unwrap();
+                assert_eq!(
+                    path,
+                    serde_json::json!([
+                        {"kind": "argument", "value": "limits"},
+                        {"kind": "argument", "value": "items"},
+                    ]),
+                );
+            }
+
+            let state = state.lock().unwrap();
+            assert!(state.opens.is_empty());
+            assert!(state.calls.is_empty());
+            assert_eq!(state.legacy_commits, 0);
+            assert_eq!(state.commits, 0);
+            assert_eq!(state.rollbacks, 0);
+        });
+    }
+
+    #[test]
+    fn successor_batch_preflight_keeps_common_row_diagnostics_and_precedes_io() {
+        use pythonize::depythonize;
+
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            let (_, package) = install_batch(py);
+            let person_id = package
+                .type_by_label("person", TypeKind::Entity)
+                .unwrap()
+                .clone();
+
+            let (database, state) = BatchRecordingBackend::fixture(vec![], false);
+            let manager = origin_manager(
+                Arc::clone(&package),
+                person_id.clone(),
+                Some(database),
+                None,
+                Arc::new(ProviderRuntimeOwner::new().expect("provider runtime should start")),
+            );
+            let duplicate = batch_person(py, package.as_ref(), "duplicate", "first", None);
+            let error = manager
+                .insert_many(
+                    py,
+                    PyList::new(py, [duplicate.bind(py), duplicate.bind(py)])
+                        .unwrap()
+                        .into_any(),
+                )
+                .unwrap_err();
+            let value = error.value(py);
+            assert_eq!(
+                value
+                    .getattr("sdk_category")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "invalid_input",
+            );
+            assert_eq!(
+                value.getattr("code").unwrap().extract::<String>().unwrap(),
+                "duplicate_batch_key",
+            );
+            let path: serde_json::Value = depythonize(&value.getattr("path").unwrap()).unwrap();
+            assert_eq!(
+                path[0],
+                serde_json::json!({"kind": "argument", "value": "rows"})
+            );
+            assert_eq!(path[1], serde_json::json!({"kind": "index", "value": 1}));
+            assert_eq!(path[2]["kind"], "field");
+            let details: serde_json::Value =
+                depythonize(&value.getattr("details").unwrap()).unwrap();
+            assert_eq!(
+                details,
+                serde_json::json!({
+                    "first_conflicting_index": {"kind": "count", "value": 0},
+                }),
+            );
+            {
+                let state = state.lock().unwrap();
+                assert!(state.opens.is_empty());
+                assert!(state.calls.is_empty());
+            }
+            assert_eq!(package.facade_origins.len(), 0);
+
+            let (database, state) = BatchRecordingBackend::fixture(vec![], false);
+            let manager = origin_manager(
+                Arc::clone(&package),
+                person_id.clone(),
+                Some(database),
+                None,
+                Arc::new(ProviderRuntimeOwner::new().expect("provider runtime should start")),
+            );
+            let duplicate_target =
+                batch_person(py, package.as_ref(), "first", "first", Some("0x20"));
+            let error = manager
+                .update_many(
+                    py,
+                    PyList::new(py, [duplicate_target.bind(py), duplicate_target.bind(py)])
+                        .unwrap()
+                        .into_any(),
+                )
+                .unwrap_err();
+            let value = error.value(py);
+            assert_eq!(
+                value.getattr("code").unwrap().extract::<String>().unwrap(),
+                "duplicate_batch_target",
+            );
+            let path: serde_json::Value = depythonize(&value.getattr("path").unwrap()).unwrap();
+            assert_eq!(
+                path,
+                serde_json::json!([
+                    {"kind": "argument", "value": "rows"},
+                    {"kind": "index", "value": 1},
+                    {"kind": "argument", "value": "iid"},
+                ]),
+            );
+            let details: serde_json::Value =
+                depythonize(&value.getattr("details").unwrap()).unwrap();
+            assert_eq!(
+                details,
+                serde_json::json!({
+                    "first_conflicting_index": {"kind": "count", "value": 0},
+                }),
+            );
+            {
+                let state = state.lock().unwrap();
+                assert!(state.opens.is_empty());
+                assert!(state.calls.is_empty());
+            }
+
+            let (database, state) = BatchRecordingBackend::fixture(vec![], false);
+            let memo_id = package
+                .type_by_label("memo", TypeKind::Entity)
+                .unwrap()
+                .clone();
+            let manager = origin_manager(
+                Arc::clone(&package),
+                memo_id.clone(),
+                Some(database),
+                None,
+                Arc::new(ProviderRuntimeOwner::new().expect("provider runtime should start")),
+            );
+            let memo = package
+                .class(&memo_id, ProjectedModelForm::Complete)
+                .unwrap()
+                .bind(py)
+                .call0()
+                .unwrap();
+            let error = manager
+                .insert_many(
+                    py,
+                    PyList::new(py, [memo.clone(), memo]).unwrap().into_any(),
+                )
+                .unwrap_err();
+            let value = error.value(py);
+            assert_eq!(
+                value.getattr("code").unwrap().extract::<String>().unwrap(),
+                "duplicate_batch_input_identity",
+            );
+            let path: serde_json::Value = depythonize(&value.getattr("path").unwrap()).unwrap();
+            assert_eq!(
+                path,
+                serde_json::json!([
+                    {"kind": "argument", "value": "rows"},
+                    {"kind": "index", "value": 1},
+                ]),
+            );
+            let details: serde_json::Value =
+                depythonize(&value.getattr("details").unwrap()).unwrap();
+            assert_eq!(
+                details,
+                serde_json::json!({
+                    "first_conflicting_index": {"kind": "count", "value": 0},
+                }),
+            );
+            {
+                let state = state.lock().unwrap();
+                assert!(state.opens.is_empty());
+                assert!(state.calls.is_empty());
+            }
+
+            let (database, state) = BatchRecordingBackend::fixture(vec![], false);
+            let manager = origin_manager(
+                Arc::clone(&package),
+                package
+                    .type_by_label("membership", TypeKind::Relation)
+                    .unwrap()
+                    .clone(),
+                Some(database),
+                None,
+                Arc::new(ProviderRuntimeOwner::new().expect("provider runtime should start")),
+            );
+            let error = manager
+                .delete_many_projected(py, vec!["0x30".into(), "0x30".into()])
+                .unwrap_err();
+            assert_eq!(
+                error
+                    .value(py)
+                    .getattr("code")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "duplicate_batch_target",
+            );
+            {
+                let state = state.lock().unwrap();
+                assert!(state.opens.is_empty());
+                assert!(state.calls.is_empty());
+            }
+
+            let (database, state) = BatchRecordingBackend::fixture(vec![], false);
+            let manager = origin_manager(
+                Arc::clone(&package),
+                person_id.clone(),
+                Some(database),
+                None,
+                Arc::new(ProviderRuntimeOwner::new().expect("provider runtime should start")),
+            );
+            let valid = batch_person(py, package.as_ref(), "valid", "valid", None);
+            let invalid = batch_person(py, package.as_ref(), "invalid", "duplicate", None);
+            let values = invalid
+                .bind(py)
+                .getattr("_values")
+                .unwrap()
+                .downcast_into::<PyDict>()
+                .unwrap();
+            let tags = values
+                .get_item("tag")
+                .unwrap()
+                .unwrap()
+                .downcast_into::<PyTuple>()
+                .unwrap();
+            let tag = tags.get_item(0).unwrap();
+            values
+                .set_item("tag", PyTuple::new(py, [tag.clone(), tag]).unwrap())
+                .unwrap();
+            let error = manager
+                .write_many_projected(py, vec![valid, invalid], ProjectedBatchOperation::Insert)
+                .unwrap_err();
+            let value = error.value(py);
+            assert_eq!(
+                value.getattr("code").unwrap().extract::<String>().unwrap(),
+                "ordered_distinct_duplicate",
+            );
+            let path: serde_json::Value = depythonize(&value.getattr("path").unwrap()).unwrap();
+            assert_eq!(
+                path[0],
+                serde_json::json!({"kind": "argument", "value": "rows"})
+            );
+            assert_eq!(path[1], serde_json::json!({"kind": "index", "value": 1}));
+            {
+                let state = state.lock().unwrap();
+                assert!(state.opens.is_empty());
+                assert!(state.calls.is_empty());
+            }
+            assert_eq!(package.facade_origins.len(), 0);
+
+            let (database, state) = BatchRecordingBackend::fixture(vec![], false);
+            let manager = origin_manager(
+                package,
+                person_id,
+                Some(database),
+                None,
+                Arc::new(ProviderRuntimeOwner::new().expect("provider runtime should start")),
+            );
+            let row_count = usize::try_from(type_bridge_orm::MAX_QUERY_ITEMS).unwrap() + 1;
+            let hostile = (0..row_count).map(|_| py.None()).collect::<Vec<_>>();
+            let error = manager
+                .write_many_projected(py, hostile, ProjectedBatchOperation::Insert)
+                .unwrap_err();
+            let value = error.value(py);
+            assert_eq!(
+                value
+                    .getattr("sdk_category")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "resource_limit",
+            );
+            assert_eq!(
+                value.getattr("code").unwrap().extract::<String>().unwrap(),
+                "batch_item_limit",
+            );
+            let path: serde_json::Value = depythonize(&value.getattr("path").unwrap()).unwrap();
+            assert_eq!(
+                path,
+                serde_json::json!([
+                    {"kind": "argument", "value": "limits"},
+                    {"kind": "argument", "value": "items"},
+                ]),
+            );
+            let state = state.lock().unwrap();
+            assert!(state.opens.is_empty());
+            assert!(state.calls.is_empty());
+        });
+    }
+
+    #[test]
+    fn owned_successor_provider_and_commit_failures_are_exact_and_terminal() {
+        use pythonize::depythonize;
+
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            let (_, package) = install_batch(py);
+            let person_id = package
+                .type_by_label("person", TypeKind::Entity)
+                .unwrap()
+                .clone();
+            let (database, state) =
+                BatchRecordingBackend::fixture(vec![BatchResponse::Error], false);
+            let manager = origin_manager(
+                Arc::clone(&package),
+                person_id.clone(),
+                Some(database),
+                None,
+                Arc::new(ProviderRuntimeOwner::new().expect("provider runtime should start")),
+            );
+            let input = batch_person(py, package.as_ref(), "person-0", "authored-0", None);
+            let retained = input.clone_ref(py);
+            let prior_values = retained.bind(py).getattr("_values").unwrap().unbind();
+            let prior_iid = retained.bind(py).getattr("_iid").unwrap().unbind();
+            let error = manager
+                .write_many_projected(py, vec![input], ProjectedBatchOperation::Insert)
+                .unwrap_err();
+            let value = error.value(py);
+            assert_eq!(
+                value
+                    .getattr("sdk_category")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "provider",
+            );
+            assert_eq!(
+                value.getattr("code").unwrap().extract::<String>().unwrap(),
+                "provider_operation_failed",
+            );
+            assert!(!error.to_string().contains("injected batch failure"));
+            let path: serde_json::Value = depythonize(&value.getattr("path").unwrap()).unwrap();
+            assert_eq!(
+                path,
+                serde_json::json!([{"kind": "type", "value": person_id}]),
+            );
+            let details: serde_json::Value =
+                depythonize(&value.getattr("details").unwrap()).unwrap();
+            assert_eq!(
+                details,
+                serde_json::json!({"operation": {"kind": "text", "value": "write"}}),
+            );
+            assert!(
+                retained
+                    .bind(py)
+                    .getattr("_values")
+                    .unwrap()
+                    .is(prior_values.bind(py))
+            );
+            assert!(
+                retained
+                    .bind(py)
+                    .getattr("_iid")
+                    .unwrap()
+                    .is(prior_iid.bind(py))
+            );
+            assert_eq!(package.facade_origins.len(), 0);
+            {
+                let state = state.lock().unwrap();
+                assert!(state.responses.is_empty());
+                assert_eq!(state.opens, [TxType::Write]);
+                assert_eq!(state.calls.len(), 1);
+                assert_eq!(state.legacy_commits, 0);
+                assert_eq!(state.commits, 0);
+                assert_eq!(state.rollbacks, 1);
+            }
+
+            let (_, package) = install_batch(py);
+            let person_id = package
+                .type_by_label("person", TypeKind::Entity)
+                .unwrap()
+                .clone();
+            let (database, state) = BatchRecordingBackend::fixture(
+                entity_batch_responses(ProjectedBatchOperation::Insert),
+                true,
+            );
+            let manager = origin_manager(
+                Arc::clone(&package),
+                person_id.clone(),
+                Some(database),
+                None,
+                Arc::new(ProviderRuntimeOwner::new().expect("provider runtime should start")),
+            );
+            let inputs = (0..2)
+                .map(|ordinal| {
+                    batch_person(
+                        py,
+                        package.as_ref(),
+                        &format!("person-{ordinal}"),
+                        &format!("authored-{ordinal}"),
+                        None,
+                    )
+                })
+                .collect::<Vec<_>>();
+            let retained = inputs
+                .iter()
+                .map(|input| input.clone_ref(py))
+                .collect::<Vec<_>>();
+            let prior_slots = retained
+                .iter()
+                .map(|input| {
+                    (
+                        input.bind(py).getattr("_values").unwrap().unbind(),
+                        input.bind(py).getattr("_iid").unwrap().unbind(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            let error = manager
+                .write_many_projected(py, inputs, ProjectedBatchOperation::Insert)
+                .unwrap_err();
+            let value = error.value(py);
+            assert_eq!(
+                value
+                    .getattr("sdk_category")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "transaction",
+            );
+            assert_eq!(
+                value.getattr("code").unwrap().extract::<String>().unwrap(),
+                "commit_definitely_aborted",
+            );
+            assert!(!error.to_string().contains("injected commit failure"));
+            let path: serde_json::Value = depythonize(&value.getattr("path").unwrap()).unwrap();
+            assert_eq!(
+                path,
+                serde_json::json!([{"kind": "type", "value": person_id}]),
+            );
+            let details: serde_json::Value =
+                depythonize(&value.getattr("details").unwrap()).unwrap();
+            assert_eq!(
+                details,
+                serde_json::json!({
+                    "commit_outcome": {"kind": "text", "value": "definitely_aborted"},
+                }),
+            );
+            for (input, (prior_values, prior_iid)) in retained.iter().zip(&prior_slots) {
+                assert!(
+                    input
+                        .bind(py)
+                        .getattr("_values")
+                        .unwrap()
+                        .is(prior_values.bind(py)),
+                );
+                assert!(
+                    input
+                        .bind(py)
+                        .getattr("_iid")
+                        .unwrap()
+                        .is(prior_iid.bind(py)),
+                );
+                assert!(package.facade_origins.proof(input.bind(py)).is_none());
+            }
+            assert_eq!(package.facade_origins.len(), 0);
+            let state = state.lock().unwrap();
+            assert!(state.responses.is_empty());
+            assert_eq!(state.opens, [TxType::Write]);
+            assert_eq!(state.calls.len(), 2);
+            assert_eq!(state.legacy_commits, 0);
+            assert_eq!(state.commits, 1);
+            assert_eq!(state.rollbacks, 0);
+        });
+    }
+
+    #[test]
+    fn unmarked_python_transaction_commit_keeps_the_legacy_error_surface() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            let (database, state) = BatchRecordingBackend::fixture(vec![], false);
+            let runtime =
+                Arc::new(ProviderRuntimeOwner::new().expect("provider runtime should start"));
+            let transaction = runtime
+                .block_on(database.transaction_context(TxType::Write))
+                .unwrap();
+            let context =
+                PyRustTransactionContext::from_parts_for_test(transaction, Arc::clone(&runtime));
+            assert!(!context.successor_batch_marker().load(Ordering::Acquire));
+            Py::new(py, context)
+                .unwrap()
+                .bind(py)
+                .call_method0("commit")
+                .unwrap();
+            {
+                let state = state.lock().unwrap();
+                assert_eq!(state.legacy_commits, 1);
+                assert_eq!(state.commits, 0);
+            }
+
+            let transaction = runtime
+                .block_on(database.transaction_context(TxType::Write))
+                .unwrap();
+            runtime.block_on(
+                transaction.latch_rollback_only(&SdkExecutionDiagnostic::internal_failure()),
+            );
+            let context =
+                PyRustTransactionContext::from_parts_for_test(transaction, Arc::clone(&runtime));
+            let error = Py::new(py, context)
+                .unwrap()
+                .bind(py)
+                .call_method0("commit")
+                .unwrap_err();
+            assert!(error.value(py).getattr("sdk_category").is_err());
+            assert!(error.value(py).getattr("code").is_err());
+            let state = state.lock().unwrap();
+            assert_eq!(state.opens, [TxType::Write, TxType::Write]);
+            assert_eq!(state.legacy_commits, 1);
+            assert_eq!(state.commits, 0);
+        });
+    }
+
+    #[test]
+    fn projected_batch_mapper_publishes_original_identities_only_after_total_success() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            let (_, package) = install_batch(py);
+            let originals = (0..3)
+                .map(|ordinal| {
+                    batch_person(
+                        py,
+                        package.as_ref(),
+                        &format!("authored-{ordinal}"),
+                        &format!("authored-tag-{ordinal}"),
+                        None,
+                    )
+                })
+                .collect::<Vec<_>>();
+            let pointers = originals
+                .iter()
+                .map(|value| value.bind(py).as_ptr())
+                .collect::<Vec<_>>();
+            let facades = prepared_batch_facades(py, package.as_ref(), originals);
+            let projected = projected_batch_people(py, package.as_ref(), 3);
+            let binding_error = Arc::new(Mutex::new(None));
+            let slots = package
+                .batch_slots(package.type_by_label("person", TypeKind::Entity).unwrap())
+                .unwrap();
+            let pool = hydration_pool_for_prepared(py, &facades);
+            let output = materialize_projected_batch(
+                py,
+                Arc::clone(&package),
+                slots,
+                facades,
+                ProjectedBatchResult::Things(projected),
+                &binding_error,
+                &pool,
+            )
+            .unwrap_or_else(|diagnostic| panic!("materialization failed: {diagnostic:?}"))
+            .finish();
+            assert!(take_binding_materialization_error(&binding_error).is_none());
+            let output = output.bind(py).downcast::<PyList>().unwrap();
+            assert_eq!(output.len(), 3);
+            for (ordinal, pointer) in pointers.into_iter().enumerate() {
+                let value = output.get_item(ordinal).unwrap();
+                assert_eq!(value.as_ptr(), pointer);
+                assert_eq!(
+                    value.getattr("iid").unwrap().extract::<String>().unwrap(),
+                    format!("0x2{ordinal}"),
+                );
+                let values = value
+                    .call_method0("runtime_values")
+                    .unwrap()
+                    .downcast_into::<PyDict>()
+                    .unwrap();
+                let tag = values
+                    .get_item("tag")
+                    .unwrap()
+                    .unwrap()
+                    .downcast_into::<PyTuple>()
+                    .unwrap()
+                    .get_item(0)
+                    .unwrap();
+                assert_eq!(
+                    tag.call_method0("runtime_attribute_value")
+                        .unwrap()
+                        .extract::<String>()
+                        .unwrap(),
+                    format!("normalized-{ordinal}"),
+                );
+                assert!(matches!(
+                    package.facade_origins.proof(&value),
+                    Some(FacadeProjectionProof::Thing(_)),
+                ));
+            }
+            assert_eq!(package.facade_origins.len(), 3);
+        });
+    }
+
+    #[test]
+    fn projected_batch_mapper_restores_every_prefix_and_publishes_no_proof_on_failure() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            for failing_ordinal in 0..3 {
+                let (_, package) = install_batch(py);
+                let originals = (0..3)
+                    .map(|ordinal| {
+                        batch_person(
+                            py,
+                            package.as_ref(),
+                            &format!("authored-{ordinal}"),
+                            &format!("authored-tag-{ordinal}"),
+                            None,
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                let prior = originals
+                    .iter()
+                    .map(|value| {
+                        (
+                            value.bind(py).getattr("_values").unwrap().unbind(),
+                            value.bind(py).getattr("_iid").unwrap().unbind(),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                let facades = prepared_batch_facades(
+                    py,
+                    package.as_ref(),
+                    originals.iter().map(|value| value.clone_ref(py)).collect(),
+                );
+                let projected = projected_batch_people(py, package.as_ref(), 3);
+                let binding_error = Arc::new(Mutex::new(None));
+                let slots = package
+                    .batch_slots(package.type_by_label("person", TypeKind::Entity).unwrap())
+                    .unwrap();
+                let pool = hydration_pool_for_prepared(py, &facades);
+                let diagnostic = match materialize_projected_batch_with_probe(
+                    py,
+                    Arc::clone(&package),
+                    slots,
+                    facades,
+                    ProjectedBatchResult::Things(projected),
+                    &binding_error,
+                    &pool,
+                    BatchMaterializationProbe {
+                        fail_publication_at: Some(failing_ordinal),
+                        ..BatchMaterializationProbe::default()
+                    },
+                ) {
+                    Err(diagnostic) => diagnostic,
+                    Ok(_) => panic!("injected publication failure unexpectedly succeeded"),
+                };
+                assert_eq!(
+                    diagnostic.code().as_str(),
+                    "generated_model_materialization_failed"
+                );
+                assert!(matches!(
+                    diagnostic.path(),
+                    [SdkDiagnosticPathSegment::Argument(argument), SdkDiagnosticPathSegment::Index(index)]
+                        if argument.as_str() == "rows" && *index == failing_ordinal as u64
+                ));
+                let error = take_binding_materialization_error(&binding_error).unwrap();
+                assert!(
+                    error
+                        .to_string()
+                        .contains("injected projected batch publication failure")
+                );
+                assert_eq!(package.facade_origins.len(), 0);
+                for (facade, (values, iid)) in originals.iter().zip(prior.iter()) {
+                    assert!(
+                        facade
+                            .bind(py)
+                            .getattr("_values")
+                            .unwrap()
+                            .is(values.bind(py))
+                    );
+                    assert!(facade.bind(py).getattr("_iid").unwrap().is(iid.bind(py)));
+                }
+            }
+
+            let (_, package) = install_batch(py);
+            let originals = (0..3)
+                .map(|ordinal| {
+                    batch_person(
+                        py,
+                        package.as_ref(),
+                        &format!("allocation-{ordinal}"),
+                        &format!("allocation-tag-{ordinal}"),
+                        None,
+                    )
+                })
+                .collect::<Vec<_>>();
+            let prior = originals
+                .iter()
+                .map(|value| {
+                    (
+                        value.bind(py).getattr("_values").unwrap().unbind(),
+                        value.bind(py).getattr("_iid").unwrap().unbind(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            let facades = prepared_batch_facades(
+                py,
+                package.as_ref(),
+                originals.iter().map(|value| value.clone_ref(py)).collect(),
+            );
+            let projected = projected_batch_people(py, package.as_ref(), 3);
+            let binding_error = Arc::new(Mutex::new(None));
+            let slots = package
+                .batch_slots(package.type_by_label("person", TypeKind::Entity).unwrap())
+                .unwrap();
+            let pool = hydration_pool_for_prepared(py, &facades);
+            let diagnostic = match materialize_projected_batch_with_probe(
+                py,
+                Arc::clone(&package),
+                slots,
+                facades,
+                ProjectedBatchResult::Things(projected),
+                &binding_error,
+                &pool,
+                BatchMaterializationProbe {
+                    fail_output_allocation: true,
+                    ..BatchMaterializationProbe::default()
+                },
+            ) {
+                Err(diagnostic) => diagnostic,
+                Ok(_) => panic!("injected output allocation failure unexpectedly succeeded"),
+            };
+            assert_eq!(
+                diagnostic.code().as_str(),
+                "projected_batch_allocation_exhausted"
+            );
+            assert!(take_binding_materialization_error(&binding_error).is_none());
+            assert_eq!(package.facade_origins.len(), 0);
+            for (facade, (values, iid)) in originals.iter().zip(prior.iter()) {
+                assert!(
+                    facade
+                        .bind(py)
+                        .getattr("_values")
+                        .unwrap()
+                        .is(values.bind(py))
+                );
+                assert!(facade.bind(py).getattr("_iid").unwrap().is(iid.bind(py)));
+            }
+        });
+    }
+
+    #[test]
+    fn python_materialization_first_middle_last_preserves_error_and_transaction_atomicity() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            for borrowed in [false, true] {
+                for failing_ordinal in 0..3 {
+                    let (_, package) = install_batch(py);
+                    let (database, state) =
+                        BatchRecordingBackend::fixture(entity_insert_responses(3), false);
+                    let runtime = Arc::new(
+                        ProviderRuntimeOwner::new().expect("provider runtime should start"),
+                    );
+                    let transaction = borrowed.then(|| {
+                        runtime
+                            .block_on(database.transaction_context(TxType::Write))
+                            .unwrap()
+                    });
+                    let context = transaction.as_ref().map(|transaction| {
+                        PyRustTransactionContext::from_parts_for_test(
+                            transaction.clone(),
+                            Arc::clone(&runtime),
+                        )
+                    });
+                    let instances = (0..3)
+                        .map(|ordinal| {
+                            batch_person(
+                                py,
+                                package.as_ref(),
+                                &format!("person-{ordinal}"),
+                                &format!("authored-{ordinal}"),
+                                None,
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    let retained = instances
+                        .iter()
+                        .map(|instance| instance.clone_ref(py))
+                        .collect::<Vec<_>>();
+                    let prior = retained
+                        .iter()
+                        .map(|instance| {
+                            (
+                                instance.bind(py).getattr("_values").unwrap().unbind(),
+                                instance.bind(py).getattr("_iid").unwrap().unbind(),
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    let marker = context
+                        .as_ref()
+                        .map(PyRustTransactionContext::successor_batch_marker);
+                    let error = execute_batch_with_materialization_probe(
+                        py,
+                        Arc::clone(&package),
+                        package
+                            .type_by_label("person", TypeKind::Entity)
+                            .unwrap()
+                            .clone(),
+                        (!borrowed).then(|| Arc::clone(&database)),
+                        transaction.clone(),
+                        marker.clone(),
+                        Arc::clone(&runtime),
+                        instances,
+                        BatchMaterializationProbe {
+                            fail_publication_at: Some(failing_ordinal),
+                            ..BatchMaterializationProbe::default()
+                        },
+                    )
+                    .unwrap_err();
+                    assert!(
+                        error
+                            .to_string()
+                            .contains("injected projected batch publication failure"),
+                        "unexpected caller error: {error}",
+                    );
+                    assert!(error.value(py).getattr("sdk_category").is_err());
+                    for (instance, (values, iid)) in retained.iter().zip(prior.iter()) {
+                        assert!(
+                            instance
+                                .bind(py)
+                                .getattr("_values")
+                                .unwrap()
+                                .is(values.bind(py))
+                        );
+                        assert!(instance.bind(py).getattr("_iid").unwrap().is(iid.bind(py)));
+                    }
+                    assert_eq!(package.facade_origins.len(), 0);
+
+                    if let Some(transaction) = transaction {
+                        assert!(marker.unwrap().load(Ordering::Acquire));
+                        assert_eq!(
+                            runtime.block_on(transaction.lifecycle_state()),
+                            TransactionContextState::RollbackOnly,
+                        );
+                        let cause = runtime
+                            .block_on(transaction.rollback_only_cause())
+                            .expect("borrowed materialization failure retains its common cause");
+                        assert_eq!(
+                            cause.code().as_str(),
+                            "generated_model_materialization_failed"
+                        );
+                        assert!(matches!(
+                            cause.path(),
+                            [SdkDiagnosticPathSegment::Argument(argument), SdkDiagnosticPathSegment::Index(index)]
+                                if argument.as_str() == "rows" && *index == failing_ordinal as u64
+                        ));
+
+                        let context = Py::new(py, context.unwrap()).unwrap();
+                        let commit = context.bind(py).call_method0("commit").unwrap_err();
+                        assert_eq!(
+                            commit
+                                .value(py)
+                                .getattr("code")
+                                .unwrap()
+                                .extract::<String>()
+                                .unwrap(),
+                            "transaction_rollback_only",
+                        );
+                    }
+                    let state = state.lock().unwrap();
+                    assert_eq!(state.opens, [TxType::Write]);
+                    assert_eq!(state.calls.len(), 2);
+                    assert_eq!(state.legacy_commits, 0);
+                    assert_eq!(state.commits, 0);
+                    assert_eq!(state.rollbacks, usize::from(!borrowed));
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn successor_batch_hydration_pool_forecasts_and_retains_every_allocation() {
+        const NAMED_ZONE_SCHEMA: &str = r#"format: typebridge.schema/v2
+attributes:
+  observed: { value: datetime-tz }
+entities:
+  event:
+    owns:
+      observed:
+        card: { min: 0, max: 2 }
+        ordered: true
+"#;
+
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            let (_, package) = install_batch(py);
+            let person_id = package
+                .type_by_label("person", TypeKind::Entity)
+                .unwrap()
+                .clone();
+            let membership_id = package
+                .type_by_label("membership", TypeKind::Relation)
+                .unwrap()
+                .clone();
+
+            let people = projected_batch_people(py, package.as_ref(), 1);
+            assert_eq!(projected_batch_hydration_pool_capacity(&people).unwrap(), 3);
+
+            let player = batch_person(
+                py,
+                package.as_ref(),
+                "player-forecast",
+                "player-tag",
+                Some("0x10"),
+            );
+            let player_values = player
+                .bind(py)
+                .call_method0("runtime_values")
+                .unwrap()
+                .downcast_into::<PyDict>()
+                .unwrap();
+            let projected_player = project_hydrated_thing(
+                py,
+                package.as_ref(),
+                &person_id,
+                &player_values,
+                Some("0x10"),
+            )
+            .unwrap();
+            let membership = batch_membership(
+                py,
+                package.as_ref(),
+                "membership-forecast",
+                &player,
+                Some("0x30"),
+            );
+            let membership_values = membership
+                .bind(py)
+                .call_method0("runtime_values")
+                .unwrap()
+                .downcast_into::<PyDict>()
+                .unwrap();
+            let membership = project_hydrated_thing(
+                py,
+                package.as_ref(),
+                &membership_id,
+                &membership_values,
+                Some("0x30"),
+            )
+            .unwrap();
+            assert_eq!(
+                projected_batch_hydration_pool_capacity(std::slice::from_ref(&membership)).unwrap(),
+                3,
+            );
+            let (role_id, players) = membership.roles().iter().next().unwrap();
+            let read_role = &package.projection.projection().models()[&membership_id]
+                .complete_read()
+                .roles()[role_id];
+            let exact_player = ProjectedRolePlayer::try_new_complete_for_hydration(
+                &package.projection,
+                read_role,
+                players[0].reference().clone(),
+                projected_player
+                    .fields()
+                    .iter()
+                    .map(|(field, values)| (field.clone(), values.clone()))
+                    .collect(),
+            )
+            .unwrap();
+            let exact_membership = ProjectedThing::try_new(
+                &package.projection,
+                membership_id,
+                "0x30".to_owned(),
+                membership
+                    .fields()
+                    .iter()
+                    .map(|(field, values)| (field.clone(), values.clone()))
+                    .collect(),
+                vec![(role_id.clone(), vec![exact_player])],
+            )
+            .unwrap();
+            assert_eq!(
+                projected_batch_hydration_pool_capacity(&[exact_membership]).unwrap(),
+                5,
+            );
+
+            let named_zone_authority =
+                authority(NAMED_ZONE_SCHEMA, "python-batch-named-zone-forecast.yaml");
+            let named_zone_projection = python_projection(&named_zone_authority);
+            let named_zone_installed =
+                InstalledRuntimeProjection::try_new(named_zone_projection).unwrap();
+            let observed_id = TypeId::new(TypeKind::Attribute, "observed").unwrap();
+            let local: CanonicalDateTime = "2026-08-14T12:30:00".parse().unwrap();
+            let named_zone = ProjectedAttributeValue::try_new(
+                &named_zone_installed,
+                observed_id.clone(),
+                CanonicalValue::DateTimeTz(
+                    CanonicalDateTimeTz::new_named_resolved(local, "Europe/London", 3_600).unwrap(),
+                ),
+            )
+            .unwrap();
+            let fixed_zone = ProjectedAttributeValue::try_new(
+                &named_zone_installed,
+                observed_id,
+                CanonicalValue::DateTimeTz(
+                    CanonicalDateTimeTz::new_fixed(local, TimeZoneDesignator::Utc).unwrap(),
+                ),
+            )
+            .unwrap();
+            let mut named_zone_count = 0;
+            add_projected_attribute_pool_objects(
+                &mut named_zone_count,
+                [&named_zone, &fixed_zone].into_iter(),
+            )
+            .unwrap();
+            assert_eq!(named_zone_count, 3);
+
+            let original = batch_person(
+                py,
+                package.as_ref(),
+                "pool-original",
+                "pool-original-tag",
+                None,
+            );
+            let slots = package.batch_slots(&person_id).unwrap();
+            let staged = vec![StagedBatchFacade {
+                snapshot: slots.snapshot(py, original.bind(py)).unwrap(),
+                instance: original.clone_ref(py),
+            }];
+            let expected = package
+                .class(&person_id, ProjectedModelForm::Complete)
+                .unwrap()
+                .bind(py);
+
+            let exact = BatchHydrationPool::try_new(&staged).unwrap();
+            exact.reserve_exact(1).unwrap();
+            let fresh = batch_person(py, package.as_ref(), "pool-fresh", "pool-fresh-tag", None);
+            exact.retain_fresh(fresh.bind(py), expected).unwrap();
+            exact.verify_fully_consumed().unwrap();
+
+            let aliased = BatchHydrationPool::try_new(&staged).unwrap();
+            aliased.reserve_exact(1).unwrap();
+            let error = aliased
+                .retain_fresh(original.bind(py), expected)
+                .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("input or repeated object identity")
+            );
+
+            let overflow = BatchHydrationPool::try_new(&[]).unwrap();
+            overflow.reserve_exact(0).unwrap();
+            let overflow_value = batch_person(
+                py,
+                package.as_ref(),
+                "pool-overflow",
+                "pool-overflow-tag",
+                None,
+            );
+            let observer = PyWeakrefReference::new(overflow_value.bind(py))
+                .unwrap()
+                .unbind();
+            let error = overflow
+                .retain_fresh(overflow_value.bind(py), expected)
+                .unwrap_err();
+            assert!(error.to_string().contains("prevalidated object forecast"));
+            drop(overflow_value);
+            assert!(observer.bind(py).upgrade().is_some());
+            drop(overflow);
+            assert!(observer.bind(py).upgrade().is_none());
+
+            let exhausted = BatchHydrationPool::try_new(&[])
+                .unwrap()
+                .reserve_exact(usize::MAX)
+                .unwrap_err();
+            assert_eq!(
+                exhausted.code().as_str(),
+                "projected_batch_allocation_exhausted"
+            );
+        });
+    }
+
+    #[test]
+    fn successor_batch_gc_guard_restores_state_and_defers_cyclic_finalizers() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            let initially_enabled = unsafe { pyo3::ffi::PyGC_IsEnabled() } != 0;
+            unsafe {
+                pyo3::ffi::PyGC_Enable();
+            }
+            {
+                let _guard = SuccessorBatchGcGuard::disable(py);
+                assert_eq!(unsafe { pyo3::ffi::PyGC_IsEnabled() }, 0);
+            }
+            assert_ne!(unsafe { pyo3::ffi::PyGC_IsEnabled() }, 0);
+
+            unsafe {
+                pyo3::ffi::PyGC_Disable();
+            }
+            {
+                let _guard = SuccessorBatchGcGuard::disable(py);
+                unsafe {
+                    pyo3::ffi::PyGC_Enable();
+                }
+            }
+            assert_eq!(unsafe { pyo3::ffi::PyGC_IsEnabled() }, 0);
+            unsafe {
+                pyo3::ffi::PyGC_Enable();
+            }
+
+            let helper = PyModule::from_code(
+                py,
+                ffi::c_str!(
+                    r#"
+class CyclicFinalizer:
+    def __init__(self, seen):
+        self.seen = seen
+        self.cycle = self
+    def __del__(self):
+        self.seen.append("collected")
+"#
+                ),
+                ffi::c_str!("python_batch_gc.py"),
+                ffi::c_str!("python_batch_gc"),
+            )
+            .unwrap();
+            let seen = PyList::empty(py);
+            let cycle = helper
+                .getattr("CyclicFinalizer")
+                .unwrap()
+                .call1((&seen,))
+                .unwrap();
+            {
+                let _guard = SuccessorBatchGcGuard::disable(py);
+                drop(cycle);
+                for _ in 0..128 {
+                    drop(PyDict::new(py));
+                }
+                assert_eq!(seen.len(), 0);
+            }
+            py.import("gc").unwrap().call_method0("collect").unwrap();
+            assert_eq!(seen.len(), 1);
+            assert_eq!(
+                seen.get_item(0).unwrap().extract::<String>().unwrap(),
+                "collected"
+            );
+
+            if !initially_enabled {
+                unsafe {
+                    pyo3::ffi::PyGC_Disable();
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn python_mapper_panic_restores_facades_gc_and_marks_borrowed_public_commit() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            let initially_enabled = unsafe { pyo3::ffi::PyGC_IsEnabled() } != 0;
+            unsafe {
+                pyo3::ffi::PyGC_Enable();
+            }
+            for borrowed in [false, true] {
+                let (_, package) = install_batch(py);
+                let (database, state) =
+                    BatchRecordingBackend::fixture(entity_insert_responses(3), false);
+                let runtime =
+                    Arc::new(ProviderRuntimeOwner::new().expect("provider runtime should start"));
+                let transaction = borrowed.then(|| {
+                    runtime
+                        .block_on(database.transaction_context(TxType::Write))
+                        .unwrap()
+                });
+                let context = transaction.as_ref().map(|transaction| {
+                    PyRustTransactionContext::from_parts_for_test(
+                        transaction.clone(),
+                        Arc::clone(&runtime),
+                    )
+                });
+                let marker = context
+                    .as_ref()
+                    .map(PyRustTransactionContext::successor_batch_marker);
+                let instances = (0..3)
+                    .map(|ordinal| {
+                        batch_person(
+                            py,
+                            package.as_ref(),
+                            &format!("panic-{ordinal}"),
+                            &format!("authored-{ordinal}"),
+                            None,
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                let retained = instances
+                    .iter()
+                    .map(|instance| instance.clone_ref(py))
+                    .collect::<Vec<_>>();
+                let prior = retained
+                    .iter()
+                    .map(|instance| {
+                        (
+                            instance.bind(py).getattr("_values").unwrap().unbind(),
+                            instance.bind(py).getattr("_iid").unwrap().unbind(),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    execute_batch_with_materialization_probe(
+                        py,
+                        Arc::clone(&package),
+                        package
+                            .type_by_label("person", TypeKind::Entity)
+                            .unwrap()
+                            .clone(),
+                        (!borrowed).then(|| Arc::clone(&database)),
+                        transaction.clone(),
+                        marker.clone(),
+                        Arc::clone(&runtime),
+                        instances,
+                        BatchMaterializationProbe {
+                            panic_publication_at: Some(1),
+                            ..BatchMaterializationProbe::default()
+                        },
+                    )
+                }))
+                .expect_err("the mapper panic must resume after common cleanup");
+                let message = panic
+                    .downcast_ref::<String>()
+                    .map(String::as_str)
+                    .or_else(|| panic.downcast_ref::<&'static str>().copied())
+                    .unwrap_or("unknown panic payload");
+                assert!(message.contains("mapper panic at row 1"));
+                assert_ne!(unsafe { pyo3::ffi::PyGC_IsEnabled() }, 0);
+                for (instance, (values, iid)) in retained.iter().zip(prior.iter()) {
+                    assert!(
+                        instance
+                            .bind(py)
+                            .getattr("_values")
+                            .unwrap()
+                            .is(values.bind(py))
+                    );
+                    assert!(instance.bind(py).getattr("_iid").unwrap().is(iid.bind(py)));
+                }
+                assert_eq!(package.facade_origins.len(), 0);
+
+                if let Some(transaction) = transaction {
+                    assert!(marker.unwrap().load(Ordering::Acquire));
+                    assert_eq!(
+                        runtime.block_on(transaction.lifecycle_state()),
+                        TransactionContextState::RollbackOnly,
+                    );
+                    let cause = runtime
+                        .block_on(transaction.rollback_only_cause())
+                        .expect("mapper panic retains its redacted common cause");
+                    assert_eq!(
+                        cause.code().as_str(),
+                        "generated_model_materialization_failed"
+                    );
+                    assert!(matches!(
+                        cause.path(),
+                        [SdkDiagnosticPathSegment::Argument(argument)]
+                            if argument.as_str() == "rows"
+                    ));
+                    let context = Py::new(py, context.unwrap()).unwrap();
+                    let commit = context.bind(py).call_method0("commit").unwrap_err();
+                    assert_eq!(
+                        commit
+                            .value(py)
+                            .getattr("code")
+                            .unwrap()
+                            .extract::<String>()
+                            .unwrap(),
+                        "transaction_rollback_only",
+                    );
+                }
+                let state = state.lock().unwrap();
+                assert_eq!(state.opens, [TxType::Write]);
+                assert_eq!(state.calls.len(), 2);
+                assert_eq!(state.legacy_commits, 0);
+                assert_eq!(state.commits, 0);
+                assert_eq!(state.rollbacks, usize::from(!borrowed));
+            }
+            if !initially_enabled {
+                unsafe {
+                    pyo3::ffi::PyGC_Disable();
+                }
+            }
         });
     }
 
