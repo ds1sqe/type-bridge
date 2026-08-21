@@ -517,7 +517,7 @@ def embedded_driver_versions() -> dict[int, str]:
 
     Returns a dict mapping ``int`` band → ``str`` version for every band
     feature compiled into this build.  The default build returns
-    ``{8: "3.11.5", 9: "3.12.1"}``.
+    ``{8: "3.11.5", 9: "3.12.3"}``.
     """
     ...
 
@@ -541,7 +541,7 @@ def server_version(
 ) -> str:
     """Query the TypeDB HTTP API for the server version.
 
-    Returns the detected version as a string (e.g. ``"3.12.1"``).
+    Returns the detected version as a string (e.g. ``"3.12.3"``).
     Raises ``VersionError`` when the endpoint is unreachable or the response
     cannot be parsed, and ``ValueError`` for invalid custom-root configuration.
     """
@@ -989,6 +989,19 @@ class PyRuntimeProjection:
         projection_fingerprint_json: str,
         models: Sequence[tuple[type[object], type[object] | None]],
     ) -> None: ...
+    def connect_direct(
+        self,
+        endpoint: str,
+        database: str,
+        username: str = ...,
+        password: str = ...,
+        http_port: int = ...,
+        tls_mode: str = ...,
+        tls_root_ca: str | PathLike[str] | None = ...,
+        connection_limits: QueryExecutionResourceLimits | None = ...,
+        answer_limits: QueryExecutionResourceLimits | None = ...,
+        cancellation: QueryCancellation | None = ...,
+    ) -> PyRustDatabase: ...
     def manager_for_database(
         self,
         model: type[object],

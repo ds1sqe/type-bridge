@@ -10,7 +10,7 @@ The image contains retained V1 routes and the public `v2-query` capability.
 `[v2].enabled` adds or hides V2 routes at runtime; it never replaces the V1
 pipeline.
 
-The generated Rust SDK is source code, and `typedb/typedb:3.12.1` is an
+The generated Rust SDK is source code, and `typedb/typedb:3.12.3` is an
 upstream integration dependency. Neither is republished as another
 TypeBridge image.
 

@@ -43,7 +43,7 @@ def test_v1_exact_312_producers_stay_three_binding_and_step_scoped() -> None:
             "display": "Python",
             "binding": "python",
             "condition": (
-                "matrix.test-group == 'schema' && matrix.typedb-server == 'typedb/typedb:3.12.1'"
+                "matrix.test-group == 'schema' && matrix.typedb-server == 'typedb/typedb:3.12.3'"
             ),
             "prepare_id": "prepare-python-workforce-v1",
             "producer": "Run integration tests for ${{ matrix.test-group }}",
@@ -51,14 +51,14 @@ def test_v1_exact_312_producers_stay_three_binding_and_step_scoped() -> None:
         "rust-integration": {
             "display": "Rust",
             "binding": "rust",
-            "condition": "matrix.typedb-server == 'typedb/typedb:3.12.1'",
+            "condition": "matrix.typedb-server == 'typedb/typedb:3.12.3'",
             "prepare_id": "prepare-rust-workforce-v1",
             "producer": "Run generated Rust projection live smoke",
         },
         "node-integration": {
             "display": "Node",
             "binding": "node",
-            "condition": "matrix.typedb-server == 'typedb/typedb:3.12.1'",
+            "condition": "matrix.typedb-server == 'typedb/typedb:3.12.3'",
             "prepare_id": "prepare-node-workforce-v1",
             "producer": "Run generated projection live smoke",
         },
@@ -102,7 +102,7 @@ def test_v2_exact_producer_bound_fragments_precede_each_live_report() -> None:
         "python": {
             "job": "test-integration",
             "condition": (
-                "matrix.test-group == 'schema' && matrix.typedb-server == 'typedb/typedb:3.12.1'"
+                "matrix.test-group == 'schema' && matrix.typedb-server == 'typedb/typedb:3.12.3'"
             ),
             "prepare": "Prepare Python workforce-v2 evidence outputs",
             "prepare_id": "prepare-python-workforce-v2",
@@ -122,7 +122,7 @@ def test_v2_exact_producer_bound_fragments_precede_each_live_report() -> None:
         },
         "rust": {
             "job": "rust-integration",
-            "condition": "matrix.typedb-server == 'typedb/typedb:3.12.1'",
+            "condition": "matrix.typedb-server == 'typedb/typedb:3.12.3'",
             "prepare": "Prepare Rust workforce-v2 evidence outputs",
             "prepare_id": "prepare-rust-workforce-v2",
             "emitters": {
@@ -136,7 +136,7 @@ def test_v2_exact_producer_bound_fragments_precede_each_live_report() -> None:
         },
         "c": {
             "job": "rust-integration",
-            "condition": "matrix.typedb-server == 'typedb/typedb:3.12.1'",
+            "condition": "matrix.typedb-server == 'typedb/typedb:3.12.3'",
             "prepare": "Prepare C workforce-v2 evidence outputs",
             "prepare_id": "prepare-c-workforce-v2",
             "emitters": {
@@ -150,7 +150,7 @@ def test_v2_exact_producer_bound_fragments_precede_each_live_report() -> None:
         },
         "node": {
             "job": "node-integration",
-            "condition": "matrix.typedb-server == 'typedb/typedb:3.12.1'",
+            "condition": "matrix.typedb-server == 'typedb/typedb:3.12.3'",
             "prepare": "Prepare Node workforce-v2 evidence outputs",
             "prepare_id": "prepare-node-workforce-v2",
             "emitters": {
@@ -243,7 +243,7 @@ def test_node_v2_validator_is_absolute_and_visible_only_to_the_live_producer() -
     producer = steps["Run generated projection live smoke"]
 
     assert setup["uses"] == SETUP_PYTHON
-    assert setup["if"] == "matrix.typedb-server == 'typedb/typedb:3.12.1'"
+    assert setup["if"] == "matrix.typedb-server == 'typedb/typedb:3.12.3'"
     assert "os.path.realpath(sys.executable)" in prepare["run"]
     assert '[[ "$validator_python" == /* ]]' in prepare["run"]
     assert 'test -x "$validator_python"' in prepare["run"]
@@ -365,7 +365,7 @@ def test_local_full_suite_emits_fragments_then_fans_in_both_versions() -> None:
         assert variable in source
     assert "${!runner_owned_workforce_variable+x}" in source
     assert "is runner-owned; unset it before invoking test.sh" in source
-    assert 'if [[ "$typedb_server_version" == "3.12.1" && ${#pytest_args[@]} -eq 0 ]]' in source
+    assert 'if [[ "$typedb_server_version" == "3.12.3" && ${#pytest_args[@]} -eq 0 ]]' in source
     assert "forwarded pytest arguments may change collection" in source
     assert 'mktemp -d "${TMPDIR:-/tmp}/typebridge-workforce.XXXXXXXXXX"' in source
     assert 'workforce_report_dir="$(cd "$workforce_report_dir" && pwd -P)"' in source

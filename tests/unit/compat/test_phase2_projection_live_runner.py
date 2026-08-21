@@ -449,7 +449,7 @@ def test_check_local_integration_and_ci_persist_the_same_exact_live_gate() -> No
     ):
         assert owned in local
     local_gate = local.index("scripts/ci/run_phase2_projection_live.py")
-    exact_detection = local.index('if [[ "$typedb_server_version" == "3.12.1" ]]')
+    exact_detection = local.index('if [[ "$typedb_server_version" == "3.12.3" ]]')
     rust_integration = local.index('printf "${BOLD}━━━ Rust (integration)')
     assert exact_detection < local_gate < rust_integration
 
@@ -457,6 +457,6 @@ def test_check_local_integration_and_ci_persist_the_same_exact_live_gate() -> No
         "  # I6 single-band V2 legs", maxsplit=1
     )[0]
     assert "runs-on: ubuntu-latest" in live_job
-    assert "image: typedb/typedb:3.12.1" in live_job
+    assert "image: typedb/typedb:3.12.3" in live_job
     assert "./scripts/check.sh phase2-live" in live_job
     assert "docker logs ${{ job.services.typedb.id }}" in live_job

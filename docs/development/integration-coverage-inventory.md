@@ -31,7 +31,7 @@ path.
 | Python | `crates/schema-codegen/tests/acceptance/check.py`, emitter tests, Pyright positive/negative fixtures | `tests/integration/schema/test_generated_projection_live.py` |
 | TypeScript/Node | `crates/schema-codegen/tests/typescript_acceptance/check.mjs`, emitter tests, TypeScript compile fixtures | `crates/node/tests/projection-integration/generated-package-live.test.ts` via `npm run test:projection-integration` |
 | Rust | schema-codegen Rust acceptance and an external generated consumer crate | `crates/schema-codegen/tests/rust_projection_live.rs` and its external consumer |
-| Internal C foundation | `crates/schema-codegen/tests/c_emitter.rs`, C ABI suites, and installed C17/C++17 consumers via `./scripts/check.sh c` | Exact-3.12.1 generated CRUD and typed-query consumers via `./test.sh` |
+| Internal C foundation | `crates/schema-codegen/tests/c_emitter.rs`, C ABI suites, and installed C17/C++17 consumers via `./scripts/check.sh c` | Exact-3.12.3 generated CRUD and typed-query consumers via `./test.sh` |
 
 The three current public SDK live applications cover model construction, scalar
 and multivalue ownership, references, entity/relation CRUD, batch operations
@@ -78,7 +78,7 @@ schema-authoring examples and are not imported by generated packages.
 ## Provider and TLS Coverage
 
 Ordinary live lanes exercise the retained TypeDB 3.11 and 3.12 provider window.
-The 3.12.1 lane is the full generated-projection conformance baseline. Dedicated
+The 3.12.3 lane is the full generated-projection conformance baseline. Dedicated
 TLS lanes run generated Python, Node, and Rust applications with a verified
 custom root, alongside the retained low-level Query V2 transport probe.
 

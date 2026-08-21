@@ -1500,6 +1500,26 @@ impl InstalledPackage {
     }
 }
 
+fn direct_tls_from_node(
+    tls_mode: &str,
+    tls_root_ca: Option<String>,
+) -> napi::Result<type_bridge_orm::DirectTls> {
+    match (tls_mode, tls_root_ca) {
+        ("disabled", None) => Ok(type_bridge_orm::DirectTls::disabled()),
+        ("native_roots", None) => Ok(type_bridge_orm::DirectTls::native_roots()),
+        ("custom_root", Some(path)) => {
+            type_bridge_orm::DirectTls::custom_root(path).map_err(napi_sdk_diagnostic)
+        }
+        ("custom_root", None) => Err(invalid_error("custom_root TLS requires tlsRootCa")),
+        ("disabled" | "native_roots", Some(_)) => Err(invalid_error(
+            "tlsRootCa is valid only with custom_root TLS",
+        )),
+        _ => Err(invalid_error(
+            "tlsMode must be disabled, native_roots, or custom_root",
+        )),
+    }
+}
+
 /// A canonical runtime projection installed for exactly one generated package.
 #[napi]
 pub struct NodeRuntimeProjection {
@@ -1677,6 +1697,49 @@ impl NodeRuntimeProjection {
                 projected_batch_materializer,
             }),
         })
+    }
+
+    /// Open a database through this installed package's verified authority.
+    #[napi(js_name = "connectDirect")]
+    #[allow(clippy::too_many_arguments)]
+    pub fn connect_direct(
+        &self,
+        endpoint: String,
+        database: String,
+        username: String,
+        password: String,
+        http_port: u16,
+        tls_mode: String,
+        tls_root_ca: Option<String>,
+        connection_limits: Option<&NodeQueryExecutionResources>,
+        answer_limits: Option<&NodeQueryExecutionResources>,
+        cancellation: Option<&NodeQueryCancellation>,
+    ) -> napi::Result<NodeRustDatabase> {
+        let tls = direct_tls_from_node(&tls_mode, tls_root_ca)?;
+        let mut policy =
+            type_bridge_orm::DirectConnectionPolicy::new(endpoint, database, username, password)
+                .http_port(http_port)
+                .tls(tls);
+        if let Some(limits) = connection_limits {
+            policy = policy.connection_limits(limits.inner());
+        }
+        if let Some(limits) = answer_limits {
+            policy = policy.answer_limits(limits.inner());
+        }
+        let runtime = ProviderRuntimeOwner::new()
+            .map(Arc::new)
+            .map_err(|error| runtime_error(format!("Failed to create Tokio runtime: {error}")))?;
+        let cancellation = cancellation
+            .map(NodeQueryCancellation::inner)
+            .unwrap_or_default();
+        let database = runtime
+            .block_on(Database::connect_direct(
+                self.package.projection.as_ref(),
+                &policy,
+                cancellation,
+            ))
+            .map_err(napi_sdk_diagnostic)?;
+        Ok(NodeRustDatabase::from_handles(Arc::new(database), runtime))
     }
 
     /// Bind one exact projected model to a database-owned manager.
@@ -5706,6 +5769,26 @@ mod tests {
     use type_bridge_schema_codegen::{PythonEmitter, TypeScriptEmitter};
 
     use super::*;
+
+    #[test]
+    fn direct_tls_shape_rejects_before_provider_runtime_creation() {
+        for (mode, root, message) in [
+            ("custom_root", None, "custom_root TLS requires tlsRootCa"),
+            (
+                "disabled",
+                Some("unused.pem".to_owned()),
+                "tlsRootCa is valid only with custom_root TLS",
+            ),
+            (
+                "invented",
+                None,
+                "tlsMode must be disabled, native_roots, or custom_root",
+            ),
+        ] {
+            let error = direct_tls_from_node(mode, root).expect_err("TLS shape must fail");
+            assert!(error.to_string().contains(message));
+        }
+    }
 
     const ORDERED_SCHEMA: &str = r#"format: typebridge.schema/v2
 attributes:

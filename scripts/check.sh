@@ -197,8 +197,8 @@ run_phase2_parity() {
 }
 
 run_phase2_live() {
-    printf "${BOLD}━━━ Exact-TypeDB-3.12.1 Phase-2 live parity ━━━${RESET}\n\n"
-    run_step "four-binding exact-TypeDB-3.12.1 Phase-2 live fan-in" \
+    printf "${BOLD}━━━ Exact-TypeDB-3.12.3 Phase-2 live parity ━━━${RESET}\n\n"
+    run_step "four-binding exact-TypeDB-3.12.3 Phase-2 live fan-in" \
         uv run python scripts/ci/run_phase2_projection_live.py
 }
 

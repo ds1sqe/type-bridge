@@ -152,6 +152,7 @@ impl<'projection> ProjectedBatchExecutor<'projection> {
     where
         F: FnOnce(ProjectedBatchResult) -> std::result::Result<T, SdkExecutionDiagnostic>,
     {
+        let control = control.constrained_by(database.answer_limits());
         let prepared = PreparedProjectedBatchInvocation::try_new(self.installed, batch, control)?;
         if batch.is_empty() {
             return Ok(empty);
@@ -245,6 +246,7 @@ impl<'projection> ProjectedBatchExecutor<'projection> {
     where
         F: FnOnce(ProjectedBatchResult) -> std::result::Result<T, SdkExecutionDiagnostic>,
     {
+        let control = control.constrained_by(transaction.answer_limits());
         let prepared = PreparedProjectedBatchInvocation::try_new(self.installed, batch, control)?;
         if batch.is_empty() {
             return Ok(empty);

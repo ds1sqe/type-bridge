@@ -15,7 +15,7 @@ use type_bridge_orm::session::{ConnectOptions, Database as AdminDatabase, TxType
 
 const REPORT_FORMAT: &str = "typebridge.phase5-manager-filter-live-report/v1";
 const SEMANTIC_PROFILE: &str = "typedb-3.12.1/v1";
-const SERVER_VERSION: &str = "3.12.1";
+const SERVER_VERSION: &str = "3.12.3";
 const OUTPUT_ENV: &str = "TYPE_BRIDGE_PHASE5_MANAGER_LIVE_REPORT";
 const ADDRESS_ENV: &str = "TYPE_BRIDGE_PHASE5_MANAGER_LIVE_ADDRESS";
 const DATABASE_ENV: &str = "TYPE_BRIDGE_PHASE5_MANAGER_LIVE_DATABASE";

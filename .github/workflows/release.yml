@@ -198,9 +198,9 @@ jobs:
             --node-package-lock type-bridge-core/crates/node/package-lock.json \
             --release-workflow .github/workflows/release.yml
 
-      # Keep the owner-frozen official 3.12.1 graph check read-only. It is an
+      # Keep the owner-frozen official 3.12.3 graph check read-only. It is an
       # artifact/provenance input, not a crates.io publication precondition.
-      - name: Validate the owner-frozen official TypeDB 3.12.1 driver graph
+      - name: Validate the owner-frozen official TypeDB 3.12.3 driver graph
         run: |
           python scripts/ci/validate_latest_typedb_driver_pin.py \
             --committed-cutoff
@@ -1168,9 +1168,10 @@ jobs:
             platform: linux/arm64
     services:
       typedb:
-        # Registry index resolves to amd64 config
-        # sha256:f683eed7f07c2c519caa795afbc1cd4df4f83c6422ad2cc07406f28f7537423a.
-        image: typedb/typedb:3.12.1@sha256:4224951114b044d52e2fe48108be26ae2734726041dae8d63453ecd407fe2422
+        # Pin the published linux/amd64 manifest used by GitHub-hosted runners;
+        # it resolves to config
+        # sha256:afac1444a1699e627611d39d7864e6b80be5aa7f4039ca03c9cbe968c11ad4b9.
+        image: typedb/typedb:3.12.3@sha256:1b2baa93e282d6fc4aeb8e8784a8d275214621033ad1bd9d2e492f7fb1a34b40
         ports:
           - 1729:1729
           - 8000:8000
@@ -1398,9 +1399,10 @@ jobs:
     runs-on: ubuntu-latest
     services:
       typedb:
-        # Registry index resolves to amd64 config
-        # sha256:f683eed7f07c2c519caa795afbc1cd4df4f83c6422ad2cc07406f28f7537423a.
-        image: typedb/typedb:3.12.1@sha256:4224951114b044d52e2fe48108be26ae2734726041dae8d63453ecd407fe2422
+        # Pin the published linux/amd64 manifest used by GitHub-hosted runners;
+        # it resolves to config
+        # sha256:afac1444a1699e627611d39d7864e6b80be5aa7f4039ca03c9cbe968c11ad4b9.
+        image: typedb/typedb:3.12.3@sha256:1b2baa93e282d6fc4aeb8e8784a8d275214621033ad1bd9d2e492f7fb1a34b40
         ports:
           - 1729:1729
           - 8000:8000

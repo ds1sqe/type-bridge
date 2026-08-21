@@ -501,7 +501,7 @@ pub const PINNED_DRIVER_VERSION: &str = "3.11.5";
 /// the band-9 dependency is refreshed, update this constant to match the new
 /// `Cargo.lock` entry — the `tests::cargo_lock_pin_b9` test will
 /// catch any divergence.
-pub const PINNED_DRIVER_VERSION_B9: &str = "3.12.1";
+pub const PINNED_DRIVER_VERSION_B9: &str = "3.12.3";
 
 /// Protocol bands this build embeds a driver for, derived from the compiled-in
 /// band features.  This is the `embedded_bands` argument to
@@ -523,7 +523,7 @@ const EMBEDDED_BANDS: &[u8] = &[
 /// Each entry is `(band, version_string)` and is individually cfg-gated so only
 /// compiled-in bands appear in the slice (master-plan I6 — no hardcoded
 /// band-set literal).  The default build embeds both retained bands and returns
-/// `[(8, "3.11.5"), (9, "3.12.1")]`.
+/// `[(8, "3.11.5"), (9, "3.12.3")]`.
 ///
 /// This is the Rust-side source of truth for the Python `embedded_driver_versions()`
 /// binding — `crates/python/src/version.rs` wraps this function and exposes it
@@ -635,6 +635,7 @@ impl SecureConnectOptions {
         Ok(PreparedSecureConnectOptions {
             http_port: self.http_port,
             server_version: self.server_version,
+            required_server_version: None,
             resolved_tls: ResolvedTlsMode::from_configured_path(self.tls_mode.clone())?,
             connection_control: None,
         })
@@ -653,6 +654,7 @@ impl SecureConnectOptions {
         Ok(PreparedSecureConnectOptions {
             http_port: self.http_port,
             server_version: self.server_version,
+            required_server_version: None,
             resolved_tls: ResolvedTlsMode::from_validated_physical_path(self.tls_mode.clone())?,
             connection_control: None,
         })
@@ -672,6 +674,7 @@ impl SecureConnectOptions {
         Ok(PreparedSecureConnectOptions {
             http_port: self.http_port,
             server_version: self.server_version,
+            required_server_version: None,
             resolved_tls: ResolvedTlsMode::from_captured_custom_root(self.tls_mode.clone(), bytes)?,
             connection_control: None,
         })
@@ -915,6 +918,7 @@ enum ResolvedTlsProbeMode {
 pub struct PreparedSecureConnectOptions {
     http_port: u16,
     server_version: Option<core_version::Version>,
+    required_server_version: Option<core_version::Version>,
     resolved_tls: ResolvedTlsMode,
     connection_control: Option<RuntimeConnectionControl>,
 }
@@ -928,6 +932,20 @@ impl PreparedSecureConnectOptions {
     #[must_use]
     pub fn with_connection_control(mut self, control: RuntimeConnectionControl) -> Self {
         self.connection_control = Some(control);
+        self
+    }
+
+    /// Require the exact provider version owned by the current generated
+    /// package policy.
+    ///
+    /// This is deliberately not an arbitrary version-taking lane. It clears
+    /// the released caller-version shortcut so the authoritative HTTP probe
+    /// always runs before any driver or credential construction.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_generated_3_12_3_requirement(mut self) -> Self {
+        self.server_version = None;
+        self.required_server_version = Some(core_version::Version::new(3, 12, 3));
         self
     }
 }
@@ -1267,7 +1285,7 @@ fn run_driver_shutdown(
         }
         DRIVER_CLOSING => {
             // A prior shutdown attempt failed or panicked. Keep admission
-            // terminal, but retry cleanup: upstream 3.12.1 can return before
+            // terminal, but retry cleanup: the upstream 3.12 line can return before
             // closing its background runtime when server cleanup fails.
         }
         _ => unreachable!("driver shutdown state is internal and validated"),
@@ -1487,6 +1505,7 @@ where
         let PreparedSecureConnectOptions {
             http_port,
             server_version,
+            required_server_version,
             resolved_tls,
             connection_control,
         } = options;
@@ -1531,6 +1550,7 @@ where
             match probe_result {
                 Ok(server_version) => {
                     meter.charge_version_evidence(server_version)?;
+                    require_generated_server_version(server_version, required_server_version)?;
                     let driver = driver_for_server_version(
                         address,
                         username,
@@ -1550,6 +1570,7 @@ where
                         http_error,
                         &resolved_tls,
                         &mut meter,
+                        required_server_version,
                     )
                     .await?
                 }
@@ -1571,6 +1592,26 @@ where
     } else {
         result
     }
+}
+
+fn require_generated_server_version(
+    observed: core_version::Version,
+    required: Option<core_version::Version>,
+) -> Result<()> {
+    let Some(required) = required else {
+        return Ok(());
+    };
+    if observed == required {
+        return Ok(());
+    }
+    Err(RuntimeError::UnsupportedVersion(
+        core_version::VersionError::FeatureUnsupported {
+            feature: "generated-package exact provider compatibility",
+            server: observed,
+            required,
+            remediation: "connect the generated package to its exact required TypeDB release",
+        },
+    ))
 }
 
 fn validate_server_band(server_version: &core_version::Version) -> Result<u8> {
@@ -1683,6 +1724,7 @@ async fn grpc_fallback_driver(
     http_error: core_version::VersionError,
     tls: &ResolvedTlsMode,
     meter: &mut ConnectionMeter,
+    required_server_version: Option<core_version::Version>,
 ) -> SecureResult<(DriverHandle, Option<core_version::Version>)> {
     #[cfg(not(feature = "band8"))]
     let _ = (address, username, password, tls, meter);
@@ -1727,6 +1769,12 @@ async fn grpc_fallback_driver(
                 match classification {
                     Band8GrpcVersion::Validated(server_version) => {
                         if let Err(error) = meter.charge_version_evidence(server_version) {
+                            return Err(close_driver_preserving(&driver, error.into()));
+                        }
+                        if let Err(error) = require_generated_server_version(
+                            server_version,
+                            required_server_version,
+                        ) {
                             return Err(close_driver_preserving(&driver, error.into()));
                         }
                         // Prefer the server's native band when this build embeds
@@ -4920,6 +4968,46 @@ mod tests {
                 code: "response_byte_limit",
                 ..
             })
+        ));
+    }
+
+    #[tokio::test]
+    async fn generated_exact_version_rejects_after_one_probe_before_driver_construction() {
+        let probe_calls = Arc::new(AtomicUsize::new(0));
+        let observed_calls = Arc::clone(&probe_calls);
+        let result = gated_driver_prepared_with_probe(
+            "not a provider endpoint and must not reach address parsing",
+            "credential must not be used",
+            "credential must not be used",
+            prepared_controlled_probe(test_connection_control(
+                1,
+                32,
+                2,
+                RuntimeAnswerCancellation::default(),
+            ))
+            .with_generated_3_12_3_requirement(),
+            move |_address, _port, _mode| {
+                observed_calls.fetch_add(1, Ordering::AcqRel);
+                Ok(core_version::Version::new(3, 12, 0))
+            },
+        )
+        .await;
+        let error = match result {
+            Ok(_) => panic!("a generated package requires exact TypeDB 3.12.3"),
+            Err(error) => error,
+        };
+
+        assert_eq!(probe_calls.load(Ordering::Acquire), 1);
+        assert!(matches!(
+            error,
+            SecureConnectError::Runtime(RuntimeError::UnsupportedVersion(
+                core_version::VersionError::FeatureUnsupported {
+                    server,
+                    required,
+                    ..
+                }
+            )) if server == core_version::Version::new(3, 12, 0)
+                && required == core_version::Version::new(3, 12, 3)
         ));
     }
 

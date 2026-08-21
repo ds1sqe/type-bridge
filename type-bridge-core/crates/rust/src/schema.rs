@@ -165,6 +165,41 @@ impl<S: Schema> SchemaPackage<S> {
         Ok(())
     }
 
+    /// Verify this generated package and open an already schema-bound direct
+    /// database through the canonical connection policy.
+    ///
+    /// Server compatibility is discovered authoritatively; callers cannot
+    /// supply or override the server version used for admission.
+    #[cfg(feature = "typedb")]
+    pub async fn connect(
+        self,
+        policy: type_bridge_orm::DirectConnectionPolicy,
+    ) -> Result<crate::session::Database<S>> {
+        self.connect_with_cancellation(policy, type_bridge_orm::AnswerCancellation::default())
+            .await
+    }
+
+    /// Verify this generated package and open an already schema-bound direct
+    /// database with one wakeable connection-cancellation owner.
+    #[cfg(feature = "typedb")]
+    pub async fn connect_with_cancellation(
+        self,
+        policy: type_bridge_orm::DirectConnectionPolicy,
+        cancellation: type_bridge_orm::AnswerCancellation,
+    ) -> Result<crate::session::Database<S>> {
+        let installed = self.verify_and_install()?;
+        let match_registry = crate::session::build_match_registry(&installed)?;
+        let inner =
+            type_bridge_orm::Database::connect_direct(installed.as_ref(), &policy, cancellation)
+                .await
+                .map_err(Error::from_direct_connection)?;
+        Ok(crate::session::Database::from_bound_parts(
+            inner,
+            installed,
+            match_registry,
+        ))
+    }
+
     /// Install the package's exact projection for generated successor-runtime validation.
     /// Package verification remains projection-evidence admission; generated-token package
     /// fencing is provided by the nominal generated Rust types.

@@ -185,8 +185,8 @@ pub use session::database::is_identity_safe_provider_address;
 pub use session::embedded_driver_versions;
 #[cfg(feature = "typedb")]
 pub use session::{
-    ConnectOptions, PreparedSecureConnectOptions, SecureConnectError, SecureConnectOptions,
-    SecureResult, TlsMode,
+    ConnectOptions, DirectConnectionPolicy, DirectTls, PreparedSecureConnectOptions,
+    SecureConnectError, SecureConnectOptions, SecureResult, TlsMode,
 };
 pub use session::{
     Database, DatabaseConnectionAuthority, GivenRowsSpec, GivenValue, Transaction,

@@ -108,7 +108,7 @@ pub struct Database<S: Schema = Unbound> {
     marker: std::marker::PhantomData<fn() -> S>,
 }
 
-fn build_match_registry(
+pub(crate) fn build_match_registry(
     installed: &type_bridge_orm::InstalledRuntimeProjection,
 ) -> Result<Arc<DescriptorRegistry>> {
     installed
@@ -163,16 +163,28 @@ impl Database<Unbound> {
     pub fn with_schema<S: Schema>(self, schema: SchemaPackage<S>) -> Result<Database<S>> {
         let installed = schema.verify_and_install()?;
         let match_registry = build_match_registry(&installed)?;
-        Ok(Database {
-            inner: self.inner,
-            installed_schema: Some(installed),
-            match_registry: Some(match_registry),
-            marker: std::marker::PhantomData,
-        })
+        Ok(Database::from_bound_parts(
+            self.inner,
+            installed,
+            match_registry,
+        ))
     }
 }
 
 impl<S: Schema> Database<S> {
+    pub(crate) fn from_bound_parts(
+        inner: type_bridge_orm::Database,
+        installed: Arc<type_bridge_orm::InstalledRuntimeProjection>,
+        match_registry: Arc<DescriptorRegistry>,
+    ) -> Self {
+        Self {
+            inner,
+            installed_schema: Some(installed),
+            match_registry: Some(match_registry),
+            marker: std::marker::PhantomData,
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn from_test_parts(
         inner: type_bridge_orm::Database,
@@ -229,6 +241,14 @@ impl<S: Schema> Database<S> {
         self.inner.database_name()
     }
 
+    /// Explicitly close this database's provider connection.
+    ///
+    /// Closing is idempotent. Once closed, the database cannot admit new
+    /// provider work, while repeated calls remain harmless.
+    pub fn close(&self) -> Result<()> {
+        self.inner.close().map_err(Error::from_orm)
+    }
+
     /// Return whether this database handle is bound to a verified schema.
     #[must_use]
     pub fn is_schema_bound(&self) -> bool {
@@ -239,6 +259,16 @@ impl<S: Schema> Database<S> {
     #[allow(dead_code)]
     pub(crate) fn inner_orm(&self) -> &type_bridge_orm::Database {
         &self.inner
+    }
+
+    pub(crate) fn operation_limits(
+        &self,
+        requested: type_bridge_orm::QueryExecutionResourceLimits,
+    ) -> type_bridge_orm::QueryExecutionResourceLimits {
+        self.inner.answer_limits().map_or_else(
+            || requested.effective(),
+            |ceiling| requested.constrained_by(ceiling),
+        )
     }
 
     /// Return the installed projection if schema-bound (crate-internal).
@@ -253,5 +283,66 @@ impl<S: Schema> Database<S> {
     #[allow(dead_code)]
     pub(crate) fn match_registry(&self) -> Option<&Arc<DescriptorRegistry>> {
         self.match_registry.as_ref()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    use type_bridge_orm::error::OrmError;
+    use type_bridge_orm::session::backend::{BoxFuture, DriverBackend, TransactionOps, TxType};
+
+    use super::Database;
+    use crate::schema::Unbound;
+
+    struct CloseBackend {
+        closed: Arc<AtomicBool>,
+        close_calls: Arc<AtomicUsize>,
+    }
+
+    impl DriverBackend for CloseBackend {
+        fn open_transaction(
+            &self,
+            _database: &str,
+            _tx_type: TxType,
+        ) -> BoxFuture<'_, std::result::Result<Box<dyn TransactionOps>, OrmError>> {
+            Box::pin(async {
+                Err(OrmError::Connection(
+                    "closed test backend cannot open transactions".into(),
+                ))
+            })
+        }
+
+        fn is_open(&self) -> bool {
+            !self.closed.load(Ordering::SeqCst)
+        }
+
+        fn close_connection(&self) -> std::result::Result<(), OrmError> {
+            self.close_calls.fetch_add(1, Ordering::SeqCst);
+            self.closed.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn explicit_database_close_is_idempotent() {
+        let closed = Arc::new(AtomicBool::new(false));
+        let close_calls = Arc::new(AtomicUsize::new(0));
+        let inner = type_bridge_orm::Database::with_backend(
+            Box::new(CloseBackend {
+                closed: Arc::clone(&closed),
+                close_calls: Arc::clone(&close_calls),
+            }),
+            "app",
+        );
+        let database: Database<Unbound> = Database::from_test_unbound_parts(inner);
+
+        database.close().unwrap();
+        database.close().unwrap();
+
+        assert!(closed.load(Ordering::SeqCst));
+        assert_eq!(close_calls.load(Ordering::SeqCst), 2);
     }
 }

@@ -3494,9 +3494,9 @@ dependencies = [
 
 [[package]]
 name = "typedb-driver"
-version = "3.12.1"
+version = "3.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b7daa941ffe0f6e6cb17e2e831e13b338a9db23551414f877c7fb64ce05f9f46"
+checksum = "76c285253f1b328ea1773acf5a68d64fc3917b1c20066186a2c6a578e3dc3922"
 dependencies = [
  "chrono",
  "chrono-tz",

@@ -13,12 +13,14 @@ import generated_identical as identical
 import generated_v2._query as generated_query_module
 import generated_variant as variant
 from generated_ordered import CrudHook as OrderedCrudHook
+from generated_ordered import DirectConnectionPolicy as OrderedDirectConnectionPolicy
 from generated_ordered import Membership as OrderedMembership
 from generated_ordered import MembershipRef as OrderedMembershipRef
 from generated_ordered import Person as OrderedPerson
 from generated_ordered import PersonRef as OrderedPersonRef
 from generated_ordered import ProjectedModelManager as OrderedProjectedModelManager
 from generated_ordered import Tag as OrderedTag
+from generated_ordered import connect as ordered_connect
 from generated_v2 import (
     PLAYING_FACTS,
     PROJECTION_FINGERPRINT_JSON,
@@ -104,6 +106,29 @@ assert isinstance(Employment.employee, RoleToken)
 assert isinstance(Person.identifier, FieldToken)
 assert Person.identifier.fact["key"] is True
 assert Person.aliases.fact["unique"] is True
+
+direct_policy = OrderedDirectConnectionPolicy(
+    "hostile-endpoint:1729",
+    "hostile-database",
+    username="hostile-user",
+    password="hostile-password",
+    tls_root_ca="/hostile/root.pem",
+)
+assert repr(direct_policy) == "DirectConnectionPolicy([REDACTED])"
+for secret in (
+    "hostile-endpoint",
+    "hostile-database",
+    "hostile-user",
+    "hostile-password",
+    "/hostile/root.pem",
+):
+    assert secret not in repr(direct_policy)
+try:
+    ordered_connect(object())
+except TypeError as error:
+    assert str(error) == "connect requires this generated package's DirectConnectionPolicy"
+else:
+    raise AssertionError("connect accepted a foreign direct connection policy")
 
 
 class FakeCanonicalFilterNative:

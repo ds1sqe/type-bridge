@@ -526,6 +526,13 @@ pub struct PyRustDatabase {
 }
 
 impl PyRustDatabase {
+    pub(crate) fn from_handles(
+        db: Arc<type_bridge_orm::Database>,
+        runtime: Arc<ProviderRuntimeOwner>,
+    ) -> Self {
+        Self { db, runtime }
+    }
+
     /// Return shared `Arc` clones of the database and runtime-owner handles.
     ///
     /// Exposes the capability to drive work on this database's connection and

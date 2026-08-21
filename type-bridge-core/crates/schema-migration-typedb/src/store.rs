@@ -2499,7 +2499,7 @@ mod tests {
         }
 
         fn server_version(&self) -> Option<Version> {
-            Some(Version::new(3, 12, 1))
+            Some(Version::new(3, 12, 3))
         }
 
         fn close_connection(&self) -> Result<(), OrmError> {
@@ -2663,7 +2663,7 @@ mod tests {
             Some(authority_a),
         );
         let binding_a = TypeDbExecutionBinding::new(managed_a, journal_a, context.clone())
-            .expect("first exact 3.12.1 pair");
+            .expect("first exact 3.12.3 pair");
 
         let authority_b = DatabaseConnectionAuthority::isolated();
         let managed_b = no_io_database(
@@ -2677,7 +2677,7 @@ mod tests {
             Some(authority_b),
         );
         let binding_b = TypeDbExecutionBinding::new(managed_b, journal_b, context.clone())
-            .expect("second exact 3.12.1 pair");
+            .expect("second exact 3.12.3 pair");
 
         let catalog_a =
             VerifiedMigrationCatalog::new(std::iter::empty::<&VerifiedSchemaMigrationManifest>())

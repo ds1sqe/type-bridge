@@ -761,6 +761,13 @@ impl ProjectedBatchInvocationControl {
         self.check()
     }
 
+    pub(crate) fn constrained_by(mut self, ceiling: Option<QueryExecutionResourceLimits>) -> Self {
+        if let Some(ceiling) = ceiling {
+            self.limits = self.limits.constrained_by(ceiling);
+        }
+        self
+    }
+
     pub(crate) fn check(&self) -> Result<(), SdkExecutionDiagnostic> {
         if self.cancellation.is_cancelled() {
             return Err(SdkExecutionDiagnostic::data_operation_cancelled());

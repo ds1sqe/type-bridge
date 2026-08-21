@@ -115,4 +115,4 @@ def test_c_phase2_live_requires_exact_ports_database_and_provider_version() -> N
     assert "*cursor < (unsigned char)'0'" in consumer
     assert "parsed > 65535ul" in consumer
     assert "(version.major, version.minor, version.patch),\n        (3, 12, 1)" in setup
-    assert 'text_is(version, "3.12.1")' in consumer
+    assert 'text_is(version, "3.12.3")' in consumer

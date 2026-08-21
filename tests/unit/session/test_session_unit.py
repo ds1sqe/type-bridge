@@ -4,6 +4,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from type_bridge._rust_runtime import database_from_rust
 from type_bridge.session import (
     Connection,
     ConnectionExecutor,
@@ -43,6 +44,23 @@ class TestDatabaseConfiguration:
         """Driver should be None before connection."""
         db = Database()
         assert db._driver is None
+
+    def test_package_owned_rust_database_is_registered_and_closes_once(self):
+        """The generated facade owns one native handle and close is idempotent."""
+        native = MagicMock()
+        database = database_from_rust("localhost:1729", "generated", native)
+
+        assert database.address == "localhost:1729"
+        assert database.database_name == "generated"
+        assert getattr(database, "_rust_backend_database") is native
+        assert database._transport_committed is True
+
+        database.close()
+        database.close()
+
+        native.close.assert_called_once_with()
+        assert not hasattr(database, "_rust_backend_database")
+        assert database._transport_committed is False
 
     def test_close_without_connect(self):
         """Close should be safe to call without prior connection."""

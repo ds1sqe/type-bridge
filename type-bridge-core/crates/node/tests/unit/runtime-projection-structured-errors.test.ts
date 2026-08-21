@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  createRustDatabaseFromNative,
   QueryV2Error,
   type NativeRustDatabase,
   type NativeRustTransactionContext,
@@ -14,9 +15,29 @@ import {
   type RuntimeProjectionConnection,
 } from "../../typescript/runtime-projection.js";
 import {
+  isRegisteredRustConnection,
   registerRustDatabaseHandle,
   registerRustTransactionHandle,
+  rustDatabaseHandle,
 } from "../../typescript/runtime-handles.js";
+
+test("package-owned native databases are registered and retain idempotent close", () => {
+  let closed = false;
+  const native = {
+    close: (): void => {
+      closed = true;
+    },
+    isConnected: (): boolean => !closed,
+  } as NativeRustDatabase;
+  const database = createRustDatabaseFromNative(native);
+
+  assert.equal(isRegisteredRustConnection(database), true);
+  assert.equal(rustDatabaseHandle(database), native);
+  assert.equal(database.isConnected(), true);
+  database.close();
+  database.close();
+  assert.equal(database.isConnected(), false);
+});
 
 const nativeDiagnostic = Object.freeze({
   category: "cardinality",

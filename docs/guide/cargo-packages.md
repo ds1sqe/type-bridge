@@ -86,7 +86,7 @@ Cargo package index:
 | `type-bridge-c` | ABI 1.4 projected-value, provider-lifecycle, typed-query, and atomic-batch foundation for generated C | Internal foundation under development; not published or packaged |
 
 The C entry is not a support claim. The internal ABI now covers verified schema
-packages, projected values/models, synchronous runtime, an exact-TypeDB-3.12.1
+packages, projected values/models, synchronous runtime, an exact-TypeDB-3.12.3
 database connection, distinct read/write transactions, cancellation, and
 classified commit outcomes, plus generated nominal exact single-entity and
 single-relation CRUD/count with closed typed role-player unions. ABI 1.4 also
@@ -98,7 +98,7 @@ field-token manager filters over that existing query ABI, including borrowed
 read-transaction terminals, without adding runtime exports. Chunked
 schema-package resources and a streaming create builder keep generated C
 objects within the hosted C11 portability floors.
-Ordered C-v3 live acceptance on exact TypeDB 3.12.1 leaves ordered values empty
+Ordered C-v3 live acceptance on exact TypeDB 3.12.3 leaves ordered values empty
 and does not claim list-instance evidence. Multi-endpoint connection policy and
 the support/distribution contract remain incomplete before C can become a public
 SDK. The source workspace can emit the internal C schema package for development

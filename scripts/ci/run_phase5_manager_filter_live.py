@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Produce and compare four focused Phase-5 manager reports on TypeDB 3.12.1."""
+"""Produce and compare four focused Phase-5 manager reports on TypeDB 3.12.3."""
 
 from __future__ import annotations
 
@@ -80,8 +80,8 @@ for name in names:
         database.connect()
         connected = True
         detected = database.detected_server_version()
-        if detected != "3.12.1":
-            failures.append(f"{name}: exact TypeDB 3.12.1 required, detected {detected!r}")
+        if detected != "3.12.3":
+            failures.append(f"{name}: exact TypeDB 3.12.3 required, detected {detected!r}")
             continue
         exists = database.database_exists()
         if action == "assert-absent" and exists:

@@ -150,6 +150,13 @@ fn render_init(projection: &RuntimeProjection, stub: bool, ordered: bool) -> Str
          from ._runtime import ProjectedModelNotFoundError as ProjectedModelNotFoundError\n\
          from ._runtime import RoleToken as RoleToken\n",
     );
+    if ordered {
+        output.push_str(
+            "from ._runtime import DirectConnectionPolicy as DirectConnectionPolicy\n\
+             from ._runtime import DirectTlsMode as DirectTlsMode\n\
+             from ._runtime import connect as connect\n",
+        );
+    }
     let query_imports = "from ._query import Aggregate as Aggregate\n\
          from ._query import BoundField as BoundField\n\
          from ._query import BoundRole as BoundRole\n\

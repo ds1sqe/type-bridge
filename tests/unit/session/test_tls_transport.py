@@ -288,7 +288,7 @@ def test_driver_options_lower_custom_roots_for_each_driver_api(
     custom_tls = object()
     tls_config = MagicMock()
     tls_config.enabled_with_root_ca.return_value = custom_tls
-    banded_version = "3.11.5" if sys.version_info < (3, 14) else "3.12.1"
+    banded_version = "3.11.5" if sys.version_info < (3, 14) else "3.12.3"
     monkeypatch.setattr(typedb_driver, "driver_version", lambda: banded_version)
     monkeypatch.setattr(typedb_driver, "_load_tls_config", lambda: tls_config)
 

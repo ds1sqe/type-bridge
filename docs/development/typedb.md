@@ -3,7 +3,7 @@
 ## Server and driver compatibility
 
 TypeBridge 2.1 supports TypeDB 3.11.x–3.12.x. The live release matrix uses
-3.11.5 and 3.12.1, and 3.12.1 is the V2 conformance baseline. Generated Python,
+3.11.5 and 3.12.3, and 3.12.3 is the V2 conformance baseline. Generated Python,
 TypeScript/Node, and Rust applications share this exact window.
 
 Generated live acceptance executes the same application operation set on both
@@ -14,11 +14,11 @@ difference from the 3.12 fixture.
 | Dimension | Supported value |
 | --- | --- |
 | TypeDB servers | 3.11.x–3.12.x |
-| Verified tags | 3.11.5, 3.12.1 |
-| Generated CRUD/query acceptance | 3.11.5 and 3.12.1 |
-| Connected V2 migration execution | exactly 3.12.1 |
+| Verified tags | 3.11.5, 3.12.3 |
+| Generated CRUD/query acceptance | 3.11.5 and 3.12.3 |
+| Connected V2 migration execution | exactly 3.12.3 |
 | Protocol providers | band 8 and band 9 |
-| V2 conformance baseline | 3.12.1 |
+| V2 conformance baseline | 3.12.3 |
 | CPython | 3.12–3.14 |
 | Node | 18+; primary lane 20 |
 | Public Rust SDK | Rust 1.88+ |
@@ -28,8 +28,10 @@ transaction.
 
 The wider window applies to generated application operations and query
 execution. `migration apply`, `migration verify`, and `migration adopt` have a
-narrower authority contract: both the workspace semantic profile and the
-negotiated server must be exactly 3.12.1. They reject before database creation
+narrower authority contract: the workspace semantic profile must be
+`typedb-3.12.1/v1`, and the negotiated server must be exactly 3.12.3. The
+profile name remains stable because it identifies frozen schema semantics, not
+the selected compatible server patch. Connected commands reject before database creation
 or migration state work otherwise. Offline `schema check`, `schema generate`,
 `migration make`, and `migration plan` remain available for either supported
 semantic profile.
@@ -44,12 +46,12 @@ A TypeDB driver speaks one protocol band. Server acceptance is asymmetric:
 | band 9 | 3.12 | 3.12 |
 
 The native runtime embeds the source-unmodified namespaced 3.11.5 provider and
-uses the official 3.12.1 driver. Band 8 is the safe unknown-server discovery
+uses the official 3.12.3 driver. Band 8 is the safe unknown-server discovery
 path; a confirmed 3.12 server upgrades to band 9. No application-side provider
 selection is required.
 
 The Python `typedb-driver` extra is independent of generated ORM execution. It
-exists for direct driver calls. CPython 3.14 uses driver 3.12.1 and therefore
+exists for direct driver calls. CPython 3.14 uses driver 3.12.3 and therefore
 requires a 3.12 server for those direct calls; the embedded TypeBridge runtime
 still supports both server lines.
 
@@ -92,9 +94,51 @@ import { RustDatabase } from "@type-bridge/node";
 
 const db = RustDatabase.connect("localhost:1729", "application", {
   httpPort: 9000,
-  serverVersion: "3.12.1",
+  serverVersion: "3.12.3",
 });
 ```
+
+### Generated-package connections
+
+Ordered generated Python and TypeScript packages expose a package-owned
+`DirectConnectionPolicy` and `connect` function. Use these for application
+data work so the connection is bound to the package's embedded schema
+authority; use the low-level database facade only for administrative setup such
+as creating the database or installing schema.
+
+```python
+import generated_application as app
+
+db = app.connect(app.DirectConnectionPolicy("localhost:1729", "application"))
+try:
+    people = app.Person.manager(db).all()
+finally:
+    db.close()
+```
+
+```ts
+import {
+  connect,
+  DirectConnectionPolicy,
+  Person,
+} from "generated-application";
+
+const db = connect(
+  new DirectConnectionPolicy("localhost:1729", "application"),
+);
+try {
+  const people = Person.manager(db).all();
+} finally {
+  db.close();
+}
+```
+
+Plaintext is explicit by default. For a private CA, select `CUSTOM_ROOT` and
+`tls_root_ca` in Python, or `"custom_root"` and `tlsRootCa` in TypeScript. A
+root path does not enable TLS implicitly. Policies are immutable, redact
+credentials when rendered, reject policies from another generated package,
+and inherit their optional connection and answer limits across data
+operations. Repeated `close()` calls are safe.
 
 ### Feature gates
 
@@ -214,7 +258,7 @@ Node, Rust, CLI, and server paths.
 
 ## Testing provider behavior
 
-The full suite manages an isolated 3.12.1 server by default:
+The full suite manages an isolated 3.12.3 server by default:
 
 ```bash
 ./test.sh

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/** Produce Node's exact-TypeDB-3.12.1 Phase-5 manager-filter report. */
+/** Produce Node's TypeDB-3.12.3 Phase-5 manager-filter report. */
 
 import crypto from "node:crypto";
 import {
@@ -32,6 +32,7 @@ export const OUTPUT_ENV = "TYPE_BRIDGE_PHASE5_MANAGER_LIVE_REPORT";
 export const ADDRESS_ENV = "TYPE_BRIDGE_PHASE5_MANAGER_LIVE_ADDRESS";
 export const DATABASE_ENV = "TYPE_BRIDGE_PHASE5_MANAGER_LIVE_DATABASE";
 export const HTTP_PORT_ENV = "TYPE_BRIDGE_PHASE5_MANAGER_LIVE_HTTP_PORT";
+export const TLS_ROOT_CA_ENV = "TYPEDB_TLS_ROOT_CA";
 export const PACKAGE_ROOT_ENV = "TYPE_BRIDGE_PHASE5_MANAGER_NODE_PACKAGE_ROOT";
 export const REPOSITORY_ROOT_ENV = "TYPE_BRIDGE_PHASE5_MANAGER_REPOSITORY_ROOT";
 export const LOCAL_PACKAGE = "generated_phase5_manager";
@@ -491,7 +492,7 @@ export async function loadGeneratedPackages(packageRoot) {
   return { local: local.package_, foreign: foreign.package_, runtime };
 }
 
-function versionEndpoint(address, port) {
+function versionEndpoint(address, port, tls = false) {
   let parsed;
   try {
     parsed = new URL(address.includes("://") ? address : `http://${address}`);
@@ -518,14 +519,14 @@ function versionEndpoint(address, port) {
   const host = parsed.hostname.includes(":")
     ? `[${parsed.hostname.replace(/^\[|\]$/g, "")}]`
     : parsed.hostname;
-  return `http://${host}:${port}/v1/version`;
+  return `${tls ? "https" : "http"}://${host}:${port}/v1/version`;
 }
 
-export async function detectServerVersion(address, port) {
+export async function detectServerVersion(address, port, tls = false) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 30_000);
   try {
-    const response = await fetch(versionEndpoint(address, port), {
+    const response = await fetch(versionEndpoint(address, port, tls), {
       redirect: "error",
       signal: controller.signal,
     });
@@ -1072,34 +1073,63 @@ async function runOwnedDatabase({
   port,
   providerSchema,
   records,
+  tlsRootCa,
 }) {
-  const detected = await detectServerVersion(address, port);
-  if (detected !== "3.12.1") {
+  const detected = await detectServerVersion(address, port, tlsRootCa !== undefined);
+  if (detected !== "3.12.3") {
     throw new ProducerError(
       "server_version_mismatch",
-      `exact TypeDB 3.12.1 required, detected ${JSON.stringify(detected)}`,
+      `exact TypeDB 3.12.3 required, detected ${JSON.stringify(detected)}`,
     );
   }
-  const database = runtime.RustDatabase.connect(address, databaseName, {
+  const bootstrap = runtime.RustDatabase.connect(address, databaseName, {
     httpPort: port,
+    ...(tlsRootCa === undefined ? {} : { tlsEnabled: true, tlsRootCa }),
   });
+  let database;
   let ownsDatabase = false;
   let failure;
   let observation;
   try {
-    const providerFreeFilters = providerFreeManagerSurfaceChecks(
-      local,
-      database,
-    );
-    const hostile = preIoRejections(local, foreign, database);
     requireCondition(
-      !database.databaseExists(),
+      !bootstrap.databaseExists(),
       "database_preexisting",
       "isolated database must be absent",
     );
-    database.createDatabase();
+    bootstrap.createDatabase();
     ownsDatabase = true;
-    installSchema(database, providerSchema);
+    installSchema(bootstrap, providerSchema);
+    bootstrap.close();
+    if (tlsRootCa !== undefined) {
+      let untrusted;
+      try {
+        untrusted = local.connect(
+          new local.DirectConnectionPolicy(address, databaseName, {
+            httpPort: port,
+            tls: "native_roots",
+          }),
+        );
+      } catch {
+        // The isolated fixture root is deliberately absent from native roots.
+      }
+      if (untrusted !== undefined) {
+        untrusted.close();
+        throw new ProducerError(
+          "wrong_trust_accepted",
+          "TLS fixture connected without its configured custom root",
+        );
+      }
+    }
+    database = local.connect(
+      new local.DirectConnectionPolicy(address, databaseName, {
+        httpPort: port,
+        ...(tlsRootCa === undefined
+          ? { tls: "disabled" }
+          : { tls: "custom_root", tlsRootCa }),
+      }),
+    );
+    const providerFreeFilters = providerFreeManagerSurfaceChecks(local, database);
+    const hostile = preIoRejections(local, foreign, database);
 
     const manager = local.Person.manager(database);
     const inserted = records.map((record) =>
@@ -1126,9 +1156,10 @@ async function runOwnedDatabase({
   }
   if (ownsDatabase) {
     try {
-      database.deleteDatabase();
+      const owner = database ?? bootstrap;
+      owner.deleteDatabase();
       requireCondition(
-        !database.databaseExists(),
+        !owner.databaseExists(),
         "database_teardown_failed",
         "isolated database remained",
       );
@@ -1137,7 +1168,8 @@ async function runOwnedDatabase({
     }
   }
   try {
-    database.close();
+    database?.close();
+    bootstrap.close();
   } catch (error) {
     failure ??= error;
   }
@@ -1164,6 +1196,13 @@ export async function main(environment = process.env) {
     const address = requiredEnvironment(ADDRESS_ENV, environment);
     const databaseName = requiredEnvironment(DATABASE_ENV, environment);
     const port = httpPort(environment);
+    const tlsRootCa = environment[TLS_ROOT_CA_ENV];
+    if (tlsRootCa === "") {
+      throw new ProducerError(
+        "invalid_tls_root_ca",
+        `${TLS_ROOT_CA_ENV} must not be empty`,
+      );
+    }
     const { authority, sources } = sourceAuthority(root);
     const { local, foreign, runtime } =
       await loadGeneratedPackages(packageRoot);
@@ -1182,6 +1221,7 @@ export async function main(environment = process.env) {
       port,
       providerSchema,
       records,
+      tlsRootCa,
     });
     publishReport(output, {
       authority,

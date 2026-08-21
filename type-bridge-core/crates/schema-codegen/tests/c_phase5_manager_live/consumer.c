@@ -473,7 +473,7 @@ int main(void) {
         database != NULL && diagnostics == NULL);
   CHECK(type_bridge_database_server_version(database, &version) ==
             TYPE_BRIDGE_STATUS_OK &&
-        same_text(version, "3.12.1"));
+        same_text(version, "3.12.3"));
 
   CHECK(open_person_create(
       package, "data-ada", "Ada", 38, 7, 40, 0u, 38, "2026-08-12",

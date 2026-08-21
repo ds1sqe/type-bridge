@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Produce Python's exact-TypeDB-3.12.1 Phase-5 manager-filter report."""
+"""Produce Python's TypeDB-3.12.3 Phase-5 manager-filter report."""
 
 from __future__ import annotations
 
@@ -35,6 +35,7 @@ OUTPUT_ENV = "TYPE_BRIDGE_PHASE5_MANAGER_LIVE_REPORT"
 ADDRESS_ENV = "TYPE_BRIDGE_PHASE5_MANAGER_LIVE_ADDRESS"
 DATABASE_ENV = "TYPE_BRIDGE_PHASE5_MANAGER_LIVE_DATABASE"
 HTTP_PORT_ENV = "TYPE_BRIDGE_PHASE5_MANAGER_LIVE_HTTP_PORT"
+TLS_ROOT_CA_ENV = "TYPEDB_TLS_ROOT_CA"
 PACKAGE_ROOT_ENV = "TYPE_BRIDGE_PHASE5_MANAGER_PYTHON_PACKAGE_ROOT"
 REPOSITORY_ROOT_ENV = "TYPE_BRIDGE_PHASE5_MANAGER_REPOSITORY_ROOT"
 LOCAL_PACKAGE = "generated_phase5_manager"
@@ -580,24 +581,64 @@ def _run_owned_database(
     provider_schema: str,
     ada: dict[str, Any],
     dana: dict[str, Any],
+    tls_root_ca: str | None,
 ) -> dict[str, object]:
-    database = Database(address=address, database=database_name, http_port=http_port)
+    bootstrap = Database(
+        address=address,
+        database=database_name,
+        http_port=http_port,
+        tls=tls_root_ca is not None,
+        tls_root_ca=tls_root_ca,
+    )
+    database: Database | None = None
     owns_database = False
     failure: BaseException | None = None
     observation: dict[str, object] | None = None
     try:
-        database.connect()
-        detected = database.detected_server_version()
-        if detected != "3.12.1":
+        bootstrap.connect()
+        detected = bootstrap.detected_server_version()
+        if detected != "3.12.3":
             raise ProducerError(
                 "server_version_mismatch",
-                f"exact TypeDB 3.12.1 required, detected {detected!r}",
+                f"exact TypeDB 3.12.3 required, detected {detected!r}",
             )
-        if database.database_exists():
+        if bootstrap.database_exists():
             raise ProducerError("database_preexisting", "isolated database must be absent")
-        database.create_database()
+        bootstrap.create_database()
         owns_database = True
-        database.execute_query(provider_schema, transaction_type="schema")
+        bootstrap.execute_query(provider_schema, transaction_type="schema")
+        bootstrap.close()
+        if tls_root_ca is not None:
+            try:
+                untrusted = package.connect(
+                    package.DirectConnectionPolicy(
+                        address,
+                        database_name,
+                        http_port=http_port,
+                        tls=package.DirectTlsMode.NATIVE_ROOTS,
+                    )
+                )
+            except BaseException:
+                pass
+            else:
+                untrusted.close()
+                raise ProducerError(
+                    "wrong_trust_accepted",
+                    "TLS fixture connected without its configured custom root",
+                )
+        database = package.connect(
+            package.DirectConnectionPolicy(
+                address,
+                database_name,
+                http_port=http_port,
+                tls=(
+                    package.DirectTlsMode.CUSTOM_ROOT
+                    if tls_root_ca is not None
+                    else package.DirectTlsMode.DISABLED
+                ),
+                tls_root_ca=tls_root_ca,
+            )
+        )
         manager = package.Person.manager(database)
         inserted = [manager.insert(_person(package, record)) for record in (ada, dana)]
         if _keys(package, inserted) != ["data-ada", "data-dana"]:
@@ -611,13 +652,16 @@ def _run_owned_database(
         failure = error
     if owns_database:
         try:
-            database.delete_database()
-            if database.database_exists():
+            owner = database if database is not None else bootstrap
+            owner.delete_database()
+            if owner.database_exists():
                 raise ProducerError("database_teardown_failed", "isolated database remained")
         except BaseException as error:
             failure = failure or error
     try:
-        database.close()
+        if database is not None:
+            database.close()
+        bootstrap.close()
     except BaseException as error:
         failure = failure or error
     if failure is not None:
@@ -651,6 +695,9 @@ def main(environment: Mapping[str, str] = os.environ) -> int:
         address = _required_environment(ADDRESS_ENV, environment)
         database_name = _required_environment(DATABASE_ENV, environment)
         http_port = _http_port(environment)
+        tls_root_ca = environment.get(TLS_ROOT_CA_ENV)
+        if tls_root_ca == "":
+            raise ProducerError("invalid_tls_root_ca", f"{TLS_ROOT_CA_ENV} must not be empty")
         authority, sources = _source_authority(root)
         local = _load_package(package_root, LOCAL_PACKAGE)
         foreign = _load_package(package_root, FOREIGN_PACKAGE)
@@ -666,6 +713,8 @@ def main(environment: Mapping[str, str] = os.environ) -> int:
             address=address,
             database=database_name,
             http_port=http_port,
+            tls=tls_root_ca is not None,
+            tls_root_ca=tls_root_ca,
         )
         try:
             rejections, nonsingular = _pre_io_rejections(local, foreign, preflight_database)
@@ -680,6 +729,7 @@ def main(environment: Mapping[str, str] = os.environ) -> int:
             provider_schema,
             ada,
             dana,
+            tls_root_ca,
         )
         observation["rejections"] = rejections
         first = observation.get("first")

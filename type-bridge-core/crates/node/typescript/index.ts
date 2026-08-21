@@ -509,6 +509,16 @@ export class RustDatabase {
   }
 }
 
+/** @internal Wrap a generated-package-owned native database handle. */
+export function createRustDatabaseFromNative(
+  native: NativeRustDatabase,
+): RustDatabase {
+  const Constructor = RustDatabase as unknown as new (
+    native: NativeRustDatabase,
+  ) => RustDatabase;
+  return new Constructor(native);
+}
+
 const TRANSACTION_CONSTRUCTOR = Symbol("RustTransactionContext");
 
 export class RustTransactionContext {

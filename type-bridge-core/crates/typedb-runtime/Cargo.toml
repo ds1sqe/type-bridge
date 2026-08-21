@@ -30,7 +30,7 @@ thiserror = "2"
 tracing = "0.1"
 futures = "0.3"
 type-bridge-typedb-driver-b8 = { path = "../../vendor/typedb-driver-b8", version = "=3.11.5", optional = true }
-typedb-driver = { version = "=3.12.1", optional = true }
+typedb-driver = { version = "=3.12.3", optional = true }
 # Driver-band temporal bridging: parse GivenValue on band 9 and preserve exact
 # datetime-tz evidence across every supported driver band.
 chrono = { version = "0.4", optional = true }

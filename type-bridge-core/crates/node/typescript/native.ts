@@ -453,6 +453,18 @@ interface NativeRemoteModelQueryModule {
 }
 
 interface NativeRuntimeProjectionHandle {
+  connectDirect(
+    endpoint: string,
+    database: string,
+    username: string,
+    password: string,
+    httpPort: number,
+    tlsMode: string,
+    tlsRootCa?: string,
+    connectionLimits?: NativeQueryExecutionResources,
+    answerLimits?: NativeQueryExecutionResources,
+    cancellation?: NativeQueryCancellation,
+  ): NativeRustDatabase;
   managerForDatabase(typeKey: string, database: NativeRustDatabase): NativeProjectedManager;
   managerForTransaction(typeKey: string, transaction: NativeRustTransactionContext): NativeProjectedManager;
   matchSession(): NativeMatchSessionHandle;

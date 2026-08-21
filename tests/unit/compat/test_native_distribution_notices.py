@@ -35,7 +35,7 @@ def test_notice_pins_namespaced_sources_and_complete_license_texts() -> None:
     for identity in (
         "type-bridge-typedb-driver-b8` 3.11.5",
         "type-bridge-typedb-protocol-b8` 3.11.0",
-        "official `typedb-driver` 3.12.1",
+        "official `typedb-driver` 3.12.3",
         "official `typedb-protocol` 3.12.0",
         "`ed25519-dalek` | 2.2.0",
         "`curve25519-dalek` | 4.1.3",
@@ -49,7 +49,7 @@ def test_notice_pins_namespaced_sources_and_complete_license_texts() -> None:
         assert upstream_commit in notice
 
     for official_source in (
-        "https://crates.io/crates/typedb-driver/3.12.1",
+        "https://crates.io/crates/typedb-driver/3.12.3",
         "https://crates.io/crates/typedb-protocol/3.12.0",
     ):
         assert official_source in notice

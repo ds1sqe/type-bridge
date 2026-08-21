@@ -7,6 +7,8 @@
 pub mod backend;
 pub mod context;
 pub mod database;
+#[cfg(feature = "typedb")]
+mod direct_connection;
 pub mod legacy_writer;
 pub mod transaction;
 
@@ -18,6 +20,8 @@ pub use context::TransactionContext;
 #[doc(hidden)]
 pub use context::TransactionContextState;
 pub use database::{Database, DatabaseConnectionAuthority};
+#[cfg(feature = "typedb")]
+pub use direct_connection::{DirectConnectionPolicy, DirectTls};
 pub use legacy_writer::{require_legacy_writer_open, require_legacy_writer_open_in_transaction};
 pub use transaction::Transaction;
 

@@ -168,7 +168,7 @@ def test_migration_live_lanes_are_bound_to_the_exact_server_leg() -> None:
         ),
     }.items():
         step = steps[name]
-        assert step["if"] == "matrix.typedb-server == 'typedb/typedb:3.12.1'"
+        assert step["if"] == "matrix.typedb-server == 'typedb/typedb:3.12.3'"
         assert test_name in step["run"]
 
     rollback = steps["Run connected migration rollback and reapply lifecycle"]

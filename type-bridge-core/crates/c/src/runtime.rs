@@ -270,7 +270,7 @@ impl TypeBridgeDatabase {
                 runtime,
                 _package: package,
                 database: Arc::new(database),
-                server_version: b"3.12.1".to_vec(),
+                server_version: b"3.12.3".to_vec(),
                 answer_ceiling,
                 transaction_children: AtomicUsize::new(0),
             }),
@@ -1551,13 +1551,13 @@ pub(crate) unsafe extern "C" fn type_bridge_database_open_v2_impl(
             };
         if !database
             .server_version()
-            .is_some_and(|version| version.major == 3 && version.minor == 12 && version.patch == 1)
+            .is_some_and(|version| version.major == 3 && version.minor == 12 && version.patch == 3)
         {
             let _ = database.close();
             return return_execution_error(
                 unsupported(
                     "c_database_server_version_not_exact",
-                    "The C database ABI requires an authoritative TypeDB 3.12.1 server",
+                    "The C database ABI requires an authoritative TypeDB 3.12.3 server",
                 ),
                 out_diagnostics,
             );
@@ -1580,7 +1580,7 @@ pub(crate) unsafe extern "C" fn type_bridge_database_open_v2_impl(
             runtime: Arc::clone(&runtime.state),
             _package: Arc::clone(package.state()),
             database: Arc::new(database),
-            server_version: b"3.12.1".to_vec(),
+            server_version: b"3.12.3".to_vec(),
             answer_ceiling: Some(answer_limits),
             transaction_children: AtomicUsize::new(0),
         };
@@ -1596,7 +1596,7 @@ pub(crate) unsafe extern "C" fn type_bridge_database_open_v2_impl(
     })
 }
 
-/// Connect and bind one exact TypeDB 3.12.1 database to a verified C package.
+/// Connect and bind one exact TypeDB 3.12.3 database to a verified C package.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn type_bridge_database_open_v1(
     runtime: *const TypeBridgeRuntime,
@@ -1662,13 +1662,13 @@ pub unsafe extern "C" fn type_bridge_database_open_v1(
         };
         if !database
             .server_version()
-            .is_some_and(|version| version.major == 3 && version.minor == 12 && version.patch == 1)
+            .is_some_and(|version| version.major == 3 && version.minor == 12 && version.patch == 3)
         {
             let _ = database.close();
             return return_execution_error(
                 unsupported(
                     "c_database_server_version_not_exact",
-                    "The C database ABI requires an authoritative TypeDB 3.12.1 server",
+                    "The C database ABI requires an authoritative TypeDB 3.12.3 server",
                 ),
                 out_diagnostics,
             );
@@ -1681,7 +1681,7 @@ pub unsafe extern "C" fn type_bridge_database_open_v1(
             runtime: Arc::clone(&runtime.state),
             _package: Arc::clone(package.state()),
             database: Arc::new(database),
-            server_version: b"3.12.1".to_vec(),
+            server_version: b"3.12.3".to_vec(),
             answer_ceiling: None,
             transaction_children: AtomicUsize::new(0),
         };
@@ -3228,7 +3228,7 @@ entities:
     fn v2_result_handle_allocation_failures_precede_provider_dispatch() {
         let state = Arc::new(FakeState::default());
         state.supports_given_rows.store(true, Ordering::Release);
-        let mut runtime = runtime(Arc::clone(&state), Version::new(3, 12, 1));
+        let mut runtime = runtime(Arc::clone(&state), Version::new(3, 12, 3));
         let mut package = Box::into_raw(Box::new(package("typedb-3.12.1/v1", "v2allocation")));
         let fixture = DatabaseConfigV2Fixture::plaintext(QueryExecutionResourceLimits::default());
 
@@ -3361,7 +3361,7 @@ entities:
     fn v2_output_preflight_fences_nested_and_live_handle_storage_before_writes() {
         let state = Arc::new(FakeState::default());
         state.supports_given_rows.store(true, Ordering::Release);
-        let mut runtime = runtime(Arc::clone(&state), Version::new(3, 12, 1));
+        let mut runtime = runtime(Arc::clone(&state), Version::new(3, 12, 3));
         let mut package = Box::into_raw(Box::new(package("typedb-3.12.1/v1", "v2alias")));
         let fixture = DatabaseConfigV2Fixture::plaintext(QueryExecutionResourceLimits::default());
         let preserved_address = fixture._address.clone();
@@ -3482,7 +3482,7 @@ entities:
             Database::with_backend(
                 Box::new(FakeBackend {
                     state: Arc::clone(&state),
-                    version: Version::new(3, 12, 1),
+                    version: Version::new(3, 12, 3),
                 }),
                 "legacy-routing-v1",
             ),
@@ -3493,7 +3493,7 @@ entities:
                 Database::with_backend(
                     Box::new(FakeBackend {
                         state: Arc::clone(&state),
-                        version: Version::new(3, 12, 1),
+                        version: Version::new(3, 12, 3),
                     }),
                     "legacy-routing-v2",
                 ),
@@ -3645,7 +3645,7 @@ entities:
     fn legacy_lifecycle_on_v2_handles_deep_fences_every_retained_input_before_writes() {
         let state = Arc::new(FakeState::default());
         state.supports_given_rows.store(true, Ordering::Release);
-        let mut runtime = runtime(Arc::clone(&state), Version::new(3, 12, 1));
+        let mut runtime = runtime(Arc::clone(&state), Version::new(3, 12, 3));
         let mut package = Box::into_raw(Box::new(package("typedb-3.12.1/v1", "legacydeep")));
         let fixture = DatabaseConfigV2Fixture::plaintext(QueryExecutionResourceLimits::default());
         let (mut database, mut diagnostics, status) =
@@ -3857,7 +3857,7 @@ entities:
     #[test]
     fn v2_database_requires_band9_and_transactions_intersect_and_inherit_answer_policy() {
         let state = Arc::new(FakeState::default());
-        let mut runtime = runtime(Arc::clone(&state), Version::new(3, 12, 1));
+        let mut runtime = runtime(Arc::clone(&state), Version::new(3, 12, 3));
         let mut package = Box::into_raw(Box::new(package("typedb-3.12.1/v1", "v2policy")));
         let answer_limits =
             QueryExecutionResourceLimits::tightened(9_000, 11, 101, 13, 17, 19, 23, 2);
@@ -3983,7 +3983,7 @@ entities:
     #[test]
     fn v2_transaction_open_wakes_for_cancellation_and_deadline() {
         let state = Arc::new(FakeState::default());
-        let mut runtime = runtime(Arc::clone(&state), Version::new(3, 12, 1));
+        let mut runtime = runtime(Arc::clone(&state), Version::new(3, 12, 3));
         let mut package = Box::into_raw(Box::new(package("typedb-3.12.1/v1", "v2opencontrol")));
         let (mut database, mut diagnostics, status) =
             unsafe { open_database(runtime, package, ptr::null()) };
@@ -4129,7 +4129,7 @@ entities:
     fn rollback_only_commit_is_exact_pre_dispatch_and_retains_legacy_and_v2_owners() {
         let state = Arc::new(FakeState::default());
         state.supports_given_rows.store(true, Ordering::Release);
-        let mut runtime = runtime(Arc::clone(&state), Version::new(3, 12, 1));
+        let mut runtime = runtime(Arc::clone(&state), Version::new(3, 12, 3));
         let mut package = Box::into_raw(Box::new(package("typedb-3.12.1/v1", "rollbackonly")));
         let fixture = DatabaseConfigV2Fixture::plaintext(QueryExecutionResourceLimits::default());
         let (mut database, mut diagnostics, status) =
@@ -4244,7 +4244,7 @@ entities:
     #[test]
     fn v2_and_inherited_legacy_commits_reject_before_dispatch_but_actual_outcome_wins() {
         let state = Arc::new(FakeState::default());
-        let mut runtime = runtime(Arc::clone(&state), Version::new(3, 12, 1));
+        let mut runtime = runtime(Arc::clone(&state), Version::new(3, 12, 3));
         let mut package = Box::into_raw(Box::new(package("typedb-3.12.1/v1", "v2commit")));
         let (mut database, mut diagnostics, status) =
             unsafe { open_database(runtime, package, ptr::null()) };
@@ -4439,7 +4439,7 @@ entities:
     #[test]
     fn v2_commit_deadline_awaits_actual_outcome_without_cancelling_reusable_token() {
         let state = Arc::new(FakeState::default());
-        let mut runtime = runtime(Arc::clone(&state), Version::new(3, 12, 1));
+        let mut runtime = runtime(Arc::clone(&state), Version::new(3, 12, 3));
         let mut package = Box::into_raw(Box::new(package("typedb-3.12.1/v1", "commitdeadline")));
         let (mut database, mut diagnostics, status) =
             unsafe { open_database(runtime, package, ptr::null()) };
@@ -4544,7 +4544,7 @@ entities:
     #[test]
     fn parent_lifecycle_retains_in_use_slots_and_closes_children() {
         let state = Arc::new(FakeState::default());
-        let mut runtime = runtime(Arc::clone(&state), Version::new(3, 12, 1));
+        let mut runtime = runtime(Arc::clone(&state), Version::new(3, 12, 3));
         let mut package = Box::into_raw(Box::new(package("typedb-3.12.1/v1", "lifecycle")));
         let (mut database, mut diagnostics, status) =
             unsafe { open_database(runtime, package, ptr::null()) };
@@ -4561,7 +4561,7 @@ entities:
         );
         assert_eq!(
             unsafe { std::slice::from_raw_parts(version.data, version.length) },
-            b"3.12.1"
+            b"3.12.3"
         );
 
         let runtime_before = runtime;
@@ -4640,7 +4640,7 @@ entities:
     #[test]
     fn cancellation_and_invalid_layout_reject_before_provider_io() {
         let state = Arc::new(FakeState::default());
-        let mut runtime = runtime(Arc::clone(&state), Version::new(3, 12, 1));
+        let mut runtime = runtime(Arc::clone(&state), Version::new(3, 12, 3));
         let mut package_a = Box::into_raw(Box::new(package("typedb-3.12.1/v1", "packagea")));
         let (mut database, mut diagnostics, status) =
             unsafe { open_database(runtime, package_a, ptr::null()) };
@@ -4752,7 +4752,7 @@ entities:
     #[test]
     fn database_configuration_is_copied_bounded_and_utf8_checked_before_dispatch() {
         let state = Arc::new(FakeState::default());
-        let mut runtime = runtime(Arc::clone(&state), Version::new(3, 12, 1));
+        let mut runtime = runtime(Arc::clone(&state), Version::new(3, 12, 3));
         let mut package = Box::into_raw(Box::new(package("typedb-3.12.1/v1", "config")));
         let (address, database_name, username, _password, mut config) = database_config();
         let mut database = ptr::null_mut();
@@ -4922,7 +4922,7 @@ entities:
     #[test]
     fn write_terminals_preserve_commit_certainty_and_cancel_before_dispatch() {
         let state = Arc::new(FakeState::default());
-        let mut runtime = runtime(Arc::clone(&state), Version::new(3, 12, 1));
+        let mut runtime = runtime(Arc::clone(&state), Version::new(3, 12, 3));
         let mut package = Box::into_raw(Box::new(package("typedb-3.12.1/v1", "commit")));
         let (mut database, mut diagnostics, status) =
             unsafe { open_database(runtime, package, ptr::null()) };
@@ -5041,7 +5041,7 @@ entities:
     #[test]
     fn panicking_transaction_terminals_consume_slots_and_release_parent_children() {
         let state = Arc::new(FakeState::default());
-        let mut runtime = runtime(Arc::clone(&state), Version::new(3, 12, 1));
+        let mut runtime = runtime(Arc::clone(&state), Version::new(3, 12, 3));
         let mut package = Box::into_raw(Box::new(package("typedb-3.12.1/v1", "panic")));
         let (mut database, mut diagnostics, status) =
             unsafe { open_database(runtime, package, ptr::null()) };
@@ -5169,7 +5169,7 @@ entities:
         );
 
         let state = Arc::new(FakeState::default());
-        let mut runtime_handle = runtime(Arc::clone(&state), Version::new(3, 12, 1));
+        let mut runtime_handle = runtime(Arc::clone(&state), Version::new(3, 12, 3));
         let mut old_package = Box::into_raw(Box::new(package("typedb-3.11.5/v1", "oldprofile")));
         let (database, mut diagnostics, status) =
             unsafe { open_database(runtime_handle, old_package, ptr::null()) };

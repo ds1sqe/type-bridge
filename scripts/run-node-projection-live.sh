@@ -25,7 +25,7 @@ fi
 compose=("$container_tool" compose -p "$PROJECT" -f "$COMPOSE_FILE")
 "${compose[@]}" version >/dev/null
 
-export TYPEDB_IMAGE="typedb/typedb:3.12.1"
+export TYPEDB_IMAGE="typedb/typedb:3.12.3"
 export TYPEDB_PORT=0
 export TYPEDB_HTTP_PORT=0
 
@@ -55,7 +55,7 @@ for _ in {1..60}; do
 done
 if [[ "$ready" != true ]]; then
     "${compose[@]}" logs typedb >&2 || true
-    echo "TypeDB 3.12.1 did not become ready." >&2
+    echo "TypeDB 3.12.3 did not become ready." >&2
     exit 1
 fi
 

@@ -273,14 +273,14 @@ start_typedb() {
     detect_compose
     local proj
     local services=(typedb)
-    local typedb_image="${TYPEDB_IMAGE:-typedb/typedb:3.12.1}"
+    local typedb_image="${TYPEDB_IMAGE:-typedb/typedb:3.12.3}"
     proj="$(compose_project)"
     if [[ "$tls" == 1 ]]; then
         services+=(typedb-tls)
         # Workspace migration execution is pinned to the shipped semantic
         # profile's exact server, while the ordinary lane retains its prior
         # image. An explicit caller override remains authoritative.
-        typedb_image="${TYPEDB_IMAGE:-typedb/typedb:3.12.1}"
+        typedb_image="${TYPEDB_IMAGE:-typedb/typedb:3.12.3}"
     fi
 
     printf "${BOLD}━━━ TypeDB (isolated, project %s) ━━━${RESET}\n\n" "$proj"
@@ -490,7 +490,7 @@ if [[ "$integration" == 1 ]]; then
     # Python report producer. Keep targeted Python runs useful instead of
     # allocating a fan-in that can never become complete; the unfiltered full
     # suite remains the local conformance gate.
-    if [[ "$typedb_server_version" == "3.12.1" && ${#pytest_args[@]} -eq 0 ]]; then
+    if [[ "$typedb_server_version" == "3.12.3" && ${#pytest_args[@]} -eq 0 ]]; then
         workforce_report_dir="$(
             mktemp -d "${TMPDIR:-/tmp}/typebridge-workforce.XXXXXXXXXX"
         )"
@@ -567,18 +567,18 @@ if [[ "$integration" == 1 ]]; then
             "TYPE_BRIDGE_WORKFORCE_V2_PROOF_RUN_NONCE=$workforce_c_nonce"
         )
         printf "${CYAN}Workforce reports: %s${RESET}\n\n" "$workforce_report_dir"
-    elif [[ "$typedb_server_version" == "3.12.1" ]]; then
+    elif [[ "$typedb_server_version" == "3.12.3" ]]; then
         printf "${CYAN}Workforce report fan-in skipped because forwarded pytest arguments may change collection.${RESET}\n\n"
     fi
 
-    if [[ "$typedb_server_version" == "3.12.1" ]]; then
+    if [[ "$typedb_server_version" == "3.12.3" ]]; then
         printf "${BOLD}━━━ Phase-2 exact-live parity (integration) ━━━${RESET}\n\n"
-        run_step "four-binding exact-TypeDB-3.12.1 Phase-2 live fan-in" \
+        run_step "four-binding exact-TypeDB-3.12.3 Phase-2 live fan-in" \
             env TYPE_BRIDGE_PHASE2_LIVE_ADDRESS="$TYPEDB_ADDRESS" \
                 TYPE_BRIDGE_PHASE2_LIVE_HTTP_PORT="$TYPEDB_HTTP_PORT" \
             uv run python scripts/ci/run_phase2_projection_live.py
     else
-        printf "${CYAN}Phase-2 exact-live fan-in requires TypeDB 3.12.1; skipping %s.${RESET}\n\n" \
+        printf "${CYAN}Phase-2 exact-live fan-in requires TypeDB 3.12.3; skipping %s.${RESET}\n\n" \
             "$typedb_server_version"
     fi
 
@@ -621,7 +621,7 @@ if [[ "$integration" == 1 ]]; then
             --manifest-path type-bridge-core/Cargo.toml \
             -p type-bridge-schema-codegen --test rust_projection_live
 
-    if [[ "$typedb_server_version" == "3.12.1" ]]; then
+    if [[ "$typedb_server_version" == "3.12.3" ]]; then
         printf "${BOLD}━━━ C runtime transactions (integration) ━━━${RESET}\n\n"
         run_step "compiled C17 runtime and transaction lifecycle" \
             timeout --foreground 10m \
@@ -654,7 +654,7 @@ if [[ "$integration" == 1 ]]; then
                 --manifest-path type-bridge-core/Cargo.toml --locked \
                 -p type-bridge-schema-codegen --test c_projection_live
     else
-        printf "${CYAN}Generated C entity and relation CRUD live smoke is intentionally limited to exact TypeDB 3.12.1; skipping %s.${RESET}\n\n" \
+        printf "${CYAN}Generated C entity and relation CRUD live smoke is intentionally limited to exact TypeDB 3.12.3; skipping %s.${RESET}\n\n" \
             "$typedb_server_version"
     fi
 
@@ -809,9 +809,9 @@ run_tls_transport_steps() {
                 SSL_CERT_FILE="$fixture_root_ca" \
                 TYPE_BRIDGE_TLS_LIVE_REQUIRED=1 \
                 TYPE_BRIDGE_TLS_NATIVE_ROOTS=1 \
-                TYPE_BRIDGE_TLS_EXPECTED_SERVER_VERSION=3.12.1 \
+                TYPE_BRIDGE_TLS_EXPECTED_SERVER_VERSION=3.12.3 \
                 TYPE_BRIDGE_TLS_EXPECTED_DRIVER_BAND=9 \
-                TYPE_BRIDGE_TLS_EXPECTED_DRIVER_VERSION=3.12.1 \
+                TYPE_BRIDGE_TLS_EXPECTED_DRIVER_VERSION=3.12.3 \
             cargo test --manifest-path type-bridge-core/Cargo.toml \
                 -p type-bridge-typedb-runtime --test tls_live \
                 -- --nocapture --test-threads=1
@@ -829,8 +829,16 @@ run_tls_transport_steps() {
                 generated_rust_projection_round_trips_exact_live_models \
                 --manifest-path type-bridge-core/Cargo.toml \
                 -p type-bridge-schema-codegen --test rust_projection_live
+
+        run_step "TLS ordered generated Python + Node manager parity" \
+            timeout --foreground 20m \
+            env TYPEDB_TLS_ADDRESS="$tls_address" \
+                TYPEDB_TLS_HTTP_PORT="$tls_http_port" \
+                TYPEDB_TLS_ROOT_CA="$tls_root_ca" \
+                RUSTUP_TOOLCHAIN="${RUSTUP_TOOLCHAIN:-stable}" \
+            uv run python scripts/ci/run_phase5_manager_filter_tls.py
     else
-        printf "${CYAN}External TLS runtime proof is custom-root only; native-root and exact-topology assertions require the isolated 3.12.1 lane.${RESET}\n\n"
+        printf "${CYAN}External TLS runtime proof is custom-root only; native-root and exact-topology assertions require the isolated 3.12.3 lane.${RESET}\n\n"
         run_step "TLS runtime HTTP + gRPC lifecycle (external custom-root)" \
             timeout --foreground 10m \
             env TYPEDB_TLS_ADDRESS="$tls_address" \

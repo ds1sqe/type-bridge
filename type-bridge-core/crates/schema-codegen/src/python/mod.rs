@@ -28,6 +28,59 @@ const ORDERED_RUNTIME_SOURCE_SUFFIX: &[u8] = br#"
 # Successor resource for ordered collection projections.
 _TYPE_BRIDGE_ORDERED_COLLECTION_RESOURCE_VERSION = 3
 
+from dataclasses import dataclass, field
+from type_bridge_core import QueryCancellation, QueryExecutionResourceLimits
+
+
+class DirectTlsMode(StrEnum):
+    DISABLED = "disabled"
+    NATIVE_ROOTS = "native_roots"
+    CUSTOM_ROOT = "custom_root"
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class DirectConnectionPolicy:
+    endpoint: str
+    database: str
+    username: str = "admin"
+    password: str = field(default="password", repr=False)
+    http_port: int = 8000
+    tls: DirectTlsMode = DirectTlsMode.DISABLED
+    tls_root_ca: str | None = None
+    connection_limits: QueryExecutionResourceLimits | None = None
+    answer_limits: QueryExecutionResourceLimits | None = None
+
+    def __repr__(self) -> str:
+        return "DirectConnectionPolicy([REDACTED])"
+
+
+def connect(
+    policy: object,
+    *,
+    cancellation: QueryCancellation | None = None,
+) -> Database:
+    """Open a database owned and verified by this generated package."""
+    if not isinstance(policy, DirectConnectionPolicy):
+        raise TypeError("connect requires this generated package's DirectConnectionPolicy")
+    projection = _package_runtime_projection
+    if projection is None:
+        raise RuntimeError("generated package runtime projection is not installed")
+    native = projection.connect_direct(
+        policy.endpoint,
+        policy.database,
+        policy.username,
+        policy.password,
+        policy.http_port,
+        policy.tls.value,
+        policy.tls_root_ca,
+        policy.connection_limits,
+        policy.answer_limits,
+        cancellation,
+    )
+    from type_bridge._rust_runtime import database_from_rust
+
+    return database_from_rust(policy.endpoint, policy.database, native)
+
 
 def _install_runtime_projection_with_authority(
     projection_json: str,
@@ -132,6 +185,35 @@ class _WholeCreateProjectedModelManager[ModelT: ModelBase](
 globals()["ProjectedModelManager"] = _WholeCreateProjectedModelManager
 "#;
 
+const ORDERED_RUNTIME_STUB_SUFFIX: &[u8] = br#"
+
+from dataclasses import dataclass
+from type_bridge_core import QueryCancellation, QueryExecutionResourceLimits
+
+class DirectTlsMode(StrEnum):
+    DISABLED = "disabled"
+    NATIVE_ROOTS = "native_roots"
+    CUSTOM_ROOT = "custom_root"
+
+@dataclass(frozen=True, slots=True, repr=False)
+class DirectConnectionPolicy:
+    endpoint: str
+    database: str
+    username: str = ...
+    password: str = ...
+    http_port: int = ...
+    tls: DirectTlsMode = ...
+    tls_root_ca: str | None = ...
+    connection_limits: QueryExecutionResourceLimits | None = ...
+    answer_limits: QueryExecutionResourceLimits | None = ...
+
+def connect(
+    policy: DirectConnectionPolicy,
+    *,
+    cancellation: QueryCancellation | None = ...,
+) -> Database: ...
+"#;
+
 /// Python package emitter with feature-selected legacy and ordered evidence ledgers.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct PythonEmitter;
@@ -178,10 +260,11 @@ impl PythonEmitter {
 
     fn resources_for_ordered(&self, ordered: bool) -> Result<Vec<CodeResourceDigest>, Diagnostic> {
         let runtime_source = ordered_runtime_source(ordered);
+        let runtime_stub = ordered_runtime_stub(ordered);
         let mut resources = vec![
             CodeResourceDigest::from_bytes(PY_TYPED_ID, PY_TYPED)?,
             CodeResourceDigest::from_bytes(RUNTIME_SOURCE_ID, &runtime_source)?,
-            CodeResourceDigest::from_bytes(RUNTIME_STUB_ID, RUNTIME_STUB)?,
+            CodeResourceDigest::from_bytes(RUNTIME_STUB_ID, &runtime_stub)?,
             CodeResourceDigest::from_bytes(QUERY_SOURCE_ID, QUERY_SOURCE)?,
             CodeResourceDigest::from_bytes(QUERY_STUB_ID, QUERY_STUB)?,
         ];
@@ -210,11 +293,12 @@ impl PythonEmitter {
         }
         let authority = embedded_authority(projection, authority)?;
         let runtime_source = ordered_runtime_source(ordered);
+        let runtime_stub = ordered_runtime_stub(ordered);
         render::render(
             projection,
             &authority,
             &runtime_source,
-            RUNTIME_STUB,
+            &runtime_stub,
             QUERY_SOURCE,
             QUERY_STUB,
             PY_TYPED,
@@ -227,6 +311,10 @@ fn ordered_runtime_source(ordered: bool) -> Vec<u8> {
         RUNTIME_SOURCE,
         ordered.then_some(ORDERED_RUNTIME_SOURCE_SUFFIX),
     )
+}
+
+fn ordered_runtime_stub(ordered: bool) -> Vec<u8> {
+    resource_with_suffix(RUNTIME_STUB, ordered.then_some(ORDERED_RUNTIME_STUB_SUFFIX))
 }
 
 fn resource_with_suffix(resource: &[u8], suffix: Option<&[u8]>) -> Vec<u8> {
@@ -247,6 +335,7 @@ mod tests {
     #[test]
     fn legacy_runtime_source_remains_byte_exact() {
         assert_eq!(ordered_runtime_source(false), RUNTIME_SOURCE);
+        assert_eq!(ordered_runtime_stub(false), RUNTIME_STUB);
     }
 
     #[test]
@@ -259,6 +348,11 @@ mod tests {
         assert!(source.contains("for owner in type(instance).__mro__:"));
         assert!(source.contains("_LegacyProjectedField.__set__(descriptor, instance, value)"));
         assert!(source.contains("class _WholeCreateProjectedModelManager"));
+        assert!(source.contains("class DirectConnectionPolicy:"));
+        assert!(source.contains("password: str = field(default=\"password\", repr=False)"));
+        assert!(source.contains("DirectConnectionPolicy([REDACTED])"));
+        assert!(source.contains("def connect("));
+        assert!(source.contains("projection.connect_direct("));
         assert!(
             source.contains("globals()[\"initialize_model\"] = _initialize_model_with_validation")
         );
@@ -270,7 +364,7 @@ mod tests {
     }
 
     #[test]
-    fn ordered_evidence_changes_only_the_runtime_source_resource() {
+    fn ordered_evidence_changes_only_the_runtime_resources() {
         let emitter = PythonEmitter::new();
         let legacy = emitter.resources_for_ordered(false).unwrap();
         let ordered = emitter.resources_for_ordered(true).unwrap();
@@ -286,7 +380,10 @@ mod tests {
 
         assert_eq!(
             changed,
-            BTreeSet::from(["typebridge.generator.python.runtime-source"]),
+            BTreeSet::from([
+                "typebridge.generator.python.runtime-source",
+                "typebridge.generator.python.runtime-stub",
+            ]),
         );
     }
 }

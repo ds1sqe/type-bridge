@@ -493,7 +493,7 @@ def test_ci_fans_in_exact_pinned_3_12_workforce_artifacts() -> None:
         upload = uploads[0]
         assert upload in jobs[job_name]["steps"]
         assert upload["uses"] == upload_action
-        assert "matrix.typedb-server == 'typedb/typedb:3.12.1'" in upload["if"]
+        assert "matrix.typedb-server == 'typedb/typedb:3.12.3'" in upload["if"]
         if extra_condition is not None:
             assert extra_condition in upload["if"]
         assert upload["with"] == {
@@ -539,7 +539,7 @@ def test_local_runner_allocates_and_compares_three_distinct_reports() -> None:
     source = (ROOT / "test.sh").read_text(encoding="utf-8")
     collapsed = " ".join(source.replace("\\\n", " ").split())
 
-    assert 'if [[ "$typedb_server_version" == "3.12.1" ]]; then' in source
+    assert 'if [[ "$typedb_server_version" == "3.12.3" ]]; then' in source
     assert 'mktemp -d "${TMPDIR:-/tmp}/typebridge-workforce.XXXXXXXXXX"' in source
     for binding in comparator.REPORT_BINDINGS:
         assignment = f'"TYPE_BRIDGE_WORKFORCE_REPORT=$workforce_report_dir/{binding}.json"'

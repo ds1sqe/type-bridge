@@ -313,6 +313,197 @@ fn main() {}"#,
 }
 
 #[test]
+fn generated_direct_connection_policy_compiles_with_legacy_compatibility() {
+    let stage = Stage::new();
+    let generated = stage.path().join("generated");
+    let consumer = stage.path().join("direct-connection-positive");
+    write_package(&emit(), &generated);
+    write_consumer_with_features(
+        &consumer,
+        "direct-connection-positive",
+        r#"use std::path::PathBuf;
+
+use generated::{AppSchema, SCHEMA};
+use type_bridge::{
+    AnswerCancellation, ConnectionOptions, Database, DirectConnectionPolicy, DirectTls,
+    QueryExecutionResourceLimits, Unbound,
+};
+
+fn limits() -> QueryExecutionResourceLimits {
+    QueryExecutionResourceLimits::tightened(5_000, 32, 65_536, 32, 64, 64, 32, 3)
+}
+
+fn canonical_policy() -> DirectConnectionPolicy {
+    let trust = DirectTls::custom_root(PathBuf::from("root-ca.pem")).unwrap();
+    DirectConnectionPolicy::new(
+        "localhost:1729",
+        "app",
+        "admin",
+        "password",
+    )
+    .http_port(8000)
+    .tls(trust)
+    .connection_limits(limits())
+    .answer_limits(limits())
+}
+
+async fn canonical_connection() -> type_bridge::Result<()> {
+    let cancellation = AnswerCancellation::default();
+    let database: Database<AppSchema> = SCHEMA
+        .connect_with_cancellation(canonical_policy(), cancellation)
+        .await?;
+    database.close()?;
+
+    let database: Database<AppSchema> = SCHEMA.connect(canonical_policy()).await?;
+    database.close()
+}
+
+async fn released_connection_compatibility() -> type_bridge::Result<()> {
+    let options = ConnectionOptions::new("localhost:1729", "app")
+        .credentials("admin", "password")
+        .http_port(8000)
+        .tls(false);
+    let database: Database<Unbound> = Database::connect(options).await?;
+    let database: Database<AppSchema> = database.with_schema(SCHEMA)?;
+    database.close()
+}
+
+fn main() {
+    let _ = DirectTls::disabled();
+    let _ = DirectTls::native_roots();
+    let _ = canonical_connection;
+    let _ = released_connection_compatibility;
+}
+"#,
+        &["band8", "band9"],
+    );
+
+    let output = cargo(
+        &[
+            "check",
+            "--offline",
+            "--quiet",
+            "--manifest-path",
+            consumer.join("Cargo.toml").to_str().unwrap(),
+        ],
+        &stage.path().join("direct-connection-positive-target"),
+    );
+    assert!(
+        output.status.success(),
+        "canonical and released direct connections did not compile\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+#[test]
+fn generated_direct_connection_policy_boundaries_fail_independently() {
+    let stage = Stage::new();
+    let generated = stage.path().join("generated");
+    write_package(&emit(), &generated);
+
+    let cases: [(&str, &str, &[&str]); 5] = [
+        (
+            "direct-policy-rejects-caller-server-version",
+            r#"use type_bridge::DirectConnectionPolicy;
+fn main() {
+    let policy = DirectConnectionPolicy::new(
+        "localhost:1729", "app", "admin", "password",
+    );
+    let _ = policy.server_version("3.12.1");
+}"#,
+            &["no method named `server_version`", "DirectConnectionPolicy"],
+        ),
+        (
+            "direct-connect-preserves-package-authority",
+            r#"use generated::{AppSchema, SCHEMA};
+use type_bridge::{Database, DirectConnectionPolicy, Schema};
+
+struct ForeignSchema;
+impl type_bridge::schema::sealed::Sealed for ForeignSchema {}
+impl Schema for ForeignSchema {}
+
+async fn check() {
+    let policy = DirectConnectionPolicy::new(
+        "localhost:1729", "app", "admin", "password",
+    );
+    let _: Database<ForeignSchema> = SCHEMA.connect(policy).await.unwrap();
+}
+
+fn main() {
+    let _: Option<AppSchema> = None;
+}"#,
+            &[
+                "mismatched types",
+                "Database<ForeignSchema>",
+                "Database<AppSchema>",
+            ],
+        ),
+        (
+            "direct-tls-rejects-inline-trust-bytes",
+            r#"use type_bridge::DirectTls;
+fn main() {
+    let _ = DirectTls::custom_root(vec![b'x']);
+}"#,
+            &["AsRef", "Path", "Vec<u8>"],
+        ),
+        (
+            "direct-policy-rejects-untyped-answer-limit",
+            r#"use type_bridge::DirectConnectionPolicy;
+fn main() {
+    let policy = DirectConnectionPolicy::new(
+        "localhost:1729", "app", "admin", "password",
+    );
+    let _ = policy.answer_limits(1_u64);
+}"#,
+            &["mismatched types", "QueryExecutionResourceLimits"],
+        ),
+        (
+            "direct-connect-rejects-untyped-cancellation",
+            r#"use generated::SCHEMA;
+use type_bridge::DirectConnectionPolicy;
+
+async fn check() {
+    let policy = DirectConnectionPolicy::new(
+        "localhost:1729", "app", "admin", "password",
+    );
+    let _ = SCHEMA.connect_with_cancellation(policy, ()).await;
+}
+
+fn main() {}"#,
+            &["mismatched types", "AnswerCancellation"],
+        ),
+    ];
+
+    for (name, source, expected) in cases {
+        let consumer = stage.path().join(name);
+        write_consumer_with_features(&consumer, name, source, &["band8", "band9"]);
+        let output = cargo(
+            &[
+                "check",
+                "--offline",
+                "--quiet",
+                "--manifest-path",
+                consumer.join("Cargo.toml").to_str().unwrap(),
+            ],
+            &stage.path().join(format!("{name}-target")),
+        );
+        assert!(!output.status.success(), "{name} unexpectedly compiled");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        for fragment in expected {
+            assert!(
+                stderr.contains(fragment),
+                "{name} omitted {fragment:?}:\n{stderr}",
+            );
+        }
+        assert!(
+            !stderr.contains("unresolved import") && !stderr.contains("cannot find"),
+            "{name} failed before the intended boundary:\n{stderr}",
+        );
+    }
+}
+
+#[test]
 fn generated_role_bindings_admit_only_overlapping_subtype_domains() {
     let stage = Stage::new();
     let generated = stage.path().join("generated");

@@ -84,9 +84,9 @@ def _source_identity(relative_path: str, raw: bytes) -> dict[str, str]:
 
 
 def _require_workforce_server_version(detected: str | None) -> None:
-    if detected != "3.12.1":
+    if detected != "3.12.3":
         raise AssertionError(
-            "workforce reports require the actual detected TypeDB server version 3.12.1; "
+            "workforce reports require the actual detected TypeDB server version 3.12.3; "
             f"detected {detected!r}"
         )
 
@@ -1982,9 +1982,9 @@ def _wait_for_port(port: int, process: subprocess.Popen[bytes], timeout: float) 
 
 
 def test_workforce_report_server_version_gate_is_exact() -> None:
-    _require_workforce_server_version("3.12.1")
+    _require_workforce_server_version("3.12.3")
     for detected in (None, "3.11.5", "3.12.0", "3.12.2", "3.13.0"):
-        with pytest.raises(AssertionError, match="actual detected TypeDB server version 3.12.1"):
+        with pytest.raises(AssertionError, match="actual detected TypeDB server version 3.12.3"):
             _require_workforce_server_version(detected)
 
 

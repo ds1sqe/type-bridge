@@ -3,7 +3,7 @@
 TypeBridge's default/native band-9 path consumes the official upstream
 `typedb-driver` and `typedb-protocol` crates directly. The source manifest is
 exact-pinned to the newest non-yanked stable 3.12.x driver selected for the
-release; currently that is 3.12.1, exercised against the TypeDB 3.12.1 server
+release; currently that is 3.12.3, exercised against the TypeDB 3.12.3 server
 baseline.
 There is no active, consumed, or release-input TypeBridge band-9 fork.
 The retained `typedb-driver-b9/` and `typedb-protocol-b9/` directories are
@@ -23,7 +23,7 @@ names or packaging metadata.
 | Band | Runtime packages | Upstream source | Registry disposition |
 | --- | --- | --- | --- |
 | 8 | `type-bridge-typedb-driver-b8` 3.11.5 and `type-bridge-typedb-protocol-b8` 3.11.0 | driver 3.11.5, protocol 3.11.0 | owner-authorized Cargo distribution uses the exact source-unmodified protocol-before-driver packages |
-| 9 | official `typedb-driver` 3.12.1 and `typedb-protocol` 3.12.0 | official crates.io packages | consume upstream directly; never publish a TypeBridge fork |
+| 9 | official `typedb-driver` 3.12.3 and `typedb-protocol` 3.12.0 | official crates.io packages | consume upstream directly; never publish a TypeBridge fork |
 
 Cargo treats the upstream 3.11 and 3.12 protocol requirements as one
 semver-compatible package identity, so they cannot be resolved at different
@@ -87,4 +87,4 @@ exact pin. Before the first immutable release-graph package is published, the
 release workflow refuses publication unless that pin is the newest non-yanked
 stable 3.12.x release. A retry after that cutoff retains and revalidates the
 already-started exact graph even if a newer upstream patch appears. The
-selected driver must also pass the TypeDB 3.12.1 conformance lane.
+selected driver must also pass the TypeDB 3.12.3 conformance lane.

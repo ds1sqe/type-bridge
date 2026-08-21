@@ -99,7 +99,7 @@ adding C runtime exports.
 
 The full integration suite runs the ordinary generated C17 CRUD and typed-query
 consumer and strict generated C17/C++17 ABI-1.4 successor consumers against
-exact TypeDB 3.12.1. A focused four-binding lane compares the same generated
+exact TypeDB 3.12.3. A focused four-binding lane compares the same generated
 Python, Node, Rust, and C manager-filter observation. The successor lane leaves
 ordered attributes and ordered role-player lists empty and therefore does not
 claim live list-instance evidence. These checks do not make C a supported SDK
@@ -120,9 +120,9 @@ uv run python scripts/ci/run_phase5_manager_filter_live.py
 The default lane creates and removes an isolated TypeDB. `--no-integration`
 runs offline Rust, Python, Node, and internal C-foundation tiers.
 `--no-isolated` uses an existing server. The retained live matrix covers TypeDB
-3.11 and 3.12 provider paths; 3.12.1 is the V2 conformance baseline.
+3.11 and 3.12 provider paths; 3.12.3 is the V2 conformance baseline.
 
-On the exact 3.12.1 lane, a compiled generated C17 consumer independently
+On the exact 3.12.3 lane, a compiled generated C17 consumer independently
 verifies the detected server version and exercises read close, write commit,
 rollback, active-write close, and parent-in-use behavior. A separate generated
 C17 consumer exercises the exact Person and Membership database/read/write

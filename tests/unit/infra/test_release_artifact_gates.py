@@ -1012,7 +1012,7 @@ def test_read_only_notices_and_driver_provenance_precede_publication() -> None:
     assert notice in identity
     assert historical in identity
     assert "--committed-cutoff" in identity
-    assert "owner-frozen official TypeDB 3.12.1" in identity
+    assert "owner-frozen official TypeDB 3.12.3" in identity
     assert (
         identity.index(notice)
         < identity.index(historical)
@@ -1268,7 +1268,7 @@ def test_live_cli_workspace_state_machine_is_required_locally_and_in_ci() -> Non
         assert f"          {test}\n          --manifest-path" in rust_integration
     # The same live job also gates the unsupported-version probe, two recovery
     # probes, generated Rust, generated C, and C runtime with exact selection.
-    assert rust_integration.count("scripts/ci/run_exact_ignored_rust_test.sh") == len(tests) + 6
+    assert rust_integration.count("scripts/ci/run_exact_ignored_rust_test.sh") == len(tests) + 7
     assert "unsupported_server_apply_creates_neither_database_live" in rust_integration
     assert "runner_rolls_back_the_applied_head_and_reapplies_on_3_12_1" in rust_integration
     assert "control_schema_and_fenced_lease_round_trip_on_3_12_1" in rust_integration
@@ -1311,6 +1311,8 @@ def test_generated_and_low_level_queries_are_required_in_the_tls_lane() -> None:
     assert tls_lane.count("TYPEDB_TLS_ROOT_CA") >= 4
     assert 'NODE_EXTRA_CA_CERTS="$fixture_root_ca"' in tls_lane
     assert "NODE_TLS_REJECT_UNAUTHORIZED" not in tls_lane
+    assert "scripts/ci/run_phase5_manager_filter_tls.py" in tls_lane
+    assert "TLS ordered generated Python + Node manager parity" in tls_lane
 
 
 def test_live_release_parity_consumes_exact_artifacts_before_every_publish() -> None:
@@ -1324,7 +1326,7 @@ def test_live_release_parity_consumes_exact_artifacts_before_every_publish() -> 
     assert needs_line(acceptance) == (
         "    needs: [build-core-wheels, build-python, pack-node-package, build-v2-smoke-server]"
     )
-    assert "image: typedb/typedb:3.12.1" in acceptance
+    assert "image: typedb/typedb:3.12.3" in acceptance
     assert 'python-version: "3.13.5"' in acceptance
     assert "- 1729:1729" in acceptance
     assert "- 8000:8000" in acceptance

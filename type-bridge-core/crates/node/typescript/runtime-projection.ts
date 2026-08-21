@@ -1,4 +1,5 @@
 import {
+  createRustDatabaseFromNative,
   QueryV2Authority,
   type NativeRustDatabase,
   type NativeRustTransactionContext,
@@ -363,6 +364,18 @@ export function projectedManagerNativeCall<Result>(operation: () => Result): Res
 }
 
 interface NativeProjectionHandle {
+  connectDirect(
+    endpoint: string,
+    database: string,
+    username: string,
+    password: string,
+    httpPort: number,
+    tlsMode: string,
+    tlsRootCa?: string,
+    connectionLimits?: NativeQueryExecutionResources,
+    answerLimits?: NativeQueryExecutionResources,
+    cancellation?: NativeQueryCancellation,
+  ): NativeRustDatabase;
   managerForDatabase(typeKey: string, database: NativeRustDatabase): NativeProjectedManager;
   managerForTransaction(typeKey: string, transaction: NativeRustTransactionContext): NativeProjectedManager;
   matchSession(): RuntimeProjectionMatchSession;
@@ -391,6 +404,33 @@ export class InstalledRuntimeProjection {
   constructor(native: NativeProjectionHandle) {
     this.#native = native;
     Object.freeze(this);
+  }
+
+  /** @internal Open through this installed generated package's authority. */
+  connectDirect(input: {
+    endpoint: string;
+    database: string;
+    username: string;
+    password: string;
+    httpPort: number;
+    tlsMode: "disabled" | "native_roots" | "custom_root";
+    tlsRootCa?: string;
+    connectionLimits?: QueryExecutionResourceLimits;
+    answerLimits?: QueryExecutionResourceLimits;
+    cancellation?: QueryCancellation;
+  }): RustDatabase {
+    return createRustDatabaseFromNative(this.#native.connectDirect(
+      input.endpoint,
+      input.database,
+      input.username,
+      input.password,
+      input.httpPort,
+      input.tlsMode,
+      input.tlsRootCa,
+      input.connectionLimits?.nativeHandle(),
+      input.answerLimits?.nativeHandle(),
+      input.cancellation?.nativeHandle(),
+    ));
   }
 
   /** @internal Bind one generated token without exposing its native handle. */

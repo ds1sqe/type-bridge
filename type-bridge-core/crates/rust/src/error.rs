@@ -544,6 +544,43 @@ impl Error {
         }
     }
 
+    #[cfg(feature = "typedb")]
+    pub(crate) fn from_direct_connection(error: SdkExecutionDiagnostic) -> Self {
+        let category = match error.category() {
+            SdkDiagnosticCategory::InvalidInput | SdkDiagnosticCategory::Provider => {
+                ErrorCategory::Connection
+            }
+            SdkDiagnosticCategory::Integrity => ErrorCategory::Integrity,
+            SdkDiagnosticCategory::UnsupportedCapability => ErrorCategory::Capability,
+            SdkDiagnosticCategory::ResourceLimit => ErrorCategory::ResourceLimit,
+            SdkDiagnosticCategory::Cancelled => ErrorCategory::Cancelled,
+            SdkDiagnosticCategory::Transaction | SdkDiagnosticCategory::Internal => {
+                ErrorCategory::Other
+            }
+            _ => ErrorCategory::Other,
+        };
+        let code = error.code().as_str().to_owned();
+        let message = error.message().as_str().to_owned();
+        let path = error.path().iter().map(flatten_sdk_path).collect();
+        let diagnostic = ErrorDiagnostic {
+            path: error.path().iter().map(typed_sdk_path).collect(),
+            details: error
+                .details()
+                .iter()
+                .map(|(name, value)| (name.as_str().to_owned(), flatten_sdk_detail(value)))
+                .collect(),
+        };
+        Self::classified_with_diagnostic(
+            category,
+            None,
+            code,
+            path,
+            Some(diagnostic),
+            message,
+            Some(Box::new(error)),
+        )
+    }
+
     pub(crate) fn from_projected_batch(
         error: SdkExecutionDiagnostic,
         model_phase: ModelValidationPhase,

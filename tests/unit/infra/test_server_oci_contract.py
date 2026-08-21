@@ -35,7 +35,7 @@ BINFMT_IMAGE = (
     "sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0"
 )
 TYPEDB_SERVICE_IMAGE = (
-    "typedb/typedb:3.12.1@sha256:4224951114b044d52e2fe48108be26ae2734726041dae8d63453ecd407fe2422"
+    "typedb/typedb:3.12.3@sha256:1b2baa93e282d6fc4aeb8e8784a8d275214621033ad1bd9d2e492f7fb1a34b40"
 )
 
 
@@ -646,7 +646,7 @@ def test_release_builds_accepts_and_publishes_only_exact_oci_bytes() -> None:
     assert workflow.count(f"image={BUILDKIT_IMAGE}") == 2
     assert workflow.count(f"image: {TYPEDB_SERVICE_IMAGE}") == 2
     assert (
-        workflow.count("sha256:f683eed7f07c2c519caa795afbc1cd4df4f83c6422ad2cc07406f28f7537423a")
+        workflow.count("sha256:afac1444a1699e627611d39d7864e6b80be5aa7f4039ca03c9cbe968c11ad4b9")
         == 2
     )
     assert workflow.count('source_date_epoch="$(git show --no-patch --format=%ct') == 1

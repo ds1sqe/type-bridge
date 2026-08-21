@@ -103,6 +103,13 @@ pub struct NodeRustDatabase {
 }
 
 impl NodeRustDatabase {
+    pub(crate) fn from_handles(
+        db: Arc<type_bridge_orm::Database>,
+        runtime: Arc<ProviderRuntimeOwner>,
+    ) -> Self {
+        Self { db, runtime }
+    }
+
     pub(crate) fn handles(&self) -> (Arc<type_bridge_orm::Database>, Arc<ProviderRuntimeOwner>) {
         (Arc::clone(&self.db), Arc::clone(&self.runtime))
     }

@@ -31,6 +31,15 @@ struct ProjectedFilterCore<'target> {
 }
 
 impl<'target> ProjectedFilterCore<'target> {
+    fn limits(&self) -> QueryExecutionResourceLimits {
+        match self.target {
+            FilterTarget::Database(database) => database.answer_limits().unwrap_or_default(),
+            FilterTarget::ReadTransaction(transaction) => {
+                transaction.answer_limits().unwrap_or_default()
+            }
+        }
+    }
+
     fn try_new(
         installed: &'target InstalledRuntimeProjection,
         target: FilterTarget<'target>,
@@ -81,7 +90,7 @@ impl<'target> ProjectedFilterCore<'target> {
                     .all(
                         database,
                         &self.filter,
-                        QueryExecutionResourceLimits::default(),
+                        self.limits(),
                         AnswerCancellation::default(),
                     )
                     .await
@@ -91,7 +100,7 @@ impl<'target> ProjectedFilterCore<'target> {
                     .all_in_read_transaction(
                         transaction,
                         &self.filter,
-                        QueryExecutionResourceLimits::default(),
+                        self.limits(),
                         AnswerCancellation::default(),
                     )
                     .await
@@ -112,7 +121,7 @@ impl<'target> ProjectedFilterCore<'target> {
                     .first(
                         database,
                         &self.filter,
-                        QueryExecutionResourceLimits::default(),
+                        self.limits(),
                         AnswerCancellation::default(),
                     )
                     .await
@@ -122,7 +131,7 @@ impl<'target> ProjectedFilterCore<'target> {
                     .first_in_read_transaction(
                         transaction,
                         &self.filter,
-                        QueryExecutionResourceLimits::default(),
+                        self.limits(),
                         AnswerCancellation::default(),
                     )
                     .await
@@ -142,7 +151,7 @@ impl<'target> ProjectedFilterCore<'target> {
                     .count(
                         database,
                         &self.filter,
-                        QueryExecutionResourceLimits::default(),
+                        self.limits(),
                         AnswerCancellation::default(),
                     )
                     .await
@@ -152,7 +161,7 @@ impl<'target> ProjectedFilterCore<'target> {
                     .count_in_read_transaction(
                         transaction,
                         &self.filter,
-                        QueryExecutionResourceLimits::default(),
+                        self.limits(),
                         AnswerCancellation::default(),
                     )
                     .await
@@ -169,7 +178,7 @@ impl<'target> ProjectedFilterCore<'target> {
                     .exists(
                         database,
                         &self.filter,
-                        QueryExecutionResourceLimits::default(),
+                        self.limits(),
                         AnswerCancellation::default(),
                     )
                     .await
@@ -179,7 +188,7 @@ impl<'target> ProjectedFilterCore<'target> {
                     .exists_in_read_transaction(
                         transaction,
                         &self.filter,
-                        QueryExecutionResourceLimits::default(),
+                        self.limits(),
                         AnswerCancellation::default(),
                     )
                     .await

@@ -132,7 +132,7 @@ impl<'db, S: Schema> ReadTransaction<'db, S> {
             &self.installed,
             Arc::clone(&self.registry),
             &self.tx,
-            resources,
+            self.db.operation_limits(resources),
             cancellation,
         )
     }

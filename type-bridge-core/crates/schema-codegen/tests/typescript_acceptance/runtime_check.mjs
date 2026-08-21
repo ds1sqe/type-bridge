@@ -51,6 +51,7 @@ import {
   Person as ForeignPerson,
 } from "./generated_foreign/dist/index.js";
 import {
+  DirectConnectionPolicy as OrderedDirectConnectionPolicy,
   Identifier as OrderedIdentifier,
   Membership as OrderedMembership,
   Person as OrderedPerson,
@@ -60,7 +61,32 @@ import {
   ValDatetime as OrderedValDatetime,
   ValDatetimeTz as OrderedValDatetimeTz,
   ValDouble as OrderedValDouble,
+  connect as orderedConnect,
 } from "./generated_ordered/dist/index.js";
+
+const directPolicy = new OrderedDirectConnectionPolicy(
+  "hostile-endpoint:1729",
+  "hostile-database",
+  {
+    username: "hostile-user",
+    password: "hostile-password",
+    tlsRootCa: "/hostile/root.pem",
+  },
+);
+assert.equal(directPolicy.toString(), "DirectConnectionPolicy([REDACTED])");
+for (const secret of [
+  "hostile-endpoint",
+  "hostile-database",
+  "hostile-user",
+  "hostile-password",
+  "/hostile/root.pem",
+]) {
+  assert.equal(directPolicy.toString().includes(secret), false);
+}
+assert.throws(
+  () => orderedConnect({}),
+  /connect requires this generated package's DirectConnectionPolicy/,
+);
 
 function captureNativeDiagnostic(operation) {
   try {

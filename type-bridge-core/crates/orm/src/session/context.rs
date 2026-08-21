@@ -10,6 +10,7 @@ use super::backend::{
 };
 use super::database::DatabaseExecutionIdentity;
 use crate::_registry::DescriptorRegistry;
+use crate::QueryExecutionResourceLimits;
 use crate::error::{ClassifiedCommitError, OrmError, Result};
 use crate::match_request::selected_result_executor::{
     ManagerHydratedRoots, ManagerRootSelection, SelectedResultExecutor,
@@ -80,6 +81,7 @@ pub struct TransactionContext {
     match_capabilities: CapabilitySet,
     server_version: Option<Version>,
     execution_identity: DatabaseExecutionIdentity,
+    answer_limits: Option<QueryExecutionResourceLimits>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -186,6 +188,7 @@ impl TransactionContext {
         match_capabilities: CapabilitySet,
         server_version: Option<Version>,
         execution_identity: DatabaseExecutionIdentity,
+        answer_limits: Option<QueryExecutionResourceLimits>,
     ) -> Self {
         Self {
             inner: Arc::new(Mutex::new(TransactionContextInner {
@@ -197,11 +200,19 @@ impl TransactionContext {
             match_capabilities,
             server_version,
             execution_identity,
+            answer_limits,
         }
     }
 
     pub(crate) const fn execution_identity(&self) -> &DatabaseExecutionIdentity {
         &self.execution_identity
+    }
+
+    /// Return the immutable generated direct-connection answer ceiling.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn answer_limits(&self) -> Option<QueryExecutionResourceLimits> {
+        self.answer_limits
     }
 
     /// Acquire the private whole-mutation lifecycle fence.
@@ -614,6 +625,7 @@ impl Clone for TransactionContext {
             match_capabilities: self.match_capabilities.clone(),
             server_version: self.server_version,
             execution_identity: self.execution_identity.clone(),
+            answer_limits: self.answer_limits,
         }
     }
 }
@@ -772,6 +784,7 @@ mod tests {
             CapabilitySet::new(),
             None,
             DatabaseExecutionIdentity::isolated("transaction-lifecycle-test"),
+            None,
         );
         (context, calls)
     }

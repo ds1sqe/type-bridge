@@ -245,6 +245,11 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         database: &Database,
         input: &ProjectedCreate,
     ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
+        if let Some(limits) = database.answer_limits() {
+            return self
+                .insert_entity_controlled(database, input, limits, AnswerCancellation::default())
+                .await;
+        }
         let prepared = self.prepare_entity_create(input)?;
         let transaction = self
             .open_transaction(
@@ -266,6 +271,16 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         transaction: &TransactionContext,
         input: &ProjectedCreate,
     ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
+        if let Some(limits) = transaction.answer_limits() {
+            return self
+                .insert_entity_in_transaction_controlled(
+                    transaction,
+                    input,
+                    limits,
+                    AnswerCancellation::default(),
+                )
+                .await;
+        }
         let prepared = self.prepare_entity_create(input)?;
         require_transaction(transaction, TxType::Write, &prepared.type_id)?;
         self.insert_entity_prepared(transaction, &prepared, ExecutionMode::default())
@@ -278,6 +293,11 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         database: &Database,
         input: &ProjectedCreate,
     ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
+        if let Some(limits) = database.answer_limits() {
+            return self
+                .put_entity_controlled(database, input, limits, AnswerCancellation::default())
+                .await;
+        }
         let prepared = self.prepare_entity_create(input)?;
         let transaction = self
             .open_transaction(
@@ -299,6 +319,16 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         transaction: &TransactionContext,
         input: &ProjectedCreate,
     ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
+        if let Some(limits) = transaction.answer_limits() {
+            return self
+                .put_entity_in_transaction_controlled(
+                    transaction,
+                    input,
+                    limits,
+                    AnswerCancellation::default(),
+                )
+                .await;
+        }
         let prepared = self.prepare_entity_create(input)?;
         require_transaction(transaction, TxType::Write, &prepared.type_id)?;
         self.put_entity_prepared(transaction, &prepared, ExecutionMode::default())
@@ -312,6 +342,17 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         type_id: &TypeId,
         iid: &str,
     ) -> Result<Option<ProjectedThing>, SdkExecutionDiagnostic> {
+        if let Some(limits) = database.answer_limits() {
+            return self
+                .get_entity_by_iid_controlled(
+                    database,
+                    type_id,
+                    iid,
+                    limits,
+                    AnswerCancellation::default(),
+                )
+                .await;
+        }
         let prepared = self.prepare_entity_identity(type_id, iid)?;
         let transaction = self
             .open_transaction(
@@ -334,6 +375,17 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         type_id: &TypeId,
         iid: &str,
     ) -> Result<Option<ProjectedThing>, SdkExecutionDiagnostic> {
+        if let Some(limits) = transaction.answer_limits() {
+            return self
+                .get_entity_by_iid_in_transaction_controlled(
+                    transaction,
+                    type_id,
+                    iid,
+                    limits,
+                    AnswerCancellation::default(),
+                )
+                .await;
+        }
         let prepared = self.prepare_entity_identity(type_id, iid)?;
         require_transaction(transaction, TxType::Read, &prepared.type_id)?;
         self.get_entity_prepared(transaction, &prepared, ExecutionMode::default())
@@ -347,6 +399,17 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         iid: &str,
         input: &ProjectedCreate,
     ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
+        if let Some(limits) = database.answer_limits() {
+            return self
+                .update_entity_controlled(
+                    database,
+                    iid,
+                    input,
+                    limits,
+                    AnswerCancellation::default(),
+                )
+                .await;
+        }
         let prepared = self.prepare_entity_create(input)?;
         validate_iid(&prepared.type_id, iid)?;
         let transaction = self
@@ -370,6 +433,17 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         iid: &str,
         input: &ProjectedCreate,
     ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
+        if let Some(limits) = transaction.answer_limits() {
+            return self
+                .update_entity_in_transaction_controlled(
+                    transaction,
+                    iid,
+                    input,
+                    limits,
+                    AnswerCancellation::default(),
+                )
+                .await;
+        }
         let prepared = self.prepare_entity_create(input)?;
         validate_iid(&prepared.type_id, iid)?;
         require_transaction(transaction, TxType::Write, &prepared.type_id)?;
@@ -387,6 +461,17 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         type_id: &TypeId,
         iid: &str,
     ) -> Result<(), SdkExecutionDiagnostic> {
+        if let Some(limits) = database.answer_limits() {
+            return self
+                .delete_entity_by_iid_controlled(
+                    database,
+                    type_id,
+                    iid,
+                    limits,
+                    AnswerCancellation::default(),
+                )
+                .await;
+        }
         let prepared = self.prepare_entity_identity(type_id, iid)?;
         let transaction = self
             .open_transaction(
@@ -411,6 +496,17 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         type_id: &TypeId,
         iid: &str,
     ) -> Result<(), SdkExecutionDiagnostic> {
+        if let Some(limits) = transaction.answer_limits() {
+            return self
+                .delete_entity_by_iid_in_transaction_controlled(
+                    transaction,
+                    type_id,
+                    iid,
+                    limits,
+                    AnswerCancellation::default(),
+                )
+                .await;
+        }
         let prepared = self.prepare_entity_identity(type_id, iid)?;
         require_transaction(transaction, TxType::Write, &prepared.type_id)?;
         self.delete_entity_prepared(transaction, &prepared, ExecutionMode::default())
@@ -423,6 +519,11 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         database: &Database,
         type_id: &TypeId,
     ) -> Result<u64, SdkExecutionDiagnostic> {
+        if let Some(limits) = database.answer_limits() {
+            return self
+                .count_entities_controlled(database, type_id, limits, AnswerCancellation::default())
+                .await;
+        }
         let prepared = self.prepare_entity_type(type_id)?;
         let transaction = self
             .open_transaction(
@@ -444,6 +545,16 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         transaction: &TransactionContext,
         type_id: &TypeId,
     ) -> Result<u64, SdkExecutionDiagnostic> {
+        if let Some(limits) = transaction.answer_limits() {
+            return self
+                .count_entities_in_transaction_controlled(
+                    transaction,
+                    type_id,
+                    limits,
+                    AnswerCancellation::default(),
+                )
+                .await;
+        }
         let prepared = self.prepare_entity_type(type_id)?;
         require_transaction(transaction, TxType::Read, &prepared.type_id)?;
         self.count_entities_prepared(transaction, &prepared, ExecutionMode::default())
@@ -456,6 +567,11 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         database: &Database,
         input: &ProjectedCreate,
     ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
+        if let Some(limits) = database.answer_limits() {
+            return self
+                .insert_relation_controlled(database, input, limits, AnswerCancellation::default())
+                .await;
+        }
         let prepared = self.prepare_relation_create(input)?;
         let database_identity = database.execution_identity();
         require_role_player_database_identity(&prepared, &database_identity)?;
@@ -479,6 +595,16 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         transaction: &TransactionContext,
         input: &ProjectedCreate,
     ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
+        if let Some(limits) = transaction.answer_limits() {
+            return self
+                .insert_relation_in_transaction_controlled(
+                    transaction,
+                    input,
+                    limits,
+                    AnswerCancellation::default(),
+                )
+                .await;
+        }
         let prepared = self.prepare_relation_create(input)?;
         require_role_player_database_identity(&prepared, transaction.execution_identity())?;
         require_transaction(transaction, TxType::Write, &prepared.type_id)?;
@@ -492,6 +618,11 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         database: &Database,
         input: &ProjectedCreate,
     ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
+        if let Some(limits) = database.answer_limits() {
+            return self
+                .put_relation_controlled(database, input, limits, AnswerCancellation::default())
+                .await;
+        }
         let prepared = self.prepare_relation_create(input)?;
         let database_identity = database.execution_identity();
         require_role_player_database_identity(&prepared, &database_identity)?;
@@ -515,6 +646,16 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         transaction: &TransactionContext,
         input: &ProjectedCreate,
     ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
+        if let Some(limits) = transaction.answer_limits() {
+            return self
+                .put_relation_in_transaction_controlled(
+                    transaction,
+                    input,
+                    limits,
+                    AnswerCancellation::default(),
+                )
+                .await;
+        }
         let prepared = self.prepare_relation_create(input)?;
         require_role_player_database_identity(&prepared, transaction.execution_identity())?;
         require_transaction(transaction, TxType::Write, &prepared.type_id)?;
@@ -529,6 +670,17 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         type_id: &TypeId,
         iid: &str,
     ) -> Result<Option<ProjectedThing>, SdkExecutionDiagnostic> {
+        if let Some(limits) = database.answer_limits() {
+            return self
+                .get_relation_by_iid_controlled(
+                    database,
+                    type_id,
+                    iid,
+                    limits,
+                    AnswerCancellation::default(),
+                )
+                .await;
+        }
         let prepared = self.prepare_relation_identity(type_id, iid)?;
         let transaction = self
             .open_transaction(
@@ -551,6 +703,17 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         type_id: &TypeId,
         iid: &str,
     ) -> Result<Option<ProjectedThing>, SdkExecutionDiagnostic> {
+        if let Some(limits) = transaction.answer_limits() {
+            return self
+                .get_relation_by_iid_in_transaction_controlled(
+                    transaction,
+                    type_id,
+                    iid,
+                    limits,
+                    AnswerCancellation::default(),
+                )
+                .await;
+        }
         let prepared = self.prepare_relation_identity(type_id, iid)?;
         require_transaction(transaction, TxType::Read, &prepared.type_id)?;
         self.get_relation_prepared(transaction, &prepared, ExecutionMode::default())
@@ -564,6 +727,17 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         iid: &str,
         input: &ProjectedCreate,
     ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
+        if let Some(limits) = database.answer_limits() {
+            return self
+                .update_relation_controlled(
+                    database,
+                    iid,
+                    input,
+                    limits,
+                    AnswerCancellation::default(),
+                )
+                .await;
+        }
         let prepared = self.prepare_relation_create(input)?;
         validate_iid(&prepared.type_id, iid)?;
         let database_identity = database.execution_identity();
@@ -589,6 +763,17 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         iid: &str,
         input: &ProjectedCreate,
     ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
+        if let Some(limits) = transaction.answer_limits() {
+            return self
+                .update_relation_in_transaction_controlled(
+                    transaction,
+                    iid,
+                    input,
+                    limits,
+                    AnswerCancellation::default(),
+                )
+                .await;
+        }
         let prepared = self.prepare_relation_create(input)?;
         validate_iid(&prepared.type_id, iid)?;
         require_role_player_database_identity(&prepared, transaction.execution_identity())?;
@@ -607,6 +792,17 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         type_id: &TypeId,
         iid: &str,
     ) -> Result<(), SdkExecutionDiagnostic> {
+        if let Some(limits) = database.answer_limits() {
+            return self
+                .delete_relation_by_iid_controlled(
+                    database,
+                    type_id,
+                    iid,
+                    limits,
+                    AnswerCancellation::default(),
+                )
+                .await;
+        }
         let prepared = self.prepare_relation_identity(type_id, iid)?;
         let transaction = self
             .open_transaction(
@@ -631,6 +827,17 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         type_id: &TypeId,
         iid: &str,
     ) -> Result<(), SdkExecutionDiagnostic> {
+        if let Some(limits) = transaction.answer_limits() {
+            return self
+                .delete_relation_by_iid_in_transaction_controlled(
+                    transaction,
+                    type_id,
+                    iid,
+                    limits,
+                    AnswerCancellation::default(),
+                )
+                .await;
+        }
         let prepared = self.prepare_relation_identity(type_id, iid)?;
         require_transaction(transaction, TxType::Write, &prepared.type_id)?;
         self.delete_relation_prepared(transaction, &prepared, ExecutionMode::default())
@@ -643,6 +850,16 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         database: &Database,
         type_id: &TypeId,
     ) -> Result<u64, SdkExecutionDiagnostic> {
+        if let Some(limits) = database.answer_limits() {
+            return self
+                .count_relations_controlled(
+                    database,
+                    type_id,
+                    limits,
+                    AnswerCancellation::default(),
+                )
+                .await;
+        }
         let prepared = self.prepare_relation_type(type_id)?;
         let transaction = self
             .open_transaction(
@@ -664,6 +881,16 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         transaction: &TransactionContext,
         type_id: &TypeId,
     ) -> Result<u64, SdkExecutionDiagnostic> {
+        if let Some(limits) = transaction.answer_limits() {
+            return self
+                .count_relations_in_transaction_controlled(
+                    transaction,
+                    type_id,
+                    limits,
+                    AnswerCancellation::default(),
+                )
+                .await;
+        }
         let prepared = self.prepare_relation_type(type_id)?;
         require_transaction(transaction, TxType::Read, &prepared.type_id)?;
         self.count_relations_prepared(transaction, &prepared, ExecutionMode::default())
@@ -1602,6 +1829,17 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         transaction: &TransactionContext,
         input: &ProjectedCreate,
     ) -> Result<ProjectedThing, ProjectedCrudCompatibilityFailure> {
+        if let Some(limits) = transaction.answer_limits() {
+            return self
+                .insert_entity_in_transaction_controlled(
+                    transaction,
+                    input,
+                    limits,
+                    AnswerCancellation::default(),
+                )
+                .await
+                .map_err(compatibility_without_cause);
+        }
         let prepared = self
             .prepare_entity_create(input)
             .map_err(compatibility_without_cause)?;
@@ -1625,6 +1863,17 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         transaction: &TransactionContext,
         input: &ProjectedCreate,
     ) -> Result<ProjectedThing, ProjectedCrudCompatibilityFailure> {
+        if let Some(limits) = transaction.answer_limits() {
+            return self
+                .put_entity_in_transaction_controlled(
+                    transaction,
+                    input,
+                    limits,
+                    AnswerCancellation::default(),
+                )
+                .await
+                .map_err(compatibility_without_cause);
+        }
         let prepared = self
             .prepare_entity_create(input)
             .map_err(compatibility_without_cause)?;
@@ -1649,6 +1898,18 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         type_id: &TypeId,
         iid: &str,
     ) -> Result<Option<ProjectedThing>, ProjectedCrudCompatibilityFailure> {
+        if let Some(limits) = transaction.answer_limits() {
+            return self
+                .get_entity_by_iid_in_transaction_controlled(
+                    transaction,
+                    type_id,
+                    iid,
+                    limits,
+                    AnswerCancellation::default(),
+                )
+                .await
+                .map_err(compatibility_without_cause);
+        }
         let prepared = self
             .prepare_entity_identity(type_id, iid)
             .map_err(compatibility_without_cause)?;
@@ -1673,6 +1934,18 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         iid: &str,
         input: &ProjectedCreate,
     ) -> Result<ProjectedThing, ProjectedCrudCompatibilityFailure> {
+        if let Some(limits) = transaction.answer_limits() {
+            return self
+                .update_entity_in_transaction_controlled(
+                    transaction,
+                    iid,
+                    input,
+                    limits,
+                    AnswerCancellation::default(),
+                )
+                .await
+                .map_err(compatibility_without_cause);
+        }
         let prepared = self
             .prepare_entity_create(input)
             .map_err(compatibility_without_cause)?;
@@ -1699,6 +1972,18 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         type_id: &TypeId,
         iid: &str,
     ) -> Result<(), ProjectedCrudCompatibilityFailure> {
+        if let Some(limits) = transaction.answer_limits() {
+            return self
+                .delete_entity_by_iid_in_transaction_controlled(
+                    transaction,
+                    type_id,
+                    iid,
+                    limits,
+                    AnswerCancellation::default(),
+                )
+                .await
+                .map_err(compatibility_without_cause);
+        }
         let prepared = self
             .prepare_entity_identity(type_id, iid)
             .map_err(compatibility_without_cause)?;
@@ -1722,6 +2007,17 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         transaction: &TransactionContext,
         type_id: &TypeId,
     ) -> Result<u64, ProjectedCrudCompatibilityFailure> {
+        if let Some(limits) = transaction.answer_limits() {
+            return self
+                .count_entities_in_transaction_controlled(
+                    transaction,
+                    type_id,
+                    limits,
+                    AnswerCancellation::default(),
+                )
+                .await
+                .map_err(compatibility_without_cause);
+        }
         let prepared = self
             .prepare_entity_type(type_id)
             .map_err(compatibility_without_cause)?;
@@ -1745,6 +2041,17 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         transaction: &TransactionContext,
         input: &ProjectedCreate,
     ) -> Result<ProjectedThing, ProjectedCrudCompatibilityFailure> {
+        if let Some(limits) = transaction.answer_limits() {
+            return self
+                .insert_relation_in_transaction_controlled(
+                    transaction,
+                    input,
+                    limits,
+                    AnswerCancellation::default(),
+                )
+                .await
+                .map_err(compatibility_without_cause);
+        }
         let prepared = self
             .prepare_relation_create(input)
             .map_err(compatibility_without_cause)?;
@@ -1770,6 +2077,17 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         transaction: &TransactionContext,
         input: &ProjectedCreate,
     ) -> Result<ProjectedThing, ProjectedCrudCompatibilityFailure> {
+        if let Some(limits) = transaction.answer_limits() {
+            return self
+                .put_relation_in_transaction_controlled(
+                    transaction,
+                    input,
+                    limits,
+                    AnswerCancellation::default(),
+                )
+                .await
+                .map_err(compatibility_without_cause);
+        }
         let prepared = self
             .prepare_relation_create(input)
             .map_err(compatibility_without_cause)?;
@@ -1796,6 +2114,18 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         type_id: &TypeId,
         iid: &str,
     ) -> Result<Option<ProjectedThing>, ProjectedCrudCompatibilityFailure> {
+        if let Some(limits) = transaction.answer_limits() {
+            return self
+                .get_relation_by_iid_in_transaction_controlled(
+                    transaction,
+                    type_id,
+                    iid,
+                    limits,
+                    AnswerCancellation::default(),
+                )
+                .await
+                .map_err(compatibility_without_cause);
+        }
         let prepared = self
             .prepare_relation_identity(type_id, iid)
             .map_err(compatibility_without_cause)?;
@@ -1820,6 +2150,18 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         iid: &str,
         input: &ProjectedCreate,
     ) -> Result<ProjectedThing, ProjectedCrudCompatibilityFailure> {
+        if let Some(limits) = transaction.answer_limits() {
+            return self
+                .update_relation_in_transaction_controlled(
+                    transaction,
+                    iid,
+                    input,
+                    limits,
+                    AnswerCancellation::default(),
+                )
+                .await
+                .map_err(compatibility_without_cause);
+        }
         let prepared = self
             .prepare_relation_create(input)
             .map_err(compatibility_without_cause)?;
@@ -1848,6 +2190,18 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         type_id: &TypeId,
         iid: &str,
     ) -> Result<(), ProjectedCrudCompatibilityFailure> {
+        if let Some(limits) = transaction.answer_limits() {
+            return self
+                .delete_relation_by_iid_in_transaction_controlled(
+                    transaction,
+                    type_id,
+                    iid,
+                    limits,
+                    AnswerCancellation::default(),
+                )
+                .await
+                .map_err(compatibility_without_cause);
+        }
         let prepared = self
             .prepare_relation_identity(type_id, iid)
             .map_err(compatibility_without_cause)?;
@@ -1871,6 +2225,17 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         transaction: &TransactionContext,
         type_id: &TypeId,
     ) -> Result<u64, ProjectedCrudCompatibilityFailure> {
+        if let Some(limits) = transaction.answer_limits() {
+            return self
+                .count_relations_in_transaction_controlled(
+                    transaction,
+                    type_id,
+                    limits,
+                    AnswerCancellation::default(),
+                )
+                .await
+                .map_err(compatibility_without_cause);
+        }
         let prepared = self
             .prepare_relation_type(type_id)
             .map_err(compatibility_without_cause)?;
@@ -1895,6 +2260,18 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         type_id: &TypeId,
         iid: &str,
     ) -> Result<Option<ProjectedThing>, ProjectedCrudCompatibilityFailure> {
+        if let Some(limits) = database.answer_limits() {
+            return self
+                .get_entity_by_iid_controlled(
+                    database,
+                    type_id,
+                    iid,
+                    limits,
+                    AnswerCancellation::default(),
+                )
+                .await
+                .map_err(compatibility_without_cause);
+        }
         let prepared = self
             .prepare_entity_identity(type_id, iid)
             .map_err(compatibility_without_cause)?;
@@ -1917,6 +2294,12 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         database: &Database,
         type_id: &TypeId,
     ) -> Result<u64, ProjectedCrudCompatibilityFailure> {
+        if let Some(limits) = database.answer_limits() {
+            return self
+                .count_entities_controlled(database, type_id, limits, AnswerCancellation::default())
+                .await
+                .map_err(compatibility_without_cause);
+        }
         let prepared = self
             .prepare_entity_type(type_id)
             .map_err(compatibility_without_cause)?;
@@ -1940,6 +2323,18 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         type_id: &TypeId,
         iid: &str,
     ) -> Result<Option<ProjectedThing>, ProjectedCrudCompatibilityFailure> {
+        if let Some(limits) = database.answer_limits() {
+            return self
+                .get_relation_by_iid_controlled(
+                    database,
+                    type_id,
+                    iid,
+                    limits,
+                    AnswerCancellation::default(),
+                )
+                .await
+                .map_err(compatibility_without_cause);
+        }
         let prepared = self
             .prepare_relation_identity(type_id, iid)
             .map_err(compatibility_without_cause)?;
@@ -1962,6 +2357,17 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         database: &Database,
         type_id: &TypeId,
     ) -> Result<u64, ProjectedCrudCompatibilityFailure> {
+        if let Some(limits) = database.answer_limits() {
+            return self
+                .count_relations_controlled(
+                    database,
+                    type_id,
+                    limits,
+                    AnswerCancellation::default(),
+                )
+                .await
+                .map_err(compatibility_without_cause);
+        }
         let prepared = self
             .prepare_relation_type(type_id)
             .map_err(compatibility_without_cause)?;

@@ -38,7 +38,7 @@ use crate::observation::{
 use crate::runner::LegacyExecutionBinding;
 use crate::store::{require_active_managed_fence, require_migration_database_pair_identity};
 
-const SUPPORTED_SERVER: (u32, u32, u32) = (3, 12, 1);
+const SUPPORTED_SERVER: (u32, u32, u32) = (3, 12, 3);
 
 /// One validated, process-local TypeDB migration execution binding.
 ///
@@ -57,7 +57,7 @@ pub struct TypeDbExecutionBinding {
 }
 
 impl TypeDbExecutionBinding {
-    /// Validate and bind one exact TypeDB 3.12.1 database pair and context.
+    /// Validate and bind one exact TypeDB 3.12.3 database pair and context.
     ///
     /// Reuse this value (or a clone) for every provider and store that must
     /// participate in one execution. Each successful call creates a fresh
@@ -450,7 +450,7 @@ pub fn require_supported_migration_execution_binding(
         return Err(failure(
             DiagnosticCategory::InvalidContract,
             "migration_typedb_semantic_profile_unsupported",
-            "migration execution requires exactly the TypeDB 3.12.1 semantic profile",
+            "migration execution requires exactly the typedb-3.12.1/v1 semantic profile",
         )
         .with_detail(
             "semantic_profile",
@@ -543,7 +543,7 @@ fn require_supported_server_version(version: Option<(u32, u32, u32)>) -> Result<
         return Err(failure(
             DiagnosticCategory::InvalidContract,
             "migration_typedb_server_version_unsupported",
-            "migration execution requires exactly TypeDB 3.12.1",
+            "migration execution requires exactly TypeDB 3.12.3",
         )
         .with_detail(
             "server_version",
@@ -695,10 +695,10 @@ mod tests {
                 "migration_typedb_server_version_unsupported"
             );
         }
-        require_supported_server_version(Some((3, 12, 1)))
+        require_supported_server_version(Some((3, 12, 3)))
             .expect("only the exact migration server is supported");
 
-        let managed = require_supported_pair_server_versions(None, Some((3, 12, 1)))
+        let managed = require_supported_pair_server_versions(None, Some((3, 12, 3)))
             .expect_err("managed identity is checked first");
         assert_eq!(
             managed.details().get("database_role"),
@@ -708,7 +708,7 @@ mod tests {
                 )
             )
         );
-        let journal = require_supported_pair_server_versions(Some((3, 12, 1)), Some((3, 11, 5)))
+        let journal = require_supported_pair_server_versions(Some((3, 12, 3)), Some((3, 11, 5)))
             .expect_err("journal identity is checked after the managed identity");
         assert_eq!(
             journal.details().get("database_role"),
@@ -718,7 +718,7 @@ mod tests {
                 )
             )
         );
-        require_supported_pair_server_versions(Some((3, 12, 1)), Some((3, 12, 1)))
+        require_supported_pair_server_versions(Some((3, 12, 3)), Some((3, 12, 3)))
             .expect("both pair members carry the exact negotiated version");
     }
 

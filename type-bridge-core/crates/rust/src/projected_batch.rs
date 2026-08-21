@@ -109,9 +109,13 @@ pub(crate) async fn execute_owned_things<M: CompleteModel>(
     batch: &ProjectedBatch,
 ) -> Result<Vec<M>> {
     ProjectedBatchExecutor::new(installed)
-        .execute_mapped(database, batch, control(), Vec::new(), |result| {
-            materialize_result(result, installed)
-        })
+        .execute_mapped(
+            database,
+            batch,
+            database_control(database),
+            Vec::new(),
+            |result| materialize_result(result, installed),
+        )
         .await
         .map_err(map_execution_error)
 }
@@ -122,9 +126,13 @@ pub(crate) async fn execute_borrowed_things<M: CompleteModel>(
     batch: &ProjectedBatch,
 ) -> Result<Vec<M>> {
     ProjectedBatchExecutor::new(installed)
-        .execute_in_transaction_mapped(transaction, batch, control(), Vec::new(), |result| {
-            materialize_result(result, installed)
-        })
+        .execute_in_transaction_mapped(
+            transaction,
+            batch,
+            transaction_control(transaction),
+            Vec::new(),
+            |result| materialize_result(result, installed),
+        )
         .await
         .map_err(map_execution_error)
 }
@@ -135,7 +143,13 @@ pub(crate) async fn execute_owned_delete(
     batch: &ProjectedBatch,
 ) -> Result<()> {
     ProjectedBatchExecutor::new(installed)
-        .execute_mapped(database, batch, control(), (), deleted_result)
+        .execute_mapped(
+            database,
+            batch,
+            database_control(database),
+            (),
+            deleted_result,
+        )
         .await
         .map_err(map_execution_error)
 }
@@ -146,7 +160,13 @@ pub(crate) async fn execute_borrowed_delete(
     batch: &ProjectedBatch,
 ) -> Result<()> {
     ProjectedBatchExecutor::new(installed)
-        .execute_in_transaction_mapped(transaction, batch, control(), (), deleted_result)
+        .execute_in_transaction_mapped(
+            transaction,
+            batch,
+            transaction_control(transaction),
+            (),
+            deleted_result,
+        )
         .await
         .map_err(map_execution_error)
 }
@@ -214,11 +234,16 @@ fn deleted_result(result: ProjectedBatchResult) -> std::result::Result<(), SdkEx
     }
 }
 
-fn control() -> ProjectedBatchInvocationControl {
-    ProjectedBatchInvocationControl::capture(
-        QueryExecutionResourceLimits::default(),
-        AnswerCancellation::default(),
-    )
+fn control(limits: QueryExecutionResourceLimits) -> ProjectedBatchInvocationControl {
+    ProjectedBatchInvocationControl::capture(limits, AnswerCancellation::default())
+}
+
+fn database_control(database: &Database) -> ProjectedBatchInvocationControl {
+    control(database.answer_limits().unwrap_or_default())
+}
+
+fn transaction_control(transaction: &TransactionContext) -> ProjectedBatchInvocationControl {
+    control(transaction.answer_limits().unwrap_or_default())
 }
 
 fn map_execution_error(error: SdkExecutionDiagnostic) -> Error {

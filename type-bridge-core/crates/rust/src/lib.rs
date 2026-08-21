@@ -62,4 +62,6 @@ pub use type_bridge_orm::{
     MAX_QUERY_TIMEOUT_MILLISECONDS, ProjectedManagerComparison, QueryExecutionDeadline,
     QueryExecutionResourceLimits,
 };
+#[cfg(feature = "typedb")]
+pub use type_bridge_orm::{DirectConnectionPolicy, DirectTls};
 pub use type_bridge_orm_derive::SelectedRow;

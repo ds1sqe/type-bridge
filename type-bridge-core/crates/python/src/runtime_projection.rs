@@ -941,6 +941,28 @@ impl InstalledPackage {
     }
 }
 
+fn direct_tls_from_python(
+    tls_mode: &str,
+    tls_root_ca: Option<std::path::PathBuf>,
+) -> PyResult<type_bridge_orm::DirectTls> {
+    match (tls_mode, tls_root_ca) {
+        ("disabled", None) => Ok(type_bridge_orm::DirectTls::disabled()),
+        ("native_roots", None) => Ok(type_bridge_orm::DirectTls::native_roots()),
+        ("custom_root", Some(path)) => {
+            type_bridge_orm::DirectTls::custom_root(path).map_err(py_sdk_diagnostic)
+        }
+        ("custom_root", None) => Err(pyo3::exceptions::PyValueError::new_err(
+            "custom_root TLS requires tls_root_ca",
+        )),
+        ("disabled" | "native_roots", Some(_)) => Err(pyo3::exceptions::PyValueError::new_err(
+            "tls_root_ca is valid only with custom_root TLS",
+        )),
+        _ => Err(pyo3::exceptions::PyValueError::new_err(
+            "tls_mode must be disabled, native_roots, or custom_root",
+        )),
+    }
+}
+
 /// A verified runtime projection installed for exactly one generated package.
 #[pyclass]
 pub struct PyRuntimeProjection {
@@ -975,6 +997,60 @@ impl PyRuntimeProjection {
             schema_authority.map(|authority| authority.as_bytes()),
         )
         .map(|package| Self { package })
+    }
+
+    /// Open a database through this installed package's verified authority.
+    #[pyo3(signature = (
+        endpoint,
+        database,
+        username="admin",
+        password="password",
+        http_port=type_bridge_core_lib::version::DEFAULT_HTTP_PORT,
+        tls_mode="disabled",
+        tls_root_ca=None,
+        connection_limits=None,
+        answer_limits=None,
+        cancellation=None,
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn connect_direct(
+        &self,
+        py: Python<'_>,
+        endpoint: String,
+        database: String,
+        username: &str,
+        password: &str,
+        http_port: u16,
+        tls_mode: &str,
+        tls_root_ca: Option<std::path::PathBuf>,
+        connection_limits: Option<PyRef<'_, PyQueryExecutionResourceLimits>>,
+        answer_limits: Option<PyRef<'_, PyQueryExecutionResourceLimits>>,
+        cancellation: Option<PyRef<'_, PyQueryCancellation>>,
+    ) -> PyResult<PyRustDatabase> {
+        let tls = direct_tls_from_python(tls_mode, tls_root_ca)?;
+        let mut policy =
+            type_bridge_orm::DirectConnectionPolicy::new(endpoint, database, username, password)
+                .http_port(http_port)
+                .tls(tls);
+        if let Some(limits) = connection_limits {
+            policy = policy.connection_limits(limits.inner());
+        }
+        if let Some(limits) = answer_limits {
+            policy = policy.answer_limits(limits.inner());
+        }
+        let runtime = ProviderRuntimeOwner::new().map(Arc::new).map_err(|error| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!(
+                "Failed to create Tokio runtime: {error}"
+            ))
+        })?;
+        let cancellation = cancellation.map(|value| value.inner()).unwrap_or_default();
+        let database = provider_block_on(
+            py,
+            runtime.as_ref(),
+            Database::connect_direct(self.package.projection.as_ref(), &policy, cancellation),
+        )
+        .map_err(py_sdk_diagnostic)?;
+        Ok(PyRustDatabase::from_handles(Arc::new(database), runtime))
     }
 
     /// Bind an exact generated model class to an existing Rust database handle.
@@ -7885,6 +7961,30 @@ mod tests {
 
     use super::*;
     use crate::match_runtime::{PyQueryInvocationBudget, validated_result_handle};
+
+    #[test]
+    fn direct_tls_shape_rejects_before_provider_runtime_creation() {
+        pyo3::prepare_freethreaded_python();
+        for (mode, root, message) in [
+            ("custom_root", None, "custom_root TLS requires tls_root_ca"),
+            (
+                "disabled",
+                Some(std::path::PathBuf::from("unused.pem")),
+                "tls_root_ca is valid only with custom_root TLS",
+            ),
+            (
+                "invented",
+                None,
+                "tls_mode must be disabled, native_roots, or custom_root",
+            ),
+        ] {
+            let error = direct_tls_from_python(mode, root).expect_err("TLS shape must fail");
+            assert!(Python::with_gil(
+                |py| error.is_instance_of::<pyo3::exceptions::PyValueError>(py)
+            ));
+            assert!(error.to_string().contains(message));
+        }
+    }
 
     const SCHEMA: &str = r#"format: typebridge.schema/v2
 attributes:

@@ -181,12 +181,12 @@ def test_repository_cargo_inclusive_stable_identity_is_complete() -> None:
     }
     assert "typedb_runtime_band7_driver_pin" not in report
     assert report["typedb_runtime_driver_pin"] == "3.11.5"
-    assert report["typedb_runtime_band9_driver_pin"] == "3.12.1"
+    assert report["typedb_runtime_band9_driver_pin"] == "3.12.3"
     assert report["typedb_runtime_band9_components"] == {
         "typedb-driver": {
-            "checksum": "b7daa941ffe0f6e6cb17e2e831e13b338a9db23551414f877c7fb64ce05f9f46",
+            "checksum": "76c285253f1b328ea1773acf5a68d64fc3917b1c20066186a2c6a578e3dc3922",
             "source": "registry+https://github.com/rust-lang/crates.io-index",
-            "version": "3.12.1",
+            "version": "3.12.3",
         },
         "typedb-protocol": {
             "checksum": "01f6b7eb813a853349ff22f385c120c61d04d4648318c92072e7e04dd81cdc3f",
@@ -1277,7 +1277,7 @@ def test_band9_driver_requirement_must_exactly_match_runtime_constant(
     manifest = workspace.parent / "crates/typedb-runtime/Cargo.toml"
     manifest.write_text(
         manifest.read_text().replace(
-            'typedb-driver = { version = "=3.12.1", optional = true }',
+            'typedb-driver = { version = "=3.12.3", optional = true }',
             'typedb-driver = { version = "3", optional = true }',
             1,
         )
@@ -1295,15 +1295,15 @@ def test_band9_runtime_constant_drift_hard_fails(tmp_path: Path) -> None:
     source = workspace.parent / "crates/typedb-runtime/src/lib.rs"
     source.write_text(
         source.read_text().replace(
-            'pub const PINNED_DRIVER_VERSION_B9: &str = "3.12.1";',
-            'pub const PINNED_DRIVER_VERSION_B9: &str = "3.12.2";',
+            'pub const PINNED_DRIVER_VERSION_B9: &str = "3.12.3";',
+            'pub const PINNED_DRIVER_VERSION_B9: &str = "3.12.4";',
             1,
         )
     )
 
     with pytest.raises(
         validator.ValidationError,
-        match="actual='=3.12.1', expected='=3.12.2'",
+        match="actual='=3.12.3', expected='=3.12.4'",
     ):
         validate(workspace_manifest=workspace)
 
@@ -1326,29 +1326,29 @@ def test_band9_pin_refresh_cannot_leave_native_provenance_stale(tmp_path: Path) 
     manifest = workspace.parent / "crates/typedb-runtime/Cargo.toml"
     manifest.write_text(
         manifest.read_text().replace(
-            'typedb-driver = { version = "=3.12.1", optional = true }',
-            'typedb-driver = { version = "=3.12.2", optional = true }',
+            'typedb-driver = { version = "=3.12.3", optional = true }',
+            'typedb-driver = { version = "=3.12.4", optional = true }',
             1,
         )
     )
     runtime_source = workspace.parent / "crates/typedb-runtime/src/lib.rs"
     runtime_source.write_text(
         runtime_source.read_text().replace(
-            'pub const PINNED_DRIVER_VERSION_B9: &str = "3.12.1";',
-            'pub const PINNED_DRIVER_VERSION_B9: &str = "3.12.2";',
+            'pub const PINNED_DRIVER_VERSION_B9: &str = "3.12.3";',
+            'pub const PINNED_DRIVER_VERSION_B9: &str = "3.12.4";',
             1,
         )
     )
     replace_lock_package_text(
         workspace,
         "typedb-driver",
-        'version = "3.12.1"',
-        'version = "3.12.2"',
+        'version = "3.12.3"',
+        'version = "3.12.4"',
     )
     replace_lock_package_text(
         workspace,
         "typedb-driver",
-        "b7daa941ffe0f6e6cb17e2e831e13b338a9db23551414f877c7fb64ce05f9f46",
+        "76c285253f1b328ea1773acf5a68d64fc3917b1c20066186a2c6a578e3dc3922",
         "1" * 64,
     )
 
@@ -1374,7 +1374,7 @@ def test_band9_lockfile_checksum_must_match_packaged_notices(tmp_path: Path) -> 
     replace_lock_package_text(
         workspace,
         "typedb-driver",
-        "b7daa941ffe0f6e6cb17e2e831e13b338a9db23551414f877c7fb64ce05f9f46",
+        "76c285253f1b328ea1773acf5a68d64fc3917b1c20066186a2c6a578e3dc3922",
         "0" * 64,
     )
 
@@ -1400,8 +1400,8 @@ def test_band9_notice_source_must_name_exact_official_crates_io_package(
     workspace = copy_workspace_manifests(tmp_path)
     replace_both_native_notices(
         workspace,
-        "TypeDB official crates.io package [3.12.1](https://crates.io/crates/typedb-driver/3.12.1)",
-        "TypeDB tag [3.12.1]"
+        "TypeDB official crates.io package [3.12.3](https://crates.io/crates/typedb-driver/3.12.3)",
+        "TypeDB tag [3.12.3]"
         "(https://github.com/typedb/typedb-driver/tree/0000000000000000000000000000000000000000)",
     )
 
@@ -1650,7 +1650,7 @@ def test_vendor_provenance_band9_versions_must_match_lockfile(tmp_path: Path) ->
     readme = workspace.parent / "vendor/README.md"
     readme.write_text(
         readme.read_text().replace(
-            "official `typedb-driver` 3.12.1 and `typedb-protocol` 3.12.0",
+            "official `typedb-driver` 3.12.3 and `typedb-protocol` 3.12.0",
             "official `typedb-driver` 3.12.9 and `typedb-protocol` 3.12.0",
             1,
         )
@@ -1665,7 +1665,7 @@ def test_vendor_provenance_current_driver_prose_tracks_resolved_pin(tmp_path: Pa
     readme = workspace.parent / "vendor/README.md"
     readme.write_text(
         readme.read_text().replace(
-            "currently that is 3.12.1, exercised",
+            "currently that is 3.12.3, exercised",
             "currently that is 3.12.9, exercised",
             1,
         )

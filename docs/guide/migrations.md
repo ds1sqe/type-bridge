@@ -38,7 +38,7 @@ environments:
 one named environment and enforce its `migrate` policy. TypeDB-backed
 `migration apply`, `migration verify`, and `migration adopt` require both an
 exact `typedb-3.12.1/v1` workspace semantic profile and a negotiated TypeDB
-3.12.1 server. Generated applications and offline authoring retain the wider
+3.12.3 server. Generated applications and offline authoring retain the wider
 3.11–3.12 support window.
 
 ## Author and apply a change

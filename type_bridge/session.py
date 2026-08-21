@@ -747,7 +747,7 @@ class Database:
     def detected_server_version(self) -> str | None:
         """The server version detected by the connect-time version gate.
 
-        Returns the version string (e.g. ``"3.12.1"``) when known. ``None``
+        Returns the version string (e.g. ``"3.12.3"``) when known. ``None``
         means the negotiated connection path produced no authoritative server
         identity; supply ``server_version=`` at construction when strict
         identity validation is required.

@@ -607,6 +607,13 @@ impl ProjectedManagerFilterInvocationControl {
             .check(&self.cancellation)
             .map_err(|diagnostic| at_path(diagnostic, type_path(model)))
     }
+
+    fn constrained_by(mut self, ceiling: Option<QueryExecutionResourceLimits>) -> Self {
+        if let Some(ceiling) = ceiling {
+            self.limits = self.limits.constrained_by(ceiling);
+        }
+        self
+    }
 }
 
 /// Binding-neutral executor for exact generated-manager filters.
@@ -645,6 +652,7 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
         filter: &ProjectedManagerFilter,
         control: ProjectedManagerFilterInvocationControl,
     ) -> Result<Vec<Arc<ProjectedThing>>, SdkExecutionDiagnostic> {
+        let control = control.constrained_by(database.answer_limits());
         self.preflight(filter, &control, false)?;
         let (registry, request) = self.build_request(filter, false)?;
         let hydrated = database
@@ -694,6 +702,7 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
         filter: &ProjectedManagerFilter,
         control: ProjectedManagerFilterInvocationControl,
     ) -> Result<Vec<Arc<ProjectedThing>>, SdkExecutionDiagnostic> {
+        let control = control.constrained_by(transaction.answer_limits());
         self.preflight(filter, &control, false)?;
         let (registry, request) = self.build_request(filter, false)?;
         let hydrated = transaction
@@ -743,6 +752,7 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
         filter: &ProjectedManagerFilter,
         control: ProjectedManagerFilterInvocationControl,
     ) -> Result<Option<Arc<ProjectedThing>>, SdkExecutionDiagnostic> {
+        let control = control.constrained_by(database.answer_limits());
         self.preflight(filter, &control, true)?;
         let (registry, request) = self.build_request(filter, false)?;
         let hydrated = database
@@ -793,6 +803,7 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
         filter: &ProjectedManagerFilter,
         control: ProjectedManagerFilterInvocationControl,
     ) -> Result<Option<Arc<ProjectedThing>>, SdkExecutionDiagnostic> {
+        let control = control.constrained_by(transaction.answer_limits());
         self.preflight(filter, &control, true)?;
         let (registry, request) = self.build_request(filter, false)?;
         let hydrated = transaction
@@ -843,6 +854,7 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
         filter: &ProjectedManagerFilter,
         control: ProjectedManagerFilterInvocationControl,
     ) -> Result<u64, SdkExecutionDiagnostic> {
+        let control = control.constrained_by(database.answer_limits());
         self.preflight(filter, &control, false)?;
         let (registry, request) = self.build_request(filter, false)?;
         let result = database
@@ -888,6 +900,7 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
         filter: &ProjectedManagerFilter,
         control: ProjectedManagerFilterInvocationControl,
     ) -> Result<u64, SdkExecutionDiagnostic> {
+        let control = control.constrained_by(transaction.answer_limits());
         self.preflight(filter, &control, false)?;
         let (registry, request) = self.build_request(filter, false)?;
         let result = transaction
@@ -933,6 +946,7 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
         filter: &ProjectedManagerFilter,
         control: ProjectedManagerFilterInvocationControl,
     ) -> Result<bool, SdkExecutionDiagnostic> {
+        let control = control.constrained_by(database.answer_limits());
         self.preflight(filter, &control, false)?;
         let (registry, request) = self.build_request(filter, true)?;
         let result = database
@@ -978,6 +992,7 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
         filter: &ProjectedManagerFilter,
         control: ProjectedManagerFilterInvocationControl,
     ) -> Result<bool, SdkExecutionDiagnostic> {
+        let control = control.constrained_by(transaction.answer_limits());
         self.preflight(filter, &control, false)?;
         let (registry, request) = self.build_request(filter, true)?;
         let result = transaction

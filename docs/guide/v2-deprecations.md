@@ -53,7 +53,7 @@ query terminals.
 TypeDB 3.8 and 3.10 support and their native provider packages are absent.
 TypeBridge 2.1 supports generated CRUD/query operations on TypeDB 3.11 and
 3.12 through bands 8 and 9. Connected V2 migration apply/verify/adopt is
-deliberately narrower at exactly 3.12.1. An older known server or driver fails
+deliberately narrower at exactly 3.12.3. An older known server or driver fails
 the relevant version gate before data work. No compatibility warning class,
 Node warning code, or Rust warning event is retained in 2.1.
 

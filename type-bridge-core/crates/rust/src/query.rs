@@ -575,7 +575,7 @@ impl<S: Schema> Database<S> {
             installed,
             Arc::clone(registry),
             QueryExecution::Local(self),
-            resources,
+            self.operation_limits(resources),
             cancellation,
         ))
     }

@@ -39,7 +39,8 @@ use crate::match_request::selected_result_executor::{
 };
 use crate::match_request::{MatchExecutionLimits, ValidatedMatchRequest, ValidatedMatchResult};
 #[cfg(feature = "typedb")]
-use crate::query_execution_limits::{QueryExecutionDeadline, QueryExecutionResourceLimits};
+use crate::query_execution_limits::QueryExecutionDeadline;
+use crate::query_execution_limits::QueryExecutionResourceLimits;
 
 /// Primary connection handle wrapping a TypeDB driver.
 ///
@@ -52,6 +53,7 @@ pub struct Database {
     backend: Box<dyn DriverBackend>,
     connection_authority: DatabaseConnectionAuthority,
     database_name: String,
+    answer_limits: Option<QueryExecutionResourceLimits>,
 }
 
 #[derive(Clone, Eq, PartialEq)]
@@ -199,6 +201,35 @@ impl fmt::Debug for DatabaseConnectionAuthority {
 }
 
 impl Database {
+    /// Connect one verified generated package through the canonical bounded
+    /// direct-connection policy.
+    #[cfg(feature = "typedb")]
+    #[doc(hidden)]
+    pub async fn connect_direct(
+        installed: &crate::InstalledRuntimeProjection,
+        policy: &super::direct_connection::DirectConnectionPolicy,
+        cancellation: AnswerCancellation,
+    ) -> std::result::Result<Self, type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic>
+    {
+        let prepared =
+            super::direct_connection::prepare_direct_connection(installed, policy, &cancellation)?;
+        let transport = prepared.transport.with_generated_3_12_3_requirement();
+        let mut database = Self::connect_prepared_secure_with_control(
+            &prepared.endpoint,
+            &prepared.database,
+            &prepared.username,
+            &prepared.password,
+            transport,
+            prepared.connection_limits,
+            prepared.deadline,
+            cancellation,
+        )
+        .await
+        .map_err(super::direct_connection::lower_secure_connection)?;
+        database.answer_limits = Some(prepared.answer_limits);
+        Ok(database)
+    }
+
     /// Create a Database with a custom backend (for testing).
     pub fn with_backend(backend: Box<dyn DriverBackend>, database_name: impl Into<String>) -> Self {
         Self::with_backend_authority(
@@ -223,6 +254,7 @@ impl Database {
             backend,
             connection_authority,
             database_name: database_name.into(),
+            answer_limits: None,
         }
     }
 
@@ -264,6 +296,7 @@ impl Database {
             backend: Box::new(backend),
             connection_authority: DatabaseConnectionAuthority::for_typedb_address(address),
             database_name: database.to_string(),
+            answer_limits: None,
         })
     }
 
@@ -287,6 +320,7 @@ impl Database {
             backend: Box::new(backend),
             connection_authority: DatabaseConnectionAuthority::for_typedb_address(address),
             database_name: database.to_string(),
+            answer_limits: None,
         })
     }
 
@@ -308,6 +342,7 @@ impl Database {
             backend: Box::new(backend),
             connection_authority: DatabaseConnectionAuthority::for_typedb_address(address),
             database_name: database.to_string(),
+            answer_limits: None,
         })
     }
 
@@ -416,6 +451,7 @@ impl Database {
             capabilities,
             self.server_version(),
             self.execution_identity(),
+            self.answer_limits,
         ))
     }
 
@@ -479,6 +515,13 @@ impl Database {
     /// Get the database name.
     pub fn database_name(&self) -> &str {
         &self.database_name
+    }
+
+    /// Return the immutable generated direct-connection answer ceiling.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn answer_limits(&self) -> Option<QueryExecutionResourceLimits> {
+        self.answer_limits
     }
 
     pub(crate) fn execution_identity(&self) -> DatabaseExecutionIdentity {
