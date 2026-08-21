@@ -101,6 +101,16 @@ if [[ "$binding" == "python" ]]; then
     cp -R "$primary/generated/generated_v2" "$output_dir/generated_v2"
     cp "$primary/generated/schema-authority.json" "$output_dir/schema-authority.json"
 
+    if [[ "$semantic_profile" == "typedb-3.12.1/v1" ]]; then
+        ordered="$scratch/ordered"
+        write_workspace \
+            "$ordered" python generated_ordered generated-python-ordered \
+            "$WORKFORCE_V3_DIR/schema-v3.yaml" no
+        generate_workspace "$ordered"
+        cp -R "$ordered/generated/generated_ordered" "$output_dir/generated_ordered"
+        cp -R "$ordered/generated/generated_ordered" "$output_dir/generated_phase2"
+    fi
+
     variant="$scratch/variant"
     variant_schema="$scratch/schema-variant.yaml"
     sed \
@@ -137,6 +147,7 @@ if [[ "$semantic_profile" == "typedb-3.12.1/v1" ]]; then
         "$WORKFORCE_V3_DIR/schema-v3.yaml" no
     generate_workspace "$ordered"
     cp -R "$ordered/generated/generated_ordered" "$output_dir/generated_ordered"
+    cp -R "$ordered/generated/generated_ordered" "$output_dir/generated_phase2"
 fi
 
 package_scope="$output_dir/node_modules/@type-bridge"
@@ -157,6 +168,8 @@ trap 'cleanup_runtime_link; cleanup_scratch' EXIT
 if [[ -d "$output_dir/generated_ordered" ]]; then
     "$NODE_DIR/node_modules/.bin/tsc" \
         --project "$output_dir/generated_ordered/tsconfig.json"
+    "$NODE_DIR/node_modules/.bin/tsc" \
+        --project "$output_dir/generated_phase2/tsconfig.json"
 fi
 "$NODE_DIR/node_modules/.bin/tsc" \
     --project "$NODE_DIR/tsconfig.projection-integration.json" \

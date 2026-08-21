@@ -1,4 +1,4 @@
-"""Fail-closed tests for Node's exact-3.12.1 Phase-2 live producer."""
+"""Fail-closed tests for Node's exact-3.12.3 Phase-2 live producer."""
 
 from __future__ import annotations
 
@@ -266,7 +266,7 @@ const result = await producer.runOwnedDatabase({
   createOrder: [], cleanupOrder: [],
   versionDetector: async (address, port) => {
     events.push(`version:${address}:${port}`);
-    return "3.12.1";
+    return "3.12.3";
   },
   journeyRunner: () => { events.push("journey"); return { observed: true }; },
 });
@@ -315,7 +315,7 @@ try {
     records: new Map(), createOrder: [], cleanupOrder: [],
     versionDetector: async () => {
       events.push("version");
-      return mode === "version" ? "3.12.0" : "3.12.1";
+      return mode === "version" ? "3.12.0" : "3.12.3";
     },
     journeyRunner: () => ({}),
   });
@@ -362,7 +362,7 @@ try {
     package_: {}, runtime, address: "127.0.0.1:32942",
     databaseName: "fresh", port: 32943, providerSchema: "schema",
     records: new Map(), createOrder: [], cleanupOrder: [],
-    versionDetector: async () => { events.push("version"); return "3.12.1"; },
+    versionDetector: async () => { events.push("version"); return "3.12.3"; },
     journeyRunner: () => {
       events.push("journey");
       if (mode === "journey") throw new Error("journey failed");
@@ -400,7 +400,7 @@ try {
     package_: {}, runtime, address: "127.0.0.1:32942",
     databaseName: "fresh", port: 32943, providerSchema: "schema",
     records: new Map(), createOrder: [], cleanupOrder: [],
-    versionDetector: async () => "3.12.1",
+    versionDetector: async () => "3.12.3",
     journeyRunner: () => ({}),
   });
 } catch (error) {
@@ -433,7 +433,7 @@ try {
     package_: {}, runtime, address: "127.0.0.1:32942",
     databaseName: "fresh", port: 32943, providerSchema: "schema",
     records: new Map(), createOrder: [], cleanupOrder: [],
-    versionDetector: async () => "3.12.1",
+    versionDetector: async () => "3.12.3",
     journeyRunner: () => { throw new Error("journey failed"); },
   });
 } catch (error) {

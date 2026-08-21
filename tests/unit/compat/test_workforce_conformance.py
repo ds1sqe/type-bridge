@@ -137,8 +137,8 @@ def test_catalog_covers_manifest_and_freezes_fixture_authority() -> None:
     assert catalog_cases == manifest_cases
     assert len(catalog_cases) == len(set(catalog_cases)) == 44
     assert dispositions.count("shared_smoke") == 6
-    assert dispositions.count("retained_evidence") == 26
-    assert dispositions.count("known_gap") == 12
+    assert dispositions.count("retained_evidence") == 28
+    assert dispositions.count("known_gap") == 10
     assert [tuple(proof.values()) for proof in catalog["selected_proofs"]] == (
         EXPECTED_SELECTED_PROOFS
     )
@@ -252,11 +252,11 @@ def test_valid_three_report_set_is_order_independent_and_derives_only_unresolved
     ]
 
     gaps = {item["case_id"]: item["bindings"] for item in forward["current_gaps"]}
-    assert gaps["workforce.crud.entity-batch-update-delete"] == ["node"]
-    assert gaps["workforce.crud.relation-batch-update-delete"] == ["node"]
+    assert "workforce.crud.entity-batch-update-delete" not in gaps
+    assert "workforce.crud.relation-batch-update-delete" not in gaps
     assert "workforce.query.reducers-remote" not in gaps
     assert "workforce.query.schema-function" not in gaps
-    assert len(gaps) == 14
+    assert len(gaps) == 10
     assert forward["uncovered_required_proofs"]
     summary_text = comparator.canonical_json_bytes(forward).decode()
     assert '"accepted"' not in summary_text
@@ -404,7 +404,7 @@ def test_runtime_identity_leak_is_rejected_before_comparison(tmp_path: Path) -> 
 def test_manifest_gap_cannot_be_reported_as_passing_evidence(tmp_path: Path) -> None:
     contracts = comparator.load_contracts()
     reports = _valid_reports(contracts)
-    gap_case = "workforce.schema.ordered-distinct"
+    gap_case = "workforce.runtime.cancellation"
     gap_capability = contracts.cases[gap_case]["capability"]
     reports["python"]["results"][0] = {
         "capability_id": gap_capability["id"],

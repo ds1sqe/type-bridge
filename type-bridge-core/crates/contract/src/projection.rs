@@ -3350,3 +3350,67 @@ impl CodeResourceDigest {
         })
     }
 }
+/// One compatibility lookup resolved against generated field names.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GeneratedManagerLookup<'a> {
+    field_name: &'a str,
+    lookup: &'a str,
+}
+
+impl<'a> GeneratedManagerLookup<'a> {
+    /// Return the exact generated field selected by the compatibility spelling.
+    #[must_use]
+    pub const fn field_name(self) -> &'a str {
+        self.field_name
+    }
+
+    /// Return the normalized lookup operator.
+    #[must_use]
+    pub const fn lookup(self) -> &'a str {
+        self.lookup
+    }
+}
+
+/// Resolve a generated-manager compatibility spelling without losing literal
+/// field names that contain `__`.
+///
+/// A recognized trailing lookup wins only when its prefix is itself a field.
+/// Otherwise an exact full-field match wins and defaults to equality.
+#[must_use]
+pub fn resolve_generated_manager_lookup<'a>(
+    key: &'a str,
+    has_field: impl Fn(&str) -> bool,
+) -> GeneratedManagerLookup<'a> {
+    let parsed = key.rsplit_once("__");
+    match parsed {
+        Some((field_name, lookup))
+            if matches!(
+                lookup,
+                "eq" | "exact"
+                    | "ne"
+                    | "gt"
+                    | "gte"
+                    | "lt"
+                    | "lte"
+                    | "contains"
+                    | "startswith"
+                    | "endswith"
+                    | "regex"
+                    | "like"
+                    | "in"
+                    | "isnull"
+            ) && has_field(field_name) =>
+        {
+            GeneratedManagerLookup { field_name, lookup }
+        }
+        _ if has_field(key) => GeneratedManagerLookup {
+            field_name: key,
+            lookup: "eq",
+        },
+        Some((field_name, lookup)) => GeneratedManagerLookup { field_name, lookup },
+        None => GeneratedManagerLookup {
+            field_name: key,
+            lookup: "eq",
+        },
+    }
+}

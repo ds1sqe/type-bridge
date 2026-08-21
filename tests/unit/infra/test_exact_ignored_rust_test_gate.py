@@ -105,7 +105,7 @@ def test_ci_and_local_harness_route_cli_live_tests_through_the_gate() -> None:
 
     # In addition to the CLI/recovery selectors, CI gates the production V2
     # server, generated Rust, generated C, and C runtime live probes exactly.
-    assert workflow.count(gate_call) == len(positive_tests) + 7
+    assert workflow.count(gate_call) == len(positive_tests) + 8
     assert local.count(gate_call) == 9
     assert "-- --ignored --exact --nocapture" not in local
     for test_name in (

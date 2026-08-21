@@ -233,7 +233,15 @@ def main() -> None:
             str(STAGE / "generated_phase2_foreign"),
         ]
     )
-    phase2_report = STAGE / "phase2-python-report.json"
+    external_phase2_report = os.environ.get("TYPE_BRIDGE_PHASE2_PARITY_REPORT")
+    phase2_report = (
+        Path(external_phase2_report)
+        if external_phase2_report is not None
+        else STAGE / "phase2-python-report.json"
+    )
+    if external_phase2_report is not None:
+        if not phase2_report.is_absolute() or phase2_report.exists():
+            raise AssertionError("external Phase-2 parity report must be absent and absolute")
     phase2_environment = os.environ.copy()
     phase2_environment.update(
         {

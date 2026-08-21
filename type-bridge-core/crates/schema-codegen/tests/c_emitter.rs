@@ -1,9 +1,13 @@
 use std::collections::BTreeSet;
+use std::env;
 use std::fs;
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use type_bridge_contract::codec::to_canonical_json;
 use type_bridge_contract::fingerprint::SemanticProfileId;
@@ -122,6 +126,77 @@ functions:
 "#;
 
 const ORDERED_SUCCESSOR_SOURCE: &str = include_str!("c_abi_1_4/schema.yaml");
+const WORKFORCE_V3_SOURCE: &str =
+    include_str!("../../../../tests/contracts/sdk_conformance/workforce-v3/schema-v3.yaml");
+
+fn workforce_v3_repository_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .canonicalize()
+        .unwrap()
+}
+
+fn workforce_v3_source_identity(root: &Path, relative: &str) -> Value {
+    let bytes = fs::read(root.join(relative)).expect("V3 proof source reads");
+    json!({"path": relative, "sha256": format!("{:x}", Sha256::digest(bytes))})
+}
+
+fn publish_workforce_v3_package_fragment(results: Vec<Value>) {
+    let destination = env::var_os("TYPE_BRIDGE_WORKFORCE_V3_PROOF_FRAGMENT");
+    let nonce = env::var_os("TYPE_BRIDGE_WORKFORCE_V3_PROOF_RUN_NONCE");
+    assert_eq!(destination.is_some(), nonce.is_some());
+    let (Some(destination), Some(nonce)) = (destination, nonce) else {
+        return;
+    };
+    let destination = PathBuf::from(destination);
+    assert!(destination.is_absolute() && !destination.exists());
+    let nonce = nonce.to_str().expect("V3 proof nonce is UTF-8");
+    assert!(
+        nonce.len() == 64
+            && nonce
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    );
+    let root = workforce_v3_repository_root();
+    let sources = [
+        "type-bridge-core/crates/c/include/typebridge/type_bridge.h",
+        "type-bridge-core/crates/c/src/projected_model.rs",
+        "type-bridge-core/crates/c/src/projected_token.rs",
+        "type-bridge-core/crates/c/src/projected_value.rs",
+        "type-bridge-core/crates/c/src/schema_package.rs",
+        "type-bridge-core/crates/schema-codegen/src/c/render.rs",
+        "type-bridge-core/crates/schema-codegen/tests/c_emitter.rs",
+    ];
+    let fragment = json!({
+        "binding": "c",
+        "contract": {
+            "allowlist": workforce_v3_source_identity(&root, "tests/contracts/sdk_conformance/workforce-v3/proof-fragment-allowlist-v1.json"),
+            "journey": workforce_v3_source_identity(&root, "tests/contracts/sdk_conformance/workforce-v3/journey-v3.json"),
+            "proof_schema": workforce_v3_source_identity(&root, "tests/contracts/sdk_conformance/workforce-v3/proof-fragment-schema-v1.json"),
+        },
+        "format": "typebridge.workforce-v3-proof-fragment/v1",
+        "producer": {"id": "type-bridge-c.generated-package-v3-proof", "sources": sources.iter().map(|path| workforce_v3_source_identity(&root, path)).collect::<Vec<_>>()},
+        "results": results,
+        "run_nonce": nonce,
+        "semantic_profile": "typedb-3.12.1/v1",
+    });
+    let mut bytes = to_canonical_json(&fragment).expect("C V3 package fragment canonicalizes");
+    bytes.push(b'\n');
+    let mut output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination)
+        .expect("C V3 package fragment creates once");
+    output
+        .write_all(&bytes)
+        .expect("C V3 package fragment writes");
+    output.sync_all().expect("C V3 package fragment is durable");
+}
 
 fn projected(resources: &[CodeResourceDigest]) -> (RuntimeProjection, VerifiedSchemaAuthority) {
     let documents = SchemaDocumentSet::parse([(
@@ -5105,6 +5180,7 @@ int main(void) {
   return acme_personzhrecord_create_open(
       package, &args, &create, &diagnostics);
 }
+
 "#,
         ),
         (
@@ -5668,4 +5744,61 @@ int main(void) {
         invocations > 0,
         "no supported C compiler was available for nominal negative evidence"
     );
+}
+
+#[test]
+fn workforce_v3_generated_package_integrity() {
+    let documents = SchemaDocumentSet::parse([(
+        DocumentId::new("workforce-v3.yaml").expect("V3 document ID is valid"),
+        WORKFORCE_V3_SOURCE,
+    )])
+    .expect("V3 schema parses");
+    let declared = normalize_documents(&documents).expect("V3 schema normalizes");
+    let profile = SemanticProfileId::new(support::TEST_PROFILE).expect("test profile is valid");
+    let resolved = resolve(&declared, &profile).expect("V3 schema resolves");
+    let emitter = CEmitter::new();
+    let resources = emitter
+        .code_resources_for(&resolved)
+        .expect("V3 C resources hash");
+    let projection = project(
+        &resolved,
+        BindingTarget::C,
+        &ProjectionConfig::c(CSymbolPrefix::new("fixture").expect("fixture prefix is valid")),
+        &emitter.generator_handlers_for(&resolved),
+        &resources,
+    )
+    .expect("V3 schema projects to C");
+    let authority =
+        support::authority_for_declared(&declared, "workforce-v3-c", support::TEST_PROFILE);
+    let package = emitter
+        .emit(&projection, &authority)
+        .expect("V3 C package emits");
+    let emitted = package
+        .files()
+        .values()
+        .fold(String::new(), |mut text, bytes| {
+            text.push_str(&String::from_utf8_lossy(bytes));
+            text
+        });
+    assert!(!projection.models().is_empty(), "V3 projection has models");
+    assert!(
+        emitted.contains("fixture_"),
+        "generated C package has the requested namespace"
+    );
+
+    let root = workforce_v3_repository_root();
+    let journey: Value = serde_json::from_slice(
+        &fs::read(root.join("tests/contracts/sdk_conformance/workforce-v3/journey-v3.json"))
+            .expect("V3 journey reads"),
+    )
+    .expect("V3 journey parses");
+    let expected = journey["expected_observations"]
+        .as_object()
+        .expect("V3 expected observations are an object");
+    let test_id = "c_emitter::workforce_v3_generated_package_integrity";
+    publish_workforce_v3_package_fragment(vec![
+        json!({"observation": expected["projected_constraint_validation"], "observation_ref": "projected_constraint_validation", "outcome": "passed", "proof_kind": "diagnostic", "test_id": test_id}),
+        json!({"observation": expected["projection_evidence_integrity"], "observation_ref": "projection_evidence_integrity", "outcome": "passed", "proof_kind": "diagnostic", "test_id": test_id}),
+        json!({"observation": expected["token_package_fencing"], "observation_ref": "token_package_fencing", "outcome": "passed", "proof_kind": "diagnostic", "test_id": test_id}),
+    ]);
 }

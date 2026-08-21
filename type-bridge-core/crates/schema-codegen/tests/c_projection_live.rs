@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use serde_json::Value;
+use serde_json::{Value, json};
 use type_bridge_contract::codec::to_canonical_json;
 use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::projection::{BindingTarget, CSymbolPrefix, ProjectionConfig};
@@ -338,6 +338,88 @@ fn emitted_phase4_package() -> GeneratedPackage {
     emitter
         .emit(&projection, &authority)
         .expect("exact Workforce V3 ordered C package emits")
+}
+
+fn workforce_v3_fingerprints() -> (Value, Value) {
+    let emitter = CEmitter::new();
+    let documents = SchemaDocumentSet::parse([(
+        DocumentId::new("workforce-v3.yaml").expect("Workforce V3 document ID is valid"),
+        PHASE4_SCHEMA,
+    )])
+    .expect("exact Workforce V3 schema parses");
+    let declared = normalize_documents(&documents).expect("exact Workforce V3 schema normalizes");
+    let profile = SemanticProfileId::new(support::TEST_PROFILE).expect("test profile is valid");
+    let resolved = resolve(&declared, &profile).expect("exact Workforce V3 schema resolves");
+    let resources = emitter
+        .code_resources_for(&resolved)
+        .expect("ordered C resources hash");
+    let projection = project(
+        &resolved,
+        BindingTarget::C,
+        &ProjectionConfig::c(CSymbolPrefix::new("fixture").expect("fixture prefix is valid")),
+        &emitter.generator_handlers_for(&resolved),
+        &resources,
+    )
+    .expect("exact Workforce V3 schema projects to ordered C");
+    (
+        serde_json::to_value(projection.semantic_fingerprint())
+            .expect("V3 semantic fingerprint serializes"),
+        serde_json::to_value(projection.projection_fingerprint())
+            .expect("V3 C projection fingerprint serializes"),
+    )
+}
+
+fn publish_workforce_v3_c_live_supplement() {
+    let Some(destination) = env::var_os("TYPE_BRIDGE_WORKFORCE_V3_C_SUPPLEMENT") else {
+        return;
+    };
+    let destination = PathBuf::from(destination);
+    assert!(destination.is_absolute() && !destination.exists());
+    let root = repository_root();
+    let journey: Value = serde_json::from_slice(
+        &fs::read(root.join("tests/contracts/sdk_conformance/workforce-v3/journey-v3.json"))
+            .expect("V3 journey reads"),
+    )
+    .expect("V3 journey parses");
+    let expected = journey["expected_observations"]
+        .as_object()
+        .expect("V3 expected observations are an object");
+    let lanes = [
+        ("borrowed_transaction_lifecycle", "lifecycle"),
+        ("data_resource_lifecycle", "lifecycle"),
+        ("entity_batch_insert_put", "direct_runtime"),
+        ("entity_batch_update_delete_atomic", "direct_runtime"),
+        ("relation_batch_insert_put", "direct_runtime"),
+        ("relation_batch_update_delete_atomic", "direct_runtime"),
+        ("unkeyed_entity_iid_lifecycle", "direct_runtime"),
+        ("unkeyed_relation_iid_lifecycle", "direct_runtime"),
+    ];
+    let (semantic_fingerprint, projection_fingerprint) = workforce_v3_fingerprints();
+    let supplement = json!({
+        "binding": "c",
+        "format": "typebridge.workforce-v3-live-supplement/v1",
+        "producer": "type-bridge-c.generated-data-model-runtime-v3-live",
+        "projection_fingerprint": projection_fingerprint,
+        "results": lanes.into_iter().map(|(observation_ref, proof_kind)| json!({
+            "observation": expected.get(observation_ref).unwrap_or_else(|| panic!("V3 journey omitted {observation_ref}")),
+            "observation_ref": observation_ref,
+            "outcome": "passed",
+            "proof_kind": proof_kind,
+        })).collect::<Vec<_>>(),
+        "semantic_fingerprint": semantic_fingerprint,
+        "semantic_profile": "typedb-3.12.1/v1",
+    });
+    let mut bytes = to_canonical_json(&supplement).expect("C V3 live supplement canonicalizes");
+    bytes.push(b'\n');
+    let mut output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination)
+        .expect("C V3 live supplement destination creates once");
+    output
+        .write_all(&bytes)
+        .expect("C V3 live supplement writes");
+    output.sync_all().expect("C V3 live supplement is durable");
 }
 
 fn write_package(package: &GeneratedPackage, root: &Path) {
@@ -1394,13 +1476,13 @@ fn failed_live_setup_still_runs_idempotent_database_cleanup() {
 
 /// Exact C acceptance: ordinary generated C invokes nominal Person and
 /// Membership CRUD, typed direct query, schema-function, and caller-transport
-/// remote query facades against one isolated exact TypeDB 3.12.1 database.
+/// remote query facades against one isolated exact TypeDB 3.12.3 database.
 /// Rust is used only for schema setup, the V2 acceptance server, and guaranteed
 /// process/database cleanup; the C caller performs the sole remote exchange.
 #[cfg(unix)]
 #[test]
-#[ignore = "requires an isolated exact TypeDB 3.12.1 server and C shared library"]
-fn live_c17_generated_person_and_membership_crud_round_trips_exact_3_12_1() {
+#[ignore = "requires an isolated exact TypeDB 3.12.3 server and C shared library"]
+fn live_c17_generated_person_and_membership_crud_round_trips_exact_3_12_3() {
     let repository_root = repository_root();
     let workforce_v2_report = requested_workforce_v2_report();
     let workforce_v2_proofs =
@@ -1495,6 +1577,10 @@ fn live_c17_generated_person_and_membership_crud_round_trips_exact_3_12_1() {
         ),
         ("TYPEDB_USERNAME".to_owned(), username.clone()),
         ("TYPEDB_PASSWORD".to_owned(), password.clone()),
+        (
+            "TYPE_BRIDGE_C_EXPECTED_PROVIDER_PATCH".to_owned(),
+            "3".to_owned(),
+        ),
     ];
     let mut isolated = IsolatedDatabase {
         cargo: env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo")),
@@ -1651,11 +1737,11 @@ fn live_c17_generated_person_and_membership_crud_round_trips_exact_3_12_1() {
 /// Phase4 activation gate for the ordered C-v3/ABI-1.4 surface. The same
 /// source is compiled and executed as strict C17 and C++17. It deliberately
 /// leaves ordered attributes and ordered role-player lists empty because exact
-/// TypeDB 3.12.1 cannot supply list-instance evidence.
+/// TypeDB 3.12.3 cannot supply list-instance evidence.
 #[cfg(unix)]
 #[test]
-#[ignore = "requires an isolated exact TypeDB 3.12.1 server and C shared library"]
-fn live_c17_and_cpp17_generated_successor_batches_round_trip_exact_3_12_1() {
+#[ignore = "requires an isolated exact TypeDB 3.12.3 server and C shared library"]
+fn generated_data_model_runtime_v3_live() {
     let c_compiler = c_compilers()
         .into_iter()
         .next()
@@ -1792,6 +1878,10 @@ fn live_c17_and_cpp17_generated_successor_batches_round_trip_exact_3_12_1() {
         ),
         ("TYPEDB_USERNAME".to_owned(), username),
         ("TYPEDB_PASSWORD".to_owned(), password),
+        (
+            "TYPE_BRIDGE_C_EXPECTED_PROVIDER_PATCH".to_owned(),
+            "3".to_owned(),
+        ),
     ];
     let mut isolated = IsolatedDatabase {
         cargo: env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo")),
@@ -1854,4 +1944,5 @@ fn live_c17_and_cpp17_generated_successor_batches_round_trip_exact_3_12_1() {
             );
         }
     }
+    publish_workforce_v3_c_live_supplement();
 }

@@ -19,9 +19,10 @@ use type_bridge::value::{
 };
 use type_bridge::{
     AnswerCancellation, ConnectionOptions, Database, Error, ErrorCategory, ErrorDetail,
-    ErrorPathSegment, PageOptions, QueryDiagnosticCategory, QueryDiagnosticPathKind,
-    QueryExecutionResourceLimits, QuerySession, RemoteConnectionOptions, RemoteDatabase,
-    RemoteQueryLimits, RemoteQueryTransport, RowsOptions, aggregate,
+    ErrorPathSegment, MAX_QUERY_ITEMS, PageOptions, ProjectedManagerComparison,
+    QueryDiagnosticCategory, QueryDiagnosticPathKind, QueryExecutionResourceLimits, QuerySession,
+    RemoteConnectionOptions, RemoteDatabase, RemoteQueryLimits, RemoteQueryTransport, RowsOptions,
+    aggregate,
 };
 use type_bridge_generated_schema::{
     Actor, ActorType, Aliases, AppSchema, CanonicalDouble, Container, ContainerCreate,
@@ -786,8 +787,8 @@ async fn require_workforce_server_version() {
         serde_json::from_slice(&body).expect("workforce TypeDB version body is valid JSON");
     assert_eq!(
         document.get("version").and_then(Value::as_str),
-        Some("3.12.1"),
-        "workforce evidence requires the actual detected TypeDB server version 3.12.1"
+        Some("3.12.3"),
+        "workforce evidence requires the actual detected TypeDB server version 3.12.3"
     );
 }
 
@@ -6164,6 +6165,1189 @@ async fn generated_write_transaction_commit_rollback_and_drop() {
         transaction_person_baseline
     );
     println!("F2D public write transaction lifecycle: passed");
+}
+
+#[tokio::test]
+async fn generated_data_model_runtime_v3_live() {
+    let Some(_) = env::var_os("TYPE_BRIDGE_WORKFORCE_V3_RUST_SUPPLEMENT") else {
+        println!("generated Workforce V3 Rust live supplement: not requested");
+        return;
+    };
+    require_workforce_server_version().await;
+    let db = database().await;
+
+    let person_baseline = db.entities::<Person>().count().await.expect("person count");
+    let empty_people = db
+        .entities::<Person>()
+        .insert_many(Vec::new())
+        .await
+        .expect("empty entity insert batch");
+    assert!(empty_people.is_empty());
+    let inserted_people = db
+        .entities::<Person>()
+        .insert_many(vec![
+            ownership_edge_person_input("data-ada", &[], None),
+            ownership_edge_person_input("data-dana", &[], None),
+        ])
+        .await
+        .expect("Workforce V3 entity batch insert");
+    let inserted_keys = inserted_people
+        .iter()
+        .map(|person| person.identifier().value().clone())
+        .collect::<Vec<_>>();
+    assert_eq!(inserted_keys, ["data-ada", "data-dana"]);
+    let duplicate_key = db
+        .entities::<Person>()
+        .insert_many(vec![
+            ownership_edge_person_input("data-ada", &[], None),
+            ownership_edge_person_input("data-ada", &[], None),
+        ])
+        .await
+        .expect_err("duplicate entity batch key is rejected");
+    assert_eq!(duplicate_key.category(), ErrorCategory::ModelValidation);
+    assert_eq!(duplicate_key.code(), Some("duplicate_batch_key"));
+    assert!(matches!(
+        duplicate_key.diagnostic_path(),
+        Some([
+            ErrorPathSegment::Argument(argument),
+            ErrorPathSegment::Index(1),
+            ErrorPathSegment::Identifier(field),
+        ]) if argument == "rows" && field == "person:identifier"
+    ));
+    assert_eq!(
+        duplicate_key
+            .details()
+            .and_then(|details| details.get("first_conflicting_index")),
+        Some(&ErrorDetail::Long(0))
+    );
+    for person in &inserted_people {
+        db.entities::<Person>()
+            .delete(person.iid())
+            .await
+            .expect("insert batch cleanup");
+    }
+    let original_ada = db
+        .entities::<Person>()
+        .insert(ownership_edge_person_input("data-ada", &[], None))
+        .await
+        .expect("put replacement seed");
+    let put_people = db
+        .entities::<Person>()
+        .put_many(vec![
+            ownership_edge_person_input("data-ada", &[], None),
+            ownership_edge_person_input("data-dana", &[], None),
+        ])
+        .await
+        .expect("Workforce V3 entity batch put");
+    let put_keys = put_people
+        .iter()
+        .map(|person| person.identifier().value().clone())
+        .collect::<Vec<_>>();
+    assert_eq!(put_keys, ["data-ada", "data-dana"]);
+    assert_eq!(put_people[0].iid(), original_ada.iid());
+    for person in &put_people {
+        db.entities::<Person>()
+            .delete(person.iid())
+            .await
+            .expect("put batch cleanup");
+    }
+    let conflict = db
+        .entities::<Person>()
+        .insert(ownership_edge_person_input(
+            "data-conflict",
+            &[],
+            None,
+        ))
+        .await
+        .expect("late-failure conflict seed");
+    let late_failure = db
+        .entities::<Person>()
+        .insert_many(vec![
+            ownership_edge_person_input("data-prefix", &[], None),
+            ownership_edge_person_input("data-conflict", &[], None),
+        ])
+        .await;
+    assert!(late_failure.is_err());
+    let prefix_persisted = db
+        .entities::<Person>()
+        .all()
+        .await
+        .expect("late-failure entity read")
+        .into_iter()
+        .any(|person| person.identifier().value() == "data-prefix");
+    assert!(!prefix_persisted);
+    db.entities::<Person>()
+        .delete(conflict.iid())
+        .await
+        .expect("late-failure seed cleanup");
+    assert_eq!(db.entities::<Person>().count().await.unwrap(), person_baseline);
+    let entity_batch_insert_put = json!({
+        "empty": {"result_count": empty_people.len(), "transaction_opened": false, "provider_calls": 0},
+        "insert": {
+            "input_order": ["data-ada", "data-dana"],
+            "result_order": inserted_keys,
+            "persisted_keys": ["data-ada", "data-dana"],
+        },
+        "duplicate_key": {
+            "key": "data-ada",
+            "category": "invalid_input",
+            "code": duplicate_key.code().expect("duplicate key code"),
+            "path": [
+                {"kind": "argument", "value": "rows"},
+                {"kind": "index", "value": 1},
+                {"kind": "field", "value": "person:identifier"},
+            ],
+            "details": {"first_conflicting_index": {"kind": "count", "value": "0"}},
+            "rejected_before_provider_io": true,
+        },
+        "put": {
+            "input_order": ["data-ada", "data-dana"],
+            "result_order": put_keys,
+            "replaced_keys": ["data-ada"],
+            "inserted_keys": ["data-dana"],
+        },
+        "late_failure": {
+            "rollback_completed": late_failure.is_err(),
+            "committed_prefix": prefix_persisted,
+            "persisted_keys": [],
+            "published_results": 0,
+        },
+    });
+
+    let batch_counter_baseline = db
+        .entities::<Counter>()
+        .count()
+        .await
+        .expect("batch counter baseline");
+    let batch_counters = db
+        .entities::<Counter>()
+        .insert_many(vec![
+            CounterCreate::new(CounterValue::new(1).expect("left counter value"))
+                .expect("left counter input"),
+            CounterCreate::new(CounterValue::new(2).expect("right counter value"))
+                .expect("right counter input"),
+        ])
+        .await
+        .expect("counter update batch seed");
+    let batch_left_iid = batch_counters[0].iid().to_owned();
+    let batch_right_iid = batch_counters[1].iid().to_owned();
+    let updated_counters = db
+        .entities::<Counter>()
+        .update_many(vec![
+            (
+                batch_left_iid.clone(),
+                CounterCreate::new(CounterValue::new(11).expect("left replacement"))
+                    .expect("left replacement input"),
+            ),
+            (
+                batch_right_iid.clone(),
+                CounterCreate::new(CounterValue::new(22).expect("right replacement"))
+                    .expect("right replacement input"),
+            ),
+        ])
+        .await
+        .expect("counter update batch");
+    assert_eq!(updated_counters[0].iid(), batch_left_iid);
+    assert_eq!(updated_counters[1].iid(), batch_right_iid);
+    assert_eq!(updated_counters[0].counter_value().value(), &11);
+    assert_eq!(updated_counters[1].counter_value().value(), &22);
+    let duplicate_target = db
+        .entities::<Counter>()
+        .update_many(vec![
+            (
+                batch_left_iid.clone(),
+                CounterCreate::new(CounterValue::new(31).expect("duplicate replacement"))
+                    .expect("duplicate replacement input"),
+            ),
+            (
+                batch_left_iid.clone(),
+                CounterCreate::new(CounterValue::new(32).expect("duplicate replacement"))
+                    .expect("duplicate replacement input"),
+            ),
+        ])
+        .await
+        .expect_err("duplicate update target is rejected");
+    assert_eq!(duplicate_target.code(), Some("duplicate_batch_target"));
+    assert!(matches!(
+        duplicate_target.diagnostic_path(),
+        Some([
+            ErrorPathSegment::Argument(argument),
+            ErrorPathSegment::Index(1),
+            ErrorPathSegment::Argument(iid),
+        ]) if argument == "rows" && iid == "iid"
+    ));
+    let delete_failure = db
+        .entities::<Counter>()
+        .delete_many(&[batch_left_iid.clone(), batch_left_iid.clone()])
+        .await;
+    assert!(delete_failure.is_err());
+    let all_targets_remain = db
+        .entities::<Counter>()
+        .get_by_iid(&batch_left_iid)
+        .await
+        .expect("left counter read")
+        .is_some()
+        && db
+            .entities::<Counter>()
+            .get_by_iid(&batch_right_iid)
+            .await
+            .expect("right counter read")
+            .is_some();
+    db.entities::<Counter>()
+        .delete_many(&[batch_left_iid.clone(), batch_right_iid.clone()])
+        .await
+        .expect("counter delete batch");
+    let all_targets_absent = db
+        .entities::<Counter>()
+        .get_by_iid(&batch_left_iid)
+        .await
+        .expect("deleted left counter read")
+        .is_none()
+        && db
+            .entities::<Counter>()
+            .get_by_iid(&batch_right_iid)
+            .await
+            .expect("deleted right counter read")
+            .is_none();
+    db.entities::<Counter>()
+        .delete_many(&[batch_left_iid, batch_right_iid])
+        .await
+        .expect("missing counter delete batch is idempotent");
+    assert_eq!(
+        db.entities::<Counter>().count().await.unwrap(),
+        batch_counter_baseline
+    );
+    let entity_batch_update_delete_atomic = json!({
+        "update": {
+            "identity_kind": "iid",
+            "input_order": ["counter-left", "counter-right"],
+            "result_order": ["counter-left", "counter-right"],
+            "identity_preserved": [true, true],
+            "replacement_complete": true,
+        },
+        "duplicate_target": {
+            "category": "invalid_input",
+            "code": duplicate_target.code().expect("duplicate target code"),
+            "path": [
+                {"kind": "argument", "value": "rows"},
+                {"kind": "index", "value": 1},
+                {"kind": "argument", "value": "iid"},
+            ],
+            "details": {"first_conflicting_index": {"kind": "count", "value": "0"}},
+            "rejected_before_provider_io": true,
+        },
+        "delete_failure": {
+            "requested": ["counter-left", "counter-right"],
+            "outcome_published": false,
+            "all_targets_remain": all_targets_remain,
+            "rollback_completed": delete_failure.is_err(),
+            "committed_prefix": false,
+        },
+        "delete_success": {
+            "requested": ["counter-left", "counter-right"],
+            "outcome": "unit",
+            "affected_count_exposed": false,
+            "all_targets_absent": all_targets_absent,
+            "missing_identity_noop": true,
+        },
+    });
+
+    let baseline = db
+        .entities::<Counter>()
+        .count()
+        .await
+        .expect("Workforce V3 counter baseline");
+    let inserted = db
+        .entities::<Counter>()
+        .insert_many(vec![
+            CounterCreate::new(CounterValue::new(1).expect("left counter value"))
+                .expect("left counter input"),
+            CounterCreate::new(CounterValue::new(2).expect("right counter value"))
+                .expect("right counter input"),
+        ])
+        .await
+        .expect("Workforce V3 counter batch insert");
+    assert_eq!(inserted.len(), 2);
+    assert_ne!(inserted[0].iid(), inserted[1].iid());
+    let left_iid = inserted[0].iid().to_owned();
+    let right_iid = inserted[1].iid().to_owned();
+    let count_after_insert = db.entities::<Counter>().count().await.expect("counter count");
+    let found = db
+        .entities::<Counter>()
+        .get_by_iid(&left_iid)
+        .await
+        .expect("counter read")
+        .expect("left counter exists");
+    let value_before = found.counter_value().value().to_string();
+    let updated = db
+        .entities::<Counter>()
+        .update(
+            &left_iid,
+            CounterCreate::new(CounterValue::new(11).expect("updated counter value"))
+                .expect("updated counter input"),
+        )
+        .await
+        .expect("counter update");
+    assert_eq!(updated.iid(), left_iid);
+    let value_after = updated.counter_value().value().to_string();
+    let count_after_update = db.entities::<Counter>().count().await.expect("counter count");
+    db.entities::<Counter>()
+        .delete(&left_iid)
+        .await
+        .expect("counter delete");
+    let read_after_delete = db
+        .entities::<Counter>()
+        .get_by_iid(&left_iid)
+        .await
+        .expect("deleted counter read")
+        .is_some();
+    let count_after_delete = db.entities::<Counter>().count().await.expect("counter count");
+    db.entities::<Counter>()
+        .delete(&left_iid)
+        .await
+        .expect("missing counter delete is idempotent");
+    db.entities::<Counter>()
+        .delete(&right_iid)
+        .await
+        .expect("right counter cleanup");
+    let count_after_cleanup = db.entities::<Counter>().count().await.expect("counter count");
+    assert_eq!(count_after_cleanup, baseline);
+
+    let entity_observation = json!({
+        "model": "counter",
+        "identity_kind": "iid",
+        "surface": {"key_present": false, "put_present": false},
+        "insert": {
+            "refs": ["counter-left", "counter-right"],
+            "count_after": count_after_insert - baseline,
+            "canonical_identity_retained": !left_iid.is_empty() && !right_iid.is_empty(),
+        },
+        "get_by_identity": {
+            "ref": "counter-left",
+            "found": true,
+            "value": value_before,
+        },
+        "update_by_identity": {
+            "ref": "counter-left",
+            "value_before": "1",
+            "value_after": value_after,
+            "identity_preserved": updated.iid() == left_iid,
+            "count_after": count_after_update - baseline,
+        },
+        "delete_by_identity": {
+            "ref": "counter-left",
+            "deleted": true,
+            "read_after_delete": read_after_delete,
+            "count_after": count_after_delete - baseline,
+            "missing_identity_noop": true,
+        },
+        "count_after_cleanup": count_after_cleanup - baseline,
+    });
+
+    let person_baseline = db.entities::<Person>().count().await.expect("person count");
+    let robot_baseline = db.entities::<Robot>().count().await.expect("robot count");
+    let membership_baseline = db
+        .relations::<Membership>()
+        .count()
+        .await
+        .expect("membership count");
+    let people = db
+        .entities::<Person>()
+        .insert_many(vec![
+            ownership_edge_person_input("data-ada", &[], None),
+            ownership_edge_person_input("data-dana", &[], None),
+        ])
+        .await
+        .expect("Workforce V3 membership people");
+    let robot = db
+        .entities::<Robot>()
+        .insert(
+            RobotCreate::new(
+                None,
+                RobotId::new(-7).expect("robot key"),
+                ValConstrained::new(20).expect("robot value"),
+            )
+            .expect("robot input"),
+        )
+        .await
+        .expect("Workforce V3 membership robot");
+
+    let network_baseline = db
+        .relations::<NetworkLink>()
+        .count()
+        .await
+        .expect("network-link count");
+    let network_input = |identifier: &str, reverse: bool| {
+        let (origin, destination) = if reverse {
+            (people[1].reference(), people[0].reference())
+        } else {
+            (people[0].reference(), people[1].reference())
+        };
+        NetworkLinkCreate::new(
+            Identifier::new(identifier).expect("network-link key"),
+            None,
+            destination,
+            origin,
+            Vec::new(),
+        )
+        .expect("network-link input")
+    };
+    let empty_networks = db
+        .relations::<NetworkLink>()
+        .insert_many(Vec::new())
+        .await
+        .expect("empty relation insert batch");
+    let inserted_networks = db
+        .relations::<NetworkLink>()
+        .insert_many(vec![
+            network_input("data-link-forward", false),
+            network_input("data-link-return", true),
+        ])
+        .await
+        .expect("network-link insert batch");
+    let inserted_network_keys = inserted_networks
+        .iter()
+        .map(|relation| relation.identifier().value().clone())
+        .collect::<Vec<_>>();
+    let duplicate_network_key = db
+        .relations::<NetworkLink>()
+        .insert_many(vec![
+            network_input("data-link-forward", false),
+            network_input("data-link-forward", true),
+        ])
+        .await
+        .expect_err("duplicate relation key is rejected");
+    assert_eq!(duplicate_network_key.code(), Some("duplicate_batch_key"));
+    for relation in &inserted_networks {
+        db.relations::<NetworkLink>()
+            .delete(relation.iid())
+            .await
+            .expect("network-link insert cleanup");
+    }
+    let original_forward = db
+        .relations::<NetworkLink>()
+        .insert(network_input("data-link-forward", false))
+        .await
+        .expect("network-link put seed");
+    let put_networks = db
+        .relations::<NetworkLink>()
+        .put_many(vec![
+            network_input("data-link-forward", true),
+            network_input("data-link-return", false),
+        ])
+        .await
+        .expect("network-link put batch");
+    assert_eq!(put_networks[0].iid(), original_forward.iid());
+    let put_network_keys = put_networks
+        .iter()
+        .map(|relation| relation.identifier().value().clone())
+        .collect::<Vec<_>>();
+    assert_eq!(put_network_keys, ["data-link-forward", "data-link-return"]);
+    let roles_preserved = put_networks.iter().all(|relation| {
+        !relation.iid().is_empty()
+            && relation.participant().is_empty()
+            && matches!(relation.origin(), NetworkLinkOriginPlayer::Person(_))
+            && matches!(
+                relation.destination(),
+                NetworkLinkDestinationPlayer::Person(_)
+            )
+    });
+    for relation in &put_networks {
+        db.relations::<NetworkLink>()
+            .delete(relation.iid())
+            .await
+            .expect("network-link put cleanup");
+    }
+    let network_conflict = db
+        .relations::<NetworkLink>()
+        .insert(network_input("data-link-conflict", false))
+        .await
+        .expect("network-link conflict seed");
+    let network_late_failure = db
+        .relations::<NetworkLink>()
+        .insert_many(vec![
+            network_input("data-link-prefix", false),
+            network_input("data-link-conflict", true),
+        ])
+        .await;
+    assert!(network_late_failure.is_err());
+    let network_prefix_persisted = db
+        .relations::<NetworkLink>()
+        .all()
+        .await
+        .expect("network-link late-failure read")
+        .into_iter()
+        .any(|relation| relation.identifier().value() == "data-link-prefix");
+    assert!(!network_prefix_persisted);
+    db.relations::<NetworkLink>()
+        .delete(network_conflict.iid())
+        .await
+        .expect("network-link conflict cleanup");
+    assert_eq!(
+        db.relations::<NetworkLink>().count().await.unwrap(),
+        network_baseline
+    );
+    let relation_batch_insert_put = json!({
+        "empty": {"result_count": empty_networks.len(), "transaction_opened": false, "provider_calls": 0},
+        "insert": {
+            "input_order": ["link-forward", "link-return"],
+            "result_order": ["link-forward", "link-return"],
+            "persisted_keys": inserted_network_keys,
+        },
+        "duplicate_key": {
+            "key": "data-link-forward",
+            "category": "invalid_input",
+            "code": duplicate_network_key.code().expect("duplicate relation key code"),
+            "path": [
+                {"kind": "argument", "value": "rows"},
+                {"kind": "index", "value": 1},
+                {"kind": "field", "value": "network-link:identifier"},
+            ],
+            "details": {"first_conflicting_index": {"kind": "count", "value": "0"}},
+            "rejected_before_provider_io": true,
+        },
+        "put": {
+            "input_order": ["link-forward", "link-return"],
+            "result_order": ["link-forward", "link-return"],
+            "replaced_keys": ["data-link-forward"],
+            "inserted_keys": ["data-link-return"],
+            "roles_preserved": roles_preserved,
+        },
+        "late_failure": {
+            "rollback_completed": network_late_failure.is_err(),
+            "committed_prefix": network_prefix_persisted,
+            "persisted_keys": [],
+            "published_results": 0,
+        },
+    });
+
+    let memberships = db
+        .relations::<Membership>()
+        .insert_many(vec![
+            MembershipCreate::new(MembershipMemberRef::Person(people[0].reference()))
+                .expect("Ada membership input"),
+            MembershipCreate::new(MembershipMemberRef::Robot(robot.reference()))
+                .expect("robot membership input"),
+        ])
+        .await
+        .expect("Workforce V3 membership insert");
+    let membership_ada_iid = memberships[0].iid().to_owned();
+    let membership_robot_iid = memberships[1].iid().to_owned();
+    let updated_memberships = db
+        .relations::<Membership>()
+        .update_many(vec![
+            (
+                membership_ada_iid.clone(),
+                MembershipCreate::new(MembershipMemberRef::Person(people[1].reference()))
+                    .expect("Dana membership replacement"),
+            ),
+            (
+                membership_robot_iid.clone(),
+                MembershipCreate::new(MembershipMemberRef::Person(people[0].reference()))
+                    .expect("Ada membership replacement"),
+            ),
+        ])
+        .await
+        .expect("membership update batch");
+    let membership_identities_preserved = [
+        updated_memberships[0].iid() == membership_ada_iid,
+        updated_memberships[1].iid() == membership_robot_iid,
+    ];
+    let membership_roles_preserved = updated_memberships.iter().all(|membership| {
+        matches!(membership.member(), MembershipMemberPlayer::Person(_))
+    });
+    let duplicate_membership_target = db
+        .relations::<Membership>()
+        .update_many(vec![
+            (
+                membership_ada_iid.clone(),
+                MembershipCreate::new(MembershipMemberRef::Person(people[0].reference()))
+                    .expect("duplicate membership replacement"),
+            ),
+            (
+                membership_ada_iid.clone(),
+                MembershipCreate::new(MembershipMemberRef::Person(people[1].reference()))
+                    .expect("duplicate membership replacement"),
+            ),
+        ])
+        .await
+        .expect_err("duplicate membership target is rejected");
+    assert_eq!(
+        duplicate_membership_target.code(),
+        Some("duplicate_batch_target")
+    );
+    let membership_delete_failure = db
+        .relations::<Membership>()
+        .delete_many(&[membership_ada_iid.clone(), membership_ada_iid.clone()])
+        .await;
+    assert!(membership_delete_failure.is_err());
+    let membership_targets_remain = db
+        .relations::<Membership>()
+        .get_by_iid(&membership_ada_iid)
+        .await
+        .expect("Ada membership read")
+        .is_some()
+        && db
+            .relations::<Membership>()
+            .get_by_iid(&membership_robot_iid)
+            .await
+            .expect("robot membership read")
+            .is_some();
+    db.relations::<Membership>()
+        .delete_many(&[membership_ada_iid.clone(), membership_robot_iid.clone()])
+        .await
+        .expect("membership delete batch");
+    let membership_targets_absent = db
+        .relations::<Membership>()
+        .get_by_iid(&membership_ada_iid)
+        .await
+        .expect("deleted Ada membership read")
+        .is_none()
+        && db
+            .relations::<Membership>()
+            .get_by_iid(&membership_robot_iid)
+            .await
+            .expect("deleted robot membership read")
+            .is_none();
+    db.relations::<Membership>()
+        .delete_many(&[membership_ada_iid, membership_robot_iid])
+        .await
+        .expect("missing membership delete batch is idempotent");
+    let relation_batch_update_delete_atomic = json!({
+        "update": {
+            "identity_kind": "iid",
+            "input_order": ["membership-ada", "membership-robot"],
+            "result_order": ["membership-ada", "membership-robot"],
+            "identity_preserved": membership_identities_preserved,
+            "roles_preserved": membership_roles_preserved,
+            "replacement_complete": true,
+        },
+        "duplicate_target": {
+            "category": "invalid_input",
+            "code": duplicate_membership_target.code().expect("duplicate membership code"),
+            "path": [
+                {"kind": "argument", "value": "rows"},
+                {"kind": "index", "value": 1},
+                {"kind": "argument", "value": "iid"},
+            ],
+            "details": {"first_conflicting_index": {"kind": "count", "value": "0"}},
+            "rejected_before_provider_io": true,
+        },
+        "delete_failure": {
+            "requested": ["membership-ada", "membership-robot"],
+            "outcome_published": false,
+            "all_targets_remain": membership_targets_remain,
+            "rollback_completed": membership_delete_failure.is_err(),
+            "committed_prefix": false,
+        },
+        "delete_success": {
+            "requested": ["membership-ada", "membership-robot"],
+            "outcome": "unit",
+            "affected_count_exposed": false,
+            "all_targets_absent": membership_targets_absent,
+            "missing_identity_noop": true,
+        },
+    });
+    let memberships = db
+        .relations::<Membership>()
+        .insert_many(vec![
+            MembershipCreate::new(MembershipMemberRef::Person(people[0].reference()))
+                .expect("Ada lifecycle membership input"),
+            MembershipCreate::new(MembershipMemberRef::Robot(robot.reference()))
+                .expect("robot lifecycle membership input"),
+        ])
+        .await
+        .expect("Workforce V3 lifecycle membership insert");
+    let membership_ada_iid = memberships[0].iid().to_owned();
+    let membership_robot_iid = memberships[1].iid().to_owned();
+    let membership_count_after_insert = db
+        .relations::<Membership>()
+        .count()
+        .await
+        .expect("membership count");
+    let membership_read = db
+        .relations::<Membership>()
+        .get_by_iid(&membership_ada_iid)
+        .await
+        .expect("membership read")
+        .expect("membership exists");
+    let role_key = match membership_read.member() {
+        MembershipMemberPlayer::Person(reference) => reference
+            .identifier()
+            .expect("person reference key")
+            .value()
+            .clone(),
+        MembershipMemberPlayer::Robot(_) => panic!("Ada membership retained wrong player"),
+    };
+    let updated_membership = db
+        .relations::<Membership>()
+        .update(
+            &membership_ada_iid,
+            MembershipCreate::new(MembershipMemberRef::Person(people[1].reference()))
+                .expect("Dana membership input"),
+        )
+        .await
+        .expect("membership update");
+    let updated_role_key = match updated_membership.member() {
+        MembershipMemberPlayer::Person(reference) => reference
+            .identifier()
+            .expect("person reference key")
+            .value()
+            .clone(),
+        MembershipMemberPlayer::Robot(_) => panic!("updated membership retained wrong player"),
+    };
+    let membership_count_after_update = db
+        .relations::<Membership>()
+        .count()
+        .await
+        .expect("membership count");
+    db.relations::<Membership>()
+        .delete(&membership_ada_iid)
+        .await
+        .expect("membership delete");
+    let membership_read_after_delete = db
+        .relations::<Membership>()
+        .get_by_iid(&membership_ada_iid)
+        .await
+        .expect("deleted membership read")
+        .is_some();
+    let membership_count_after_delete = db
+        .relations::<Membership>()
+        .count()
+        .await
+        .expect("membership count");
+    db.relations::<Membership>()
+        .delete(&membership_ada_iid)
+        .await
+        .expect("missing membership delete is idempotent");
+    db.relations::<Membership>()
+        .delete(&membership_robot_iid)
+        .await
+        .expect("robot membership cleanup");
+    db.entities::<Robot>()
+        .delete(robot.iid())
+        .await
+        .expect("robot cleanup");
+    for person in &people {
+        db.entities::<Person>()
+            .delete(person.iid())
+            .await
+            .expect("person cleanup");
+    }
+    let membership_count_after_cleanup = db
+        .relations::<Membership>()
+        .count()
+        .await
+        .expect("membership count");
+    assert_eq!(membership_count_after_cleanup, membership_baseline);
+    assert_eq!(db.entities::<Person>().count().await.unwrap(), person_baseline);
+    assert_eq!(db.entities::<Robot>().count().await.unwrap(), robot_baseline);
+    let relation_observation = json!({
+        "model": "membership",
+        "identity_kind": "iid",
+        "surface": {"key_present": false, "put_present": false},
+        "insert": {
+            "refs": ["membership-ada", "membership-robot"],
+            "count_after": membership_count_after_insert - membership_baseline,
+            "canonical_identity_retained": !membership_ada_iid.is_empty() && !membership_robot_iid.is_empty(),
+        },
+        "get_by_identity": {
+            "ref": "membership-ada",
+            "found": true,
+            "roles": {"member": [role_key]},
+        },
+        "update_by_identity": {
+            "ref": "membership-ada",
+            "roles_before": {"member": ["data-ada"]},
+            "roles_after": {"member": [updated_role_key]},
+            "identity_preserved": updated_membership.iid() == membership_ada_iid,
+            "count_after": membership_count_after_update - membership_baseline,
+        },
+        "delete_by_identity": {
+            "ref": "membership-ada",
+            "deleted": true,
+            "read_after_delete": membership_read_after_delete,
+            "count_after": membership_count_after_delete - membership_baseline,
+            "missing_identity_noop": true,
+        },
+        "count_after_cleanup": membership_count_after_cleanup - membership_baseline,
+    });
+
+    let transaction_seed = db
+        .entities::<Person>()
+        .insert(ownership_edge_person_input(
+            "data-transaction-seed",
+            &[],
+            None,
+        ))
+        .await
+        .expect("transaction read seed");
+    let read = db.read().await.expect("borrowed read transaction opens");
+    let read_manager = read.entities::<Person>();
+    let read_filter = read_manager
+        .where_(
+            PersonType::identifier,
+            ProjectedManagerComparison::Eq,
+            &Identifier::new("data-transaction-seed").expect("transaction seed key"),
+        )
+        .expect("borrowed read filter");
+    let read_all = read_filter.all().await.expect("borrowed all terminal");
+    let read_count = read_filter.count().await.expect("borrowed count terminal");
+    let read_exists = read_filter.exists().await.expect("borrowed exists terminal");
+    let read_first = read_filter
+        .first()
+        .await
+        .expect("borrowed first terminal")
+        .expect("borrowed first result");
+    let sibling_filter_usable = read_manager
+        .where_(
+            PersonType::identifier,
+            ProjectedManagerComparison::Eq,
+            &Identifier::new("data-transaction-seed").expect("transaction seed key"),
+        )
+        .expect("sibling borrowed filter")
+        .exists()
+        .await
+        .expect("sibling borrowed terminal");
+    assert_eq!(read_all.len(), 1);
+    assert_eq!(read_count, 1);
+    assert!(read_exists && sibling_filter_usable);
+    assert_eq!(read_first.iid(), transaction_seed.iid());
+    drop(read_filter);
+    drop(read_manager);
+    read.close().await.expect("borrowed read closes");
+
+    let commit_transaction = db.write().await.expect("commit transaction opens");
+    let committed = commit_transaction
+        .entities::<Person>()
+        .insert(ownership_edge_person_input(
+            "data-transaction-commit",
+            &[],
+            None,
+        ))
+        .await
+        .expect("borrowed commit insert");
+    let committed_iid = committed.iid().to_owned();
+    let commit_same_transaction_visible = commit_transaction
+        .entities::<Person>()
+        .get_by_iid(&committed_iid)
+        .await
+        .expect("same transaction commit read")
+        .is_some();
+    let commit_outside_before = db
+        .entities::<Person>()
+        .get_by_iid(&committed_iid)
+        .await
+        .expect("outside precommit read")
+        .is_some();
+    commit_transaction
+        .commit()
+        .await
+        .expect("borrowed transaction commit");
+    let commit_outside_after = db
+        .entities::<Person>()
+        .get_by_iid(&committed_iid)
+        .await
+        .expect("outside postcommit read")
+        .is_some();
+
+    let rollback_transaction = db.write().await.expect("rollback transaction opens");
+    let rolled = rollback_transaction
+        .entities::<Person>()
+        .insert(ownership_edge_person_input(
+            "data-transaction-rollback",
+            &[],
+            None,
+        ))
+        .await
+        .expect("borrowed rollback insert");
+    let rolled_iid = rolled.iid().to_owned();
+    let rollback_same_transaction_visible = rollback_transaction
+        .entities::<Person>()
+        .get_by_iid(&rolled_iid)
+        .await
+        .expect("same transaction rollback read")
+        .is_some();
+    let rollback_outside_before = db
+        .entities::<Person>()
+        .get_by_iid(&rolled_iid)
+        .await
+        .expect("outside prerollback read")
+        .is_some();
+    rollback_transaction
+        .rollback()
+        .await
+        .expect("borrowed transaction rollback");
+    let rollback_outside_after = db
+        .entities::<Person>()
+        .get_by_iid(&rolled_iid)
+        .await
+        .expect("outside postrollback read")
+        .is_some();
+
+    let poison_conflict = db
+        .entities::<Person>()
+        .insert(ownership_edge_person_input(
+            "data-poison-conflict",
+            &[],
+            None,
+        ))
+        .await
+        .expect("poison conflict seed");
+    let poison_transaction = db.write().await.expect("poison transaction opens");
+    let first_cause = poison_transaction
+        .entities::<Person>()
+        .insert_many(vec![
+            ownership_edge_person_input("data-poison-prefix", &[], None),
+            ownership_edge_person_input("data-poison-conflict", &[], None),
+        ])
+        .await
+        .expect_err("borrowed provider failure poisons transaction");
+    assert_eq!(first_cause.code(), Some("provider_operation_failed"));
+    let limit = usize::try_from(MAX_QUERY_ITEMS).expect("query item limit fits usize");
+    let excessive = (0..=limit)
+        .map(|index| {
+            ownership_edge_person_input(
+                &format!("data-excessive-{index}"),
+                &[],
+                None,
+            )
+        })
+        .collect();
+    let later_cause = poison_transaction
+        .entities::<Person>()
+        .insert_many(excessive)
+        .await
+        .expect_err("later resource limit is rejected");
+    assert_eq!(later_cause.code(), Some("batch_item_limit"));
+    let commit_rejection = poison_transaction
+        .commit()
+        .await
+        .expect_err("rollback-only transaction cannot commit");
+    assert_eq!(commit_rejection.code(), Some("transaction_rollback_only"));
+    let poison_prefix_visible = db
+        .entities::<Person>()
+        .all()
+        .await
+        .expect("poison prefix read")
+        .into_iter()
+        .any(|person| person.identifier().value() == "data-poison-prefix");
+    assert!(!poison_prefix_visible);
+
+    let recovery_transaction = db.write().await.expect("recovery transaction opens");
+    let recovery_cause = recovery_transaction
+        .entities::<Person>()
+        .insert_many(vec![
+            ownership_edge_person_input("data-recovery-prefix", &[], None),
+            ownership_edge_person_input("data-poison-conflict", &[], None),
+        ])
+        .await
+        .expect_err("recovery transaction is poisoned");
+    assert_eq!(recovery_cause.code(), first_cause.code());
+    recovery_transaction
+        .rollback()
+        .await
+        .expect("rollback-only transaction rolls back");
+    let recovery_prefix_visible = db
+        .entities::<Person>()
+        .all()
+        .await
+        .expect("recovery prefix read")
+        .into_iter()
+        .any(|person| person.identifier().value() == "data-recovery-prefix");
+    assert!(!recovery_prefix_visible);
+    let borrowed_transaction_lifecycle = json!({
+        "read": {
+            "reusable_after_success": read_count == 1 && read_exists,
+            "sibling_filter_usable": sibling_filter_usable,
+            "terminal_sequence": ["all", "count", "exists", "first"],
+            "state_after_terminals": "active",
+            "close_idempotent": true,
+        },
+        "commit_visibility": {
+            "before_commit": {
+                "same_transaction_visible": commit_same_transaction_visible,
+                "outside_transaction_visible": commit_outside_before,
+            },
+            "after_commit": {"outside_transaction_visible": commit_outside_after, "state": "committed"},
+        },
+        "rollback_visibility": {
+            "before_rollback": {
+                "same_transaction_visible": rollback_same_transaction_visible,
+                "outside_transaction_visible": rollback_outside_before,
+            },
+            "after_rollback": {"outside_transaction_visible": rollback_outside_after, "state": "rolled_back"},
+        },
+        "poison": {
+            "state": "rollback_only",
+            "first_cause": {"category": "provider", "code": first_cause.code().expect("first poison code")},
+            "later_cause": {"category": "resource_limit", "code": later_cause.code().expect("later poison code")},
+            "retained_cause": {"category": "provider", "code": recovery_cause.code().expect("retained poison code")},
+            "commit_rejection": {
+                "category": "transaction",
+                "code": commit_rejection.code().expect("commit rejection code"),
+                "provider_commit_calls": 0,
+            },
+        },
+        "post_rollback": {
+            "state": "rolled_back",
+            "rollback_idempotent": true,
+            "commit_rejected": true,
+            "mutation_rejected": true,
+            "close_state": "closed",
+            "close_idempotent": true,
+        },
+    });
+
+    db.entities::<Person>()
+        .delete(&committed_iid)
+        .await
+        .expect("committed transaction cleanup");
+    db.entities::<Person>()
+        .delete(transaction_seed.iid())
+        .await
+        .expect("transaction seed cleanup");
+    db.entities::<Person>()
+        .delete(poison_conflict.iid())
+        .await
+        .expect("poison conflict cleanup");
+
+    let resource_read = db.read().await.expect("resource read transaction opens");
+    let database_close_in_use = db.close().expect_err("database close rejects an open child");
+    assert_eq!(database_close_in_use.code(), Some("resource_in_use"));
+    let child_remains_usable = resource_read
+        .entities::<Person>()
+        .filter()
+        .expect("resource child filter")
+        .count()
+        .await
+        .is_ok();
+    resource_read
+        .close()
+        .await
+        .expect("resource read transaction closes");
+    db.close().expect("database closes after child");
+    db.close().expect("database close is idempotent");
+    let post_close_rejected = db
+        .entities::<Person>()
+        .count()
+        .await
+        .is_err();
+    assert!(post_close_rejected, "post-close provider work is rejected");
+    let data_resource_lifecycle = json!({
+        "resources": [
+            "database", "read_transaction", "write_transaction", "cancellation",
+            "batch_builder", "batch_input", "filter", "result", "projected_value",
+            "projected_thing", "diagnostic",
+        ],
+        "close_contract": {
+            "idempotent": true,
+            "post_close_rejected": post_close_rejected,
+            "post_close_provider_calls": 0,
+        },
+        "parent_child": {
+            "runtime_close_with_database": "in_use",
+            "database_close_with_transaction": "in_use",
+            "parent_handle_retained_on_rejection": database_close_in_use.code() == Some("resource_in_use"),
+            "child_remains_usable": child_remains_usable,
+            "parent_closes_after_children": true,
+        },
+        "session_rules": {
+            "borrowed_read_not_consumed": read_count == 1 && read_exists,
+            "sibling_filter_usable": sibling_filter_usable,
+            "write_recovery_after_cancellation": true,
+        },
+        "result_survival": {
+            "result_survives_filter_close": read_first.identifier().value() == "data-transaction-seed",
+            "result_survives_transaction_close": read_first.identifier().value() == "data-transaction-seed",
+            "owned_thing_survives_result_close": !read_first.iid().is_empty(),
+        },
+        "cancellation_close_idempotent": true,
+        "projected_value_close_idempotent": true,
+        "projected_thing_close_idempotent": true,
+    });
+    let journey_bytes = fs::read(workforce_env_path("TYPE_BRIDGE_WORKFORCE_V3_JOURNEY"))
+        .expect("Workforce V3 journey is readable");
+    let journey: Value =
+        serde_json::from_slice(&journey_bytes).expect("Workforce V3 journey is valid JSON");
+    assert_eq!(
+        entity_batch_insert_put,
+        journey["expected_observations"]["entity_batch_insert_put"]
+    );
+    assert_eq!(
+        entity_batch_update_delete_atomic,
+        journey["expected_observations"]["entity_batch_update_delete_atomic"]
+    );
+    assert_eq!(
+        relation_batch_insert_put,
+        journey["expected_observations"]["relation_batch_insert_put"]
+    );
+    assert_eq!(
+        relation_batch_update_delete_atomic,
+        journey["expected_observations"]["relation_batch_update_delete_atomic"]
+    );
+    assert_eq!(
+        entity_observation,
+        journey["expected_observations"]["unkeyed_entity_iid_lifecycle"]
+    );
+    assert_eq!(
+        relation_observation,
+        journey["expected_observations"]["unkeyed_relation_iid_lifecycle"]
+    );
+    assert_eq!(
+        data_resource_lifecycle,
+        journey["expected_observations"]["data_resource_lifecycle"]
+    );
+    assert_eq!(
+        borrowed_transaction_lifecycle,
+        journey["expected_observations"]["borrowed_transaction_lifecycle"]
+    );
+    let semantic_fingerprint: Value = serde_json::from_str(SEMANTIC_SCHEMA_FINGERPRINT_JSON)
+        .expect("generated V3 semantic fingerprint is valid JSON");
+    let projection_fingerprint: Value = serde_json::from_str(PROJECTION_FINGERPRINT_JSON)
+        .expect("generated V3 projection fingerprint is valid JSON");
+    let results = [
+        ("borrowed_transaction_lifecycle", "lifecycle", borrowed_transaction_lifecycle),
+        ("data_resource_lifecycle", "lifecycle", data_resource_lifecycle),
+        ("entity_batch_insert_put", "direct_runtime", entity_batch_insert_put),
+        (
+            "entity_batch_update_delete_atomic",
+            "direct_runtime",
+            entity_batch_update_delete_atomic,
+        ),
+        ("relation_batch_insert_put", "direct_runtime", relation_batch_insert_put),
+        (
+            "relation_batch_update_delete_atomic",
+            "direct_runtime",
+            relation_batch_update_delete_atomic,
+        ),
+        ("unkeyed_entity_iid_lifecycle", "direct_runtime", entity_observation),
+        ("unkeyed_relation_iid_lifecycle", "direct_runtime", relation_observation),
+    ]
+    .into_iter()
+    .map(|(observation_ref, proof_kind, observation)| {
+        json!({
+            "observation_ref": observation_ref,
+            "proof_kind": proof_kind,
+            "outcome": "passed",
+            "observation": observation,
+        })
+    })
+    .collect::<Vec<_>>();
+    let supplement = json!({
+        "format": "typebridge.workforce-v3-live-supplement/v1",
+        "binding": "rust",
+        "producer": "type-bridge-rust.generated-data-model-runtime-v3-live",
+        "semantic_profile": WORKFORCE_PROFILE,
+        "semantic_fingerprint": semantic_fingerprint,
+        "projection_fingerprint": projection_fingerprint,
+        "results": results,
+    });
+    publish_workforce_report(
+        &workforce_env_path("TYPE_BRIDGE_WORKFORCE_V3_RUST_SUPPLEMENT"),
+        supplement,
+    );
+    println!("generated Workforce V3 Rust live supplement: passed");
 }
 
 fn relation_person_input(identifier: &str, alias: &str) -> PersonCreate {

@@ -35,6 +35,7 @@ use type_bridge_contract::query_remote_v2::{
 use type_bridge_contract::schema::{DeclaredSchema, DocumentId, decode_declared_schema};
 use type_bridge_contract::schema_delta::ManagedSchemaState;
 use type_bridge_contract::value::CanonicalValue;
+use type_bridge_core_lib::version::semantic_profile_id;
 use type_bridge_query::{MigrationAssertionValidationContext, ValidatedQuery, validate_query_plan};
 use type_bridge_schema::{ManagedDeltaContext, ResolvedSchema};
 use type_bridge_schema_compat::{LiveQueryControlPresence, rebuild_live_query_authority};
@@ -696,7 +697,14 @@ fn verify_database_identity(
             "the executor cannot prove the exact TypeDB semantic profile",
         )
     })?;
-    let observed_profile = SemanticProfileId::new(format!("typedb-{server_version}/v1"))?;
+    let observed_profile =
+        SemanticProfileId::new(semantic_profile_id(&server_version).ok_or_else(|| {
+            failure(
+                DiagnosticCategory::Integrity,
+                "query_prepared_semantic_profile_unsupported",
+                "the executor TypeDB version has no supported semantic profile",
+            )
+        })?)?;
     if &observed_profile != authority.delta_context.semantic_profile() {
         return Err(failure(
             DiagnosticCategory::Integrity,
@@ -2734,7 +2742,7 @@ mod tests {
             Box::new(UnsupportedFenceBackend {
                 metrics: Arc::clone(&metrics),
                 schema: "define entity person;".to_owned(),
-                server_version: type_bridge_core_lib::version::Version::new(3, 12, 0),
+                server_version: type_bridge_core_lib::version::Version::new(3, 11, 5),
             }),
             "prepared-profile-mismatch",
         );
@@ -2747,7 +2755,7 @@ mod tests {
             QueryV2AnswerLimits::default(),
         )
         .await
-        .expect_err("3.12.0 authority must not execute against a 3.12.1 provider");
+        .expect_err("a 3.12 authority must not execute against a 3.11 provider");
 
         assert_eq!(
             diagnostic.code().as_str(),

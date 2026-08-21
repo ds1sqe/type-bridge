@@ -269,7 +269,7 @@ def test_committed_catalog_and_manifest_freeze_exact_transition_subset() -> None
         for capability in contracts.capabilities
         if capability["binding_profile"] == FOUR_LIVE_PROFILE
     }
-    assert promoted_cases == set(comparator.EXPECTED_MANIFEST_TRANSITION_CASES)
+    assert set(comparator.EXPECTED_MANIFEST_TRANSITION_CASES) <= promoted_cases
     for case_id in contracts.manifest_transition_cases:
         capability = contracts.cases[case_id]["capability"]
         statuses = comparator._expand_binding_profile(
@@ -333,13 +333,15 @@ def test_final_promoted_reports_have_no_pending_manifest_transition(
         )
         assert {statuses[binding] for binding in ("python", "node", "rust")} == {"gap"}
         assert statuses["c"] == "planned"
-    unrelated = contracts.cases["workforce.schema.ordered-distinct"]["capability"]
-    unrelated_statuses = comparator._expand_binding_profile(
+    later_plan05 = contracts.cases["workforce.schema.ordered-distinct"]["capability"]
+    later_plan05_statuses = comparator._expand_binding_profile(
         contracts.manifest.value,
-        unrelated["binding_profile"],
+        later_plan05["binding_profile"],
     )
-    assert unrelated_statuses["python"] == "gap"
-    assert unrelated_statuses["c"] == "planned"
+    assert all(
+        later_plan05_statuses[binding] == "accepted_live"
+        for binding in comparator.REPORT_BINDINGS
+    )
 
 
 @pytest.mark.parametrize(

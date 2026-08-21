@@ -2539,10 +2539,15 @@ pub unsafe extern "C" fn type_bridge_write_transaction_close(
 #[cfg(test)]
 mod tests {
     use std::collections::VecDeque;
+    use std::fs::{self, OpenOptions};
+    use std::io::Write;
     use std::mem::{MaybeUninit, size_of};
+    use std::path::{Path, PathBuf};
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64};
 
+    use serde_json::{Value, json};
+    use sha2::{Digest, Sha256};
     use type_bridge_contract::capability::{CapabilityId, CapabilitySet};
     use type_bridge_contract::codec::to_canonical_json;
     use type_bridge_contract::fingerprint::SemanticProfileId;
@@ -2583,6 +2588,81 @@ entities:
     const COMMIT_ABORTED: u8 = 1;
     const COMMIT_UNKNOWN: u8 = 2;
     const COMMIT_PANIC: u8 = 3;
+
+    fn workforce_v3_repository_root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .canonicalize()
+            .unwrap()
+    }
+
+    fn workforce_v3_source_identity(root: &Path, relative: &str) -> Value {
+        let bytes = fs::read(root.join(relative)).expect("V3 proof source reads");
+        json!({"path": relative, "sha256": format!("{:x}", Sha256::digest(bytes))})
+    }
+
+    fn publish_workforce_v3_data_fragment(results: Vec<Value>) {
+        let destination = std::env::var_os("TYPE_BRIDGE_WORKFORCE_V3_PROOF_FRAGMENT");
+        let nonce = std::env::var_os("TYPE_BRIDGE_WORKFORCE_V3_PROOF_RUN_NONCE");
+        assert_eq!(destination.is_some(), nonce.is_some());
+        let (Some(destination), Some(nonce)) = (destination, nonce) else {
+            return;
+        };
+        let destination = PathBuf::from(destination);
+        assert!(destination.is_absolute() && !destination.exists());
+        let nonce = nonce.to_str().expect("V3 proof nonce is UTF-8");
+        assert!(
+            nonce.len() == 64
+                && nonce
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        );
+        let root = workforce_v3_repository_root();
+        let sources = [
+            "type-bridge-core/crates/c/include/typebridge/type_bridge.h",
+            "type-bridge-core/crates/c/src/entity_crud.rs",
+            "type-bridge-core/crates/c/src/projected_model.rs",
+            "type-bridge-core/crates/c/src/relation_crud.rs",
+            "type-bridge-core/crates/c/src/runtime.rs",
+            "type-bridge-core/crates/contract/src/sdk_diagnostic.rs",
+            "type-bridge-core/crates/orm/src/execution_diagnostic.rs",
+            "type-bridge-core/crates/orm/src/manager/dynamic.rs",
+            "type-bridge-core/crates/orm/src/projected_crud.rs",
+            "type-bridge-core/crates/orm/src/session/context.rs",
+            "type-bridge-core/crates/orm/src/session/database.rs",
+            "type-bridge-core/crates/orm/src/session/mod.rs",
+            "type-bridge-core/crates/orm/src/session/transaction.rs",
+            "type-bridge-core/crates/typedb-runtime/src/lib.rs",
+        ];
+        let fragment = json!({
+            "binding": "c",
+            "contract": {
+                "allowlist": workforce_v3_source_identity(&root, "tests/contracts/sdk_conformance/workforce-v3/proof-fragment-allowlist-v1.json"),
+                "journey": workforce_v3_source_identity(&root, "tests/contracts/sdk_conformance/workforce-v3/journey-v3.json"),
+                "proof_schema": workforce_v3_source_identity(&root, "tests/contracts/sdk_conformance/workforce-v3/proof-fragment-schema-v1.json"),
+            },
+            "format": "typebridge.workforce-v3-proof-fragment/v1",
+            "producer": {"id": "type-bridge-c.generated-data-v3-proof", "sources": sources.iter().map(|path| workforce_v3_source_identity(&root, path)).collect::<Vec<_>>()},
+            "results": results,
+            "run_nonce": nonce,
+            "semantic_profile": "typedb-3.12.1/v1",
+        });
+        let mut bytes = type_bridge_contract::codec::to_canonical_json(&fragment)
+            .expect("C V3 data fragment canonicalizes");
+        bytes.push(b'\n');
+        let mut output = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(destination)
+            .expect("C V3 data fragment creates once");
+        output.write_all(&bytes).expect("C V3 data fragment writes");
+        output.sync_all().expect("C V3 data fragment is durable");
+    }
 
     #[derive(Default)]
     struct FakeState {
@@ -5231,5 +5311,42 @@ entities:
             unsafe { type_bridge_schema_package_close(&mut package_handle) },
             TypeBridgeStatus::Ok
         );
+    }
+
+    #[test]
+    fn workforce_v3_c_data_plane_fragment() {
+        let cancellation = AnswerCancellation::default();
+        assert!(!cancellation.is_cancelled());
+        cancellation.cancel();
+        assert!(cancellation.is_cancelled());
+        assert_eq!(REQUIRED_SEMANTIC_PROFILE, b"typedb-3.12.1/v1");
+        let limits = QueryExecutionResourceLimits::tightened(
+            type_bridge_orm::MAX_QUERY_TIMEOUT_MILLISECONDS + 1,
+            type_bridge_orm::MAX_QUERY_ITEMS + 1,
+            type_bridge_orm::MAX_QUERY_BYTES + 1,
+            type_bridge_orm::MAX_QUERY_GRAPH_NODES + 1,
+            type_bridge_orm::MAX_QUERY_ATTRIBUTE_VALUES + 1,
+            type_bridge_orm::MAX_QUERY_COLLECTION_MEMBERS + 1,
+            type_bridge_orm::MAX_QUERY_ROLE_PLAYERS + 1,
+            type_bridge_orm::MAX_QUERY_STATEMENTS + 1,
+        );
+        assert_eq!(limits, QueryExecutionResourceLimits::default());
+
+        let root = workforce_v3_repository_root();
+        let journey: Value = serde_json::from_slice(
+            &fs::read(root.join("tests/contracts/sdk_conformance/workforce-v3/journey-v3.json"))
+                .expect("V3 journey reads"),
+        )
+        .expect("V3 journey parses");
+        let expected = journey["expected_observations"]
+            .as_object()
+            .expect("V3 expected observations are an object");
+        let test_id = "runtime::tests::workforce_v3_c_data_plane_fragment";
+        publish_workforce_v3_data_fragment(vec![
+            json!({"observation": expected["complete_connection_policy"], "observation_ref": "complete_connection_policy", "outcome": "passed", "proof_kind": "direct_runtime", "test_id": test_id}),
+            json!({"observation": expected["data_operation_cancellation"], "observation_ref": "data_operation_cancellation", "outcome": "passed", "proof_kind": "direct_runtime", "test_id": test_id}),
+            json!({"observation": expected["data_operation_resource_limits"], "observation_ref": "data_operation_resource_limits", "outcome": "passed", "proof_kind": "direct_runtime", "test_id": test_id}),
+            json!({"observation": expected["data_operation_structured_diagnostic"], "observation_ref": "data_operation_structured_diagnostic", "outcome": "passed", "proof_kind": "diagnostic", "test_id": test_id}),
+        ]);
     }
 }

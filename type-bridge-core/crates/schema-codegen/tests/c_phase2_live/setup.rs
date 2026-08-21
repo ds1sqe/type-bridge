@@ -49,8 +49,8 @@ async fn main() {
         .expect("the server exposes authoritative version evidence");
     assert_eq!(
         (version.major, version.minor, version.patch),
-        (3, 12, 1),
-        "the C Phase-2 live subset requires exact TypeDB 3.12.1",
+        (3, 12, 3),
+        "the C Phase-2 live subset requires exact TypeDB 3.12.3",
     );
 
     match mode.as_str() {

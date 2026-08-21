@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/** Produce Node's exact-TypeDB-3.12.1 Phase-2 live-subset report. */
+/** Produce Node's exact-TypeDB-3.12.3 Phase-2 live-subset report. */
 
 import crypto from "node:crypto";
 import {
@@ -30,7 +30,7 @@ export const SEMANTIC_SCHEMA_FINGERPRINT = Object.freeze({
 export const PROJECTION_FINGERPRINT = Object.freeze({
   algorithm: "sha256",
   canonicalization: "typebridge.binding-projection/v1",
-  digest: "d2aa868a17f1c8f2ac8f276421b78966f9dbfced608f6565f2647d3a8e584b59",
+  digest: "9592d74eaa4e207cbbb87c4004b0b556d4e6d42992ae161caa140641c689efa6",
   domain: "typebridge.binding.projection",
   semantic_profile: SEMANTIC_PROFILE,
 });
@@ -1387,10 +1387,10 @@ export async function runOwnedDatabase({
   let failure;
   try {
     const detected = await versionDetector(address, port);
-    if (detected !== "3.12.1") {
+    if (detected !== "3.12.3") {
       throw new ProducerError(
         "server_version_mismatch",
-        "live evidence requires the actually detected TypeDB server version 3.12.1; " +
+        "live evidence requires the actually detected TypeDB server version 3.12.3; " +
           `detected ${JSON.stringify(detected)}`,
       );
     }

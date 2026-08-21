@@ -6439,7 +6439,7 @@ impl Drop for IsolatedLiveDatabase<'_> {
 }
 
 /// Exact Phase-3 acceptance: a compiled C17 consumer owns the complete
-/// runtime/database/transaction lifecycle against an isolated TypeDB 3.12.1.
+/// runtime/database/transaction lifecycle against an isolated TypeDB 3.12.3.
 ///
 /// Run through the repository integration lane, or directly after building
 /// the shared library:
@@ -6449,13 +6449,13 @@ impl Drop for IsolatedLiveDatabase<'_> {
 /// TYPEDB_ADDRESS=127.0.0.1:<grpc-port> TYPEDB_HTTP_PORT=<http-port> \
 /// TYPE_BRIDGE_C_INTG_DATABASE=type_bridge_c_runtime_live_<unique> \
 /// cargo test --locked -p type-bridge-c --test schema_package_abi \
-///   live_c17_consumer_exercises_exact_3_12_1_transaction_lifecycle \
+///   live_c17_consumer_exercises_exact_3_12_3_transaction_lifecycle \
 ///   -- --exact --ignored --nocapture
 /// ```
 #[cfg(unix)]
 #[test]
-#[ignore = "requires an isolated exact TypeDB 3.12.1 server and the C shared library"]
-fn live_c17_consumer_exercises_exact_3_12_1_transaction_lifecycle() {
+#[ignore = "requires an isolated exact TypeDB 3.12.3 server and the C shared library"]
+fn live_c17_consumer_exercises_exact_3_12_3_transaction_lifecycle() {
     let native_library = native_library().unwrap_or_else(|| {
         panic!("build the TypeBridge C shared library before running the exact C runtime live test")
     });
@@ -6577,7 +6577,7 @@ int main(void) {
   CHECK(database != NULL && diagnostics == NULL);
   CHECK(type_bridge_database_server_version(database, &version) ==
         TYPE_BRIDGE_STATUS_OK);
-  CHECK(same_text(version, "3.12.1"));
+  CHECK(same_text(version, "3.12.3"));
 
   /* Database ownership retains the verified package authority. */
   CHECK(type_bridge_schema_package_close(&package) == TYPE_BRIDGE_STATUS_OK);
@@ -6699,8 +6699,8 @@ int main(void) {
         .expect("the live administration connection has authoritative version evidence");
     assert_eq!(
         (detected.major, detected.minor, detected.patch),
-        (3, 12, 1),
-        "the exact C runtime live test requires TypeDB 3.12.1"
+        (3, 12, 3),
+        "the exact C runtime live test requires TypeDB 3.12.3"
     );
     assert!(
         !administration_runtime

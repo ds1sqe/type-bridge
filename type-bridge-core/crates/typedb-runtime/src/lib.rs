@@ -14,7 +14,7 @@ compile_error!(
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU8, Ordering as AtomicOrdering};
+use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -1260,6 +1260,7 @@ fn contain_driver_shutdown(shutdown: impl FnOnce() -> Result<()>) -> Result<()> 
     }
 }
 
+#[cfg(test)]
 fn run_driver_shutdown(
     state: &AtomicU8,
     close_lock: &Mutex<()>,
@@ -1273,6 +1274,13 @@ fn run_driver_shutdown(
         Err(poisoned) => poisoned.into_inner(),
     };
 
+    run_driver_shutdown_locked(state, shutdown)
+}
+
+fn run_driver_shutdown_locked(
+    state: &AtomicU8,
+    shutdown: impl FnOnce() -> Result<()>,
+) -> Result<()> {
     match state.load(AtomicOrdering::Acquire) {
         DRIVER_CLOSED => return Ok(()),
         DRIVER_OPEN => {
@@ -1298,15 +1306,33 @@ fn run_driver_shutdown(
     result
 }
 
+fn retain_driver_transaction(
+    state: &AtomicU8,
+    active_transactions: &AtomicUsize,
+    close_lock: &Mutex<()>,
+) -> Result<()> {
+    let _close_guard = match close_lock.lock() {
+        Ok(close_guard) => close_guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    if state.load(AtomicOrdering::Acquire) != DRIVER_OPEN {
+        return Err(RuntimeError::Connection(
+            "TypeDB driver connection is closed".to_owned(),
+        ));
+    }
+    active_transactions.fetch_add(1, AtomicOrdering::AcqRel);
+    Ok(())
+}
+
 /// Shared driver lifetime retained by every open transaction.
 ///
 /// Automatic shutdown happens only when the final runtime/transaction lease is
-/// released. Explicit connection close still calls [`Self::force_close`]
-/// immediately. This distinction preserves the released behavior that a
-/// transaction can outlive the database handle that opened it.
+/// released. Explicit connection close rejects while a transaction is active,
+/// preserving child usability and making parent/child close order observable.
 pub(crate) struct DriverHandle {
     inner: DriverHandleInner,
     state: AtomicU8,
+    active_transactions: AtomicUsize,
     close_lock: Mutex<()>,
 }
 
@@ -1320,6 +1346,7 @@ impl DriverHandle {
         Self {
             inner: DriverHandleInner::B8(driver),
             state: AtomicU8::new(DRIVER_OPEN),
+            active_transactions: AtomicUsize::new(0),
             close_lock: Mutex::new(()),
         }
     }
@@ -1329,6 +1356,7 @@ impl DriverHandle {
         Self {
             inner: DriverHandleInner::B9(driver),
             state: AtomicU8::new(DRIVER_OPEN),
+            active_transactions: AtomicUsize::new(0),
             close_lock: Mutex::new(()),
         }
     }
@@ -1367,7 +1395,17 @@ impl DriverHandle {
     /// upstream callback worker is joined only when the final driver lease is
     /// dropped.
     fn force_close(&self) -> Result<()> {
-        run_driver_shutdown(&self.state, &self.close_lock, || match &self.inner {
+        let _close_guard = match self.close_lock.lock() {
+            Ok(close_guard) => close_guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if self.active_transactions.load(AtomicOrdering::Acquire) != 0 {
+            return Err(RuntimeError::ResourceLimit {
+                code: "resource_in_use",
+                message: "connection cannot close while a transaction is active",
+            });
+        }
+        run_driver_shutdown_locked(&self.state, || match &self.inner {
             #[cfg(feature = "band8")]
             DriverHandleInner::B8(driver) => driver
                 .force_close()
@@ -2269,7 +2307,11 @@ impl TypeDBRuntime {
                         .map_err(|e| {
                             RuntimeError::Transaction(format!("Failed to open transaction: {e}"))
                         })?;
-                    driver_lease.ensure_open()?;
+                    retain_driver_transaction(
+                        &driver_lease.state,
+                        &driver_lease.active_transactions,
+                        &driver_lease.close_lock,
+                    )?;
                     Ok(RuntimeTransaction {
                         inner: RuntimeTransactionInner::B8(Some(transaction)),
                         driver_lease: Some(driver_lease),
@@ -2294,7 +2336,11 @@ impl TypeDBRuntime {
                         .map_err(|e| {
                             RuntimeError::Transaction(format!("Failed to open transaction: {e}"))
                         })?;
-                    driver_lease.ensure_open()?;
+                    retain_driver_transaction(
+                        &driver_lease.state,
+                        &driver_lease.active_transactions,
+                        &driver_lease.close_lock,
+                    )?;
                     Ok(RuntimeTransaction {
                         inner: RuntimeTransactionInner::B9(Some(transaction)),
                         driver_lease: Some(driver_lease),
@@ -2436,6 +2482,17 @@ pub struct RuntimeTransaction {
     // Keep the selected driver alive until this transaction is released. Test
     // doubles use `None` because they contain no live upstream transaction.
     driver_lease: Option<Arc<DriverHandle>>,
+}
+
+impl Drop for RuntimeTransaction {
+    fn drop(&mut self) {
+        if let Some(driver) = &self.driver_lease {
+            let previous = driver
+                .active_transactions
+                .fetch_sub(1, AtomicOrdering::AcqRel);
+            debug_assert!(previous != 0, "runtime transaction lease count underflow");
+        }
+    }
 }
 
 fn runtime_cancelled_error() -> RuntimeError {
@@ -3022,6 +3079,9 @@ impl RuntimeTransaction {
                     let t = tx.ok_or_else(|| {
                         RuntimeError::Transaction("Transaction already consumed".into())
                     })?;
+                    if !t.is_open() {
+                        return Ok(());
+                    }
                     t.rollback()
                         .await
                         .map_err(|e| RuntimeError::Transaction(format!("Rollback failed: {e}")))
@@ -3037,6 +3097,9 @@ impl RuntimeTransaction {
                     let t = tx.ok_or_else(|| {
                         RuntimeError::Transaction("Transaction already consumed".into())
                     })?;
+                    if !t.is_open() {
+                        return Ok(());
+                    }
                     t.rollback()
                         .await
                         .map_err(|e| RuntimeError::Transaction(format!("Rollback failed: {e}")))
@@ -4022,6 +4085,26 @@ mod tests {
             panic!("successful cleanup must make later close calls no-ops")
         })
         .expect("close remains idempotent after cleanup succeeds");
+    }
+
+    #[test]
+    fn transaction_retention_and_shutdown_share_one_admission_lock() {
+        let state = AtomicU8::new(DRIVER_OPEN);
+        let active_transactions = AtomicUsize::new(0);
+        let close_lock = Mutex::new(());
+
+        retain_driver_transaction(&state, &active_transactions, &close_lock)
+            .expect("an open driver admits a transaction lease");
+        assert_eq!(active_transactions.load(AtomicOrdering::Acquire), 1);
+
+        let _close_guard = close_lock.lock().expect("admission lock remains usable");
+        state.store(DRIVER_CLOSING, AtomicOrdering::Release);
+        drop(_close_guard);
+
+        let error = retain_driver_transaction(&state, &active_transactions, &close_lock)
+            .expect_err("shutdown must make later transaction retention terminal");
+        assert!(matches!(error, RuntimeError::Connection(_)));
+        assert_eq!(active_transactions.load(AtomicOrdering::Acquire), 1);
     }
 
     #[test]

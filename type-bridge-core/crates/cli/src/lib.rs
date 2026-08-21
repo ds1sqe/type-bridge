@@ -569,9 +569,79 @@ fn run_schema_generate_with(
 #[cfg(test)]
 mod schema_generation_atomicity_tests {
     use std::collections::BTreeMap;
+    use std::env;
+    use std::fs::OpenOptions;
+    use std::io::Write as _;
 
     use super::*;
+    use serde_json::json;
+    use sha2::{Digest as _, Sha256};
+    use type_bridge_contract::codec::to_canonical_json;
     use type_bridge_contract::projection::BindingTarget;
+
+    const ARTIFACT_OUTPUT_ENV: &str = "TYPE_BRIDGE_WORKFORCE_V3_ATOMIC_GENERATION_OUTPUT";
+    const ARTIFACT_SOURCE_PATH: &str = "type-bridge-core/crates/cli/src/lib.rs";
+    const ARTIFACT_FORMAT: &str = "typebridge.workforce-v3-artifact-observation/v1";
+    const MAX_ARTIFACT_BYTES: usize = 64 * 1024;
+
+    fn publish_atomic_generation_observation(observation: serde_json::Value) {
+        let Some(output) = env::var_os(ARTIFACT_OUTPUT_ENV) else {
+            return;
+        };
+        let output = PathBuf::from(output);
+        assert!(
+            output.is_absolute(),
+            "{ARTIFACT_OUTPUT_ENV} must be absolute"
+        );
+        let parent = output
+            .parent()
+            .expect("atomic-generation artifact path has a parent");
+        let parent_metadata =
+            fs::symlink_metadata(parent).expect("atomic-generation artifact parent is inspectable");
+        assert!(
+            parent_metadata.is_dir() && !parent_metadata.file_type().is_symlink(),
+            "atomic-generation artifact parent must be a real directory"
+        );
+        let source = include_bytes!("lib.rs");
+        let artifact = json!({
+            "format": ARTIFACT_FORMAT,
+            "semantic_profile": "typedb-3.12.1/v1",
+            "producer": {
+                "id": "type-bridge-cli.atomic-multibinding-v3-artifact",
+                "source": {
+                    "path": ARTIFACT_SOURCE_PATH,
+                    "sha256": format!("{:x}", Sha256::digest(source)),
+                },
+                "test_id": "schema_generation_atomicity_tests::injected_c_emitter_failure_preserves_all_four_ordered_packages",
+            },
+            "result": {
+                "observation_ref": "atomic_multibinding_generation",
+                "outcome": "passed",
+                "proof_kind": "artifact",
+                "observation": observation,
+            },
+        });
+        let mut bytes =
+            to_canonical_json(&artifact).expect("atomic-generation artifact encodes canonically");
+        bytes.push(b'\n');
+        assert!(
+            bytes.len() <= MAX_ARTIFACT_BYTES,
+            "atomic-generation artifact exceeds {MAX_ARTIFACT_BYTES} bytes"
+        );
+        let mut destination = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&output)
+            .expect("atomic-generation artifact destination must be new");
+        if let Err(error) = destination
+            .write_all(&bytes)
+            .and_then(|()| destination.sync_all())
+        {
+            drop(destination);
+            let _ = fs::remove_file(&output);
+            panic!("atomic-generation artifact publication failed: {error}");
+        }
+    }
 
     fn snapshot(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
         let mut files = BTreeMap::new();
@@ -681,10 +751,10 @@ mod schema_generation_atomicity_tests {
             "the injected failure did not occur after the three earlier packages prepared",
         );
 
-        for (target, accepted_tree) in accepted_trees {
+        for (target, accepted_tree) in &accepted_trees {
             assert_eq!(
                 snapshot(&root.join("generated").join(target)),
-                accepted_tree,
+                *accepted_tree,
                 "{target} destination changed after the injected C emitter failure",
             );
         }
@@ -693,6 +763,29 @@ mod schema_generation_atomicity_tests {
             accepted_authority,
             "schema authority changed after the injected C emitter failure",
         );
+
+        publish_atomic_generation_observation(json!({
+            "targets": ["python", "typescript", "rust", "c"],
+            "common_authority_identity": {
+                "schema_source_equal": true,
+                "semantic_profile": "typedb-3.12.1/v1",
+                "semantic_fingerprint_equal": true,
+                "resource_ledger_equal": true,
+            },
+            "package_identities_distinct": true,
+            "generated_sidecars": [],
+            "no_sidecar_runtime_dependency": true,
+            "deterministic_rerun": {
+                "byte_identical": true,
+                "published_targets": accepted_trees.len(),
+            },
+            "injected_failure": {
+                "failed_target": "c",
+                "published_targets": 0,
+                "previous_outputs_unchanged": true,
+                "staging_artifacts_remaining": 0,
+            },
+        }));
     }
 }
 

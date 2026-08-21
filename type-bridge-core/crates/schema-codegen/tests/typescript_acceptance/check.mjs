@@ -1,5 +1,5 @@
-import { copyFileSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { dirname, isAbsolute, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
@@ -248,7 +248,11 @@ writeFileSync(
 command("tsc", ["--project", resolve(STAGE, "tsconfig.json")]);
 command("node", [resolve(STAGE, "authority_rejection_check.mjs")]);
 command("node", [resolve(STAGE, "runtime_check.mjs")]);
-const phase2Report = resolve(STAGE, "phase2-node-report.json");
+const externalPhase2Report = process.env.TYPE_BRIDGE_PHASE2_PARITY_REPORT;
+const phase2Report = externalPhase2Report ?? resolve(STAGE, "phase2-node-report.json");
+if (externalPhase2Report !== undefined && (!isAbsolute(phase2Report) || existsSync(phase2Report))) {
+  throw new Error("external Phase-2 parity report must be absent and absolute");
+}
 command(
   "node",
   [resolve(STAGE, "phase2_parity_check.mjs")],

@@ -228,7 +228,10 @@ fn ordered_projection_selects_successor_evidence_and_descriptors_in_all_bindings
     );
     assert_eq!(
         changed_resource_ids(&python_legacy_resources, &python_resources),
-        BTreeSet::from(["typebridge.generator.python.runtime-source".to_owned()])
+        BTreeSet::from([
+            "typebridge.generator.python.runtime-source".to_owned(),
+            "typebridge.generator.python.runtime-stub".to_owned(),
+        ])
     );
     let python_projection = projection(
         &schema,

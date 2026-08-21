@@ -839,7 +839,7 @@ int main(void) {
                                      &diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(type_bridge_database_server_version(database, &version) ==
         TYPE_BRIDGE_STATUS_OK);
-  CHECK(same_text(version, "3.12.1"));
+  CHECK(same_text(version, "3.12.3"));
 
   CHECK(type_bridge_read_transaction_open_v2(database, &limits, NULL,
                                              &read_transaction, &diagnostics) ==

@@ -89,6 +89,45 @@ def _finalize_catalog(tmp_path: Path) -> None:
     _write_json(catalog_path, catalog)
 
 
+def _restore_candidate_manifest(tmp_path: Path) -> None:
+    profiles = {
+        "workforce.schema.generate.atomic": "current_live_future_planned",
+        "workforce.model.constraints": "current_offline_future_planned",
+        "workforce.crud.entity-batch-insert-put": "current_live_future_planned",
+        "workforce.crud.relation-batch-insert-put": "current_live_future_planned",
+        "workforce.crud.entity-batch-update-delete": "python_rust_live_node_gap_future_planned",
+        "workforce.crud.relation-batch-update-delete": "python_rust_live_node_gap_future_planned",
+        "workforce.transaction.borrowed": "current_live_future_planned",
+        "workforce.manager.filter": "current_live_future_planned",
+        "workforce.projection.field-name-identity": "current_live_future_planned",
+        "workforce.model.integer-key-polymorphic-role": "current_live_future_planned",
+        "workforce.model.inherited-relation-role": "current_live_future_planned",
+        "workforce.crud.unkeyed-entity": "current_live_future_planned",
+        "workforce.crud.unkeyed-relation": "current_live_future_planned",
+        "workforce.projection.evidence-integrity": "current_offline_future_planned",
+        "workforce.projection.token-package-fencing": "current_offline_future_planned",
+        "workforce.schema.ordered-distinct": "current_gap_future_planned",
+        "workforce.runtime.connection-policy": "current_gap_future_planned",
+    }
+    manifest_path = tmp_path / comparator.MANIFEST_RELATIVE
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    for capability in manifest["capabilities"]:
+        case_id = capability["case_ids"][0]
+        if case_id in profiles:
+            capability["binding_profile"] = profiles[case_id]
+    reasons = {
+        "workforce.crud.entity-batch-update-delete": "the generated Node manager does not expose the required atomic batch update/delete outcome",
+        "workforce.crud.relation-batch-update-delete": "the generated Node manager does not expose the required atomic batch update/delete outcome",
+        "workforce.schema.ordered-distinct": "the guides promise ordered/list schema facts but Split-YAML and the canonical schema fact algebra do not represent them",
+        "workforce.runtime.connection-policy": "address, credentials, TLS roots, compatibility, timeout, and resource policy are not exposed and proven uniformly by current SDK facades",
+    }
+    for capability in manifest["capabilities"]:
+        case_id = capability["case_ids"][0]
+        if case_id in reasons:
+            capability["gap_reason"] = reasons[case_id]
+    _write_json(manifest_path, manifest)
+
+
 def _valid_report(binding: str, contracts: Any) -> dict[str, Any]:
     results = []
     for case_id, proof_kind, observation_ref in contracts.selected:
@@ -132,12 +171,12 @@ def _write_reports(tmp_path: Path, contracts: Any) -> list[Path]:
     return paths
 
 
-def test_phase0_contract_loads_exact_ledger_but_report_fan_in_is_disabled() -> None:
+def test_finalized_contract_loads_exact_ledger_and_fingerprint_authority() -> None:
     contracts = comparator.load_contracts()
 
-    assert contracts.authority_state == "phase0_unfinalized"
-    assert contracts.semantic_fingerprint is None
-    assert contracts.projection_fingerprints == {}
+    assert contracts.authority_state == "finalized"
+    assert contracts.semantic_fingerprint is not None
+    assert set(contracts.projection_fingerprints) == set(comparator.REPORT_BINDINGS)
     assert contracts.selected == comparator.EXPECTED_SELECTED_PROOFS
     assert contracts.manifest_transition_cases == comparator.EXPECTED_MANIFEST_TRANSITION_CASES
     assert len(contracts.selected) == 21
@@ -148,7 +187,7 @@ def test_phase0_contract_loads_exact_ledger_but_report_fan_in_is_disabled() -> N
 
     with pytest.raises(comparator.ContractError) as rejected:
         comparator.compare_reports([])
-    assert rejected.value.code == "unfinalized_contract"
+    assert rejected.value.code == "missing_binding"
 
 
 @pytest.mark.parametrize(
@@ -158,10 +197,10 @@ def test_phase0_contract_loads_exact_ledger_but_report_fan_in_is_disabled() -> N
         ("transition_reordered", "manifest_transition_case_mismatch"),
         ("broad_case_transition", "manifest_transition_case_mismatch"),
         ("report_producer", "invalid_report_producer"),
-        ("claimed_fingerprints", "unfinalized_fingerprint_mismatch"),
+        ("claimed_fingerprints", "invalid_object_fields"),
     ],
 )
-def test_phase0_catalog_mutations_fail_closed(
+def test_finalized_catalog_mutations_fail_closed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     mutation: str,
@@ -236,6 +275,7 @@ def test_finalized_fixture_derives_only_exact17_pending_and_retains_four_gaps(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _copy_authority(tmp_path)
+    _restore_candidate_manifest(tmp_path)
     _finalize_catalog(tmp_path)
     monkeypatch.setattr(comparator, "ROOT", tmp_path)
     contracts = comparator.load_contracts()

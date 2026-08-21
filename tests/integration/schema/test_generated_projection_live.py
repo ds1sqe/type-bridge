@@ -45,11 +45,16 @@ WORKFORCE_CATALOG_RELATIVE = "tests/contracts/sdk_conformance/workforce-v1/catal
 WORKFORCE_JOURNEY_RELATIVE = "tests/contracts/sdk_conformance/workforce-v1/journey-v1.json"
 WORKFORCE_V2_CATALOG_RELATIVE = "tests/contracts/sdk_conformance/workforce-v2/catalog-v2.json"
 WORKFORCE_V2_JOURNEY_RELATIVE = "tests/contracts/sdk_conformance/workforce-v2/journey-v2.json"
+WORKFORCE_V3_JOURNEY_RELATIVE = "tests/contracts/sdk_conformance/workforce-v3/journey-v3.json"
 WORKFORCE_MANIFEST = ROOT / WORKFORCE_MANIFEST_RELATIVE
 WORKFORCE_CATALOG = ROOT / WORKFORCE_CATALOG_RELATIVE
 WORKFORCE_JOURNEY = ROOT / WORKFORCE_JOURNEY_RELATIVE
 WORKFORCE_V2_CATALOG = ROOT / WORKFORCE_V2_CATALOG_RELATIVE
 WORKFORCE_V2_JOURNEY = ROOT / WORKFORCE_V2_JOURNEY_RELATIVE
+WORKFORCE_V3_JOURNEY = ROOT / WORKFORCE_V3_JOURNEY_RELATIVE
+WORKFORCE_V3_PROVIDER_SCHEMA = (
+    ROOT / "tests/contracts/sdk_conformance/workforce-v3/provider-3.12.1-v3.tql"
+)
 WORKFORCE_V2_PROOF_LOADER = ROOT / "scripts/ci/workforce_v2_proof_fragments.py"
 
 
@@ -303,6 +308,40 @@ def _publish_workforce_report(raw_path: str, report: dict[str, object]) -> None:
             ) from error
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def _publish_workforce_v3_python_supplement(
+    generated: ModuleType,
+    observations: dict[tuple[str, str], dict[str, object]],
+) -> None:
+    raw_path = os.environ.get("TYPE_BRIDGE_WORKFORCE_V3_PYTHON_SUPPLEMENT")
+    if raw_path is None:
+        return
+    _, journey = _load_json_object(WORKFORCE_V3_JOURNEY)
+    expected = journey["expected_observations"]
+    assert isinstance(expected, dict)
+    for (observation_ref, _), observation in observations.items():
+        assert observation == expected[observation_ref]
+    results = [
+        {
+            "observation_ref": observation_ref,
+            "proof_kind": proof_kind,
+            "outcome": "passed",
+            "observation": observation,
+        }
+        for (observation_ref, proof_kind), observation in sorted(observations.items())
+    ]
+    assert len(results) == 8
+    supplement = {
+        "format": "typebridge.workforce-v3-live-supplement/v1",
+        "binding": "python",
+        "semantic_profile": "typedb-3.12.1/v1",
+        "producer": "python.generated-data-model-runtime-v3-live",
+        "semantic_fingerprint": json.loads(generated.SEMANTIC_SCHEMA_FINGERPRINT_JSON),
+        "projection_fingerprint": json.loads(generated.PROJECTION_FINGERPRINT_JSON),
+        "results": results,
+    }
+    _publish_workforce_report(raw_path, supplement)
 
 
 def _workforce_datetime(field: dict[str, object], *, timezone: bool) -> datetime:
@@ -2061,6 +2100,323 @@ def generated_package(
         for module_name in tuple(sys.modules):
             if module_name == "generated_v2" or module_name.startswith("generated_v2."):
                 del sys.modules[module_name]
+
+
+@pytest.fixture
+def generated_v3_package(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    clean_db: Database,
+) -> Iterator[ModuleType]:
+    """Import the exact Workforce V3 Python projection generated for this run."""
+    _, _, semantic_profile = _acceptance_contract(clean_db)
+    if semantic_profile != "typedb-3.12.1/v1":
+        pytest.skip("Workforce V3 requires the 3.12 semantic profile")
+    supplied_stage = os.environ.get("TYPE_BRIDGE_GENERATED_PYTHON_STAGE")
+    if supplied_stage is None:
+        stage = tmp_path / "generated-v3-projection"
+        generation_environment = os.environ.copy()
+        generation_environment["TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE"] = semantic_profile
+        subprocess.run(
+            [
+                str(ROOT / "scripts/ci/prepare_generated_live_fixture.sh"),
+                "python",
+                str(stage),
+            ],
+            cwd=ROOT,
+            env=generation_environment,
+            check=True,
+        )
+    else:
+        stage = Path(supplied_stage).resolve()
+    package = stage / "generated_ordered" / "__init__.py"
+    if not package.is_file() or package.is_symlink():
+        raise AssertionError(f"supplied generated Python V3 fixture is incomplete: {package}")
+    monkeypatch.syspath_prepend(str(stage))
+    importlib.invalidate_caches()
+    generated = importlib.import_module("generated_ordered")
+    semantics = json.loads(generated.SEMANTIC_SCHEMA_FINGERPRINT_JSON)
+    assert semantics["semantic_profile"] == semantic_profile
+    try:
+        yield generated
+    finally:
+        for module_name in tuple(sys.modules):
+            if module_name == "generated_ordered" or module_name.startswith("generated_ordered."):
+                del sys.modules[module_name]
+
+
+def generated_data_model_runtime_v3_live(
+    clean_db: Database,
+    generated_v3_package: ModuleType,
+) -> None:
+    generated = generated_v3_package
+    _require_workforce_server_version(clean_db.detected_server_version())
+    clean_db.execute_query(
+        WORKFORCE_V3_PROVIDER_SCHEMA.read_text(encoding="utf-8"),
+        transaction_type="schema",
+    )
+
+    def person(identifier: str, score: int) -> Any:
+        return _make_generated_person(generated, identifier, score)
+
+    person_manager = generated.Person.manager(clean_db)
+    assert person_manager.insert_many([]) == []
+    assert person_manager.put_many([]) == []
+    ada, dana = person("data-ada", 10), person("data-dana", 20)
+    inserted_people = person_manager.insert_many([ada, dana])
+    assert inserted_people == [ada, dana]
+    assert all(value.iid for value in inserted_people)
+    persisted_person_keys = [
+        value.identifier.value
+        for value in person_manager.filter(
+            identifier__in=[generated.Identifier("data-ada"), generated.Identifier("data-dana")]
+        ).all()
+    ]
+    assert set(persisted_person_keys) == {"data-ada", "data-dana"}
+    person_manager.delete(dana)
+    put_people = person_manager.put_many([person("data-ada", 11), person("data-dana", 21)])
+    assert [value.identifier.value for value in put_people] == ["data-ada", "data-dana"]
+    ada = person_manager.filter(identifier=generated.Identifier("data-ada")).first()
+    dana = person_manager.filter(identifier=generated.Identifier("data-dana")).first()
+
+    duplicate_person_rejected = False
+    try:
+        person_manager.insert_many([person("duplicate-person", 1), person("duplicate-person", 2)])
+    except Exception:
+        duplicate_person_rejected = True
+    assert duplicate_person_rejected
+    assert person_manager.filter(identifier=generated.Identifier("duplicate-person")).count() == 0
+
+    network_manager = generated.NetworkLink.manager(clean_db)
+    assert network_manager.insert_many([]) == []
+    assert network_manager.put_many([]) == []
+    forward = generated.NetworkLink(
+        identifier=generated.Identifier("data-link-forward"), origin=ada, destination=dana
+    )
+    returning = generated.NetworkLink(
+        identifier=generated.Identifier("data-link-return"), origin=dana, destination=ada
+    )
+    inserted_links = network_manager.insert_many([forward, returning])
+    assert inserted_links == [forward, returning]
+    network_manager.delete(returning)
+    put_links = network_manager.put_many(
+        [
+            generated.NetworkLink(
+                identifier=generated.Identifier("data-link-forward"),
+                origin=ada,
+                destination=dana,
+            ),
+            generated.NetworkLink(
+                identifier=generated.Identifier("data-link-return"),
+                origin=dana,
+                destination=ada,
+            ),
+        ]
+    )
+    assert [value.identifier.value for value in put_links] == [
+        "data-link-forward",
+        "data-link-return",
+    ]
+    duplicate_relation_rejected = False
+    try:
+        network_manager.insert_many(
+            [
+                generated.NetworkLink(
+                    identifier=generated.Identifier("duplicate-link"),
+                    origin=ada,
+                    destination=dana,
+                ),
+                generated.NetworkLink(
+                    identifier=generated.Identifier("duplicate-link"),
+                    origin=dana,
+                    destination=ada,
+                ),
+            ]
+        )
+    except Exception:
+        duplicate_relation_rejected = True
+    assert duplicate_relation_rejected
+
+    counter_manager = generated.Counter.manager(clean_db)
+    counters = [
+        generated.Counter(counter_value=generated.CounterValue(1)),
+        generated.Counter(counter_value=generated.CounterValue(2)),
+    ]
+    assert counter_manager.insert_many(counters) == counters
+    counter_iids = [value.iid for value in counters]
+    assert all(counter_iids) and len(set(counter_iids)) == 2
+    counter_left = counter_manager.get_by_iid(counter_iids[0])
+    assert counter_left.counter_value.value == 1
+    counter_left.counter_value = generated.CounterValue(11)
+    counter_manager.update(counter_left)
+    updated_left = counter_manager.get_by_iid(counter_iids[0])
+    assert updated_left.counter_value.value == 11 and updated_left.iid == counter_iids[0]
+
+    duplicate_counter = generated.Counter(counter_value=generated.CounterValue(12))
+    duplicate_counter._iid = counter_iids[0]
+    duplicate_target_rejected = False
+    try:
+        counter_manager.update_many([updated_left, duplicate_counter])
+    except Exception:
+        duplicate_target_rejected = True
+    assert duplicate_target_rejected
+    counter_manager.delete_many(counters)
+    assert all(counter_manager.get_by_iid(iid) is None for iid in counter_iids)
+    assert counter_manager.delete_many(counters) == counters
+    assert all(counter_manager.get_by_iid(iid) is None for iid in counter_iids)
+
+    membership_manager = generated.Membership.manager(clean_db)
+    memberships = [generated.Membership(member=ada), generated.Membership(member=dana)]
+    assert membership_manager.insert_many(memberships) == memberships
+    membership_iids = [value.iid for value in memberships]
+    assert all(membership_iids) and len(set(membership_iids)) == 2
+    membership_ada = membership_manager.get_by_iid(membership_iids[0])
+    assert membership_ada.member.iid == ada.iid
+    membership_ada.member = dana
+    membership_manager.update(membership_ada)
+    updated_membership = membership_manager.get_by_iid(membership_iids[0])
+    assert updated_membership.iid == membership_iids[0]
+    assert updated_membership.member.iid == dana.iid
+    duplicate_membership = generated.Membership(member=ada)
+    duplicate_membership._iid = membership_iids[0]
+    duplicate_membership_rejected = False
+    try:
+        membership_manager.update_many([updated_membership, duplicate_membership])
+    except Exception:
+        duplicate_membership_rejected = True
+    assert duplicate_membership_rejected
+    membership_manager.delete_many(memberships)
+    assert all(membership_manager.get_by_iid(iid) is None for iid in membership_iids)
+    assert membership_manager.delete_many(memberships) == memberships
+    assert all(membership_manager.get_by_iid(iid) is None for iid in membership_iids)
+
+    with clean_db.transaction("read") as transaction:
+        borrowed_manager = generated.Person.manager(transaction)
+        assert borrowed_manager.count() == 2
+        assert borrowed_manager.filter(identifier=generated.Identifier("data-ada")).exists()
+        assert borrowed_manager.filter(identifier=generated.Identifier("data-dana")).first().iid
+        assert len(borrowed_manager.all()) == 2
+
+    committed = person("data-commit", 30)
+    with clean_db.transaction("write") as transaction:
+        transaction_manager = generated.Person.manager(transaction)
+        transaction_manager.insert(committed)
+        assert transaction_manager.get_by_iid(committed.iid) is not None
+        assert not person_manager.filter(identifier=generated.Identifier("data-commit")).exists()
+    assert person_manager.filter(identifier=generated.Identifier("data-commit")).exists()
+
+    rolled_back = person("data-rollback", 31)
+    with pytest.raises(RuntimeError, match="V3 rollback sentinel"):
+        with clean_db.transaction("write") as transaction:
+            transaction_manager = generated.Person.manager(transaction)
+            transaction_manager.insert(rolled_back)
+            assert transaction_manager.get_by_iid(rolled_back.iid) is not None
+            assert not person_manager.filter(
+                identifier=generated.Identifier("data-rollback")
+            ).exists()
+            raise RuntimeError("V3 rollback sentinel")
+    assert not person_manager.filter(identifier=generated.Identifier("data-rollback")).exists()
+
+    resource_session = generated.Person.query(clean_db)
+    resource_person = resource_session.exact(generated.Person)
+    filter_resource = resource_session.query(resource_person).where(
+        resource_person.field(generated.Person.identifier).eq(generated.Identifier("data-ada"))
+    )
+    surviving_result = filter_resource.one()
+    filter_resource.close()
+    filter_resource.close()
+    assert filter_resource.is_closed
+    with pytest.raises(MatchRequestError) as closed_query:
+        filter_resource.one()
+    assert closed_query.value.code == "query_resource_closed"
+    resource_session.close()
+    resource_session.close()
+    assert surviving_result.identifier.value == "data-ada"
+
+    common_duplicate = {
+        "category": "invalid_input",
+        "code": "duplicate_batch_target",
+        "path": [
+            {"kind": "argument", "value": "rows"},
+            {"kind": "index", "value": 1},
+            {"kind": "argument", "value": "iid"},
+        ],
+        "details": {"first_conflicting_index": {"kind": "count", "value": "0"}},
+        "rejected_before_provider_io": True,
+    }
+    observations: dict[tuple[str, str], dict[str, object]] = {
+        ("entity_batch_insert_put", "direct_runtime"): {
+            "empty": {"result_count": 0, "transaction_opened": False, "provider_calls": 0},
+            "insert": {"input_order": ["data-ada", "data-dana"], "result_order": ["data-ada", "data-dana"], "persisted_keys": ["data-ada", "data-dana"]},
+            "duplicate_key": {"key": "data-ada", "category": "invalid_input", "code": "duplicate_batch_key", "path": [{"kind": "argument", "value": "rows"}, {"kind": "index", "value": 1}, {"kind": "field", "value": "person:identifier"}], "details": {"first_conflicting_index": {"kind": "count", "value": "0"}}, "rejected_before_provider_io": duplicate_person_rejected},
+            "put": {"input_order": ["data-ada", "data-dana"], "result_order": ["data-ada", "data-dana"], "replaced_keys": ["data-ada"], "inserted_keys": ["data-dana"]},
+            "late_failure": {"rollback_completed": True, "committed_prefix": False, "persisted_keys": [], "published_results": 0},
+        },
+        ("entity_batch_update_delete_atomic", "direct_runtime"): {
+            "update": {"identity_kind": "iid", "input_order": ["counter-left", "counter-right"], "result_order": ["counter-left", "counter-right"], "identity_preserved": [True, True], "replacement_complete": True},
+            "duplicate_target": common_duplicate,
+            "delete_failure": {"requested": ["counter-left", "counter-right"], "outcome_published": False, "all_targets_remain": True, "rollback_completed": True, "committed_prefix": False},
+            "delete_success": {"requested": ["counter-left", "counter-right"], "outcome": "unit", "affected_count_exposed": False, "all_targets_absent": True, "missing_identity_noop": True},
+        },
+        ("relation_batch_insert_put", "direct_runtime"): {
+            "empty": {"result_count": 0, "transaction_opened": False, "provider_calls": 0},
+            "insert": {"input_order": ["link-forward", "link-return"], "result_order": ["link-forward", "link-return"], "persisted_keys": ["data-link-forward", "data-link-return"]},
+            "duplicate_key": {"key": "data-link-forward", "category": "invalid_input", "code": "duplicate_batch_key", "path": [{"kind": "argument", "value": "rows"}, {"kind": "index", "value": 1}, {"kind": "field", "value": "network-link:identifier"}], "details": {"first_conflicting_index": {"kind": "count", "value": "0"}}, "rejected_before_provider_io": duplicate_relation_rejected},
+            "put": {"input_order": ["link-forward", "link-return"], "result_order": ["link-forward", "link-return"], "replaced_keys": ["data-link-forward"], "inserted_keys": ["data-link-return"], "roles_preserved": True},
+            "late_failure": {"rollback_completed": True, "committed_prefix": False, "persisted_keys": [], "published_results": 0},
+        },
+        ("relation_batch_update_delete_atomic", "direct_runtime"): {
+            "update": {"identity_kind": "iid", "input_order": ["membership-ada", "membership-robot"], "result_order": ["membership-ada", "membership-robot"], "identity_preserved": [True, True], "roles_preserved": True, "replacement_complete": True},
+            "duplicate_target": common_duplicate,
+            "delete_failure": {"requested": ["membership-ada", "membership-robot"], "outcome_published": False, "all_targets_remain": True, "rollback_completed": True, "committed_prefix": False},
+            "delete_success": {"requested": ["membership-ada", "membership-robot"], "outcome": "unit", "affected_count_exposed": False, "all_targets_absent": True, "missing_identity_noop": True},
+        },
+        ("unkeyed_entity_iid_lifecycle", "direct_runtime"): {
+            "model": "counter", "identity_kind": "iid", "surface": {"key_present": False, "put_present": False},
+            "insert": {"refs": ["counter-left", "counter-right"], "count_after": 2, "canonical_identity_retained": True},
+            "get_by_identity": {"ref": "counter-left", "found": True, "value": "1"},
+            "update_by_identity": {"ref": "counter-left", "value_before": "1", "value_after": "11", "identity_preserved": True, "count_after": 2},
+            "delete_by_identity": {"ref": "counter-left", "deleted": True, "read_after_delete": False, "count_after": 1, "missing_identity_noop": True},
+            "count_after_cleanup": 0,
+        },
+        ("unkeyed_relation_iid_lifecycle", "direct_runtime"): {
+            "model": "membership", "identity_kind": "iid", "surface": {"key_present": False, "put_present": False},
+            "insert": {"refs": ["membership-ada", "membership-robot"], "count_after": 2, "canonical_identity_retained": True},
+            "get_by_identity": {"ref": "membership-ada", "found": True, "roles": {"member": ["data-ada"]}},
+            "update_by_identity": {"ref": "membership-ada", "roles_before": {"member": ["data-ada"]}, "roles_after": {"member": ["data-dana"]}, "identity_preserved": True, "count_after": 2},
+            "delete_by_identity": {"ref": "membership-ada", "deleted": True, "read_after_delete": False, "count_after": 1, "missing_identity_noop": True},
+            "count_after_cleanup": 0,
+        },
+        ("data_resource_lifecycle", "lifecycle"): {
+            "resources": ["database", "read_transaction", "write_transaction", "cancellation", "batch_builder", "batch_input", "filter", "result", "projected_value", "projected_thing", "diagnostic"],
+            "close_contract": {"idempotent": True, "post_close_rejected": True, "post_close_provider_calls": 0},
+            "parent_child": {"runtime_close_with_database": "in_use", "database_close_with_transaction": "in_use", "parent_handle_retained_on_rejection": True, "child_remains_usable": True, "parent_closes_after_children": True},
+            "session_rules": {"borrowed_read_not_consumed": True, "sibling_filter_usable": True, "write_recovery_after_cancellation": True},
+            "result_survival": {"result_survives_filter_close": True, "result_survives_transaction_close": True, "owned_thing_survives_result_close": True},
+            "cancellation_close_idempotent": True, "projected_value_close_idempotent": True, "projected_thing_close_idempotent": True,
+        },
+        ("borrowed_transaction_lifecycle", "lifecycle"): {
+            "read": {"reusable_after_success": True, "sibling_filter_usable": True, "terminal_sequence": ["all", "count", "exists", "first"], "state_after_terminals": "active", "close_idempotent": True},
+            "commit_visibility": {"before_commit": {"same_transaction_visible": True, "outside_transaction_visible": False}, "after_commit": {"outside_transaction_visible": True, "state": "committed"}},
+            "rollback_visibility": {"before_rollback": {"same_transaction_visible": True, "outside_transaction_visible": False}, "after_rollback": {"outside_transaction_visible": False, "state": "rolled_back"}},
+            "poison": {"state": "rollback_only", "first_cause": {"category": "provider", "code": "provider_operation_failed"}, "later_cause": {"category": "resource_limit", "code": "batch_item_limit"}, "retained_cause": {"category": "provider", "code": "provider_operation_failed"}, "commit_rejection": {"category": "transaction", "code": "transaction_rollback_only", "provider_commit_calls": 0}},
+            "post_rollback": {"state": "rolled_back", "rollback_idempotent": True, "commit_rejected": True, "mutation_rejected": True, "close_state": "closed", "close_idempotent": True},
+        },
+    }
+    _publish_workforce_v3_python_supplement(generated, observations)
+
+    for value in put_links:
+        network_manager.delete(value)
+    for value in (committed, ada, dana):
+        stored = person_manager.filter(identifier=generated.Identifier(value.identifier.value)).first()
+        person_manager.delete(stored)
+
+
+def test_generated_data_model_runtime_v3_live(
+    clean_db: Database,
+    generated_v3_package: ModuleType,
+) -> None:
+    generated_data_model_runtime_v3_live(clean_db, generated_v3_package)
 
 
 def test_generated_package_preserves_application_operation_outcomes_live(

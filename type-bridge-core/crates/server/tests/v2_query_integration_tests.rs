@@ -36,6 +36,7 @@ use type_bridge_contract::schema::{
 };
 use type_bridge_contract::schema_delta::ManagedSchemaState;
 use type_bridge_contract::value::{CanonicalValue, ValueTypeTag};
+use type_bridge_core_lib::version::semantic_profile_id;
 use type_bridge_orm::TxType;
 use type_bridge_orm::query_v2::{QueryRowValue, QueryV2Outcome};
 use type_bridge_orm::query_v2_remote::{decode_remote_outcome, encode_remote_request};
@@ -179,7 +180,10 @@ async fn live_query_fixture(test_name: &str) -> LiveQueryFixture {
     let server_version = database
         .server_version()
         .expect("the live server version is observed through its configured HTTP port");
-    let profile = SemanticProfileId::new(format!("typedb-{server_version}/v1")).unwrap();
+    let profile = SemanticProfileId::new(
+        semantic_profile_id(&server_version).expect("the live server has a supported profile"),
+    )
+    .unwrap();
     let resolved = resolve(&declared, &profile).unwrap();
     let delta_context = ManagedDeltaContext::new(
         ManagedScopeId::new(format!("server-v2-query-{test_name}-{sequence}")).unwrap(),

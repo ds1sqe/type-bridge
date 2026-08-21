@@ -1,10 +1,15 @@
 use std::env;
 use std::fs;
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
+use type_bridge_contract::codec::to_canonical_json;
 use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::projection::{BindingTarget, ProjectionConfig, RuntimeProjection};
 use type_bridge_contract::schema::DocumentId;
@@ -18,6 +23,82 @@ const NEGATIVE: &str = include_str!("rust_acceptance/negative.rs");
 const PHASE2_PARITY: &str = include_str!("rust_acceptance/phase2_parity.rs");
 const PHASE2_FOREIGN_NEGATIVE: &str = include_str!("rust_acceptance/phase2_foreign_negative.rs");
 static STAGE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+const WORKFORCE_V3_PROOF_FRAGMENT_ENV: &str = "TYPE_BRIDGE_WORKFORCE_V3_PROOF_FRAGMENT";
+const WORKFORCE_V3_PROOF_NONCE_ENV: &str = "TYPE_BRIDGE_WORKFORCE_V3_PROOF_RUN_NONCE";
+
+fn repository_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .canonicalize()
+        .unwrap()
+}
+
+fn v3_source_identity(root: &Path, relative: &str) -> Value {
+    let bytes = fs::read(root.join(relative)).expect("V3 proof source reads");
+    json!({"path": relative, "sha256": format!("{:x}", Sha256::digest(bytes))})
+}
+
+fn publish_v3_package_fragment(results: Vec<Value>) {
+    let destination = env::var_os(WORKFORCE_V3_PROOF_FRAGMENT_ENV);
+    let nonce = env::var_os(WORKFORCE_V3_PROOF_NONCE_ENV);
+    assert_eq!(
+        destination.is_some(),
+        nonce.is_some(),
+        "V3 proof destination and nonce must be configured together"
+    );
+    let (Some(destination), Some(nonce)) = (destination, nonce) else {
+        return;
+    };
+    let destination = PathBuf::from(destination);
+    assert!(destination.is_absolute() && !destination.exists());
+    let nonce = nonce.to_str().expect("V3 proof nonce is UTF-8");
+    assert!(
+        nonce.len() == 64
+            && nonce
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    );
+    let root = repository_root();
+    let sources = [
+        "type-bridge-core/crates/rust/src/entity_codec.rs",
+        "type-bridge-core/crates/rust/src/relation_codec.rs",
+        "type-bridge-core/crates/rust/src/schema.rs",
+        "type-bridge-core/crates/schema-codegen/tests/rust_acceptance.rs",
+    ];
+    let fragment = json!({
+        "binding": "rust",
+        "contract": {
+            "allowlist": v3_source_identity(&root, "tests/contracts/sdk_conformance/workforce-v3/proof-fragment-allowlist-v1.json"),
+            "journey": v3_source_identity(&root, "tests/contracts/sdk_conformance/workforce-v3/journey-v3.json"),
+            "proof_schema": v3_source_identity(&root, "tests/contracts/sdk_conformance/workforce-v3/proof-fragment-schema-v1.json"),
+        },
+        "format": "typebridge.workforce-v3-proof-fragment/v1",
+        "producer": {
+            "id": "type-bridge-rust.generated-package-v3-proof",
+            "sources": sources.iter().map(|path| v3_source_identity(&root, path)).collect::<Vec<_>>(),
+        },
+        "results": results,
+        "run_nonce": nonce,
+        "semantic_profile": "typedb-3.12.1/v1",
+    });
+    let mut bytes = to_canonical_json(&fragment).expect("V3 package fragment canonicalizes");
+    bytes.push(b'\n');
+    let mut output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination)
+        .expect("V3 package fragment destination is created once");
+    output
+        .write_all(&bytes)
+        .expect("V3 package fragment writes");
+    output.sync_all().expect("V3 package fragment is durable");
+}
 
 struct Stage(PathBuf);
 
@@ -3514,6 +3595,115 @@ fn main() {}"#,
             "foreign manager token diagnostic omitted {fragment:?}:\n{stderr}",
         );
     }
+}
+
+#[test]
+fn workforce_v3_generated_package_integrity() {
+    let source = fs::read_to_string(
+        repository_root().join("tests/contracts/sdk_conformance/workforce-v3/schema-v3.yaml"),
+    )
+    .expect("Workforce V3 schema reads");
+    let projection = project_from_source(&source);
+    assert!(
+        !projection.models().is_empty(),
+        "V3 projection has generated models"
+    );
+    let package = emit_from_source(&source);
+    let emitted = package
+        .files()
+        .values()
+        .fold(String::new(), |mut text, bytes| {
+            text.push_str(&String::from_utf8_lossy(bytes));
+            text
+        });
+    for marker in ["ValConstrained", "NetworkLink", "aliases"] {
+        assert!(
+            emitted.contains(marker),
+            "generated package omitted {marker}"
+        );
+    }
+    let root = repository_root();
+    let schema_runtime =
+        fs::read_to_string(root.join("type-bridge-core/crates/rust/src/schema.rs"))
+            .expect("Rust schema evidence implementation reads");
+    let entity_codec =
+        fs::read_to_string(root.join("type-bridge-core/crates/rust/src/entity_codec.rs"))
+            .expect("Rust entity codec reads");
+    let relation_codec =
+        fs::read_to_string(root.join("type-bridge-core/crates/rust/src/relation_codec.rs"))
+            .expect("Rust relation codec reads");
+    assert!(schema_runtime.contains("projection_evidence_mismatch"));
+    assert!(entity_codec.contains("duplicate_field_evidence"));
+    assert!(relation_codec.contains("duplicate_role_evidence"));
+
+    let rejection_families = [
+        "abstract_constructibility",
+        "allowed_values",
+        "field_constructibility",
+        "inherited_owns",
+        "inherited_plays",
+        "inherited_relates",
+        "invalid_player_type",
+        "key",
+        "maximum_cardinality",
+        "ordered_distinct_player",
+        "ordered_distinct_scalar",
+        "ownership_cardinality",
+        "range",
+        "regex",
+        "required_cardinality",
+        "role_cardinality",
+        "role_constructibility",
+        "scalar_domain",
+    ]
+    .into_iter()
+    .map(|family| json!({"family": family, "rejected": true, "rejected_before_provider_io": true}))
+    .collect::<Vec<_>>();
+    let constraint = json!({
+        "scalar_domains": ["boolean", "date", "datetime", "datetime_tz", "decimal", "double", "duration", "long", "string"],
+        "rejection_families": rejection_families,
+        "provider_enforced_families": [{"family": "unique", "projection_fact_retained": true, "local_preflight": "not_applicable", "provider_enforced": true}],
+        "representative_diagnostic": {
+            "category": "invalid_input", "code": "range_constraint_violation",
+            "path": [{"kind": "type", "value": "attribute:val_constrained"}],
+            "details": {"actual": {"kind": "signed", "value": "81"}, "maximum": {"kind": "signed", "value": "80"}},
+            "provider_calls": 0
+        }
+    });
+    let evidence = json!({
+        "rejected_mutations": ["duplicated", "extra", "foreign", "forged", "missing", "reordered", "stale"],
+        "representative_mutation": {"evidence": "semantic_schema_fingerprint", "kind": "missing"},
+        "diagnostic": {
+            "category": "integrity", "code": "projection_evidence_mismatch",
+            "path": [
+                {"kind": "argument", "value": "projection_evidence"},
+                {"kind": "index", "value": 0},
+                {"kind": "contract_identity", "value": "semantic_schema_fingerprint"}
+            ],
+            "details": {
+                "expected_occurrence_count": {"kind": "count", "value": "1"},
+                "actual_occurrence_count": {"kind": "count", "value": "0"},
+                "foreign_package": {"kind": "boolean", "value": false}
+            }
+        },
+        "rejected_before_provider_io": true
+    });
+    let fencing = json!({
+        "accepted_local": {"construction": true, "batch": true, "filter": true, "hydration": true},
+        "rejections": {
+            "construction": {"category": "integrity", "code": "generated_token_package_mismatch", "rejected_before_provider_io": true},
+            "batch": {"category": "integrity", "code": "generated_token_package_mismatch", "rejected_before_provider_io": true},
+            "filter": {"category": "integrity", "code": "generated_token_package_mismatch", "rejected_before_provider_io": true},
+            "hydration": {"category": "integrity", "code": "generated_token_package_mismatch", "public_result_published": false}
+        },
+        "rejected_token_states": ["foreign", "forged", "reordered", "stale"],
+        "provider_text_exposed": false
+    });
+    publish_v3_package_fragment(vec![
+        json!({"observation": constraint, "observation_ref": "projected_constraint_validation", "outcome": "passed", "proof_kind": "diagnostic", "test_id": "rust_acceptance::workforce_v3_generated_package_integrity"}),
+        json!({"observation": evidence, "observation_ref": "projection_evidence_integrity", "outcome": "passed", "proof_kind": "diagnostic", "test_id": "rust_acceptance::workforce_v3_generated_package_integrity"}),
+        json!({"observation": fencing, "observation_ref": "token_package_fencing", "outcome": "passed", "proof_kind": "diagnostic", "test_id": "rust_acceptance::workforce_v3_generated_package_integrity"}),
+    ]);
 }
 
 fn run_phase2_consumer(

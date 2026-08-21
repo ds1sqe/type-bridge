@@ -179,6 +179,7 @@ export interface NativeProjectedManagerFilter {
 /** @internal Preserve structured SDK diagnostics from generated-manager N-API calls. */
 export declare function projectedManagerNativeCall<Result>(operation: () => Result): Result;
 interface NativeProjectionHandle {
+    connectDirect(endpoint: string, database: string, username: string, password: string, httpPort: number, tlsMode: string, tlsRootCa?: string, connectionLimits?: NativeQueryExecutionResources, answerLimits?: NativeQueryExecutionResources, cancellation?: NativeQueryCancellation): NativeRustDatabase;
     managerForDatabase(typeKey: string, database: NativeRustDatabase): NativeProjectedManager;
     managerForTransaction(typeKey: string, transaction: NativeRustTransactionContext): NativeProjectedManager;
     matchSession(): RuntimeProjectionMatchSession;
@@ -198,6 +199,19 @@ interface NativeProjectionHandle {
 export declare class InstalledRuntimeProjection {
     #private;
     constructor(native: NativeProjectionHandle);
+    /** @internal Open through this installed generated package's authority. */
+    connectDirect(input: {
+        endpoint: string;
+        database: string;
+        username: string;
+        password: string;
+        httpPort: number;
+        tlsMode: "disabled" | "native_roots" | "custom_root";
+        tlsRootCa?: string;
+        connectionLimits?: QueryExecutionResourceLimits;
+        answerLimits?: QueryExecutionResourceLimits;
+        cancellation?: QueryCancellation;
+    }): RustDatabase;
     /** @internal Bind one generated token without exposing its native handle. */
     manager(typeKey: string, connection: RuntimeProjectionConnection): NativeProjectedManager;
     /** @internal Create an opaque query session from verified projection evidence. */

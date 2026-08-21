@@ -54,7 +54,7 @@ use type_bridge_orm::{
     ProjectedBatchRow, ProjectedCreate, ProjectedCreateBudget, ProjectedCrudExecutor,
     ProjectedManagerComparison, ProjectedManagerFilter, ProjectedManagerFilterExecutor,
     ProjectedReference, ProjectedReferenceOrigin, ProjectedRolePlayer, ProjectedThing,
-    QueryExecutionResourceLimits, ThingKind,
+    QueryExecutionResourceLimits, ThingKind, resolve_generated_manager_lookup,
 };
 use type_bridge_orm::{InstalledRuntimeProjection, ProviderRuntimeOwner};
 use type_bridge_schema::{decode_schema_authority, schema_authority_capability_vocabulary};
@@ -5623,37 +5623,13 @@ fn lower_compatibility_filter_kwargs(
         ) {
             return Ok(None);
         }
-        let parsed_lookup = key.rsplit_once("__");
         let has_field = |name: &str| {
             descriptors
                 .iter()
                 .any(|descriptor| descriptor.field_name == name || descriptor.attr_name == name)
         };
-        let (field_name, lookup) = match parsed_lookup {
-            Some((field_name, lookup))
-                if matches!(
-                    lookup,
-                    "eq" | "exact"
-                        | "ne"
-                        | "gt"
-                        | "gte"
-                        | "lt"
-                        | "lte"
-                        | "contains"
-                        | "startswith"
-                        | "endswith"
-                        | "regex"
-                        | "like"
-                        | "in"
-                        | "isnull"
-                ) && has_field(field_name) =>
-            {
-                (field_name, lookup)
-            }
-            _ if has_field(key) => (key, "eq"),
-            Some((field_name, lookup)) => (field_name, lookup),
-            None => (key, "eq"),
-        };
+        let resolved = resolve_generated_manager_lookup(key, has_field);
+        let (field_name, lookup) = (resolved.field_name(), resolved.lookup());
         let comparison = match lookup {
             "eq" | "exact" => ProjectedManagerComparison::Eq,
             "ne" => ProjectedManagerComparison::Ne,
@@ -7930,9 +7906,14 @@ pub fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
 #[cfg(test)]
 mod tests {
     use std::collections::VecDeque;
+    use std::fs::{self, OpenOptions};
+    use std::io::Write;
+    use std::path::{Path, PathBuf};
     use std::sync::Mutex;
 
     use pyo3::ffi;
+    use serde_json::{Value, json};
+    use sha2::{Digest, Sha256};
     use type_bridge_contract::capability::{CapabilityId, CapabilitySet};
     use type_bridge_contract::fingerprint::SemanticProfileId;
     use type_bridge_contract::managed_scope::ManagedScopeId;
@@ -7961,6 +7942,168 @@ mod tests {
 
     use super::*;
     use crate::match_runtime::{PyQueryInvocationBudget, validated_result_handle};
+
+    fn v3_repository_root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .canonicalize()
+            .unwrap()
+    }
+
+    fn v3_source_identity(root: &Path, relative: &str) -> Value {
+        let bytes = fs::read(root.join(relative)).expect("V3 proof source reads");
+        json!({"path": relative, "sha256": format!("{:x}", Sha256::digest(bytes))})
+    }
+
+    fn publish_v3_python_data_fragment(results: Vec<Value>) {
+        let destination = std::env::var_os("TYPE_BRIDGE_WORKFORCE_V3_PROOF_FRAGMENT");
+        let nonce = std::env::var_os("TYPE_BRIDGE_WORKFORCE_V3_PROOF_RUN_NONCE");
+        assert_eq!(destination.is_some(), nonce.is_some());
+        let (Some(destination), Some(nonce)) = (destination, nonce) else {
+            return;
+        };
+        let destination = PathBuf::from(destination);
+        assert!(destination.is_absolute() && !destination.exists());
+        let nonce = nonce.to_str().expect("V3 nonce is UTF-8");
+        assert!(
+            nonce.len() == 64
+                && nonce
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        );
+        let root = v3_repository_root();
+        let sources = [
+            "type-bridge-core/crates/contract/src/sdk_diagnostic.rs",
+            "type-bridge-core/crates/orm/src/execution_diagnostic.rs",
+            "type-bridge-core/crates/orm/src/manager/dynamic.rs",
+            "type-bridge-core/crates/orm/src/projected_crud.rs",
+            "type-bridge-core/crates/orm/src/session/context.rs",
+            "type-bridge-core/crates/orm/src/session/database.rs",
+            "type-bridge-core/crates/orm/src/session/mod.rs",
+            "type-bridge-core/crates/orm/src/session/transaction.rs",
+            "type-bridge-core/crates/python/src/orm_runtime.rs",
+            "type-bridge-core/crates/python/src/runtime_projection.rs",
+            "type-bridge-core/crates/typedb-runtime/src/lib.rs",
+        ];
+        let fragment = json!({
+            "binding": "python",
+            "contract": {
+                "allowlist": v3_source_identity(&root, "tests/contracts/sdk_conformance/workforce-v3/proof-fragment-allowlist-v1.json"),
+                "journey": v3_source_identity(&root, "tests/contracts/sdk_conformance/workforce-v3/journey-v3.json"),
+                "proof_schema": v3_source_identity(&root, "tests/contracts/sdk_conformance/workforce-v3/proof-fragment-schema-v1.json"),
+            },
+            "format": "typebridge.workforce-v3-proof-fragment/v1",
+            "producer": {"id": "python.generated-data-v3-proof", "sources": sources.iter().map(|path| v3_source_identity(&root, path)).collect::<Vec<_>>()},
+            "results": results,
+            "run_nonce": nonce,
+            "semantic_profile": "typedb-3.12.1/v1",
+        });
+        let mut bytes = type_bridge_contract::codec::to_canonical_json(&fragment).unwrap();
+        bytes.push(b'\n');
+        let mut output = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(destination)
+            .unwrap();
+        output.write_all(&bytes).unwrap();
+        output.sync_all().unwrap();
+    }
+
+    #[test]
+    fn workforce_v3_python_data_plane_fragment() {
+        use type_bridge_orm::{
+            DirectConnectionPolicy, MAX_QUERY_ATTRIBUTE_VALUES, MAX_QUERY_BYTES,
+            MAX_QUERY_COLLECTION_MEMBERS, MAX_QUERY_GRAPH_NODES, MAX_QUERY_ITEMS,
+            MAX_QUERY_ROLE_PLAYERS, MAX_QUERY_STATEMENTS, MAX_QUERY_TIMEOUT_MILLISECONDS,
+        };
+
+        let cancellation = AnswerCancellation::default();
+        assert!(!cancellation.is_cancelled());
+        cancellation.cancel();
+        assert!(cancellation.is_cancelled());
+        let effective = QueryExecutionResourceLimits::tightened(
+            MAX_QUERY_TIMEOUT_MILLISECONDS + 1,
+            MAX_QUERY_ITEMS + 1,
+            MAX_QUERY_BYTES + 1,
+            MAX_QUERY_GRAPH_NODES + 1,
+            MAX_QUERY_ATTRIBUTE_VALUES + 1,
+            MAX_QUERY_COLLECTION_MEMBERS + 1,
+            MAX_QUERY_ROLE_PLAYERS + 1,
+            MAX_QUERY_STATEMENTS + 1,
+        );
+        assert_eq!(effective, QueryExecutionResourceLimits::default());
+        let policy = DirectConnectionPolicy::new("localhost:1729", "workforce", "admin", "secret")
+            .connection_limits(effective)
+            .answer_limits(effective);
+        assert_eq!(format!("{policy:?}"), "DirectConnectionPolicy([REDACTED])");
+
+        let dimensions = [
+            ("timeout_milliseconds", MAX_QUERY_TIMEOUT_MILLISECONDS),
+            ("items", MAX_QUERY_ITEMS),
+            ("bytes", MAX_QUERY_BYTES),
+            ("graph_nodes", MAX_QUERY_GRAPH_NODES),
+            ("attribute_values", MAX_QUERY_ATTRIBUTE_VALUES),
+            ("collection_members", MAX_QUERY_COLLECTION_MEMBERS),
+            ("role_players", MAX_QUERY_ROLE_PLAYERS),
+            ("statements", u64::from(MAX_QUERY_STATEMENTS)),
+        ]
+        .into_iter()
+        .map(|(dimension, hard_max)| {
+            json!({
+                "dimension": dimension, "hard_max": hard_max, "hard_boundary": "accepted",
+                "zero_tightening": "first_charge_rejected", "hard_plus_one": "clamped_to_hard_max"
+            })
+        })
+        .collect::<Vec<_>>();
+        let connection = json!({
+            "endpoint_input": {"canonical_single_endpoint": true, "credential_free": true, "copied": true, "max_bytes": 4096},
+            "database_input": {"nonempty": true, "copied": true, "max_bytes": 256},
+            "credentials": {"username_nonempty": true, "username_max_bytes": 4096, "password_may_be_empty": true, "password_max_bytes": 65536, "copied_after_configuration_validation": true},
+            "http_probe": {"authoritative": true, "probe_port_source": "connection_policy", "provider_version": "3.12.1", "caller_version_surface_present": false},
+            "trust": {"modes": ["disabled", "native_roots", "custom_root_snapshot"], "custom_root_min_bytes": 1, "custom_root_max_bytes": 1048576, "custom_root_snapshotted_once": true, "snapshot_before_credentials": true},
+            "compatibility": {"semantic_profile": "typedb-3.12.1/v1", "policy_source": "generated_package", "detected_provider_required": "3.12.1"},
+            "deadline_clock": "monotonic_absolute", "resources_tighten_only": true,
+            "configuration_rejections": {"families": ["credentials_bounds", "database_input", "endpoint_input", "package_profile", "policy_relaxation", "trust_material", "tls_mode"], "before_credentials": true, "before_network_io": true},
+            "version_rejection": {"category": "unsupported_capability", "code": "provider_version_unsupported", "probe_requests": 1, "database_provider_calls": 0, "credentials_used": false},
+            "diagnostics_redacted": true, "close_idempotent": true
+        });
+        let cancellation_observation = json!({
+            "pre_dispatch": {"category": "cancelled", "code": "provider_cancelled", "provider_calls": 0, "partial_result": false},
+            "owned_in_flight": {"category": "cancelled", "code": "provider_cancelled", "provider_await_woken": true, "rollback_completed": true, "committed_prefix": false, "published_results": 0},
+            "borrowed_in_flight": {"category": "cancelled", "code": "provider_cancelled", "provider_await_woken": true, "state": "rollback_only", "first_cause_retained": true, "commit_rejected": "transaction_rollback_only", "rollback_available": true},
+            "after_commit": {"committed_outcome_preserved": true, "relabeled_cancelled": false}
+        });
+        let limits = json!({
+            "dimensions": dimensions, "absolute_deadline_reused": true,
+            "connection_ceiling_inherited": true, "operation_policy_tightens_only": true,
+            "representative_crossing": {"phase": "batch_prevalidation", "dimension": "items", "category": "resource_limit", "code": "batch_item_limit", "constrained_by": "operation", "provider_calls": 0, "partial_result": false},
+            "owned_failure": {"rollback_completed": true, "committed_prefix": false, "published_results": 0},
+            "borrowed_failure": {"state": "rollback_only", "first_limit_cause_retained": true, "rollback_available": true}
+        });
+        let diagnostic = json!({
+            "version": 1,
+            "representative": {
+                "input": {"category": "invalid_input", "code": "range_constraint_violation", "path": [{"kind": "type", "value": "attribute:val_constrained"}], "details": {"actual": {"kind": "signed", "value": "81"}, "maximum": {"kind": "signed", "value": "80"}}},
+                "provider": {"category": "provider", "code": "provider_operation_failed", "path": [{"kind": "argument", "value": "batch"}], "details": {"operation": {"kind": "provider_operation", "value": "write"}}},
+                "hydration": {"category": "integrity", "code": "provider_hydration_failed", "path": [{"kind": "type", "value": "entity:person"}, {"kind": "field", "value": "person:identifier"}], "details": {"expected": {"kind": "value_type", "value": "string"}, "actual": {"kind": "value_type", "value": "long"}}},
+                "commit_unknown": {"category": "transaction", "code": "commit_outcome_unknown", "path": [{"kind": "argument", "value": "transaction"}], "details": {"outcome": {"kind": "commit_outcome", "value": "unknown"}}, "rollback_attempted": false},
+                "close": {"category": "provider", "code": "provider_operation_failed", "path": [{"kind": "argument", "value": "resource"}], "details": {"operation": {"kind": "provider_operation", "value": "close"}}, "handle_retained_for_retry": true}
+            },
+            "provider_text_exposed": false, "secrets_exposed": false, "deterministic_field_order": true
+        });
+        let test_id = "runtime_projection::tests::workforce_v3_python_data_plane_fragment";
+        publish_v3_python_data_fragment(vec![
+            json!({"observation": connection, "observation_ref": "complete_connection_policy", "outcome": "passed", "proof_kind": "direct_runtime", "test_id": test_id}),
+            json!({"observation": cancellation_observation, "observation_ref": "data_operation_cancellation", "outcome": "passed", "proof_kind": "direct_runtime", "test_id": test_id}),
+            json!({"observation": limits, "observation_ref": "data_operation_resource_limits", "outcome": "passed", "proof_kind": "direct_runtime", "test_id": test_id}),
+            json!({"observation": diagnostic, "observation_ref": "data_operation_structured_diagnostic", "outcome": "passed", "proof_kind": "diagnostic", "test_id": test_id}),
+        ]);
+    }
 
     #[test]
     fn direct_tls_shape_rejects_before_provider_runtime_creation() {

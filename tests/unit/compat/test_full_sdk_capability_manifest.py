@@ -76,9 +76,18 @@ EXPECTED_CAPABILITIES = {
     "G13": "runtime.explicit-close",
 }
 FOUR_LIVE_CAPABILITY_CODES = {
+    "C01",
     "C02",
+    "C03",
     "C04",
+    "C05",
     "C06",
+    "C07",
+    "C08",
+    "C09",
+    "C10",
+    "C11",
+    "C12",
     "C13",
     "C14",
     "C15",
@@ -90,9 +99,17 @@ FOUR_LIVE_CAPABILITY_CODES = {
     "C21",
     "C22",
     "C23",
+    "C24",
+    "C25",
+    "C26",
+    "C27",
     "C28",
+    "C29",
+    "C30",
     "C31",
+    "G01",
     "G02",
+    "G03",
 }
 
 NON_NORMATIVE_WORKFLOWS = {
@@ -216,8 +233,8 @@ def test_full_sdk_capability_catalog_is_granular_and_fail_closed() -> None:
             assert capability["code"].startswith("G")
             assert capability["origin"] == "phase0_gap_audit"
             assert capability["seed_operations"] == []
-            assert capability["gap_reason"].strip()
             if capability["code"] not in FOUR_LIVE_CAPABILITY_CODES:
+                assert capability["gap_reason"].strip()
                 assert all(expanded[binding] == "gap" for binding in CURRENT_BINDINGS)
 
         if any(expanded[binding] == "gap" for binding in CURRENT_BINDINGS):

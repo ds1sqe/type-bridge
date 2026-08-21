@@ -4,6 +4,7 @@ import os
 
 import pytest
 
+from tests.utils import typedb_lifecycle as _typedb_lifecycle
 from tests.utils.typedb_lifecycle import (
     TEST_DB_ADDRESS,
     TEST_DB_HTTP_PORT,
@@ -33,6 +34,12 @@ def docker_typedb():
         None (container runs in background)
     """
     if start_typedb_container():
+        # The lifecycle owner discovers ephemeral ports after this module is
+        # imported. Refresh the local compatibility exports so all fixtures
+        # and tests use the discovered endpoint instead of stale defaults.
+        global TEST_DB_ADDRESS, TEST_DB_HTTP_PORT
+        TEST_DB_ADDRESS = _typedb_lifecycle.TEST_DB_ADDRESS
+        TEST_DB_HTTP_PORT = _typedb_lifecycle.TEST_DB_HTTP_PORT
         try:
             yield
         finally:

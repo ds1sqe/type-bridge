@@ -1330,3 +1330,39 @@ fn sdk_message(value: &'static str) -> SdkDiagnosticMessage {
 fn sdk_name(value: &'static str) -> SdkDiagnosticName {
     SdkDiagnosticName::new(value).expect("static manager-filter name is canonical")
 }
+
+#[cfg(test)]
+mod compatibility_lookup_tests {
+    use type_bridge_contract::projection::resolve_generated_manager_lookup;
+
+    const FIELDS: &[&str] = &["foo__bar", "score", "score__gte"];
+
+    #[test]
+    fn literal_double_underscore_and_lookup_suffixes_resolve_without_ambiguity() {
+        for (input, field, lookup) in [
+            ("foo__bar", "foo__bar", "eq"),
+            ("score__gte", "score", "gte"),
+            ("score__gte__eq", "score__gte", "eq"),
+        ] {
+            let resolved =
+                resolve_generated_manager_lookup(input, |candidate| FIELDS.contains(&candidate));
+            assert_eq!(resolved.field_name(), field);
+            assert_eq!(resolved.lookup(), lookup);
+        }
+    }
+
+    #[test]
+    fn unknown_fields_and_lookups_remain_available_for_boundary_diagnostics() {
+        let unknown = resolve_generated_manager_lookup("missing__gte", |candidate| {
+            FIELDS.contains(&candidate)
+        });
+        assert_eq!(unknown.field_name(), "missing");
+        assert_eq!(unknown.lookup(), "gte");
+
+        let unsupported = resolve_generated_manager_lookup("score__unsupported", |candidate| {
+            FIELDS.contains(&candidate)
+        });
+        assert_eq!(unsupported.field_name(), "score");
+        assert_eq!(unsupported.lookup(), "unsupported");
+    }
+}

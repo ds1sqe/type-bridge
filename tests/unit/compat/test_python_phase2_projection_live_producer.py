@@ -1,4 +1,4 @@
-"""Fail-closed tests for Python's exact-3.12.1 Phase-2 live producer."""
+"""Fail-closed tests for Python's exact-3.12.3 Phase-2 live producer."""
 
 from __future__ import annotations
 
@@ -38,7 +38,7 @@ class _FakeDatabase:
         http_port: int,
         events: list[str],
         preexisting: bool = False,
-        version: str | None = "3.12.1",
+        version: str | None = "3.12.3",
         schema_failure: bool = False,
         delete_failure: bool = False,
     ) -> None:
@@ -88,7 +88,7 @@ def _factory(
     events: list[str],
     *,
     preexisting: bool = False,
-    version: str | None = "3.12.1",
+    version: str | None = "3.12.3",
     schema_failure: bool = False,
     delete_failure: bool = False,
 ) -> Any:

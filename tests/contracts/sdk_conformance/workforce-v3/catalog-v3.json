@@ -1,6 +1,6 @@
 {
   "format": "typebridge.workforce-catalog/v3",
-  "authority_state": "phase0_unfinalized",
+  "authority_state": "finalized",
   "fixture": {
     "id": "workforce-v3",
     "version": 3,
@@ -40,7 +40,45 @@
       "test_id": "c_projection_live::generated_data_model_runtime_v3_live"
     }
   },
-  "expected_fingerprints": null,
+  "expected_fingerprints": {
+    "semantic": {
+      "domain": "typebridge.schema.semantic",
+      "algorithm": "sha256",
+      "canonicalization": "typebridge.schema-canonical-json/v1",
+      "semantic_profile": "typedb-3.12.1/v1",
+      "digest": "3c8d072b60c575b4c0381c1ea44088a9c18e01ed52e90730311aadccb72cd0c8"
+    },
+    "projections": {
+      "python": {
+        "domain": "typebridge.binding.projection",
+        "algorithm": "sha256",
+        "canonicalization": "typebridge.binding-projection/v1",
+        "semantic_profile": "typedb-3.12.1/v1",
+        "digest": "d420b8c524c627fad692002173a5bf08f1e1ee3464cb01f523324d8242a0d965"
+      },
+      "node": {
+        "domain": "typebridge.binding.projection",
+        "algorithm": "sha256",
+        "canonicalization": "typebridge.binding-projection/v1",
+        "semantic_profile": "typedb-3.12.1/v1",
+        "digest": "9592d74eaa4e207cbbb87c4004b0b556d4e6d42992ae161caa140641c689efa6"
+      },
+      "rust": {
+        "domain": "typebridge.binding.projection",
+        "algorithm": "sha256",
+        "canonicalization": "typebridge.binding-projection/v1",
+        "semantic_profile": "typedb-3.12.1/v1",
+        "digest": "e4a801726b98d2248c245ff9f6fe9a332dc7982a04fcae355ef76ebcbe8ef54e"
+      },
+      "c": {
+        "domain": "typebridge.binding.projection",
+        "algorithm": "sha256",
+        "canonicalization": "typebridge.binding-projection/v1",
+        "semantic_profile": "typedb-3.12.1/v1",
+        "digest": "fb36518a03a25d606bd2696ebf92bb0a0e6cfa24589008f9ab163fbf861e0e19"
+      }
+    }
+  },
   "manifest_transition_cases": [
     "workforce.schema.generate.atomic",
     "workforce.model.constraints",

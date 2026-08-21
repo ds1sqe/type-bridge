@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Produce Python's exact-TypeDB-3.12.1 Phase-2 live subset report."""
+"""Produce Python's exact-TypeDB-3.12.3 Phase-2 live subset report."""
 
 from __future__ import annotations
 
@@ -844,10 +844,10 @@ def _run_owned_database(
     try:
         database.connect()
         detected = database.detected_server_version()
-        if detected != "3.12.1":
+        if detected != "3.12.3":
             raise ProducerError(
                 "server_version_mismatch",
-                "live evidence requires the actual detected TypeDB server version 3.12.1; "
+                "live evidence requires the actual detected TypeDB server version 3.12.3; "
                 f"detected {detected!r}",
             )
         if database.database_exists():

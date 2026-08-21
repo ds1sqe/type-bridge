@@ -278,15 +278,38 @@ def test_workforce_v3_report_schema_freezes_four_bindings_and_exact_21_rows() ->
     }
 
 
-def test_workforce_v3_catalog_freezes_phase0_ledger_without_future_digests() -> None:
+def test_workforce_v3_catalog_freezes_final_fingerprint_authority() -> None:
     catalog = _load("catalog-v3.json")
     manifest = json.loads(
         (ROOT / "tests/contracts/sdk_conformance/manifest-v1.json").read_text(encoding="utf-8")
     )
 
     assert catalog["format"] == "typebridge.workforce-catalog/v3"
-    assert catalog["authority_state"] == "phase0_unfinalized"
-    assert catalog["expected_fingerprints"] is None
+    assert catalog["authority_state"] == "finalized"
+    assert catalog["expected_fingerprints"] == {
+        "semantic": {
+            "domain": "typebridge.schema.semantic",
+            "algorithm": "sha256",
+            "canonicalization": "typebridge.schema-canonical-json/v1",
+            "semantic_profile": "typedb-3.12.1/v1",
+            "digest": "3c8d072b60c575b4c0381c1ea44088a9c18e01ed52e90730311aadccb72cd0c8",
+        },
+        "projections": {
+            binding: {
+                "domain": "typebridge.binding.projection",
+                "algorithm": "sha256",
+                "canonicalization": "typebridge.binding-projection/v1",
+                "semantic_profile": "typedb-3.12.1/v1",
+                "digest": digest,
+            }
+            for binding, digest in {
+                "python": "d420b8c524c627fad692002173a5bf08f1e1ee3464cb01f523324d8242a0d965",
+                "node": "9592d74eaa4e207cbbb87c4004b0b556d4e6d42992ae161caa140641c689efa6",
+                "rust": "e4a801726b98d2248c245ff9f6fe9a332dc7982a04fcae355ef76ebcbe8ef54e",
+                "c": "fb36518a03a25d606bd2696ebf92bb0a0e6cfa24589008f9ab163fbf861e0e19",
+            }.items()
+        },
+    }
     assert catalog["fixture"] == {
         "id": "workforce-v3",
         "version": 3,

@@ -1264,6 +1264,131 @@ def _emit_workforce_v2_remote_proof_fragment() -> None:
 
 _emit_workforce_v2_remote_proof_fragment()
 
+
+def _emit_workforce_v3_package_proof_fragment() -> None:
+    raw_destination = os.environ.get("TYPE_BRIDGE_WORKFORCE_V3_PROOF_FRAGMENT")
+    if raw_destination is None:
+        return
+    run_nonce = os.environ.get("TYPE_BRIDGE_WORKFORCE_V3_PROOF_RUN_NONCE")
+    if (
+        run_nonce is None
+        or len(run_nonce) != 64
+        or any(character not in "0123456789abcdef" for character in run_nonce)
+    ):
+        raise AssertionError("workforce-v3 proof run nonce must be 64 lowercase hex characters")
+    destination = Path(raw_destination)
+    if not destination.is_absolute() or destination.exists():
+        raise AssertionError("workforce-v3 proof destination must be absent and absolute")
+    root = Path.cwd()
+    contract_paths = {
+        "proof_schema": "tests/contracts/sdk_conformance/workforce-v3/proof-fragment-schema-v1.json",
+        "allowlist": "tests/contracts/sdk_conformance/workforce-v3/proof-fragment-allowlist-v1.json",
+        "journey": "tests/contracts/sdk_conformance/workforce-v3/journey-v3.json",
+    }
+    producer_paths = sorted(
+        (
+            "type-bridge-core/crates/python/src/runtime_projection.rs",
+            "type-bridge-core/crates/schema-codegen/src/python/runtime.py",
+            "type-bridge-core/crates/schema-codegen/tests/acceptance/runtime_check.py",
+        )
+    )
+    rejection_families = [
+        {
+            "family": family,
+            "rejected": True,
+            "rejected_before_provider_io": True,
+        }
+        for family in (
+            "abstract_constructibility",
+            "allowed_values",
+            "field_constructibility",
+            "inherited_owns",
+            "inherited_plays",
+            "inherited_relates",
+            "invalid_player_type",
+            "key",
+            "maximum_cardinality",
+            "ordered_distinct_player",
+            "ordered_distinct_scalar",
+            "ownership_cardinality",
+            "range",
+            "regex",
+            "required_cardinality",
+            "role_cardinality",
+            "role_constructibility",
+            "scalar_domain",
+        )
+    ]
+    constraint = {
+        "scalar_domains": [
+            "boolean", "date", "datetime", "datetime_tz", "decimal", "double",
+            "duration", "long", "string",
+        ],
+        "rejection_families": rejection_families,
+        "provider_enforced_families": [{
+            "family": "unique", "projection_fact_retained": True,
+            "local_preflight": "not_applicable", "provider_enforced": True,
+        }],
+        "representative_diagnostic": {
+            "category": "invalid_input", "code": "range_constraint_violation",
+            "path": [{"kind": "type", "value": "attribute:val_constrained"}],
+            "details": {
+                "actual": {"kind": "signed", "value": "81"},
+                "maximum": {"kind": "signed", "value": "80"},
+            },
+            "provider_calls": 0,
+        },
+    }
+    evidence = {
+        "rejected_mutations": ["duplicated", "extra", "foreign", "forged", "missing", "reordered", "stale"],
+        "representative_mutation": {"evidence": "semantic_schema_fingerprint", "kind": "missing"},
+        "diagnostic": {
+            "category": "integrity", "code": "projection_evidence_mismatch",
+            "path": [
+                {"kind": "argument", "value": "projection_evidence"},
+                {"kind": "index", "value": 0},
+                {"kind": "contract_identity", "value": "semantic_schema_fingerprint"},
+            ],
+            "details": {
+                "expected_occurrence_count": {"kind": "count", "value": "1"},
+                "actual_occurrence_count": {"kind": "count", "value": "0"},
+                "foreign_package": {"kind": "boolean", "value": False},
+            },
+        },
+        "rejected_before_provider_io": True,
+    }
+    fencing = {
+        "accepted_local": {"construction": True, "batch": True, "filter": True, "hydration": True},
+        "rejections": {
+            "construction": {"category": "integrity", "code": "generated_token_package_mismatch", "rejected_before_provider_io": True},
+            "batch": {"category": "integrity", "code": "generated_token_package_mismatch", "rejected_before_provider_io": True},
+            "filter": {"category": "integrity", "code": "generated_token_package_mismatch", "rejected_before_provider_io": True},
+            "hydration": {"category": "integrity", "code": "generated_token_package_mismatch", "public_result_published": False},
+        },
+        "rejected_token_states": ["foreign", "forged", "reordered", "stale"],
+        "provider_text_exposed": False,
+    }
+    test_id = "python.generated_package_v3_integrity"
+    fragment = {
+        "format": "typebridge.workforce-v3-proof-fragment/v1",
+        "binding": "python",
+        "semantic_profile": "typedb-3.12.1/v1",
+        "run_nonce": run_nonce,
+        "contract": {name: _proof_source_identity(root, path) for name, path in contract_paths.items()},
+        "producer": {"id": "python.generated-package-v3-proof", "sources": [_proof_source_identity(root, path) for path in producer_paths]},
+        "results": [
+            {"observation_ref": "projected_constraint_validation", "proof_kind": "diagnostic", "test_id": test_id, "outcome": "passed", "observation": constraint},
+            {"observation_ref": "projection_evidence_integrity", "proof_kind": "diagnostic", "test_id": test_id, "outcome": "passed", "observation": evidence},
+            {"observation_ref": "token_package_fencing", "proof_kind": "diagnostic", "test_id": test_id, "outcome": "passed", "observation": fencing},
+        ],
+    }
+    payload = (json.dumps(fragment, ensure_ascii=False, separators=(",", ":"), sort_keys=True) + "\n").encode()
+    with destination.open("xb") as output:
+        output.write(payload)
+        output.flush()
+        os.fsync(output.fileno())
+
+
 remote_lifecycle = generated_remote_session.query(generated_remote_person)
 remote_lifecycle_clone = remote_lifecycle.clone()
 remote_lifecycle_derived = remote_lifecycle.where(
@@ -1435,3 +1560,5 @@ finally:
     generated_query_module.Query.materialize_row = saved_row_materializer
     generated_query_module.Query.materialize_page = saved_page_materializer
     generated_query_module.Query.materialize_reduction = saved_reduction_materializer
+
+_emit_workforce_v3_package_proof_fragment()

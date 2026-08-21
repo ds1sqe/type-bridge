@@ -786,15 +786,23 @@ async fn repeated_driver_lifecycles_do_not_poison_terminal_close() {
             .open_transaction(&database_name, TxType::Read)
             .await
             .expect("a final read transaction should open before connection shutdown");
-        backend
+        let in_use = backend
             .close_connection()
-            .expect("explicit driver shutdown should succeed");
-        assert!(!backend.is_open());
+            .expect_err("explicit driver shutdown must reject an active transaction");
+        assert_eq!(
+            in_use.to_string(),
+            "resource_limit [resource_in_use] at provider_evidence: connection cannot close while a transaction is active"
+        );
+        assert!(backend.is_open());
         tokio::time::timeout(Duration::from_secs(10), cancelled_transaction.close())
             .await
             .unwrap_or_else(|_| panic!("post-shutdown close timed out in lifecycle {iteration}"))
-            .expect("connection shutdown is terminal for retained transactions");
+            .expect("the retained transaction closes before connection shutdown");
         drop(cancelled_transaction);
+        backend
+            .close_connection()
+            .expect("explicit driver shutdown should succeed after transaction close");
+        assert!(!backend.is_open());
         backend
             .close_connection()
             .expect("explicit driver shutdown should be idempotent");

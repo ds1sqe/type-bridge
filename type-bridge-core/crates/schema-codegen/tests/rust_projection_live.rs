@@ -32,10 +32,18 @@ const WORKFORCE_JOURNEY: &[u8] =
     include_bytes!("../../../../tests/contracts/sdk_conformance/workforce-v1/journey-v1.json");
 const WORKFORCE_V2_JOURNEY: &[u8] =
     include_bytes!("../../../../tests/contracts/sdk_conformance/workforce-v2/journey-v2.json");
+const WORKFORCE_V3_SCHEMA: &str =
+    include_str!("../../../../tests/contracts/sdk_conformance/workforce-v3/schema-v3.yaml");
+const WORKFORCE_V3_PROVIDER_SCHEMA: &str =
+    include_str!("../../../../tests/contracts/sdk_conformance/workforce-v3/provider-3.12.1-v3.tql");
+const WORKFORCE_V3_CATALOG: &[u8] =
+    include_bytes!("../../../../tests/contracts/sdk_conformance/workforce-v3/catalog-v3.json");
+const WORKFORCE_V3_JOURNEY: &[u8] =
+    include_bytes!("../../../../tests/contracts/sdk_conformance/workforce-v3/journey-v3.json");
 const WORKFORCE_V2_CATALOG_RELATIVE: &str =
     "tests/contracts/sdk_conformance/workforce-v2/catalog-v2.json";
 const WORKFORCE_PROFILE: &str = "typedb-3.12.1/v1";
-const CONSUMER_TESTS: [&str; 10] = [
+const CONSUMER_TESTS: [&str; 11] = [
     "generated_workforce_report_journeys",
     "generated_schema_handshake_and_tokens",
     "generated_entity_crud_batches_and_scalar_domains",
@@ -46,6 +54,7 @@ const CONSUMER_TESTS: [&str; 10] = [
     "generated_unkeyed_entity_iid_lifecycle_and_singular_query",
     "generated_lifecycle_hooks_and_atomic_mutation_batches",
     "generated_write_transaction_commit_rollback_and_drop",
+    "generated_data_model_runtime_v3_live",
 ];
 
 struct Stage(PathBuf);
@@ -233,6 +242,24 @@ fn requested_workforce_v2_report(profile_name: &str) -> Option<PathBuf> {
     Some(path)
 }
 
+fn requested_workforce_v3_supplement(profile_name: &str) -> Option<PathBuf> {
+    let raw = env::var_os("TYPE_BRIDGE_WORKFORCE_V3_RUST_SUPPLEMENT")?;
+    assert_eq!(profile_name, WORKFORCE_PROFILE);
+    let path = PathBuf::from(raw);
+    assert!(
+        path.is_absolute(),
+        "Workforce V3 supplement path must be absolute"
+    );
+    let parent = path.parent().expect("Workforce V3 supplement has a parent");
+    let metadata =
+        fs::symlink_metadata(parent).expect("Workforce V3 supplement parent must already exist");
+    assert!(metadata.is_dir() && !metadata.file_type().is_symlink());
+    assert!(
+        matches!(fs::symlink_metadata(&path), Err(error) if error.kind() == std::io::ErrorKind::NotFound)
+    );
+    Some(path)
+}
+
 #[test]
 fn external_consumer_remains_a_focused_public_api_suite() {
     fn consumer_test<'a>(source: &'a str, name: &str) -> &'a str {
@@ -338,6 +365,17 @@ fn generated_rust_projection_round_trips_exact_live_models() {
     };
     let workforce_report = requested_workforce_report(&profile_name);
     let workforce_v2_report = requested_workforce_v2_report(&profile_name);
+    let workforce_v3_supplement = requested_workforce_v3_supplement(&profile_name);
+    assert!(
+        workforce_v3_supplement.is_none()
+            || (workforce_report.is_none() && workforce_v2_report.is_none()),
+        "Workforce V3 uses an isolated generated package and consumer run"
+    );
+    let (schema, provider_schema) = if workforce_v3_supplement.is_some() {
+        (WORKFORCE_V3_SCHEMA, WORKFORCE_V3_PROVIDER_SCHEMA)
+    } else {
+        (schema, provider_schema)
+    };
     let workforce_v2_proof_fragments = workforce_v2_report.as_ref().map(|_| {
         let raw = env::var_os("TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENTS")
             .expect("TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENTS is required for a V2 report");
@@ -461,6 +499,15 @@ fn generated_rust_projection_round_trips_exact_live_models() {
         fs::write(&provider_schema, PROVIDER_SCHEMA.as_bytes())
             .expect("workforce-v2 provider schema is staged");
         (manifest, catalog, journey, schema, provider_schema)
+    });
+    let workforce_v3_files = workforce_v3_supplement.as_ref().map(|_| {
+        let directory = stage.path().join("workforce-v3");
+        fs::create_dir_all(&directory).expect("workforce-v3 contract stage is created");
+        let catalog = directory.join("catalog-v3.json");
+        let journey = directory.join("journey-v3.json");
+        fs::write(&catalog, WORKFORCE_V3_CATALOG).expect("workforce-v3 catalog is staged");
+        fs::write(&journey, WORKFORCE_V3_JOURNEY).expect("workforce-v3 journey is staged");
+        (catalog, journey)
     });
     let generated = stage.path().join("generated");
     for (relative, bytes) in package.files() {
@@ -785,6 +832,9 @@ tokio = {{ version = "1", features = ["macros", "rt-multi-thread"] }}
         .env_remove("TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENTS")
         .env_remove("TYPE_BRIDGE_WORKFORCE_V2_PROOF_RUN_NONCE")
         .env_remove("TYPE_BRIDGE_WORKFORCE_V2_VALIDATED_OBSERVATIONS");
+    if workforce_v3_supplement.is_some() {
+        consumer_command.arg("generated_data_model_runtime_v3_live");
+    }
     if let (Some(report), Some((manifest, catalog, journey, schema, provider_schema))) =
         (&workforce_report, &workforce_files)
     {
@@ -795,6 +845,14 @@ tokio = {{ version = "1", features = ["macros", "rt-multi-thread"] }}
             .env("TYPE_BRIDGE_WORKFORCE_JOURNEY", journey)
             .env("TYPE_BRIDGE_WORKFORCE_SCHEMA", schema)
             .env("TYPE_BRIDGE_WORKFORCE_PROVIDER_SCHEMA", provider_schema);
+    }
+    if let (Some(supplement), Some((catalog, journey))) =
+        (&workforce_v3_supplement, &workforce_v3_files)
+    {
+        consumer_command
+            .env("TYPE_BRIDGE_WORKFORCE_V3_RUST_SUPPLEMENT", supplement)
+            .env("TYPE_BRIDGE_WORKFORCE_V3_CATALOG", catalog)
+            .env("TYPE_BRIDGE_WORKFORCE_V3_JOURNEY", journey);
     }
     if let (Some(report), Some((manifest, catalog, journey, schema, provider_schema))) =
         (&workforce_v2_report, &workforce_v2_files)
@@ -824,10 +882,23 @@ tokio = {{ version = "1", features = ["macros", "rt-multi-thread"] }}
         String::from_utf8_lossy(&consumer_output.stderr),
     );
     let consumer_stdout = String::from_utf8_lossy(&consumer_output.stdout);
-    assert!(consumer_stdout.contains(&format!(
-        "test result: ok. {} passed; 0 failed",
+    let expected_consumer_tests = if workforce_v3_supplement.is_some() {
+        1
+    } else {
         CONSUMER_TESTS.len()
+    };
+    assert!(consumer_stdout.contains(&format!(
+        "test result: ok. {expected_consumer_tests} passed; 0 failed"
     )));
+    if workforce_v3_supplement.is_some() {
+        assert!(consumer_stdout.contains("generated Workforce V3 Rust live supplement: passed"));
+        assert!(
+            workforce_v3_supplement
+                .as_ref()
+                .is_some_and(|path| path.is_file())
+        );
+        return;
+    }
     assert!(consumer_stdout.contains("public generated schema handshake and tokens: passed"));
     assert!(
         consumer_stdout

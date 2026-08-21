@@ -27,7 +27,7 @@
       "python": {
         "algorithm": "sha256",
         "canonicalization": "typebridge.binding-projection/v1",
-        "digest": "eb8061dadaa18cb6645e35a8219d2922b1cc40ace57bb919ee4853a965752857",
+        "digest": "8df239d0c9167d1a87bb6d00bc13c1f51644883d3a211651e746217edf3d3cf8",
         "domain": "typebridge.binding.projection",
         "semantic_profile": "typedb-3.12.1/v1"
       },
@@ -126,9 +126,9 @@
     {"id": "workforce.projection.evidence-integrity", "capability_id": "projection.evidence-integrity", "disposition": "retained_evidence"},
     {"id": "workforce.projection.token-package-fencing", "capability_id": "projection.token-package-fencing", "disposition": "retained_evidence"},
     {"id": "workforce.query.reducers-remote", "capability_id": "query.remote-reducers-and-grouping", "disposition": "retained_evidence"},
-    {"id": "workforce.schema.ordered-distinct", "capability_id": "schema.ordered-distinct-collections", "disposition": "known_gap"},
+    {"id": "workforce.schema.ordered-distinct", "capability_id": "schema.ordered-distinct-collections", "disposition": "retained_evidence"},
     {"id": "workforce.query.schema-function", "capability_id": "query.schema-function-invocation", "disposition": "retained_evidence"},
-    {"id": "workforce.runtime.connection-policy", "capability_id": "runtime.complete-connection-policy", "disposition": "known_gap"},
+    {"id": "workforce.runtime.connection-policy", "capability_id": "runtime.complete-connection-policy", "disposition": "retained_evidence"},
     {"id": "workforce.runtime.database-administration", "capability_id": "runtime.database-administration", "disposition": "known_gap"},
     {"id": "workforce.runtime.cancellation", "capability_id": "runtime.cancellation", "disposition": "known_gap"},
     {"id": "workforce.runtime.timeout-resource-limits", "capability_id": "runtime.timeout-and-resource-limits", "disposition": "known_gap"},

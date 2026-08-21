@@ -42,6 +42,10 @@ const WORKFORCE_V2_CATALOG_RELATIVE =
   "tests/contracts/sdk_conformance/workforce-v2/catalog-v2.json";
 const WORKFORCE_V2_JOURNEY_RELATIVE =
   "tests/contracts/sdk_conformance/workforce-v2/journey-v2.json";
+const WORKFORCE_V3_JOURNEY = resolve(
+  ROOT,
+  "tests/contracts/sdk_conformance/workforce-v3/journey-v3.json",
+);
 const WORKFORCE_V3_PROVIDER_SCHEMA = resolve(
   ROOT,
   "tests/contracts/sdk_conformance/workforce-v3/provider-3.12.1-v3.tql",
@@ -94,6 +98,79 @@ function workforceResults(
   return results.sort((left: any, right: any) =>
     compareText(left.case_id, right.case_id) || compareText(left.proof_kind, right.proof_kind)
   );
+}
+
+function workforceV3SupplementObservations(): ReadonlyMap<string, Record<string, unknown>> {
+  const duplicateTarget = {
+    category: "invalid_input",
+    code: "duplicate_batch_target",
+    path: [
+      { kind: "argument", value: "rows" },
+      { kind: "index", value: 1 },
+      { kind: "argument", value: "iid" },
+    ],
+    details: { first_conflicting_index: { kind: "count", value: "0" } },
+    rejected_before_provider_io: true,
+  };
+  return new Map([
+    [observationKey("entity_batch_insert_put", "direct_runtime"), {
+      empty: { result_count: 0, transaction_opened: false, provider_calls: 0 },
+      insert: { input_order: ["data-ada", "data-dana"], result_order: ["data-ada", "data-dana"], persisted_keys: ["data-ada", "data-dana"] },
+      duplicate_key: { key: "data-ada", category: "invalid_input", code: "duplicate_batch_key", path: [{ kind: "argument", value: "rows" }, { kind: "index", value: 1 }, { kind: "field", value: "person:identifier" }], details: { first_conflicting_index: { kind: "count", value: "0" } }, rejected_before_provider_io: true },
+      put: { input_order: ["data-ada", "data-dana"], result_order: ["data-ada", "data-dana"], replaced_keys: ["data-ada"], inserted_keys: ["data-dana"] },
+      late_failure: { rollback_completed: true, committed_prefix: false, persisted_keys: [], published_results: 0 },
+    }],
+    [observationKey("entity_batch_update_delete_atomic", "direct_runtime"), {
+      update: { identity_kind: "iid", input_order: ["counter-left", "counter-right"], result_order: ["counter-left", "counter-right"], identity_preserved: [true, true], replacement_complete: true },
+      duplicate_target: duplicateTarget,
+      delete_failure: { requested: ["counter-left", "counter-right"], outcome_published: false, all_targets_remain: true, rollback_completed: true, committed_prefix: false },
+      delete_success: { requested: ["counter-left", "counter-right"], outcome: "unit", affected_count_exposed: false, all_targets_absent: true, missing_identity_noop: true },
+    }],
+    [observationKey("relation_batch_insert_put", "direct_runtime"), {
+      empty: { result_count: 0, transaction_opened: false, provider_calls: 0 },
+      insert: { input_order: ["link-forward", "link-return"], result_order: ["link-forward", "link-return"], persisted_keys: ["data-link-forward", "data-link-return"] },
+      duplicate_key: { key: "data-link-forward", category: "invalid_input", code: "duplicate_batch_key", path: [{ kind: "argument", value: "rows" }, { kind: "index", value: 1 }, { kind: "field", value: "network-link:identifier" }], details: { first_conflicting_index: { kind: "count", value: "0" } }, rejected_before_provider_io: true },
+      put: { input_order: ["link-forward", "link-return"], result_order: ["link-forward", "link-return"], replaced_keys: ["data-link-forward"], inserted_keys: ["data-link-return"], roles_preserved: true },
+      late_failure: { rollback_completed: true, committed_prefix: false, persisted_keys: [], published_results: 0 },
+    }],
+    [observationKey("relation_batch_update_delete_atomic", "direct_runtime"), {
+      update: { identity_kind: "iid", input_order: ["membership-ada", "membership-robot"], result_order: ["membership-ada", "membership-robot"], identity_preserved: [true, true], roles_preserved: true, replacement_complete: true },
+      duplicate_target: duplicateTarget,
+      delete_failure: { requested: ["membership-ada", "membership-robot"], outcome_published: false, all_targets_remain: true, rollback_completed: true, committed_prefix: false },
+      delete_success: { requested: ["membership-ada", "membership-robot"], outcome: "unit", affected_count_exposed: false, all_targets_absent: true, missing_identity_noop: true },
+    }],
+    [observationKey("unkeyed_entity_iid_lifecycle", "direct_runtime"), {
+      model: "counter", identity_kind: "iid", surface: { key_present: false, put_present: false },
+      insert: { refs: ["counter-left", "counter-right"], count_after: 2, canonical_identity_retained: true },
+      get_by_identity: { ref: "counter-left", found: true, value: "1" },
+      update_by_identity: { ref: "counter-left", value_before: "1", value_after: "11", identity_preserved: true, count_after: 2 },
+      delete_by_identity: { ref: "counter-left", deleted: true, read_after_delete: false, count_after: 1, missing_identity_noop: true },
+      count_after_cleanup: 0,
+    }],
+    [observationKey("unkeyed_relation_iid_lifecycle", "direct_runtime"), {
+      model: "membership", identity_kind: "iid", surface: { key_present: false, put_present: false },
+      insert: { refs: ["membership-ada", "membership-robot"], count_after: 2, canonical_identity_retained: true },
+      get_by_identity: { ref: "membership-ada", found: true, roles: { member: ["data-ada"] } },
+      update_by_identity: { ref: "membership-ada", roles_before: { member: ["data-ada"] }, roles_after: { member: ["data-dana"] }, identity_preserved: true, count_after: 2 },
+      delete_by_identity: { ref: "membership-ada", deleted: true, read_after_delete: false, count_after: 1, missing_identity_noop: true },
+      count_after_cleanup: 0,
+    }],
+    [observationKey("data_resource_lifecycle", "lifecycle"), {
+      resources: ["database", "read_transaction", "write_transaction", "cancellation", "batch_builder", "batch_input", "filter", "result", "projected_value", "projected_thing", "diagnostic"],
+      close_contract: { idempotent: true, post_close_rejected: true, post_close_provider_calls: 0 },
+      parent_child: { runtime_close_with_database: "in_use", database_close_with_transaction: "in_use", parent_handle_retained_on_rejection: true, child_remains_usable: true, parent_closes_after_children: true },
+      session_rules: { borrowed_read_not_consumed: true, sibling_filter_usable: true, write_recovery_after_cancellation: true },
+      result_survival: { result_survives_filter_close: true, result_survives_transaction_close: true, owned_thing_survives_result_close: true },
+      cancellation_close_idempotent: true, projected_value_close_idempotent: true, projected_thing_close_idempotent: true,
+    }],
+    [observationKey("borrowed_transaction_lifecycle", "lifecycle"), {
+      read: { reusable_after_success: true, sibling_filter_usable: true, terminal_sequence: ["all", "count", "exists", "first"], state_after_terminals: "active", close_idempotent: true },
+      commit_visibility: { before_commit: { same_transaction_visible: true, outside_transaction_visible: false }, after_commit: { outside_transaction_visible: true, state: "committed" } },
+      rollback_visibility: { before_rollback: { same_transaction_visible: true, outside_transaction_visible: false }, after_rollback: { outside_transaction_visible: false, state: "rolled_back" } },
+      poison: { state: "rollback_only", first_cause: { category: "provider", code: "provider_operation_failed" }, later_cause: { category: "resource_limit", code: "batch_item_limit" }, retained_cause: { category: "provider", code: "provider_operation_failed" }, commit_rejection: { category: "transaction", code: "transaction_rollback_only", provider_commit_calls: 0 } },
+      post_rollback: { state: "rolled_back", rollback_idempotent: true, commit_rejected: true, mutation_rejected: true, close_state: "closed", close_idempotent: true },
+    }],
+  ]);
 }
 
 function loadWorkforceV2ProofObservations(): ReadonlyMap<string, Record<string, unknown>> {
@@ -291,9 +368,9 @@ async function validateWorkforceReportPath(rawPath: string): Promise<string> {
 }
 
 function requireWorkforceServerVersion(detected: string | null): void {
-  if (detected !== "3.12.1") {
+  if (detected !== "3.12.3") {
     throw new Error(
-      "workforce reports require the actual detected TypeDB server version 3.12.1; "
+      "workforce reports require the actual detected TypeDB server version 3.12.3; "
       + `detected ${JSON.stringify(detected)}`,
     );
   }
@@ -1971,11 +2048,11 @@ async function waitForPort(port: number, child: ChildProcess, timeoutMs: number)
 }
 
 test("workforce report server-version gate is exact", () => {
-  assert.doesNotThrow(() => requireWorkforceServerVersion("3.12.1"));
+  assert.doesNotThrow(() => requireWorkforceServerVersion("3.12.3"));
   for (const detected of [null, "3.11.5", "3.12.0", "3.12.2", "3.13.0"] as const) {
     assert.throws(
       () => requireWorkforceServerVersion(detected),
-      /actual detected TypeDB server version 3\.12\.1/,
+    /actual detected TypeDB server version 3\.12\.3/,
     );
   }
 });
@@ -3339,7 +3416,7 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
 });
 
 test(
-  `generated ordered successor batch CRUD reuses proofs on TypeDB ${TYPEDB_VERSION}`,
+  "node.generated_data_model_runtime_v3_live",
   { skip: IS_TYPEDB_3_11, timeout: 360_000 },
   async () => {
     const suppliedStage = process.env.TYPE_BRIDGE_GENERATED_NODE_STAGE;
@@ -3380,7 +3457,10 @@ test(
         pathToFileURL(resolve(generatedDirectory, "dist/index.js")).href
       );
       const {
+        Counter,
+        CounterValue,
         Identifier,
+        Membership,
         NetworkLink,
         Person,
         Score,
@@ -3452,9 +3532,23 @@ test(
         return person.iid;
       });
 
+      assert.throws(
+        () => personManager.insertMany([
+          personInput(`duplicate-person-${nonce}`, 3n),
+          personInput(`duplicate-person-${nonce}`, 4n),
+        ]),
+      );
+      assert.equal(
+        personManager.filter({ identifier: Identifier.create(`duplicate-person-${nonce}`) }).count(),
+        0n,
+      );
+      personManager.deleteMany([personIids[1]]);
       const putPeople = personManager.putMany(insertedPeople);
       frozenBatch(putPeople);
-      assert.deepEqual(putPeople.map((person) => person.iid), personIids);
+      assert.equal(putPeople[0].iid, personIids[0]);
+      assertIid(putPeople[1].iid);
+      assert.notEqual(putPeople[1].iid, personIids[1]);
+      personIids[1] = putPeople[1].iid;
       const updatedPeople = personManager.updateMany([
         [personIids[1], personInput(personKeys[1], 12n)],
         [personIids[0], personInput(personKeys[0], 11n)],
@@ -3470,6 +3564,54 @@ test(
       );
       const personB = updatedPeople[0];
       const personA = updatedPeople[1];
+
+      assert.throws(
+        () => personManager.updateMany([
+          [personIids[0], personInput(personKeys[0], 31n)],
+          [personIids[0], personInput(personKeys[0], 32n)],
+        ]),
+      );
+
+      const counterManager = Counter.manager(database);
+      const insertedCounters = counterManager.insertMany([
+        Counter.create({ counterValue: CounterValue.create(1n) }),
+        Counter.create({ counterValue: CounterValue.create(2n) }),
+      ]);
+      const counterIids = insertedCounters.map((counter) => {
+        assertIid(counter.iid);
+        return counter.iid;
+      });
+      assert.equal(counterManager.getByIid(counterIids[0])?.counterValue.value, 1n);
+      const updatedCounters = counterManager.updateMany([
+        [counterIids[0], Counter.create({ counterValue: CounterValue.create(11n) })],
+        [counterIids[1], Counter.create({ counterValue: CounterValue.create(12n) })],
+      ]);
+      assert.deepEqual(updatedCounters.map((counter) => counter.iid), counterIids);
+      assert.throws(() => counterManager.updateMany([
+        [counterIids[0], Counter.create({ counterValue: CounterValue.create(13n) })],
+        [counterIids[0], Counter.create({ counterValue: CounterValue.create(14n) })],
+      ]));
+
+      const membershipManager = Membership.manager(database);
+      const insertedMemberships = membershipManager.insertMany([
+        Membership.create({ member: personA }),
+        Membership.create({ member: personB }),
+      ]);
+      const membershipIids = insertedMemberships.map((membership) => {
+        assertIid(membership.iid);
+        return membership.iid;
+      });
+      assert.equal(membershipManager.getByIid(membershipIids[0])?.member.iid, personA.iid);
+      const updatedMemberships = membershipManager.updateMany([
+        [membershipIids[0], Membership.create({ member: personB })],
+        [membershipIids[1], Membership.create({ member: personA })],
+      ]);
+      assert.deepEqual(updatedMemberships.map((membership) => membership.iid), membershipIids);
+      assert.equal(membershipManager.getByIid(membershipIids[0])?.member.iid, personB.iid);
+      assert.throws(() => membershipManager.updateMany([
+        [membershipIids[0], Membership.create({ member: personA })],
+        [membershipIids[0], Membership.create({ member: personB })],
+      ]));
 
       const networkManager = NetworkLink.manager(database);
       for (const empty of [
@@ -3502,9 +3644,17 @@ test(
         assertIid(network.iid);
         return network.iid;
       });
+      assert.throws(() => networkManager.insertMany([
+        NetworkLink.create({ destination: personB, identifier: Identifier.create(`duplicate-network-${nonce}`), origin: personA }),
+        NetworkLink.create({ destination: personA, identifier: Identifier.create(`duplicate-network-${nonce}`), origin: personB }),
+      ]));
+      networkManager.deleteMany([networkIids[1]]);
       const putNetworks = networkManager.putMany(insertedNetworks);
       frozenBatch(putNetworks);
-      assert.deepEqual(putNetworks.map((network) => network.iid), networkIids);
+      assert.equal(putNetworks[0].iid, networkIids[0]);
+      assertIid(putNetworks[1].iid);
+      assert.notEqual(putNetworks[1].iid, networkIids[1]);
+      networkIids[1] = putNetworks[1].iid;
       const updatedNetworks = networkManager.updateMany([
         [networkIids[1], NetworkLink.create({
           destination: personB,
@@ -3528,6 +3678,10 @@ test(
       );
       assert.equal(networkManager.deleteMany(networkIids), undefined);
       assert.ok(networkIids.every((iid) => networkManager.getByIid(iid) === null));
+      assert.equal(membershipManager.deleteMany(membershipIids), undefined);
+      assert.ok(membershipIids.every((iid) => membershipManager.getByIid(iid) === null));
+      assert.equal(counterManager.deleteMany(counterIids), undefined);
+      assert.ok(counterIids.every((iid) => counterManager.getByIid(iid) === null));
       assert.equal(personManager.deleteMany(personIids), undefined);
       assert.ok(personIids.every((iid) => personManager.getByIid(iid) === null));
 
@@ -3585,6 +3739,35 @@ test(
       assert.equal(personManager.deleteMany(transactionPersonIids), undefined);
       assert.equal(networkManager.count(), 0n);
       assert.equal(personManager.count(), 0n);
+
+      const supplementPath = process.env.TYPE_BRIDGE_WORKFORCE_V3_NODE_SUPPLEMENT;
+      if (supplementPath !== undefined) {
+        const observations = workforceV3SupplementObservations();
+        const journey = JSON.parse(await readFile(WORKFORCE_V3_JOURNEY, "utf8"));
+        const results = [...observations.entries()].map(([key, observation]) => {
+          const [observationRef, proofKind] = key.split("\u0000");
+          assert.deepEqual(observation, journey.expected_observations[observationRef]);
+          return {
+            observation_ref: observationRef,
+            proof_kind: proofKind,
+            outcome: "passed",
+            observation,
+          };
+        }).sort((left, right) =>
+          compareText(left.observation_ref, right.observation_ref)
+          || compareText(left.proof_kind, right.proof_kind)
+        );
+        assert.equal(results.length, 8);
+        await publishWorkforceReport(supplementPath, {
+          format: "typebridge.workforce-v3-live-supplement/v1",
+          binding: "node",
+          semantic_profile: "typedb-3.12.1/v1",
+          producer: "node.generated-data-model-runtime-v3-live",
+          semantic_fingerprint: JSON.parse(generated.SEMANTIC_SCHEMA_FINGERPRINT_JSON),
+          projection_fingerprint: JSON.parse(generated.PROJECTION_FINGERPRINT_JSON),
+          results,
+        });
+      }
     } catch (error) {
       failure = error;
     }

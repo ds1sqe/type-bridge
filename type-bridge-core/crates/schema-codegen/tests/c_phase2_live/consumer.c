@@ -402,7 +402,7 @@ int main(void) {
         database != NULL && diagnostics == NULL);
   CHECK(type_bridge_database_server_version(database, &version) ==
             TYPE_BRIDGE_STATUS_OK &&
-        text_is(version, "3.12.1"));
+        text_is(version, "3.12.3"));
 
   {
     phase2_foreign_identifier *foreign_key = NULL;

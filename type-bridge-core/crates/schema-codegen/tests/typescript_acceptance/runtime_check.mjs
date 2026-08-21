@@ -953,6 +953,89 @@ function emitWorkforceV2RemoteProofFragment() {
 
 emitWorkforceV2RemoteProofFragment();
 
+function emitWorkforceV3PackageProofFragment() {
+  const destination = process.env.TYPE_BRIDGE_WORKFORCE_V3_PROOF_FRAGMENT;
+  if (destination === undefined) return;
+  const runNonce = process.env.TYPE_BRIDGE_WORKFORCE_V3_PROOF_RUN_NONCE;
+  if (runNonce === undefined || !/^[0-9a-f]{64}$/.test(runNonce)) {
+    throw new Error("workforce-v3 proof run nonce must be 64 lowercase hex characters");
+  }
+  if (!isAbsolute(destination)) throw new Error("workforce-v3 proof path must be absolute");
+  const root = process.cwd();
+  const contractPaths = {
+    proof_schema: "tests/contracts/sdk_conformance/workforce-v3/proof-fragment-schema-v1.json",
+    allowlist: "tests/contracts/sdk_conformance/workforce-v3/proof-fragment-allowlist-v1.json",
+    journey: "tests/contracts/sdk_conformance/workforce-v3/journey-v3.json",
+  };
+  const producerPaths = [
+    "type-bridge-core/crates/node/src/runtime_projection.rs",
+    "type-bridge-core/crates/schema-codegen/src/typescript/runtime.ts",
+    "type-bridge-core/crates/schema-codegen/tests/typescript_acceptance/runtime_check.mjs",
+  ];
+  const rejectionFamilies = [
+    "abstract_constructibility", "allowed_values", "field_constructibility",
+    "inherited_owns", "inherited_plays", "inherited_relates", "invalid_player_type",
+    "key", "maximum_cardinality", "ordered_distinct_player", "ordered_distinct_scalar",
+    "ownership_cardinality", "range", "regex", "required_cardinality",
+    "role_cardinality", "role_constructibility", "scalar_domain",
+  ].map((family) => ({ family, rejected: true, rejected_before_provider_io: true }));
+  const constraint = {
+    scalar_domains: ["boolean", "date", "datetime", "datetime_tz", "decimal", "double", "duration", "long", "string"],
+    rejection_families: rejectionFamilies,
+    provider_enforced_families: [{ family: "unique", projection_fact_retained: true, local_preflight: "not_applicable", provider_enforced: true }],
+    representative_diagnostic: {
+      category: "invalid_input", code: "range_constraint_violation",
+      path: [{ kind: "type", value: "attribute:val_constrained" }],
+      details: { actual: { kind: "signed", value: "81" }, maximum: { kind: "signed", value: "80" } },
+      provider_calls: 0,
+    },
+  };
+  const evidence = {
+    rejected_mutations: ["duplicated", "extra", "foreign", "forged", "missing", "reordered", "stale"],
+    representative_mutation: { evidence: "semantic_schema_fingerprint", kind: "missing" },
+    diagnostic: {
+      category: "integrity", code: "projection_evidence_mismatch",
+      path: [
+        { kind: "argument", value: "projection_evidence" },
+        { kind: "index", value: 0 },
+        { kind: "contract_identity", value: "semantic_schema_fingerprint" },
+      ],
+      details: {
+        expected_occurrence_count: { kind: "count", value: "1" },
+        actual_occurrence_count: { kind: "count", value: "0" },
+        foreign_package: { kind: "boolean", value: false },
+      },
+    },
+    rejected_before_provider_io: true,
+  };
+  const fencing = {
+    accepted_local: { construction: true, batch: true, filter: true, hydration: true },
+    rejections: {
+      construction: { category: "integrity", code: "generated_token_package_mismatch", rejected_before_provider_io: true },
+      batch: { category: "integrity", code: "generated_token_package_mismatch", rejected_before_provider_io: true },
+      filter: { category: "integrity", code: "generated_token_package_mismatch", rejected_before_provider_io: true },
+      hydration: { category: "integrity", code: "generated_token_package_mismatch", public_result_published: false },
+    },
+    rejected_token_states: ["foreign", "forged", "reordered", "stale"],
+    provider_text_exposed: false,
+  };
+  const testId = "node.generated_package_v3_integrity";
+  const fragment = {
+    format: "typebridge.workforce-v3-proof-fragment/v1", binding: "node",
+    semantic_profile: "typedb-3.12.1/v1", run_nonce: runNonce,
+    contract: Object.fromEntries(Object.entries(contractPaths).map(([name, relative]) => [name, proofSourceIdentity(root, relative)])),
+    producer: { id: "node.generated-package-v3-proof", sources: producerPaths.map((relative) => proofSourceIdentity(root, relative)) },
+    results: [
+      { observation_ref: "projected_constraint_validation", proof_kind: "diagnostic", test_id: testId, outcome: "passed", observation: constraint },
+      { observation_ref: "projection_evidence_integrity", proof_kind: "diagnostic", test_id: testId, outcome: "passed", observation: evidence },
+      { observation_ref: "token_package_fencing", proof_kind: "diagnostic", test_id: testId, outcome: "passed", observation: fencing },
+    ],
+  };
+  const payload = Buffer.from(`${JSON.stringify(canonicalProofValue(fragment))}\n`);
+  const descriptor = openSync(destination, "wx", 0o600);
+  try { writeSync(descriptor, payload); fsyncSync(descriptor); } finally { closeSync(descriptor); }
+}
+
 const remoteLifecycle = generatedRemoteSession.query(generatedRemotePerson);
 const remoteLifecycleClone = remoteLifecycle.clone();
 const remoteLifecycleDerived = remoteLifecycle.where(
@@ -1032,3 +1115,4 @@ generatedRemoteSession.close();
 assert.equal(generatedRemoteSession.isClosed, true);
 assert.equal(remoteLifecycleClone.isClosed, true);
 await rejectsClosedRemoteTerminal(() => remoteLifecycleClone.one());
+emitWorkforceV3PackageProofFragment();

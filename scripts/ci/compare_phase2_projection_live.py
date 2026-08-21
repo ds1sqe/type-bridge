@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare the four exact-TypeDB-3.12.1 Phase-2 live projection reports."""
+"""Compare the four exact-TypeDB-3.12.3 Phase-2 live projection reports."""
 
 from __future__ import annotations
 

@@ -4845,7 +4845,7 @@ int main(void) {
         TYPE_BRIDGE_STATUS_OK);
   CHECK(type_bridge_database_server_version(database, &version) ==
         TYPE_BRIDGE_STATUS_OK);
-  CHECK(same_text(version, "3.12.1"));
+  CHECK(same_text(version, "3.12.3"));
 
   CHECK(fixture_robotzuid_open(package, 7, &robot_id, &diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);

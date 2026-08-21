@@ -210,6 +210,8 @@ export declare class RustDatabase {
     resetDatabase(): void;
     transaction(transactionType?: TransactionType): RustTransactionContext;
 }
+/** @internal Wrap a generated-package-owned native database handle. */
+export declare function createRustDatabaseFromNative(native: NativeRustDatabase): RustDatabase;
 export declare class RustTransactionContext {
     #private;
     private constructor();
