@@ -2810,27 +2810,26 @@ mod tests {
     #[test]
     fn journal_schema_contract_rejects_every_lossy_compatibility_construct() {
         let payload_ownership = "owns typebridge-internal-v2-record-payload @card(1..1),";
-        for (case, replacement) in [
+        for (case, replacement, expected_code) in [
             (
                 "ordered distinct ownership",
                 "owns typebridge-internal-v2-record-payload[] @card(1..1) @distinct,",
+                "migration_typedb_control_schema_mismatch",
             ),
             (
                 "cascade ownership",
                 "owns typebridge-internal-v2-record-payload @card(1..1) @cascade,",
+                "migration_typedb_export_invalid",
             ),
             (
                 "subkey ownership",
                 "owns typebridge-internal-v2-record-payload @card(1..1) @subkey(journal),",
+                "migration_typedb_export_invalid",
             ),
         ] {
             let schema = JOURNAL_CONTROL_SCHEMA_TYPEQL.replacen(payload_ownership, replacement, 1);
             let error = journal_schema_state(&schema).expect_err(case);
-            assert_eq!(
-                error.code().as_str(),
-                "migration_typedb_export_invalid",
-                "{case}: {error}"
-            );
+            assert_eq!(error.code().as_str(), expected_code, "{case}: {error}");
         }
 
         for (case, definition) in [

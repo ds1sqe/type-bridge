@@ -592,7 +592,7 @@ mod tests {
     }
 
     #[test]
-    fn fresh_authority_refuses_scalar_projection_of_released_list_semantics() {
+    fn fresh_authority_distinguishes_scalar_candidates_from_released_list_semantics() {
         let scalar =
             candidate_state("define\nattribute tag, value string;\nentity person, owns tag;\n");
         let export = export_with_user(
@@ -606,21 +606,23 @@ mod tests {
             &scalar,
         )
         .expect_err("fresh V2 authority cannot erase released list semantics");
-        assert_eq!(error.code().as_str(), "migration_typedb_export_invalid");
+        assert_eq!(
+            error.code().as_str(),
+            "migration_typedb_observation_no_candidate_match"
+        );
 
         let declared = typeql_to_declared(
             DocumentId::new("observer-query-candidate.typeql").expect("document id"),
             "define\nattribute tag, value string;\nentity person, owns tag;\n",
         )
         .expect("query candidate");
-        let query_error = rebuild_live_query_authority_state(
+        rebuild_live_query_authority_state(
             DocumentId::new("observer-query-live.typeql").expect("document id"),
             &export,
             &declared,
             &observation_context(),
         )
-        .expect_err("query and fresh migration authority must reject the same lossy export");
-        assert_eq!(query_error.code(), error.code());
+        .expect("query authority retains the now-canonical ordered/distinct facts");
     }
 
     #[test]
@@ -633,8 +635,9 @@ mod tests {
         )
         .expect("released list schema is adoptable");
         let authority = ManagedObservationAuthority::Adopted(Arc::new(adopted));
-        let scalar =
-            candidate_state("define\nattribute tag, value string;\nentity person, owns tag;\n");
+        let ordered_distinct = candidate_state(
+            "define\nattribute tag, value string;\nentity person, owns tag[] @distinct;\n",
+        );
         let export = export_with_user(
             "attribute tag, value string;\nentity person, owns tag[] @distinct;\n",
         );
@@ -642,35 +645,35 @@ mod tests {
             observation_document(),
             &export,
             &available_capabilities(),
-            &scalar,
-            &scalar,
+            &ordered_distinct,
+            &ordered_distinct,
             &authority,
         )
         .expect("matching adopted extensions accompany the portable candidate");
-        assert_eq!(observed, scalar);
+        assert_eq!(observed, ordered_distinct);
     }
 
     #[test]
-    fn adopted_authority_rejects_extension_tampering_in_the_observed_export() {
+    fn adopted_authority_defers_canonical_collection_changes_to_candidate_identity() {
         let adopted = type_bridge_schema_compat::parse_adopted_genesis_authority(
             DocumentId::new("observer-adopted-genesis.typeql").expect("document id"),
             "define\nattribute tag, value string;\nentity person, owns tag[] @distinct;\n",
         )
         .expect("released list schema is adoptable");
         let authority = ManagedObservationAuthority::Adopted(Arc::new(adopted));
-        let scalar =
-            candidate_state("define\nattribute tag, value string;\nentity person, owns tag;\n");
+        let ordered =
+            candidate_state("define\nattribute tag, value string;\nentity person, owns tag[];\n");
         let export = export_with_user("attribute tag, value string;\nentity person, owns tag[];\n");
-        let error = observe_managed_state_from_export_with_authority(
+        let observed = observe_managed_state_from_export_with_authority(
             observation_document(),
             &export,
             &available_capabilities(),
-            &scalar,
-            &scalar,
+            &ordered,
+            &ordered,
             &authority,
         )
-        .expect_err("the exact fenced export must retain adopted @distinct authority");
-        assert_eq!(error.code().as_str(), "migration_adopted_extension_drift");
+        .expect("ordered/distinct facts are canonical rather than adopted extensions");
+        assert_eq!(observed, ordered);
     }
 
     #[test]
