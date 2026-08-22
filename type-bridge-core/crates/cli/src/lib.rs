@@ -1,8 +1,9 @@
 //! `type-bridge` — the V2 workspace command-line interface.
 //!
 //! `schema check`, `schema generate`, `migration make`, and `migration
-//! plan` run without any network I/O. `migration apply`, `migration
-//! verify`, and `migration adopt` connect through one named workspace
+//! plan`, and rollback preview run without any network I/O. `migration apply`,
+//! `migration rollback --execute`, `migration verify`, and `migration adopt`
+//! connect through one named workspace
 //! environment: credentials stay symbolic environment references resolved
 //! only at command time, and application requires the environment's
 //! explicit `migrate: true` opt-in.
@@ -18,7 +19,7 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 #[cfg(test)]
 use type_bridge_schema::SystemSchemaSourceService;
 use type_bridge_schema_migration::MigrationGenerationOutcome;
@@ -97,6 +98,24 @@ enum MigrationCommand {
         #[arg(long)]
         environment: String,
     },
+    /// Preview or explicitly execute rollback of named applied migrations.
+    Rollback {
+        /// The manifest environment whose exact database pair is targeted.
+        #[arg(long)]
+        environment: String,
+        /// Remove one exact compound migration identity (app/name); repeat as needed.
+        #[arg(long = "remove", required = true)]
+        removals: Vec<String>,
+        /// Approve one destructive rollback by compound id (app/name).
+        #[arg(long = "approve")]
+        approvals: Vec<String>,
+        /// Execute the previewed rollback; omission is provider-free preview only.
+        #[arg(long)]
+        execute: bool,
+        /// Select stable human or machine-readable output.
+        #[arg(long, value_enum, default_value_t = RollbackOutput::Text)]
+        output: RollbackOutput,
+    },
     /// Adopt a completed archived V1 history as the canonical genesis.
     Adopt {
         /// The manifest environment holding the migrated v1 database.
@@ -109,6 +128,12 @@ enum MigrationCommand {
         #[arg(long, default_value = "0000_archive_frontier")]
         name: String,
     },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum RollbackOutput {
+    Text,
+    Json,
 }
 
 /// Symbolic secret references stay unresolved during offline commands.
@@ -231,6 +256,20 @@ fn run(cli: &Cli) -> Result<(), String> {
             MigrationCommand::Verify { environment } => {
                 run_connected(&workspace, environment, ConnectedAction::Verify)
             }
+            MigrationCommand::Rollback {
+                environment,
+                removals,
+                approvals,
+                execute,
+                output,
+            } => run_migration_rollback(
+                &workspace,
+                environment,
+                removals,
+                approvals,
+                *execute,
+                *output,
+            ),
             MigrationCommand::Adopt {
                 environment,
                 archive_directory,
@@ -264,6 +303,132 @@ fn run(cli: &Cli) -> Result<(), String> {
                 Ok(())
             }
         },
+    }
+}
+
+fn run_migration_rollback(
+    workspace: &TypeBridgeWorkspace,
+    environment: &str,
+    removals: &[String],
+    approvals: &[String],
+    execute: bool,
+    output: RollbackOutput,
+) -> Result<(), String> {
+    if workspace.config().environment(environment).is_none() {
+        return Err(format!(
+            "unknown environment {environment:?}; rollback requires an exact workspace environment binding"
+        ));
+    }
+    let directory = workspace.open_migration_directory().map_err(display)?;
+    let graph = workspace
+        .discover_migrations_in(&directory)
+        .map_err(display)?;
+    let removals = parse_migration_ids(&graph, removals, "rollback removal")?;
+    let _ = bind_rollback_approvals(&graph, approvals)?;
+    let applied = graph
+        .manifests()
+        .map(|(id, _)| id.clone())
+        .collect::<BTreeSet<_>>();
+    let lowering = type_bridge_schema_migration::SchemaLoweringBinding::current(
+        workspace.delta_context().available_capabilities().clone(),
+    )
+    .map_err(display)?;
+    let plan = type_bridge_schema_migration::build_verified_migration_rollback_preview(
+        &graph,
+        &applied,
+        &removals,
+        workspace.delta_context(),
+        &lowering,
+    )
+    .map_err(display)?;
+    render_rollback_preview(environment, &plan, execute, output)?;
+    if !execute {
+        return Ok(());
+    }
+    run_connected(
+        workspace,
+        environment,
+        ConnectedAction::Rollback {
+            removals,
+            approvals: approvals.to_vec(),
+        },
+    )
+}
+
+fn render_rollback_preview(
+    environment: &str,
+    plan: &type_bridge_schema_migration::VerifiedMigrationRollbackPlan,
+    execute: bool,
+    output: RollbackOutput,
+) -> Result<(), String> {
+    let order = plan
+        .rollbacks()
+        .iter()
+        .map(|rollback| {
+            format!(
+                "{}/{}",
+                rollback.manifest().id().app_label().as_str(),
+                rollback.manifest().id().name().as_str()
+            )
+        })
+        .collect::<Vec<_>>();
+    let target = plan
+        .remaining_applied()
+        .iter()
+        .map(|id| format!("{}/{}", id.app_label().as_str(), id.name().as_str()))
+        .collect::<Vec<_>>();
+    let safety = plan
+        .rollbacks()
+        .iter()
+        .map(|rollback| rollback_safety_wire(rollback.rollback_safety()).to_owned())
+        .collect::<Vec<_>>();
+    let plan_identity = plan
+        .rollbacks()
+        .iter()
+        .map(|rollback| rollback.digest().to_hex())
+        .collect::<Vec<_>>()
+        .join(":");
+    let reverse_backfills = plan
+        .rollbacks()
+        .iter()
+        .map(|rollback| rollback.backfills().len())
+        .sum::<usize>();
+    match output {
+        RollbackOutput::Text => println!(
+            "rollback preview\n  environment: {environment}\n  basis: committed-history\n  plan identity: {plan_identity}\n  order: {}\n  target applied: {}\n  safety: {}\n  reverse backfills: {reverse_backfills}\n  execution requested: {execute}",
+            order.join(", "),
+            target.join(", "),
+            safety.join(", "),
+        ),
+        RollbackOutput::Json => {
+            let strings = |values: &[String]| {
+                values
+                    .iter()
+                    .map(|value| format!("\"{value}\""))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            };
+            println!(
+                "{{\"basis\":\"committed-history\",\"environment\":\"{environment}\",\"execute\":{execute},\"format\":\"typebridge.migration-rollback-preview/v1\",\"order\":[{}],\"plan_identity\":\"{plan_identity}\",\"reverse_backfills\":{reverse_backfills},\"safety\":[{}],\"target_applied\":[{}]}}",
+                strings(&order),
+                strings(&safety),
+                strings(&target),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn rollback_safety_wire(safety: type_bridge_schema::SafetyClass) -> &'static str {
+    match safety {
+        type_bridge_schema::SafetyClass::FormalOnly => "formal_only",
+        type_bridge_schema::SafetyClass::SchemaMetadata => "schema_metadata",
+        type_bridge_schema::SafetyClass::Additive => "additive",
+        type_bridge_schema::SafetyClass::Conditional => "conditional",
+        type_bridge_schema::SafetyClass::BackfillRequired => "backfill_required",
+        type_bridge_schema::SafetyClass::Destructive => "destructive",
+        type_bridge_schema::SafetyClass::Opaque => "opaque",
+        type_bridge_schema::SafetyClass::Unsupported => "unsupported",
     }
 }
 
@@ -383,6 +548,37 @@ fn sanitize_migration_execution_outcome(
             migration_id.app_label().as_str(),
             migration_id.name().as_str(),
             position = render_position(position),
+        ),
+    }
+}
+
+fn sanitize_migration_rollback_outcome(
+    outcome: type_bridge_schema_migration::MigrationRollbackOutcome,
+) -> String {
+    use type_bridge_schema_migration::MigrationRollbackOutcome as Outcome;
+    match outcome {
+        Outcome::RolledBack => "rollback completed".to_owned(),
+        Outcome::RetrySafe {
+            migration_id,
+            step_ordinal,
+            diagnostic,
+        } => format!(
+            "rollback may be retried at {}/{} step {} [{}]",
+            migration_id.app_label().as_str(),
+            migration_id.name().as_str(),
+            step_ordinal,
+            diagnostic.code().as_str(),
+        ),
+        Outcome::RequiresExplicitRecovery {
+            migration_id,
+            step_ordinal,
+            diagnostic,
+        } => format!(
+            "rollback requires explicit recovery at {}/{} step {} [{}]",
+            migration_id.app_label().as_str(),
+            migration_id.name().as_str(),
+            step_ordinal,
+            diagnostic.code().as_str(),
         ),
     }
 }
@@ -860,6 +1056,10 @@ enum ConnectedAction {
         approvals: Vec<String>,
     },
     Verify,
+    Rollback {
+        removals: BTreeSet<type_bridge_contract::migration::MigrationId>,
+        approvals: Vec<String>,
+    },
     Adopt {
         archive_directory: PathBuf,
         name: String,
@@ -937,7 +1137,9 @@ async fn run_connected_async(
     };
     if matches!(
         &action,
-        ConnectedAction::Apply { .. } | ConnectedAction::Adopt { .. }
+        ConnectedAction::Apply { .. }
+            | ConnectedAction::Rollback { .. }
+            | ConnectedAction::Adopt { .. }
     ) && !environment.migrate()
     {
         return Err(format!(
@@ -970,7 +1172,9 @@ async fn run_connected_async(
             archive_directory,
             name,
         )?),
-        ConnectedAction::Apply { .. } | ConnectedAction::Verify => None,
+        ConnectedAction::Apply { .. }
+        | ConnectedAction::Rollback { .. }
+        | ConnectedAction::Verify => None,
     };
 
     // Retain one descriptor-backed authority for the whole connected action.
@@ -1004,6 +1208,12 @@ async fn run_connected_async(
                 .ok_or_else(|| "internal apply history was not retained".to_owned())?,
             approvals,
         )?),
+        ConnectedAction::Rollback { approvals, .. } => Some(bind_rollback_approvals(
+            ordinary_graph
+                .as_ref()
+                .ok_or_else(|| "internal rollback history was not retained".to_owned())?,
+            approvals,
+        )?),
         ConnectedAction::Verify | ConnectedAction::Adopt { .. } => None,
     };
 
@@ -1029,7 +1239,7 @@ async fn run_connected_async(
         ConnectedAction::Adopt { .. } => {
             Some("`migration adopt` cutover requires the migrated v1 database to already exist")
         }
-        ConnectedAction::Apply { .. } => None,
+        ConnectedAction::Apply { .. } | ConnectedAction::Rollback { .. } => None,
     };
     // A TypeDB connection is server-scoped: binding a database name does not
     // require that database to exist. Negotiate and gate both pair members
@@ -1188,6 +1398,30 @@ async fn run_connected_async(
                     "apply did not complete",
                     outcome,
                 )),
+            }
+        }
+        ConnectedAction::Rollback { removals, .. } => {
+            let approvals = prepared_approvals
+                .as_deref()
+                .ok_or_else(|| "internal rollback approvals were not retained".to_owned())?;
+            match runner
+                .rollback_in(directory, &removals, &holder, approvals)
+                .await
+                .map_err(display)?
+            {
+                type_bridge_schema_migration_typedb::MigrationDirectoryRollbackOutcome::UpToDate => {
+                    println!("requested migrations are already absent from the applied ledger");
+                    Ok(())
+                }
+                type_bridge_schema_migration_typedb::MigrationDirectoryRollbackOutcome::Executed(
+                    type_bridge_schema_migration::MigrationRollbackOutcome::RolledBack,
+                ) => {
+                    println!("rolled back the requested migrations");
+                    Ok(())
+                }
+                type_bridge_schema_migration_typedb::MigrationDirectoryRollbackOutcome::Executed(
+                    outcome,
+                ) => Err(sanitize_migration_rollback_outcome(outcome)),
             }
         }
         ConnectedAction::Verify => {
@@ -1948,6 +2182,63 @@ fn bind_approvals(
         .collect()
 }
 
+fn parse_migration_ids(
+    graph: &type_bridge_schema_migration::MigrationHistoryGraph,
+    values: &[String],
+    kind: &str,
+) -> Result<BTreeSet<type_bridge_contract::migration::MigrationId>, String> {
+    let mut ids = BTreeSet::new();
+    for compound in values {
+        let (app_label, name) = compound
+            .split_once('/')
+            .ok_or_else(|| format!("{kind} {compound:?} must be app-label/name"))?;
+        let id = type_bridge_contract::migration::MigrationId::from_components(
+            type_bridge_contract::migration::MigrationAppLabel::new(app_label.to_owned())
+                .map_err(display)?,
+            type_bridge_contract::migration::MigrationName::new(name.to_owned())
+                .map_err(display)?,
+        );
+        if graph.manifest(&id).is_none() {
+            return Err(format!(
+                "{kind} target {compound:?} is not in the committed history"
+            ));
+        }
+        if !ids.insert(id) {
+            return Err(format!("{kind} target {compound:?} is duplicated"));
+        }
+    }
+    Ok(ids)
+}
+
+fn bind_rollback_approvals(
+    graph: &type_bridge_schema_migration::MigrationHistoryGraph,
+    approvals: &[String],
+) -> Result<Vec<type_bridge_schema_migration::MigrationApplyApproval>, String> {
+    let ids = parse_migration_ids(graph, approvals, "rollback approval")?;
+    let mut bound = Vec::new();
+    for id in ids {
+        let manifest = graph
+            .manifest(&id)
+            .ok_or_else(|| "internal rollback approval target disappeared".to_owned())?;
+        for safety in [
+            type_bridge_schema::SafetyClass::FormalOnly,
+            type_bridge_schema::SafetyClass::SchemaMetadata,
+            type_bridge_schema::SafetyClass::Additive,
+            type_bridge_schema::SafetyClass::Conditional,
+            type_bridge_schema::SafetyClass::Destructive,
+            type_bridge_schema::SafetyClass::Opaque,
+        ] {
+            bound.push(
+                type_bridge_schema_migration::MigrationApplyApproval::for_rollback(
+                    manifest, safety,
+                )
+                .map_err(display)?,
+            );
+        }
+    }
+    Ok(bound)
+}
+
 #[cfg(test)]
 mod transport_option_tests {
     use super::*;
@@ -2094,6 +2385,81 @@ mod transport_option_tests {
         fs::remove_dir_all(&configured_root).expect("replacement root removes");
         fs::rename(&held_root, &configured_root).expect("retained root restores");
         preflight.expect("transport must use the CA under the retained original root");
+    }
+}
+
+#[cfg(test)]
+mod rollback_cli_contract_tests {
+    use super::*;
+
+    #[test]
+    fn rollback_grammar_requires_environment_and_explicit_removal() {
+        assert!(Cli::try_parse_from(["type-bridge", "migration", "rollback"]).is_err());
+        assert!(
+            Cli::try_parse_from([
+                "type-bridge",
+                "migration",
+                "rollback",
+                "--environment",
+                "live",
+            ])
+            .is_err()
+        );
+        let cli = Cli::try_parse_from([
+            "type-bridge",
+            "migration",
+            "rollback",
+            "--environment",
+            "live",
+            "--remove",
+            "example/0002_contract",
+            "--remove",
+            "example/0001_expand",
+            "--approve",
+            "example/0002_contract",
+            "--output",
+            "json",
+        ])
+        .expect("explicit preview grammar parses");
+        let Command::Migration {
+            command:
+                MigrationCommand::Rollback {
+                    environment,
+                    removals,
+                    approvals,
+                    execute,
+                    output,
+                },
+        } = cli.command
+        else {
+            panic!("rollback command parsed into another command")
+        };
+        assert_eq!(environment, "live");
+        assert_eq!(removals.len(), 2);
+        assert_eq!(approvals, ["example/0002_contract"]);
+        assert!(!execute, "preview is the non-mutating default");
+        assert_eq!(output, RollbackOutput::Json);
+    }
+
+    #[test]
+    fn rollback_execution_requires_an_explicit_flag() {
+        let cli = Cli::try_parse_from([
+            "type-bridge",
+            "migration",
+            "rollback",
+            "--environment",
+            "live",
+            "--remove",
+            "example/0002_contract",
+            "--execute",
+        ])
+        .expect("explicit execution grammar parses");
+        assert!(matches!(
+            cli.command,
+            Command::Migration {
+                command: MigrationCommand::Rollback { execute: true, .. }
+            }
+        ));
     }
 }
 

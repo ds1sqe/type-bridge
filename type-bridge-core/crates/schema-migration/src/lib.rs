@@ -76,6 +76,7 @@ pub use rollback_plan::{
     VerifiedMigrationRollbackBackfillStep, VerifiedMigrationRollbackManifest,
     VerifiedMigrationRollbackOperation, VerifiedMigrationRollbackPlan,
     VerifiedMigrationRollbackStep, build_verified_migration_rollback_plan,
+    build_verified_migration_rollback_preview,
 };
 pub use verify::{MigrationDriftFinding, MigrationVerifyReport, verify_migration_state};
 

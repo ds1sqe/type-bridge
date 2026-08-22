@@ -141,6 +141,7 @@ pub struct VerifiedMigrationRollbackPlan {
     source_state: ManagedSchemaState,
     target_schema: DeclaredSchema,
     target_state: ManagedSchemaState,
+    execution_authorized: bool,
 }
 
 impl VerifiedMigrationRollbackPlan {
@@ -167,6 +168,11 @@ impl VerifiedMigrationRollbackPlan {
     /// Return the exact managed state the rollback restores.
     pub const fn target_state(&self) -> &ManagedSchemaState {
         &self.target_state
+    }
+
+    /// Return whether policy and exact approvals authorize provider execution.
+    pub const fn execution_authorized(&self) -> bool {
+        self.execution_authorized
     }
 
     /// Return the complete canonically ordered applied basis this plan assumed.
@@ -199,6 +205,48 @@ pub fn build_verified_migration_rollback_plan(
     lowering_binding: &SchemaLoweringBinding,
     policy: &MigrationSafetyPolicy,
     approvals: &[MigrationApplyApproval],
+) -> Result<VerifiedMigrationRollbackPlan, MigrationApplyPlanError> {
+    build_verified_migration_rollback_plan_inner(
+        graph,
+        applied,
+        removals,
+        delta_context,
+        lowering_binding,
+        policy,
+        approvals,
+        true,
+    )
+}
+
+/// Build a deterministic provider-free preview without granting execution authority.
+pub fn build_verified_migration_rollback_preview(
+    graph: &MigrationHistoryGraph,
+    applied: &BTreeSet<MigrationId>,
+    removals: &BTreeSet<MigrationId>,
+    delta_context: &ManagedDeltaContext,
+    lowering_binding: &SchemaLoweringBinding,
+) -> Result<VerifiedMigrationRollbackPlan, MigrationApplyPlanError> {
+    build_verified_migration_rollback_plan_inner(
+        graph,
+        applied,
+        removals,
+        delta_context,
+        lowering_binding,
+        &MigrationSafetyPolicy::default_policy(),
+        &[],
+        false,
+    )
+}
+
+fn build_verified_migration_rollback_plan_inner(
+    graph: &MigrationHistoryGraph,
+    applied: &BTreeSet<MigrationId>,
+    removals: &BTreeSet<MigrationId>,
+    delta_context: &ManagedDeltaContext,
+    lowering_binding: &SchemaLoweringBinding,
+    policy: &MigrationSafetyPolicy,
+    approvals: &[MigrationApplyApproval],
+    execution_authorized: bool,
 ) -> Result<VerifiedMigrationRollbackPlan, MigrationApplyPlanError> {
     if lowering_binding.available_capabilities() != delta_context.available_capabilities() {
         return Err(contract_failure(
@@ -369,33 +417,37 @@ pub fn build_verified_migration_rollback_plan(
             ));
         }
 
-        let approved = match policy.decision(rollback_safety) {
-            SafetyPolicyDecision::Allow => false,
-            SafetyPolicyDecision::Reject => {
-                return Err(contract_failure(
-                    DiagnosticCategory::InvalidContract,
-                    "migration_rollback_safety_policy_rejected",
-                    "explicit policy rejects the reverse program classification",
-                )
-                .into());
-            }
-            SafetyPolicyDecision::RequireApproval => {
-                let mut bound = false;
-                for approval in approvals {
-                    if approval.binds_rollback(manifest, rollback_safety)? {
-                        bound = true;
-                        break;
-                    }
-                }
-                if !bound {
+        let approved = if !execution_authorized {
+            true
+        } else {
+            match policy.decision(rollback_safety) {
+                SafetyPolicyDecision::Allow => false,
+                SafetyPolicyDecision::Reject => {
                     return Err(contract_failure(
                         DiagnosticCategory::InvalidContract,
-                        "migration_rollback_approval_required",
-                        "reverse program requires an approval bound to this exact rollback",
+                        "migration_rollback_safety_policy_rejected",
+                        "explicit policy rejects the reverse program classification",
                     )
                     .into());
                 }
-                true
+                SafetyPolicyDecision::RequireApproval => {
+                    let mut bound = false;
+                    for approval in approvals {
+                        if approval.binds_rollback(manifest, rollback_safety)? {
+                            bound = true;
+                            break;
+                        }
+                    }
+                    if !bound {
+                        return Err(contract_failure(
+                            DiagnosticCategory::InvalidContract,
+                            "migration_rollback_approval_required",
+                            "reverse program requires an approval bound to this exact rollback",
+                        )
+                        .into());
+                    }
+                    true
+                }
             }
         };
 
@@ -441,5 +493,6 @@ pub fn build_verified_migration_rollback_plan(
         source_state,
         target_schema: current_schema,
         target_state: current_state,
+        execution_authorized,
     })
 }

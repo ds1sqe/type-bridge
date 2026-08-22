@@ -510,6 +510,13 @@ where
     S: MigrationLeaseStore + MigrationExecutionJournal,
     P: MigrationExecutionProvider,
 {
+    if !plan.execution_authorized() {
+        return Err(failure(
+            DiagnosticCategory::InvalidContract,
+            "migration_rollback_preview_not_executable",
+            "a provider-free rollback preview carries no execution authority",
+        ));
+    }
     if plan.rollbacks().is_empty() {
         return Err(failure(
             DiagnosticCategory::InvalidContract,
