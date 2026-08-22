@@ -30,9 +30,10 @@ pub use coordinator::{
     MigrationExecutionDirection, MigrationExecutionOutcome, MigrationExecutionPosition,
     MigrationExecutionProvider, MigrationExecutionReport, MigrationExecutionReportPosition,
     MigrationExecutionStatus, MigrationRollbackOutcome, PreparedMigrationGroup,
-    execute_verified_migration_apply_plan, execute_verified_migration_apply_plan_controlled,
-    execute_verified_migration_rollback_plan, execute_verified_migration_rollback_plan_controlled,
-    require_authorized_apply_plan, require_authorized_rollback_plan,
+    await_interruptible_operation, execute_verified_migration_apply_plan,
+    execute_verified_migration_apply_plan_controlled, execute_verified_migration_rollback_plan,
+    execute_verified_migration_rollback_plan_controlled, require_authorized_apply_plan,
+    require_authorized_rollback_plan,
 };
 pub use directory::{
     MigrationAuthoringLock, MigrationDirectory, MigrationDirectoryEntry,

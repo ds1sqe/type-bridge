@@ -38,7 +38,11 @@ pub type BackfillExecutionFuture<'a> = Pin<
     Box<dyn Future<Output = Result<BackfillCompletionEvidence, GroupCommitFailure>> + Send + 'a>,
 >;
 
-async fn await_interruptible<F, T>(
+/// Await an effect-free or abort-on-drop operation under shared controls.
+///
+/// Callers must not use this around commit or another future whose drop can
+/// leave an unknown durable outcome.
+pub async fn await_interruptible_operation<F, T>(
     control: &MigrationExecutionControl,
     future: F,
 ) -> Result<T, Diagnostic>
@@ -622,7 +626,7 @@ where
         let source = plan
             .source_state()
             .expect("non-empty plan has source state");
-        let live_source = await_interruptible(
+        let live_source = await_interruptible_operation(
             control,
             provider.observe_managed_state(lease, source, source),
         )
@@ -669,7 +673,7 @@ where
             let (source, target, lowering) = group_evidence(migration, group)?;
             if observed.is_none() {
                 observed = Some(
-                    await_interruptible(
+                    await_interruptible_operation(
                         control,
                         provider.observe_managed_state(lease, source, target),
                     )
@@ -733,8 +737,11 @@ where
                 continue;
             }
 
-            let mut transaction =
-                await_interruptible(control, provider.prepare_group(lease, source, target)).await?;
+            let mut transaction = await_interruptible_operation(
+                control,
+                provider.prepare_group(lease, source, target),
+            )
+            .await?;
             let steps = &migration.steps()[group.first_step_index()..group.end_step_index()];
             for step in &steps[..group.assertion_count()] {
                 let validated = step.validated_assertion().ok_or_else(|| {
@@ -745,7 +752,8 @@ where
                     )
                 })?;
                 if let Err(error) =
-                    await_interruptible(control, transaction.execute_assertion(validated)).await
+                    await_interruptible_operation(control, transaction.execute_assertion(validated))
+                        .await
                 {
                     return Err(rollback_prepared_group_error(
                         transaction,
@@ -757,7 +765,8 @@ where
             }
             for unit in lowering.units() {
                 if let Err(error) =
-                    await_interruptible(control, transaction.execute_statement_unit(unit)).await
+                    await_interruptible_operation(control, transaction.execute_statement_unit(unit))
+                        .await
                 {
                     return Err(rollback_prepared_group_error(
                         transaction,
@@ -1012,7 +1021,7 @@ where
         ));
     }
 
-    let observation = await_interruptible(
+    let observation = await_interruptible_operation(
         control,
         provider.observe_backfill(lease, plan, BackfillExecutionDirection::Forward),
     )
@@ -1335,7 +1344,7 @@ where
 
     if open.is_none() {
         let source = plan.source_state();
-        let live_source = await_interruptible(
+        let live_source = await_interruptible_operation(
             control,
             provider.observe_managed_state(lease, source, source),
         )
@@ -1401,7 +1410,7 @@ where
             let target = reverse.target();
             if observed.is_none() {
                 observed = Some(
-                    await_interruptible(
+                    await_interruptible_operation(
                         control,
                         provider.observe_managed_state(lease, source, target),
                     )
@@ -1461,11 +1470,15 @@ where
                 continue;
             }
 
-            let mut transaction =
-                await_interruptible(control, provider.prepare_group(lease, source, target)).await?;
+            let mut transaction = await_interruptible_operation(
+                control,
+                provider.prepare_group(lease, source, target),
+            )
+            .await?;
             for unit in step.lowering().units() {
                 if let Err(error) =
-                    await_interruptible(control, transaction.execute_statement_unit(unit)).await
+                    await_interruptible_operation(control, transaction.execute_statement_unit(unit))
+                        .await
                 {
                     return Err(rollback_prepared_group_error(
                         transaction,
@@ -1696,7 +1709,7 @@ where
         ));
     }
 
-    let observation = await_interruptible(
+    let observation = await_interruptible_operation(
         control,
         provider.observe_backfill(lease, plan, BackfillExecutionDirection::Reverse),
     )
@@ -2864,7 +2877,7 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
             cancellation.cancel();
         });
-        let diagnostic = futures_executor::block_on(await_interruptible(
+        let diagnostic = futures_executor::block_on(await_interruptible_operation(
             &control,
             std::future::pending::<Result<(), Diagnostic>>(),
         ))
@@ -2881,7 +2894,7 @@ mod tests {
             Some(Instant::now() + std::time::Duration::from_millis(10)),
             crate::MigrationExecutionResourceLimits::default(),
         );
-        let diagnostic = futures_executor::block_on(await_interruptible(
+        let diagnostic = futures_executor::block_on(await_interruptible_operation(
             &control,
             std::future::pending::<Result<(), Diagnostic>>(),
         ))

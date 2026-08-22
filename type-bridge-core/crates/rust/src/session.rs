@@ -76,6 +76,18 @@ impl ManagedDatabaseDeletionPlan {
             .map(map_delete_outcome)
             .map_err(administration_error)
     }
+
+    /// Revalidate interruptibly, then execute without masking provider outcomes.
+    pub async fn execute_controlled(
+        self,
+        control: &crate::MigrationExecutionControl,
+    ) -> Result<ManagedDatabaseDeleteOutcome> {
+        self.inner
+            .execute_controlled(control)
+            .await
+            .map(map_delete_outcome)
+            .map_err(administration_error)
+    }
 }
 
 /// Connection options for TypeDB servers.
@@ -325,6 +337,23 @@ impl<S: Schema> Database<S> {
         self.inner.database_exists().await.map_err(Error::from_orm)
     }
 
+    /// Return whether the managed database exists, honoring execution controls.
+    #[cfg(feature = "typedb")]
+    pub async fn database_exists_controlled(
+        &self,
+        control: &crate::MigrationExecutionControl,
+    ) -> Result<bool> {
+        if let Some(scope) = &self.managed_scope_id {
+            return self
+                .pair_administrator(scope.clone())?
+                .database_exists_controlled(control)
+                .await
+                .map_err(administration_error);
+        }
+        control.check().map_err(administration_error)?;
+        self.database_exists().await
+    }
+
     /// Create the one configured database and return its normalized outcome.
     pub async fn create_database(&self) -> Result<DatabaseCreateOutcome> {
         #[cfg(feature = "typedb")]
@@ -351,6 +380,27 @@ impl<S: Schema> Database<S> {
                 }
             })
             .map_err(Error::from_orm)
+    }
+
+    /// Create the configured database with cancellation and deadline control.
+    #[cfg(feature = "typedb")]
+    pub async fn create_database_controlled(
+        &self,
+        control: &crate::MigrationExecutionControl,
+    ) -> Result<DatabaseCreateOutcome> {
+        if let Some(scope) = &self.managed_scope_id {
+            return self
+                .pair_administrator(scope.clone())?
+                .create_database_outcome_controlled(control)
+                .await
+                .map(|outcome| match outcome {
+                    type_bridge_schema_migration_typedb::ManagedDatabasePairCreateOutcome::Created => DatabaseCreateOutcome::Created,
+                    type_bridge_schema_migration_typedb::ManagedDatabasePairCreateOutcome::AlreadyExists => DatabaseCreateOutcome::AlreadyExists,
+                })
+                .map_err(administration_error);
+        }
+        control.check().map_err(administration_error)?;
+        self.create_database().await
     }
 
     /// Delete the one configured database and return its normalized outcome.
@@ -396,6 +446,28 @@ impl<S: Schema> Database<S> {
             .map_err(administration_error)
     }
 
+    /// Inspect the managed pair while honoring cancellation and a deadline.
+    #[cfg(feature = "typedb")]
+    pub async fn inspect_database_pair_controlled(
+        &self,
+        control: &crate::MigrationExecutionControl,
+    ) -> Result<ManagedDatabasePairState> {
+        let scope = self
+            .managed_scope_id
+            .clone()
+            .ok_or_else(|| Error::Database {
+                message:
+                    "managed database administration requires verified generated schema authority"
+                        .to_owned(),
+                source: None,
+            })?;
+        self.pair_administrator(scope)?
+            .inspect_controlled(control)
+            .await
+            .map(map_pair_state)
+            .map_err(administration_error)
+    }
+
     /// Inspect and retain an explicit pair-aware destructive deletion plan.
     #[cfg(feature = "typedb")]
     pub async fn plan_database_delete(&self) -> Result<ManagedDatabaseDeletionPlan> {
@@ -409,6 +481,27 @@ impl<S: Schema> Database<S> {
             })?;
         self.pair_administrator(scope)?
             .plan_delete()
+            .await
+            .map(|inner| ManagedDatabaseDeletionPlan { inner })
+            .map_err(administration_error)
+    }
+
+    /// Inspect and retain a deletion plan while honoring execution controls.
+    #[cfg(feature = "typedb")]
+    pub async fn plan_database_delete_controlled(
+        &self,
+        control: &crate::MigrationExecutionControl,
+    ) -> Result<ManagedDatabaseDeletionPlan> {
+        let scope = self
+            .managed_scope_id
+            .clone()
+            .ok_or_else(|| Error::Database {
+                message: "managed database deletion requires verified generated schema authority"
+                    .to_owned(),
+                source: None,
+            })?;
+        self.pair_administrator(scope)?
+            .plan_delete_controlled(control)
             .await
             .map(|inner| ManagedDatabaseDeletionPlan { inner })
             .map_err(administration_error)

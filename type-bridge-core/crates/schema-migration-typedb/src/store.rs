@@ -19,11 +19,12 @@ use type_bridge_schema_compat::typeql_to_declared;
 use type_bridge_schema_migration::{
     AppliedRecord, BackfillEventRecord, BackfillExecutionDirection, ExecutionBindingToken,
     ExecutionFence, ExecutionFuture, ExecutionScope, GroupEventRecord, GroupJournalEventKind,
-    JournalEntry, JournalSequence, LeaseHolderId, MigrationExecutionJournal, MigrationLease,
-    MigrationLeaseStore, OpenPlanRecord, OpenRollbackPlanRecord, PlanRecord, RollbackPlanRecord,
-    RollbackStepEventRecord, RolledBackRecord, VerifiedMigrationApplyPlan,
-    VerifiedMigrationRollbackPlan, VerifiedMigrationTransactionGroup,
-    VerifiedSchemaMigrationManifest, active_applied_entries, verified_manifest_digest,
+    JournalEntry, JournalSequence, LeaseHolderId, MigrationExecutionControl,
+    MigrationExecutionJournal, MigrationLease, MigrationLeaseStore, OpenPlanRecord,
+    OpenRollbackPlanRecord, PlanRecord, RollbackPlanRecord, RollbackStepEventRecord,
+    RolledBackRecord, VerifiedMigrationApplyPlan, VerifiedMigrationRollbackPlan,
+    VerifiedMigrationTransactionGroup, VerifiedSchemaMigrationManifest, active_applied_entries,
+    await_interruptible_operation, verified_manifest_digest,
 };
 
 use crate::control_schema::{
@@ -171,6 +172,14 @@ impl ManagedDatabasePairAdministrator {
         })
     }
 
+    /// Inspect the pair while honoring cancellation and an absolute deadline.
+    pub async fn inspect_controlled(
+        &self,
+        control: &MigrationExecutionControl,
+    ) -> Result<ManagedDatabasePairState, Diagnostic> {
+        await_interruptible_operation(control, self.inspect()).await
+    }
+
     /// Return whether the exact bound managed database exists.
     pub async fn database_exists(&self) -> Result<bool, Diagnostic> {
         self.inner
@@ -178,6 +187,14 @@ impl ManagedDatabasePairAdministrator {
             .database_exists()
             .await
             .map_err(map_orm_error)
+    }
+
+    /// Check existence while honoring cancellation and an absolute deadline.
+    pub async fn database_exists_controlled(
+        &self,
+        control: &MigrationExecutionControl,
+    ) -> Result<bool, Diagnostic> {
+        await_interruptible_operation(control, self.database_exists()).await
     }
 
     /// Create the managed member only after validating the complete pair state.
@@ -203,9 +220,47 @@ impl ManagedDatabasePairAdministrator {
         }
     }
 
+    /// Create the managed member with interruptible inspection and safe dispatch.
+    pub async fn create_database_outcome_controlled(
+        &self,
+        control: &MigrationExecutionControl,
+    ) -> Result<ManagedDatabasePairCreateOutcome, Diagnostic> {
+        match self.inspect_controlled(control).await? {
+            ManagedDatabasePairState::StandaloneManaged | ManagedDatabasePairState::OwnedPair => {
+                Ok(ManagedDatabasePairCreateOutcome::AlreadyExists)
+            }
+            ManagedDatabasePairState::Absent | ManagedDatabasePairState::OwnedJournalOrphan => {
+                control.check()?;
+                self.inner
+                    .managed_database
+                    .create_database_outcome()
+                    .await
+                    .map(|outcome| match outcome {
+                        DatabaseCreateOutcome::Created => ManagedDatabasePairCreateOutcome::Created,
+                        DatabaseCreateOutcome::AlreadyExists => {
+                            ManagedDatabasePairCreateOutcome::AlreadyExists
+                        }
+                    })
+                    .map_err(map_orm_error)
+            }
+        }
+    }
+
     /// Create an explicit destructive plan after a complete owner-verified inspection.
     pub async fn plan_delete(&self) -> Result<ManagedDatabasePairDeletionPlan, Diagnostic> {
         let inspected = self.inspect().await?;
+        Ok(ManagedDatabasePairDeletionPlan {
+            administrator: self.clone(),
+            inspected,
+        })
+    }
+
+    /// Build a deletion plan while honoring cancellation and an absolute deadline.
+    pub async fn plan_delete_controlled(
+        &self,
+        control: &MigrationExecutionControl,
+    ) -> Result<ManagedDatabasePairDeletionPlan, Diagnostic> {
+        let inspected = self.inspect_controlled(control).await?;
         Ok(ManagedDatabasePairDeletionPlan {
             administrator: self.clone(),
             inspected,
@@ -269,6 +324,59 @@ impl ManagedDatabasePairDeletionPlan {
                 "database pair changed after destructive admission; inspect and approve again",
             ));
         }
+        match current {
+            ManagedDatabasePairState::Absent => Ok(ManagedDatabasePairDeleteOutcome::AlreadyAbsent),
+            ManagedDatabasePairState::StandaloneManaged => {
+                self.administrator
+                    .inner
+                    .managed_database
+                    .delete_database_outcome()
+                    .await
+                    .map_err(map_orm_error)?;
+                Ok(ManagedDatabasePairDeleteOutcome::DeletedStandaloneManaged)
+            }
+            ManagedDatabasePairState::OwnedJournalOrphan => {
+                self.administrator
+                    .inner
+                    .journal_database
+                    .delete_database_outcome()
+                    .await
+                    .map_err(map_orm_error)?;
+                Ok(ManagedDatabasePairDeleteOutcome::DeletedOwnedJournalOrphan)
+            }
+            ManagedDatabasePairState::OwnedPair => {
+                self.administrator.require_exact_journal_owner().await?;
+                self.administrator
+                    .inner
+                    .journal_database
+                    .delete_database_outcome()
+                    .await
+                    .map_err(map_orm_error)?;
+                self.administrator
+                    .inner
+                    .managed_database
+                    .delete_database_outcome()
+                    .await
+                    .map_err(map_orm_error)?;
+                Ok(ManagedDatabasePairDeleteOutcome::DeletedOwnedPair)
+            }
+        }
+    }
+
+    /// Revalidate interruptibly, then execute deletion without masking its outcome.
+    pub async fn execute_controlled(
+        self,
+        control: &MigrationExecutionControl,
+    ) -> Result<ManagedDatabasePairDeleteOutcome, Diagnostic> {
+        let current = self.administrator.inspect_controlled(control).await?;
+        if current != self.inspected {
+            return Err(failure(
+                DiagnosticCategory::Integrity,
+                "migration_typedb_pair_changed_after_delete_preview",
+                "database pair changed after destructive admission; inspect and approve again",
+            ));
+        }
+        control.check()?;
         match current {
             ManagedDatabasePairState::Absent => Ok(ManagedDatabasePairDeleteOutcome::AlreadyAbsent),
             ManagedDatabasePairState::StandaloneManaged => {
