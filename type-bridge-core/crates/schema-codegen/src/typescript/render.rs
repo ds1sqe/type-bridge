@@ -558,7 +558,8 @@ fn render_structs(projection: &RuntimeProjection) -> Result<String, Diagnostic> 
             .get(id)
             .ok_or_else(|| facet_error("emission plan references an absent struct"))?;
         let name = structure.target_name().as_str();
-        let id = identity_literal!(structure.id());
+        let id = TypeId::new(TypeKind::Struct, structure.id().label().as_str())?;
+        let id = identity_literal!(&id);
         let _ = writeln!(
             output,
             "export interface {name} extends StructValue<{id}> {{"

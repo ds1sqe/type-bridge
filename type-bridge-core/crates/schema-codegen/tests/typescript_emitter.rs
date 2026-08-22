@@ -104,6 +104,35 @@ fn emits_exact_deterministic_es_module_package() {
 }
 
 #[test]
+fn emits_canonical_struct_type_identity() {
+    let source =
+        include_str!("../../../../tests/contracts/sdk_conformance/workforce-v3/schema-v3.yaml");
+    let emitter = TypeScriptEmitter::new();
+    let documents =
+        SchemaDocumentSet::parse([(DocumentId::new("typescript-struct.yaml").unwrap(), source)])
+            .unwrap();
+    let declared = normalize_documents(&documents).unwrap();
+    let resolved = resolve(
+        &declared,
+        &SemanticProfileId::new("typedb-3.12.1/v1").unwrap(),
+    )
+    .unwrap();
+    let resources = emitter.code_resources_for(&resolved).unwrap();
+    let projection = project(
+        &resolved,
+        BindingTarget::TypeScript,
+        &ProjectionConfig::typescript(),
+        &emitter.generator_handlers_for(&resolved),
+        &resources,
+    )
+    .unwrap();
+    let authority = support::authority(source);
+    let package = emitter.emit(&projection, &authority).unwrap();
+    let structs = String::from_utf8(package.get("src/structs.ts").unwrap().to_vec()).unwrap();
+    assert!(structs.contains(r#"id: "{\"kind\":\"struct\",\"label\":\"player-stats\"}""#));
+}
+
+#[test]
 fn emits_safely_escaped_type_and_direct_sub_documentation() {
     let emitter = TypeScriptEmitter::new();
     let resources = emitter.code_resources().unwrap();

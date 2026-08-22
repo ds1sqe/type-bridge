@@ -1418,6 +1418,8 @@ function scalarToWire(valueType: ScalarValueType, value: unknown): ScalarWire {
   switch (valueType) {
     case "long":
       return { valueType, value: (value as bigint).toString() };
+    case "double":
+      return { valueType, value: Object.is(value, -0) ? "-0" : (value as number) };
     case "date": {
       const iso = (value as Date).toISOString();
       if (!iso.endsWith("T00:00:00.000Z")) {
@@ -1564,6 +1566,11 @@ function scalarFromWire(wire: ScalarWire): unknown {
       if (typeof wire.value !== "string")
         throw new TypeError("datetime-tz wire requires a string");
       return new Date(wire.value);
+    case "double":
+      if (wire.value === "-0") return -0;
+      if (typeof wire.value !== "number")
+        throw new TypeError("double wire requires a finite number or signed zero");
+      return wire.value;
     default:
       return wire.value;
   }

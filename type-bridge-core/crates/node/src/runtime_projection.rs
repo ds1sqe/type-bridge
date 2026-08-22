@@ -4011,6 +4011,9 @@ fn project_create_wire(
                 SdkDiagnosticPathSegment::Field(field.token().clone()),
             ],
         )?;
+        if field.multiplicity().container() == ProjectedContainer::Scalar && values.is_empty() {
+            continue;
+        }
         let projected = values
             .iter()
             .enumerate()
@@ -4106,6 +4109,9 @@ fn project_create_wire_with_proofs(
                 SdkDiagnosticPathSegment::Field(field.token().clone()),
             ],
         )?;
+        if field.multiplicity().container() == ProjectedContainer::Scalar && values.is_empty() {
+            continue;
+        }
         let projected = values
             .iter()
             .enumerate()
@@ -4210,6 +4216,9 @@ fn project_thing_wire(
             field.multiplicity(),
             path.iter().cloned(),
         )?;
+        if field.multiplicity().container() == ProjectedContainer::Scalar && values.is_empty() {
+            continue;
+        }
         let projected = values
             .iter()
             .enumerate()
@@ -4248,10 +4257,7 @@ fn project_thing_wire(
             .map(|(index, value)| {
                 let mut value_path = path.to_vec();
                 value_path.push(SdkDiagnosticPathSegment::Index(projected_index(index)));
-                let reference =
-                    project_hydrated_reference_wire(package, role.players(), value, &value_path)?;
-                ProjectedRolePlayer::try_new(&package.projection, reference)
-                    .map_err(|diagnostic| rebase_hydration_diagnostic(diagnostic, value_path))
+                project_hydrated_role_player_wire(package, role, value, &value_path)
             })
             .collect::<Result<Vec<_>, _>>()?;
         roles.push((role_id.clone(), projected));
@@ -4415,6 +4421,76 @@ fn project_hydrated_reference_wire(
         .map_err(|diagnostic| {
             rebase_hydration_diagnostic(diagnostic, operation_path.iter().cloned())
         })
+}
+
+fn project_hydrated_role_player_wire(
+    package: &InstalledPackage,
+    read_role: &type_bridge_contract::projection::ReadRoleProjection,
+    wire: &ProjectedWire,
+    operation_path: &[SdkDiagnosticPathSegment],
+) -> Result<ProjectedRolePlayer, SdkExecutionDiagnostic> {
+    let form = match wire.form {
+        WireForm::Complete => ProjectedModelForm::Complete,
+        WireForm::Reference => ProjectedModelForm::Reference,
+    };
+    let reference =
+        project_hydrated_reference_wire(package, read_role.players(), wire, operation_path)?;
+    if form == ProjectedModelForm::Reference {
+        return ProjectedRolePlayer::try_new_reference_for_hydration(
+            &package.projection,
+            read_role,
+            reference,
+        )
+        .map_err(|diagnostic| {
+            rebase_hydration_diagnostic(diagnostic, operation_path.iter().cloned())
+        });
+    }
+    let id = reference.type_id().clone();
+    let model = package
+        .projection
+        .projection()
+        .models()
+        .get(&id)
+        .ok_or_else(|| generated_token_package_mismatch_at(operation_path.iter().cloned()))?;
+    let mut fields = Vec::with_capacity(model.complete_read().fields().len());
+    for field in model.complete_read().fields() {
+        let token = model
+            .query_tokens()
+            .fields()
+            .get(field.token())
+            .ok_or_else(|| malformed_projected_hydration_at(operation_path.iter().cloned()))?;
+        let mut field_path = operation_path.to_vec();
+        field_path.extend([
+            SdkDiagnosticPathSegment::Type(id.clone()),
+            SdkDiagnosticPathSegment::Field(field.token().clone()),
+        ]);
+        let values = projected_hydration_wire_items(
+            wire.values.get(token.target_name().as_str()),
+            field.multiplicity(),
+            field_path.iter().cloned(),
+        )?;
+        if field.multiplicity().container() == ProjectedContainer::Scalar && values.is_empty() {
+            continue;
+        }
+        let projected = values
+            .iter()
+            .enumerate()
+            .map(|(index, value)| {
+                let mut value_path = field_path.clone();
+                value_path.push(SdkDiagnosticPathSegment::Index(projected_index(index)));
+                project_hydrated_attribute_wire(package, value)
+                    .map_err(|diagnostic| rebase_hydration_diagnostic(diagnostic, value_path))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        fields.push((field.token().clone(), projected));
+    }
+    ProjectedRolePlayer::try_new_complete_for_hydration(
+        &package.projection,
+        read_role,
+        reference,
+        fields,
+    )
+    .map_err(|diagnostic| rebase_hydration_diagnostic(diagnostic, operation_path.iter().cloned()))
 }
 
 fn projected_wire_items(
@@ -6310,12 +6386,18 @@ fn scalar_to_attribute(wire: &ScalarWire, expected: ValueType) -> napi::Result<A
             }
             Ok(AttributeValue::Long(parsed))
         }
-        ValueType::Double => wire
-            .value
-            .as_f64()
-            .filter(|value| value.is_finite())
-            .map(AttributeValue::Double)
-            .ok_or_else(|| invalid_error("double envelope requires a finite number")),
+        ValueType::Double => match wire.value.as_str() {
+            Some("-0") => Ok(AttributeValue::Double(-0.0)),
+            Some(_) => Err(invalid_error(
+                "double envelope string must be canonical signed zero",
+            )),
+            None => wire
+                .value
+                .as_f64()
+                .filter(|value| value.is_finite())
+                .map(AttributeValue::Double)
+                .ok_or_else(|| invalid_error("double envelope requires a finite number")),
+        },
         ValueType::Boolean => wire
             .value
             .as_bool()
@@ -6411,12 +6493,16 @@ fn attribute_to_scalar(value: &AttributeValue, expected: ValueType) -> napi::Res
         (AttributeValue::Long(value), ValueType::Long) => {
             (ValueTypeTag::Long, Value::String(value.to_string()))
         }
-        (AttributeValue::Double(value), ValueType::Double) if value.is_finite() => (
-            ValueTypeTag::Double,
-            serde_json::Number::from_f64(*value)
-                .map(Value::Number)
-                .ok_or_else(|| runtime_error("provider returned a non-finite double"))?,
-        ),
+        (AttributeValue::Double(value), ValueType::Double) if value.is_finite() => {
+            let value = if *value == 0.0 && value.is_sign_negative() {
+                Value::String("-0".to_owned())
+            } else {
+                serde_json::Number::from_f64(*value)
+                    .map(Value::Number)
+                    .ok_or_else(|| runtime_error("provider returned a non-finite double"))?
+            };
+            (ValueTypeTag::Double, value)
+        }
         (AttributeValue::Boolean(value), ValueType::Boolean) => {
             (ValueTypeTag::Boolean, Value::Bool(*value))
         }
