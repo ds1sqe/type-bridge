@@ -233,6 +233,74 @@ export type ManagedDatabaseDeleteOutcome =
   | "deleted_owned_pair"
   | "deleted_owned_journal_orphan";
 
+export interface MigrationIdentity {
+  readonly appLabel: string;
+  readonly name: string;
+}
+
+export interface MigrationHistoryEntry {
+  readonly id: MigrationIdentity;
+  readonly parents: MigrationIdentity[];
+  readonly manifestDigest: string;
+  readonly stepCount: number;
+  readonly safety: string;
+  readonly reversible: boolean;
+}
+
+export interface MigrationPreviewEntry {
+  readonly id: MigrationIdentity;
+  readonly safety: string;
+  readonly stepCount: number;
+  readonly transactionGroupCount: number;
+  readonly backfillCount: number;
+  readonly reversible: boolean;
+}
+
+interface NativeMigrationApprovalBuilder {
+  approve(index: number): void;
+  finish(): NativeMigrationApprovalSet;
+}
+
+interface NativeMigrationApprovalSet {
+  readonly length: number;
+}
+
+interface NativeMigrationPlan {
+  readonly executionAuthorized: boolean;
+  execute(database: NativeRustDatabase, holder: string): MigrationExecutionStatus;
+}
+
+interface NativeMigrationPreview {
+  readonly direction: "apply" | "rollback";
+  readonly executionAuthorized: boolean;
+  migrationCount(): number;
+  migration(index: number): MigrationPreviewEntry | null;
+  approvalBuilder(): NativeMigrationApprovalBuilder;
+  authorize(approvals: NativeMigrationApprovalSet): NativeMigrationPlan;
+}
+
+interface NativeMigrationCatalog {
+  readonly length: number;
+  fingerprintJson(): string;
+  isEmpty(): boolean;
+  heads(): MigrationIdentity[];
+  entry(index: number): MigrationHistoryEntry | null;
+  previewApply(
+    applied: MigrationIdentity[],
+    targets?: MigrationIdentity[] | null,
+  ): NativeMigrationPreview;
+  previewRollback(
+    applied: MigrationIdentity[],
+    removals: MigrationIdentity[],
+  ): NativeMigrationPreview;
+}
+
+export type MigrationExecutionStatus =
+  | "applied"
+  | "rolled_back"
+  | "retry_safe"
+  | "requires_explicit_recovery";
+
 export interface NativeRustTransactionContext {
   queryJson(query: string): string;
   commit(): void;
@@ -288,6 +356,10 @@ interface NativeQueryV2Runtime {
 }
 
 export interface NativeRuntime {
+  openMigrationCatalog(
+    schemaAuthority: Uint8Array,
+    historyBundle: Uint8Array,
+  ): NativeMigrationCatalog;
   ensureRustDatabase(
     address: string,
     database: string,
@@ -326,6 +398,145 @@ export interface RustDatabaseConnectOptions {
 }
 
 export interface EnsureDatabaseOptions extends RustDatabaseConnectOptions {}
+
+export class MigrationApprovalSet {
+  readonly #native: NativeMigrationApprovalSet;
+
+  /** @internal */
+  constructor(native: NativeMigrationApprovalSet) {
+    this.#native = native;
+  }
+
+  get length(): number {
+    return this.#native.length;
+  }
+
+  /** @internal */
+  nativeHandle(): NativeMigrationApprovalSet {
+    return this.#native;
+  }
+}
+
+export class MigrationApprovalBuilder {
+  readonly #native: NativeMigrationApprovalBuilder;
+
+  /** @internal */
+  constructor(native: NativeMigrationApprovalBuilder) {
+    this.#native = native;
+  }
+
+  approve(index: number): void {
+    this.#native.approve(index);
+  }
+
+  finish(): MigrationApprovalSet {
+    return new MigrationApprovalSet(this.#native.finish());
+  }
+}
+
+export class MigrationPlan {
+  readonly #native: NativeMigrationPlan;
+
+  /** @internal */
+  constructor(native: NativeMigrationPlan) {
+    this.#native = native;
+  }
+
+  get executionAuthorized(): boolean {
+    return this.#native.executionAuthorized;
+  }
+
+  execute(database: RustDatabase, holder: string): MigrationExecutionStatus {
+    return this.#native.execute(preparedV2DatabaseHandle(database), holder);
+  }
+}
+
+export class MigrationPreview {
+  readonly #native: NativeMigrationPreview;
+
+  /** @internal */
+  constructor(native: NativeMigrationPreview) {
+    this.#native = native;
+  }
+
+  get direction(): "apply" | "rollback" {
+    return this.#native.direction;
+  }
+
+  get executionAuthorized(): boolean {
+    return this.#native.executionAuthorized;
+  }
+
+  migrationCount(): number {
+    return this.#native.migrationCount();
+  }
+
+  migration(index: number): MigrationPreviewEntry | null {
+    return this.#native.migration(index);
+  }
+
+  approvalBuilder(): MigrationApprovalBuilder {
+    return new MigrationApprovalBuilder(this.#native.approvalBuilder());
+  }
+
+  authorize(approvals: MigrationApprovalSet): MigrationPlan {
+    return new MigrationPlan(this.#native.authorize(approvals.nativeHandle()));
+  }
+}
+
+export class MigrationCatalog {
+  readonly #native: NativeMigrationCatalog;
+
+  /** @internal */
+  constructor(native: NativeMigrationCatalog) {
+    this.#native = native;
+  }
+
+  get length(): number {
+    return this.#native.length;
+  }
+
+  fingerprintJson(): string {
+    return this.#native.fingerprintJson();
+  }
+
+  isEmpty(): boolean {
+    return this.#native.isEmpty();
+  }
+
+  heads(): MigrationIdentity[] {
+    return this.#native.heads();
+  }
+
+  entry(index: number): MigrationHistoryEntry | null {
+    return this.#native.entry(index);
+  }
+
+  previewApply(
+    applied: MigrationIdentity[],
+    targets?: MigrationIdentity[],
+  ): MigrationPreview {
+    return new MigrationPreview(
+      this.#native.previewApply(applied, targets ?? null),
+    );
+  }
+
+  previewRollback(
+    applied: MigrationIdentity[],
+    removals: MigrationIdentity[],
+  ): MigrationPreview {
+    return new MigrationPreview(this.#native.previewRollback(applied, removals));
+  }
+}
+
+export function openMigrationCatalog(
+  schemaAuthority: Uint8Array,
+  historyBundle: Uint8Array,
+): MigrationCatalog {
+  return new MigrationCatalog(
+    loadNative().openMigrationCatalog(schemaAuthority, historyBundle),
+  );
+}
 
 export function ensureDatabase(
   address: string,
