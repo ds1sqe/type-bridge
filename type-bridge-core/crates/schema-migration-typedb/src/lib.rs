@@ -53,4 +53,6 @@ pub use store::{
 };
 mod backfill;
 mod catalog_executor;
-pub use catalog_executor::{execute_catalog_apply_plan, execute_catalog_rollback_plan};
+pub use catalog_executor::{
+    execute_catalog_apply_plan, execute_catalog_rollback_plan, verify_catalog_state,
+};
