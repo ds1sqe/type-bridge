@@ -46,6 +46,7 @@ pub mod match_request;
 pub mod migration_assertion;
 pub mod projected_batch;
 mod projected_batch_executor;
+pub mod projected_codec;
 pub mod projected_crud;
 mod projected_manager_filter;
 pub mod projected_model;
@@ -137,6 +138,11 @@ pub use projected_batch::{
     ProjectedBatch, ProjectedBatchOperation, ProjectedBatchResourceMeasure, ProjectedBatchRow,
 };
 pub use projected_batch_executor::{ProjectedBatchExecutor, ProjectedBatchResult};
+pub use projected_codec::{
+    ProjectedCodecError, ProjectedCodecValue, ProjectedStructValue, materialize_record,
+    record_from_attribute, record_from_create, record_from_reference, record_from_snapshot,
+    record_from_struct,
+};
 pub use projected_crud::ProjectedCrudExecutor;
 #[doc(hidden)]
 pub use projected_crud::{

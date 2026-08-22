@@ -610,7 +610,10 @@ pub struct ProjectedRolePlayer {
 enum ProjectedRolePlayerEvidence {
     Legacy,
     Reference,
-    Complete(BTreeMap<OwnsFactId, Vec<ProjectedAttributeValue>>),
+    Complete {
+        fields: BTreeMap<OwnsFactId, Vec<ProjectedAttributeValue>>,
+        present_fields: BTreeSet<OwnsFactId>,
+    },
 }
 
 impl ProjectedRolePlayer {
@@ -733,7 +736,7 @@ impl ProjectedRolePlayer {
             &mut budget,
             ValidationOrigin::Hydration,
         )?;
-        let fields =
+        let (fields, present_fields) =
             validate_read_fields(installed, reference.type_id(), model, supplied, &mut budget)?;
         validate_exact_hydrated_reference_keys(model, &reference)?;
         for field_id in model.reference_read().key_fields() {
@@ -761,7 +764,10 @@ impl ProjectedRolePlayer {
         }
         Ok(Self {
             reference,
-            evidence: ProjectedRolePlayerEvidence::Complete(fields),
+            evidence: ProjectedRolePlayerEvidence::Complete {
+                fields,
+                present_fields,
+            },
             size: budget.finish(),
         })
     }
@@ -792,7 +798,7 @@ impl ProjectedRolePlayer {
         match &self.evidence {
             ProjectedRolePlayerEvidence::Legacy => None,
             ProjectedRolePlayerEvidence::Reference => Some(ProjectedModelForm::Reference),
-            ProjectedRolePlayerEvidence::Complete(_) => Some(ProjectedModelForm::Complete),
+            ProjectedRolePlayerEvidence::Complete { .. } => Some(ProjectedModelForm::Complete),
         }
     }
 
@@ -800,11 +806,22 @@ impl ProjectedRolePlayer {
     #[must_use]
     pub const fn fields(&self) -> &BTreeMap<OwnsFactId, Vec<ProjectedAttributeValue>> {
         match &self.evidence {
-            ProjectedRolePlayerEvidence::Complete(fields) => fields,
+            ProjectedRolePlayerEvidence::Complete { fields, .. } => fields,
             ProjectedRolePlayerEvidence::Legacy | ProjectedRolePlayerEvidence::Reference => {
                 const EMPTY: &BTreeMap<OwnsFactId, Vec<ProjectedAttributeValue>> = &BTreeMap::new();
                 EMPTY
             }
+        }
+    }
+
+    /// Return whether a complete role-player field was explicitly present.
+    #[must_use]
+    pub fn field_is_present(&self, field: &OwnsFactId) -> bool {
+        match &self.evidence {
+            ProjectedRolePlayerEvidence::Complete { present_fields, .. } => {
+                present_fields.contains(field)
+            }
+            ProjectedRolePlayerEvidence::Legacy | ProjectedRolePlayerEvidence::Reference => false,
         }
     }
 
@@ -1055,7 +1072,9 @@ pub struct ProjectedCreate {
     brand: ProjectionBrand,
     type_id: TypeId,
     fields: BTreeMap<OwnsFactId, Vec<ProjectedAttributeValue>>,
+    present_fields: BTreeSet<OwnsFactId>,
     roles: BTreeMap<RoleId, Vec<ProjectedReference>>,
+    present_roles: BTreeSet<RoleId>,
     size: ProjectedSize,
 }
 
@@ -1080,15 +1099,18 @@ impl ProjectedCreate {
             collect_unique_fields(&type_id, fields, &mut budget, ValidationOrigin::Input)?;
         let supplied_roles =
             collect_unique_roles(&type_id, roles, &mut budget, ValidationOrigin::Input)?;
-        let fields =
+        let (fields, present_fields) =
             validate_create_fields(installed, &type_id, model, supplied_fields, &mut budget)?;
-        let roles = validate_create_roles(installed, &type_id, model, supplied_roles, &mut budget)?;
+        let (roles, present_roles) =
+            validate_create_roles(installed, &type_id, model, supplied_roles, &mut budget)?;
         let size = budget.finish();
         Ok(Self {
             brand: ProjectionBrand::from_installed(installed),
             type_id,
             fields,
+            present_fields,
             roles,
+            present_roles,
             size,
         })
     }
@@ -1109,6 +1131,18 @@ impl ProjectedCreate {
     #[must_use]
     pub const fn roles(&self) -> &BTreeMap<RoleId, Vec<ProjectedReference>> {
         &self.roles
+    }
+
+    /// Return whether a normalized create field was explicitly supplied.
+    #[must_use]
+    pub fn field_is_present(&self, field: &OwnsFactId) -> bool {
+        self.present_fields.contains(field)
+    }
+
+    /// Return whether a normalized create role was explicitly supplied.
+    #[must_use]
+    pub fn role_is_present(&self, role: &RoleId) -> bool {
+        self.present_roles.contains(role)
     }
 
     /// Return the cached binding-neutral resource measure without allocation.
@@ -1153,7 +1187,9 @@ pub struct ProjectedThing {
     type_id: TypeId,
     iid: String,
     fields: BTreeMap<OwnsFactId, Vec<ProjectedAttributeValue>>,
+    present_fields: BTreeSet<OwnsFactId>,
     roles: BTreeMap<RoleId, Vec<ProjectedRolePlayer>>,
+    present_roles: BTreeSet<RoleId>,
     size: ProjectedSize,
 }
 
@@ -1163,7 +1199,9 @@ impl PartialEq for ProjectedThing {
             && self.type_id == other.type_id
             && self.iid == other.iid
             && self.fields == other.fields
+            && self.present_fields == other.present_fields
             && self.roles == other.roles
+            && self.present_roles == other.present_roles
             && self.size == other.size
     }
 }
@@ -1246,9 +1284,9 @@ impl ProjectedThing {
             collect_unique_fields(&type_id, fields, &mut budget, ValidationOrigin::Hydration)?;
         let supplied_roles =
             collect_unique_role_players(&type_id, roles, &mut budget, ValidationOrigin::Hydration)?;
-        let fields =
+        let (fields, present_fields) =
             validate_read_fields(installed, &type_id, model, supplied_fields, &mut budget)?;
-        let roles = validate_read_roles(
+        let (roles, present_roles) = validate_read_roles(
             installed,
             &type_id,
             model,
@@ -1263,7 +1301,9 @@ impl ProjectedThing {
             type_id,
             iid,
             fields,
+            present_fields,
             roles,
+            present_roles,
             size,
         })
     }
@@ -1290,6 +1330,18 @@ impl ProjectedThing {
     #[must_use]
     pub const fn roles(&self) -> &BTreeMap<RoleId, Vec<ProjectedRolePlayer>> {
         &self.roles
+    }
+
+    /// Return whether a normalized hydrated field was explicitly present.
+    #[must_use]
+    pub fn field_is_present(&self, field: &OwnsFactId) -> bool {
+        self.present_fields.contains(field)
+    }
+
+    /// Return whether a normalized hydrated role was explicitly present.
+    #[must_use]
+    pub fn role_is_present(&self, role: &RoleId) -> bool {
+        self.present_roles.contains(role)
     }
 
     /// Return the cached binding-neutral resource measure without allocation.
@@ -1432,13 +1484,20 @@ fn collect_unique_role_players(
     collect_unique_roles(type_id, roles, budget, origin)
 }
 
+type PresentFields = (
+    BTreeMap<OwnsFactId, Vec<ProjectedAttributeValue>>,
+    BTreeSet<OwnsFactId>,
+);
+type PresentReferenceRoles = (BTreeMap<RoleId, Vec<ProjectedReference>>, BTreeSet<RoleId>);
+type PresentPlayerRoles = (BTreeMap<RoleId, Vec<ProjectedRolePlayer>>, BTreeSet<RoleId>);
+
 fn validate_create_fields(
     installed: &InstalledRuntimeProjection,
     type_id: &TypeId,
     model: &ModelProjection,
     mut supplied: BTreeMap<OwnsFactId, Vec<ProjectedAttributeValue>>,
     budget: &mut ProjectedBudget,
-) -> Result<BTreeMap<OwnsFactId, Vec<ProjectedAttributeValue>>, SdkExecutionDiagnostic> {
+) -> Result<PresentFields, SdkExecutionDiagnostic> {
     let allowed = model
         .create()
         .fields()
@@ -1452,6 +1511,7 @@ fn validate_create_fields(
             field_path(type_id, field_id),
         ));
     }
+    let present_fields = supplied.keys().cloned().collect();
     let mut output = BTreeMap::new();
     for field in model.create().fields() {
         let field_id = field.token();
@@ -1490,7 +1550,7 @@ fn validate_create_fields(
         )?;
         output.insert(field_id.clone(), values);
     }
-    Ok(output)
+    Ok((output, present_fields))
 }
 
 fn validate_read_fields(
@@ -1499,7 +1559,7 @@ fn validate_read_fields(
     model: &ModelProjection,
     mut supplied: BTreeMap<OwnsFactId, Vec<ProjectedAttributeValue>>,
     budget: &mut ProjectedBudget,
-) -> Result<BTreeMap<OwnsFactId, Vec<ProjectedAttributeValue>>, SdkExecutionDiagnostic> {
+) -> Result<PresentFields, SdkExecutionDiagnostic> {
     let allowed = model
         .complete_read()
         .fields()
@@ -1513,6 +1573,7 @@ fn validate_read_fields(
             field_path(type_id, field_id),
         ));
     }
+    let present_fields = supplied.keys().cloned().collect();
     let mut output = BTreeMap::new();
     for field in model.complete_read().fields() {
         let field_id = field.token();
@@ -1551,7 +1612,7 @@ fn validate_read_fields(
         )?;
         output.insert(field_id.clone(), values);
     }
-    Ok(output)
+    Ok((output, present_fields))
 }
 
 #[derive(Clone, Copy)]
@@ -1624,7 +1685,7 @@ fn validate_create_roles(
     model: &ModelProjection,
     mut supplied: BTreeMap<RoleId, Vec<ProjectedReference>>,
     budget: &mut ProjectedBudget,
-) -> Result<BTreeMap<RoleId, Vec<ProjectedReference>>, SdkExecutionDiagnostic> {
+) -> Result<PresentReferenceRoles, SdkExecutionDiagnostic> {
     let allowed = model.create().roles().keys().collect::<BTreeSet<_>>();
     if let Some(role_id) = supplied.keys().find(|role_id| !allowed.contains(role_id)) {
         return Err(invalid_input(
@@ -1633,6 +1694,7 @@ fn validate_create_roles(
             role_path(type_id, role_id),
         ));
     }
+    let present_roles = supplied.keys().cloned().collect();
     let mut output = BTreeMap::new();
     for (role_id, role) in model.create().roles() {
         let present = supplied.remove(role_id);
@@ -1705,7 +1767,7 @@ fn validate_create_roles(
         }
         output.insert(role_id.clone(), references);
     }
-    Ok(output)
+    Ok((output, present_roles))
 }
 
 fn validate_read_roles(
@@ -1715,7 +1777,7 @@ fn validate_read_roles(
     mut supplied: BTreeMap<RoleId, Vec<ProjectedRolePlayer>>,
     database_origin: Option<&ProjectedReferenceOrigin>,
     budget: &mut ProjectedBudget,
-) -> Result<BTreeMap<RoleId, Vec<ProjectedRolePlayer>>, SdkExecutionDiagnostic> {
+) -> Result<PresentPlayerRoles, SdkExecutionDiagnostic> {
     let allowed = model
         .complete_read()
         .roles()
@@ -1728,6 +1790,7 @@ fn validate_read_roles(
             role_path(type_id, role_id),
         ));
     }
+    let present_roles = supplied.keys().cloned().collect();
     let mut output = BTreeMap::new();
     for (role_id, role) in model.complete_read().roles() {
         let present = supplied.remove(role_id);
@@ -1814,7 +1877,7 @@ fn validate_read_roles(
         }
         output.insert(role_id.clone(), players);
     }
-    Ok(output)
+    Ok((output, present_roles))
 }
 
 fn validate_role_player_database_origin(
@@ -2573,7 +2636,7 @@ fn read_role_player_path(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use type_bridge_contract::fingerprint::SemanticProfileId;
     use type_bridge_contract::id::AttributeId;
@@ -2598,7 +2661,7 @@ plays:
     friendship: [friend]
 "#;
 
-    fn origin_projection() -> InstalledRuntimeProjection {
+    pub(crate) fn origin_projection() -> InstalledRuntimeProjection {
         let documents = SchemaDocumentSet::parse([(
             DocumentId::new("projected-origin.yaml").unwrap(),
             ORIGIN_SCHEMA,
@@ -2609,6 +2672,7 @@ plays:
             &SemanticProfileId::new("typedb-3.12.1/v1").unwrap(),
         )
         .unwrap();
+        let declared_identity = resolved.declared_identity_fingerprint().clone();
         let runtime = project(
             &resolved,
             BindingTarget::Rust,
@@ -2617,7 +2681,9 @@ plays:
             &[],
         )
         .unwrap();
-        InstalledRuntimeProjection::try_new(runtime).unwrap()
+        InstalledRuntimeProjection::try_new(runtime)
+            .unwrap()
+            .with_declared_schema_identity(declared_identity)
     }
 
     fn origin_complete_player(
