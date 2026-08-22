@@ -332,6 +332,19 @@ export interface MigrationExecutionReport {
   readonly positionOrdinal?: number | null;
   readonly diagnosticCategory?: string | null;
   readonly diagnosticCode?: string | null;
+  readonly backfills: readonly MigrationBackfillObservation[];
+}
+
+export interface MigrationBackfillObservation {
+  readonly migrationId: MigrationIdentity;
+  readonly operationOrdinal: number;
+  readonly manifestStepIndex: number;
+  readonly planFingerprint: string;
+  readonly direction: "forward" | "reverse";
+  readonly matched: number;
+  readonly changed: number;
+  readonly skipped: number;
+  readonly transactionGroups: number;
 }
 
 export interface NativeRustTransactionContext {

@@ -529,7 +529,7 @@ fn sanitize_migration_execution_outcome(
         Position::ManifestCheckpoint => "manifest checkpoint".to_owned(),
     };
     match outcome {
-        Outcome::Applied => format!("{context}: applied"),
+        Outcome::Applied { .. } => format!("{context}: applied"),
         Outcome::RetrySafe {
             migration_id,
             position,
@@ -558,7 +558,7 @@ fn sanitize_migration_rollback_outcome(
 ) -> String {
     use type_bridge_schema_migration::MigrationRollbackOutcome as Outcome;
     match outcome {
-        Outcome::RolledBack => "rollback completed".to_owned(),
+        Outcome::RolledBack { .. } => "rollback completed".to_owned(),
         Outcome::RetrySafe {
             migration_id,
             step_ordinal,
@@ -1403,7 +1403,7 @@ async fn run_connected_async(
                     Ok(())
                 }
                 type_bridge_schema_migration_typedb::MigrationDirectoryApplyOutcome::Executed(
-                    type_bridge_schema_migration::MigrationExecutionOutcome::Applied,
+                    type_bridge_schema_migration::MigrationExecutionOutcome::Applied { .. },
                 ) => {
                     println!("applied the committed chain");
                     Ok(())
@@ -1430,7 +1430,7 @@ async fn run_connected_async(
                     Ok(())
                 }
                 type_bridge_schema_migration_typedb::MigrationDirectoryRollbackOutcome::Executed(
-                    type_bridge_schema_migration::MigrationRollbackOutcome::RolledBack,
+                    type_bridge_schema_migration::MigrationRollbackOutcome::RolledBack { .. },
                 ) => {
                     println!("rolled back the requested migrations");
                     Ok(())
@@ -1486,7 +1486,7 @@ async fn run_connected_async(
                 }
                 Ok(
                     type_bridge_schema_migration_typedb::MigrationDirectoryApplyOutcome::Executed(
-                        type_bridge_schema_migration::MigrationExecutionOutcome::Applied,
+                        type_bridge_schema_migration::MigrationExecutionOutcome::Applied { .. },
                     ),
                 ) => {
                     println!(

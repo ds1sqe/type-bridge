@@ -322,7 +322,7 @@ async fn coordinator_applies_verified_plan_through_live_provider_on_3_12_3() {
     let outcome = execute_verified_migration_apply_plan(&store, &provider, &holder, &plan)
         .await
         .expect("coordinator execution against live TypeDB");
-    assert!(matches!(outcome, MigrationExecutionOutcome::Applied));
+    assert!(matches!(outcome, MigrationExecutionOutcome::Applied { .. }));
 
     let export = managed
         .schema_text()

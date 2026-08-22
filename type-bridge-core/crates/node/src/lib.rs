@@ -29,9 +29,9 @@ pub use match_runtime::{
     NodeQueryExecutionResources, NodeValidatedMatchResultHandle, NodeValidatedThingHandle,
 };
 pub use migration_catalog_runtime::{
-    NodeMigrationApprovalBuilder, NodeMigrationApprovalSet, NodeMigrationCatalog,
-    NodeMigrationExecutionReport, NodeMigrationHistoryEntry, NodeMigrationIdentity,
-    NodeMigrationPlan, NodeMigrationPreview, NodeMigrationPreviewEntry,
+    NodeMigrationApprovalBuilder, NodeMigrationApprovalSet, NodeMigrationBackfillObservation,
+    NodeMigrationCatalog, NodeMigrationExecutionReport, NodeMigrationHistoryEntry,
+    NodeMigrationIdentity, NodeMigrationPlan, NodeMigrationPreview, NodeMigrationPreviewEntry,
     NodeMigrationVerificationFinding, NodeMigrationVerificationReport, open_migration_catalog,
 };
 pub use query_v2_model_remote_runtime::{

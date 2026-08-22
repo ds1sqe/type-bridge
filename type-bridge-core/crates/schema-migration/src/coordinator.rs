@@ -181,7 +181,10 @@ pub enum MigrationExecutionPosition {
 #[derive(Debug)]
 pub enum MigrationExecutionOutcome {
     /// Every planned manifest is durably checkpointed as applied.
-    Applied,
+    Applied {
+        /// Exact terminal evidence for every executed or recovered backfill.
+        backfills: Vec<MigrationBackfillObservation>,
+    },
     /// A later invocation may safely retry or repair journal-only progress.
     RetrySafe {
         /// Migration containing the interrupted execution position.
@@ -206,7 +209,10 @@ pub enum MigrationExecutionOutcome {
 #[derive(Debug)]
 pub enum MigrationRollbackOutcome {
     /// Every planned manifest is durably retired from the applied ledger.
-    RolledBack,
+    RolledBack {
+        /// Exact terminal evidence for every executed or recovered reverse backfill.
+        backfills: Vec<MigrationBackfillObservation>,
+    },
     /// A later invocation may safely retry or repair journal-only progress.
     RetrySafe {
         /// Migration containing the interrupted rollback step.
@@ -262,6 +268,51 @@ pub enum MigrationExecutionReportPosition {
     RollbackStep(usize),
 }
 
+/// Bounded terminal observation for one canonical backfill operation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MigrationBackfillObservation {
+    migration_id: MigrationId,
+    operation_ordinal: usize,
+    manifest_step_index: usize,
+    evidence: BackfillCompletionEvidence,
+}
+
+impl MigrationBackfillObservation {
+    fn new(
+        migration_id: MigrationId,
+        operation_ordinal: usize,
+        manifest_step_index: usize,
+        evidence: BackfillCompletionEvidence,
+    ) -> Self {
+        Self {
+            migration_id,
+            operation_ordinal,
+            manifest_step_index,
+            evidence,
+        }
+    }
+
+    /// Return the migration containing this canonical data operation.
+    pub const fn migration_id(&self) -> &MigrationId {
+        &self.migration_id
+    }
+
+    /// Return its zero-based position in forward or reverse execution order.
+    pub const fn operation_ordinal(&self) -> usize {
+        self.operation_ordinal
+    }
+
+    /// Return the original zero-based canonical manifest step position.
+    pub const fn manifest_step_index(&self) -> usize {
+        self.manifest_step_index
+    }
+
+    /// Return the exact plan-bound terminal evidence and aggregate counts.
+    pub const fn evidence(&self) -> &BackfillCompletionEvidence {
+        &self.evidence
+    }
+}
+
 /// Bounded owned projection of one terminal apply or rollback outcome.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MigrationExecutionReport {
@@ -270,6 +321,7 @@ pub struct MigrationExecutionReport {
     migration_id: Option<MigrationId>,
     position: Option<MigrationExecutionReportPosition>,
     diagnostic: Option<Diagnostic>,
+    backfills: Vec<MigrationBackfillObservation>,
 }
 
 impl MigrationExecutionReport {
@@ -293,16 +345,21 @@ impl MigrationExecutionReport {
     pub const fn diagnostic(&self) -> Option<&Diagnostic> {
         self.diagnostic.as_ref()
     }
+    /// Return ordered terminal observations for completed canonical backfills.
+    pub fn backfills(&self) -> &[MigrationBackfillObservation] {
+        &self.backfills
+    }
 
     /// Consume a forward coordinator outcome into its bounded public projection.
     pub fn from_apply(outcome: MigrationExecutionOutcome) -> Self {
         match outcome {
-            MigrationExecutionOutcome::Applied => Self {
+            MigrationExecutionOutcome::Applied { backfills } => Self {
                 direction: MigrationExecutionDirection::Apply,
                 status: MigrationExecutionStatus::Applied,
                 migration_id: None,
                 position: None,
                 diagnostic: None,
+                backfills,
             },
             MigrationExecutionOutcome::RetrySafe {
                 migration_id,
@@ -330,12 +387,13 @@ impl MigrationExecutionReport {
     /// Consume a rollback coordinator outcome into its bounded public projection.
     pub fn from_rollback(outcome: MigrationRollbackOutcome) -> Self {
         match outcome {
-            MigrationRollbackOutcome::RolledBack => Self {
+            MigrationRollbackOutcome::RolledBack { backfills } => Self {
                 direction: MigrationExecutionDirection::Rollback,
                 status: MigrationExecutionStatus::RolledBack,
                 migration_id: None,
                 position: None,
                 diagnostic: None,
+                backfills,
             },
             MigrationRollbackOutcome::RetrySafe {
                 migration_id,
@@ -383,6 +441,7 @@ impl MigrationExecutionReport {
             migration_id: Some(migration_id),
             position: Some(position),
             diagnostic: Some(diagnostic),
+            backfills: Vec::new(),
         }
     }
 
@@ -398,6 +457,7 @@ impl MigrationExecutionReport {
             migration_id: Some(migration_id),
             position: Some(MigrationExecutionReportPosition::RollbackStep(step_ordinal)),
             diagnostic: Some(diagnostic),
+            backfills: Vec::new(),
         }
     }
 }
@@ -471,6 +531,7 @@ where
         None => 0,
     };
     let mut observed = None;
+    let mut backfill_observations = Vec::new();
 
     if open.is_none() {
         let source = plan
@@ -498,11 +559,15 @@ where
                 .is_some_and(|step_index| *step_index < group.first_step_index())
             {
                 let step_index = backfills.next().expect("peeked backfill position");
-                if let Some(outcome) =
-                    execute_apply_backfill(store, provider, lease, migration, step_index, snapshot)
-                        .await?
+                match execute_apply_backfill(
+                    store, provider, lease, migration, step_index, snapshot,
+                )
+                .await?
                 {
-                    return Ok(outcome);
+                    ApplyBackfillResult::Completed(observation) => {
+                        backfill_observations.push(observation);
+                    }
+                    ApplyBackfillResult::Terminal(outcome) => return Ok(outcome),
                 }
             }
             let last_event = snapshot.and_then(|open| last_group_event(open, migration, group));
@@ -709,11 +774,13 @@ where
             }
         }
         for step_index in backfills {
-            if let Some(outcome) =
-                execute_apply_backfill(store, provider, lease, migration, step_index, snapshot)
-                    .await?
+            match execute_apply_backfill(store, provider, lease, migration, step_index, snapshot)
+                .await?
             {
-                return Ok(outcome);
+                ApplyBackfillResult::Completed(observation) => {
+                    backfill_observations.push(observation);
+                }
+                ApplyBackfillResult::Terminal(outcome) => return Ok(outcome),
             }
         }
 
@@ -745,7 +812,14 @@ where
             });
         }
     }
-    Ok(MigrationExecutionOutcome::Applied)
+    Ok(MigrationExecutionOutcome::Applied {
+        backfills: backfill_observations,
+    })
+}
+
+enum ApplyBackfillResult {
+    Completed(MigrationBackfillObservation),
+    Terminal(MigrationExecutionOutcome),
 }
 
 async fn execute_apply_backfill<S, P>(
@@ -755,7 +829,7 @@ async fn execute_apply_backfill<S, P>(
     migration: &VerifiedMigrationApplyManifest,
     step_index: usize,
     snapshot: Option<&OpenPlanRecord>,
-) -> Result<Option<MigrationExecutionOutcome>, Diagnostic>
+) -> Result<ApplyBackfillResult, Diagnostic>
 where
     S: MigrationExecutionJournal,
     P: MigrationExecutionProvider,
@@ -790,7 +864,25 @@ where
         .unwrap_or_default();
     let last_event = events.last().map(|event| event.kind());
     if last_event.is_some_and(is_completion_event) {
-        return Ok(None);
+        let completion = events
+            .last()
+            .and_then(|event| event.completion())
+            .cloned()
+            .ok_or_else(|| {
+                failure(
+                    DiagnosticCategory::Integrity,
+                    "migration_execution_backfill_completion_missing",
+                    "completed backfill checkpoint lost its terminal evidence",
+                )
+            })?;
+        return Ok(ApplyBackfillResult::Completed(
+            MigrationBackfillObservation::new(
+                migration.manifest().id().clone(),
+                step_index,
+                step_index,
+                completion,
+            ),
+        ));
     }
 
     let observation = provider
@@ -803,7 +895,7 @@ where
         BackfillExecutionDirection::Forward,
     ) {
         GroupRecoveryDecision::RequiresExplicitRecovery => {
-            return Ok(Some(backfill_explicit_recovery(
+            return Ok(ApplyBackfillResult::Terminal(backfill_explicit_recovery(
                 migration,
                 step_index,
                 failure(
@@ -826,12 +918,21 @@ where
                 migration,
                 step_index,
                 GroupJournalEventKind::Committed,
-                Some(completion),
+                Some(completion.clone()),
             )?;
             if let Err(error) = store.record_backfill_event(lease, committed).await {
-                return Ok(Some(backfill_retry_safe(migration, step_index, error)));
+                return Ok(ApplyBackfillResult::Terminal(backfill_retry_safe(
+                    migration, step_index, error,
+                )));
             }
-            return Ok(None);
+            return Ok(ApplyBackfillResult::Completed(
+                MigrationBackfillObservation::new(
+                    migration.manifest().id().clone(),
+                    step_index,
+                    step_index,
+                    completion,
+                ),
+            ));
         }
         GroupRecoveryDecision::ExecuteNormally => {}
     }
@@ -849,6 +950,12 @@ where
         .await
     {
         Ok(completion) => {
+            let observation = MigrationBackfillObservation::new(
+                migration.manifest().id().clone(),
+                step_index,
+                step_index,
+                completion.clone(),
+            );
             let committed = BackfillEventRecord::new_apply(
                 lease,
                 migration,
@@ -857,9 +964,11 @@ where
                 Some(completion),
             )?;
             if let Err(error) = store.record_backfill_event(lease, committed).await {
-                return Ok(Some(backfill_retry_safe(migration, step_index, error)));
+                return Ok(ApplyBackfillResult::Terminal(backfill_retry_safe(
+                    migration, step_index, error,
+                )));
             }
-            Ok(None)
+            Ok(ApplyBackfillResult::Completed(observation))
         }
         Err(commit_failure) => {
             let (certainty, diagnostic) = commit_failure.into_parts();
@@ -871,7 +980,7 @@ where
                 None,
             )?;
             if let Err(error) = store.record_backfill_event(lease, event).await {
-                return Ok(Some(match certainty {
+                return Ok(ApplyBackfillResult::Terminal(match certainty {
                     GroupCommitCertainty::DefinitelyAborted => {
                         backfill_retry_safe(migration, step_index, error)
                     }
@@ -881,7 +990,9 @@ where
                 }));
             }
             if certainty == GroupCommitCertainty::DefinitelyAborted {
-                return Ok(Some(backfill_retry_safe(migration, step_index, diagnostic)));
+                return Ok(ApplyBackfillResult::Terminal(backfill_retry_safe(
+                    migration, step_index, diagnostic,
+                )));
             }
             let after = provider
                 .observe_backfill(lease, plan, BackfillExecutionDirection::Forward)
@@ -893,13 +1004,19 @@ where
                 BackfillExecutionDirection::Forward,
             ) != GroupRecoveryDecision::RepairCheckpoint
             {
-                return Ok(Some(backfill_explicit_recovery(
+                return Ok(ApplyBackfillResult::Terminal(backfill_explicit_recovery(
                     migration, step_index, diagnostic,
                 )));
             }
             let BackfillRecoveryObservation::Complete(completion) = after else {
                 unreachable!("repair decision requires complete evidence")
             };
+            let observation = MigrationBackfillObservation::new(
+                migration.manifest().id().clone(),
+                step_index,
+                step_index,
+                completion.clone(),
+            );
             let committed = BackfillEventRecord::new_apply(
                 lease,
                 migration,
@@ -908,9 +1025,11 @@ where
                 Some(completion),
             )?;
             if let Err(error) = store.record_backfill_event(lease, committed).await {
-                return Ok(Some(backfill_retry_safe(migration, step_index, error)));
+                return Ok(ApplyBackfillResult::Terminal(backfill_retry_safe(
+                    migration, step_index, error,
+                )));
             }
-            Ok(None)
+            Ok(ApplyBackfillResult::Completed(observation))
         }
     }
 }
@@ -1048,6 +1167,7 @@ where
         None => 0,
     };
     let mut observed = None;
+    let mut backfill_observations = Vec::new();
 
     if open.is_none() {
         let source = plan.source_state();
@@ -1073,7 +1193,7 @@ where
         for (operation_index, operation) in rollback.operations().iter().enumerate() {
             let step_index = match operation {
                 crate::VerifiedMigrationRollbackOperation::Backfill(_) => {
-                    if let Some(outcome) = execute_rollback_backfill(
+                    match execute_rollback_backfill(
                         store,
                         provider,
                         lease,
@@ -1083,7 +1203,10 @@ where
                     )
                     .await?
                     {
-                        return Ok(outcome);
+                        RollbackBackfillResult::Completed(observation) => {
+                            backfill_observations.push(observation);
+                        }
+                        RollbackBackfillResult::Terminal(outcome) => return Ok(outcome),
                     }
                     continue;
                 }
@@ -1314,7 +1437,14 @@ where
             });
         }
     }
-    Ok(MigrationRollbackOutcome::RolledBack)
+    Ok(MigrationRollbackOutcome::RolledBack {
+        backfills: backfill_observations,
+    })
+}
+
+enum RollbackBackfillResult {
+    Completed(MigrationBackfillObservation),
+    Terminal(MigrationRollbackOutcome),
 }
 
 async fn execute_rollback_backfill<S, P>(
@@ -1324,7 +1454,7 @@ async fn execute_rollback_backfill<S, P>(
     rollback: &VerifiedMigrationRollbackManifest,
     operation_index: usize,
     snapshot: Option<&OpenRollbackPlanRecord>,
-) -> Result<Option<MigrationRollbackOutcome>, Diagnostic>
+) -> Result<RollbackBackfillResult, Diagnostic>
 where
     S: MigrationExecutionJournal,
     P: MigrationExecutionProvider,
@@ -1367,7 +1497,25 @@ where
         .unwrap_or_default();
     let last_event = events.last().map(|event| event.kind());
     if last_event.is_some_and(is_completion_event) {
-        return Ok(None);
+        let completion = events
+            .last()
+            .and_then(|event| event.completion())
+            .cloned()
+            .ok_or_else(|| {
+                failure(
+                    DiagnosticCategory::Integrity,
+                    "migration_execution_backfill_completion_missing",
+                    "completed reverse-backfill checkpoint lost its terminal evidence",
+                )
+            })?;
+        return Ok(RollbackBackfillResult::Completed(
+            MigrationBackfillObservation::new(
+                rollback.manifest().id().clone(),
+                operation_index,
+                backfill_index,
+                completion,
+            ),
+        ));
     }
 
     let observation = provider
@@ -1380,15 +1528,17 @@ where
         BackfillExecutionDirection::Reverse,
     ) {
         GroupRecoveryDecision::RequiresExplicitRecovery => {
-            return Ok(Some(rollback_backfill_explicit_recovery(
-                rollback,
-                operation_index,
-                failure(
-                    DiagnosticCategory::Integrity,
-                    "migration_execution_ambiguous_backfill_state",
-                    "data state cannot prove whether the reverse backfill may replay",
+            return Ok(RollbackBackfillResult::Terminal(
+                rollback_backfill_explicit_recovery(
+                    rollback,
+                    operation_index,
+                    failure(
+                        DiagnosticCategory::Integrity,
+                        "migration_execution_ambiguous_backfill_state",
+                        "data state cannot prove whether the reverse backfill may replay",
+                    ),
                 ),
-            )));
+            ));
         }
         GroupRecoveryDecision::RepairCheckpoint => {
             let BackfillRecoveryObservation::Complete(completion) = observation else {
@@ -1403,16 +1553,21 @@ where
                 rollback,
                 operation_index,
                 GroupJournalEventKind::Committed,
-                Some(completion),
+                Some(completion.clone()),
             )?;
             if let Err(error) = store.record_backfill_event(lease, committed).await {
-                return Ok(Some(rollback_backfill_retry_safe(
-                    rollback,
-                    operation_index,
-                    error,
-                )));
+                return Ok(RollbackBackfillResult::Terminal(
+                    rollback_backfill_retry_safe(rollback, operation_index, error),
+                ));
             }
-            return Ok(None);
+            return Ok(RollbackBackfillResult::Completed(
+                MigrationBackfillObservation::new(
+                    rollback.manifest().id().clone(),
+                    operation_index,
+                    backfill_index,
+                    completion,
+                ),
+            ));
         }
         GroupRecoveryDecision::ExecuteNormally => {}
     }
@@ -1430,6 +1585,12 @@ where
         .await
     {
         Ok(completion) => {
+            let observation = MigrationBackfillObservation::new(
+                rollback.manifest().id().clone(),
+                operation_index,
+                backfill_index,
+                completion.clone(),
+            );
             let committed = BackfillEventRecord::new_rollback(
                 lease,
                 rollback,
@@ -1438,13 +1599,11 @@ where
                 Some(completion),
             )?;
             if let Err(error) = store.record_backfill_event(lease, committed).await {
-                return Ok(Some(rollback_backfill_retry_safe(
-                    rollback,
-                    operation_index,
-                    error,
-                )));
+                return Ok(RollbackBackfillResult::Terminal(
+                    rollback_backfill_retry_safe(rollback, operation_index, error),
+                ));
             }
-            Ok(None)
+            Ok(RollbackBackfillResult::Completed(observation))
         }
         Err(commit_failure) => {
             let (certainty, diagnostic) = commit_failure.into_parts();
@@ -1456,7 +1615,7 @@ where
                 None,
             )?;
             if let Err(error) = store.record_backfill_event(lease, event).await {
-                return Ok(Some(match certainty {
+                return Ok(RollbackBackfillResult::Terminal(match certainty {
                     GroupCommitCertainty::DefinitelyAborted => {
                         rollback_backfill_retry_safe(rollback, operation_index, error)
                     }
@@ -1466,11 +1625,9 @@ where
                 }));
             }
             if certainty == GroupCommitCertainty::DefinitelyAborted {
-                return Ok(Some(rollback_backfill_retry_safe(
-                    rollback,
-                    operation_index,
-                    diagnostic,
-                )));
+                return Ok(RollbackBackfillResult::Terminal(
+                    rollback_backfill_retry_safe(rollback, operation_index, diagnostic),
+                ));
             }
             let after = provider
                 .observe_backfill(lease, plan, BackfillExecutionDirection::Reverse)
@@ -1482,15 +1639,19 @@ where
                 BackfillExecutionDirection::Reverse,
             ) != GroupRecoveryDecision::RepairCheckpoint
             {
-                return Ok(Some(rollback_backfill_explicit_recovery(
-                    rollback,
-                    operation_index,
-                    diagnostic,
-                )));
+                return Ok(RollbackBackfillResult::Terminal(
+                    rollback_backfill_explicit_recovery(rollback, operation_index, diagnostic),
+                ));
             }
             let BackfillRecoveryObservation::Complete(completion) = after else {
                 unreachable!("repair decision requires complete evidence")
             };
+            let observation = MigrationBackfillObservation::new(
+                rollback.manifest().id().clone(),
+                operation_index,
+                backfill_index,
+                completion.clone(),
+            );
             let committed = BackfillEventRecord::new_rollback(
                 lease,
                 rollback,
@@ -1499,13 +1660,11 @@ where
                 Some(completion),
             )?;
             if let Err(error) = store.record_backfill_event(lease, committed).await {
-                return Ok(Some(rollback_backfill_retry_safe(
-                    rollback,
-                    operation_index,
-                    error,
-                )));
+                return Ok(RollbackBackfillResult::Terminal(
+                    rollback_backfill_retry_safe(rollback, operation_index, error),
+                ));
             }
-            Ok(None)
+            Ok(RollbackBackfillResult::Completed(observation))
         }
     }
 }
@@ -2329,9 +2488,9 @@ fn finish_apply_lease_release(
     match (result, release) {
         (Ok(outcome), Ok(())) => Ok(outcome),
         (Err(primary), Ok(())) => Err(primary),
-        (Ok(MigrationExecutionOutcome::Applied), Err(cleanup)) => Err(lease_release_uncertainty(
-            "apply", "applied", None, &cleanup,
-        )),
+        (Ok(MigrationExecutionOutcome::Applied { .. }), Err(cleanup)) => Err(
+            lease_release_uncertainty("apply", "applied", None, &cleanup),
+        ),
         (
             Ok(MigrationExecutionOutcome::RetrySafe {
                 migration_id,
@@ -2377,12 +2536,9 @@ fn finish_rollback_lease_release(
     match (result, release) {
         (Ok(outcome), Ok(())) => Ok(outcome),
         (Err(primary), Ok(())) => Err(primary),
-        (Ok(MigrationRollbackOutcome::RolledBack), Err(cleanup)) => Err(lease_release_uncertainty(
-            "rollback",
-            "rolled_back",
-            None,
-            &cleanup,
-        )),
+        (Ok(MigrationRollbackOutcome::RolledBack { .. }), Err(cleanup)) => Err(
+            lease_release_uncertainty("rollback", "rolled_back", None, &cleanup),
+        ),
         (
             Ok(MigrationRollbackOutcome::RetrySafe {
                 migration_id,
@@ -2684,7 +2840,9 @@ mod tests {
         );
 
         let diagnostic = finish_rollback_lease_release(
-            Ok(MigrationRollbackOutcome::RolledBack),
+            Ok(MigrationRollbackOutcome::RolledBack {
+                backfills: Vec::new(),
+            }),
             Err(cleanup.clone()),
         )
         .expect_err("completed execution cannot hide lease release uncertainty");

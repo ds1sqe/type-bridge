@@ -332,6 +332,61 @@ pub struct PyMigrationExecutionReport {
     position_ordinal: Option<usize>,
     diagnostic_category: Option<String>,
     diagnostic_code: Option<String>,
+    backfills: Vec<PyMigrationBackfillObservation>,
+}
+
+#[pyclass(name = "MigrationBackfillObservation", frozen)]
+#[derive(Clone)]
+pub struct PyMigrationBackfillObservation {
+    migration_id: PyMigrationIdentity,
+    operation_ordinal: usize,
+    manifest_step_index: usize,
+    plan_fingerprint: String,
+    direction: String,
+    matched: u64,
+    changed: u64,
+    skipped: u64,
+    transaction_groups: u32,
+}
+
+#[pymethods]
+impl PyMigrationBackfillObservation {
+    #[getter]
+    fn migration_id(&self) -> PyMigrationIdentity {
+        self.migration_id.clone()
+    }
+    #[getter]
+    fn operation_ordinal(&self) -> usize {
+        self.operation_ordinal
+    }
+    #[getter]
+    fn manifest_step_index(&self) -> usize {
+        self.manifest_step_index
+    }
+    #[getter]
+    fn plan_fingerprint(&self) -> &str {
+        &self.plan_fingerprint
+    }
+    #[getter]
+    fn direction(&self) -> &str {
+        &self.direction
+    }
+    #[getter]
+    fn matched(&self) -> u64 {
+        self.matched
+    }
+    #[getter]
+    fn changed(&self) -> u64 {
+        self.changed
+    }
+    #[getter]
+    fn skipped(&self) -> u64 {
+        self.skipped
+    }
+    #[getter]
+    fn transaction_groups(&self) -> u32 {
+        self.transaction_groups
+    }
 }
 
 #[pymethods]
@@ -363,6 +418,10 @@ impl PyMigrationExecutionReport {
     #[getter]
     fn diagnostic_code(&self) -> Option<&str> {
         self.diagnostic_code.as_deref()
+    }
+    #[getter]
+    fn backfills(&self) -> Vec<PyMigrationBackfillObservation> {
+        self.backfills.clone()
     }
 }
 
@@ -688,6 +747,33 @@ fn python_execution_report(
         diagnostic_code: report
             .diagnostic()
             .map(|value| value.code().as_str().to_owned()),
+        backfills: report
+            .backfills()
+            .iter()
+            .map(python_backfill_observation)
+            .collect(),
+    }
+}
+
+fn python_backfill_observation(
+    observation: &type_bridge_schema_migration::MigrationBackfillObservation,
+) -> PyMigrationBackfillObservation {
+    let evidence = observation.evidence();
+    let counts = evidence.counts();
+    PyMigrationBackfillObservation {
+        migration_id: migration_identity(observation.migration_id()),
+        operation_ordinal: observation.operation_ordinal(),
+        manifest_step_index: observation.manifest_step_index(),
+        plan_fingerprint: evidence.plan_fingerprint().digest().to_hex(),
+        direction: match evidence.direction() {
+            type_bridge_schema_migration::BackfillExecutionDirection::Forward => "forward",
+            type_bridge_schema_migration::BackfillExecutionDirection::Reverse => "reverse",
+        }
+        .to_owned(),
+        matched: counts.matched(),
+        changed: counts.changed(),
+        skipped: counts.skipped(),
+        transaction_groups: counts.transaction_groups(),
     }
 }
 
@@ -748,6 +834,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyMigrationApprovalBuilder>()?;
     m.add_class::<PyMigrationApprovalSet>()?;
     m.add_class::<PyMigrationPlan>()?;
+    m.add_class::<PyMigrationBackfillObservation>()?;
     m.add_class::<PyMigrationExecutionReport>()?;
     m.add_class::<PyMigrationVerificationFinding>()?;
     m.add_class::<PyMigrationVerificationReport>()?;

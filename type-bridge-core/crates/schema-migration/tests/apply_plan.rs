@@ -401,7 +401,19 @@ fn backfill_apply_evidence_retains_exact_manifest_position_and_requires_approval
         &plan,
     ))
     .unwrap();
-    assert!(matches!(outcome, MigrationExecutionOutcome::Applied));
+    let MigrationExecutionOutcome::Applied { backfills } = outcome else {
+        panic!("backfill plan must complete")
+    };
+    assert_eq!(backfills.len(), 1);
+    assert_eq!(backfills[0].migration_id(), migration.manifest().id());
+    assert_eq!(backfills[0].operation_ordinal(), 0);
+    assert_eq!(backfills[0].manifest_step_index(), 0);
+    assert_eq!(
+        backfills[0].evidence().direction(),
+        BackfillExecutionDirection::Forward
+    );
+    assert_eq!(backfills[0].evidence().counts().matched(), 0);
+    assert_eq!(backfills[0].evidence().counts().transaction_groups(), 1);
     assert_eq!(
         *provider.calls.lock().unwrap(),
         [
@@ -429,10 +441,19 @@ fn backfill_apply_evidence_retains_exact_manifest_position_and_requires_approval
         &rollback,
     ))
     .unwrap();
-    assert!(matches!(
-        rollback_outcome,
-        type_bridge_schema_migration::MigrationRollbackOutcome::RolledBack
-    ));
+    let type_bridge_schema_migration::MigrationRollbackOutcome::RolledBack { backfills } =
+        rollback_outcome
+    else {
+        panic!("reverse backfill plan must complete")
+    };
+    assert_eq!(backfills.len(), 1);
+    assert_eq!(backfills[0].migration_id(), migration.manifest().id());
+    assert_eq!(backfills[0].operation_ordinal(), 0);
+    assert_eq!(backfills[0].manifest_step_index(), 0);
+    assert_eq!(
+        backfills[0].evidence().direction(),
+        BackfillExecutionDirection::Reverse
+    );
     let state = store.state.lock().unwrap();
     assert_eq!(state.rolled_back.len(), 1);
     assert_eq!(
@@ -621,7 +642,7 @@ fn coordinator_stale_gate_uses_the_full_applied_set_not_only_graph_heads() {
         &remaining,
     ))
     .expect("execute remaining migration");
-    assert!(matches!(outcome, MigrationExecutionOutcome::Applied));
+    assert!(matches!(outcome, MigrationExecutionOutcome::Applied { .. }));
     let state = store.state.lock().expect("coordinator store");
     assert_eq!(state.applied.len(), 3);
     assert_eq!(state.releases, 1);
@@ -701,7 +722,7 @@ fn zero_group_applied_checkpoint_failure_is_retry_safe_at_manifest_position() {
         &store, &provider, &holder, &plan,
     ))
     .expect("checkpoint retry");
-    assert!(matches!(retry, MigrationExecutionOutcome::Applied));
+    assert!(matches!(retry, MigrationExecutionOutcome::Applied { .. }));
     let state = store.state.lock().expect("coordinator store");
     assert_eq!(state.applied.len(), 1);
     assert!(state.open.is_none());
@@ -764,7 +785,7 @@ fn committed_group_checkpoint_failure_retains_transaction_group_position() {
         &store, &provider, &holder, &plan,
     ))
     .expect("group checkpoint retry");
-    assert!(matches!(retry, MigrationExecutionOutcome::Applied));
+    assert!(matches!(retry, MigrationExecutionOutcome::Applied { .. }));
     let state = store.state.lock().expect("coordinator store");
     assert_eq!(state.applied.len(), 1);
     assert!(state.open.is_none());
@@ -968,7 +989,7 @@ fn assertion_apply_step_retains_validated_plan_bound_to_exact_source_state() {
         &plan,
     ))
     .expect("coordinator execution");
-    assert!(matches!(outcome, MigrationExecutionOutcome::Applied));
+    assert!(matches!(outcome, MigrationExecutionOutcome::Applied { .. }));
     let calls = provider.calls.lock().expect("provider calls").clone();
     assert_eq!(calls.iter().filter(|call| **call == "prepare").count(), 2);
     assert_eq!(calls.iter().filter(|call| **call == "commit").count(), 2);

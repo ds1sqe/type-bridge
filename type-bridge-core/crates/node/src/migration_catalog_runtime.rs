@@ -53,6 +53,20 @@ pub struct NodeMigrationExecutionReport {
     pub position_ordinal: Option<u32>,
     pub diagnostic_category: Option<String>,
     pub diagnostic_code: Option<String>,
+    pub backfills: Vec<NodeMigrationBackfillObservation>,
+}
+
+#[napi(object)]
+pub struct NodeMigrationBackfillObservation {
+    pub migration_id: NodeMigrationIdentity,
+    pub operation_ordinal: u32,
+    pub manifest_step_index: u32,
+    pub plan_fingerprint: String,
+    pub direction: String,
+    pub matched: i64,
+    pub changed: i64,
+    pub skipped: i64,
+    pub transaction_groups: u32,
 }
 
 /// Generated-package-owned, source-free migration catalog.
@@ -535,7 +549,38 @@ fn node_execution_report(
         diagnostic_code: report
             .diagnostic()
             .map(|value| value.code().as_str().to_owned()),
+        backfills: report
+            .backfills()
+            .iter()
+            .map(node_backfill_observation)
+            .collect(),
     }
+}
+
+fn node_backfill_observation(
+    observation: &type_bridge_schema_migration::MigrationBackfillObservation,
+) -> NodeMigrationBackfillObservation {
+    let evidence = observation.evidence();
+    let counts = evidence.counts();
+    NodeMigrationBackfillObservation {
+        migration_id: migration_identity(observation.migration_id()),
+        operation_ordinal: bounded_u32(observation.operation_ordinal()),
+        manifest_step_index: bounded_u32(observation.manifest_step_index()),
+        plan_fingerprint: evidence.plan_fingerprint().digest().to_hex(),
+        direction: match evidence.direction() {
+            type_bridge_schema_migration::BackfillExecutionDirection::Forward => "forward",
+            type_bridge_schema_migration::BackfillExecutionDirection::Reverse => "reverse",
+        }
+        .to_owned(),
+        matched: bounded_i64(counts.matched()),
+        changed: bounded_i64(counts.changed()),
+        skipped: bounded_i64(counts.skipped()),
+        transaction_groups: counts.transaction_groups(),
+    }
+}
+
+fn bounded_i64(value: u64) -> i64 {
+    i64::try_from(value).unwrap_or(i64::MAX)
 }
 
 fn verification_report(

@@ -465,7 +465,10 @@ fn full_chain_rollback_executes_reverse_programs_and_retires_the_ledger() {
         &plan,
     ))
     .expect("rollback execution");
-    assert!(matches!(outcome, MigrationRollbackOutcome::RolledBack));
+    assert!(matches!(
+        outcome,
+        MigrationRollbackOutcome::RolledBack { .. }
+    ));
 
     let calls = provider.calls.lock().expect("provider calls").clone();
     assert_eq!(calls.iter().filter(|call| **call == "prepare").count(), 2);
@@ -533,7 +536,10 @@ fn partial_rollback_reopens_the_head_for_a_fresh_apply_plan() {
         &plan,
     ))
     .expect("rollback execution");
-    assert!(matches!(outcome, MigrationRollbackOutcome::RolledBack));
+    assert!(matches!(
+        outcome,
+        MigrationRollbackOutcome::RolledBack { .. }
+    ));
 
     let active_basis: BTreeSet<_> = {
         let state = store.state.lock().expect("coordinator store");
@@ -676,7 +682,10 @@ fn rollback_resumes_from_a_committed_checkpoint_without_replaying() {
         &plan,
     ))
     .expect("resumed rollback execution");
-    assert!(matches!(outcome, MigrationRollbackOutcome::RolledBack));
+    assert!(matches!(
+        outcome,
+        MigrationRollbackOutcome::RolledBack { .. }
+    ));
     let calls = provider.calls.lock().expect("provider calls").clone();
     assert!(!calls.contains(&"prepare"), "calls: {calls:?}");
     assert!(!calls.contains(&"commit"), "calls: {calls:?}");
