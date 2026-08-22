@@ -891,6 +891,17 @@ impl SdkExecutionDiagnostic {
         .expect("the fixed projected record schema path is bounded")
     }
 
+    /// Construct the fixed rejection for mutating a decoded detached snapshot.
+    #[must_use]
+    pub fn projected_snapshot_detached() -> Self {
+        Self::invalid_input(
+            static_code("projected_snapshot_detached"),
+            static_message(
+                "A decoded canonical snapshot is detached and cannot authorize a mutation",
+            ),
+        )
+    }
+
     /// Construct a redacted internal failure with no implementation details.
     #[must_use]
     pub fn internal_failure() -> Self {
@@ -1143,5 +1154,11 @@ mod tests {
                 if field.as_str() == "declared_schema_identity"
         ));
         assert!(mismatch.details().is_empty());
+
+        let detached = SdkExecutionDiagnostic::projected_snapshot_detached();
+        assert_eq!(detached.category(), SdkDiagnosticCategory::InvalidInput);
+        assert_eq!(detached.code().as_str(), "projected_snapshot_detached");
+        assert!(detached.path().is_empty());
+        assert!(detached.details().is_empty());
     }
 }
