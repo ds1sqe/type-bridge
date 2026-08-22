@@ -185,6 +185,17 @@ fn python_canonical_limit_error(
     py_sdk_diagnostic(diagnostic)
 }
 
+fn python_canonical_codec_error(error: type_bridge_orm::ProjectedCodecError) -> PyErr {
+    if matches!(
+        &error,
+        type_bridge_orm::ProjectedCodecError::Contract(diagnostic)
+            if diagnostic.code().as_str() == "projected_codec_declared_schema_mismatch"
+    ) {
+        return py_sdk_diagnostic(SdkExecutionDiagnostic::projected_record_schema_mismatch());
+    }
+    py_value_error(error.to_string())
+}
+
 struct RegisteredModel {
     complete: Py<PyType>,
     reference: Option<Py<PyType>>,
@@ -1784,7 +1795,7 @@ impl PyRuntimeProjection {
             )
             .map_err(py_diagnostic)?;
             let _ = type_bridge_orm::materialize_record(&self.package.projection, &record)
-                .map_err(|error| py_value_error(error.to_string()))?;
+                .map_err(python_canonical_codec_error)?;
             verified.push(record);
         }
         let bytes = type_bridge_contract::projected_record::ProjectedArchive::try_new(verified)
@@ -1833,7 +1844,7 @@ impl PyRuntimeProjection {
                 )
                 .map_err(|error| python_canonical_limit_error(error, true))?;
             let _ = type_bridge_orm::materialize_record(&self.package.projection, &record)
-                .map_err(|error| py_value_error(error.to_string()))?;
+                .map_err(python_canonical_codec_error)?;
             verified.push(record);
         }
         let archive = type_bridge_contract::projected_record::ProjectedArchive::try_new(verified)
@@ -1865,7 +1876,7 @@ impl PyRuntimeProjection {
             .iter()
             .map(|record| {
                 let _ = type_bridge_orm::materialize_record(&self.package.projection, record)
-                    .map_err(|error| py_value_error(error.to_string()))?;
+                    .map_err(python_canonical_codec_error)?;
                 record
                     .encode()
                     .map(|bytes| PyBytes::new(py, &bytes).unbind())
@@ -1919,7 +1930,7 @@ impl PyRuntimeProjection {
             .map(|record| {
                 control.check()?;
                 let _ = type_bridge_orm::materialize_record(&self.package.projection, record)
-                    .map_err(|error| py_value_error(error.to_string()))?;
+                    .map_err(python_canonical_codec_error)?;
                 let bytes = record
                     .encode_with_limits(control.output_limits())
                     .map_err(|error| python_canonical_limit_error(error, false))?;

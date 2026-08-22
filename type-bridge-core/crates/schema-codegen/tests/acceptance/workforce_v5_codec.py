@@ -11,8 +11,10 @@ from decimal import Decimal
 from pathlib import Path
 
 import generated_ordered as generated
+import generated_ordered_foreign as foreign
 
 FORMAT = "typebridge.workforce-v5-provider-free-corpus/v1"
+OPERATIONAL_FORMAT = "typebridge.workforce-v5-operational-evidence/v1"
 
 
 def person(*, aliases: list[generated.Aliases] | None = None) -> generated.Person:
@@ -47,13 +49,35 @@ def canonical_json(value: object) -> bytes:
     ).encode()
 
 
+def expect_code(operation: object, expected: str) -> Exception:
+    try:
+        assert callable(operation)
+        operation()
+    except Exception as error:
+        if getattr(error, "code", None) != expected:
+            raise AssertionError(f"expected {expected}, saw {error!r}") from error
+        return error
+    raise AssertionError(f"controlled canonical operation must fail with {expected}")
+
+
+def publish(path: Path, payload: bytes) -> None:
+    if not path.is_absolute():
+        raise RuntimeError("Workforce V5 evidence path must be absolute")
+    with path.open("xb") as stream:
+        stream.write(payload)
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
 def main() -> None:
     output_value = os.environ.get("TYPE_BRIDGE_WORKFORCE_V5_CORPUS")
     if output_value is None:
         raise RuntimeError("TYPE_BRIDGE_WORKFORCE_V5_CORPUS must be configured")
     output = Path(output_value)
-    if not output.is_absolute():
-        raise RuntimeError("Workforce V5 corpus path must be absolute")
+    operational_value = os.environ.get("TYPE_BRIDGE_WORKFORCE_V5_OPERATIONAL_EVIDENCE")
+    if operational_value is None:
+        raise RuntimeError("TYPE_BRIDGE_WORKFORCE_V5_OPERATIONAL_EVIDENCE must be configured")
+    operational_output = Path(operational_value)
 
     integer_key = generated.RobotId(9_007_199_254_740_993).encode_attribute()
     stats = generated.PlayerStats(nickname="stable", wins=3).encode()
@@ -108,6 +132,84 @@ def main() -> None:
     if generated.Employment.decode_snapshot(decoded[7]).encode_snapshot() != decoded[7]:
         raise AssertionError("Python employment snapshot did not re-encode byte-exactly")
 
+    cancellation = generated.QueryCancellation()
+    cancellation.cancel()
+    cancellation_error = expect_code(
+        lambda: generated.encode_archive_controlled(records, cancellation=cancellation),
+        "projected_codec_cancelled",
+    )
+    input_error = expect_code(
+        lambda: generated.decode_archive_controlled(archive, max_input_bytes=len(archive) - 1),
+        "projected_codec_input_limit",
+    )
+    output_error = expect_code(
+        lambda: generated.encode_archive_controlled(records, max_output_bytes=len(archive) - 1),
+        "projected_codec_output_limit",
+    )
+    member_error = expect_code(
+        lambda: generated.encode_archive_controlled(records, max_records=len(records) - 1),
+        "projected_codec_member_limit",
+    )
+    depth_error = expect_code(
+        lambda: generated.decode_archive_controlled(archive, max_depth=1),
+        "projected_codec_depth_limit",
+    )
+    deadline_error = expect_code(
+        lambda: generated.decode_archive_controlled(archive, timeout_milliseconds=0),
+        "projected_codec_deadline_exceeded",
+    )
+    foreign_record = foreign.RobotId(7).encode_attribute()
+    foreign_error = expect_code(
+        lambda: generated.encode_archive([foreign_record]),
+        "projected_record_schema_mismatch",
+    )
+    if getattr(foreign_error, "sdk_category", None) != "invalid_input":
+        raise AssertionError("foreign-schema diagnostic category drifted")
+    if getattr(foreign_error, "path", None) != [
+        {"kind": "contract_field", "value": "declared_schema_identity"}
+    ]:
+        raise AssertionError("foreign-schema diagnostic path drifted")
+    if getattr(foreign_error, "details", None) != {}:
+        raise AssertionError("foreign-schema diagnostic exposed payload details")
+
+    sibling_archive = generated.encode_archive(records)
+    sibling_records = generated.decode_archive(sibling_archive)
+    if sibling_records != records:
+        raise AssertionError("independent Python archive was unusable after failures")
+    del sibling_records
+    del sibling_archive
+
+    operational_payload = canonical_json(
+        {
+            "binding": "python",
+            "cancellation": {"code": cancellation_error.code, "partial_output": False},
+            "deadline": {"code": deadline_error.code, "partial_output": False},
+            "diagnostic": {
+                "category": foreign_error.sdk_category,
+                "code": foreign_error.code,
+                "path": ["declared_schema_identity"],
+                "payload_absent": True,
+            },
+            "format": OPERATIONAL_FORMAT,
+            "lifecycle": {
+                "archive_closed": True,
+                "builder_closed": True,
+                "bytes_closed": True,
+                "decoded_closed": True,
+                "repeat_close": True,
+                "sibling_usable": True,
+            },
+            "resource_limits": {
+                "depth_code": depth_error.code,
+                "input_code": input_error.code,
+                "member_code": member_error.code,
+                "output_code": output_error.code,
+                "partial_output": False,
+            },
+            "test_id": "python.generated_workforce_v5_canonical_codec",
+        }
+    )
+
     def encoded(value: bytes) -> str:
         return base64.b64encode(value).decode("ascii")
 
@@ -119,10 +221,8 @@ def main() -> None:
             "record_b64": [encoded(record) for record in records],
         }
     )
-    with output.open("xb") as stream:
-        stream.write(payload)
-        stream.flush()
-        os.fsync(stream.fileno())
+    publish(output, payload)
+    publish(operational_output, operational_payload)
 
 
 if __name__ == "__main__":

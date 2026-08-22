@@ -43,6 +43,7 @@ fi
 mkdir -p "$output_dir"
 
 scratch="$(mktemp -d "${TMPDIR:-/tmp}/type-bridge-generated-live.XXXXXX")"
+ordered_foreign_schema="$scratch/schema-ordered-foreign.yaml"
 cleanup_scratch() {
     rm -rf -- "$scratch"
 }
@@ -93,6 +94,14 @@ generate_workspace() {
         --manifest "$workspace/typebridge.yaml" schema generate
 }
 
+sed \
+    -e 's/range: { min: 0, max: 80 }/range: { min: 0, max: 79 }/' \
+    "$WORKFORCE_V3_DIR/schema-v3.yaml" > "$ordered_foreign_schema"
+if cmp -s "$WORKFORCE_V3_DIR/schema-v3.yaml" "$ordered_foreign_schema"; then
+    echo "Generated ordered foreign schema did not alter its authority." >&2
+    exit 1
+fi
+
 primary="$scratch/primary"
 if [[ "$binding" == "python" ]]; then
     write_workspace \
@@ -111,6 +120,14 @@ if [[ "$binding" == "python" ]]; then
         cp -R "$ordered/generated/generated_ordered" "$output_dir/generated_phase2"
         cp "$ordered/generated/schema-authority.json" \
             "$output_dir/schema-authority-ordered.json"
+
+        ordered_foreign="$scratch/ordered-foreign"
+        write_workspace \
+            "$ordered_foreign" python generated_ordered_foreign \
+            generated-python-ordered-foreign "$ordered_foreign_schema" no
+        generate_workspace "$ordered_foreign"
+        cp -R "$ordered_foreign/generated/generated_ordered_foreign" \
+            "$output_dir/generated_ordered_foreign"
     fi
 
     variant="$scratch/variant"
@@ -152,6 +169,14 @@ if [[ "$semantic_profile" == "typedb-3.12.1/v1" ]]; then
     cp -R "$ordered/generated/generated_ordered" "$output_dir/generated_phase2"
     cp "$ordered/generated/schema-authority.json" \
         "$output_dir/schema-authority-ordered.json"
+
+    ordered_foreign="$scratch/ordered-foreign"
+    write_workspace \
+        "$ordered_foreign" typescript generated_ordered_foreign \
+        generated-node-ordered-foreign "$ordered_foreign_schema" no
+    generate_workspace "$ordered_foreign"
+    cp -R "$ordered_foreign/generated/generated_ordered_foreign" \
+        "$output_dir/generated_ordered_foreign"
 fi
 
 package_scope="$output_dir/node_modules/@type-bridge"
@@ -174,6 +199,8 @@ if [[ -d "$output_dir/generated_ordered" ]]; then
         --project "$output_dir/generated_ordered/tsconfig.json"
     "$NODE_DIR/node_modules/.bin/tsc" \
         --project "$output_dir/generated_phase2/tsconfig.json"
+    "$NODE_DIR/node_modules/.bin/tsc" \
+        --project "$output_dir/generated_ordered_foreign/tsconfig.json"
 fi
 "$NODE_DIR/node_modules/.bin/tsc" \
     --project "$NODE_DIR/tsconfig.projection-integration.json" \
