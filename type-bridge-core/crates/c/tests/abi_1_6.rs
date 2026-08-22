@@ -49,6 +49,12 @@ fn abi_1_6_header_is_additive_closed_and_strict_c17() {
         r#"#include <typebridge/type_bridge_abi_1_6.h>
 _Static_assert(TYPE_BRIDGE_C_ABI_MAJOR == 1u, "ABI major drifted");
 _Static_assert(TYPE_BRIDGE_C_ABI_MINOR == 6u, "ABI minor drifted");
+_Static_assert(sizeof(type_bridge_projected_codec_options_v1_t) == 72u,
+               "codec options size drifted");
+_Static_assert(_Alignof(type_bridge_projected_codec_options_v1_t) == 8u,
+               "codec options alignment drifted");
+_Static_assert(offsetof(type_bridge_projected_codec_options_v1_t, cancellation) == 64u,
+               "codec options cancellation offset drifted");
 int main(void) {
   type_bridge_canonical_bytes_t *bytes = 0;
   type_bridge_canonical_archive_builder_t *builder = 0;

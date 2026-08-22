@@ -2755,7 +2755,7 @@ fn render_codec_definition_pair(
         "type_bridge_status_t TYPE_BRIDGE_CALL {encode}(\n\
            const {target} *value, type_bridge_canonical_bytes_t **out_bytes,\n\
            type_bridge_execution_diagnostics_t **out_diagnostics) {{\n\
-           return {encode_runtime}((const {generic} *)value, out_bytes, out_diagnostics);\n\
+           return {encode_runtime}((const {generic} *)value, NULL, out_bytes, out_diagnostics);\n\
          }}\n\n\
          type_bridge_status_t TYPE_BRIDGE_CALL {decode}(\n\
            const type_bridge_schema_package_t *package, type_bridge_byte_view_t bytes,\n\

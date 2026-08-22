@@ -6,14 +6,15 @@ use type_bridge_c::{
     GENERATED_CREATE_GRAPH_VERSION, GENERATED_CREATE_HOSTED_OBJECT_BYTES_MAX,
     GENERATED_CREATE_MEMBER_REFERENCE_SEQUENCE, GENERATED_CREATE_MEMBER_VALUE_SEQUENCE,
     GENERATED_INPUT_CREATE_ARGS_GRAPH, GENERATED_INPUT_PROJECTED_VALUE_POINTER_ARRAY,
-    GENERATED_INPUT_SCHEMA_PACKAGE, TypeBridgeByteView, TypeBridgeCanonicalArchive,
-    TypeBridgeCanonicalArchiveBuilder, TypeBridgeCanonicalBytes,
+    GENERATED_INPUT_SCHEMA_PACKAGE, TypeBridgeByteView, TypeBridgeCancellation,
+    TypeBridgeCanonicalArchive, TypeBridgeCanonicalArchiveBuilder, TypeBridgeCanonicalBytes,
     TypeBridgeExecutionDiagnosticCategory, TypeBridgeExecutionDiagnosticDetailKind,
     TypeBridgeExecutionDiagnosticDetailViewV1, TypeBridgeExecutionDiagnosticPathKind,
     TypeBridgeExecutionDiagnosticPathViewV1, TypeBridgeExecutionDiagnosticViewV1,
     TypeBridgeExecutionDiagnostics, TypeBridgeGeneratedCreateArgsGraphV1,
     TypeBridgeGeneratedCreateHandleChunkV1, TypeBridgeGeneratedCreateMemberV1,
-    TypeBridgeGeneratedOpaqueInputV1, TypeBridgeGeneratedOutputRangeV1, TypeBridgeProjectedCreate,
+    TypeBridgeGeneratedOpaqueInputV1, TypeBridgeGeneratedOutputRangeV1,
+    TypeBridgeProjectedCodecOptionsV1, TypeBridgeProjectedCreate,
     TypeBridgeProjectedCreateDescriptorV1, TypeBridgeProjectedFieldInputV1,
     TypeBridgeProjectedReference, TypeBridgeProjectedReferenceDescriptorV1,
     TypeBridgeProjectedRoleInputV1, TypeBridgeProjectedStruct, TypeBridgeProjectedStructMember,
@@ -94,6 +95,15 @@ structs:
 
 #[allow(improper_ctypes)]
 unsafe extern "C" {
+    fn type_bridge_cancellation_open(
+        out_cancellation: *mut *mut TypeBridgeCancellation,
+    ) -> TypeBridgeStatus;
+    fn type_bridge_cancellation_request(
+        cancellation: *const TypeBridgeCancellation,
+    ) -> TypeBridgeStatus;
+    fn type_bridge_cancellation_close(
+        cancellation: *mut *mut TypeBridgeCancellation,
+    ) -> TypeBridgeStatus;
     fn type_bridge_schema_package_open_v1(
         descriptor: *const TypeBridgeSchemaPackageDescriptorV1,
         out_package: *mut *mut TypeBridgeSchemaPackage,
@@ -307,6 +317,7 @@ unsafe extern "C" {
     ) -> TypeBridgeStatus;
     fn type_bridge_canonical_record_encode_create_v1(
         value: *const TypeBridgeProjectedCreate,
+        options: *const TypeBridgeProjectedCodecOptionsV1,
         out_bytes: *mut *mut TypeBridgeCanonicalBytes,
         out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
     ) -> TypeBridgeStatus;
@@ -975,6 +986,70 @@ fn all_nine_domains_person_create_reference_and_membership_are_package_branded()
     );
     assert!(diagnostics.is_null());
 
+    let mut cancellation = ptr::null_mut();
+    // SAFETY: the owner slot is writable and initially null.
+    assert_eq!(
+        unsafe { type_bridge_cancellation_open(&mut cancellation) },
+        TypeBridgeStatus::Ok,
+    );
+    let options = TypeBridgeProjectedCodecOptionsV1 {
+        struct_size: size_of::<TypeBridgeProjectedCodecOptionsV1>() as u64,
+        version: 1,
+        flags: 0,
+        timeout_milliseconds: 0,
+        max_input_bytes: 16 * 1024 * 1024,
+        max_output_bytes: 16 * 1024 * 1024,
+        max_depth: 64,
+        max_records: 1,
+        max_members: 65_536,
+        cancellation,
+    };
+    // An output inside the complete options object is rejected before initialization.
+    // SAFETY: the hostile output aliases the live options object and is rejected by preflight.
+    assert_eq!(
+        unsafe {
+            type_bridge_canonical_record_encode_create_v1(
+                person_create,
+                &options,
+                (&options as *const TypeBridgeProjectedCodecOptionsV1)
+                    .cast_mut()
+                    .cast(),
+                &mut diagnostics,
+            )
+        },
+        TypeBridgeStatus::InvalidArgument,
+    );
+    assert!(diagnostics.is_null());
+    // SAFETY: the live cancellation handle accepts one sticky request.
+    assert_eq!(
+        unsafe { type_bridge_cancellation_request(cancellation) },
+        TypeBridgeStatus::Ok,
+    );
+    let mut cancelled_bytes = ptr::null_mut();
+    // SAFETY: all inputs and distinct outputs remain live for the controlled call.
+    let status = unsafe {
+        type_bridge_canonical_record_encode_create_v1(
+            person_create,
+            &options,
+            &mut cancelled_bytes,
+            &mut diagnostics,
+        )
+    };
+    assert!(cancelled_bytes.is_null());
+    assert_execution_error(
+        status,
+        TypeBridgeStatus::Cancelled,
+        diagnostics,
+        TypeBridgeExecutionDiagnosticCategory::Cancelled,
+        "provider_cancelled",
+    );
+    diagnostics = ptr::null_mut();
+    // SAFETY: the exact cancellation owner slot is live and uniquely owned.
+    assert_eq!(
+        unsafe { type_bridge_cancellation_close(&mut cancellation) },
+        TypeBridgeStatus::Ok,
+    );
+
     // An output slot inside the live projected input is rejected before publication.
     // SAFETY: the deliberately hostile output aliases a live input object; preflight rejects it
     // before writing either output.
@@ -982,6 +1057,7 @@ fn all_nine_domains_person_create_reference_and_membership_are_package_branded()
         unsafe {
             type_bridge_canonical_record_encode_create_v1(
                 person_create,
+                ptr::null(),
                 person_create.cast(),
                 &mut diagnostics,
             )
@@ -996,6 +1072,7 @@ fn all_nine_domains_person_create_reference_and_membership_are_package_branded()
         unsafe {
             type_bridge_canonical_record_encode_create_v1(
                 person_create,
+                ptr::null(),
                 &mut record_bytes,
                 &mut diagnostics,
             )

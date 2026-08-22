@@ -580,13 +580,28 @@ impl ProjectedRecord {
 
     /// Encode exact canonical record bytes.
     pub fn encode(&self) -> Result<Vec<u8>, Diagnostic> {
-        to_canonical_json_with_limits(&self.to_wire(), RECORD_LIMITS)
+        self.encode_with_limits(RECORD_LIMITS)
+    }
+
+    /// Encode exact canonical record bytes under tighter caller limits.
+    pub fn encode_with_limits(&self, limits: CodecLimits) -> Result<Vec<u8>, Diagnostic> {
+        to_canonical_json_with_limits(&self.to_wire(), limits)
     }
 
     /// Strictly decode, normalize, and verify one canonical record.
     pub fn decode(bytes: &[u8]) -> Result<Self, Diagnostic> {
-        let wire: RecordWire = from_canonical_json_with_limits(bytes, RECORD_LIMITS)?;
+        Self::decode_with_limits(bytes, RECORD_LIMITS)
+    }
+
+    /// Strictly decode one canonical record under tighter caller limits.
+    pub fn decode_with_limits(bytes: &[u8], limits: CodecLimits) -> Result<Self, Diagnostic> {
+        let wire: RecordWire = from_canonical_json_with_limits(bytes, limits)?;
         wire.rebuild()
+    }
+
+    /// Return the exact bounded decoded member/value/reference weight.
+    pub const fn decoded_weight(&self) -> usize {
+        self.weight
     }
 
     fn to_wire(&self) -> RecordWireRef<'_> {
@@ -711,6 +726,11 @@ impl ProjectedArchive {
 
     /// Encode exact canonical archive bytes.
     pub fn encode(&self) -> Result<Vec<u8>, Diagnostic> {
+        self.encode_with_limits(ARCHIVE_LIMITS)
+    }
+
+    /// Encode exact canonical archive bytes under tighter caller limits.
+    pub fn encode_with_limits(&self, limits: CodecLimits) -> Result<Vec<u8>, Diagnostic> {
         let wire = ArchiveWireRef {
             format: PROJECTED_ARCHIVE_V1,
             semantic_profile: &self.semantic_profile,
@@ -718,12 +738,17 @@ impl ProjectedArchive {
             records: self.records.iter().map(ProjectedRecord::to_wire).collect(),
             fingerprint: &self.fingerprint,
         };
-        to_canonical_json_with_limits(&wire, ARCHIVE_LIMITS)
+        to_canonical_json_with_limits(&wire, limits)
     }
 
     /// Strictly decode and validate a complete archive before publication.
     pub fn decode(bytes: &[u8]) -> Result<Self, Diagnostic> {
-        let wire: ArchiveWire = from_canonical_json_with_limits(bytes, ARCHIVE_LIMITS)?;
+        Self::decode_with_limits(bytes, ARCHIVE_LIMITS)
+    }
+
+    /// Strictly decode one complete canonical archive under tighter caller limits.
+    pub fn decode_with_limits(bytes: &[u8], limits: CodecLimits) -> Result<Self, Diagnostic> {
+        let wire: ArchiveWire = from_canonical_json_with_limits(bytes, limits)?;
         if wire.format != PROJECTED_ARCHIVE_V1 {
             return Err(invalid(
                 "unsupported_projected_archive_format",
@@ -747,6 +772,14 @@ impl ProjectedArchive {
             ));
         }
         Ok(rebuilt)
+    }
+
+    /// Return the exact aggregate decoded member/value/reference weight.
+    pub fn decoded_weight(&self) -> usize {
+        self.records
+            .iter()
+            .map(ProjectedRecord::decoded_weight)
+            .sum()
     }
 }
 

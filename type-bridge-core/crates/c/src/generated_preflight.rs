@@ -11,7 +11,7 @@ use crate::abi::{
 };
 use crate::canonical_archive::{
     TypeBridgeCanonicalArchive, TypeBridgeCanonicalArchiveBuilder, TypeBridgeCanonicalBytes,
-    TypeBridgeProjectedStruct, TypeBridgeProjectedStructMember,
+    TypeBridgeProjectedCodecOptionsV1, TypeBridgeProjectedStruct, TypeBridgeProjectedStructMember,
 };
 use crate::execution_diagnostic::TypeBridgeExecutionDiagnostics;
 use crate::projected_batch::{
@@ -120,6 +120,8 @@ pub const GENERATED_INPUT_CANONICAL_ARCHIVE: u32 = 39;
 pub const GENERATED_INPUT_PROJECTED_STRUCT: u32 = 40;
 /// Independently owned projected-struct member input kind.
 pub const GENERATED_INPUT_PROJECTED_STRUCT_MEMBER: u32 = 41;
+/// Versioned canonical codec options input kind.
+pub const GENERATED_INPUT_PROJECTED_CODEC_OPTIONS: u32 = 42;
 
 /// Frozen generated create-argument graph layout version.
 pub const GENERATED_CREATE_GRAPH_VERSION: u32 = 1;
@@ -436,6 +438,9 @@ fn object_size(kind: u32) -> Option<usize> {
         GENERATED_INPUT_PROJECTED_STRUCT_MEMBER => {
             Some(size_of::<TypeBridgeProjectedStructMember>())
         }
+        GENERATED_INPUT_PROJECTED_CODEC_OPTIONS => {
+            Some(size_of::<TypeBridgeProjectedCodecOptionsV1>())
+        }
         _ => None,
     }
 }
@@ -568,6 +573,21 @@ unsafe fn check_deep_object_ranges(
             // SAFETY: the complete struct-member handle was checked before dispatch.
             unsafe { &*pointer.cast::<TypeBridgeProjectedStructMember>() }
                 .check_borrowed_ranges(outputs)
+        }
+        GENERATED_INPUT_PROJECTED_CODEC_OPTIONS => {
+            // SAFETY: the complete options object was checked before dispatch.
+            let options = unsafe {
+                pointer
+                    .cast::<TypeBridgeProjectedCodecOptionsV1>()
+                    .read_unaligned()
+            };
+            // SAFETY: the caller promises the optional cancellation owner remains live.
+            unsafe {
+                outputs.check_deep_object_kind(
+                    GENERATED_INPUT_CANCELLATION,
+                    options.cancellation.cast(),
+                )
+            }
         }
         GENERATED_INPUT_QUERY_SESSION => {
             // SAFETY: the complete query-session handle was checked before dispatch.
@@ -1316,6 +1336,7 @@ mod tests {
         assert_eq!(GENERATED_INPUT_CANONICAL_ARCHIVE, 39);
         assert_eq!(GENERATED_INPUT_PROJECTED_STRUCT, 40);
         assert_eq!(GENERATED_INPUT_PROJECTED_STRUCT_MEMBER, 41);
+        assert_eq!(GENERATED_INPUT_PROJECTED_CODEC_OPTIONS, 42);
         assert_eq!(
             object_size(GENERATED_INPUT_CANONICAL_BYTES),
             Some(size_of::<TypeBridgeCanonicalBytes>()),
@@ -1336,7 +1357,11 @@ mod tests {
             object_size(GENERATED_INPUT_PROJECTED_STRUCT_MEMBER),
             Some(size_of::<TypeBridgeProjectedStructMember>()),
         );
-        assert_eq!(object_size(42), None);
+        assert_eq!(
+            object_size(GENERATED_INPUT_PROJECTED_CODEC_OPTIONS),
+            Some(size_of::<TypeBridgeProjectedCodecOptionsV1>()),
+        );
+        assert_eq!(object_size(43), None);
         assert_eq!(object_size(u32::MAX), None);
     }
 

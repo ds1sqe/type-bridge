@@ -4,10 +4,17 @@ use std::ffi::c_void;
 use std::mem::{size_of, size_of_val};
 use std::ptr;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use type_bridge_contract::id::{TypeId, TypeKind};
-use type_bridge_contract::limits::MAX_CANONICAL_BYTES;
-use type_bridge_contract::projected_record::{ProjectedArchive, ProjectedRecord};
+use type_bridge_contract::limits::{
+    CodecLimits, MAX_CANONICAL_BYTES, MAX_CANONICAL_COLLECTION_LEN, MAX_CANONICAL_DEPTH,
+    MAX_CANONICAL_STRING_BYTES,
+};
+use type_bridge_contract::projected_record::{
+    MAX_PROJECTED_ARCHIVE_BYTES, MAX_PROJECTED_ARCHIVE_RECORDS, MAX_PROJECTED_DECODED_WEIGHT,
+    MAX_PROJECTED_RECORD_BYTES, ProjectedArchive, ProjectedRecord,
+};
 use type_bridge_contract::sdk_diagnostic::{
     SdkDiagnosticCode, SdkDiagnosticMessage, SdkExecutionDiagnostic,
 };
@@ -26,10 +33,11 @@ use crate::execution_diagnostic::{
 use crate::generated_preflight::{
     DirectOutputPreflight, GENERATED_INPUT_CANONICAL_ARCHIVE,
     GENERATED_INPUT_CANONICAL_ARCHIVE_BUILDER, GENERATED_INPUT_CANONICAL_BYTES,
-    GENERATED_INPUT_PROJECTED_CREATE, GENERATED_INPUT_PROJECTED_REFERENCE,
-    GENERATED_INPUT_PROJECTED_STRUCT, GENERATED_INPUT_PROJECTED_STRUCT_MEMBER,
-    GENERATED_INPUT_PROJECTED_THING, GENERATED_INPUT_PROJECTED_TOKEN,
-    GENERATED_INPUT_PROJECTED_VALUE, GENERATED_INPUT_SCHEMA_PACKAGE, direct_output_preflight,
+    GENERATED_INPUT_PROJECTED_CODEC_OPTIONS, GENERATED_INPUT_PROJECTED_CREATE,
+    GENERATED_INPUT_PROJECTED_REFERENCE, GENERATED_INPUT_PROJECTED_STRUCT,
+    GENERATED_INPUT_PROJECTED_STRUCT_MEMBER, GENERATED_INPUT_PROJECTED_THING,
+    GENERATED_INPUT_PROJECTED_TOKEN, GENERATED_INPUT_PROJECTED_VALUE,
+    GENERATED_INPUT_SCHEMA_PACKAGE, direct_output_preflight,
 };
 use crate::projected_model::{
     TypeBridgeProjectedCreate, TypeBridgeProjectedReference, TypeBridgeProjectedThing,
@@ -40,6 +48,145 @@ use crate::projected_token::{
 use crate::projected_value::{
     InlineCanonicalText, TypeBridgeProjectedValue, TypeBridgeProjectedValueKind,
 };
+use crate::runtime::TypeBridgeCancellation;
+
+const PROJECTED_CODEC_OPTIONS_V1: u32 = 1;
+const PROJECTED_CODEC_HAS_TIMEOUT: u32 = 1;
+
+/// Versioned tighten-only controls for canonical record and archive work.
+#[repr(C)]
+pub struct TypeBridgeProjectedCodecOptionsV1 {
+    /// Must equal `sizeof(TypeBridgeProjectedCodecOptionsV1)`.
+    pub struct_size: u64,
+    /// Must be `1`.
+    pub version: u32,
+    /// Bit 0 declares `timeout_milliseconds` present; all other bits are zero.
+    pub flags: u32,
+    /// Relative timeout converted once to an absolute monotonic deadline.
+    pub timeout_milliseconds: u64,
+    /// Tighten-only canonical input byte ceiling.
+    pub max_input_bytes: u64,
+    /// Tighten-only canonical output byte ceiling.
+    pub max_output_bytes: u64,
+    /// Tighten-only canonical nesting depth ceiling.
+    pub max_depth: u64,
+    /// Tighten-only ordered archive record ceiling.
+    pub max_records: u64,
+    /// Tighten-only decoded member/value/reference weight ceiling.
+    pub max_members: u64,
+    /// Optional separately owned common cancellation handle.
+    pub cancellation: *const TypeBridgeCancellation,
+}
+
+#[derive(Clone)]
+pub struct CanonicalControl {
+    pub deadline: Option<Instant>,
+    pub cancellation: type_bridge_orm::AnswerCancellation,
+    pub max_input_bytes: usize,
+    pub max_output_bytes: usize,
+    pub max_depth: usize,
+    pub max_records: usize,
+    pub max_members: usize,
+}
+
+impl CanonicalControl {
+    pub fn check(&self) -> Result<(), SdkExecutionDiagnostic> {
+        if self.cancellation.is_cancelled() {
+            Err(SdkExecutionDiagnostic::data_operation_cancelled())
+        } else if self
+            .deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            Err(SdkExecutionDiagnostic::data_operation_deadline_exceeded())
+        } else {
+            Ok(())
+        }
+    }
+
+    fn input_limits(&self) -> CodecLimits {
+        CodecLimits {
+            max_bytes: self.max_input_bytes,
+            max_depth: self.max_depth,
+            max_collection_len: self.max_members,
+            max_string_bytes: MAX_CANONICAL_STRING_BYTES.min(self.max_input_bytes),
+        }
+    }
+
+    fn output_limits(&self) -> CodecLimits {
+        CodecLimits {
+            max_bytes: self.max_output_bytes,
+            max_depth: self.max_depth,
+            max_collection_len: self.max_members,
+            max_string_bytes: MAX_CANONICAL_STRING_BYTES.min(self.max_output_bytes),
+        }
+    }
+}
+
+pub unsafe fn canonical_control(
+    options: *const TypeBridgeProjectedCodecOptionsV1,
+    archive: bool,
+) -> Result<CanonicalControl, TypeBridgeStatus> {
+    let (max_input_bytes, max_output_bytes, max_records) = if archive {
+        (
+            MAX_PROJECTED_ARCHIVE_BYTES,
+            MAX_PROJECTED_ARCHIVE_BYTES,
+            MAX_PROJECTED_ARCHIVE_RECORDS,
+        )
+    } else {
+        (MAX_PROJECTED_RECORD_BYTES, MAX_PROJECTED_RECORD_BYTES, 1)
+    };
+    if options.is_null() {
+        return Ok(CanonicalControl {
+            deadline: None,
+            cancellation: type_bridge_orm::AnswerCancellation::default(),
+            max_input_bytes,
+            max_output_bytes,
+            max_depth: MAX_CANONICAL_DEPTH,
+            max_records,
+            max_members: MAX_PROJECTED_DECODED_WEIGHT,
+        });
+    }
+    // SAFETY: the caller retains one complete possibly unaligned options object.
+    let options = unsafe { options.read_unaligned() };
+    if options.struct_size != size_of::<TypeBridgeProjectedCodecOptionsV1>() as u64
+        || options.version != PROJECTED_CODEC_OPTIONS_V1
+        || options.flags & !PROJECTED_CODEC_HAS_TIMEOUT != 0
+    {
+        return Err(TypeBridgeStatus::InvalidArgument);
+    }
+    let limit = |value: u64, ceiling: usize| {
+        usize::try_from(value)
+            .map(|value| value.min(ceiling))
+            .map_err(|_| TypeBridgeStatus::ResourceLimit)
+    };
+    let deadline = if options.flags & PROJECTED_CODEC_HAS_TIMEOUT != 0 {
+        Some(
+            Instant::now()
+                .checked_add(Duration::from_millis(options.timeout_milliseconds))
+                .ok_or(TypeBridgeStatus::InvalidArgument)?,
+        )
+    } else {
+        None
+    };
+    let cancellation = if options.cancellation.is_null() {
+        type_bridge_orm::AnswerCancellation::default()
+    } else {
+        // SAFETY: the caller retains the cancellation handle while controls are captured.
+        unsafe { &*options.cancellation }.answer_cancellation()
+    };
+    Ok(CanonicalControl {
+        deadline,
+        cancellation,
+        max_input_bytes: limit(options.max_input_bytes, max_input_bytes)?,
+        max_output_bytes: limit(options.max_output_bytes, max_output_bytes)?,
+        max_depth: limit(options.max_depth, MAX_CANONICAL_DEPTH)?,
+        max_records: limit(options.max_records, max_records)?,
+        max_members: limit(
+            options.max_members,
+            MAX_PROJECTED_DECODED_WEIGHT.min(MAX_CANONICAL_COLLECTION_LEN),
+        )?,
+    })
+}
 
 /// Opaque owned immutable canonical byte buffer.
 pub struct TypeBridgeCanonicalBytes {
@@ -194,6 +341,13 @@ fn canonical_input_limit() -> SdkExecutionDiagnostic {
     )
 }
 
+fn canonical_output_limit() -> SdkExecutionDiagnostic {
+    SdkExecutionDiagnostic::resource_limit(
+        code("c_canonical_output_limit"),
+        message("Canonical output bytes exceed the supported bounded allocation"),
+    )
+}
+
 fn invalid_value() -> SdkExecutionDiagnostic {
     SdkExecutionDiagnostic::invalid_input(
         code("c_canonical_value_invalid"),
@@ -245,31 +399,51 @@ unsafe fn decode_record(
     if package.is_null() {
         return Err(invalid_record());
     }
+    // SAFETY: null selects the frozen record ceilings and an uncancelled control.
+    let control = unsafe { canonical_control(ptr::null(), false) }
+        .expect("default canonical record controls are valid");
+    control.check()?;
     // SAFETY: caller retains one live immutable package for this call.
     let package = unsafe { &*package };
     // SAFETY: caller retains the bounded byte range for this call.
-    let bytes = unsafe { snapshot_bytes(bytes, invalid_record) }?;
-    let record = ProjectedRecord::decode(&bytes).map_err(|_| invalid_record())?;
+    let bytes = unsafe { snapshot_bytes(bytes, control.max_input_bytes, invalid_record) }?;
+    control.check()?;
+    let record = ProjectedRecord::decode_with_limits(&bytes, control.input_limits())
+        .map_err(|_| invalid_record())?;
+    if record.decoded_weight() > control.max_members {
+        return Err(canonical_input_limit());
+    }
+    control.check()?;
     Ok((Arc::clone(package.state()), record))
 }
 
 fn publish_record(
     record: Result<ProjectedRecord, type_bridge_orm::ProjectedCodecError>,
+    control: &CanonicalControl,
     out_bytes: *mut *mut TypeBridgeCanonicalBytes,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
+    if let Err(diagnostic) = control.check() {
+        return return_execution_error(diagnostic, out_diagnostics);
+    }
     let record = match record {
         Ok(record) => record,
         Err(_) => return return_execution_error(invalid_value(), out_diagnostics),
     };
     let bytes = match encode_bytes(
         AllocationSite::CanonicalRecordEncodeBytes,
-        || record.encode(),
+        || record.encode_with_limits(control.output_limits()),
         invalid_value,
     ) {
         Ok(bytes) => bytes,
         Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
     };
+    if bytes.len() > control.max_output_bytes {
+        return return_execution_error(canonical_output_limit(), out_diagnostics);
+    }
+    if let Err(diagnostic) = control.check() {
+        return return_execution_error(diagnostic, out_diagnostics);
+    }
     let bytes = match try_box(
         AllocationSite::CanonicalBytesHandle,
         TypeBridgeCanonicalBytes { bytes },
@@ -295,6 +469,7 @@ fn encode_bytes(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn type_bridge_canonical_record_encode_attribute_v1(
     value: *const TypeBridgeProjectedValue,
+    options: *const TypeBridgeProjectedCodecOptionsV1,
     out_bytes: *mut *mut TypeBridgeCanonicalBytes,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
@@ -308,7 +483,10 @@ pub unsafe extern "C" fn type_bridge_canonical_record_encode_attribute_v1(
                     size_of::<*mut TypeBridgeExecutionDiagnostics>(),
                 ),
             ],
-            &[(GENERATED_INPUT_PROJECTED_VALUE, value.cast())],
+            &[
+                (GENERATED_INPUT_PROJECTED_VALUE, value.cast()),
+                (GENERATED_INPUT_PROJECTED_CODEC_OPTIONS, options.cast()),
+            ],
             &[],
         )
     } {
@@ -319,6 +497,10 @@ pub unsafe extern "C" fn type_bridge_canonical_record_encode_attribute_v1(
         return status;
     }
     guarded(|| {
+        let control = match unsafe { canonical_control(options, false) } {
+            Ok(control) => control,
+            Err(status) => return status,
+        };
         if value.is_null() {
             return TypeBridgeStatus::InvalidArgument;
         }
@@ -329,6 +511,7 @@ pub unsafe extern "C" fn type_bridge_canonical_record_encode_attribute_v1(
                 &value.package.installed_projection,
                 &value.value,
             ),
+            &control,
             out_bytes,
             out_diagnostics,
         )
@@ -339,6 +522,7 @@ pub unsafe extern "C" fn type_bridge_canonical_record_encode_attribute_v1(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn type_bridge_canonical_record_encode_create_v1(
     value: *const TypeBridgeProjectedCreate,
+    options: *const TypeBridgeProjectedCodecOptionsV1,
     out_bytes: *mut *mut TypeBridgeCanonicalBytes,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
@@ -352,7 +536,10 @@ pub unsafe extern "C" fn type_bridge_canonical_record_encode_create_v1(
                     size_of::<*mut TypeBridgeExecutionDiagnostics>(),
                 ),
             ],
-            &[(GENERATED_INPUT_PROJECTED_CREATE, value.cast())],
+            &[
+                (GENERATED_INPUT_PROJECTED_CREATE, value.cast()),
+                (GENERATED_INPUT_PROJECTED_CODEC_OPTIONS, options.cast()),
+            ],
             &[],
         )
     } {
@@ -363,6 +550,10 @@ pub unsafe extern "C" fn type_bridge_canonical_record_encode_create_v1(
         return status;
     }
     guarded(|| {
+        let control = match unsafe { canonical_control(options, false) } {
+            Ok(control) => control,
+            Err(status) => return status,
+        };
         if value.is_null() {
             return TypeBridgeStatus::InvalidArgument;
         }
@@ -370,6 +561,7 @@ pub unsafe extern "C" fn type_bridge_canonical_record_encode_create_v1(
         let value = unsafe { &*value };
         publish_record(
             type_bridge_orm::record_from_create(&value.package.installed_projection, &value.value),
+            &control,
             out_bytes,
             out_diagnostics,
         )
@@ -380,6 +572,7 @@ pub unsafe extern "C" fn type_bridge_canonical_record_encode_create_v1(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn type_bridge_canonical_record_encode_reference_v1(
     value: *const TypeBridgeProjectedReference,
+    options: *const TypeBridgeProjectedCodecOptionsV1,
     out_bytes: *mut *mut TypeBridgeCanonicalBytes,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
@@ -393,7 +586,10 @@ pub unsafe extern "C" fn type_bridge_canonical_record_encode_reference_v1(
                     size_of::<*mut TypeBridgeExecutionDiagnostics>(),
                 ),
             ],
-            &[(GENERATED_INPUT_PROJECTED_REFERENCE, value.cast())],
+            &[
+                (GENERATED_INPUT_PROJECTED_REFERENCE, value.cast()),
+                (GENERATED_INPUT_PROJECTED_CODEC_OPTIONS, options.cast()),
+            ],
             &[],
         )
     } {
@@ -404,6 +600,10 @@ pub unsafe extern "C" fn type_bridge_canonical_record_encode_reference_v1(
         return status;
     }
     guarded(|| {
+        let control = match unsafe { canonical_control(options, false) } {
+            Ok(control) => control,
+            Err(status) => return status,
+        };
         if value.is_null() {
             return TypeBridgeStatus::InvalidArgument;
         }
@@ -414,6 +614,7 @@ pub unsafe extern "C" fn type_bridge_canonical_record_encode_reference_v1(
                 &value.package.installed_projection,
                 &value.value,
             ),
+            &control,
             out_bytes,
             out_diagnostics,
         )
@@ -424,6 +625,7 @@ pub unsafe extern "C" fn type_bridge_canonical_record_encode_reference_v1(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn type_bridge_canonical_record_encode_snapshot_v1(
     value: *const TypeBridgeProjectedThing,
+    options: *const TypeBridgeProjectedCodecOptionsV1,
     out_bytes: *mut *mut TypeBridgeCanonicalBytes,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
@@ -437,7 +639,10 @@ pub unsafe extern "C" fn type_bridge_canonical_record_encode_snapshot_v1(
                     size_of::<*mut TypeBridgeExecutionDiagnostics>(),
                 ),
             ],
-            &[(GENERATED_INPUT_PROJECTED_THING, value.cast())],
+            &[
+                (GENERATED_INPUT_PROJECTED_THING, value.cast()),
+                (GENERATED_INPUT_PROJECTED_CODEC_OPTIONS, options.cast()),
+            ],
             &[],
         )
     } {
@@ -448,6 +653,10 @@ pub unsafe extern "C" fn type_bridge_canonical_record_encode_snapshot_v1(
         return status;
     }
     guarded(|| {
+        let control = match unsafe { canonical_control(options, false) } {
+            Ok(control) => control,
+            Err(status) => return status,
+        };
         if value.is_null() {
             return TypeBridgeStatus::InvalidArgument;
         }
@@ -458,6 +667,7 @@ pub unsafe extern "C" fn type_bridge_canonical_record_encode_snapshot_v1(
                 &value.package.installed_projection,
                 &value.value,
             ),
+            &control,
             out_bytes,
             out_diagnostics,
         )
@@ -468,6 +678,7 @@ pub unsafe extern "C" fn type_bridge_canonical_record_encode_snapshot_v1(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn type_bridge_canonical_record_encode_struct_v1(
     value: *const TypeBridgeProjectedStruct,
+    options: *const TypeBridgeProjectedCodecOptionsV1,
     out_bytes: *mut *mut TypeBridgeCanonicalBytes,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
@@ -481,7 +692,10 @@ pub unsafe extern "C" fn type_bridge_canonical_record_encode_struct_v1(
                     size_of::<*mut TypeBridgeExecutionDiagnostics>(),
                 ),
             ],
-            &[(GENERATED_INPUT_PROJECTED_STRUCT, value.cast())],
+            &[
+                (GENERATED_INPUT_PROJECTED_STRUCT, value.cast()),
+                (GENERATED_INPUT_PROJECTED_CODEC_OPTIONS, options.cast()),
+            ],
             &[],
         )
     } {
@@ -492,6 +706,10 @@ pub unsafe extern "C" fn type_bridge_canonical_record_encode_struct_v1(
         return status;
     }
     guarded(|| {
+        let control = match unsafe { canonical_control(options, false) } {
+            Ok(control) => control,
+            Err(status) => return status,
+        };
         if value.is_null() {
             return TypeBridgeStatus::InvalidArgument;
         }
@@ -499,6 +717,7 @@ pub unsafe extern "C" fn type_bridge_canonical_record_encode_struct_v1(
         let value = unsafe { &*value };
         publish_record(
             type_bridge_orm::record_from_struct(&value.package.installed_projection, &value.value),
+            &control,
             out_bytes,
             out_diagnostics,
         )
@@ -1104,12 +1323,13 @@ pub unsafe extern "C" fn type_bridge_projected_struct_member_close(
 
 unsafe fn snapshot_bytes(
     view: TypeBridgeByteView,
+    max_input_bytes: usize,
     invalid: fn() -> SdkExecutionDiagnostic,
 ) -> Result<Vec<u8>, SdkExecutionDiagnostic> {
     if view.data.is_null() || view.length == 0 {
         return Err(invalid());
     }
-    if view.length > MAX_CANONICAL_BYTES {
+    if view.length > max_input_bytes.min(MAX_CANONICAL_BYTES) {
         return Err(canonical_input_limit());
     }
     let mut snapshot = Vec::new();
@@ -1233,7 +1453,14 @@ pub unsafe extern "C" fn type_bridge_canonical_archive_builder_append_record_v1(
         // SAFETY: the builder is uniquely borrowed for this mutating call.
         let builder = unsafe { &mut *builder };
         // SAFETY: the caller retains the byte range for this call.
-        let bytes = match unsafe { snapshot_bytes(record, invalid_record) } {
+        // SAFETY: null selects the frozen archive ceilings and an uncancelled control.
+        let control = unsafe { canonical_control(ptr::null(), true) }
+            .expect("default canonical archive controls are valid");
+        if let Err(diagnostic) = control.check() {
+            return return_execution_error(diagnostic, out_diagnostics);
+        }
+        let bytes = match unsafe { snapshot_bytes(record, control.max_input_bytes, invalid_record) }
+        {
             Ok(bytes) => bytes,
             Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
         };
@@ -1241,6 +1468,12 @@ pub unsafe extern "C" fn type_bridge_canonical_archive_builder_append_record_v1(
             Ok(record) => record,
             Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
         };
+        if builder.records.len() >= control.max_records {
+            return return_execution_error(canonical_input_limit(), out_diagnostics);
+        }
+        if let Err(diagnostic) = control.check() {
+            return return_execution_error(diagnostic, out_diagnostics);
+        }
         if reserve_archive_record(&mut builder.records).is_err() {
             return return_execution_error(allocation_exhausted(), out_diagnostics);
         }
@@ -1291,6 +1524,15 @@ pub unsafe extern "C" fn type_bridge_canonical_archive_builder_finish_v1(
         }
         // SAFETY: the retained builder remains owned by the caller until success.
         let value = unsafe { &*retained };
+        // SAFETY: null selects the frozen archive ceilings and an uncancelled control.
+        let control = unsafe { canonical_control(ptr::null(), true) }
+            .expect("default canonical archive controls are valid");
+        if let Err(diagnostic) = control.check() {
+            return return_execution_error(diagnostic, out_diagnostics);
+        }
+        if value.records.len() > control.max_records {
+            return return_execution_error(canonical_input_limit(), out_diagnostics);
+        }
         let records = match clone_archive_records(&value.records) {
             Ok(records) => records,
             Err(()) => return return_execution_error(allocation_exhausted(), out_diagnostics),
@@ -1301,7 +1543,7 @@ pub unsafe extern "C" fn type_bridge_canonical_archive_builder_finish_v1(
         };
         let bytes = match encode_bytes(
             AllocationSite::CanonicalArchiveEncodeBytes,
-            || archive.encode(),
+            || archive.encode_with_limits(control.output_limits()),
             invalid_archive,
         ) {
             Ok(bytes) => bytes,
@@ -1361,14 +1603,26 @@ pub unsafe extern "C" fn type_bridge_canonical_archive_open_v1(
         }
         // SAFETY: caller retains both input objects for this call.
         let package = unsafe { &*package };
-        let bytes = match unsafe { snapshot_bytes(bytes, invalid_archive) } {
+        // SAFETY: null selects the frozen archive ceilings and an uncancelled control.
+        let control = unsafe { canonical_control(ptr::null(), true) }
+            .expect("default canonical archive controls are valid");
+        if let Err(diagnostic) = control.check() {
+            return return_execution_error(diagnostic, out_diagnostics);
+        }
+        let bytes = match unsafe { snapshot_bytes(bytes, control.max_input_bytes, invalid_archive) }
+        {
             Ok(bytes) => bytes,
             Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
         };
-        let archive = match ProjectedArchive::decode(&bytes) {
+        let archive = match ProjectedArchive::decode_with_limits(&bytes, control.input_limits()) {
             Ok(archive) => archive,
             Err(_) => return return_execution_error(invalid_archive(), out_diagnostics),
         };
+        if archive.records().len() > control.max_records
+            || archive.decoded_weight() > control.max_members
+        {
+            return return_execution_error(canonical_input_limit(), out_diagnostics);
+        }
         for record in archive.records() {
             if type_bridge_orm::materialize_record(&package.state().installed_projection, record)
                 .is_err()
@@ -1505,9 +1759,15 @@ pub unsafe extern "C" fn type_bridge_canonical_archive_record_at(
         let Some(record) = archive.archive.records().get(index) else {
             return return_execution_error(invalid_archive(), out_diagnostics);
         };
+        // SAFETY: null selects the frozen record ceilings and an uncancelled control.
+        let control = unsafe { canonical_control(ptr::null(), false) }
+            .expect("default canonical record controls are valid");
+        if let Err(diagnostic) = control.check() {
+            return return_execution_error(diagnostic, out_diagnostics);
+        }
         let bytes = match encode_bytes(
             AllocationSite::CanonicalRecordEncodeBytes,
-            || record.encode(),
+            || record.encode_with_limits(control.output_limits()),
             invalid_archive,
         ) {
             Ok(bytes) => bytes,
@@ -1557,6 +1817,10 @@ pub unsafe extern "C" fn type_bridge_canonical_archive_close(
 mod tests {
     use super::*;
     use crate::allocation::inject_failure;
+    use crate::runtime::{
+        type_bridge_cancellation_close, type_bridge_cancellation_open,
+        type_bridge_cancellation_request,
+    };
     use std::cell::Cell;
 
     #[test]
@@ -1568,8 +1832,9 @@ mod tests {
         };
         let _failure = inject_failure(AllocationSite::CanonicalInputBytes, 0);
         // SAFETY: the fixed test input remains live and readable for this call.
-        let diagnostic = unsafe { snapshot_bytes(view, invalid_record) }
-            .expect_err("the named canonical input allocation must fail");
+        let diagnostic =
+            unsafe { snapshot_bytes(view, MAX_PROJECTED_RECORD_BYTES, invalid_record) }
+                .expect_err("the named canonical input allocation must fail");
         assert_eq!(diagnostic.code().as_str(), "c_allocation_exhausted");
     }
 
@@ -1582,8 +1847,9 @@ mod tests {
         };
         let _failure = inject_failure(AllocationSite::CanonicalInputBytes, 0);
         // SAFETY: the stable length ceiling is checked before the byte range is read.
-        let diagnostic = unsafe { snapshot_bytes(view, invalid_record) }
-            .expect_err("an over-limit canonical input must fail before allocation");
+        let diagnostic =
+            unsafe { snapshot_bytes(view, MAX_PROJECTED_RECORD_BYTES, invalid_record) }
+                .expect_err("an over-limit canonical input must fail before allocation");
         assert_eq!(diagnostic.code().as_str(), "c_canonical_input_limit");
     }
 
@@ -1618,5 +1884,94 @@ mod tests {
         drop(finish_failure);
 
         assert!(clone_archive_records(&builder_records).is_ok());
+    }
+
+    #[test]
+    fn codec_options_are_exact_tighten_only_and_retain_cancellation_state() {
+        assert_eq!(size_of::<TypeBridgeProjectedCodecOptionsV1>(), 72);
+        let mut cancellation = ptr::null_mut();
+        // SAFETY: the owner slot is writable and initially null.
+        assert_eq!(
+            unsafe { type_bridge_cancellation_open(&mut cancellation) },
+            TypeBridgeStatus::Ok,
+        );
+        let options = TypeBridgeProjectedCodecOptionsV1 {
+            struct_size: size_of::<TypeBridgeProjectedCodecOptionsV1>() as u64,
+            version: PROJECTED_CODEC_OPTIONS_V1,
+            flags: 0,
+            timeout_milliseconds: 0,
+            max_input_bytes: 17,
+            max_output_bytes: 19,
+            max_depth: 3,
+            max_records: 2,
+            max_members: 5,
+            cancellation,
+        };
+        // SAFETY: the complete options and cancellation handles remain live for capture.
+        let control = unsafe { canonical_control(&options, true) }.expect("options are valid");
+        assert_eq!(control.max_input_bytes, 17);
+        assert_eq!(control.max_output_bytes, 19);
+        assert_eq!(control.max_depth, 3);
+        assert_eq!(control.max_records, 2);
+        assert_eq!(control.max_members, 5);
+        assert!(control.check().is_ok());
+
+        // SAFETY: the live cancellation handle accepts one sticky request.
+        assert_eq!(
+            unsafe { type_bridge_cancellation_request(cancellation) },
+            TypeBridgeStatus::Ok,
+        );
+        // SAFETY: the exact owner slot is closed and cleared after control capture.
+        assert_eq!(
+            unsafe { type_bridge_cancellation_close(&mut cancellation) },
+            TypeBridgeStatus::Ok,
+        );
+        assert_eq!(
+            control
+                .check()
+                .expect_err("captured cancellation is sticky")
+                .code()
+                .as_str(),
+            "provider_cancelled",
+        );
+    }
+
+    #[test]
+    fn codec_options_reject_layout_flags_and_expired_deadlines() {
+        let mut options = TypeBridgeProjectedCodecOptionsV1 {
+            struct_size: 0,
+            version: PROJECTED_CODEC_OPTIONS_V1,
+            flags: 0,
+            timeout_milliseconds: 0,
+            max_input_bytes: 1,
+            max_output_bytes: 1,
+            max_depth: 1,
+            max_records: 1,
+            max_members: 1,
+            cancellation: ptr::null(),
+        };
+        // SAFETY: the complete deliberately invalid options object remains readable.
+        assert!(matches!(
+            unsafe { canonical_control(&options, false) },
+            Err(TypeBridgeStatus::InvalidArgument)
+        ));
+        options.struct_size = size_of::<TypeBridgeProjectedCodecOptionsV1>() as u64;
+        options.flags = 2;
+        // SAFETY: the complete deliberately invalid options object remains readable.
+        assert!(matches!(
+            unsafe { canonical_control(&options, false) },
+            Err(TypeBridgeStatus::InvalidArgument)
+        ));
+        options.flags = PROJECTED_CODEC_HAS_TIMEOUT;
+        // SAFETY: the complete options object remains readable during deadline capture.
+        let control = unsafe { canonical_control(&options, false) }.expect("layout is valid");
+        assert_eq!(
+            control
+                .check()
+                .expect_err("zero timeout expires immediately")
+                .code()
+                .as_str(),
+            "transaction_deadline_exceeded",
+        );
     }
 }
