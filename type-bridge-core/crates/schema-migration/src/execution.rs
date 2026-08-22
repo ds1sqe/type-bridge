@@ -6,6 +6,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
+use type_bridge_contract::fingerprint::Fingerprint;
 use type_bridge_contract::managed_scope::{ManagedScopeId, SemanticProfileFingerprint};
 use type_bridge_contract::migration::{
     MigrationId, MigrationManifestDigest, MigrationPlanFingerprint,
@@ -268,6 +269,157 @@ pub enum GroupRecoveryDecision {
     RepairCheckpoint,
     /// Evidence is ambiguous or contradictory and requires verified operator action.
     RequiresExplicitRecovery,
+}
+
+/// Direction of one closed backfill program at execution time.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BackfillExecutionDirection {
+    /// Execute the canonical forward data program.
+    Forward,
+    /// Execute its independently verified reverse program.
+    Reverse,
+}
+
+/// Bounded aggregate counts from a completely verified backfill execution.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BackfillExecutionCounts {
+    matched: u64,
+    changed: u64,
+    skipped: u64,
+    transaction_groups: u32,
+}
+
+impl BackfillExecutionCounts {
+    /// Construct internally consistent terminal counts.
+    pub fn new(
+        matched: u64,
+        changed: u64,
+        skipped: u64,
+        transaction_groups: u32,
+    ) -> Result<Self, Diagnostic> {
+        if transaction_groups == 0 {
+            return Err(failure(
+                DiagnosticCategory::InvalidContract,
+                "migration_backfill_zero_transaction_groups",
+                "terminal backfill evidence must include at least one transaction group",
+            ));
+        }
+        if changed.checked_add(skipped) != Some(matched) {
+            return Err(failure(
+                DiagnosticCategory::InvalidContract,
+                "migration_backfill_count_mismatch",
+                "backfill matched count must equal changed plus skipped counts",
+            ));
+        }
+        Ok(Self {
+            matched,
+            changed,
+            skipped,
+            transaction_groups,
+        })
+    }
+
+    /// Return the number of source rows selected by the closed plan.
+    pub const fn matched(self) -> u64 {
+        self.matched
+    }
+
+    /// Return the number of destination rows changed.
+    pub const fn changed(self) -> u64 {
+        self.changed
+    }
+
+    /// Return the number of already-equal rows skipped idempotently.
+    pub const fn skipped(self) -> u64 {
+        self.skipped
+    }
+
+    /// Return the number of committed deterministic transaction groups.
+    pub const fn transaction_groups(self) -> u32 {
+        self.transaction_groups
+    }
+}
+
+/// Exact terminal proof that one closed backfill program satisfies its postcondition.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BackfillCompletionEvidence {
+    plan_fingerprint: Fingerprint,
+    direction: BackfillExecutionDirection,
+    counts: BackfillExecutionCounts,
+}
+
+impl BackfillCompletionEvidence {
+    /// Bind terminal counts to one exact canonical plan and execution direction.
+    #[must_use]
+    pub const fn new(
+        plan_fingerprint: Fingerprint,
+        direction: BackfillExecutionDirection,
+        counts: BackfillExecutionCounts,
+    ) -> Self {
+        Self {
+            plan_fingerprint,
+            direction,
+            counts,
+        }
+    }
+
+    /// Return the exact canonical backfill-plan identity.
+    pub const fn plan_fingerprint(&self) -> &Fingerprint {
+        &self.plan_fingerprint
+    }
+
+    /// Return whether the forward or checked reverse program completed.
+    pub const fn direction(&self) -> BackfillExecutionDirection {
+        self.direction
+    }
+
+    /// Return internally consistent aggregate counts.
+    pub const fn counts(&self) -> BackfillExecutionCounts {
+        self.counts
+    }
+}
+
+/// Fresh provider observation of one exact backfill postcondition.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum BackfillRecoveryObservation {
+    /// No trustworthy data observation is available.
+    Unavailable,
+    /// The exact postcondition is not currently satisfied.
+    Incomplete,
+    /// The exact plan and direction have a verified terminal postcondition.
+    Complete(BackfillCompletionEvidence),
+}
+
+/// Decide whether a complete backfill may execute or only repair its checkpoint.
+///
+/// Unlike schema groups, an incomplete data observation after a before-commit
+/// or unknown-commit event cannot prove that no partition committed. Automatic
+/// replay therefore remains forbidden until partition checkpoints are present.
+pub fn decide_backfill_recovery(
+    last_event: Option<GroupJournalEventKind>,
+    observation: &BackfillRecoveryObservation,
+    expected_plan: &Fingerprint,
+    expected_direction: BackfillExecutionDirection,
+) -> GroupRecoveryDecision {
+    let complete = matches!(
+        observation,
+        BackfillRecoveryObservation::Complete(evidence)
+            if evidence.plan_fingerprint() == expected_plan
+                && evidence.direction() == expected_direction
+    );
+    match last_event {
+        None | Some(GroupJournalEventKind::DefinitelyAborted)
+            if matches!(observation, BackfillRecoveryObservation::Incomplete) =>
+        {
+            GroupRecoveryDecision::ExecuteNormally
+        }
+        Some(
+            GroupJournalEventKind::BeforeCommit
+            | GroupJournalEventKind::CommitOutcomeUnknown
+            | GroupJournalEventKind::Committed,
+        ) if complete => GroupRecoveryDecision::RepairCheckpoint,
+        _ => GroupRecoveryDecision::RequiresExplicitRecovery,
+    }
 }
 
 /// Decide recovery from durable event and freshly observed managed semantics.
@@ -2215,6 +2367,83 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn backfill_counts_and_recovery_fail_closed_without_exact_completion() {
+        assert_eq!(
+            BackfillExecutionCounts::new(5, 3, 1, 1)
+                .expect_err("inconsistent counts reject")
+                .code()
+                .as_str(),
+            "migration_backfill_count_mismatch"
+        );
+        assert_eq!(
+            BackfillExecutionCounts::new(0, 0, 0, 0)
+                .expect_err("zero transaction groups reject")
+                .code()
+                .as_str(),
+            "migration_backfill_zero_transaction_groups"
+        );
+
+        let plan = semantic_fingerprint(b"backfill-plan")
+            .as_fingerprint()
+            .clone();
+        let foreign = semantic_fingerprint(b"foreign-backfill-plan")
+            .as_fingerprint()
+            .clone();
+        let counts = BackfillExecutionCounts::new(5, 3, 2, 2).expect("valid counts");
+        let complete = BackfillRecoveryObservation::Complete(BackfillCompletionEvidence::new(
+            plan.clone(),
+            BackfillExecutionDirection::Forward,
+            counts,
+        ));
+
+        assert_eq!(
+            decide_backfill_recovery(
+                None,
+                &BackfillRecoveryObservation::Incomplete,
+                &plan,
+                BackfillExecutionDirection::Forward,
+            ),
+            GroupRecoveryDecision::ExecuteNormally
+        );
+        assert_eq!(
+            decide_backfill_recovery(
+                Some(GroupJournalEventKind::BeforeCommit),
+                &BackfillRecoveryObservation::Incomplete,
+                &plan,
+                BackfillExecutionDirection::Forward,
+            ),
+            GroupRecoveryDecision::RequiresExplicitRecovery
+        );
+        assert_eq!(
+            decide_backfill_recovery(
+                Some(GroupJournalEventKind::CommitOutcomeUnknown),
+                &complete,
+                &plan,
+                BackfillExecutionDirection::Forward,
+            ),
+            GroupRecoveryDecision::RepairCheckpoint
+        );
+        assert_eq!(
+            decide_backfill_recovery(
+                Some(GroupJournalEventKind::Committed),
+                &complete,
+                &foreign,
+                BackfillExecutionDirection::Forward,
+            ),
+            GroupRecoveryDecision::RequiresExplicitRecovery
+        );
+        assert_eq!(
+            decide_backfill_recovery(
+                Some(GroupJournalEventKind::Committed),
+                &complete,
+                &plan,
+                BackfillExecutionDirection::Reverse,
+            ),
+            GroupRecoveryDecision::RequiresExplicitRecovery
+        );
     }
 
     fn expected_distinct(

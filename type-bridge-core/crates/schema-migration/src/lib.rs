@@ -32,12 +32,13 @@ pub use directory::{
     validate_portable_direct_child,
 };
 pub use execution::{
-    AppliedRecord, ExecutionBindingToken, ExecutionFence, ExecutionFuture, ExecutionScope,
-    GroupCommitCertainty, GroupEventRecord, GroupJournalEventKind, GroupRecoveryDecision,
-    GroupRecoveryObservation, JournalEntry, JournalSequence, LeaseHolderId,
+    AppliedRecord, BackfillCompletionEvidence, BackfillExecutionCounts, BackfillExecutionDirection,
+    BackfillRecoveryObservation, ExecutionBindingToken, ExecutionFence, ExecutionFuture,
+    ExecutionScope, GroupCommitCertainty, GroupEventRecord, GroupJournalEventKind,
+    GroupRecoveryDecision, GroupRecoveryObservation, JournalEntry, JournalSequence, LeaseHolderId,
     MigrationExecutionJournal, MigrationLease, MigrationLeaseStore, OpenPlanRecord,
     OpenRollbackPlanRecord, PlanRecord, RollbackPlanRecord, RollbackStepEventRecord,
-    RolledBackRecord, active_applied_entries, decide_group_recovery,
+    RolledBackRecord, active_applied_entries, decide_backfill_recovery, decide_group_recovery,
 };
 pub use generate::{
     GeneratedMigration, MigrationGenerationOutcome, MigrationGenerationRequest,
