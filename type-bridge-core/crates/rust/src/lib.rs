@@ -38,7 +38,9 @@ pub use error::{
 pub use hooks::{
     CrudOperation, HookContext, HookError, HookFuture, LifecycleHook, ModelKind, PreHookResult,
 };
-pub use migration::{MigrationCatalog, MigrationHistoryEntry};
+pub use migration::{
+    MigrationCatalog, MigrationHistoryEntry, MigrationPreview, MigrationPreviewEntry,
+};
 pub use projected_filter::{
     ProjectedEntityFilter, ProjectedRelationFilter, ReadEntityManager, ReadRelationManager,
 };

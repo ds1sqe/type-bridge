@@ -49,6 +49,160 @@ impl<S: Schema> MigrationCatalog<S> {
             .get(index)
             .map(|entry| MigrationHistoryEntry { inner: entry })
     }
+
+    /// Build a provider-free forward preview under this generated authority.
+    pub fn preview_apply(
+        &self,
+        applied: impl IntoIterator<Item = MigrationId>,
+        targets: Option<Vec<MigrationId>>,
+    ) -> Result<MigrationPreview<S>> {
+        let applied = applied.into_iter().collect();
+        let target = match targets {
+            Some(targets) => type_bridge_schema_migration::MigrationApplyTarget::Explicit(
+                targets.into_iter().collect(),
+            ),
+            None => type_bridge_schema_migration::MigrationApplyTarget::DefaultHead,
+        };
+        self.inner
+            .preview_apply(&applied, &target)
+            .map(|plan| MigrationPreview {
+                inner: MigrationPreviewInner::Apply(plan),
+                marker: PhantomData,
+            })
+            .map_err(plan_error)
+    }
+
+    /// Build a provider-free rollback preview for an explicit removal set.
+    pub fn preview_rollback(
+        &self,
+        applied: impl IntoIterator<Item = MigrationId>,
+        removals: impl IntoIterator<Item = MigrationId>,
+    ) -> Result<MigrationPreview<S>> {
+        self.inner
+            .preview_rollback(
+                &applied.into_iter().collect(),
+                &removals.into_iter().collect(),
+            )
+            .map(|plan| MigrationPreview {
+                inner: MigrationPreviewInner::Rollback(plan),
+                marker: PhantomData,
+            })
+            .map_err(plan_error)
+    }
+}
+
+#[derive(Clone, Debug)]
+enum MigrationPreviewInner {
+    Apply(type_bridge_schema_migration::VerifiedMigrationApplyPlan),
+    Rollback(type_bridge_schema_migration::VerifiedMigrationRollbackPlan),
+}
+
+/// Generated-schema-branded immutable provider-free migration preview.
+#[derive(Clone, Debug)]
+pub struct MigrationPreview<S: Schema> {
+    inner: MigrationPreviewInner,
+    marker: PhantomData<fn() -> S>,
+}
+
+impl<S: Schema> MigrationPreview<S> {
+    /// Return whether this is a forward apply preview.
+    #[must_use]
+    pub const fn is_apply(&self) -> bool {
+        matches!(self.inner, MigrationPreviewInner::Apply(_))
+    }
+
+    /// Preview objects never grant provider execution authority.
+    #[must_use]
+    pub fn execution_authorized(&self) -> bool {
+        match &self.inner {
+            MigrationPreviewInner::Apply(plan) => plan.execution_authorized(),
+            MigrationPreviewInner::Rollback(plan) => plan.execution_authorized(),
+        }
+    }
+
+    /// Return the number of migrations in execution order.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        match &self.inner {
+            MigrationPreviewInner::Apply(plan) => plan.migrations().len(),
+            MigrationPreviewInner::Rollback(plan) => plan.rollbacks().len(),
+        }
+    }
+
+    /// Report whether the preview contains no migration work.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Inspect one migration by deterministic execution ordinal.
+    #[must_use]
+    pub fn entry(&self, index: usize) -> Option<MigrationPreviewEntry<'_>> {
+        match &self.inner {
+            MigrationPreviewInner::Apply(plan) => {
+                plan.migrations()
+                    .get(index)
+                    .map(|entry| MigrationPreviewEntry {
+                        id: entry.manifest().id(),
+                        safety: entry.manifest().safety(),
+                        step_count: entry.steps().len(),
+                        transaction_group_count: entry.transaction_groups().len(),
+                        backfill_count: entry.backfill_step_indices().len(),
+                        reversible: entry.manifest().reversible(),
+                    })
+            }
+            MigrationPreviewInner::Rollback(plan) => {
+                plan.rollbacks()
+                    .get(index)
+                    .map(|entry| MigrationPreviewEntry {
+                        id: entry.manifest().id(),
+                        safety: entry.rollback_safety(),
+                        step_count: entry.operations().len(),
+                        transaction_group_count: entry.steps().len(),
+                        backfill_count: entry.backfills().len(),
+                        reversible: true,
+                    })
+            }
+        }
+    }
+}
+
+/// Borrowed bounded inspection of one migration preview entry.
+#[derive(Clone, Copy, Debug)]
+pub struct MigrationPreviewEntry<'a> {
+    id: &'a MigrationId,
+    safety: SafetyClass,
+    step_count: usize,
+    transaction_group_count: usize,
+    backfill_count: usize,
+    reversible: bool,
+}
+
+impl MigrationPreviewEntry<'_> {
+    /// Return the compound migration identity.
+    pub const fn id(&self) -> &MigrationId {
+        self.id
+    }
+    /// Return the complete forward or reverse safety class.
+    pub const fn safety(&self) -> SafetyClass {
+        self.safety
+    }
+    /// Return the complete ordered operation count.
+    pub const fn step_count(&self) -> usize {
+        self.step_count
+    }
+    /// Return the schema transaction-group count.
+    pub const fn transaction_group_count(&self) -> usize {
+        self.transaction_group_count
+    }
+    /// Return the closed backfill-group count.
+    pub const fn backfill_count(&self) -> usize {
+        self.backfill_count
+    }
+    /// Report verified reversibility.
+    pub const fn is_reversible(&self) -> bool {
+        self.reversible
+    }
 }
 
 /// Borrowed immutable view of one catalog history entry.
@@ -141,5 +295,25 @@ impl<S: Schema> SchemaPackage<S> {
             inner,
             marker: PhantomData,
         })
+    }
+}
+
+fn plan_error(error: type_bridge_schema_migration::MigrationApplyPlanError) -> Error {
+    let message = match &error {
+        type_bridge_schema_migration::MigrationApplyPlanError::Contract(diagnostic) => format!(
+            "generated migration preview was rejected [{}]",
+            diagnostic.code().as_str()
+        ),
+        type_bridge_schema_migration::MigrationApplyPlanError::Schema(_) => {
+            "generated migration preview schema replay failed".to_owned()
+        }
+        type_bridge_schema_migration::MigrationApplyPlanError::Lowering(diagnostic) => format!(
+            "generated migration preview lowering was rejected [{}]",
+            diagnostic.code()
+        ),
+    };
+    Error::SchemaVerification {
+        message,
+        source: Some(Box::new(error)),
     }
 }

@@ -29,7 +29,8 @@ pub use match_runtime::{
     NodeQueryExecutionResources, NodeValidatedMatchResultHandle, NodeValidatedThingHandle,
 };
 pub use migration_catalog_runtime::{
-    NodeMigrationCatalog, NodeMigrationHistoryEntry, NodeMigrationIdentity, open_migration_catalog,
+    NodeMigrationCatalog, NodeMigrationHistoryEntry, NodeMigrationIdentity, NodeMigrationPreview,
+    NodeMigrationPreviewEntry, open_migration_catalog,
 };
 pub use query_v2_model_remote_runtime::{
     NodePendingRemoteModelQuery, NodeRemoteModelQueryContext, query_v2_prepare_remote_model_count,

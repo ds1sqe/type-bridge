@@ -590,6 +590,12 @@ mod tests {
             .expect("verified generated bundle opens without provider I/O");
         assert!(catalog.is_empty());
         assert_eq!(catalog.fingerprint(), bundle.fingerprint());
+        let preview = catalog
+            .preview_apply(Vec::new(), None)
+            .expect("empty generated catalog previews without provider I/O");
+        assert!(preview.is_apply());
+        assert!(preview.is_empty());
+        assert!(!preview.execution_authorized());
 
         let mut tampered: Value = serde_json::from_slice(&bytes).unwrap();
         tampered["format"] = Value::String("foreign.history/v1".to_owned());

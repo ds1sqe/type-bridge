@@ -1,9 +1,14 @@
 //! Immutable generated migration-catalog inspection for Node.
 
+use std::collections::BTreeSet;
+
 use napi::bindgen_prelude::{Buffer, Error, Result};
 use napi_derive::napi;
 use type_bridge_schema::{ManagedDeltaContext, SafetyClass, decode_schema_authority};
-use type_bridge_schema_migration::{MigrationCatalog, migration_runtime_capability_vocabulary};
+use type_bridge_schema_migration::{
+    MigrationApplyPlanError, MigrationApplyTarget, MigrationCatalog, VerifiedMigrationApplyPlan,
+    VerifiedMigrationRollbackPlan, migration_runtime_capability_vocabulary,
+};
 
 #[napi(object)]
 pub struct NodeMigrationIdentity {
@@ -65,6 +70,116 @@ impl NodeMigrationCatalog {
             }
         })
     }
+
+    #[napi]
+    pub fn preview_apply(
+        &self,
+        applied: Vec<NodeMigrationIdentity>,
+        targets: Option<Vec<NodeMigrationIdentity>>,
+    ) -> Result<NodeMigrationPreview> {
+        let target = match targets {
+            None => MigrationApplyTarget::DefaultHead,
+            Some(targets) => MigrationApplyTarget::Explicit(migration_set(targets)?),
+        };
+        self.inner
+            .preview_apply(&migration_set(applied)?, &target)
+            .map(|plan| NodeMigrationPreview {
+                inner: NodeMigrationPreviewInner::Apply(plan),
+            })
+            .map_err(plan_error)
+    }
+
+    #[napi]
+    pub fn preview_rollback(
+        &self,
+        applied: Vec<NodeMigrationIdentity>,
+        removals: Vec<NodeMigrationIdentity>,
+    ) -> Result<NodeMigrationPreview> {
+        self.inner
+            .preview_rollback(&migration_set(applied)?, &migration_set(removals)?)
+            .map(|plan| NodeMigrationPreview {
+                inner: NodeMigrationPreviewInner::Rollback(plan),
+            })
+            .map_err(plan_error)
+    }
+}
+
+enum NodeMigrationPreviewInner {
+    Apply(VerifiedMigrationApplyPlan),
+    Rollback(VerifiedMigrationRollbackPlan),
+}
+
+/// Immutable provider-free forward or rollback preview.
+#[napi]
+pub struct NodeMigrationPreview {
+    inner: NodeMigrationPreviewInner,
+}
+
+#[napi]
+impl NodeMigrationPreview {
+    #[napi(getter)]
+    pub fn direction(&self) -> &'static str {
+        match self.inner {
+            NodeMigrationPreviewInner::Apply(_) => "apply",
+            NodeMigrationPreviewInner::Rollback(_) => "rollback",
+        }
+    }
+
+    #[napi(getter)]
+    pub fn execution_authorized(&self) -> bool {
+        match &self.inner {
+            NodeMigrationPreviewInner::Apply(plan) => plan.execution_authorized(),
+            NodeMigrationPreviewInner::Rollback(plan) => plan.execution_authorized(),
+        }
+    }
+
+    #[napi]
+    pub fn migration_count(&self) -> u32 {
+        bounded_u32(match &self.inner {
+            NodeMigrationPreviewInner::Apply(plan) => plan.migrations().len(),
+            NodeMigrationPreviewInner::Rollback(plan) => plan.rollbacks().len(),
+        })
+    }
+
+    #[napi]
+    pub fn migration(&self, index: u32) -> Option<NodeMigrationPreviewEntry> {
+        match &self.inner {
+            NodeMigrationPreviewInner::Apply(plan) => {
+                plan.migrations()
+                    .get(index as usize)
+                    .map(|entry| NodeMigrationPreviewEntry {
+                        id: migration_identity(entry.manifest().id()),
+                        safety: safety_name(entry.manifest().safety()).to_owned(),
+                        step_count: bounded_u32(entry.steps().len()),
+                        transaction_group_count: bounded_u32(entry.transaction_groups().len()),
+                        backfill_count: bounded_u32(entry.backfill_step_indices().len()),
+                        reversible: entry.manifest().reversible(),
+                    })
+            }
+            NodeMigrationPreviewInner::Rollback(plan) => {
+                plan.rollbacks()
+                    .get(index as usize)
+                    .map(|entry| NodeMigrationPreviewEntry {
+                        id: migration_identity(entry.manifest().id()),
+                        safety: safety_name(entry.rollback_safety()).to_owned(),
+                        step_count: bounded_u32(entry.operations().len()),
+                        transaction_group_count: bounded_u32(entry.steps().len()),
+                        backfill_count: bounded_u32(entry.backfills().len()),
+                        reversible: true,
+                    })
+            }
+        }
+    }
+}
+
+#[napi(object)]
+pub struct NodeMigrationPreviewEntry {
+    pub id: NodeMigrationIdentity,
+    pub safety: String,
+    pub step_count: u32,
+    pub transaction_group_count: u32,
+    pub backfill_count: u32,
+    pub reversible: bool,
 }
 
 /// Open canonical generated history bytes under their generated schema authority.
@@ -92,6 +207,32 @@ fn migration_identity(id: &type_bridge_contract::migration::MigrationId) -> Node
         app_label: id.app_label().as_str().to_owned(),
         name: id.name().as_str().to_owned(),
     }
+}
+
+fn migration_set(
+    identities: Vec<NodeMigrationIdentity>,
+) -> Result<BTreeSet<type_bridge_contract::migration::MigrationId>> {
+    identities
+        .into_iter()
+        .map(|id| {
+            type_bridge_contract::migration::MigrationId::new(id.app_label, id.name)
+                .map_err(|error| catalog_error(error.code().as_str()))
+        })
+        .collect()
+}
+
+fn plan_error(error: MigrationApplyPlanError) -> Error {
+    match error {
+        MigrationApplyPlanError::Contract(error) => catalog_error(error.code().as_str()),
+        MigrationApplyPlanError::Schema(_) => {
+            catalog_error("migration_preview_schema_replay_failed")
+        }
+        MigrationApplyPlanError::Lowering(error) => catalog_error(error.code()),
+    }
+}
+
+fn bounded_u32(value: usize) -> u32 {
+    u32::try_from(value).expect("canonical migration limit fits u32")
 }
 
 fn safety_name(safety: SafetyClass) -> &'static str {
