@@ -3788,3 +3788,204 @@ test(
     if (failure !== undefined) throw failure;
   },
 );
+
+test(
+  "node.generated_canonical_serialization_v5_live",
+  {
+    skip: IS_TYPEDB_3_11 || process.env.TYPE_BRIDGE_WORKFORCE_V5_NODE_EVIDENCE === undefined,
+    timeout: 360_000,
+  },
+  async () => {
+    const evidencePath = process.env.TYPE_BRIDGE_WORKFORCE_V5_NODE_EVIDENCE;
+    assert.notEqual(evidencePath, undefined);
+    const suppliedStage = process.env.TYPE_BRIDGE_GENERATED_NODE_STAGE;
+    const stage = suppliedStage === undefined
+      ? await mkdtemp(join(tmpdir(), "type-bridge-node-v5-live-"))
+      : resolve(suppliedStage);
+    const ownsStage = suppliedStage === undefined;
+    const generatedDirectory = resolve(stage, "generated_ordered");
+    let database: ReturnType<typeof connectIntegration> | undefined;
+    let server: ChildProcess | undefined;
+    let failure: unknown;
+
+    try {
+      if (ownsStage) {
+        run(resolve(ROOT, "scripts/ci/prepare_generated_live_fixture.sh"), ["node", stage], ROOT);
+      }
+      const packageScope = resolve(stage, "node_modules/@type-bridge");
+      await mkdir(packageScope, { recursive: true });
+      await rm(resolve(packageScope, "node"), { recursive: true, force: true });
+      await symlink(
+        NODE_RUNTIME_PACKAGE,
+        resolve(packageScope, "node"),
+        process.platform === "win32" ? "junction" : "dir",
+      );
+      if (ownsStage) {
+        run(
+          resolve(NODE_SOURCE_PACKAGE, "node_modules/.bin/tsc"),
+          ["--project", resolve(generatedDirectory, "tsconfig.json")],
+          generatedDirectory,
+        );
+      }
+      const generated = await import(
+        pathToFileURL(resolve(generatedDirectory, "dist/index.js")).href
+      );
+      const {
+        Employment, Identifier, Person, QuerySession, RemoteQuerySession, Score,
+        ValBool, ValConstrained, ValDate, ValDatetime, ValDatetimeTz, ValDecimal,
+        ValDouble, ValDuration,
+      } = generated;
+
+      database = connectIntegration();
+      database.resetDatabase();
+      requireWorkforceServerVersion(await detectTypeDBServerVersion(TYPEDB_ADDRESS, TYPEDB_HTTP_PORT));
+      defineSchema(database, await readFile(WORKFORCE_V3_PROVIDER_SCHEMA, "utf8"));
+      const personManager = Person.manager(database);
+      const employmentManager = Employment.manager(database);
+      const person = personManager.insert(Person.create({
+        aliases: [],
+        identifier: Identifier.create("v5-live-person"),
+        score: Score.create(70n),
+        valBool: ValBool.create(true),
+        valConstrained: ValConstrained.create(55n),
+        valDate: ValDate.create(new Date("2026-08-03T00:00:00.000Z")),
+        valDatetime: ValDatetime.create(new Date("2026-08-03T03:55:00.000Z")),
+        valDatetimeTz: ValDatetimeTz.create(new Date("2026-08-03T03:55:00.000Z")),
+        valDecimal: ValDecimal.create("128.45"),
+        valDouble: ValDouble.create(8.14),
+        valDuration: ValDuration.create("P6D"),
+      }));
+      const employment = employmentManager.insert(Employment.create({ employee: person }));
+
+      const directSession = new QuerySession(database);
+      const directEmploymentVar = directSession.var(Employment);
+      const directPersonVar = directSession.var(Person);
+      const [directEmployment, directPerson] = directSession
+        .query(directEmploymentVar, directPersonVar)
+        .where(
+          directEmploymentVar.role(Employment.employee).connects(directPersonVar),
+          directPersonVar.field(Person.identifier).eq(Identifier.create("v5-live-person")),
+        )
+        .one();
+      const entitySnapshot = Person.encodeSnapshot(directPerson);
+      const relationSnapshot = Employment.encodeSnapshot(directEmployment);
+
+      const port = await freePort();
+      const authority = await readFile(resolve(stage, "schema-authority-ordered.json"));
+      const suppliedServer = process.env.TYPE_BRIDGE_V2_SMOKE_SERVER;
+      server = spawn(
+        suppliedServer ?? "cargo",
+        suppliedServer === undefined
+          ? ["run", "--quiet", "-p", "type-bridge-server", "--features", "v2-query", "--example", "v2_smoke_server"]
+          : [],
+        {
+          cwd: CORE,
+          env: {
+            ...process.env,
+            SMOKE_TYPEDB_ADDRESS: TYPEDB_ADDRESS,
+            SMOKE_TYPEDB_USERNAME: TYPEDB_USERNAME,
+            SMOKE_TYPEDB_PASSWORD: TYPEDB_PASSWORD,
+            SMOKE_TYPEDB_HTTP_PORT: String(TYPEDB_HTTP_PORT),
+            SMOKE_DATABASE: INTG_DATABASE,
+            SMOKE_AUTHORITY_B64: authority.toString("base64"),
+            SMOKE_PORT: String(port),
+          },
+          stdio: "ignore",
+        },
+      );
+      await waitForPort(port, server, 300_000);
+      const advertisementResponse = await fetch(`http://127.0.0.1:${port}/v2/capabilities`);
+      assert.equal(advertisementResponse.status, 200);
+      const advertisement = Buffer.from(await advertisementResponse.arrayBuffer());
+      const requests: Buffer[] = [];
+      const remoteSession = new RemoteQuerySession(
+        advertisement,
+        async (request: Uint8Array): Promise<Buffer> => {
+          requests.push(Buffer.from(request));
+          const response = await fetch(`http://127.0.0.1:${port}/v2/query`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: new Uint8Array(request),
+          });
+          assert.equal(response.status, 200);
+          return Buffer.from(await response.arrayBuffer());
+        },
+        {
+          maxItems: 10n, maxBytes: 1n << 20n, maxCollectionMembers: 100n,
+          maxGraphNodes: 30n, maxAttributeValues: 1_000n, maxRolePlayers: 30n,
+          deadlineMs: 30_000n,
+        },
+      );
+      const remoteEmploymentVar = remoteSession.var(Employment);
+      const remotePersonVar = remoteSession.var(Person);
+      const [remoteEmployment, remotePerson] = await remoteSession
+        .query(remoteEmploymentVar, remotePersonVar)
+        .where(
+          remoteEmploymentVar.role(Employment.employee).connects(remotePersonVar),
+          remotePersonVar.field(Person.identifier).eq(Identifier.create("v5-live-person")),
+        )
+        .one();
+      remoteSession.close();
+      assert.equal(requests.length, 1);
+      assert.deepEqual(Person.encodeSnapshot(remotePerson), entitySnapshot);
+      assert.deepEqual(Employment.encodeSnapshot(remoteEmployment), relationSnapshot);
+
+      const detached = Person.decodeSnapshot(entitySnapshot);
+      let detachedCode: string | undefined;
+      try {
+        employmentManager.insert(Employment.create({ employee: detached }));
+      } catch (error) {
+        detachedCode = String(error).match(/"code":"([a-z0-9_]+)"/)?.[1];
+      }
+      assert.equal(detachedCode, "projected_snapshot_detached");
+      const rebound = personManager
+        .filter({ identifier: Identifier.create("v5-live-person") })
+        .first();
+      assert.notEqual(rebound, null);
+      employmentManager.update(
+        employment.iid,
+        Employment.create({ employee: rebound }),
+      );
+      assert.equal(employmentManager.getByIid(employment.iid)?.iid, employment.iid);
+
+      await publishWorkforceReport(evidencePath!, {
+        binding: "node",
+        detached_mutation_code: detachedCode,
+        direct_remote_equal: true,
+        entity_snapshot_b64: Buffer.from(entitySnapshot).toString("base64"),
+        format: "typebridge.workforce-v5-live-codec-evidence/v1",
+        rebound_mutation: true,
+        relation_snapshot_b64: Buffer.from(relationSnapshot).toString("base64"),
+        remote_exchange_count: requests.length,
+      });
+      employmentManager.delete(employment);
+      personManager.delete(person);
+    } catch (error) {
+      failure ??= error;
+    }
+    try {
+      if (server !== undefined && server.exitCode === null) server.kill("SIGTERM");
+    } catch (error) {
+      failure ??= error;
+    }
+    try {
+      database?.deleteDatabase();
+    } catch (error) {
+      failure ??= error;
+    }
+    try {
+      database?.close();
+    } catch (error) {
+      failure ??= error;
+    }
+    try {
+      await rm(
+        ownsStage ? stage : resolve(stage, "node_modules", "@type-bridge", "node"),
+        { recursive: true, force: true },
+      );
+    } catch (error) {
+      failure ??= error;
+    }
+    if (failure !== undefined) throw failure;
+  },
+);
