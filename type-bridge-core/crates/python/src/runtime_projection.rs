@@ -1247,6 +1247,65 @@ impl PyRuntimeProjection {
             .map_err(py_sdk_diagnostic)
     }
 
+    /// Encode one exact generated attribute wrapper as canonical record bytes.
+    fn encode_attribute<'py>(
+        &self,
+        py: Python<'py>,
+        model: Py<PyType>,
+        instance: Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyBytes>> {
+        let expected = self.package.model_id_for_class(py, &model)?;
+        if expected.kind() != TypeKind::Attribute {
+            return Err(py_type_error(
+                "canonical attribute encoding requires an exact generated attribute class",
+            ));
+        }
+        let projected = project_attribute_value(py, self.package.as_ref(), &instance, &[])?;
+        if projected.attribute_type() != &expected {
+            return Err(py_sdk_diagnostic(generated_token_package_mismatch_at([
+                SdkDiagnosticPathSegment::Type(expected),
+            ])));
+        }
+        let record = type_bridge_orm::record_from_attribute(&self.package.projection, &projected)
+            .map_err(|error| py_value_error(error.to_string()))?;
+        let bytes = record.encode().map_err(py_diagnostic)?;
+        Ok(PyBytes::new(py, &bytes))
+    }
+
+    /// Decode canonical attribute bytes through exact installed package authority.
+    fn decode_attribute(
+        &self,
+        py: Python<'_>,
+        model: Py<PyType>,
+        bytes: &Bound<'_, PyBytes>,
+    ) -> PyResult<PyObject> {
+        let expected = self.package.model_id_for_class(py, &model)?;
+        if expected.kind() != TypeKind::Attribute {
+            return Err(py_type_error(
+                "canonical attribute decoding requires an exact generated attribute class",
+            ));
+        }
+        let record =
+            type_bridge_contract::projected_record::ProjectedRecord::decode(bytes.as_bytes())
+                .map_err(py_diagnostic)?;
+        let value = type_bridge_orm::materialize_record(&self.package.projection, &record)
+            .map_err(|error| py_value_error(error.to_string()))?;
+        let ProjectedCodecValue::Attribute(value) = value else {
+            return Err(py_value_error("canonical record is not an attribute value"));
+        };
+        if value.attribute_type() != &expected {
+            return Err(py_value_error(
+                "canonical attribute has the wrong exact generated type",
+            ));
+        }
+        let scalar = attribute_value_to_py(
+            py,
+            &value.to_attribute_value(),
+            self.package.named_zone_marker.as_ref(),
+        )?;
+        model.bind(py).call1((scalar,)).map(Bound::unbind)
+    }
+
     /// Validate one complete generated create payload through the common Rust contract.
     fn validate_create(
         &self,
@@ -11053,6 +11112,57 @@ class StructBase:
                     .unwrap(),
                 0
             );
+        });
+    }
+
+    #[test]
+    fn canonical_attribute_codec_round_trips_exact_python_nominal_value() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            let (_, package) = install_batch(py);
+            let identifier_id = package
+                .type_by_label("identifier", TypeKind::Attribute)
+                .unwrap()
+                .clone();
+            let identifier_class = package
+                .class(&identifier_id, ProjectedModelForm::Complete)
+                .unwrap()
+                .clone_ref(py);
+            let identifier = identifier_class.bind(py).call1(("person-1",)).unwrap();
+            let runtime = PyRuntimeProjection { package };
+
+            let bytes = runtime
+                .encode_attribute(py, identifier_class.clone_ref(py), identifier)
+                .unwrap();
+            let decoded = runtime
+                .decode_attribute(py, identifier_class.clone_ref(py), &bytes)
+                .unwrap();
+            assert!(
+                decoded
+                    .bind(py)
+                    .is_instance(identifier_class.bind(py))
+                    .unwrap()
+            );
+            assert_eq!(
+                decoded
+                    .bind(py)
+                    .call_method0("runtime_attribute_value")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "person-1"
+            );
+
+            let flag_id = runtime
+                .package
+                .type_by_label("flag", TypeKind::Attribute)
+                .unwrap();
+            let flag_class = runtime
+                .package
+                .class(flag_id, ProjectedModelForm::Complete)
+                .unwrap()
+                .clone_ref(py);
+            assert!(runtime.decode_attribute(py, flag_class, &bytes).is_err());
         });
     }
 

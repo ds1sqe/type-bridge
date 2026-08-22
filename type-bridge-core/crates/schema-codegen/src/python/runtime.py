@@ -575,6 +575,13 @@ class AttributeBase(ModelBase):
     def runtime_attribute_value(self) -> object:
         return self._attribute_value
 
+    def encode_attribute(self) -> bytes:
+        return self.__runtime_projection__.encode_attribute(type(self), self)
+
+    @classmethod
+    def decode_attribute(cls, data: bytes) -> Self:
+        return cls.__runtime_projection__.decode_attribute(cls, data)
+
     def initialize_runtime_attribute(self, value: object, scalar: str) -> None:
         if not _matches_scalar(value, scalar):
             raise TypeError("projected attribute has an incompatible scalar value")
