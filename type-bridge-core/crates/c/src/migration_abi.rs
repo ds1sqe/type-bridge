@@ -10,10 +10,15 @@ use std::sync::Arc;
 
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory};
 
-use crate::abi::{TypeBridgeDiagnostics, TypeBridgeStatus, guarded};
+use crate::abi::{
+    TypeBridgeByteView, TypeBridgeDiagnostics, TypeBridgeSchemaPackage, TypeBridgeStatus, guarded,
+};
 use crate::diagnostic::diagnostics_handle;
 use crate::generated_preflight::direct_output_preflight;
-use crate::migration_runtime::{DatabaseAdministrationState, DatabaseDeletionPlanState};
+use crate::migration_runtime::{
+    DatabaseAdministrationState, DatabaseDeletionPlanState, MigrationCatalogState,
+    MigrationHistoryEntryState, MigrationIdentitySnapshot,
+};
 use crate::runtime::TypeBridgeDatabase;
 
 /// Opaque bound-database administration owner.
@@ -24,6 +29,21 @@ pub struct TypeBridgeDatabaseAdministration {
 /// Opaque single-use pair-aware database deletion plan.
 pub struct TypeBridgeDatabaseDeletionPlan {
     state: DatabaseDeletionPlanState,
+}
+
+/// Opaque immutable verified migration catalog.
+pub struct TypeBridgeMigrationCatalog {
+    state: Arc<MigrationCatalogState>,
+}
+
+/// Opaque independently owned migration-history entry snapshot.
+pub struct TypeBridgeMigrationHistoryEntry {
+    state: MigrationHistoryEntryState,
+}
+
+/// Opaque independently owned compound migration identity.
+pub struct TypeBridgeMigrationIdentity {
+    state: MigrationIdentitySnapshot,
 }
 
 const PAIR_ABSENT: u32 = 1;
@@ -350,6 +370,374 @@ unsafe fn close_box<T>(slot: *mut *mut T) -> TypeBridgeStatus {
             slot.write_unaligned(ptr::null_mut());
             drop(Box::from_raw(value));
         }
+        TypeBridgeStatus::Ok
+    })
+}
+
+/// Open canonical bundle bytes under one verified generated package authority.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_migration_catalog_open(
+    package: *const TypeBridgeSchemaPackage,
+    bundle: TypeBridgeByteView,
+    out_catalog: *mut *mut TypeBridgeMigrationCatalog,
+    out_diagnostics: *mut *mut TypeBridgeDiagnostics,
+) -> TypeBridgeStatus {
+    let outputs = match direct_output_preflight(&[
+        (
+            out_catalog.cast(),
+            size_of::<*mut TypeBridgeMigrationCatalog>(),
+        ),
+        (
+            out_diagnostics.cast(),
+            size_of::<*mut TypeBridgeDiagnostics>(),
+        ),
+    ]) {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    if outputs
+        .check_bytes(package.cast(), size_of::<TypeBridgeSchemaPackage>())
+        .and_then(|()| outputs.check_bytes(bundle.data.cast(), bundle.length))
+        .is_err()
+        || out_catalog.is_null()
+    {
+        return TypeBridgeStatus::InvalidArgument;
+    }
+    if let Err(status) = unsafe { initialize_diagnostics(out_diagnostics) } {
+        return status;
+    }
+    unsafe { out_catalog.write_unaligned(ptr::null_mut()) };
+    guarded(|| {
+        let Some(package) = (unsafe { package.as_ref() }) else {
+            return TypeBridgeStatus::InvalidArgument;
+        };
+        let bytes = match unsafe {
+            bundle.snapshot(
+                "migration_history_bundle",
+                type_bridge_schema_migration::MAX_MIGRATION_HISTORY_BUNDLE_BYTES,
+            )
+        } {
+            Ok(value) => value,
+            Err((status, diagnostics)) => {
+                unsafe {
+                    out_diagnostics
+                        .write_unaligned(Box::into_raw(Box::new(diagnostics_handle(diagnostics))))
+                };
+                return status;
+            }
+        };
+        match MigrationCatalogState::open(&package.state()._authority, &bytes) {
+            Ok(state) => {
+                unsafe {
+                    out_catalog.write_unaligned(Box::into_raw(Box::new(
+                        TypeBridgeMigrationCatalog { state },
+                    )))
+                };
+                TypeBridgeStatus::Ok
+            }
+            Err(error) => return_failure(error, out_diagnostics),
+        }
+    })
+}
+
+/// Borrow canonical fingerprint JSON from a live catalog.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_migration_catalog_fingerprint(
+    catalog: *const TypeBridgeMigrationCatalog,
+    out_fingerprint: *mut TypeBridgeByteView,
+) -> TypeBridgeStatus {
+    guarded(|| {
+        if catalog.is_null() || out_fingerprint.is_null() {
+            return TypeBridgeStatus::InvalidArgument;
+        }
+        let bytes = unsafe { &*catalog }.state.fingerprint_json();
+        unsafe {
+            out_fingerprint.write_unaligned(TypeBridgeByteView {
+                data: bytes.as_ptr(),
+                length: bytes.len(),
+            })
+        };
+        TypeBridgeStatus::Ok
+    })
+}
+
+/// Return the bounded number of topologically ordered history entries.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_migration_catalog_count(
+    catalog: *const TypeBridgeMigrationCatalog,
+    out_count: *mut usize,
+) -> TypeBridgeStatus {
+    unsafe { scalar(catalog, out_count, |value| value.state.len()) }
+}
+
+/// Return an independently owned history entry at one topological ordinal.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_migration_catalog_entry_at(
+    catalog: *const TypeBridgeMigrationCatalog,
+    index: usize,
+    out_entry: *mut *mut TypeBridgeMigrationHistoryEntry,
+) -> TypeBridgeStatus {
+    guarded(|| {
+        if catalog.is_null() || out_entry.is_null() {
+            return TypeBridgeStatus::InvalidArgument;
+        }
+        unsafe { out_entry.write_unaligned(ptr::null_mut()) };
+        let Some(state) = unsafe { &*catalog }.state.entry(index) else {
+            return TypeBridgeStatus::InvalidArgument;
+        };
+        unsafe {
+            out_entry.write_unaligned(Box::into_raw(Box::new(TypeBridgeMigrationHistoryEntry {
+                state,
+            })))
+        };
+        TypeBridgeStatus::Ok
+    })
+}
+
+/// Return the bounded number of canonical graph heads.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_migration_catalog_head_count(
+    catalog: *const TypeBridgeMigrationCatalog,
+    out_count: *mut usize,
+) -> TypeBridgeStatus {
+    unsafe { scalar(catalog, out_count, |value| value.state.heads().len()) }
+}
+
+/// Return an independently owned canonical graph-head identity.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_migration_catalog_head_at(
+    catalog: *const TypeBridgeMigrationCatalog,
+    index: usize,
+    out_identity: *mut *mut TypeBridgeMigrationIdentity,
+) -> TypeBridgeStatus {
+    guarded(|| {
+        if catalog.is_null() || out_identity.is_null() {
+            return TypeBridgeStatus::InvalidArgument;
+        }
+        unsafe { out_identity.write_unaligned(ptr::null_mut()) };
+        let Some(state) = unsafe { &*catalog }.state.heads().get(index).cloned() else {
+            return TypeBridgeStatus::InvalidArgument;
+        };
+        unsafe {
+            out_identity.write_unaligned(Box::into_raw(Box::new(TypeBridgeMigrationIdentity {
+                state,
+            })))
+        };
+        TypeBridgeStatus::Ok
+    })
+}
+
+/// Close a catalog only after every entry or plan child has closed.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_migration_catalog_close(
+    catalog: *mut *mut TypeBridgeMigrationCatalog,
+) -> TypeBridgeStatus {
+    guarded(|| {
+        if catalog.is_null() {
+            return TypeBridgeStatus::InvalidArgument;
+        }
+        let value = unsafe { catalog.read_unaligned() };
+        if value.is_null() {
+            return TypeBridgeStatus::Ok;
+        }
+        if Arc::strong_count(&unsafe { &*value }.state) != 1 {
+            return TypeBridgeStatus::InUse;
+        }
+        unsafe {
+            catalog.write_unaligned(ptr::null_mut());
+            drop(Box::from_raw(value));
+        }
+        TypeBridgeStatus::Ok
+    })
+}
+
+/// Return an independently owned identity for one history entry.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_migration_history_entry_identity(
+    entry: *const TypeBridgeMigrationHistoryEntry,
+    out_identity: *mut *mut TypeBridgeMigrationIdentity,
+) -> TypeBridgeStatus {
+    unsafe { owned_identity(entry, out_identity, |entry| entry.state.identity()) }
+}
+
+/// Return the number of exact parent identities for one history entry.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_migration_history_entry_parent_count(
+    entry: *const TypeBridgeMigrationHistoryEntry,
+    out_count: *mut usize,
+) -> TypeBridgeStatus {
+    unsafe { scalar(entry, out_count, |value| value.state.parents().len()) }
+}
+
+/// Return an independently owned exact parent identity.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_migration_history_entry_parent_at(
+    entry: *const TypeBridgeMigrationHistoryEntry,
+    index: usize,
+    out_identity: *mut *mut TypeBridgeMigrationIdentity,
+) -> TypeBridgeStatus {
+    guarded(|| {
+        if entry.is_null() || out_identity.is_null() {
+            return TypeBridgeStatus::InvalidArgument;
+        }
+        unsafe { out_identity.write_unaligned(ptr::null_mut()) };
+        let Some(state) = unsafe { &*entry }.state.parents().get(index).cloned() else {
+            return TypeBridgeStatus::InvalidArgument;
+        };
+        unsafe {
+            out_identity.write_unaligned(Box::into_raw(Box::new(TypeBridgeMigrationIdentity {
+                state,
+            })))
+        };
+        TypeBridgeStatus::Ok
+    })
+}
+
+/// Copy the exact 32-byte canonical manifest digest.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_migration_history_entry_manifest_digest(
+    entry: *const TypeBridgeMigrationHistoryEntry,
+    out_digest: *mut u8,
+    digest_length: usize,
+) -> TypeBridgeStatus {
+    guarded(|| {
+        if entry.is_null() || out_digest.is_null() || digest_length != 32 {
+            return TypeBridgeStatus::InvalidArgument;
+        }
+        let digest = unsafe { &*entry }.state.manifest_digest();
+        unsafe { ptr::copy_nonoverlapping(digest.as_ptr(), out_digest, digest.len()) };
+        TypeBridgeStatus::Ok
+    })
+}
+
+/// Return the canonical step count.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_migration_history_entry_step_count(
+    entry: *const TypeBridgeMigrationHistoryEntry,
+    out_count: *mut usize,
+) -> TypeBridgeStatus {
+    unsafe { scalar(entry, out_count, |value| value.state.step_count()) }
+}
+
+/// Return the stable migration safety-class tag.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_migration_history_entry_safety(
+    entry: *const TypeBridgeMigrationHistoryEntry,
+    out_safety: *mut u32,
+) -> TypeBridgeStatus {
+    unsafe { scalar(entry, out_safety, |value| safety(value.state.safety())) }
+}
+
+/// Return exact zero or one for verified reversibility.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_migration_history_entry_reversible(
+    entry: *const TypeBridgeMigrationHistoryEntry,
+    out_reversible: *mut u8,
+) -> TypeBridgeStatus {
+    unsafe {
+        scalar(entry, out_reversible, |value| {
+            u8::from(value.state.reversible())
+        })
+    }
+}
+
+/// Close a history-entry snapshot idempotently.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_migration_history_entry_close(
+    entry: *mut *mut TypeBridgeMigrationHistoryEntry,
+) -> TypeBridgeStatus {
+    unsafe { close_box(entry) }
+}
+
+/// Borrow the application-label component of a live migration identity.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_migration_identity_app_label(
+    identity: *const TypeBridgeMigrationIdentity,
+    out_label: *mut TypeBridgeByteView,
+) -> TypeBridgeStatus {
+    unsafe { identity_view(identity, out_label, |value| &value.state.app_label) }
+}
+
+/// Borrow the migration-name component of a live migration identity.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_migration_identity_name(
+    identity: *const TypeBridgeMigrationIdentity,
+    out_name: *mut TypeBridgeByteView,
+) -> TypeBridgeStatus {
+    unsafe { identity_view(identity, out_name, |value| &value.state.name) }
+}
+
+/// Close a migration identity idempotently.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_migration_identity_close(
+    identity: *mut *mut TypeBridgeMigrationIdentity,
+) -> TypeBridgeStatus {
+    unsafe { close_box(identity) }
+}
+
+fn safety(value: type_bridge_schema::SafetyClass) -> u32 {
+    match value {
+        type_bridge_schema::SafetyClass::FormalOnly => 1,
+        type_bridge_schema::SafetyClass::SchemaMetadata => 2,
+        type_bridge_schema::SafetyClass::Additive => 3,
+        type_bridge_schema::SafetyClass::Conditional => 4,
+        type_bridge_schema::SafetyClass::BackfillRequired => 5,
+        type_bridge_schema::SafetyClass::Destructive => 6,
+        type_bridge_schema::SafetyClass::Opaque => 7,
+        type_bridge_schema::SafetyClass::Unsupported => 8,
+    }
+}
+
+unsafe fn scalar<Input, Output: Copy>(
+    input: *const Input,
+    out: *mut Output,
+    read: impl FnOnce(&Input) -> Output,
+) -> TypeBridgeStatus {
+    guarded(|| {
+        if input.is_null() || out.is_null() {
+            return TypeBridgeStatus::InvalidArgument;
+        }
+        unsafe { out.write_unaligned(read(&*input)) };
+        TypeBridgeStatus::Ok
+    })
+}
+
+unsafe fn owned_identity<Input>(
+    input: *const Input,
+    out: *mut *mut TypeBridgeMigrationIdentity,
+    read: impl FnOnce(&Input) -> MigrationIdentitySnapshot,
+) -> TypeBridgeStatus {
+    guarded(|| {
+        if input.is_null() || out.is_null() {
+            return TypeBridgeStatus::InvalidArgument;
+        }
+        unsafe { out.write_unaligned(ptr::null_mut()) };
+        let state = read(unsafe { &*input });
+        unsafe {
+            out.write_unaligned(Box::into_raw(Box::new(TypeBridgeMigrationIdentity {
+                state,
+            })))
+        };
+        TypeBridgeStatus::Ok
+    })
+}
+
+unsafe fn identity_view(
+    identity: *const TypeBridgeMigrationIdentity,
+    out: *mut TypeBridgeByteView,
+    read: impl FnOnce(&TypeBridgeMigrationIdentity) -> &[u8],
+) -> TypeBridgeStatus {
+    guarded(|| {
+        if identity.is_null() || out.is_null() {
+            return TypeBridgeStatus::InvalidArgument;
+        }
+        let bytes = read(unsafe { &*identity });
+        unsafe {
+            out.write_unaligned(TypeBridgeByteView {
+                data: bytes.as_ptr(),
+                length: bytes.len(),
+            })
+        };
         TypeBridgeStatus::Ok
     })
 }
