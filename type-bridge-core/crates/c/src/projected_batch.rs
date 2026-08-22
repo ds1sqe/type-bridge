@@ -3172,7 +3172,7 @@ plays:
         );
         assert_eq!(
             generated_batch_preflight(
-                37,
+                42,
                 builder.cast(),
                 1,
                 (&mut caller_output as *mut u8).cast(),

@@ -9,6 +9,10 @@ use type_bridge_orm::ProjectedResourceMeasure;
 use crate::abi::{
     SchemaPackageState, TypeBridgeDiagnostics, TypeBridgeSchemaPackage, TypeBridgeStatus, guarded,
 };
+use crate::canonical_archive::{
+    TypeBridgeCanonicalArchive, TypeBridgeCanonicalArchiveBuilder, TypeBridgeCanonicalBytes,
+    TypeBridgeProjectedStruct, TypeBridgeProjectedStructMember,
+};
 use crate::execution_diagnostic::TypeBridgeExecutionDiagnostics;
 use crate::projected_batch::{
     TypeBridgeProjectedBatch, TypeBridgeProjectedBatchBuilder, TypeBridgeProjectedBatchResult,
@@ -32,6 +36,7 @@ use crate::runtime::{
 
 const GENERATED_PREFLIGHT_VERSION: u32 = 1;
 const GENERATED_PREFLIGHT_OUTPUT_COUNT_MAX: usize = 2;
+const DIRECT_OUTPUT_COUNT_MAX: usize = 3;
 
 /// Raw byte-range input kind.
 pub const GENERATED_INPUT_BYTES: u32 = 1;
@@ -105,6 +110,16 @@ pub const GENERATED_INPUT_PROJECTED_BATCH_BUILDER: u32 = 34;
 pub const GENERATED_INPUT_PROJECTED_BATCH: u32 = 35;
 /// Immutable projected-batch result handle input kind.
 pub const GENERATED_INPUT_PROJECTED_BATCH_RESULT: u32 = 36;
+/// Owned canonical-byte handle input kind.
+pub const GENERATED_INPUT_CANONICAL_BYTES: u32 = 37;
+/// Canonical archive-builder handle input kind.
+pub const GENERATED_INPUT_CANONICAL_ARCHIVE_BUILDER: u32 = 38;
+/// Verified canonical archive handle input kind.
+pub const GENERATED_INPUT_CANONICAL_ARCHIVE: u32 = 39;
+/// Decoded projected-struct handle input kind.
+pub const GENERATED_INPUT_PROJECTED_STRUCT: u32 = 40;
+/// Independently owned projected-struct member input kind.
+pub const GENERATED_INPUT_PROJECTED_STRUCT_MEMBER: u32 = 41;
 
 /// Frozen generated create-argument graph layout version.
 pub const GENERATED_CREATE_GRAPH_VERSION: u32 = 1;
@@ -249,20 +264,20 @@ impl MemoryRange {
 
 #[derive(Clone, Copy)]
 pub(crate) struct DirectOutputPreflight {
-    ranges: [MemoryRange; GENERATED_PREFLIGHT_OUTPUT_COUNT_MAX],
+    ranges: [MemoryRange; DIRECT_OUTPUT_COUNT_MAX],
     count: usize,
 }
 
 impl DirectOutputPreflight {
     pub(crate) fn new(outputs: &[(*mut c_void, usize)]) -> Result<Self, TypeBridgeStatus> {
-        if outputs.len() > GENERATED_PREFLIGHT_OUTPUT_COUNT_MAX {
+        if outputs.len() > DIRECT_OUTPUT_COUNT_MAX {
             return Err(TypeBridgeStatus::InvalidArgument);
         }
         let mut checked = Self {
             ranges: [MemoryRange {
                 start: 0,
                 length: 0,
-            }; GENERATED_PREFLIGHT_OUTPUT_COUNT_MAX],
+            }; DIRECT_OUTPUT_COUNT_MAX],
             count: 0,
         };
         for &(pointer, length) in outputs {
@@ -315,6 +330,17 @@ impl DirectOutputPreflight {
         }
         let length = object_size(kind).ok_or(TypeBridgeStatus::InvalidArgument)?;
         self.check_bytes(pointer, length)
+    }
+
+    pub(crate) unsafe fn check_deep_object_kind(
+        &self,
+        kind: u32,
+        pointer: *const c_void,
+    ) -> Result<(), TypeBridgeStatus> {
+        self.check_object_kind(kind, pointer)?;
+        // SAFETY: the caller promises a live object of the stated kind; the
+        // complete outer object was checked before deep borrowed traversal.
+        unsafe { check_deep_object_ranges(kind, pointer, self) }
     }
 
     pub(crate) unsafe fn check_pointer_array<T>(
@@ -401,6 +427,15 @@ fn object_size(kind: u32) -> Option<usize> {
         }
         GENERATED_INPUT_PROJECTED_BATCH => Some(size_of::<TypeBridgeProjectedBatch>()),
         GENERATED_INPUT_PROJECTED_BATCH_RESULT => Some(size_of::<TypeBridgeProjectedBatchResult>()),
+        GENERATED_INPUT_CANONICAL_BYTES => Some(size_of::<TypeBridgeCanonicalBytes>()),
+        GENERATED_INPUT_CANONICAL_ARCHIVE_BUILDER => {
+            Some(size_of::<TypeBridgeCanonicalArchiveBuilder>())
+        }
+        GENERATED_INPUT_CANONICAL_ARCHIVE => Some(size_of::<TypeBridgeCanonicalArchive>()),
+        GENERATED_INPUT_PROJECTED_STRUCT => Some(size_of::<TypeBridgeProjectedStruct>()),
+        GENERATED_INPUT_PROJECTED_STRUCT_MEMBER => {
+            Some(size_of::<TypeBridgeProjectedStructMember>())
+        }
         _ => None,
     }
 }
@@ -510,6 +545,28 @@ unsafe fn check_deep_object_ranges(
         GENERATED_INPUT_EXECUTION_DIAGNOSTICS => {
             // SAFETY: the complete execution-diagnostics handle was checked before dispatch.
             unsafe { &*pointer.cast::<TypeBridgeExecutionDiagnostics>() }
+                .check_borrowed_ranges(outputs)
+        }
+        GENERATED_INPUT_CANONICAL_BYTES => {
+            // SAFETY: the complete canonical-byte handle was checked before dispatch.
+            unsafe { &*pointer.cast::<TypeBridgeCanonicalBytes>() }.check_borrowed_ranges(outputs)
+        }
+        GENERATED_INPUT_CANONICAL_ARCHIVE_BUILDER => {
+            // SAFETY: the complete archive builder was checked before dispatch.
+            unsafe { &*pointer.cast::<TypeBridgeCanonicalArchiveBuilder>() }
+                .check_borrowed_ranges(outputs)
+        }
+        GENERATED_INPUT_CANONICAL_ARCHIVE => {
+            // SAFETY: the complete archive handle was checked before dispatch.
+            unsafe { &*pointer.cast::<TypeBridgeCanonicalArchive>() }.check_borrowed_ranges(outputs)
+        }
+        GENERATED_INPUT_PROJECTED_STRUCT => {
+            // SAFETY: the complete projected struct was checked before dispatch.
+            unsafe { &*pointer.cast::<TypeBridgeProjectedStruct>() }.check_borrowed_ranges(outputs)
+        }
+        GENERATED_INPUT_PROJECTED_STRUCT_MEMBER => {
+            // SAFETY: the complete struct-member handle was checked before dispatch.
+            unsafe { &*pointer.cast::<TypeBridgeProjectedStructMember>() }
                 .check_borrowed_ranges(outputs)
         }
         GENERATED_INPUT_QUERY_SESSION => {
@@ -1254,7 +1311,32 @@ mod tests {
             object_size(GENERATED_INPUT_PROJECTED_BATCH_RESULT),
             Some(size_of::<TypeBridgeProjectedBatchResult>()),
         );
-        assert_eq!(object_size(37), None);
+        assert_eq!(GENERATED_INPUT_CANONICAL_BYTES, 37);
+        assert_eq!(GENERATED_INPUT_CANONICAL_ARCHIVE_BUILDER, 38);
+        assert_eq!(GENERATED_INPUT_CANONICAL_ARCHIVE, 39);
+        assert_eq!(GENERATED_INPUT_PROJECTED_STRUCT, 40);
+        assert_eq!(GENERATED_INPUT_PROJECTED_STRUCT_MEMBER, 41);
+        assert_eq!(
+            object_size(GENERATED_INPUT_CANONICAL_BYTES),
+            Some(size_of::<TypeBridgeCanonicalBytes>()),
+        );
+        assert_eq!(
+            object_size(GENERATED_INPUT_CANONICAL_ARCHIVE_BUILDER),
+            Some(size_of::<TypeBridgeCanonicalArchiveBuilder>()),
+        );
+        assert_eq!(
+            object_size(GENERATED_INPUT_CANONICAL_ARCHIVE),
+            Some(size_of::<TypeBridgeCanonicalArchive>()),
+        );
+        assert_eq!(
+            object_size(GENERATED_INPUT_PROJECTED_STRUCT),
+            Some(size_of::<TypeBridgeProjectedStruct>()),
+        );
+        assert_eq!(
+            object_size(GENERATED_INPUT_PROJECTED_STRUCT_MEMBER),
+            Some(size_of::<TypeBridgeProjectedStructMember>()),
+        );
+        assert_eq!(object_size(42), None);
         assert_eq!(object_size(u32::MAX), None);
     }
 

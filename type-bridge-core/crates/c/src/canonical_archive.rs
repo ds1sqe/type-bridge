@@ -1,5 +1,7 @@
 //! Private ABI 1.6 owned canonical bytes and deterministic archive handles.
 
+use std::ffi::c_void;
+use std::mem::{size_of, size_of_val};
 use std::ptr;
 use std::sync::Arc;
 
@@ -18,6 +20,14 @@ use crate::abi::{
 use crate::allocation::{AllocationSite, allocation_exhausted, try_box};
 use crate::execution_diagnostic::{
     TypeBridgeExecutionDiagnostics, initialize_execution_outputs, return_execution_error,
+};
+use crate::generated_preflight::{
+    DirectOutputPreflight, GENERATED_INPUT_CANONICAL_ARCHIVE,
+    GENERATED_INPUT_CANONICAL_ARCHIVE_BUILDER, GENERATED_INPUT_CANONICAL_BYTES,
+    GENERATED_INPUT_PROJECTED_CREATE, GENERATED_INPUT_PROJECTED_REFERENCE,
+    GENERATED_INPUT_PROJECTED_STRUCT, GENERATED_INPUT_PROJECTED_STRUCT_MEMBER,
+    GENERATED_INPUT_PROJECTED_THING, GENERATED_INPUT_PROJECTED_TOKEN,
+    GENERATED_INPUT_PROJECTED_VALUE, GENERATED_INPUT_SCHEMA_PACKAGE, direct_output_preflight,
 };
 use crate::projected_model::{
     TypeBridgeProjectedCreate, TypeBridgeProjectedReference, TypeBridgeProjectedThing,
@@ -97,6 +107,60 @@ impl TypeBridgeProjectedStructMember {
             }
         }
     }
+
+    pub(crate) fn check_borrowed_ranges(
+        &self,
+        preflight: &DirectOutputPreflight,
+    ) -> Result<(), TypeBridgeStatus> {
+        if let Some(text) = self.text() {
+            preflight.check_bytes(text.as_ptr().cast(), text.len())?;
+        }
+        Ok(())
+    }
+}
+
+impl TypeBridgeCanonicalBytes {
+    pub(crate) fn check_borrowed_ranges(
+        &self,
+        preflight: &DirectOutputPreflight,
+    ) -> Result<(), TypeBridgeStatus> {
+        preflight.check_bytes(self.bytes.as_ptr().cast(), self.bytes.len())
+    }
+}
+
+impl TypeBridgeCanonicalArchiveBuilder {
+    pub(crate) fn check_borrowed_ranges(
+        &self,
+        preflight: &DirectOutputPreflight,
+    ) -> Result<(), TypeBridgeStatus> {
+        preflight.check_package_borrowed_ranges(&self.package)?;
+        preflight.check_bytes(
+            self.records.as_ptr().cast(),
+            size_of_val(self.records.as_slice()),
+        )
+    }
+}
+
+impl TypeBridgeCanonicalArchive {
+    pub(crate) fn check_borrowed_ranges(
+        &self,
+        preflight: &DirectOutputPreflight,
+    ) -> Result<(), TypeBridgeStatus> {
+        preflight.check_package_borrowed_ranges(&self.package)
+    }
+}
+
+impl TypeBridgeProjectedStruct {
+    pub(crate) fn check_borrowed_ranges(
+        &self,
+        preflight: &DirectOutputPreflight,
+    ) -> Result<(), TypeBridgeStatus> {
+        preflight.check_package_borrowed_ranges(&self.package)?;
+        preflight.check_bytes(
+            self.value.members().as_ptr().cast(),
+            size_of_val(self.value.members()),
+        )
+    }
 }
 
 fn code(value: &'static str) -> SdkDiagnosticCode {
@@ -149,6 +213,22 @@ fn invalid_struct_member() -> SdkExecutionDiagnostic {
     )
 }
 
+unsafe fn preflight(
+    outputs: &[(*mut c_void, usize)],
+    objects: &[(u32, *const c_void)],
+    bytes: &[TypeBridgeByteView],
+) -> Result<DirectOutputPreflight, TypeBridgeStatus> {
+    let preflight = direct_output_preflight(outputs)?;
+    for &(kind, pointer) in objects {
+        // SAFETY: each ABI caller promises a live object of its declared kind.
+        unsafe { preflight.check_deep_object_kind(kind, pointer) }?;
+    }
+    for view in bytes {
+        preflight.check_bytes(view.data.cast(), view.length)?;
+    }
+    Ok(preflight)
+}
+
 unsafe fn decode_record(
     package: *const TypeBridgeSchemaPackage,
     bytes: TypeBridgeByteView,
@@ -196,6 +276,22 @@ pub unsafe extern "C" fn type_bridge_canonical_record_encode_attribute_v1(
     out_bytes: *mut *mut TypeBridgeCanonicalBytes,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
+    // SAFETY: caller retains the projected value while complete alias ranges are inspected.
+    if let Err(status) = unsafe {
+        preflight(
+            &[
+                (out_bytes.cast(), size_of::<*mut TypeBridgeCanonicalBytes>()),
+                (
+                    out_diagnostics.cast(),
+                    size_of::<*mut TypeBridgeExecutionDiagnostics>(),
+                ),
+            ],
+            &[(GENERATED_INPUT_PROJECTED_VALUE, value.cast())],
+            &[],
+        )
+    } {
+        return status;
+    }
     // SAFETY: shared initializer validates and clears distinct writable outputs.
     if let Err(status) = unsafe { initialize_execution_outputs(out_bytes, out_diagnostics) } {
         return status;
@@ -224,6 +320,22 @@ pub unsafe extern "C" fn type_bridge_canonical_record_encode_create_v1(
     out_bytes: *mut *mut TypeBridgeCanonicalBytes,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
+    // SAFETY: caller retains the projected create while complete alias ranges are inspected.
+    if let Err(status) = unsafe {
+        preflight(
+            &[
+                (out_bytes.cast(), size_of::<*mut TypeBridgeCanonicalBytes>()),
+                (
+                    out_diagnostics.cast(),
+                    size_of::<*mut TypeBridgeExecutionDiagnostics>(),
+                ),
+            ],
+            &[(GENERATED_INPUT_PROJECTED_CREATE, value.cast())],
+            &[],
+        )
+    } {
+        return status;
+    }
     // SAFETY: shared initializer validates and clears distinct writable outputs.
     if let Err(status) = unsafe { initialize_execution_outputs(out_bytes, out_diagnostics) } {
         return status;
@@ -249,6 +361,22 @@ pub unsafe extern "C" fn type_bridge_canonical_record_encode_reference_v1(
     out_bytes: *mut *mut TypeBridgeCanonicalBytes,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
+    // SAFETY: caller retains the projected reference while alias ranges are inspected.
+    if let Err(status) = unsafe {
+        preflight(
+            &[
+                (out_bytes.cast(), size_of::<*mut TypeBridgeCanonicalBytes>()),
+                (
+                    out_diagnostics.cast(),
+                    size_of::<*mut TypeBridgeExecutionDiagnostics>(),
+                ),
+            ],
+            &[(GENERATED_INPUT_PROJECTED_REFERENCE, value.cast())],
+            &[],
+        )
+    } {
+        return status;
+    }
     // SAFETY: shared initializer validates and clears distinct writable outputs.
     if let Err(status) = unsafe { initialize_execution_outputs(out_bytes, out_diagnostics) } {
         return status;
@@ -277,6 +405,22 @@ pub unsafe extern "C" fn type_bridge_canonical_record_encode_snapshot_v1(
     out_bytes: *mut *mut TypeBridgeCanonicalBytes,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
+    // SAFETY: caller retains the projected thing while complete alias ranges are inspected.
+    if let Err(status) = unsafe {
+        preflight(
+            &[
+                (out_bytes.cast(), size_of::<*mut TypeBridgeCanonicalBytes>()),
+                (
+                    out_diagnostics.cast(),
+                    size_of::<*mut TypeBridgeExecutionDiagnostics>(),
+                ),
+            ],
+            &[(GENERATED_INPUT_PROJECTED_THING, value.cast())],
+            &[],
+        )
+    } {
+        return status;
+    }
     // SAFETY: shared initializer validates and clears distinct writable outputs.
     if let Err(status) = unsafe { initialize_execution_outputs(out_bytes, out_diagnostics) } {
         return status;
@@ -305,6 +449,22 @@ pub unsafe extern "C" fn type_bridge_canonical_record_encode_struct_v1(
     out_bytes: *mut *mut TypeBridgeCanonicalBytes,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
+    // SAFETY: caller retains the projected struct while complete alias ranges are inspected.
+    if let Err(status) = unsafe {
+        preflight(
+            &[
+                (out_bytes.cast(), size_of::<*mut TypeBridgeCanonicalBytes>()),
+                (
+                    out_diagnostics.cast(),
+                    size_of::<*mut TypeBridgeExecutionDiagnostics>(),
+                ),
+            ],
+            &[(GENERATED_INPUT_PROJECTED_STRUCT, value.cast())],
+            &[],
+        )
+    } {
+        return status;
+    }
     // SAFETY: shared initializer validates and clears distinct writable outputs.
     if let Err(status) = unsafe { initialize_execution_outputs(out_bytes, out_diagnostics) } {
         return status;
@@ -355,6 +515,25 @@ pub unsafe extern "C" fn type_bridge_canonical_record_decode_attribute_v1(
     out_value: *mut *mut TypeBridgeProjectedValue,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
+    // SAFETY: package, token, and byte inputs remain live during read-only preflight.
+    if let Err(status) = unsafe {
+        preflight(
+            &[
+                (out_value.cast(), size_of::<*mut TypeBridgeProjectedValue>()),
+                (
+                    out_diagnostics.cast(),
+                    size_of::<*mut TypeBridgeExecutionDiagnostics>(),
+                ),
+            ],
+            &[
+                (GENERATED_INPUT_SCHEMA_PACKAGE, package.cast()),
+                (GENERATED_INPUT_PROJECTED_TOKEN, expected_attribute.cast()),
+            ],
+            &[bytes],
+        )
+    } {
+        return status;
+    }
     // SAFETY: shared initializer validates and clears distinct writable outputs.
     if let Err(status) = unsafe { initialize_execution_outputs(out_value, out_diagnostics) } {
         return status;
@@ -409,6 +588,25 @@ macro_rules! decode_model_record {
             out_value: *mut *mut $output,
             out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
         ) -> TypeBridgeStatus {
+            // SAFETY: package, token, and byte inputs remain live during read-only preflight.
+            if let Err(status) = unsafe {
+                preflight(
+                    &[
+                        (out_value.cast(), size_of::<*mut $output>()),
+                        (
+                            out_diagnostics.cast(),
+                            size_of::<*mut TypeBridgeExecutionDiagnostics>(),
+                        ),
+                    ],
+                    &[
+                        (GENERATED_INPUT_SCHEMA_PACKAGE, package.cast()),
+                        (GENERATED_INPUT_PROJECTED_TOKEN, expected_model.cast()),
+                    ],
+                    &[bytes],
+                )
+            } {
+                return status;
+            }
             // SAFETY: shared initializer validates and clears distinct writable outputs.
             if let Err(status) = unsafe { initialize_execution_outputs(out_value, out_diagnostics) }
             {
@@ -492,6 +690,28 @@ pub unsafe extern "C" fn type_bridge_canonical_record_decode_reference_v1(
     out_value: *mut *mut TypeBridgeProjectedReference,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
+    // SAFETY: package, token, and byte inputs remain live during read-only preflight.
+    if let Err(status) = unsafe {
+        preflight(
+            &[
+                (
+                    out_value.cast(),
+                    size_of::<*mut TypeBridgeProjectedReference>(),
+                ),
+                (
+                    out_diagnostics.cast(),
+                    size_of::<*mut TypeBridgeExecutionDiagnostics>(),
+                ),
+            ],
+            &[
+                (GENERATED_INPUT_SCHEMA_PACKAGE, package.cast()),
+                (GENERATED_INPUT_PROJECTED_TOKEN, expected_model.cast()),
+            ],
+            &[bytes],
+        )
+    } {
+        return status;
+    }
     // SAFETY: shared initializer validates and clears distinct writable outputs.
     if let Err(status) = unsafe { initialize_execution_outputs(out_value, out_diagnostics) } {
         return status;
@@ -538,6 +758,28 @@ pub unsafe extern "C" fn type_bridge_canonical_record_decode_struct_v1(
     out_value: *mut *mut TypeBridgeProjectedStruct,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
+    // SAFETY: package, token, and byte inputs remain live during read-only preflight.
+    if let Err(status) = unsafe {
+        preflight(
+            &[
+                (
+                    out_value.cast(),
+                    size_of::<*mut TypeBridgeProjectedStruct>(),
+                ),
+                (
+                    out_diagnostics.cast(),
+                    size_of::<*mut TypeBridgeExecutionDiagnostics>(),
+                ),
+            ],
+            &[
+                (GENERATED_INPUT_SCHEMA_PACKAGE, package.cast()),
+                (GENERATED_INPUT_PROJECTED_TOKEN, expected_struct.cast()),
+            ],
+            &[bytes],
+        )
+    } {
+        return status;
+    }
     // SAFETY: shared initializer validates and clears distinct writable outputs.
     if let Err(status) = unsafe { initialize_execution_outputs(out_value, out_diagnostics) } {
         return status;
@@ -597,6 +839,28 @@ pub unsafe extern "C" fn type_bridge_projected_struct_member_at_v1(
     out_member: *mut *mut TypeBridgeProjectedStructMember,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
+    // SAFETY: struct and token remain live during complete read-only preflight.
+    if let Err(status) = unsafe {
+        preflight(
+            &[
+                (
+                    out_member.cast(),
+                    size_of::<*mut TypeBridgeProjectedStructMember>(),
+                ),
+                (
+                    out_diagnostics.cast(),
+                    size_of::<*mut TypeBridgeExecutionDiagnostics>(),
+                ),
+            ],
+            &[
+                (GENERATED_INPUT_PROJECTED_STRUCT, value.cast()),
+                (GENERATED_INPUT_PROJECTED_TOKEN, expected_struct.cast()),
+            ],
+            &[],
+        )
+    } {
+        return status;
+    }
     // SAFETY: shared initializer validates and clears distinct writable outputs.
     if let Err(status) = unsafe { initialize_execution_outputs(out_member, out_diagnostics) } {
         return status;
@@ -636,6 +900,16 @@ pub unsafe extern "C" fn type_bridge_projected_struct_member_kind(
     value: *const TypeBridgeProjectedStructMember,
     out_kind: *mut TypeBridgeProjectedValueKind,
 ) -> TypeBridgeStatus {
+    // SAFETY: member remains live during complete read-only preflight.
+    if let Err(status) = unsafe {
+        preflight(
+            &[(out_kind.cast(), size_of::<TypeBridgeProjectedValueKind>())],
+            &[(GENERATED_INPUT_PROJECTED_STRUCT_MEMBER, value.cast())],
+            &[],
+        )
+    } {
+        return status;
+    }
     guarded(|| {
         if out_kind.is_null() {
             return TypeBridgeStatus::InvalidArgument;
@@ -657,6 +931,16 @@ pub unsafe extern "C" fn type_bridge_projected_struct_member_text(
     value: *const TypeBridgeProjectedStructMember,
     out_text: *mut TypeBridgeByteView,
 ) -> TypeBridgeStatus {
+    // SAFETY: member remains live during complete read-only preflight.
+    if let Err(status) = unsafe {
+        preflight(
+            &[(out_text.cast(), size_of::<TypeBridgeByteView>())],
+            &[(GENERATED_INPUT_PROJECTED_STRUCT_MEMBER, value.cast())],
+            &[],
+        )
+    } {
+        return status;
+    }
     guarded(|| {
         // SAFETY: initialize the complete view before inspecting the input.
         if let Err(status) = unsafe { initialize_view(out_text) } {
@@ -682,6 +966,16 @@ pub unsafe extern "C" fn type_bridge_projected_struct_member_long(
     value: *const TypeBridgeProjectedStructMember,
     out_value: *mut i64,
 ) -> TypeBridgeStatus {
+    // SAFETY: member remains live during complete read-only preflight.
+    if let Err(status) = unsafe {
+        preflight(
+            &[(out_value.cast(), size_of::<i64>())],
+            &[(GENERATED_INPUT_PROJECTED_STRUCT_MEMBER, value.cast())],
+            &[],
+        )
+    } {
+        return status;
+    }
     guarded(|| {
         if out_value.is_null() {
             return TypeBridgeStatus::InvalidArgument;
@@ -709,6 +1003,16 @@ pub unsafe extern "C" fn type_bridge_projected_struct_member_double_bits(
     value: *const TypeBridgeProjectedStructMember,
     out_bits: *mut u64,
 ) -> TypeBridgeStatus {
+    // SAFETY: member remains live during complete read-only preflight.
+    if let Err(status) = unsafe {
+        preflight(
+            &[(out_bits.cast(), size_of::<u64>())],
+            &[(GENERATED_INPUT_PROJECTED_STRUCT_MEMBER, value.cast())],
+            &[],
+        )
+    } {
+        return status;
+    }
     guarded(|| {
         if out_bits.is_null() {
             return TypeBridgeStatus::InvalidArgument;
@@ -736,6 +1040,16 @@ pub unsafe extern "C" fn type_bridge_projected_struct_member_boolean(
     value: *const TypeBridgeProjectedStructMember,
     out_boolean: *mut u8,
 ) -> TypeBridgeStatus {
+    // SAFETY: member remains live during complete read-only preflight.
+    if let Err(status) = unsafe {
+        preflight(
+            &[(out_boolean.cast(), size_of::<u8>())],
+            &[(GENERATED_INPUT_PROJECTED_STRUCT_MEMBER, value.cast())],
+            &[],
+        )
+    } {
+        return status;
+    }
     guarded(|| {
         if out_boolean.is_null() {
             return TypeBridgeStatus::InvalidArgument;
@@ -795,6 +1109,25 @@ pub unsafe extern "C" fn type_bridge_canonical_archive_builder_open_v1(
     out_builder: *mut *mut TypeBridgeCanonicalArchiveBuilder,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
+    // SAFETY: package remains live during complete read-only preflight.
+    if let Err(status) = unsafe {
+        preflight(
+            &[
+                (
+                    out_builder.cast(),
+                    size_of::<*mut TypeBridgeCanonicalArchiveBuilder>(),
+                ),
+                (
+                    out_diagnostics.cast(),
+                    size_of::<*mut TypeBridgeExecutionDiagnostics>(),
+                ),
+            ],
+            &[(GENERATED_INPUT_SCHEMA_PACKAGE, package.cast())],
+            &[],
+        )
+    } {
+        return status;
+    }
     // SAFETY: shared initializer validates and clears distinct writable outputs.
     if let Err(status) = unsafe { initialize_execution_outputs(out_builder, out_diagnostics) } {
         return status;
@@ -826,6 +1159,19 @@ pub unsafe extern "C" fn type_bridge_canonical_archive_builder_append_record_v1(
     record: TypeBridgeByteView,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
+    // SAFETY: builder and record bytes remain live during complete read-only preflight.
+    if let Err(status) = unsafe {
+        preflight(
+            &[(
+                (out_diagnostics.cast()),
+                size_of::<*mut TypeBridgeExecutionDiagnostics>(),
+            )],
+            &[(GENERATED_INPUT_CANONICAL_ARCHIVE_BUILDER, builder.cast())],
+            &[record],
+        )
+    } {
+        return status;
+    }
     if out_diagnostics.is_null() {
         return TypeBridgeStatus::InvalidArgument;
     }
@@ -861,16 +1207,36 @@ pub unsafe extern "C" fn type_bridge_canonical_archive_builder_finish_v1(
     out_bytes: *mut *mut TypeBridgeCanonicalBytes,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
+    if builder.is_null() {
+        return TypeBridgeStatus::InvalidArgument;
+    }
+    // SAFETY: caller supplies a readable ownership slot for this call.
+    let retained = unsafe { builder.read_unaligned() };
+    // SAFETY: retained builder remains live until successful atomic consumption.
+    if let Err(status) = unsafe {
+        preflight(
+            &[
+                (
+                    builder.cast(),
+                    size_of::<*mut TypeBridgeCanonicalArchiveBuilder>(),
+                ),
+                (out_bytes.cast(), size_of::<*mut TypeBridgeCanonicalBytes>()),
+                (
+                    out_diagnostics.cast(),
+                    size_of::<*mut TypeBridgeExecutionDiagnostics>(),
+                ),
+            ],
+            &[(GENERATED_INPUT_CANONICAL_ARCHIVE_BUILDER, retained.cast())],
+            &[],
+        )
+    } {
+        return status;
+    }
     // SAFETY: shared initializer validates and clears distinct writable outputs.
     if let Err(status) = unsafe { initialize_execution_outputs(out_bytes, out_diagnostics) } {
         return status;
     }
     guarded(|| {
-        if builder.is_null() {
-            return TypeBridgeStatus::InvalidArgument;
-        }
-        // SAFETY: caller supplies a live owning builder slot.
-        let retained = unsafe { builder.read_unaligned() };
         if retained.is_null() {
             return TypeBridgeStatus::InvalidArgument;
         }
@@ -909,6 +1275,25 @@ pub unsafe extern "C" fn type_bridge_canonical_archive_open_v1(
     out_archive: *mut *mut TypeBridgeCanonicalArchive,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
+    // SAFETY: package and byte range remain live during complete read-only preflight.
+    if let Err(status) = unsafe {
+        preflight(
+            &[
+                (
+                    out_archive.cast(),
+                    size_of::<*mut TypeBridgeCanonicalArchive>(),
+                ),
+                (
+                    out_diagnostics.cast(),
+                    size_of::<*mut TypeBridgeExecutionDiagnostics>(),
+                ),
+            ],
+            &[(GENERATED_INPUT_SCHEMA_PACKAGE, package.cast())],
+            &[bytes],
+        )
+    } {
+        return status;
+    }
     // SAFETY: shared initializer validates and clears distinct writable outputs.
     if let Err(status) = unsafe { initialize_execution_outputs(out_archive, out_diagnostics) } {
         return status;
@@ -954,6 +1339,16 @@ pub unsafe extern "C" fn type_bridge_canonical_bytes_view(
     bytes: *const TypeBridgeCanonicalBytes,
     out_view: *mut TypeBridgeByteView,
 ) -> TypeBridgeStatus {
+    // SAFETY: byte handle remains live during complete read-only preflight.
+    if let Err(status) = unsafe {
+        preflight(
+            &[(out_view.cast(), size_of::<TypeBridgeByteView>())],
+            &[(GENERATED_INPUT_CANONICAL_BYTES, bytes.cast())],
+            &[],
+        )
+    } {
+        return status;
+    }
     if out_view.is_null() {
         return TypeBridgeStatus::InvalidArgument;
     }
@@ -987,6 +1382,16 @@ pub unsafe extern "C" fn type_bridge_canonical_archive_count(
     archive: *const TypeBridgeCanonicalArchive,
     out_count: *mut usize,
 ) -> TypeBridgeStatus {
+    // SAFETY: archive remains live during complete read-only preflight.
+    if let Err(status) = unsafe {
+        preflight(
+            &[(out_count.cast(), size_of::<usize>())],
+            &[(GENERATED_INPUT_CANONICAL_ARCHIVE, archive.cast())],
+            &[],
+        )
+    } {
+        return status;
+    }
     if out_count.is_null() {
         return TypeBridgeStatus::InvalidArgument;
     }
@@ -1014,6 +1419,22 @@ pub unsafe extern "C" fn type_bridge_canonical_archive_record_at(
     out_bytes: *mut *mut TypeBridgeCanonicalBytes,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
+    // SAFETY: archive remains live during complete read-only preflight.
+    if let Err(status) = unsafe {
+        preflight(
+            &[
+                (out_bytes.cast(), size_of::<*mut TypeBridgeCanonicalBytes>()),
+                (
+                    out_diagnostics.cast(),
+                    size_of::<*mut TypeBridgeExecutionDiagnostics>(),
+                ),
+            ],
+            &[(GENERATED_INPUT_CANONICAL_ARCHIVE, archive.cast())],
+            &[],
+        )
+    } {
+        return status;
+    }
     // SAFETY: shared initializer validates and clears distinct writable outputs.
     if let Err(status) = unsafe { initialize_execution_outputs(out_bytes, out_diagnostics) } {
         return status;

@@ -6,6 +6,17 @@
 extern "C" {
 #endif
 
+#define TYPE_BRIDGE_GENERATED_INPUT_CANONICAL_BYTES                         \
+  ((type_bridge_generated_opaque_input_kind_t)37u)
+#define TYPE_BRIDGE_GENERATED_INPUT_CANONICAL_ARCHIVE_BUILDER               \
+  ((type_bridge_generated_opaque_input_kind_t)38u)
+#define TYPE_BRIDGE_GENERATED_INPUT_CANONICAL_ARCHIVE                       \
+  ((type_bridge_generated_opaque_input_kind_t)39u)
+#define TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_STRUCT                        \
+  ((type_bridge_generated_opaque_input_kind_t)40u)
+#define TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_STRUCT_MEMBER                 \
+  ((type_bridge_generated_opaque_input_kind_t)41u)
+
 typedef struct type_bridge_canonical_bytes type_bridge_canonical_bytes_t;
 typedef struct type_bridge_canonical_archive_builder
     type_bridge_canonical_archive_builder_t;

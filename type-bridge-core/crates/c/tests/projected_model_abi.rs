@@ -975,6 +975,21 @@ fn all_nine_domains_person_create_reference_and_membership_are_package_branded()
     );
     assert!(diagnostics.is_null());
 
+    // An output slot inside the live projected input is rejected before publication.
+    // SAFETY: the deliberately hostile output aliases a live input object; preflight rejects it
+    // before writing either output.
+    assert_eq!(
+        unsafe {
+            type_bridge_canonical_record_encode_create_v1(
+                person_create,
+                person_create.cast(),
+                &mut diagnostics,
+            )
+        },
+        TypeBridgeStatus::InvalidArgument,
+    );
+    assert!(diagnostics.is_null());
+
     let mut record_bytes = ptr::null_mut();
     // SAFETY: the projected create is live and both outputs are writable.
     assert_eq!(
@@ -994,6 +1009,16 @@ fn all_nine_domains_person_create_reference_and_membership_are_package_branded()
         TypeBridgeStatus::Ok,
     );
     let expected_record = copied(record_view);
+    // A view output placed inside the retained canonical buffer is rejected without mutation.
+    // SAFETY: the deliberately hostile output aliases borrowed immutable bytes; preflight rejects
+    // it before attempting an unaligned view write.
+    assert_eq!(
+        unsafe {
+            type_bridge_canonical_bytes_view(record_bytes, record_view.data.cast_mut().cast())
+        },
+        TypeBridgeStatus::InvalidArgument,
+    );
+    assert_eq!(copied(record_view), expected_record);
     let mut archive_builder = ptr::null_mut();
     // SAFETY: package and outputs are live.
     assert_eq!(
@@ -1070,6 +1095,23 @@ fn all_nine_domains_person_create_reference_and_membership_are_package_branded()
         unsafe { type_bridge_canonical_bytes_view(recovered, &mut recovered_view) },
         TypeBridgeStatus::Ok,
     );
+    assert_eq!(copied(recovered_view), expected_record);
+    // A decoded-owner output placed inside its canonical input is rejected without mutation.
+    // SAFETY: the deliberately hostile owner slot aliases borrowed canonical bytes; preflight
+    // rejects it before initializing or publishing an owner.
+    assert_eq!(
+        unsafe {
+            type_bridge_canonical_record_decode_create_v1(
+                fixture.package,
+                recovered_view,
+                &person_model,
+                recovered_view.data.cast_mut().cast(),
+                &mut diagnostics,
+            )
+        },
+        TypeBridgeStatus::InvalidArgument,
+    );
+    assert!(diagnostics.is_null());
     assert_eq!(copied(recovered_view), expected_record);
     let mut decoded_create = ptr::null_mut();
     // SAFETY: package, canonical bytes, exact generated token, and outputs remain live.
