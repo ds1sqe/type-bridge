@@ -51,9 +51,10 @@ pub use execution::{
     decide_backfill_recovery, decide_group_recovery,
 };
 pub use generate::{
-    GeneratedMigration, MigrationGenerationOutcome, MigrationGenerationRequest,
-    MigrationPreviewError, generate_next_migration, render_migration_preview,
-    try_acquire_migration_authoring_lock, write_generated_migration_under_lock,
+    BackfillMigrationGenerationRequest, GeneratedMigration, MigrationGenerationOutcome,
+    MigrationGenerationRequest, MigrationPreviewError, generate_backfill_migration,
+    generate_next_migration, render_migration_preview, try_acquire_migration_authoring_lock,
+    write_generated_migration_under_lock,
 };
 pub use history::{
     CanonicalMigrationHistoryEvidence, MigrationHistoryGraph,

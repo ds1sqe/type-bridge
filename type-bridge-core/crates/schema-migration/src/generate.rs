@@ -18,6 +18,7 @@ use type_bridge_contract::migration::{
     MigrationId, MigrationStep, MigrationStepId, SchemaDeltaStep,
 };
 use type_bridge_contract::migration_assertion::AssertionExpectation;
+use type_bridge_contract::migration_backfill::AttributeBackfillPlan;
 use type_bridge_contract::schema::{DeclaredSchema, SchemaDelta};
 use type_bridge_query::{MigrationAssertionValidationContext, lower_condition_to_plan};
 use type_bridge_schema::{
@@ -62,6 +63,23 @@ pub struct MigrationGenerationRequest<'a> {
     pub genesis_source: &'a DeclaredSchema,
     /// Desired schema compiled from the current schema sources.
     pub desired: &'a DeclaredSchema,
+    /// Managed scope, semantic profile, and available capabilities.
+    pub context: &'a ManagedDeltaContext,
+}
+
+/// Inputs authoring one closed binding-neutral backfill migration.
+#[derive(Clone, Copy, Debug)]
+pub struct BackfillMigrationGenerationRequest<'a> {
+    /// Durable application label binding the migration lineage.
+    pub app_label: &'a str,
+    /// Author-supplied descriptive name; the ordinal prefix is allocated.
+    pub base_name: &'a str,
+    /// Exact declared source when history is empty.
+    pub genesis_source: &'a DeclaredSchema,
+    /// Desired schema compiled from the current schema sources.
+    pub desired: &'a DeclaredSchema,
+    /// Closed, already structurally validated backfill plan.
+    pub plan: &'a AttributeBackfillPlan,
     /// Managed scope, semantic profile, and available capabilities.
     pub context: &'a ManagedDeltaContext,
 }
@@ -203,6 +221,63 @@ pub fn generate_next_migration(
             canonical_bytes,
         },
     )))
+}
+
+/// Author one closed backfill against the exact committed history head.
+///
+/// Backfill authoring is deliberately separate from schema-delta generation:
+/// current Split-YAML must already equal the committed head so expand,
+/// backfill, and contract remain independently reviewable migrations.
+pub fn generate_backfill_migration(
+    graph: &MigrationHistoryGraph,
+    request: &BackfillMigrationGenerationRequest<'_>,
+) -> Result<GeneratedMigration, Diagnostic> {
+    for (id, _) in graph.manifests() {
+        if id.app_label().as_str() != request.app_label {
+            return Err(failure(
+                DiagnosticCategory::InvalidContract,
+                "migration_generation_foreign_app_label",
+                "history contains a migration from a different application lineage",
+            ));
+        }
+    }
+    let (source, parents) = match graph.default_head()? {
+        None => (request.genesis_source, Vec::new()),
+        Some(head) => (
+            graph
+                .manifest(head)
+                .expect("a graph head is always a graph member")
+                .target_schema(),
+            vec![head.clone()],
+        ),
+    };
+    let source_state = managed_schema_state(source, request.context).map_err(delta_diagnostic)?;
+    let desired_state =
+        managed_schema_state(request.desired, request.context).map_err(delta_diagnostic)?;
+    if source_state != desired_state {
+        return Err(failure(
+            DiagnosticCategory::InvalidContract,
+            "migration_backfill_generation_schema_drift",
+            "backfill authoring requires current Split-YAML to equal the committed head",
+        ));
+    }
+
+    let id = MigrationId::new(request.app_label, allocate_name(graph, request.base_name))?;
+    if graph.manifest(&id).is_some() {
+        return Err(failure(
+            DiagnosticCategory::InvalidContract,
+            "migration_generation_duplicate_name",
+            "allocated migration identity already exists in verified history",
+        ));
+    }
+    let step = MigrationStep::backfill(MigrationStepId::new("backfill")?, request.plan.clone())?;
+    let draft = SchemaMigrationDraft::new(id, parents, vec![step])?;
+    let manifest = build_verified_manifest(draft, (source, request.context))?;
+    let canonical_bytes = encode_verified_manifest(&manifest)?;
+    Ok(GeneratedMigration {
+        manifest,
+        canonical_bytes,
+    })
 }
 
 /// Render the review-only TypeQL preview of a verified manifest.
