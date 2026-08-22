@@ -29,6 +29,7 @@ type-bridge-orm = { path = "../orm", version = "2.1.0", default-features = false
 type-bridge-orm-derive = { path = "../orm-derive", version = "2.1.0" }
 type-bridge-schema = { path = "../schema", version = "2.1.0" }
 type-bridge-schema-codegen = { path = "../schema-codegen", version = "2.1.0" }
+type-bridge-schema-migration = { path = "../schema-migration", version = "2.1.0" }
 thiserror = "2"
 tracing = "0.1"
 regex = "1"

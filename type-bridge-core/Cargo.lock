@@ -3126,6 +3126,7 @@ dependencies = [
  "type-bridge-orm-derive",
  "type-bridge-schema",
  "type-bridge-schema-codegen",
+ "type-bridge-schema-migration",
 ]
 
 [[package]]

@@ -454,6 +454,10 @@ mod tests {
         encode_schema_authority, normalize_documents, project, resolve,
     };
     use type_bridge_schema_codegen::{PythonEmitter, RustEmitter};
+    use type_bridge_schema_migration::{
+        MigrationHistoryGraph, VerifiedMigrationHistoryBundle,
+        encode_verified_migration_history_bundle,
+    };
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     struct TestSchema;
@@ -567,6 +571,33 @@ mod tests {
 
     fn canonical(value: &Value) -> &'static str {
         leak(to_canonical_json(value).unwrap())
+    }
+
+    #[test]
+    fn authority_backed_package_opens_and_fences_generated_migration_catalogs_offline() {
+        let package = generated_package(
+            "format: typebridge.schema/v2\nentities:\n  person: {}\n",
+            "rust-migration-catalog",
+        );
+        let graph = MigrationHistoryGraph::from_verified(std::iter::empty::<
+            type_bridge_schema_migration::VerifiedSchemaMigrationManifest,
+        >())
+        .unwrap();
+        let bundle = VerifiedMigrationHistoryBundle::from_graph(&graph).unwrap();
+        let bytes = encode_verified_migration_history_bundle(&bundle).unwrap();
+        let catalog = package
+            .open_migration_catalog(&bytes)
+            .expect("verified generated bundle opens without provider I/O");
+        assert!(catalog.is_empty());
+        assert_eq!(catalog.fingerprint(), bundle.fingerprint());
+
+        let mut tampered: Value = serde_json::from_slice(&bytes).unwrap();
+        tampered["format"] = Value::String("foreign.history/v1".to_owned());
+        let tampered = to_canonical_json(&tampered).unwrap();
+        let error = package
+            .open_migration_catalog(&tampered)
+            .expect_err("foreign bundle rejects before provider I/O");
+        assert!(matches!(error, Error::SchemaVerification { .. }));
     }
 
     fn resign(value: &mut Value) {

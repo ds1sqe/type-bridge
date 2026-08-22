@@ -15,6 +15,7 @@ mod entity_codec;
 mod entity_manager;
 pub mod error;
 pub mod hooks;
+pub mod migration;
 pub mod model;
 mod projected_batch;
 mod projected_codec;
@@ -37,6 +38,7 @@ pub use error::{
 pub use hooks::{
     CrudOperation, HookContext, HookError, HookFuture, LifecycleHook, ModelKind, PreHookResult,
 };
+pub use migration::{MigrationCatalog, MigrationHistoryEntry};
 pub use projected_filter::{
     ProjectedEntityFilter, ProjectedRelationFilter, ReadEntityManager, ReadRelationManager,
 };
