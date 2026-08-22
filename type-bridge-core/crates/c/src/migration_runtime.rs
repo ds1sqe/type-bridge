@@ -59,6 +59,14 @@ impl DatabaseAdministrationState {
         self.runtime.block_on(self.database_exists())
     }
 
+    pub(crate) fn database_exists_controlled_blocking(
+        &self,
+        control: &type_bridge_schema_migration::MigrationExecutionControl,
+    ) -> Result<bool, Diagnostic> {
+        self.runtime
+            .block_on(self.administrator.database_exists_controlled(control))
+    }
+
     pub(crate) async fn create_database_outcome(
         &self,
     ) -> Result<type_bridge_schema_migration_typedb::ManagedDatabasePairCreateOutcome, Diagnostic>
@@ -73,6 +81,17 @@ impl DatabaseAdministrationState {
         self.runtime.block_on(self.create_database_outcome())
     }
 
+    pub(crate) fn create_database_outcome_controlled_blocking(
+        &self,
+        control: &type_bridge_schema_migration::MigrationExecutionControl,
+    ) -> Result<type_bridge_schema_migration_typedb::ManagedDatabasePairCreateOutcome, Diagnostic>
+    {
+        self.runtime.block_on(
+            self.administrator
+                .create_database_outcome_controlled(control),
+        )
+    }
+
     pub(crate) async fn inspect(
         &self,
     ) -> Result<type_bridge_schema_migration_typedb::ManagedDatabasePairState, Diagnostic> {
@@ -83,6 +102,14 @@ impl DatabaseAdministrationState {
         &self,
     ) -> Result<type_bridge_schema_migration_typedb::ManagedDatabasePairState, Diagnostic> {
         self.runtime.block_on(self.inspect())
+    }
+
+    pub(crate) fn inspect_controlled_blocking(
+        &self,
+        control: &type_bridge_schema_migration::MigrationExecutionControl,
+    ) -> Result<type_bridge_schema_migration_typedb::ManagedDatabasePairState, Diagnostic> {
+        self.runtime
+            .block_on(self.administrator.inspect_controlled(control))
     }
 
     pub(crate) async fn plan_delete(
@@ -101,6 +128,21 @@ impl DatabaseAdministrationState {
         self: &Arc<Self>,
     ) -> Result<DatabaseDeletionPlanState, Diagnostic> {
         self.runtime.block_on(self.plan_delete())
+    }
+
+    pub(crate) fn plan_delete_controlled_blocking(
+        self: &Arc<Self>,
+        control: &type_bridge_schema_migration::MigrationExecutionControl,
+    ) -> Result<DatabaseDeletionPlanState, Diagnostic> {
+        self.runtime.block_on(async {
+            self.administrator
+                .plan_delete_controlled(control)
+                .await
+                .map(|plan| DatabaseDeletionPlanState {
+                    administration: Arc::clone(self),
+                    plan: Some(plan),
+                })
+        })
     }
 }
 
@@ -137,6 +179,22 @@ impl DatabaseDeletionPlanState {
     {
         let runtime = self.administration.runtime.clone();
         runtime.block_on(self.execute())
+    }
+
+    pub(crate) fn execute_controlled_blocking(
+        &mut self,
+        control: &type_bridge_schema_migration::MigrationExecutionControl,
+    ) -> Result<type_bridge_schema_migration_typedb::ManagedDatabasePairDeleteOutcome, Diagnostic>
+    {
+        let plan = self.plan.take().ok_or_else(|| {
+            stable(
+                DiagnosticCategory::InvalidContract,
+                "c_database_deletion_plan_closed",
+                "The database deletion plan is already closed or consumed",
+            )
+        })?;
+        let runtime = self.administration.runtime.clone();
+        runtime.block_on(plan.execute_controlled(control))
     }
 
     pub(crate) fn close(&mut self) {

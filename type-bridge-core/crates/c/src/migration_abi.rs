@@ -184,6 +184,39 @@ unsafe fn preflight_one_output<T, Input>(
     unsafe { initialize_diagnostics(out_diagnostics) }
 }
 
+unsafe fn preflight_options_one_output<T, Input>(
+    input: *const Input,
+    options: *const TypeBridgeMigrationExecutionOptionsV1,
+    out: *mut T,
+    out_diagnostics: *mut *mut TypeBridgeDiagnostics,
+) -> Result<(), TypeBridgeStatus> {
+    let outputs = direct_output_preflight(&[
+        (out.cast(), size_of::<T>()),
+        (
+            out_diagnostics.cast(),
+            size_of::<*mut TypeBridgeDiagnostics>(),
+        ),
+    ])?;
+    outputs.check_bytes(input.cast(), size_of::<Input>())?;
+    if !options.is_null() {
+        outputs.check_bytes(
+            options.cast(),
+            size_of::<TypeBridgeMigrationExecutionOptionsV1>(),
+        )?;
+        let cancellation = unsafe { options.read_unaligned().cancellation };
+        if !cancellation.is_null() {
+            outputs.check_bytes(
+                cancellation.cast(),
+                size_of::<TypeBridgeMigrationCancellation>(),
+            )?;
+        }
+    }
+    if out.is_null() {
+        return Err(TypeBridgeStatus::InvalidArgument);
+    }
+    unsafe { initialize_diagnostics(out_diagnostics) }
+}
+
 /// Open administration authority bound to the database handle's exact identity.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn type_bridge_database_administration_open(
@@ -246,6 +279,41 @@ pub unsafe extern "C" fn type_bridge_database_administration_exists(
     })
 }
 
+/// Controlled existence check using the shared ABI 1.5 execution options.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_database_administration_exists_with_options(
+    administration: *const TypeBridgeDatabaseAdministration,
+    options: *const TypeBridgeMigrationExecutionOptionsV1,
+    out_exists: *mut u8,
+    out_diagnostics: *mut *mut TypeBridgeDiagnostics,
+) -> TypeBridgeStatus {
+    if let Err(status) = unsafe {
+        preflight_options_one_output(administration, options, out_exists, out_diagnostics)
+    } {
+        return status;
+    }
+    unsafe { out_exists.write_unaligned(0) };
+    guarded(|| {
+        let Some(administration) = (unsafe { administration.as_ref() }) else {
+            return TypeBridgeStatus::InvalidArgument;
+        };
+        let control = match unsafe { migration_execution_control(options) } {
+            Ok(value) => value,
+            Err(status) => return status,
+        };
+        match administration
+            .state
+            .database_exists_controlled_blocking(&control)
+        {
+            Ok(value) => {
+                unsafe { out_exists.write_unaligned(u8::from(value)) };
+                TypeBridgeStatus::Ok
+            }
+            Err(error) => return_failure(error, out_diagnostics),
+        }
+    })
+}
+
 /// Create the exact bound managed database and return a normalized outcome.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn type_bridge_database_administration_create(
@@ -272,6 +340,36 @@ pub unsafe extern "C" fn type_bridge_database_administration_create(
                 unsafe { out_outcome.write_unaligned(value) };
                 TypeBridgeStatus::Ok
             }
+            Err(error) => return_failure(error, out_diagnostics),
+        }
+    })
+}
+
+/// Controlled create using the shared ABI 1.5 execution options.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_database_administration_create_with_options(
+    administration: *const TypeBridgeDatabaseAdministration,
+    options: *const TypeBridgeMigrationExecutionOptionsV1,
+    out_outcome: *mut u32,
+    out_diagnostics: *mut *mut TypeBridgeDiagnostics,
+) -> TypeBridgeStatus {
+    if let Err(status) = unsafe {
+        preflight_options_one_output(administration, options, out_outcome, out_diagnostics)
+    } {
+        return status;
+    }
+    unsafe { out_outcome.write_unaligned(0) };
+    guarded(|| {
+        let Some(administration) = (unsafe { administration.as_ref() }) else {
+            return TypeBridgeStatus::InvalidArgument;
+        };
+        let control = match unsafe { migration_execution_control(options) } {
+            Ok(value) => value,
+            Err(status) => return status,
+        };
+        match administration.state.create_database_outcome_controlled_blocking(&control) {
+            Ok(type_bridge_schema_migration_typedb::ManagedDatabasePairCreateOutcome::Created) => { unsafe { out_outcome.write_unaligned(CREATE_CREATED) }; TypeBridgeStatus::Ok }
+            Ok(type_bridge_schema_migration_typedb::ManagedDatabasePairCreateOutcome::AlreadyExists) => { unsafe { out_outcome.write_unaligned(CREATE_ALREADY_EXISTS) }; TypeBridgeStatus::Ok }
             Err(error) => return_failure(error, out_diagnostics),
         }
     })
@@ -304,6 +402,38 @@ pub unsafe extern "C" fn type_bridge_database_administration_inspect(
     })
 }
 
+/// Controlled pair inspection using the shared ABI 1.5 execution options.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_database_administration_inspect_with_options(
+    administration: *const TypeBridgeDatabaseAdministration,
+    options: *const TypeBridgeMigrationExecutionOptionsV1,
+    out_state: *mut u32,
+    out_diagnostics: *mut *mut TypeBridgeDiagnostics,
+) -> TypeBridgeStatus {
+    if let Err(status) =
+        unsafe { preflight_options_one_output(administration, options, out_state, out_diagnostics) }
+    {
+        return status;
+    }
+    unsafe { out_state.write_unaligned(0) };
+    guarded(|| {
+        let Some(administration) = (unsafe { administration.as_ref() }) else {
+            return TypeBridgeStatus::InvalidArgument;
+        };
+        let control = match unsafe { migration_execution_control(options) } {
+            Ok(value) => value,
+            Err(status) => return status,
+        };
+        match administration.state.inspect_controlled_blocking(&control) {
+            Ok(state) => {
+                unsafe { out_state.write_unaligned(pair_state(state)) };
+                TypeBridgeStatus::Ok
+            }
+            Err(error) => return_failure(error, out_diagnostics),
+        }
+    })
+}
+
 /// Build a single-use pair-aware destructive admission plan.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn type_bridge_database_administration_plan_delete(
@@ -321,6 +451,45 @@ pub unsafe extern "C" fn type_bridge_database_administration_plan_delete(
             return TypeBridgeStatus::InvalidArgument;
         };
         match administration.state.plan_delete_blocking() {
+            Ok(state) => {
+                unsafe {
+                    out_plan.write_unaligned(Box::into_raw(Box::new(
+                        TypeBridgeDatabaseDeletionPlan { state },
+                    )))
+                };
+                TypeBridgeStatus::Ok
+            }
+            Err(error) => return_failure(error, out_diagnostics),
+        }
+    })
+}
+
+/// Controlled destructive admission using the shared ABI 1.5 execution options.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_database_administration_plan_delete_with_options(
+    administration: *const TypeBridgeDatabaseAdministration,
+    options: *const TypeBridgeMigrationExecutionOptionsV1,
+    out_plan: *mut *mut TypeBridgeDatabaseDeletionPlan,
+    out_diagnostics: *mut *mut TypeBridgeDiagnostics,
+) -> TypeBridgeStatus {
+    if let Err(status) =
+        unsafe { preflight_options_one_output(administration, options, out_plan, out_diagnostics) }
+    {
+        return status;
+    }
+    unsafe { out_plan.write_unaligned(ptr::null_mut()) };
+    guarded(|| {
+        let Some(administration) = (unsafe { administration.as_ref() }) else {
+            return TypeBridgeStatus::InvalidArgument;
+        };
+        let control = match unsafe { migration_execution_control(options) } {
+            Ok(value) => value,
+            Err(status) => return status,
+        };
+        match administration
+            .state
+            .plan_delete_controlled_blocking(&control)
+        {
             Ok(state) => {
                 unsafe {
                     out_plan.write_unaligned(Box::into_raw(Box::new(
@@ -368,6 +537,44 @@ pub unsafe extern "C" fn type_bridge_database_deletion_plan_execute(
             return TypeBridgeStatus::InvalidArgument;
         };
         match plan.state.execute_blocking() {
+            Ok(outcome) => {
+                let value = match outcome {
+                    type_bridge_schema_migration_typedb::ManagedDatabasePairDeleteOutcome::AlreadyAbsent => DELETE_ALREADY_ABSENT,
+                    type_bridge_schema_migration_typedb::ManagedDatabasePairDeleteOutcome::DeletedStandaloneManaged => DELETE_STANDALONE_MANAGED,
+                    type_bridge_schema_migration_typedb::ManagedDatabasePairDeleteOutcome::DeletedOwnedPair => DELETE_OWNED_PAIR,
+                    type_bridge_schema_migration_typedb::ManagedDatabasePairDeleteOutcome::DeletedOwnedJournalOrphan => DELETE_OWNED_JOURNAL_ORPHAN,
+                };
+                unsafe { out_outcome.write_unaligned(value) };
+                TypeBridgeStatus::Ok
+            }
+            Err(error) => return_failure(error, out_diagnostics),
+        }
+    })
+}
+
+/// Controlled deletion execution using the shared ABI 1.5 execution options.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_database_deletion_plan_execute_with_options(
+    plan: *mut TypeBridgeDatabaseDeletionPlan,
+    options: *const TypeBridgeMigrationExecutionOptionsV1,
+    out_outcome: *mut u32,
+    out_diagnostics: *mut *mut TypeBridgeDiagnostics,
+) -> TypeBridgeStatus {
+    if let Err(status) =
+        unsafe { preflight_options_one_output(plan, options, out_outcome, out_diagnostics) }
+    {
+        return status;
+    }
+    unsafe { out_outcome.write_unaligned(0) };
+    guarded(|| {
+        let Some(plan) = (unsafe { plan.as_mut() }) else {
+            return TypeBridgeStatus::InvalidArgument;
+        };
+        let control = match unsafe { migration_execution_control(options) } {
+            Ok(value) => value,
+            Err(status) => return status,
+        };
+        match plan.state.execute_controlled_blocking(&control) {
             Ok(outcome) => {
                 let value = match outcome {
                     type_bridge_schema_migration_typedb::ManagedDatabasePairDeleteOutcome::AlreadyAbsent => DELETE_ALREADY_ABSENT,
@@ -2046,5 +2253,33 @@ mod tests {
         );
         assert!(diagnostics.is_null());
         assert_eq!(options.timeout_milliseconds, 0);
+    }
+
+    #[test]
+    fn candidate_c_administration_rejects_options_output_alias_before_writing() {
+        let mut options = TypeBridgeMigrationExecutionOptionsV1 {
+            struct_size: size_of::<TypeBridgeMigrationExecutionOptionsV1>() as u64,
+            version: MIGRATION_EXECUTION_OPTIONS_V1,
+            flags: 0,
+            timeout_milliseconds: 7,
+            max_transaction_groups: 1,
+            max_backfill_observations: 1,
+            cancellation: ptr::null(),
+        };
+        let mut diagnostics = ptr::null_mut();
+        let aliased_output = (&mut options.timeout_milliseconds as *mut u64).cast::<u8>();
+        assert_eq!(
+            unsafe {
+                type_bridge_database_administration_exists_with_options(
+                    ptr::null(),
+                    &options,
+                    aliased_output,
+                    &mut diagnostics,
+                )
+            },
+            TypeBridgeStatus::InvalidArgument
+        );
+        assert!(diagnostics.is_null());
+        assert_eq!(options.timeout_milliseconds, 7);
     }
 }

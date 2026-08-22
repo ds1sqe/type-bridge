@@ -2,14 +2,19 @@
 
 use std::collections::BTreeSet;
 
-const ABI_1_5_CANDIDATE_ADDITIONS: [&str; 81] = [
+const ABI_1_5_CANDIDATE_ADDITIONS: [&str; 86] = [
     "type_bridge_database_administration_open",
     "type_bridge_database_administration_exists",
+    "type_bridge_database_administration_exists_with_options",
     "type_bridge_database_administration_create",
+    "type_bridge_database_administration_create_with_options",
     "type_bridge_database_administration_inspect",
+    "type_bridge_database_administration_inspect_with_options",
     "type_bridge_database_administration_plan_delete",
+    "type_bridge_database_administration_plan_delete_with_options",
     "type_bridge_database_deletion_plan_inspected_state",
     "type_bridge_database_deletion_plan_execute",
+    "type_bridge_database_deletion_plan_execute_with_options",
     "type_bridge_database_deletion_plan_close",
     "type_bridge_database_administration_close",
     "type_bridge_migration_catalog_open",
