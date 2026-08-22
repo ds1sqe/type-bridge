@@ -66,6 +66,31 @@ def load_json(path: Path) -> dict[str, Any]:
     return value
 
 
+def canonical_json_bytes(value: Any) -> bytes:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def load_report(path: Path) -> dict[str, Any]:
+    try:
+        raw = path.read_bytes()
+    except OSError as error:
+        reject("invalid_json_source", f"cannot load {path}: {error}")
+    report = load_json(path)
+    try:
+        canonical = canonical_json_bytes(report)
+    except (TypeError, ValueError) as error:
+        reject("invalid_json_shape", f"cannot canonicalize {path}: {error}")
+    if raw != canonical:
+        reject("noncanonical_report_json", f"{path} is not exact canonical JSON")
+    return report
+
+
 def sha256(path: Path) -> str:
     try:
         return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -302,7 +327,7 @@ def compare_reports(paths: list[Path], root: Path = ROOT) -> dict[str, Any]:
     reports: dict[str, dict[str, Any]] = {}
     shared: tuple[Any, ...] | None = None
     for path in paths:
-        report = load_json(path)
+        report = load_report(path)
         validate_report(report, contracts, root)
         binding = report["binding"]
         if binding in reports:

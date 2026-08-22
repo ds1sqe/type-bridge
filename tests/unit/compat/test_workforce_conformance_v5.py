@@ -116,7 +116,7 @@ def _write_reports(root: Path) -> list[Path]:
     paths = []
     for binding in comparator.BINDINGS:
         path = root / f"{binding}.json"
-        path.write_text(json.dumps(_valid_report(root, binding)), encoding="utf-8")
+        path.write_bytes(comparator.canonical_json_bytes(_valid_report(root, binding)))
         paths.append(path)
     return paths
 
@@ -138,7 +138,7 @@ def test_rejects_cross_binding_digest_drift(tmp_path: Path) -> None:
     paths = _write_reports(root)
     report = json.loads(paths[1].read_text(encoding="utf-8"))
     report["results"][0]["observation"]["archive_sha256"] = "f" * 64
-    paths[1].write_text(json.dumps(report), encoding="utf-8")
+    paths[1].write_bytes(comparator.canonical_json_bytes(report))
 
     with pytest.raises(comparator.ContractError) as raised:
         comparator.compare_reports(paths, root)
@@ -150,7 +150,7 @@ def test_rejects_stale_source_identity(tmp_path: Path) -> None:
     paths = _write_reports(root)
     report = json.loads(paths[0].read_text(encoding="utf-8"))
     report["record_contract"]["sha256"] = "0" * 64
-    paths[0].write_text(json.dumps(report), encoding="utf-8")
+    paths[0].write_bytes(comparator.canonical_json_bytes(report))
 
     with pytest.raises(comparator.ContractError) as raised:
         comparator.compare_reports(paths, root)
@@ -162,7 +162,7 @@ def test_rejects_catalog_row_rebinding(tmp_path: Path) -> None:
     paths = _write_reports(root)
     report = json.loads(paths[0].read_text(encoding="utf-8"))
     report["results"][0]["proof_kind"] = "diagnostic"
-    paths[0].write_text(json.dumps(report), encoding="utf-8")
+    paths[0].write_bytes(comparator.canonical_json_bytes(report))
 
     with pytest.raises(comparator.ContractError) as raised:
         comparator.compare_reports(paths, root)
@@ -203,3 +203,13 @@ def test_duplicate_json_keys_are_rejected(tmp_path: Path) -> None:
     with pytest.raises(comparator.ContractError) as raised:
         comparator.load_json(path)
     assert raised.value.code == "duplicate_json_key"
+
+
+def test_noncanonical_report_json_is_rejected(tmp_path: Path) -> None:
+    root = _stage_contracts(tmp_path)
+    paths = _write_reports(root)
+    paths[0].write_text(json.dumps(_valid_report(root, "python"), indent=2), encoding="utf-8")
+
+    with pytest.raises(comparator.ContractError) as raised:
+        comparator.compare_reports(paths, root)
+    assert raised.value.code == "noncanonical_report_json"
