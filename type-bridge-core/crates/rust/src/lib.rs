@@ -52,7 +52,7 @@ pub use remote::{
     RemoteConnectionOptions, RemoteDatabase, RemoteQueryLimits, RemoteQueryTransport,
 };
 pub use schema::{Schema, SchemaPackage, Unbound};
-pub use session::{ConnectionOptions, Database};
+pub use session::{ConnectionOptions, Database, DatabaseCreateOutcome, DatabaseDeleteOutcome};
 pub use transaction::{
     ReadTransaction, TransactionEntityManager, TransactionRelationManager, WriteTransaction,
 };

@@ -8,6 +8,7 @@ mod directory;
 mod execution;
 mod generate;
 mod history;
+mod history_bundle;
 mod legacy;
 pub mod lowering;
 mod manifest;
@@ -50,6 +51,12 @@ pub use history::{
     discover_verified_migration_chain_with_evidence_in, discover_verified_migrations,
     discover_verified_migrations_in, require_adoption_authority_pair,
     require_adoption_authority_pair_state,
+};
+pub use history_bundle::{
+    MAX_MIGRATION_HISTORY_BUNDLE_BYTES, MIGRATION_HISTORY_BUNDLE_FINGERPRINT_CANONICALIZATION,
+    MIGRATION_HISTORY_BUNDLE_FINGERPRINT_DOMAIN, MIGRATION_HISTORY_BUNDLE_V1,
+    VerifiedMigrationHistoryBundle, VerifiedMigrationHistoryBundleEntry,
+    decode_verified_migration_history_bundle, encode_verified_migration_history_bundle,
 };
 pub use legacy::{
     LEGACY_APPLIED_SET_ALGORITHM, LEGACY_APPLIED_SET_CANONICALIZATION, LEGACY_CHECKSUM_ALGORITHM,

@@ -1,0 +1,171 @@
+use type_bridge_contract::capability::CapabilitySet;
+use type_bridge_contract::codec::{FormatVersion, to_canonical_json};
+use type_bridge_contract::fingerprint::SemanticProfileId;
+use type_bridge_contract::id::{TypeId, TypeKind};
+use type_bridge_contract::managed_scope::ManagedScopeId;
+use type_bridge_contract::migration::{MigrationId, MigrationStepId, SchemaDeltaStep};
+use type_bridge_contract::schema::{
+    DeclaredSchema, DocumentId, SchemaFact, SourceSpan, SourcedSchemaFact, TypeFact,
+    encode_declared_schema,
+};
+use type_bridge_schema::{ManagedDeltaContext, diff_managed, inverse_delta};
+use type_bridge_schema_migration::{
+    MigrationHistoryGraph, SchemaMigrationDraft, VerifiedMigrationHistoryBundle,
+    build_verified_manifest, decode_verified_migration_history_bundle,
+    encode_verified_migration_history_bundle,
+};
+
+fn declared(labels: &[&str]) -> DeclaredSchema {
+    let facts = labels.iter().enumerate().map(|(index, label)| {
+        let ordinal = u64::try_from(index).expect("fixture ordinal");
+        let line = u32::try_from(index + 1).expect("fixture line");
+        SourcedSchemaFact::new(
+            SchemaFact::Type(
+                TypeFact::new(TypeId::new(TypeKind::Entity, *label).expect("fixture type"))
+                    .expect("fixture type fact"),
+            ),
+            SourceSpan::new(
+                DocumentId::new("bundle-fixture").expect("fixture document"),
+                ordinal,
+                ordinal + 1,
+                line,
+                1,
+                line,
+                2,
+            )
+            .expect("fixture span"),
+        )
+    });
+    DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), facts)
+        .expect("fixture schema")
+}
+
+fn context() -> ManagedDeltaContext {
+    ManagedDeltaContext::new(
+        ManagedScopeId::new("bundle-schema").expect("fixture scope"),
+        SemanticProfileId::new("typedb-3.12.1/v1").expect("fixture profile"),
+        CapabilitySet::new(),
+    )
+}
+
+fn manifest(
+    name: &str,
+    parents: Vec<MigrationId>,
+    source: &DeclaredSchema,
+    target: &DeclaredSchema,
+    context: &ManagedDeltaContext,
+) -> type_bridge_schema_migration::VerifiedSchemaMigrationManifest {
+    let delta = diff_managed(source, target, context).expect("fixture delta");
+    let reverse = inverse_delta(&delta).expect("fixture inverse");
+    let step = SchemaDeltaStep::new(
+        MigrationStepId::new(format!("step-{name}")).expect("fixture step id"),
+        delta,
+        Some(reverse),
+    )
+    .expect("fixture step");
+    build_verified_manifest(
+        SchemaMigrationDraft::new(
+            MigrationId::new("example", name).expect("fixture migration id"),
+            parents,
+            vec![step],
+        )
+        .expect("fixture draft"),
+        (source, context),
+    )
+    .expect("fixture manifest")
+}
+
+#[test]
+fn bundle_round_trips_full_historical_authority_and_is_deterministic() {
+    let context = context();
+    let genesis = declared(&["person"]);
+    let expanded = declared(&["person", "team"]);
+    let contracted = declared(&["person", "department"]);
+    let first = manifest("0001_expand", Vec::new(), &genesis, &expanded, &context);
+    let second = manifest(
+        "0002_contract",
+        vec![first.id().clone()],
+        &expanded,
+        &contracted,
+        &context,
+    );
+    let graph = MigrationHistoryGraph::from_verified([second, first]).expect("fixture graph");
+
+    let bundle = VerifiedMigrationHistoryBundle::from_graph(&graph).expect("fixture bundle");
+    let first_bytes = encode_verified_migration_history_bundle(&bundle).expect("first encoding");
+    let second_bytes = encode_verified_migration_history_bundle(&bundle).expect("second encoding");
+    assert_eq!(first_bytes, second_bytes);
+
+    let decoded = decode_verified_migration_history_bundle(&first_bytes, &context)
+        .expect("bundle replays from embedded history");
+    assert_eq!(
+        encode_verified_migration_history_bundle(&decoded).expect("decoded encoding"),
+        first_bytes
+    );
+    assert_eq!(decoded.fingerprint(), bundle.fingerprint());
+    assert_eq!(decoded.entries().len(), 2);
+    assert_eq!(
+        decoded.heads(),
+        &[MigrationId::new("example", "0002_contract").unwrap()]
+    );
+    assert_eq!(
+        encode_declared_schema(decoded.entries()[0].source_schema()).unwrap(),
+        encode_declared_schema(&genesis).unwrap()
+    );
+    assert_eq!(
+        encode_declared_schema(decoded.entries()[1].target_schema()).unwrap(),
+        encode_declared_schema(&contracted).unwrap()
+    );
+}
+
+#[test]
+fn bundle_rejects_tampering_before_manifest_replay() {
+    let context = context();
+    let source = declared(&["person"]);
+    let target = declared(&["person", "team"]);
+    let graph = MigrationHistoryGraph::from_verified([manifest(
+        "0001_expand",
+        Vec::new(),
+        &source,
+        &target,
+        &context,
+    )])
+    .expect("fixture graph");
+    let bundle = VerifiedMigrationHistoryBundle::from_graph(&graph).expect("fixture bundle");
+    let bytes = encode_verified_migration_history_bundle(&bundle).expect("fixture encoding");
+    let mut value: serde_json::Value = serde_json::from_slice(&bytes).expect("fixture JSON");
+    value["content"]["entries"][0]["manifest_digest"] = serde_json::Value::String("0".repeat(64));
+    let tampered = to_canonical_json(&value).expect("canonical tampering");
+
+    assert_eq!(
+        decode_verified_migration_history_bundle(&tampered, &context)
+            .expect_err("tampered bundle rejects")
+            .code()
+            .as_str(),
+        "migration_history_bundle_fingerprint_mismatch"
+    );
+}
+
+#[test]
+fn bundle_rejects_foreign_semantic_context() {
+    let context = context();
+    let source = declared(&["person"]);
+    let target = declared(&["person", "team"]);
+    let graph = MigrationHistoryGraph::from_verified([manifest(
+        "0001_expand",
+        Vec::new(),
+        &source,
+        &target,
+        &context,
+    )])
+    .expect("fixture graph");
+    let bundle = VerifiedMigrationHistoryBundle::from_graph(&graph).expect("fixture bundle");
+    let bytes = encode_verified_migration_history_bundle(&bundle).expect("fixture encoding");
+    let foreign = ManagedDeltaContext::new(
+        ManagedScopeId::new("foreign-schema").expect("foreign scope"),
+        SemanticProfileId::new("typedb-3.12.1/v1").expect("fixture profile"),
+        CapabilitySet::new(),
+    );
+
+    assert!(decode_verified_migration_history_bundle(&bytes, &foreign).is_err());
+}

@@ -19,11 +19,11 @@ use type_bridge_schema::SafetyClass;
 use type_bridge_schema_compat::{ADOPTED_GENESIS_FILE_NAME, parse_adopted_genesis};
 use type_bridge_schema_migration::{
     GeneratedMigration, MigrationDirectory, MigrationGenerationOutcome, MigrationGenerationRequest,
-    MigrationHistoryGraph, MigrationPreviewError,
+    MigrationHistoryGraph, MigrationPreviewError, VerifiedMigrationHistoryBundle,
     canonical_history_declared_legacy_bridge_count_in, discover_verified_migration_chain_in,
-    generate_next_migration, render_migration_preview, require_adoption_authority_pair,
-    require_adoption_authority_pair_state, try_acquire_migration_authoring_lock,
-    write_generated_migration_under_lock,
+    encode_verified_migration_history_bundle, generate_next_migration, render_migration_preview,
+    require_adoption_authority_pair, require_adoption_authority_pair_state,
+    try_acquire_migration_authoring_lock, write_generated_migration_under_lock,
 };
 
 use crate::{
@@ -159,6 +159,29 @@ impl TypeBridgeWorkspace {
     ) -> Result<MigrationHistoryGraph, TypeBridgeWorkspaceError> {
         self.discover_migrations_with_genesis_in(directory)
             .map(|(graph, _)| graph)
+    }
+
+    /// Capture one deterministic, source-free bundle of the committed history.
+    pub fn migration_history_bundle(
+        &self,
+    ) -> Result<VerifiedMigrationHistoryBundle, TypeBridgeWorkspaceError> {
+        let directory = self.open_migration_directory()?;
+        self.migration_history_bundle_in(&directory)
+    }
+
+    /// Capture a history bundle through one retained confined directory authority.
+    pub fn migration_history_bundle_in(
+        &self,
+        directory: &MigrationDirectoryAuthority,
+    ) -> Result<VerifiedMigrationHistoryBundle, TypeBridgeWorkspaceError> {
+        let graph = self.discover_migrations_in(directory)?;
+        Ok(VerifiedMigrationHistoryBundle::from_graph(&graph)?)
+    }
+
+    /// Capture the exact canonical history-bundle bytes used by generated packages.
+    pub fn migration_history_bundle_bytes(&self) -> Result<Vec<u8>, TypeBridgeWorkspaceError> {
+        let bundle = self.migration_history_bundle()?;
+        Ok(encode_verified_migration_history_bundle(&bundle)?)
     }
 
     fn discover_migrations_with_genesis_in(

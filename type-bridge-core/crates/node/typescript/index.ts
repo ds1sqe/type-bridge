@@ -205,10 +205,15 @@ export interface NativeRustDatabase {
   databaseName(): string;
   databaseExists(): boolean;
   createDatabase(): void;
+  createDatabaseOutcome(): DatabaseCreateOutcome;
   deleteDatabase(): void;
+  deleteDatabaseOutcome(): DatabaseDeleteOutcome;
   resetDatabase(): void;
   transaction(transactionType?: TransactionType): NativeRustTransactionContext;
 }
+
+export type DatabaseCreateOutcome = "created" | "already_exists";
+export type DatabaseDeleteOutcome = "deleted" | "already_absent";
 
 export interface NativeRustTransactionContext {
   queryJson(query: string): string;
@@ -492,8 +497,16 @@ export class RustDatabase {
     this.#native.createDatabase();
   }
 
+  createDatabaseOutcome(): DatabaseCreateOutcome {
+    return this.#native.createDatabaseOutcome();
+  }
+
   deleteDatabase(): void {
     this.#native.deleteDatabase();
+  }
+
+  deleteDatabaseOutcome(): DatabaseDeleteOutcome {
+    return this.#native.deleteDatabaseOutcome();
   }
 
   resetDatabase(): void {

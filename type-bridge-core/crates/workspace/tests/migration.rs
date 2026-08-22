@@ -14,7 +14,7 @@ use type_bridge_schema_compat::{ADOPTED_GENESIS_FILE_NAME, parse_adopted_genesis
 use type_bridge_schema_migration::{
     LegacyAppliedSetDigest, LegacyMigrationChecksum, LegacyMigrationReference,
     MigrationGenerationOutcome, SafetyClass, SafetyPolicyDecision, build_legacy_frontier_bridge,
-    encode_verified_manifest, typedb_3_12_1_profile,
+    decode_verified_migration_history_bundle, encode_verified_manifest, typedb_3_12_1_profile,
 };
 use type_bridge_workspace::{
     ConfigOrigin, ExtensionRegistryService, ExtensionRequirement, MigrationV2Directory,
@@ -666,4 +666,35 @@ fn adopted_genesis_read_is_bounded_before_parsing() {
             .as_str(),
         "workspace_adopted_genesis_oversized",
     );
+}
+
+#[test]
+fn workspace_captures_replayable_deterministic_history_bundle() {
+    let directory = TempDirectory::new();
+    directory.schema("format: typebridge.schema/v2\nentities: {person: {}}\n");
+    let secrets = AcceptSecrets(AtomicUsize::new(0));
+    let extensions = AcceptExtensions(AtomicUsize::new(0));
+    let available = capabilities();
+    let workspace = load_workspace(&directory, &secrets, &extensions, &available);
+    let MigrationGenerationOutcome::Generated(generated) = workspace
+        .migration_make("initial")
+        .expect("initial migration generates")
+    else {
+        panic!("empty history has work to generate");
+    };
+    workspace
+        .write_generated_migration(&generated)
+        .expect("migration publishes");
+
+    let first = workspace
+        .migration_history_bundle_bytes()
+        .expect("history bundle captures");
+    let second = workspace
+        .migration_history_bundle_bytes()
+        .expect("history bundle reproduces");
+    assert_eq!(first, second);
+    let decoded = decode_verified_migration_history_bundle(&first, workspace.delta_context())
+        .expect("captured history replays without workspace files");
+    assert_eq!(decoded.entries().len(), 1);
+    assert_eq!(decoded.heads(), &[generated.manifest().id().clone()]);
 }

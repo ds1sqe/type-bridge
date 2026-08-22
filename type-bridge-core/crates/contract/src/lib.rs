@@ -26,6 +26,8 @@ pub mod managed_scope;
 pub mod migration;
 /// Canonical typed migration assertion syntax and fingerprints.
 pub mod migration_assertion;
+/// Closed binding-neutral migration backfill plans and fingerprints.
+pub mod migration_backfill;
 pub use migration_assertion::migration_assertion_capability_vocabulary;
 pub use query_plan::{query_given_rows_capability, query_plan_capability_vocabulary};
 mod migration_assertion_wire;

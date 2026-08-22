@@ -29,6 +29,8 @@ use sha2::{Digest, Sha256};
 
 #[cfg(feature = "typedb")]
 use super::backend::AnswerCancellation;
+#[cfg(test)]
+use super::backend::BoxFuture;
 use super::backend::{DriverBackend, GivenRowsSpec, QueryResult, TxType};
 use super::context::TransactionContext;
 use super::transaction::Transaction;
@@ -54,6 +56,24 @@ pub struct Database {
     connection_authority: DatabaseConnectionAuthority,
     database_name: String,
     answer_limits: Option<QueryExecutionResourceLimits>,
+}
+
+/// Normalized outcome of creating the one database bound to a connection.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DatabaseCreateOutcome {
+    /// This operation created the database.
+    Created,
+    /// The database already existed or a concurrent creator won the race.
+    AlreadyExists,
+}
+
+/// Normalized outcome of deleting the one database bound to a connection.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DatabaseDeleteOutcome {
+    /// This operation observed the database present and established its absence.
+    Deleted,
+    /// The database was already absent before destructive dispatch.
+    AlreadyAbsent,
 }
 
 #[derive(Clone, Eq, PartialEq)]
@@ -618,18 +638,42 @@ impl Database {
 
     /// Create this database if it does not already exist.
     pub async fn create_database(&self) -> Result<()> {
-        if !self.database_exists().await? {
-            self.backend.create_database(&self.database_name).await?;
-        }
+        self.create_database_outcome().await?;
         Ok(())
+    }
+
+    /// Create the bound database and return a race-normalized outcome.
+    pub async fn create_database_outcome(&self) -> Result<DatabaseCreateOutcome> {
+        if self.database_exists().await? {
+            return Ok(DatabaseCreateOutcome::AlreadyExists);
+        }
+        match self.backend.create_database(&self.database_name).await {
+            Ok(()) => Ok(DatabaseCreateOutcome::Created),
+            Err(error) => match self.database_exists().await {
+                Ok(true) => Ok(DatabaseCreateOutcome::AlreadyExists),
+                Ok(false) | Err(_) => Err(error),
+            },
+        }
     }
 
     /// Delete this database if it exists.
     pub async fn delete_database(&self) -> Result<()> {
-        if self.database_exists().await? {
-            self.backend.delete_database(&self.database_name).await?;
-        }
+        self.delete_database_outcome().await?;
         Ok(())
+    }
+
+    /// Delete the bound database and return a race-normalized outcome.
+    pub async fn delete_database_outcome(&self) -> Result<DatabaseDeleteOutcome> {
+        if !self.database_exists().await? {
+            return Ok(DatabaseDeleteOutcome::AlreadyAbsent);
+        }
+        match self.backend.delete_database(&self.database_name).await {
+            Ok(()) => Ok(DatabaseDeleteOutcome::Deleted),
+            Err(error) => match self.database_exists().await {
+                Ok(false) => Ok(DatabaseDeleteOutcome::Deleted),
+                Ok(true) | Err(_) => Err(error),
+            },
+        }
     }
 
     /// Export the database schema as TypeQL text.
@@ -743,6 +787,102 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use crate::error::OrmError;
+
+    struct LifecycleBackend {
+        exists: AtomicBool,
+        fail_create_after_effect: bool,
+        fail_delete_after_effect: bool,
+    }
+
+    impl DriverBackend for LifecycleBackend {
+        fn open_transaction(
+            &self,
+            _database: &str,
+            _tx_type: TxType,
+        ) -> BoxFuture<'_, Result<Box<dyn super::super::backend::TransactionOps>>> {
+            Box::pin(async { Err(OrmError::Connection("unused fixture transaction".into())) })
+        }
+
+        fn is_open(&self) -> bool {
+            true
+        }
+
+        fn database_exists(&self, _database: &str) -> BoxFuture<'_, Result<bool>> {
+            Box::pin(async { Ok(self.exists.load(Ordering::SeqCst)) })
+        }
+
+        fn create_database(&self, _database: &str) -> BoxFuture<'_, Result<()>> {
+            Box::pin(async {
+                self.exists.store(true, Ordering::SeqCst);
+                if self.fail_create_after_effect {
+                    Err(OrmError::Connection("simulated concurrent create".into()))
+                } else {
+                    Ok(())
+                }
+            })
+        }
+
+        fn delete_database(&self, _database: &str) -> BoxFuture<'_, Result<()>> {
+            Box::pin(async {
+                self.exists.store(false, Ordering::SeqCst);
+                if self.fail_delete_after_effect {
+                    Err(OrmError::Connection("simulated concurrent delete".into()))
+                } else {
+                    Ok(())
+                }
+            })
+        }
+    }
+
+    fn lifecycle_database(
+        exists: bool,
+        fail_create_after_effect: bool,
+        fail_delete_after_effect: bool,
+    ) -> Database {
+        Database::with_backend(
+            Box::new(LifecycleBackend {
+                exists: AtomicBool::new(exists),
+                fail_create_after_effect,
+                fail_delete_after_effect,
+            }),
+            "bound-database",
+        )
+    }
+
+    #[tokio::test]
+    async fn bound_administration_outcomes_are_idempotent_and_race_normalized() {
+        let database = lifecycle_database(false, false, false);
+        assert_eq!(
+            database.create_database_outcome().await.unwrap(),
+            DatabaseCreateOutcome::Created
+        );
+        assert_eq!(
+            database.create_database_outcome().await.unwrap(),
+            DatabaseCreateOutcome::AlreadyExists
+        );
+        assert_eq!(
+            database.delete_database_outcome().await.unwrap(),
+            DatabaseDeleteOutcome::Deleted
+        );
+        assert_eq!(
+            database.delete_database_outcome().await.unwrap(),
+            DatabaseDeleteOutcome::AlreadyAbsent
+        );
+
+        let concurrent_create = lifecycle_database(false, true, false);
+        assert_eq!(
+            concurrent_create.create_database_outcome().await.unwrap(),
+            DatabaseCreateOutcome::AlreadyExists
+        );
+        let concurrent_delete = lifecycle_database(true, false, true);
+        assert_eq!(
+            concurrent_delete.delete_database_outcome().await.unwrap(),
+            DatabaseDeleteOutcome::Deleted
+        );
+    }
 
     #[test]
     fn connection_authority_is_opaque_redacted_and_exact() {

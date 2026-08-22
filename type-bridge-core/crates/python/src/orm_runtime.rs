@@ -711,9 +711,29 @@ impl PyRustDatabase {
             .map_err(py_orm_error)
     }
 
+    /// Create the configured database and return a normalized outcome token.
+    fn create_database_outcome(&self, py: Python<'_>) -> PyResult<&'static str> {
+        provider_block_on(py, self.runtime.as_ref(), self.db.create_database_outcome())
+            .map(|outcome| match outcome {
+                type_bridge_orm::session::DatabaseCreateOutcome::Created => "created",
+                type_bridge_orm::session::DatabaseCreateOutcome::AlreadyExists => "already_exists",
+            })
+            .map_err(py_orm_error)
+    }
+
     /// Delete the configured database if it exists.
     fn delete_database(&self, py: Python<'_>) -> PyResult<()> {
         provider_block_on(py, self.runtime.as_ref(), self.db.delete_database())
+            .map_err(py_orm_error)
+    }
+
+    /// Delete the configured database and return a normalized outcome token.
+    fn delete_database_outcome(&self, py: Python<'_>) -> PyResult<&'static str> {
+        provider_block_on(py, self.runtime.as_ref(), self.db.delete_database_outcome())
+            .map(|outcome| match outcome {
+                type_bridge_orm::session::DatabaseDeleteOutcome::Deleted => "deleted",
+                type_bridge_orm::session::DatabaseDeleteOutcome::AlreadyAbsent => "already_absent",
+            })
             .map_err(py_orm_error)
     }
 

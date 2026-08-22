@@ -146,10 +146,36 @@ impl NodeRustDatabase {
             .map_err(napi_orm_error)
     }
 
+    #[napi(js_name = "createDatabaseOutcome")]
+    pub fn create_database_outcome(&self) -> Result<String> {
+        self.runtime
+            .block_on(self.db.create_database_outcome())
+            .map(|outcome| match outcome {
+                type_bridge_orm::session::DatabaseCreateOutcome::Created => "created".to_owned(),
+                type_bridge_orm::session::DatabaseCreateOutcome::AlreadyExists => {
+                    "already_exists".to_owned()
+                }
+            })
+            .map_err(napi_orm_error)
+    }
+
     #[napi(js_name = "deleteDatabase")]
     pub fn delete_database(&self) -> Result<()> {
         self.runtime
             .block_on(self.db.delete_database())
+            .map_err(napi_orm_error)
+    }
+
+    #[napi(js_name = "deleteDatabaseOutcome")]
+    pub fn delete_database_outcome(&self) -> Result<String> {
+        self.runtime
+            .block_on(self.db.delete_database_outcome())
+            .map(|outcome| match outcome {
+                type_bridge_orm::session::DatabaseDeleteOutcome::Deleted => "deleted".to_owned(),
+                type_bridge_orm::session::DatabaseDeleteOutcome::AlreadyAbsent => {
+                    "already_absent".to_owned()
+                }
+            })
             .map_err(napi_orm_error)
     }
 

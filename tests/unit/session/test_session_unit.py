@@ -601,3 +601,34 @@ class TestDriverInjection:
 
         assert db.database_exists() is True
         mock_driver.databases.contains.assert_called_with("test_db")
+
+    def test_database_administration_outcomes_are_normalized(self):
+        """Bound create/delete report exact idempotent outcomes."""
+        mock_driver = MagicMock()
+        mock_driver.databases.contains.side_effect = [False, True, True, False]
+        db = Database(database="test_db", driver=mock_driver)
+
+        assert db.create_database_outcome() == "created"
+        assert db.create_database_outcome() == "already_exists"
+        assert db.delete_database_outcome() == "deleted"
+        assert db.delete_database_outcome() == "already_absent"
+        mock_driver.databases.create.assert_called_once_with("test_db")
+        mock_driver.databases.get.assert_called_once_with("test_db")
+
+    def test_database_create_race_rechecks_actual_state(self):
+        """A losing concurrent create is normalized only after an exact recheck."""
+        mock_driver = MagicMock()
+        mock_driver.databases.contains.side_effect = [False, True]
+        mock_driver.databases.create.side_effect = RuntimeError("already exists")
+        db = Database(database="test_db", driver=mock_driver)
+
+        assert db.create_database_outcome() == "already_exists"
+
+    def test_database_delete_race_rechecks_actual_state(self):
+        """A concurrent delete is normalized only after observing absence."""
+        mock_driver = MagicMock()
+        mock_driver.databases.contains.side_effect = [True, False]
+        mock_driver.databases.get.return_value.delete.side_effect = RuntimeError("absent")
+        db = Database(database="test_db", driver=mock_driver)
+
+        assert db.delete_database_outcome() == "deleted"

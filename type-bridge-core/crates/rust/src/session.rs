@@ -8,6 +8,24 @@ use crate::error::{Error, Result};
 use crate::schema::{Schema, SchemaPackage, Unbound};
 use type_bridge_orm::_registry::DescriptorRegistry;
 
+/// Normalized outcome of creating the database bound to a generated client.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DatabaseCreateOutcome {
+    /// This operation created the database.
+    Created,
+    /// The database already existed or a concurrent creator won the race.
+    AlreadyExists,
+}
+
+/// Normalized outcome of deleting the database bound to a generated client.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DatabaseDeleteOutcome {
+    /// This operation observed the database present and established its absence.
+    Deleted,
+    /// The database was already absent before destructive dispatch.
+    AlreadyAbsent,
+}
+
 /// Connection options for TypeDB servers.
 #[derive(Clone, PartialEq, Eq)]
 pub struct ConnectionOptions {
@@ -239,6 +257,43 @@ impl<S: Schema> Database<S> {
     #[must_use]
     pub fn database_name(&self) -> &str {
         self.inner.database_name()
+    }
+
+    /// Return whether the one configured database exists.
+    pub async fn database_exists(&self) -> Result<bool> {
+        self.inner.database_exists().await.map_err(Error::from_orm)
+    }
+
+    /// Create the one configured database and return its normalized outcome.
+    pub async fn create_database(&self) -> Result<DatabaseCreateOutcome> {
+        self.inner
+            .create_database_outcome()
+            .await
+            .map(|outcome| match outcome {
+                type_bridge_orm::session::DatabaseCreateOutcome::Created => {
+                    DatabaseCreateOutcome::Created
+                }
+                type_bridge_orm::session::DatabaseCreateOutcome::AlreadyExists => {
+                    DatabaseCreateOutcome::AlreadyExists
+                }
+            })
+            .map_err(Error::from_orm)
+    }
+
+    /// Delete the one configured database and return its normalized outcome.
+    pub async fn delete_database(&self) -> Result<DatabaseDeleteOutcome> {
+        self.inner
+            .delete_database_outcome()
+            .await
+            .map(|outcome| match outcome {
+                type_bridge_orm::session::DatabaseDeleteOutcome::Deleted => {
+                    DatabaseDeleteOutcome::Deleted
+                }
+                type_bridge_orm::session::DatabaseDeleteOutcome::AlreadyAbsent => {
+                    DatabaseDeleteOutcome::AlreadyAbsent
+                }
+            })
+            .map_err(Error::from_orm)
     }
 
     /// Explicitly close this database's provider connection.
