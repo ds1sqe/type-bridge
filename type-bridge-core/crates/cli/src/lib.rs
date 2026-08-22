@@ -525,6 +525,7 @@ fn sanitize_migration_execution_outcome(
 
     let render_position = |position| match position {
         Position::TransactionGroup(ordinal) => format!("transaction group {ordinal}"),
+        Position::BackfillStep(ordinal) => format!("backfill step {ordinal}"),
         Position::ManifestCheckpoint => "manifest checkpoint".to_owned(),
     };
     match outcome {
@@ -691,6 +692,7 @@ fn run_schema_generate_with(
     }
 
     let resolved = workspace.resolved_schema();
+    let migration_history = workspace.migration_history_bundle().map_err(display)?;
     let authority = build_schema_authority(
         workspace.declared_schema(),
         workspace.required_capabilities(),
@@ -704,7 +706,9 @@ fn run_schema_generate_with(
     // different semantic attempt.
     let mut packages = Vec::with_capacity(outputs.len());
     for (&target, directory) in outputs {
-        let package = generate(target, resolved, &authority)?;
+        let package = generate(target, resolved, &authority)?
+            .with_migration_history_bundle(&migration_history)
+            .map_err(display)?;
         packages.push((target, directory, package));
     }
 
@@ -899,6 +903,18 @@ mod schema_generation_atomicity_tests {
 
         let accepted_trees = ["python", "typescript", "rust", "c"]
             .map(|target| (target, snapshot(&root.join("generated").join(target))));
+        let expected_history = accepted
+            .migration_history_bundle_bytes()
+            .expect("canonical migration history bundle");
+        for (target, tree) in &accepted_trees {
+            assert_eq!(
+                tree.get(std::path::Path::new(
+                    type_bridge_schema_codegen::MIGRATION_HISTORY_BUNDLE_RESOURCE,
+                )),
+                Some(&expected_history),
+                "{target} package must embed the byte-identical canonical history bundle",
+            );
+        }
         let accepted_authority =
             fs::read(root.join("generated/schema-authority.json")).expect("authority reads");
 

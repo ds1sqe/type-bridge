@@ -11,7 +11,7 @@ mod rust;
 mod typescript;
 
 pub use c::CEmitter;
-pub use package::GeneratedPackage;
+pub use package::{GeneratedPackage, MIGRATION_HISTORY_BUNDLE_RESOURCE};
 pub use python::PythonEmitter;
 pub use rust::RustEmitter;
 pub use typescript::TypeScriptEmitter;

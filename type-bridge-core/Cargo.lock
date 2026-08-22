@@ -3330,6 +3330,7 @@ dependencies = [
  "sha2",
  "type-bridge-contract",
  "type-bridge-schema",
+ "type-bridge-schema-migration",
 ]
 
 [[package]]
