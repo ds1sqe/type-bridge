@@ -219,6 +219,13 @@ class ModelBase:
     def decode_create(cls, data: bytes) -> Self:
         return cls.__runtime_projection__.decode_create(cls, data)
 
+    def encode_snapshot(self) -> bytes:
+        return self.__runtime_projection__.encode_snapshot(type(self), self)
+
+    @classmethod
+    def decode_snapshot(cls, data: bytes) -> Self:
+        return cls.__runtime_projection__.decode_snapshot(cls, data)
+
     def initialize_runtime_values(
         self,
         values: Mapping[str, object],
@@ -799,6 +806,13 @@ class ReferenceBase:
     def runtime_values(self) -> dict[str, object]:
         return self._values
 
+    def encode_reference(self) -> bytes:
+        return _require_package_runtime_projection().encode_reference(type(self), self)
+
+    @classmethod
+    def decode_reference(cls, data: bytes) -> Self:
+        return _require_package_runtime_projection().decode_reference(cls, data)
+
     def initialize_runtime_reference(
         self,
         iid: str | None,
@@ -1093,6 +1107,20 @@ def install_model(
 
 _package_runtime_projection: PyRuntimeProjection | None = None
 _package_models: tuple[type[ModelBase], ...] = ()
+
+
+def _require_package_runtime_projection() -> PyRuntimeProjection:
+    if _package_runtime_projection is None:
+        raise RuntimeError("generated package runtime projection is not installed")
+    return _package_runtime_projection
+
+
+def encode_archive(records: Sequence[bytes]) -> bytes:
+    return _require_package_runtime_projection().encode_archive(records)
+
+
+def decode_archive(data: bytes) -> list[bytes]:
+    return _require_package_runtime_projection().decode_archive(data)
 
 
 def install_runtime_projection(

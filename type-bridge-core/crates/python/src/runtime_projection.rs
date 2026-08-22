@@ -857,6 +857,22 @@ impl InstalledPackage {
             })
     }
 
+    fn model_id_for_reference_class(&self, py: Python<'_>, class: &Py<PyType>) -> PyResult<TypeId> {
+        let pointer = class.bind(py).as_ptr();
+        self.models
+            .iter()
+            .find_map(|(id, registered)| {
+                registered
+                    .reference
+                    .as_ref()
+                    .is_some_and(|reference| reference.bind(py).as_ptr() == pointer)
+                    .then(|| id.clone())
+            })
+            .ok_or_else(|| {
+                py_type_error("reference class is not registered in this runtime projection")
+            })
+    }
+
     fn identify_value(
         &self,
         py: Python<'_>,
@@ -1273,6 +1289,141 @@ impl PyRuntimeProjection {
             ));
         }
         hydrate_projected_create(py, self.package.as_ref(), &value)
+    }
+
+    /// Encode one exact generated detached reference as canonical record bytes.
+    fn encode_reference<'py>(
+        &self,
+        py: Python<'py>,
+        model: Py<PyType>,
+        instance: Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyBytes>> {
+        let id = self.package.model_id_for_reference_class(py, &model)?;
+        let allowed = BTreeSet::from([ProjectedModelUse::new(id, ProjectedModelForm::Reference)]);
+        let projected = project_reference(py, self.package.as_ref(), &instance, &allowed, &[])?;
+        let record = type_bridge_orm::record_from_reference(&self.package.projection, &projected)
+            .map_err(|error| py_value_error(error.to_string()))?;
+        let bytes = record.encode().map_err(py_diagnostic)?;
+        Ok(PyBytes::new(py, &bytes))
+    }
+
+    /// Decode canonical reference bytes through exact installed package authority.
+    fn decode_reference(
+        &self,
+        py: Python<'_>,
+        model: Py<PyType>,
+        bytes: &Bound<'_, PyBytes>,
+    ) -> PyResult<PyObject> {
+        let expected = self.package.model_id_for_reference_class(py, &model)?;
+        let record =
+            type_bridge_contract::projected_record::ProjectedRecord::decode(bytes.as_bytes())
+                .map_err(py_diagnostic)?;
+        let value = type_bridge_orm::materialize_record(&self.package.projection, &record)
+            .map_err(|error| py_value_error(error.to_string()))?;
+        let ProjectedCodecValue::Reference(value) = value else {
+            return Err(py_value_error("canonical record is not a reference"));
+        };
+        if value.type_id() != &expected {
+            return Err(py_value_error(
+                "canonical reference has the wrong exact generated type",
+            ));
+        }
+        hydrate_projected_detached_reference(py, self.package.as_ref(), &value)
+    }
+
+    /// Encode one exact generated hydrated model as a detached canonical snapshot.
+    fn encode_snapshot<'py>(
+        &self,
+        py: Python<'py>,
+        model: Py<PyType>,
+        instance: Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyBytes>> {
+        let id = self.package.model_id_for_class(py, &model)?;
+        let (actual, form) = self.package.identify_value(py, &instance)?;
+        let iid = projected_iid(&instance)?;
+        if actual != id || form != ProjectedModelForm::Complete || iid.is_none() {
+            return Err(py_value_error(
+                "snapshot requires the exact generated complete model with an IID",
+            ));
+        }
+        let values = instance.call_method0("runtime_values")?;
+        let values = values.downcast_exact::<PyDict>()?;
+        let projected =
+            project_hydrated_thing(py, self.package.as_ref(), &id, values, iid.as_deref())?;
+        let record = type_bridge_orm::record_from_snapshot(&self.package.projection, &projected)
+            .map_err(|error| py_value_error(error.to_string()))?;
+        let bytes = record.encode().map_err(py_diagnostic)?;
+        Ok(PyBytes::new(py, &bytes))
+    }
+
+    /// Decode canonical snapshot bytes through exact installed package authority.
+    fn decode_snapshot(
+        &self,
+        py: Python<'_>,
+        model: Py<PyType>,
+        bytes: &Bound<'_, PyBytes>,
+    ) -> PyResult<PyObject> {
+        let expected = self.package.model_id_for_class(py, &model)?;
+        let record =
+            type_bridge_contract::projected_record::ProjectedRecord::decode(bytes.as_bytes())
+                .map_err(py_diagnostic)?;
+        let value = type_bridge_orm::materialize_record(&self.package.projection, &record)
+            .map_err(|error| py_value_error(error.to_string()))?;
+        let ProjectedCodecValue::Snapshot(value) = value else {
+            return Err(py_value_error("canonical record is not a snapshot"));
+        };
+        if value.type_id() != &expected {
+            return Err(py_value_error(
+                "canonical snapshot has the wrong exact generated type",
+            ));
+        }
+        hydrate_projected_thing_value(py, self.package.as_ref(), &value)
+    }
+
+    /// Compose canonical exact-package records into one deterministic archive.
+    fn encode_archive<'py>(
+        &self,
+        py: Python<'py>,
+        records: Vec<Py<PyBytes>>,
+    ) -> PyResult<Bound<'py, PyBytes>> {
+        let mut verified = Vec::with_capacity(records.len());
+        for bytes in records {
+            let record = type_bridge_contract::projected_record::ProjectedRecord::decode(
+                bytes.bind(py).as_bytes(),
+            )
+            .map_err(py_diagnostic)?;
+            let _ = type_bridge_orm::materialize_record(&self.package.projection, &record)
+                .map_err(|error| py_value_error(error.to_string()))?;
+            verified.push(record);
+        }
+        let bytes = type_bridge_contract::projected_record::ProjectedArchive::try_new(verified)
+            .and_then(|archive| archive.encode())
+            .map_err(py_diagnostic)?;
+        Ok(PyBytes::new(py, &bytes))
+    }
+
+    /// Decode one archive into canonical individual exact-package records.
+    fn decode_archive<'py>(
+        &self,
+        py: Python<'py>,
+        bytes: &Bound<'_, PyBytes>,
+    ) -> PyResult<Bound<'py, PyList>> {
+        let archive =
+            type_bridge_contract::projected_record::ProjectedArchive::decode(bytes.as_bytes())
+                .map_err(py_diagnostic)?;
+        let records = archive
+            .records()
+            .iter()
+            .map(|record| {
+                let _ = type_bridge_orm::materialize_record(&self.package.projection, record)
+                    .map_err(|error| py_value_error(error.to_string()))?;
+                record
+                    .encode()
+                    .map(|bytes| PyBytes::new(py, &bytes).unbind())
+                    .map_err(py_diagnostic)
+            })
+            .collect::<PyResult<Vec<_>>>()?;
+        PyList::new(py, records)
     }
 
     /// Compile a retained raw-query entity match from one exact generated class.
@@ -6732,6 +6883,28 @@ fn allocate_projected_detached_reference(
     Ok(instance.unbind())
 }
 
+fn hydrate_projected_detached_reference(
+    py: Python<'_>,
+    package: &InstalledPackage,
+    projected: &ProjectedReference,
+) -> PyResult<PyObject> {
+    let values = hydrate_projected_fields(
+        py,
+        package,
+        projected.type_id(),
+        HydratedProjectedFields::Reference(projected.keys()),
+        false,
+        None,
+    )?;
+    allocate_projected_detached_reference(
+        py,
+        package,
+        projected.type_id(),
+        &values,
+        projected.iid(),
+    )
+}
+
 fn allocate_projected_reference_callback_free(
     py: Python<'_>,
     package: &InstalledPackage,
@@ -10604,6 +10777,107 @@ class Reference:
                     .unwrap(),
                 0
             );
+        });
+    }
+
+    #[test]
+    fn canonical_reference_snapshot_and_archive_round_trip_exact_python_values() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            let (_, package) = install_batch(py);
+            let person_id = package
+                .type_by_label("person", TypeKind::Entity)
+                .unwrap()
+                .clone();
+            let complete_class = package
+                .class(&person_id, ProjectedModelForm::Complete)
+                .unwrap()
+                .clone_ref(py);
+            let reference_class = package
+                .class(&person_id, ProjectedModelForm::Reference)
+                .unwrap()
+                .clone_ref(py);
+            let snapshot = batch_person(
+                py,
+                package.as_ref(),
+                "archive-person",
+                "archive-tag",
+                Some("0xabc"),
+            );
+            let snapshot_values = snapshot
+                .bind(py)
+                .call_method0("runtime_values")
+                .unwrap()
+                .downcast_into::<PyDict>()
+                .unwrap();
+            let reference_values = PyDict::new(py);
+            reference_values
+                .set_item(
+                    "identifier",
+                    snapshot_values.get_item("identifier").unwrap().unwrap(),
+                )
+                .unwrap();
+            let reference = reference_class
+                .bind(py)
+                .call((py.None(),), Some(&reference_values))
+                .unwrap();
+            let runtime = PyRuntimeProjection { package };
+
+            let reference_bytes = runtime
+                .encode_reference(py, reference_class.clone_ref(py), reference)
+                .unwrap();
+            let decoded_reference = runtime
+                .decode_reference(py, reference_class.clone_ref(py), &reference_bytes)
+                .unwrap();
+            assert!(
+                decoded_reference
+                    .bind(py)
+                    .is_instance(reference_class.bind(py))
+                    .unwrap()
+            );
+            assert!(decoded_reference.bind(py).getattr("iid").unwrap().is_none());
+
+            let snapshot_bytes = runtime
+                .encode_snapshot(py, complete_class.clone_ref(py), snapshot.bind(py).clone())
+                .unwrap();
+            let decoded_snapshot = runtime
+                .decode_snapshot(py, complete_class.clone_ref(py), &snapshot_bytes)
+                .unwrap();
+            assert!(
+                decoded_snapshot
+                    .bind(py)
+                    .is_instance(complete_class.bind(py))
+                    .unwrap()
+            );
+            assert_eq!(
+                decoded_snapshot
+                    .bind(py)
+                    .getattr("iid")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "0xabc"
+            );
+
+            let expected = vec![
+                reference_bytes.as_bytes().to_vec(),
+                snapshot_bytes.as_bytes().to_vec(),
+            ];
+            let archive = runtime
+                .encode_archive(py, vec![reference_bytes.unbind(), snapshot_bytes.unbind()])
+                .unwrap();
+            let decoded = runtime.decode_archive(py, &archive).unwrap();
+            let actual = decoded
+                .iter()
+                .map(|value| {
+                    value
+                        .downcast_into::<PyBytes>()
+                        .unwrap()
+                        .as_bytes()
+                        .to_vec()
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(actual, expected);
         });
     }
 
