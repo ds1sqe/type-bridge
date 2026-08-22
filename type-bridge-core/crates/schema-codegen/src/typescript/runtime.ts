@@ -383,14 +383,14 @@ export type ModelToken<
     readonly valueType: ScalarValueType | null;
     readonly create: CreateFactory;
     readonly reference: ReferenceFactory;
-    readonly encodeAttribute: (value: Complete) => Uint8Array;
-    readonly decodeAttribute: (bytes: Uint8Array) => Complete;
-    readonly encodeCreate: (value: Complete) => Uint8Array;
-    readonly decodeCreate: (bytes: Uint8Array) => Complete;
-    readonly encodeReference: (value: FactoryResult<ReferenceFactory>) => Uint8Array;
-    readonly decodeReference: (bytes: Uint8Array) => FactoryResult<ReferenceFactory>;
-    readonly encodeSnapshot: (value: Complete) => Uint8Array;
-    readonly decodeSnapshot: (bytes: Uint8Array) => Complete;
+    readonly encodeAttribute: (value: Complete, options?: CanonicalCodecOptions) => Uint8Array;
+    readonly decodeAttribute: (bytes: Uint8Array, options?: CanonicalCodecOptions) => Complete;
+    readonly encodeCreate: (value: Complete, options?: CanonicalCodecOptions) => Uint8Array;
+    readonly decodeCreate: (bytes: Uint8Array, options?: CanonicalCodecOptions) => Complete;
+    readonly encodeReference: (value: FactoryResult<ReferenceFactory>, options?: CanonicalCodecOptions) => Uint8Array;
+    readonly decodeReference: (bytes: Uint8Array, options?: CanonicalCodecOptions) => FactoryResult<ReferenceFactory>;
+    readonly encodeSnapshot: (value: Complete, options?: CanonicalCodecOptions) => Uint8Array;
+    readonly decodeSnapshot: (bytes: Uint8Array, options?: CanonicalCodecOptions) => Complete;
     readonly manager: (
       connection: RuntimeProjectionConnection,
     ) => ProjectedModelManager<Complete>;
@@ -405,8 +405,8 @@ export type ModelToken<
 export type StructFactory<Id extends string, Value, Input> = {
   (input: Input): Value;
   readonly id: Id;
-  readonly encode: (value: Value) => Uint8Array;
-  readonly decode: (bytes: Uint8Array) => Value;
+  readonly encode: (value: Value, options?: CanonicalCodecOptions) => Uint8Array;
+  readonly decode: (bytes: Uint8Array, options?: CanonicalCodecOptions) => Value;
   readonly metadata: unknown;
 };
 
@@ -779,7 +779,10 @@ export function defineModel<
       roles: Object.freeze(definition.roles),
       create,
       reference,
-      encodeAttribute: (value: Complete): Uint8Array => {
+      encodeAttribute: (
+        value: Complete,
+        options: CanonicalCodecOptions = {},
+      ): Uint8Array => {
         if (definition.valueType === null) {
           throw new TypeError(
             `${definition.name}.encodeAttribute requires an attribute token`,
@@ -796,12 +799,17 @@ export function defineModel<
             `${definition.name}.encodeAttribute requires its exact attribute value`,
           );
         }
-        return requireProjection().encodeAttributeJson(
+        return requireProjection().encodeRecordJsonControlled(
+          "attribute",
           definition.typeKey,
           JSON.stringify(wire),
+          options,
         );
       },
-      decodeAttribute: (bytes: Uint8Array): Complete => {
+      decodeAttribute: (
+        bytes: Uint8Array,
+        options: CanonicalCodecOptions = {},
+      ): Complete => {
         if (definition.valueType === null) {
           throw new TypeError(
             `${definition.name}.decodeAttribute requires an attribute token`,
@@ -809,7 +817,12 @@ export function defineModel<
         }
         const wire = parseProjectedWire(
           JSON.parse(
-            requireProjection().decodeAttributeJson(definition.typeKey, bytes),
+            requireProjection().decodeRecordJsonControlled(
+              "attribute",
+              definition.typeKey,
+              bytes,
+              options,
+            ),
           ) as unknown,
         );
         if (
@@ -829,22 +842,35 @@ export function defineModel<
           `${definition.name}.decodeAttribute`,
         );
       },
-      encodeCreate: (value: Complete): Uint8Array => {
+      encodeCreate: (
+        value: Complete,
+        options: CanonicalCodecOptions = {},
+      ): Uint8Array => {
         const wire = lowerProjectedValue(value);
         if (wire.typeKey !== definition.typeKey || wire.iid !== null) {
           throw new TypeError(
             `${definition.name}.encodeCreate requires its exact create value`,
           );
         }
-        return requireProjection().encodeCreateJson(
+        return requireProjection().encodeRecordJsonControlled(
+          "create",
           definition.typeKey,
           JSON.stringify(wire),
+          options,
         );
       },
-      decodeCreate: (bytes: Uint8Array): Complete => {
+      decodeCreate: (
+        bytes: Uint8Array,
+        options: CanonicalCodecOptions = {},
+      ): Complete => {
         const wire = parseProjectedWire(
           JSON.parse(
-            requireProjection().decodeCreateJson(definition.typeKey, bytes),
+            requireProjection().decodeRecordJsonControlled(
+              "create",
+              definition.typeKey,
+              bytes,
+              options,
+            ),
           ) as unknown,
         );
         if (
@@ -871,22 +897,35 @@ export function defineModel<
           `${definition.name}.decodeCreate`,
         );
       },
-      encodeReference: (value: FactoryResult<ReferenceFactory>): Uint8Array => {
+      encodeReference: (
+        value: FactoryResult<ReferenceFactory>,
+        options: CanonicalCodecOptions = {},
+      ): Uint8Array => {
         const wire = lowerProjectedValue(value);
         if (wire.typeKey !== definition.typeKey || wire.form !== "reference") {
           throw new TypeError(
             `${definition.name}.encodeReference requires its exact detached reference`,
           );
         }
-        return requireProjection().encodeReferenceJson(
+        return requireProjection().encodeRecordJsonControlled(
+          "reference",
           definition.typeKey,
           JSON.stringify(wire),
+          options,
         );
       },
-      decodeReference: (bytes: Uint8Array): FactoryResult<ReferenceFactory> => {
+      decodeReference: (
+        bytes: Uint8Array,
+        options: CanonicalCodecOptions = {},
+      ): FactoryResult<ReferenceFactory> => {
         const wire = parseProjectedWire(
           JSON.parse(
-            requireProjection().decodeReferenceJson(definition.typeKey, bytes),
+            requireProjection().decodeRecordJsonControlled(
+              "reference",
+              definition.typeKey,
+              bytes,
+              options,
+            ),
           ) as unknown,
         );
         if (wire.typeKey !== definition.typeKey || wire.form !== "reference") {
@@ -905,7 +944,10 @@ export function defineModel<
         }
         return reference(wire.iid, keys) as FactoryResult<ReferenceFactory>;
       },
-      encodeSnapshot: (value: Complete): Uint8Array => {
+      encodeSnapshot: (
+        value: Complete,
+        options: CanonicalCodecOptions = {},
+      ): Uint8Array => {
         const wire = lowerProjectedValue(value);
         if (
           wire.typeKey !== definition.typeKey ||
@@ -916,15 +958,25 @@ export function defineModel<
             `${definition.name}.encodeSnapshot requires its exact hydrated model`,
           );
         }
-        return requireProjection().encodeSnapshotJson(
+        return requireProjection().encodeRecordJsonControlled(
+          "snapshot",
           definition.typeKey,
           JSON.stringify(wire),
+          options,
         );
       },
-      decodeSnapshot: (bytes: Uint8Array): Complete => {
+      decodeSnapshot: (
+        bytes: Uint8Array,
+        options: CanonicalCodecOptions = {},
+      ): Complete => {
         const wire = parseProjectedWire(
           JSON.parse(
-            requireProjection().decodeSnapshotJson(definition.typeKey, bytes),
+            requireProjection().decodeRecordJsonControlled(
+              "snapshot",
+              definition.typeKey,
+              bytes,
+              options,
+            ),
           ) as unknown,
         );
         if (
@@ -4209,7 +4261,10 @@ export function defineStruct<Id extends string, Value, Input>(definition: {
   Object.defineProperties(factory, {
     id: { value: definition.id, enumerable: true },
     encode: {
-      value: (value: Value): Uint8Array => {
+      value: (
+        value: Value,
+        options: CanonicalCodecOptions = {},
+      ): Uint8Array => {
         assertRecord(value, "struct value");
         if (
           value["__typebridgeStruct"] !== definition.id ||
@@ -4226,17 +4281,27 @@ export function defineStruct<Id extends string, Value, Input>(definition: {
               : scalarToWire(field.valueType, value[field.name]),
           ]),
         );
-        return requireProjection().encodeStructJson(
+        return requireProjection().encodeRecordJsonControlled(
+          "struct",
           definition.id,
           JSON.stringify({ typeKey: definition.id, values }),
+          options,
         );
       },
       enumerable: true,
     },
     decode: {
-      value: (bytes: Uint8Array): Value => {
+      value: (
+        bytes: Uint8Array,
+        options: CanonicalCodecOptions = {},
+      ): Value => {
         const wire = JSON.parse(
-          requireProjection().decodeStructJson(definition.id, bytes),
+          requireProjection().decodeRecordJsonControlled(
+            "struct",
+            definition.id,
+            bytes,
+            options,
+          ),
         ) as unknown;
         assertRecord(wire, "native struct wire");
         if (wire["typeKey"] !== definition.id) {

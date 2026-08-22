@@ -2338,6 +2338,118 @@ impl NodeRuntimeProjection {
             .map_err(json_error)
     }
 
+    /// Encode one nominal record with cancellation, deadline, and resource limits.
+    #[napi(js_name = "encodeRecordJsonControlled")]
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_record_json_controlled(
+        &self,
+        record_kind: String,
+        type_key: String,
+        value_json: String,
+        cancellation: Option<&NodeQueryCancellation>,
+        timeout_milliseconds: Option<u32>,
+        max_input_bytes: Option<u32>,
+        max_output_bytes: Option<u32>,
+        max_depth: Option<u32>,
+        max_members: Option<u32>,
+    ) -> napi::Result<Buffer> {
+        let control = NodeCanonicalControl::capture(
+            cancellation,
+            timeout_milliseconds,
+            max_input_bytes,
+            max_output_bytes,
+            max_depth,
+            None,
+            max_members,
+        )?;
+        control.check()?;
+        if value_json.len() > control.max_input_bytes {
+            return Err(napi_sdk_diagnostic(
+                SdkExecutionDiagnostic::projected_codec_input_limit(),
+            ));
+        }
+        let bytes = match record_kind.as_str() {
+            "attribute" => self.encode_attribute_json(type_key, value_json),
+            "create" => self.encode_create_json(type_key, value_json),
+            "reference" => self.encode_reference_json(type_key, value_json),
+            "snapshot" => self.encode_snapshot_json(type_key, value_json),
+            "struct" => self.encode_struct_json(type_key, value_json),
+            _ => Err(invalid_error("unsupported canonical record kind")),
+        }?;
+        control.check()?;
+        let record = type_bridge_contract::projected_record::ProjectedRecord::decode_with_limits(
+            &bytes,
+            control.output_limits(),
+        )
+        .map_err(|error| node_canonical_limit_error(error, false))?;
+        if record.decoded_weight() > control.max_members {
+            return Err(napi_sdk_diagnostic(
+                SdkExecutionDiagnostic::projected_codec_member_limit(),
+            ));
+        }
+        let bytes = record
+            .encode_with_limits(control.output_limits())
+            .map_err(|error| node_canonical_limit_error(error, false))?;
+        control.check()?;
+        Ok(Buffer::from(bytes))
+    }
+
+    /// Decode one nominal record with cancellation, deadline, and resource limits.
+    #[napi(js_name = "decodeRecordJsonControlled")]
+    #[allow(clippy::too_many_arguments)]
+    pub fn decode_record_json_controlled(
+        &self,
+        record_kind: String,
+        type_key: String,
+        bytes: Buffer,
+        cancellation: Option<&NodeQueryCancellation>,
+        timeout_milliseconds: Option<u32>,
+        max_input_bytes: Option<u32>,
+        max_output_bytes: Option<u32>,
+        max_depth: Option<u32>,
+        max_members: Option<u32>,
+    ) -> napi::Result<String> {
+        let control = NodeCanonicalControl::capture(
+            cancellation,
+            timeout_milliseconds,
+            max_input_bytes,
+            max_output_bytes,
+            max_depth,
+            None,
+            max_members,
+        )?;
+        control.check()?;
+        let record = type_bridge_contract::projected_record::ProjectedRecord::decode_with_limits(
+            &bytes,
+            control.input_limits(),
+        )
+        .map_err(|error| node_canonical_limit_error(error, true))?;
+        if record.decoded_weight() > control.max_members {
+            return Err(napi_sdk_diagnostic(
+                SdkExecutionDiagnostic::projected_codec_member_limit(),
+            ));
+        }
+        let canonical = record
+            .encode_with_limits(control.output_limits())
+            .map_err(|error| node_canonical_limit_error(error, false))?;
+        control.check()?;
+        let value_json = match record_kind.as_str() {
+            "attribute" => self.decode_attribute_json(type_key, Buffer::from(canonical)),
+            "create" => self.decode_create_json(type_key, Buffer::from(canonical)),
+            "reference" => self.decode_reference_json(type_key, Buffer::from(canonical)),
+            "snapshot" => self.decode_snapshot_json(type_key, Buffer::from(canonical)),
+            "struct" => self.decode_struct_json(type_key, Buffer::from(canonical)),
+            _ => Err(invalid_error("unsupported canonical record kind")),
+        }?;
+        if value_json.len() > control.max_output_bytes {
+            return Err(napi_sdk_diagnostic(
+                SdkExecutionDiagnostic::projected_codec_output_limit(),
+            ));
+        }
+        control.check()?;
+        Ok(value_json)
+    }
+
     /// Compose already canonical exact-package records into one deterministic archive.
     #[napi(js_name = "encodeArchive")]
     pub fn encode_archive(&self, records: Vec<Buffer>) -> napi::Result<Buffer> {
@@ -7863,6 +7975,55 @@ entities:
         let tag_bytes = runtime
             .encode_attribute_json(tag_key.clone(), serde_json::to_string(&tag).unwrap())
             .unwrap();
+        let controlled_tag_bytes = runtime
+            .encode_record_json_controlled(
+                "attribute".into(),
+                tag_key.clone(),
+                serde_json::to_string(&tag).unwrap(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(controlled_tag_bytes.to_vec(), tag_bytes.to_vec());
+        let controlled_tag_json = runtime
+            .decode_record_json_controlled(
+                "attribute".into(),
+                tag_key.clone(),
+                Buffer::from(tag_bytes.to_vec()),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&controlled_tag_json).unwrap(),
+            serde_json::to_value(&tag).unwrap(),
+        );
+        let cancelled = NodeQueryCancellation::new();
+        cancelled.cancel();
+        let error = runtime
+            .encode_record_json_controlled(
+                "attribute".into(),
+                tag_key.clone(),
+                serde_json::to_string(&tag).unwrap(),
+                Some(&cancelled),
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .err()
+            .expect("cancelled nominal encode is rejected");
+        let diagnostic: Value = serde_json::from_str(&error.reason).unwrap();
+        assert_eq!(diagnostic["code"], "projected_codec_cancelled");
         let decoded: ProjectedWire = serde_json::from_str(
             &runtime
                 .decode_attribute_json(tag_key.clone(), Buffer::from(tag_bytes.to_vec()))

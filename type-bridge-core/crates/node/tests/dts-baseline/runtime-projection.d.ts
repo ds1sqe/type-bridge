@@ -203,6 +203,8 @@ interface NativeProjectionHandle {
     decodeArchive(bytes: Uint8Array): Uint8Array[];
     encodeArchiveControlled(records: readonly Uint8Array[], cancellation?: NativeQueryCancellation, timeoutMilliseconds?: number, maxInputBytes?: number, maxOutputBytes?: number, maxDepth?: number, maxRecords?: number, maxMembers?: number): Uint8Array;
     decodeArchiveControlled(bytes: Uint8Array, cancellation?: NativeQueryCancellation, timeoutMilliseconds?: number, maxInputBytes?: number, maxOutputBytes?: number, maxDepth?: number, maxRecords?: number, maxMembers?: number): Uint8Array[];
+    encodeRecordJsonControlled(recordKind: string, typeKey: string, valueJson: string, cancellation?: NativeQueryCancellation, timeoutMilliseconds?: number, maxInputBytes?: number, maxOutputBytes?: number, maxDepth?: number, maxMembers?: number): Uint8Array;
+    decodeRecordJsonControlled(recordKind: string, typeKey: string, bytes: Uint8Array, cancellation?: NativeQueryCancellation, timeoutMilliseconds?: number, maxInputBytes?: number, maxOutputBytes?: number, maxDepth?: number, maxMembers?: number): string;
     validateThingJson(typeKey: string, valueJson: string): void;
     rejectGeneratedTokenPackageMismatch(pathJson: string): void;
     revalidateMatchDiagnostic(diagnostic: string): string;
@@ -278,6 +280,10 @@ export declare class InstalledRuntimeProjection {
     encodeArchiveControlled(records: readonly Uint8Array[], options?: CanonicalCodecOptions): Uint8Array;
     /** @internal Split records with cancellation, deadline, and resource limits. */
     decodeArchiveControlled(bytes: Uint8Array, options?: CanonicalCodecOptions): readonly Uint8Array[];
+    /** @internal Encode one exact nominal record under managed controls. */
+    encodeRecordJsonControlled(recordKind: "attribute" | "create" | "reference" | "snapshot" | "struct", typeKey: string, valueJson: string, options?: CanonicalCodecOptions): Uint8Array;
+    /** @internal Decode one exact nominal record under managed controls. */
+    decodeRecordJsonControlled(recordKind: "attribute" | "create" | "reference" | "snapshot" | "struct", typeKey: string, bytes: Uint8Array, options?: CanonicalCodecOptions): string;
     /** @internal Validate one complete generated provider result. */
     validateThingJson(typeKey: string, valueJson: string): void;
     /** @internal Surface one exact foreign generated-member package boundary. */
