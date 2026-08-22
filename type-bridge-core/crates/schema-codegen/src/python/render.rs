@@ -12,8 +12,8 @@ use type_bridge_contract::projection::{
 use type_bridge_contract::value::ValueTypeTag;
 
 use crate::{
-    EmbeddedAuthority, GeneratedPackage, documentation_annotation, invalid, model_documentation,
-    projection_uses_ordered_collections,
+    EmbeddedAuthority, GeneratedPackage, MIGRATION_HISTORY_BUNDLE_RESOURCE,
+    documentation_annotation, invalid, model_documentation, projection_uses_ordered_collections,
 };
 
 const PUBLIC_RUNTIME_NAMES: &[&str] = &[
@@ -52,10 +52,13 @@ const PUBLIC_QUERY_NAMES: &[&str] = &[
     "aggregate",
 ];
 const PUBLIC_SCHEMA_NAMES: &[&str] = &[
+    "MIGRATION_HISTORY_RESOURCE",
+    "MigrationCatalog",
     "PLAYING_FACTS",
     "PROJECTION_FINGERPRINT_JSON",
     "RUNTIME_PROJECTION_JSON",
     "SEMANTIC_SCHEMA_FINGERPRINT_JSON",
+    "open_migration_catalog",
 ];
 const MODEL_RESERVED_NAMES: &[&str] = &[
     "value",
@@ -119,6 +122,7 @@ pub(super) fn render(
         ("_query.pyi".to_owned(), query_stub.to_vec()),
         ("_schema.py".to_owned(), finish(render_schema(projection)?)),
         ("py.typed".to_owned(), py_typed.to_vec()),
+        (MIGRATION_HISTORY_BUNDLE_RESOURCE.to_owned(), Vec::new()),
     ])
 }
 
@@ -183,18 +187,28 @@ fn render_init(projection: &RuntimeProjection, stub: bool, ordered: bool) -> Str
     }
     if stub {
         output.push_str(
-            "from collections.abc import Mapping\nfrom typing import Final\n\n\
+            "from collections.abc import Mapping\nfrom typing import Final\nfrom type_bridge_core import MigrationCatalog as MigrationCatalog\n\n\
+             MIGRATION_HISTORY_RESOURCE: Final[str]\n\
              SEMANTIC_SCHEMA_FINGERPRINT_JSON: Final[str]\n\
              PROJECTION_FINGERPRINT_JSON: Final[str]\n\
              RUNTIME_PROJECTION_JSON: Final[str]\n\
-             PLAYING_FACTS: Final[Mapping[str, object]]\n",
+             PLAYING_FACTS: Final[Mapping[str, object]]\n\n\
+             def open_migration_catalog() -> MigrationCatalog: ...\n",
         );
     } else {
         output.push_str(
-            "from ._schema import PLAYING_FACTS as PLAYING_FACTS\n\
+            "from pathlib import Path as _Path\n\
+             from type_bridge_core import MigrationCatalog as MigrationCatalog\n\
+             from type_bridge_core import open_migration_catalog as _open_migration_catalog\n\
+             from ._authority import SCHEMA_AUTHORITY_BYTES as _SCHEMA_AUTHORITY_BYTES\n\
+             from ._schema import PLAYING_FACTS as PLAYING_FACTS\n\
              from ._schema import PROJECTION_FINGERPRINT_JSON as PROJECTION_FINGERPRINT_JSON\n\
              from ._schema import RUNTIME_PROJECTION_JSON as RUNTIME_PROJECTION_JSON\n\
-             from ._schema import SEMANTIC_SCHEMA_FINGERPRINT_JSON as SEMANTIC_SCHEMA_FINGERPRINT_JSON\n",
+             from ._schema import SEMANTIC_SCHEMA_FINGERPRINT_JSON as SEMANTIC_SCHEMA_FINGERPRINT_JSON\n\n\
+             MIGRATION_HISTORY_RESOURCE = \"typebridge/migration-history.json\"\n\n\
+             def open_migration_catalog() -> MigrationCatalog:\n\
+             \x20\x20\x20\x20history = (_Path(__file__).parent / MIGRATION_HISTORY_RESOURCE).read_bytes()\n\
+             \x20\x20\x20\x20return _open_migration_catalog(_SCHEMA_AUTHORITY_BYTES, history)\n",
         );
     }
     let mut exports = PUBLIC_RUNTIME_NAMES

@@ -66,15 +66,18 @@ impl GeneratedPackage {
         bundle: &VerifiedMigrationHistoryBundle,
     ) -> Result<Self, Diagnostic> {
         let bytes = encode_verified_migration_history_bundle(bundle)?;
-        if self
-            .files
-            .insert(MIGRATION_HISTORY_BUNDLE_RESOURCE.to_owned(), bytes)
-            .is_some()
-        {
-            return Err(invalid(
-                "duplicate_generated_migration_history_resource",
-                "an emitter attempted to replace the canonical migration-history resource",
-            ));
+        match self.files.get_mut(MIGRATION_HISTORY_BUNDLE_RESOURCE) {
+            Some(placeholder) if placeholder.is_empty() => *placeholder = bytes,
+            Some(_) => {
+                return Err(invalid(
+                    "duplicate_generated_migration_history_resource",
+                    "an emitter attempted to replace the canonical migration-history resource",
+                ));
+            }
+            None => {
+                self.files
+                    .insert(MIGRATION_HISTORY_BUNDLE_RESOURCE.to_owned(), bytes);
+            }
         }
         Ok(self)
     }
@@ -121,6 +124,25 @@ mod tests {
         assert_eq!(
             error.code().as_str(),
             "duplicate_generated_migration_history_resource"
+        );
+    }
+
+    #[test]
+    fn emitter_placeholder_is_replaced_only_by_verified_canonical_history() {
+        let graph = MigrationHistoryGraph::from_verified(std::iter::empty::<
+            type_bridge_schema_migration::VerifiedSchemaMigrationManifest,
+        >())
+        .expect("empty verified graph");
+        let bundle = VerifiedMigrationHistoryBundle::from_graph(&graph).expect("empty bundle");
+        let expected = encode_verified_migration_history_bundle(&bundle).expect("canonical bytes");
+        let package =
+            GeneratedPackage::try_new([(MIGRATION_HISTORY_BUNDLE_RESOURCE.to_owned(), Vec::new())])
+                .expect("emitter placeholder")
+                .with_migration_history_bundle(&bundle)
+                .expect("verified history replaces placeholder");
+        assert_eq!(
+            package.get(MIGRATION_HISTORY_BUNDLE_RESOURCE),
+            Some(expected.as_slice())
         );
     }
 }

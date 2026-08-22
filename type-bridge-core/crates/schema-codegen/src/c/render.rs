@@ -140,7 +140,6 @@ fn render_header(
          #define {macro_prefix}_HOSTED_OBJECT_BYTES_MIN {C_HOSTED_OBJECT_BYTES_MIN}u\n\n\
          #define {macro_prefix}_EMBEDDED_BYTE_CHUNK_MAX {C_EMBEDDED_BYTE_CHUNK_MAX}u\n\
          #define {macro_prefix}_SEQUENCE_OBJECT_BYTES_MAX {C_HOSTED_OBJECT_BYTES_MIN}u\n\n\
-         #define {macro_prefix}_MIGRATION_HISTORY_RESOURCE \"typebridge/migration-history.json\"\n\n\
          #if defined(__cplusplus)\n\
          static_assert(TYPE_BRIDGE_PROJECTED_CREATE_BUILDER_CHUNK_LEN_MAX <=\n\
              {macro_prefix}_HOSTED_OBJECT_BYTES_MIN /\n\
@@ -179,7 +178,8 @@ fn render_header(
     if ordered {
         let _ = write!(
             output,
-            "\ntype_bridge_status_t TYPE_BRIDGE_CALL {prefix}_schema_package_open(\n\
+            "\n#define {macro_prefix}_MIGRATION_HISTORY_RESOURCE \"typebridge/migration-history.json\"\n\n\
+             type_bridge_status_t TYPE_BRIDGE_CALL {prefix}_schema_package_open(\n\
                type_bridge_schema_package_t **out_package,\n\
                type_bridge_diagnostics_t **out_diagnostics);\n\
              type_bridge_status_t TYPE_BRIDGE_CALL {prefix}_schema_package_open_v2(\n\

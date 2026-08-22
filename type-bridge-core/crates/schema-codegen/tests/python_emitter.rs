@@ -438,7 +438,7 @@ fn rebuild(
 }
 
 #[test]
-fn emits_exact_deterministic_eleven_file_compound_package() {
+fn emits_exact_deterministic_compound_package_with_migration_resource() {
     let emitter = PythonEmitter::new();
     let authority = support::authority(COMPOUND_AUTHORITY_SOURCE);
     let projection = compound_projection(
@@ -462,11 +462,17 @@ fn emits_exact_deterministic_eleven_file_compound_package() {
             "_runtime.pyi",
             "_schema.py",
             "py.typed",
+            "typebridge/migration-history.json",
         ]
     );
     let source = std::str::from_utf8(first.get("_models.py").unwrap()).unwrap();
     let stub = std::str::from_utf8(first.get("_models.pyi").unwrap()).unwrap();
     let schema = std::str::from_utf8(first.get("_schema.py").unwrap()).unwrap();
+    let init = std::str::from_utf8(first.get("__init__.py").unwrap()).unwrap();
+    let init_stub = std::str::from_utf8(first.get("__init__.pyi").unwrap()).unwrap();
+    assert!(init.contains("def open_migration_catalog() -> MigrationCatalog:"));
+    assert!(init.contains("typebridge/migration-history.json"));
+    assert!(init_stub.contains("def open_migration_catalog() -> MigrationCatalog: ..."));
     assert!(
         source.find("class Employment(Membership):").unwrap()
             < source

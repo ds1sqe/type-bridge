@@ -13,8 +13,8 @@ use type_bridge_contract::schema::OwnsFactId;
 use type_bridge_contract::value::{Cardinality, ValueTypeTag};
 
 use crate::{
-    EmbeddedAuthority, GeneratedPackage, documentation_annotation, invalid, model_documentation,
-    projection_uses_ordered_collections,
+    EmbeddedAuthority, GeneratedPackage, MIGRATION_HISTORY_BUNDLE_RESOURCE,
+    documentation_annotation, invalid, model_documentation, projection_uses_ordered_collections,
 };
 
 macro_rules! canonical_text {
@@ -184,6 +184,7 @@ pub(super) fn render(
             "src/schema.rs".to_owned(),
             render_schema(projection, authority)?.into_bytes(),
         ),
+        (MIGRATION_HISTORY_BUNDLE_RESOURCE.to_owned(), Vec::new()),
     ])
 }
 
@@ -1689,7 +1690,7 @@ fn render_schema(
     output.push_str(&rust_literal(&authority.managed_scope_id));
     output.push_str(";\npub(crate) const SEMANTIC_PROFILE_ID: &str = ");
     output.push_str(&rust_literal(&authority.semantic_profile_id));
-    output.push_str(";\n\npub const SCHEMA: type_bridge::schema::SchemaPackage<AppSchema> = type_bridge::schema::SchemaPackage::new_with_authority(\n  SEMANTIC_SCHEMA_FINGERPRINT_JSON,\n  PROJECTION_FINGERPRINT_JSON,\n  RUNTIME_PROJECTION_JSON,\n  SCHEMA_AUTHORITY_JSON,\n  DECLARED_SCHEMA_JSON,\n  MANAGED_SCOPE_ID,\n  SEMANTIC_PROFILE_ID,\n);\n\n");
+    output.push_str(";\n\npub const SCHEMA: type_bridge::schema::SchemaPackage<AppSchema> = type_bridge::schema::SchemaPackage::new_with_authority(\n  SEMANTIC_SCHEMA_FINGERPRINT_JSON,\n  PROJECTION_FINGERPRINT_JSON,\n  RUNTIME_PROJECTION_JSON,\n  SCHEMA_AUTHORITY_JSON,\n  DECLARED_SCHEMA_JSON,\n  MANAGED_SCOPE_ID,\n  SEMANTIC_PROFILE_ID,\n);\n\npub const MIGRATION_HISTORY_RESOURCE: &str = \"typebridge/migration-history.json\";\npub static MIGRATION_HISTORY_BUNDLE: &[u8] = include_bytes!(\"../typebridge/migration-history.json\");\n\n/// Open this generated package's immutable verified migration catalog.\npub fn open_migration_catalog() -> type_bridge::Result<type_bridge::MigrationCatalog<AppSchema>> {\n  SCHEMA.open_migration_catalog(MIGRATION_HISTORY_BUNDLE)\n}\n\n");
 
     output.push_str("pub const MODEL_SHELLS: &[&str] = &[\n");
     for id in projection.emission().model_shells() {

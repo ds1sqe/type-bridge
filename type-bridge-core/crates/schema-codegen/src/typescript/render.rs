@@ -17,8 +17,8 @@ use super::reserved::{
     is_typescript_keyword,
 };
 use crate::{
-    EmbeddedAuthority, GeneratedPackage, documentation_annotation, invalid, model_documentation,
-    projection_uses_ordered_collections,
+    EmbeddedAuthority, GeneratedPackage, MIGRATION_HISTORY_BUNDLE_RESOURCE,
+    documentation_annotation, invalid, model_documentation, projection_uses_ordered_collections,
 };
 
 macro_rules! canonical_text {
@@ -61,6 +61,11 @@ pub(super) fn render(
             "src/models.ts".to_owned(),
             render_models(projection)?.into_bytes(),
         ),
+        (
+            "src/node-fs.d.ts".to_owned(),
+            b"declare module \"node:fs\" {\n  export function readFileSync(path: URL): Uint8Array;\n}\n"
+                .to_vec(),
+        ),
         ("src/runtime.ts".to_owned(), runtime.to_vec()),
         (
             "src/schema.ts".to_owned(),
@@ -71,6 +76,7 @@ pub(super) fn render(
             render_structs(projection)?.into_bytes(),
         ),
         ("tsconfig.json".to_owned(), tsconfig_json.to_vec()),
+        (MIGRATION_HISTORY_BUNDLE_RESOURCE.to_owned(), Vec::new()),
     ])
 }
 
@@ -97,7 +103,7 @@ fn render_index(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
         })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(format!(
-        "{}import {{ SCHEMA_AUTHORITY_JSON }} from \"./authority.js\";\nimport {{ {install} }} from \"./runtime.js\";\nimport {{ {} }} from \"./models.js\";\nimport {{ PROJECTION_FINGERPRINT_JSON, RUNTIME_PROJECTION_JSON, SEMANTIC_SCHEMA_FINGERPRINT_JSON }} from \"./schema.js\";\n\n{install}(\n  RUNTIME_PROJECTION_JSON,\n  SEMANTIC_SCHEMA_FINGERPRINT_JSON,\n  PROJECTION_FINGERPRINT_JSON,\n  [{}],\n  SCHEMA_AUTHORITY_JSON,\n);\n\nexport * from \"./runtime.js\";\nexport * from \"./models.js\";\nexport * from \"./structs.js\";\nexport * from \"./functions.js\";\nexport * from \"./schema.js\";\n",
+        "{}import {{ readFileSync as _readFileSync }} from \"node:fs\";\nimport {{ MigrationCatalog, openMigrationCatalog as _openMigrationCatalog }} from \"@type-bridge/node\";\nimport {{ SCHEMA_AUTHORITY_JSON }} from \"./authority.js\";\nimport {{ {install} }} from \"./runtime.js\";\nimport {{ {} }} from \"./models.js\";\nimport {{ PROJECTION_FINGERPRINT_JSON, RUNTIME_PROJECTION_JSON, SEMANTIC_SCHEMA_FINGERPRINT_JSON }} from \"./schema.js\";\n\n{install}(\n  RUNTIME_PROJECTION_JSON,\n  SEMANTIC_SCHEMA_FINGERPRINT_JSON,\n  PROJECTION_FINGERPRINT_JSON,\n  [{}],\n  SCHEMA_AUTHORITY_JSON,\n);\n\nexport {{ MigrationCatalog }};\nexport const MIGRATION_HISTORY_RESOURCE = \"typebridge/migration-history.json\" as const;\nexport function openMigrationCatalog(): MigrationCatalog {{\n  const authority = new TextEncoder().encode(SCHEMA_AUTHORITY_JSON);\n  const history = _readFileSync(new URL(`../${{MIGRATION_HISTORY_RESOURCE}}`, import.meta.url));\n  return _openMigrationCatalog(authority, history);\n}}\n\nexport * from \"./runtime.js\";\nexport * from \"./models.js\";\nexport * from \"./structs.js\";\nexport * from \"./functions.js\";\nexport * from \"./schema.js\";\n",
         header(),
         names.join(", "),
         names.join(", "),

@@ -58,8 +58,12 @@ fn emits_exact_deterministic_single_dependency_crate() {
             "src/schema.rs",
             "src/structs.rs",
             "src/tokens.rs",
+            "typebridge/migration-history.json",
         ]),
     );
+    let schema = String::from_utf8(first.get("src/schema.rs").unwrap().to_vec()).unwrap();
+    assert!(schema.contains("pub fn open_migration_catalog()"));
+    assert!(schema.contains("include_bytes!(\"../typebridge/migration-history.json\")"));
     let declarations =
         String::from_utf8(first.get("src/declaration.rs").unwrap().to_vec()).unwrap();
     for import in [
