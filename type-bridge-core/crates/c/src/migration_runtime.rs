@@ -12,7 +12,8 @@ use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, Diagnosti
 use type_bridge_contract::migration::MigrationId;
 use type_bridge_schema::{ManagedDeltaContext, SafetyClass, VerifiedSchemaAuthority};
 use type_bridge_schema_migration::{
-    MigrationApplyPlanError, MigrationApplyTarget, MigrationCatalog, VerifiedMigrationApplyPlan,
+    MigrationApplyApproval, MigrationApplyPlanError, MigrationApplyTarget, MigrationCatalog,
+    MigrationSafetyPolicy, SafetyPolicyDecision, VerifiedMigrationApplyPlan,
     VerifiedMigrationRollbackPlan, migration_runtime_capability_vocabulary,
 };
 
@@ -193,6 +194,132 @@ impl MigrationPlanState {
 
     pub(crate) fn catalog_fingerprint_json(&self) -> &[u8] {
         self.catalog.fingerprint_json()
+    }
+
+    /// Create one mutable approval builder bound to this exact preview owner.
+    pub(crate) fn approval_builder(self: &Arc<Self>) -> MigrationApprovalBuilderState {
+        MigrationApprovalBuilderState {
+            preview: Arc::clone(self),
+            selected: BTreeSet::new(),
+        }
+    }
+
+    /// Rebuild an executable plan from an approval set bound to this preview.
+    pub(crate) fn authorize(
+        self: &Arc<Self>,
+        approvals: &MigrationApprovalSetState,
+    ) -> Result<Arc<Self>, Diagnostic> {
+        if !Arc::ptr_eq(self, &approvals.preview) {
+            return Err(stable(
+                DiagnosticCategory::InvalidContract,
+                "c_migration_approval_plan_mismatch",
+                "Migration approvals belong to a different preview owner",
+            ));
+        }
+        let policy = MigrationSafetyPolicy::default_policy();
+        let plan = match &self.plan {
+            MigrationPlanKind::Apply(plan) => self
+                .catalog
+                .catalog
+                .authorize_apply(
+                    &plan.applied_migrations().iter().cloned().collect(),
+                    &MigrationApplyTarget::Explicit(
+                        plan.target_frontier().iter().cloned().collect(),
+                    ),
+                    &policy,
+                    &approvals.approvals,
+                )
+                .map(MigrationPlanKind::Apply),
+            MigrationPlanKind::Rollback(plan) => self
+                .catalog
+                .catalog
+                .authorize_rollback(
+                    &plan.applied_basis(),
+                    &plan
+                        .rollbacks()
+                        .iter()
+                        .map(|entry| entry.manifest().id().clone())
+                        .collect(),
+                    &policy,
+                    &approvals.approvals,
+                )
+                .map(MigrationPlanKind::Rollback),
+        }
+        .map_err(plan_diagnostic)?;
+        Ok(Arc::new(Self {
+            catalog: Arc::clone(&self.catalog),
+            plan,
+        }))
+    }
+}
+
+/// Mutable, single-owner approval selection bound to one exact preview.
+#[derive(Debug)]
+pub(crate) struct MigrationApprovalBuilderState {
+    preview: Arc<MigrationPlanState>,
+    selected: BTreeSet<usize>,
+}
+
+impl MigrationApprovalBuilderState {
+    /// Add one exact preview entry whose safety requires explicit approval.
+    pub(crate) fn approve(&mut self, index: usize) -> Result<(), Diagnostic> {
+        let entry = self.preview.entry(index).ok_or_else(|| {
+            stable(
+                DiagnosticCategory::InvalidContract,
+                "c_migration_approval_index_invalid",
+                "Migration approval index is outside the preview",
+            )
+        })?;
+        match MigrationSafetyPolicy::default_policy().decision(entry.safety()) {
+            SafetyPolicyDecision::RequireApproval => {
+                self.selected.insert(index);
+                Ok(())
+            }
+            SafetyPolicyDecision::Allow => Err(stable(
+                DiagnosticCategory::InvalidContract,
+                "c_migration_approval_not_required",
+                "Migration preview entry does not require explicit approval",
+            )),
+            SafetyPolicyDecision::Reject => Err(stable(
+                DiagnosticCategory::InvalidContract,
+                "c_migration_approval_policy_rejected",
+                "Migration preview entry cannot be admitted by approval",
+            )),
+        }
+    }
+
+    /// Freeze selected exact transition approvals into an immutable owner.
+    pub(crate) fn finish(self) -> Result<MigrationApprovalSetState, Diagnostic> {
+        let approvals = self
+            .selected
+            .iter()
+            .map(|index| match &self.preview.plan {
+                MigrationPlanKind::Apply(plan) => {
+                    MigrationApplyApproval::for_manifest(plan.migrations()[*index].manifest())
+                }
+                MigrationPlanKind::Rollback(plan) => MigrationApplyApproval::for_rollback(
+                    plan.rollbacks()[*index].manifest(),
+                    plan.rollbacks()[*index].rollback_safety(),
+                ),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(MigrationApprovalSetState {
+            preview: self.preview,
+            approvals,
+        })
+    }
+}
+
+/// Immutable exact approval set retaining its preview owner.
+#[derive(Clone, Debug)]
+pub(crate) struct MigrationApprovalSetState {
+    preview: Arc<MigrationPlanState>,
+    approvals: Vec<MigrationApplyApproval>,
+}
+
+impl MigrationApprovalSetState {
+    pub(crate) fn len(&self) -> usize {
+        self.approvals.len()
     }
 }
 
@@ -393,8 +520,8 @@ mod tests {
             authority.semantic_profile().id().clone(),
             capabilities,
         );
-        let source = declared(&["person"]);
-        let target = declared(&["person", "team"]);
+        let source = declared(&["person", "team"]);
+        let target = declared(&["person"]);
         let delta = diff_managed(&source, &target, &context).unwrap();
         let reverse = inverse_delta(&delta).unwrap();
         let step = SchemaDeltaStep::new(
@@ -428,11 +555,18 @@ mod tests {
         assert_eq!(entry.operation_count(), 1);
         assert_eq!(entry.transaction_group_count(), 1);
         assert_eq!(entry.backfill_count(), 0);
-        assert!(entry.safety() <= type_bridge_schema::SafetyClass::Additive);
+        assert_eq!(entry.safety(), type_bridge_schema::SafetyClass::Destructive);
         assert!(preview.entry(1).is_none());
         assert_eq!(
             preview.catalog_fingerprint_json(),
             catalog.fingerprint_json()
         );
+        let mut builder = preview.approval_builder();
+        builder.approve(0).unwrap();
+        let approvals = builder.finish().unwrap();
+        assert_eq!(approvals.len(), 1);
+        let executable = preview.authorize(&approvals).unwrap();
+        assert!(executable.execution_authorized());
+        assert_eq!(executable.len(), 1);
     }
 }
