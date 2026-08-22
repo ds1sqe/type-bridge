@@ -30,7 +30,8 @@ pub use coordinator::{
     MigrationExecutionDirection, MigrationExecutionOutcome, MigrationExecutionPosition,
     MigrationExecutionProvider, MigrationExecutionReport, MigrationExecutionReportPosition,
     MigrationExecutionStatus, MigrationRollbackOutcome, PreparedMigrationGroup,
-    execute_verified_migration_apply_plan, execute_verified_migration_rollback_plan,
+    execute_verified_migration_apply_plan, execute_verified_migration_apply_plan_controlled,
+    execute_verified_migration_rollback_plan, execute_verified_migration_rollback_plan_controlled,
     require_authorized_apply_plan, require_authorized_rollback_plan,
 };
 pub use directory::{
@@ -42,9 +43,11 @@ pub use execution::{
     BackfillExecutionDirection, BackfillRecoveryObservation, ExecutionBindingToken, ExecutionFence,
     ExecutionFuture, ExecutionScope, GroupCommitCertainty, GroupEventRecord, GroupJournalEventKind,
     GroupRecoveryDecision, GroupRecoveryObservation, JournalEntry, JournalSequence, LeaseHolderId,
-    MigrationExecutionJournal, MigrationLease, MigrationLeaseStore, OpenPlanRecord,
-    OpenRollbackPlanRecord, PlanRecord, RollbackPlanRecord, RollbackStepEventRecord,
-    RolledBackRecord, active_applied_entries, decide_backfill_recovery, decide_group_recovery,
+    MAX_MIGRATION_BACKFILL_OBSERVATIONS, MAX_MIGRATION_EXECUTION_GROUPS, MigrationCancellation,
+    MigrationExecutionControl, MigrationExecutionJournal, MigrationExecutionResourceLimits,
+    MigrationLease, MigrationLeaseStore, OpenPlanRecord, OpenRollbackPlanRecord, PlanRecord,
+    RollbackPlanRecord, RollbackStepEventRecord, RolledBackRecord, active_applied_entries,
+    decide_backfill_recovery, decide_group_recovery,
 };
 pub use generate::{
     GeneratedMigration, MigrationGenerationOutcome, MigrationGenerationRequest,

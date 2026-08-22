@@ -15,9 +15,10 @@ use crate::execution::{
     AppliedRecord, BackfillCompletionEvidence, BackfillEventRecord, BackfillExecutionDirection,
     BackfillRecoveryObservation, ExecutionFence, ExecutionFuture, GroupCommitCertainty,
     GroupEventRecord, GroupJournalEventKind, GroupRecoveryDecision, GroupRecoveryObservation,
-    JournalEntry, LeaseHolderId, MigrationExecutionJournal, MigrationLease, MigrationLeaseStore,
-    OpenPlanRecord, OpenRollbackPlanRecord, PlanRecord, RollbackPlanRecord,
-    RollbackStepEventRecord, RolledBackRecord, decide_backfill_recovery, decide_group_recovery,
+    JournalEntry, LeaseHolderId, MigrationExecutionControl, MigrationExecutionJournal,
+    MigrationLease, MigrationLeaseStore, OpenPlanRecord, OpenRollbackPlanRecord, PlanRecord,
+    RollbackPlanRecord, RollbackStepEventRecord, RolledBackRecord, decide_backfill_recovery,
+    decide_group_recovery,
 };
 use crate::{
     StatementUnit, VerifiedMigrationApplyManifest, VerifiedMigrationApplyPlan,
@@ -478,6 +479,29 @@ where
     S: MigrationLeaseStore + MigrationExecutionJournal,
     P: MigrationExecutionProvider,
 {
+    execute_verified_migration_apply_plan_controlled(
+        store,
+        provider,
+        holder,
+        plan,
+        &MigrationExecutionControl::default(),
+    )
+    .await
+}
+
+/// Execute one verified apply plan under explicit cancellation, deadline, and limits.
+pub async fn execute_verified_migration_apply_plan_controlled<S, P>(
+    store: &S,
+    provider: &P,
+    holder: &LeaseHolderId,
+    plan: &VerifiedMigrationApplyPlan,
+    control: &MigrationExecutionControl,
+) -> Result<MigrationExecutionOutcome, Diagnostic>
+where
+    S: MigrationLeaseStore + MigrationExecutionJournal,
+    P: MigrationExecutionProvider,
+{
+    control.check()?;
     require_authorized_apply_plan(plan)?;
     plan.required_capabilities()
         .ensure_supported_by(provider.available_capabilities())?;
@@ -507,9 +531,19 @@ where
             "backfill execution requires the closed provider backfill transaction seam",
         ));
     }
+    let transaction_groups = plan
+        .migrations()
+        .iter()
+        .try_fold(0usize, |count, migration| {
+            count.checked_add(migration.transaction_groups().len())
+        })
+        .ok_or_else(execution_group_limit)?;
+    if transaction_groups > control.resources().transaction_groups() {
+        return Err(execution_group_limit());
+    }
     let scope = crate::ExecutionScope::new(source.scope().id().clone());
     let lease = store.acquire(&scope, holder).await?;
-    let result = execute_under_lease(store, provider, &lease, plan).await;
+    let result = execute_under_lease(store, provider, &lease, plan, control).await;
     let release = store.release(&lease).await;
     finish_apply_lease_release(result, release)
 }
@@ -519,11 +553,13 @@ async fn execute_under_lease<S, P>(
     provider: &P,
     lease: &MigrationLease,
     plan: &VerifiedMigrationApplyPlan,
+    control: &MigrationExecutionControl,
 ) -> Result<MigrationExecutionOutcome, Diagnostic>
 where
     S: MigrationExecutionJournal,
     P: MigrationExecutionProvider,
 {
+    control.check()?;
     let applied = store.load_applied(lease).await?;
     let open = store.load_open_plan(lease).await?;
     let completed_manifests = match &open {
@@ -554,6 +590,7 @@ where
         let snapshot = open.as_ref();
         let mut backfills = migration.backfill_step_indices().iter().copied().peekable();
         for group in migration.transaction_groups() {
+            control.check()?;
             while backfills
                 .peek()
                 .is_some_and(|step_index| *step_index < group.first_step_index())
@@ -565,7 +602,11 @@ where
                 .await?
                 {
                     ApplyBackfillResult::Completed(observation) => {
-                        backfill_observations.push(observation);
+                        retain_backfill_observation(
+                            &mut backfill_observations,
+                            observation,
+                            control,
+                        )?;
                     }
                     ApplyBackfillResult::Terminal(outcome) => return Ok(outcome),
                 }
@@ -774,11 +815,12 @@ where
             }
         }
         for step_index in backfills {
+            control.check()?;
             match execute_apply_backfill(store, provider, lease, migration, step_index, snapshot)
                 .await?
             {
                 ApplyBackfillResult::Completed(observation) => {
-                    backfill_observations.push(observation);
+                    retain_backfill_observation(&mut backfill_observations, observation, control)?;
                 }
                 ApplyBackfillResult::Terminal(outcome) => return Ok(outcome),
             }
@@ -815,6 +857,30 @@ where
     Ok(MigrationExecutionOutcome::Applied {
         backfills: backfill_observations,
     })
+}
+
+fn execution_group_limit() -> Diagnostic {
+    failure(
+        DiagnosticCategory::ResourceLimit,
+        "migration_execution_group_limit",
+        "migration plan exceeds the caller-tightened transaction-group limit",
+    )
+}
+
+fn retain_backfill_observation(
+    observations: &mut Vec<MigrationBackfillObservation>,
+    observation: MigrationBackfillObservation,
+    control: &MigrationExecutionControl,
+) -> Result<(), Diagnostic> {
+    if observations.len() >= control.resources().backfill_observations() {
+        return Err(failure(
+            DiagnosticCategory::ResourceLimit,
+            "migration_execution_backfill_observation_limit",
+            "migration execution exceeds the caller-tightened backfill-observation limit",
+        ));
+    }
+    observations.push(observation);
+    Ok(())
 }
 
 enum ApplyBackfillResult {
@@ -1074,6 +1140,29 @@ where
     S: MigrationLeaseStore + MigrationExecutionJournal,
     P: MigrationExecutionProvider,
 {
+    execute_verified_migration_rollback_plan_controlled(
+        store,
+        provider,
+        holder,
+        plan,
+        &MigrationExecutionControl::default(),
+    )
+    .await
+}
+
+/// Execute one verified rollback plan under explicit cancellation, deadline, and limits.
+pub async fn execute_verified_migration_rollback_plan_controlled<S, P>(
+    store: &S,
+    provider: &P,
+    holder: &LeaseHolderId,
+    plan: &VerifiedMigrationRollbackPlan,
+    control: &MigrationExecutionControl,
+) -> Result<MigrationRollbackOutcome, Diagnostic>
+where
+    S: MigrationLeaseStore + MigrationExecutionJournal,
+    P: MigrationExecutionProvider,
+{
+    control.check()?;
     require_authorized_rollback_plan(plan)?;
     if plan.rollbacks().is_empty() {
         return Err(failure(
@@ -1114,9 +1203,19 @@ where
                 .ensure_supported_by(provider.available_capabilities())?;
         }
     }
+    let transaction_groups = plan
+        .rollbacks()
+        .iter()
+        .try_fold(0usize, |count, rollback| {
+            count.checked_add(rollback.operations().len())
+        })
+        .ok_or_else(execution_group_limit)?;
+    if transaction_groups > control.resources().transaction_groups() {
+        return Err(execution_group_limit());
+    }
     let scope = crate::ExecutionScope::new(plan.source_state().scope().id().clone());
     let lease = store.acquire(&scope, holder).await?;
-    let result = execute_rollback_under_lease(store, provider, &lease, plan).await;
+    let result = execute_rollback_under_lease(store, provider, &lease, plan, control).await;
     let release = store.release(&lease).await;
     finish_rollback_lease_release(result, release)
 }
@@ -1154,11 +1253,13 @@ async fn execute_rollback_under_lease<S, P>(
     provider: &P,
     lease: &MigrationLease,
     plan: &VerifiedMigrationRollbackPlan,
+    control: &MigrationExecutionControl,
 ) -> Result<MigrationRollbackOutcome, Diagnostic>
 where
     S: MigrationExecutionJournal,
     P: MigrationExecutionProvider,
 {
+    control.check()?;
     let applied = store.load_applied(lease).await?;
     let rolled_back = store.load_rolled_back(lease).await?;
     let open = store.load_open_rollback_plan(lease).await?;
@@ -1191,6 +1292,7 @@ where
         }
         let snapshot = open.as_ref();
         for (operation_index, operation) in rollback.operations().iter().enumerate() {
+            control.check()?;
             let step_index = match operation {
                 crate::VerifiedMigrationRollbackOperation::Backfill(_) => {
                     match execute_rollback_backfill(
@@ -1204,7 +1306,11 @@ where
                     .await?
                     {
                         RollbackBackfillResult::Completed(observation) => {
-                            backfill_observations.push(observation);
+                            retain_backfill_observation(
+                                &mut backfill_observations,
+                                observation,
+                                control,
+                            )?;
                         }
                         RollbackBackfillResult::Terminal(outcome) => return Ok(outcome),
                     }

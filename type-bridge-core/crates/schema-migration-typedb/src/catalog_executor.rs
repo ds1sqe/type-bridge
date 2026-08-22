@@ -8,11 +8,12 @@ use type_bridge_contract::migration::MigrationId;
 use type_bridge_contract::schema::DocumentId;
 use type_bridge_orm::Database;
 use type_bridge_schema_migration::{
-    ExecutionScope, LeaseHolderId, MigrationCatalog, MigrationExecutionOutcome,
-    MigrationRollbackOutcome, MigrationVerifyReport, VerifiedMigrationApplyPlan,
-    VerifiedMigrationRollbackPlan, execute_verified_migration_apply_plan,
-    execute_verified_migration_rollback_plan, require_authorized_apply_plan,
-    require_authorized_rollback_plan, verify_migration_state,
+    ExecutionScope, LeaseHolderId, MigrationCatalog, MigrationExecutionControl,
+    MigrationExecutionOutcome, MigrationRollbackOutcome, MigrationVerifyReport,
+    VerifiedMigrationApplyPlan, VerifiedMigrationRollbackPlan,
+    execute_verified_migration_apply_plan, execute_verified_migration_apply_plan_controlled,
+    execute_verified_migration_rollback_plan, execute_verified_migration_rollback_plan_controlled,
+    require_authorized_apply_plan, require_authorized_rollback_plan, verify_migration_state,
 };
 
 use crate::{
@@ -38,6 +39,27 @@ pub async fn execute_catalog_apply_plan(
     execute_verified_migration_apply_plan(&store, &provider, holder, plan).await
 }
 
+/// Execute one catalog-authorized forward plan under explicit shared controls.
+pub async fn execute_catalog_apply_plan_controlled(
+    managed_database: Arc<Database>,
+    catalog: &MigrationCatalog,
+    holder: &LeaseHolderId,
+    plan: &VerifiedMigrationApplyPlan,
+    control: &MigrationExecutionControl,
+) -> Result<MigrationExecutionOutcome, Diagnostic> {
+    control.check()?;
+    require_authorized_apply_plan(plan)?;
+    let binding = catalog_binding(managed_database, catalog)?;
+    let verified =
+        VerifiedMigrationCatalog::new(catalog.graph().manifests().map(|(_, value)| value))?;
+    let store = TypeDbMigrationStore::new(&binding, verified)?;
+    control.check()?;
+    store.ensure_control_schema().await?;
+    let store = store.bind_plan(plan)?;
+    let provider = TypeDbMigrationProvider::new(&binding)?;
+    execute_verified_migration_apply_plan_controlled(&store, &provider, holder, plan, control).await
+}
+
 /// Execute one catalog-authorized rollback plan through its exact TypeDB pair.
 pub async fn execute_catalog_rollback_plan(
     managed_database: Arc<Database>,
@@ -54,6 +76,28 @@ pub async fn execute_catalog_rollback_plan(
     let store = store.bind_rollback_plan(plan)?;
     let provider = TypeDbMigrationProvider::new(&binding)?;
     execute_verified_migration_rollback_plan(&store, &provider, holder, plan).await
+}
+
+/// Execute one catalog-authorized rollback plan under explicit shared controls.
+pub async fn execute_catalog_rollback_plan_controlled(
+    managed_database: Arc<Database>,
+    catalog: &MigrationCatalog,
+    holder: &LeaseHolderId,
+    plan: &VerifiedMigrationRollbackPlan,
+    control: &MigrationExecutionControl,
+) -> Result<MigrationRollbackOutcome, Diagnostic> {
+    control.check()?;
+    require_authorized_rollback_plan(plan)?;
+    let binding = catalog_binding(managed_database, catalog)?;
+    let verified =
+        VerifiedMigrationCatalog::new(catalog.graph().manifests().map(|(_, value)| value))?;
+    let store = TypeDbMigrationStore::new(&binding, verified)?;
+    control.check()?;
+    store.ensure_control_schema().await?;
+    let store = store.bind_rollback_plan(plan)?;
+    let provider = TypeDbMigrationProvider::new(&binding)?;
+    execute_verified_migration_rollback_plan_controlled(&store, &provider, holder, plan, control)
+        .await
 }
 
 /// Verify catalog, ledger, and live semantics without setup, lease, or mutation.

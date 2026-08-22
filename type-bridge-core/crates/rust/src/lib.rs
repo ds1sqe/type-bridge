@@ -76,7 +76,9 @@ pub use type_bridge_orm::{DirectConnectionPolicy, DirectTls};
 pub use type_bridge_orm_derive::SelectedRow;
 #[cfg(feature = "typedb")]
 pub use type_bridge_schema_migration::{
-    MigrationBackfillObservation, MigrationDriftFinding, MigrationExecutionDirection,
-    MigrationExecutionReport, MigrationExecutionReportPosition, MigrationExecutionStatus,
+    MAX_MIGRATION_BACKFILL_OBSERVATIONS, MAX_MIGRATION_EXECUTION_GROUPS,
+    MigrationBackfillObservation, MigrationCancellation, MigrationDriftFinding,
+    MigrationExecutionControl, MigrationExecutionDirection, MigrationExecutionReport,
+    MigrationExecutionReportPosition, MigrationExecutionResourceLimits, MigrationExecutionStatus,
     MigrationVerifyReport,
 };

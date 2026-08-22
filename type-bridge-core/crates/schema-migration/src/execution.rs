@@ -4,6 +4,9 @@ use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::task::{Poll, Waker};
+use std::time::Instant;
 
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use type_bridge_contract::fingerprint::Fingerprint;
@@ -23,6 +26,171 @@ use crate::{
 };
 
 const MAX_LEASE_HOLDER_BYTES: usize = 128;
+
+/// Shared maximum number of migration transaction groups in one invocation.
+pub const MAX_MIGRATION_EXECUTION_GROUPS: usize = 65_536;
+/// Shared maximum number of retained terminal backfill observations.
+pub const MAX_MIGRATION_BACKFILL_OBSERVATIONS: usize = 65_536;
+
+/// Cloneable, wakeable cancellation authority for migration operations.
+#[derive(Clone, Debug, Default)]
+pub struct MigrationCancellation {
+    inner: Arc<MigrationCancellationInner>,
+}
+
+#[derive(Debug, Default)]
+struct MigrationCancellationInner {
+    cancelled: AtomicBool,
+    waiters: std::sync::Mutex<Vec<Waker>>,
+}
+
+impl MigrationCancellation {
+    /// Request cancellation and wake every currently registered provider wait.
+    pub fn cancel(&self) {
+        if !self.inner.cancelled.swap(true, Ordering::AcqRel) {
+            let waiters = {
+                let mut waiters = self.inner.waiters.lock().expect("cancellation waiters");
+                std::mem::take(&mut *waiters)
+            };
+            for waiter in waiters {
+                waiter.wake();
+            }
+        }
+    }
+
+    /// Return whether cancellation has been requested.
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        self.inner.cancelled.load(Ordering::Acquire)
+    }
+
+    /// Await cancellation without polling or spawning a worker thread.
+    pub async fn cancelled(&self) {
+        std::future::poll_fn(|context| {
+            if self.is_cancelled() {
+                return Poll::Ready(());
+            }
+            let mut waiters = self.inner.waiters.lock().expect("cancellation waiters");
+            if self.is_cancelled() {
+                return Poll::Ready(());
+            }
+            if !waiters
+                .iter()
+                .any(|waiter| waiter.will_wake(context.waker()))
+            {
+                waiters.push(context.waker().clone());
+            }
+            Poll::Pending
+        })
+        .await
+    }
+}
+
+/// Tighten-only bounded resources for one migration execution invocation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MigrationExecutionResourceLimits {
+    transaction_groups: usize,
+    backfill_observations: usize,
+}
+
+impl MigrationExecutionResourceLimits {
+    /// Construct limits clamped to the shared ceilings.
+    #[must_use]
+    pub const fn tightened(transaction_groups: usize, backfill_observations: usize) -> Self {
+        Self {
+            transaction_groups: if transaction_groups < MAX_MIGRATION_EXECUTION_GROUPS {
+                transaction_groups
+            } else {
+                MAX_MIGRATION_EXECUTION_GROUPS
+            },
+            backfill_observations: if backfill_observations < MAX_MIGRATION_BACKFILL_OBSERVATIONS {
+                backfill_observations
+            } else {
+                MAX_MIGRATION_BACKFILL_OBSERVATIONS
+            },
+        }
+    }
+
+    /// Return the maximum transaction groups admitted by this invocation.
+    pub const fn transaction_groups(self) -> usize {
+        self.transaction_groups
+    }
+
+    /// Return the maximum retained terminal backfill observations.
+    pub const fn backfill_observations(self) -> usize {
+        self.backfill_observations
+    }
+}
+
+impl Default for MigrationExecutionResourceLimits {
+    fn default() -> Self {
+        Self::tightened(
+            MAX_MIGRATION_EXECUTION_GROUPS,
+            MAX_MIGRATION_BACKFILL_OBSERVATIONS,
+        )
+    }
+}
+
+/// Immutable controls shared by apply and rollback execution.
+#[derive(Clone, Debug, Default)]
+pub struct MigrationExecutionControl {
+    cancellation: MigrationCancellation,
+    deadline: Option<Instant>,
+    resources: MigrationExecutionResourceLimits,
+}
+
+impl MigrationExecutionControl {
+    /// Bind cancellation, one absolute monotonic deadline, and tightened limits.
+    #[must_use]
+    pub const fn new(
+        cancellation: MigrationCancellation,
+        deadline: Option<Instant>,
+        resources: MigrationExecutionResourceLimits,
+    ) -> Self {
+        Self {
+            cancellation,
+            deadline,
+            resources,
+        }
+    }
+
+    /// Return the cancellation authority.
+    pub const fn cancellation(&self) -> &MigrationCancellation {
+        &self.cancellation
+    }
+
+    /// Return the absolute monotonic deadline, when bounded.
+    pub const fn deadline(&self) -> Option<Instant> {
+        self.deadline
+    }
+
+    /// Return caller-tightened resource limits.
+    pub const fn resources(&self) -> MigrationExecutionResourceLimits {
+        self.resources
+    }
+
+    /// Reject work at a safe coordinator boundary before another effect begins.
+    pub fn check(&self) -> Result<(), Diagnostic> {
+        if self.cancellation.is_cancelled() {
+            return Err(failure(
+                DiagnosticCategory::Cancelled,
+                "migration_execution_cancelled",
+                "migration execution was cancelled before the next effect",
+            ));
+        }
+        if self
+            .deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            return Err(failure(
+                DiagnosticCategory::ResourceLimit,
+                "migration_execution_deadline_exceeded",
+                "migration execution reached its absolute deadline before the next effect",
+            ));
+        }
+        Ok(())
+    }
+}
 
 /// Boxed future returned by provider-neutral execution stores.
 pub type ExecutionFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, Diagnostic>> + Send + 'a>>;
@@ -1979,6 +2147,41 @@ mod tests {
     use type_bridge_contract::migration::{MigrationAppLabel, MigrationName};
 
     use super::*;
+
+    #[test]
+    fn migration_controls_cancel_and_only_tighten_shared_ceilings() {
+        let cancellation = MigrationCancellation::default();
+        let limits = MigrationExecutionResourceLimits::tightened(7, usize::MAX);
+        let control = MigrationExecutionControl::new(cancellation.clone(), None, limits);
+
+        assert_eq!(control.resources().transaction_groups(), 7);
+        assert_eq!(
+            control.resources().backfill_observations(),
+            MAX_MIGRATION_BACKFILL_OBSERVATIONS
+        );
+        assert!(control.check().is_ok());
+
+        cancellation.cancel();
+        cancellation.cancel();
+        let diagnostic = control.check().expect_err("cancelled control");
+        assert_eq!(diagnostic.category(), DiagnosticCategory::Cancelled);
+        assert_eq!(diagnostic.code().as_str(), "migration_execution_cancelled");
+    }
+
+    #[test]
+    fn migration_control_uses_one_absolute_deadline() {
+        let control = MigrationExecutionControl::new(
+            MigrationCancellation::default(),
+            Some(Instant::now()),
+            MigrationExecutionResourceLimits::default(),
+        );
+        let diagnostic = control.check().expect_err("expired deadline");
+        assert_eq!(diagnostic.category(), DiagnosticCategory::ResourceLimit);
+        assert_eq!(
+            diagnostic.code().as_str(),
+            "migration_execution_deadline_exceeded"
+        );
+    }
     use crate::schema_lowering_profile_binding;
 
     #[derive(Default)]

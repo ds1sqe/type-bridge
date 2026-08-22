@@ -354,27 +354,45 @@ impl<S: Schema> MigrationPlan<S> {
         database: &Database<S>,
         holder: &str,
     ) -> Result<type_bridge_schema_migration::MigrationExecutionReport> {
+        self.execute_controlled(
+            database,
+            holder,
+            &type_bridge_schema_migration::MigrationExecutionControl::default(),
+        )
+        .await
+    }
+
+    /// Execute with shared cancellation, absolute deadline, and tightened limits.
+    #[cfg(feature = "typedb")]
+    pub async fn execute_controlled(
+        &self,
+        database: &Database<S>,
+        holder: &str,
+        control: &type_bridge_schema_migration::MigrationExecutionControl,
+    ) -> Result<type_bridge_schema_migration::MigrationExecutionReport> {
         let holder = type_bridge_schema_migration::LeaseHolderId::new(holder)
             .map_err(migration_diagnostic)?;
         let database = Arc::new(database.inner_orm().clone());
         match &self.plan {
             MigrationPreviewInner::Apply(plan) => {
-                type_bridge_schema_migration_typedb::execute_catalog_apply_plan(
+                type_bridge_schema_migration_typedb::execute_catalog_apply_plan_controlled(
                     database,
                     &self.catalog,
                     &holder,
                     plan,
+                    control,
                 )
                 .await
                 .map(type_bridge_schema_migration::MigrationExecutionReport::from_apply)
                 .map_err(migration_diagnostic)
             }
             MigrationPreviewInner::Rollback(plan) => {
-                type_bridge_schema_migration_typedb::execute_catalog_rollback_plan(
+                type_bridge_schema_migration_typedb::execute_catalog_rollback_plan_controlled(
                     database,
                     &self.catalog,
                     &holder,
                     plan,
+                    control,
                 )
                 .await
                 .map(type_bridge_schema_migration::MigrationExecutionReport::from_rollback)
