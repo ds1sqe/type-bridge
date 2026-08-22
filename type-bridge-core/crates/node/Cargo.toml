@@ -24,6 +24,7 @@ type-bridge-orm = { path = "../orm", version = "2.1.0", default-features = false
 type-bridge-schema = { path = "../schema", version = "2.1.0" }
 type-bridge-schema-codegen = { path = "../schema-codegen", version = "2.1.0" }
 type-bridge-schema-migration = { path = "../schema-migration", version = "2.1.0" }
+type-bridge-schema-migration-typedb = { path = "../schema-migration-typedb", version = "2.1.0" }
 napi = { version = "=3.12.1", default-features = false, features = ["napi8", "compat-mode"] }
 napi-derive = { version = "=3.6.3", features = ["compat-mode"] }
 serde = { version = "1.0", features = ["derive"] }

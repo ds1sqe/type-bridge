@@ -21,6 +21,7 @@ use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind, is_canonic
 use type_bridge_contract::limits::{
     MAX_CANONICAL_BYTES, MAX_CANONICAL_COLLECTION_LEN, MAX_CANONICAL_STRING_BYTES,
 };
+use type_bridge_contract::managed_scope::ManagedScopeId;
 use type_bridge_contract::projection::{
     BindingTarget, ProjectedContainer, ProjectedModelForm, ProjectedMultiplicity,
     ProjectedTokenIdentity, ProjectionConfig, RuntimeProjection,
@@ -76,6 +77,7 @@ struct ModelRegistration {
 
 struct InstalledPackage {
     projection: Arc<InstalledRuntimeProjection>,
+    managed_scope_id: Option<ManagedScopeId>,
     types_by_label: BTreeMap<String, TypeId>,
     projected_type_keys: BTreeMap<TypeId, ProjectedTypeKeyCache>,
     projected_batch_materializer: Option<Arc<FunctionRef<(), ()>>>,
@@ -1559,13 +1561,16 @@ impl NodeRuntimeProjection {
         projected_batch_materializer: Option<Function<'_, (), ()>>,
         require_projected_batch_materializer: bool,
     ) -> napi::Result<Self> {
-        let runtime = match schema_authority_json {
-            Some(schema_authority_json) => install_authority_backed_projection(
-                &projection_json,
-                &semantic_fingerprint_json,
-                &projection_fingerprint_json,
-                &schema_authority_json,
-            )?,
+        let (runtime, managed_scope_id) = match schema_authority_json {
+            Some(schema_authority_json) => {
+                let (runtime, scope) = install_authority_backed_projection(
+                    &projection_json,
+                    &semantic_fingerprint_json,
+                    &projection_fingerprint_json,
+                    &schema_authority_json,
+                )?;
+                (runtime, Some(scope))
+            }
             None => {
                 let runtime = decode_runtime_projection_verified(
                     projection_json.as_bytes(),
@@ -1582,7 +1587,7 @@ impl NodeRuntimeProjection {
                     return Err(projection_evidence_mismatch());
                 }
                 verify_legacy_typescript_projection_evidence(&runtime)?;
-                runtime
+                (runtime, None)
             }
         };
         let ordered_successor = projection_uses_ordered_collections(&runtime);
@@ -1693,6 +1698,7 @@ impl NodeRuntimeProjection {
         Ok(Self {
             package: Arc::new(InstalledPackage {
                 projection,
+                managed_scope_id,
                 types_by_label,
                 projected_type_keys,
                 projected_batch_materializer,
@@ -1740,7 +1746,11 @@ impl NodeRuntimeProjection {
                 cancellation,
             ))
             .map_err(napi_sdk_diagnostic)?;
-        Ok(NodeRustDatabase::from_handles(Arc::new(database), runtime))
+        Ok(NodeRustDatabase::from_handles(
+            Arc::new(database),
+            runtime,
+            self.package.managed_scope_id.clone(),
+        ))
     }
 
     /// Bind one exact projected model to a database-owned manager.
@@ -3187,7 +3197,7 @@ fn install_authority_backed_projection(
     semantic_fingerprint_json: &str,
     projection_fingerprint_json: &str,
     schema_authority_json: &str,
-) -> napi::Result<RuntimeProjection> {
+) -> napi::Result<(RuntimeProjection, ManagedScopeId)> {
     let rejection = || projection_evidence_rejection(semantic_fingerprint_json);
     let runtime = decode_runtime_projection_verified(
         projection_json.as_bytes(),
@@ -3204,7 +3214,8 @@ fn install_authority_backed_projection(
     )
     .map_err(|_| rejection())?;
     verify_projection_evidence(&authority, &runtime).map_err(|_| rejection())?;
-    Ok(runtime)
+    let managed_scope_id = authority.managed_scope().id().clone();
+    Ok((runtime, managed_scope_id))
 }
 
 fn projection_evidence_mismatch() -> Error {

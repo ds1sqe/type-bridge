@@ -105,19 +105,113 @@ impl NodeDescriptorRegistry {
 pub struct NodeRustDatabase {
     db: Arc<type_bridge_orm::Database>,
     runtime: Arc<ProviderRuntimeOwner>,
+    managed_scope_id: Option<type_bridge_contract::managed_scope::ManagedScopeId>,
 }
 
 impl NodeRustDatabase {
     pub(crate) fn from_handles(
         db: Arc<type_bridge_orm::Database>,
         runtime: Arc<ProviderRuntimeOwner>,
+        managed_scope_id: Option<type_bridge_contract::managed_scope::ManagedScopeId>,
     ) -> Self {
-        Self { db, runtime }
+        Self {
+            db,
+            runtime,
+            managed_scope_id,
+        }
     }
 
     pub(crate) fn handles(&self) -> (Arc<type_bridge_orm::Database>, Arc<ProviderRuntimeOwner>) {
         (Arc::clone(&self.db), Arc::clone(&self.runtime))
     }
+
+    fn pair_administrator(
+        &self,
+    ) -> Result<type_bridge_schema_migration_typedb::ManagedDatabasePairAdministrator> {
+        let scope = self.managed_scope_id.clone().ok_or_else(|| {
+            Error::new(
+                Status::InvalidArg,
+                "managed database administration requires verified generated schema authority",
+            )
+        })?;
+        type_bridge_schema_migration_typedb::ManagedDatabasePairAdministrator::from_managed_database(
+            Arc::clone(&self.db),
+            scope,
+        )
+        .map_err(napi_administration_error)
+    }
+}
+
+#[napi]
+pub struct NodeManagedDatabaseDeletionPlan {
+    inner: Option<type_bridge_schema_migration_typedb::ManagedDatabasePairDeletionPlan>,
+    runtime: Arc<ProviderRuntimeOwner>,
+}
+
+#[napi]
+impl NodeManagedDatabaseDeletionPlan {
+    #[napi(js_name = "inspectedState")]
+    pub fn inspected_state(&self) -> Result<String> {
+        self.inner
+            .as_ref()
+            .map(|plan| node_pair_state(plan.inspected_state()).to_owned())
+            .ok_or_else(|| Error::new(Status::InvalidArg, "database deletion plan is closed"))
+    }
+
+    #[napi(js_name = "execute")]
+    pub fn execute(&mut self) -> Result<String> {
+        let plan = self
+            .inner
+            .take()
+            .ok_or_else(|| Error::new(Status::InvalidArg, "database deletion plan is closed"))?;
+        self.runtime
+            .block_on(plan.execute())
+            .map(node_delete_outcome)
+            .map(str::to_owned)
+            .map_err(napi_administration_error)
+    }
+
+    #[napi(js_name = "close")]
+    pub fn close(&mut self) {
+        self.inner = None;
+    }
+}
+
+fn node_pair_state(
+    state: type_bridge_schema_migration_typedb::ManagedDatabasePairState,
+) -> &'static str {
+    match state {
+        type_bridge_schema_migration_typedb::ManagedDatabasePairState::Absent => "absent",
+        type_bridge_schema_migration_typedb::ManagedDatabasePairState::StandaloneManaged => {
+            "standalone_managed"
+        }
+        type_bridge_schema_migration_typedb::ManagedDatabasePairState::OwnedPair => "owned_pair",
+        type_bridge_schema_migration_typedb::ManagedDatabasePairState::OwnedJournalOrphan => {
+            "owned_journal_orphan"
+        }
+    }
+}
+
+fn node_delete_outcome(
+    outcome: type_bridge_schema_migration_typedb::ManagedDatabasePairDeleteOutcome,
+) -> &'static str {
+    match outcome {
+        type_bridge_schema_migration_typedb::ManagedDatabasePairDeleteOutcome::AlreadyAbsent => {
+            "already_absent"
+        }
+        type_bridge_schema_migration_typedb::ManagedDatabasePairDeleteOutcome::DeletedStandaloneManaged => "deleted_standalone_managed",
+        type_bridge_schema_migration_typedb::ManagedDatabasePairDeleteOutcome::DeletedOwnedPair => {
+            "deleted_owned_pair"
+        }
+        type_bridge_schema_migration_typedb::ManagedDatabasePairDeleteOutcome::DeletedOwnedJournalOrphan => "deleted_owned_journal_orphan",
+    }
+}
+
+fn napi_administration_error(error: type_bridge_contract::diagnostic::Diagnostic) -> Error {
+    Error::new(
+        Status::GenericFailure,
+        format!("database administration failed [{}]", error.code().as_str()),
+    )
 }
 
 #[napi]
@@ -146,13 +240,21 @@ impl NodeRustDatabase {
 
     #[napi(js_name = "createDatabase")]
     pub fn create_database(&self) -> Result<()> {
-        self.runtime
-            .block_on(self.db.create_database())
-            .map_err(napi_orm_error)
+        self.create_database_outcome().map(|_| ())
     }
 
     #[napi(js_name = "createDatabaseOutcome")]
     pub fn create_database_outcome(&self) -> Result<String> {
+        if self.managed_scope_id.is_some() {
+            return self
+                .runtime
+                .block_on(self.pair_administrator()?.create_database_outcome())
+                .map(|outcome| match outcome {
+                    type_bridge_schema_migration_typedb::ManagedDatabasePairCreateOutcome::Created => "created".to_owned(),
+                    type_bridge_schema_migration_typedb::ManagedDatabasePairCreateOutcome::AlreadyExists => "already_exists".to_owned(),
+                })
+                .map_err(napi_administration_error);
+        }
         self.runtime
             .block_on(self.db.create_database_outcome())
             .map(|outcome| match outcome {
@@ -166,6 +268,12 @@ impl NodeRustDatabase {
 
     #[napi(js_name = "deleteDatabase")]
     pub fn delete_database(&self) -> Result<()> {
+        if self.managed_scope_id.is_some() {
+            return Err(Error::new(
+                Status::InvalidArg,
+                "managed database deletion requires planDatabaseDelete() and explicit plan execution",
+            ));
+        }
         self.runtime
             .block_on(self.db.delete_database())
             .map_err(napi_orm_error)
@@ -173,6 +281,12 @@ impl NodeRustDatabase {
 
     #[napi(js_name = "deleteDatabaseOutcome")]
     pub fn delete_database_outcome(&self) -> Result<String> {
+        if self.managed_scope_id.is_some() {
+            return Err(Error::new(
+                Status::InvalidArg,
+                "managed database deletion requires planDatabaseDelete() and explicit plan execution",
+            ));
+        }
         self.runtime
             .block_on(self.db.delete_database_outcome())
             .map(|outcome| match outcome {
@@ -186,6 +300,12 @@ impl NodeRustDatabase {
 
     #[napi(js_name = "resetDatabase")]
     pub fn reset_database(&self) -> Result<()> {
+        if self.managed_scope_id.is_some() {
+            return Err(Error::new(
+                Status::InvalidArg,
+                "managed database reset is not a recovery-safe pair operation",
+            ));
+        }
         self.runtime
             .block_on(async {
                 if self.db.database_exists().await? {
@@ -194,6 +314,27 @@ impl NodeRustDatabase {
                 self.db.create_database().await
             })
             .map_err(napi_orm_error)
+    }
+
+    #[napi(js_name = "inspectDatabasePair")]
+    pub fn inspect_database_pair(&self) -> Result<String> {
+        self.runtime
+            .block_on(self.pair_administrator()?.inspect())
+            .map(node_pair_state)
+            .map(str::to_owned)
+            .map_err(napi_administration_error)
+    }
+
+    #[napi(js_name = "planDatabaseDelete")]
+    pub fn plan_database_delete(&self) -> Result<NodeManagedDatabaseDeletionPlan> {
+        let inner = self
+            .runtime
+            .block_on(self.pair_administrator()?.plan_delete())
+            .map_err(napi_administration_error)?;
+        Ok(NodeManagedDatabaseDeletionPlan {
+            inner: Some(inner),
+            runtime: Arc::clone(&self.runtime),
+        })
     }
 
     #[napi(js_name = "transaction")]
@@ -350,6 +491,7 @@ pub fn connect_rust_database(
     Ok(NodeRustDatabase {
         db: Arc::new(db),
         runtime,
+        managed_scope_id: None,
     })
 }
 
@@ -569,7 +711,91 @@ pub(crate) fn napi_orm_error(error: OrmError) -> napi::Error {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+    use std::sync::Mutex;
+
+    use type_bridge_orm::error::OrmError;
+    use type_bridge_orm::session::backend::{BoxFuture, DriverBackend, TransactionOps, TxType};
+
     use super::*;
+
+    struct AdministrationBackend {
+        databases: Arc<Mutex<BTreeSet<String>>>,
+    }
+
+    impl DriverBackend for AdministrationBackend {
+        fn open_transaction(
+            &self,
+            _database: &str,
+            _tx_type: TxType,
+        ) -> BoxFuture<'_, std::result::Result<Box<dyn TransactionOps>, OrmError>> {
+            Box::pin(async { Err(OrmError::Connection("unexpected transaction".into())) })
+        }
+
+        fn is_open(&self) -> bool {
+            true
+        }
+
+        fn database_exists(
+            &self,
+            database: &str,
+        ) -> BoxFuture<'_, std::result::Result<bool, OrmError>> {
+            let exists = self.databases.lock().unwrap().contains(database);
+            Box::pin(async move { Ok(exists) })
+        }
+
+        fn create_database(
+            &self,
+            database: &str,
+        ) -> BoxFuture<'_, std::result::Result<(), OrmError>> {
+            self.databases.lock().unwrap().insert(database.to_owned());
+            Box::pin(async { Ok(()) })
+        }
+
+        fn delete_database(
+            &self,
+            database: &str,
+        ) -> BoxFuture<'_, std::result::Result<(), OrmError>> {
+            self.databases.lock().unwrap().remove(database);
+            Box::pin(async { Ok(()) })
+        }
+
+        fn schema_text(
+            &self,
+            _database: &str,
+        ) -> BoxFuture<'_, std::result::Result<String, OrmError>> {
+            Box::pin(async { Ok(String::new()) })
+        }
+    }
+
+    #[test]
+    fn node_generated_administration_is_pair_aware_and_plan_owned() {
+        let databases = Arc::new(Mutex::new(BTreeSet::new()));
+        let database = NodeRustDatabase {
+            db: Arc::new(type_bridge_orm::Database::with_backend(
+                Box::new(AdministrationBackend {
+                    databases: Arc::clone(&databases),
+                }),
+                "app",
+            )),
+            runtime: Arc::new(ProviderRuntimeOwner::new().unwrap()),
+            managed_scope_id: Some(
+                type_bridge_contract::managed_scope::ManagedScopeId::new("generated-scope")
+                    .unwrap(),
+            ),
+        };
+
+        assert_eq!(database.create_database_outcome().unwrap(), "created");
+        assert_eq!(
+            database.inspect_database_pair().unwrap(),
+            "standalone_managed"
+        );
+        assert!(database.delete_database().is_err());
+        let mut plan = database.plan_database_delete().unwrap();
+        drop(database);
+        assert_eq!(plan.execute().unwrap(), "deleted_standalone_managed");
+        assert!(databases.lock().unwrap().is_empty());
+    }
 
     #[test]
     fn node_tls_inputs_follow_the_canonical_truth_table() {

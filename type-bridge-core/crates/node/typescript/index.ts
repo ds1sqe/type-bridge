@@ -208,12 +208,30 @@ export interface NativeRustDatabase {
   createDatabaseOutcome(): DatabaseCreateOutcome;
   deleteDatabase(): void;
   deleteDatabaseOutcome(): DatabaseDeleteOutcome;
+  inspectDatabasePair(): ManagedDatabasePairState;
+  planDatabaseDelete(): NativeManagedDatabaseDeletionPlan;
   resetDatabase(): void;
   transaction(transactionType?: TransactionType): NativeRustTransactionContext;
 }
 
+export interface NativeManagedDatabaseDeletionPlan {
+  inspectedState(): ManagedDatabasePairState;
+  execute(): ManagedDatabaseDeleteOutcome;
+  close(): void;
+}
+
 export type DatabaseCreateOutcome = "created" | "already_exists";
 export type DatabaseDeleteOutcome = "deleted" | "already_absent";
+export type ManagedDatabasePairState =
+  | "absent"
+  | "standalone_managed"
+  | "owned_pair"
+  | "owned_journal_orphan";
+export type ManagedDatabaseDeleteOutcome =
+  | "already_absent"
+  | "deleted_standalone_managed"
+  | "deleted_owned_pair"
+  | "deleted_owned_journal_orphan";
 
 export interface NativeRustTransactionContext {
   queryJson(query: string): string;
@@ -509,6 +527,14 @@ export class RustDatabase {
     return this.#native.deleteDatabaseOutcome();
   }
 
+  inspectDatabasePair(): ManagedDatabasePairState {
+    return this.#native.inspectDatabasePair();
+  }
+
+  planDatabaseDelete(): ManagedDatabaseDeletionPlan {
+    return new ManagedDatabaseDeletionPlan(this.#native.planDatabaseDelete());
+  }
+
   resetDatabase(): void {
     this.#native.resetDatabase();
   }
@@ -519,6 +545,27 @@ export class RustDatabase {
     return createRustTransactionContext(
       this.#native.transaction(transactionType),
     );
+  }
+}
+
+export class ManagedDatabaseDeletionPlan {
+  readonly #native: NativeManagedDatabaseDeletionPlan;
+
+  /** @internal */
+  constructor(native: NativeManagedDatabaseDeletionPlan) {
+    this.#native = native;
+  }
+
+  inspectedState(): ManagedDatabasePairState {
+    return this.#native.inspectedState();
+  }
+
+  execute(): ManagedDatabaseDeleteOutcome {
+    return this.#native.execute();
+  }
+
+  close(): void {
+    this.#native.close();
   }
 }
 

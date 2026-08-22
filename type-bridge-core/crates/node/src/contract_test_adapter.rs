@@ -297,6 +297,7 @@ impl ProjectionRecordingFixture {
             database: Some(NodeRustDatabase {
                 db: Arc::new(database),
                 runtime,
+                managed_scope_id: None,
             }),
             state,
         })

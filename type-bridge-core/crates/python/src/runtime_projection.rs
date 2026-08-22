@@ -16,6 +16,7 @@ use type_bridge_contract::codec::to_canonical_json;
 use type_bridge_contract::decimal::parse_decimal;
 use type_bridge_contract::id::{TypeId, TypeKind, is_canonical_thing_iid};
 use type_bridge_contract::limits::MAX_CANONICAL_STRING_BYTES;
+use type_bridge_contract::managed_scope::ManagedScopeId;
 use type_bridge_contract::projection::{
     BindingTarget, ProjectedContainer, ProjectedModelForm, ProjectedModelUse,
     ProjectedMultiplicity, ProjectedTokenIdentity, ProjectionConfig, RuntimeProjection,
@@ -77,6 +78,7 @@ struct RegisteredModel {
 
 struct InstalledPackage {
     projection: Arc<InstalledRuntimeProjection>,
+    managed_scope_id: Option<ManagedScopeId>,
     models: BTreeMap<TypeId, RegisteredModel>,
     types_by_label: BTreeMap<String, TypeId>,
     facade_origins: FacadeOriginRegistry,
@@ -1050,7 +1052,11 @@ impl PyRuntimeProjection {
             Database::connect_direct(self.package.projection.as_ref(), &policy, cancellation),
         )
         .map_err(py_sdk_diagnostic)?;
-        Ok(PyRustDatabase::from_handles(Arc::new(database), runtime))
+        Ok(PyRustDatabase::from_handles(
+            Arc::new(database),
+            runtime,
+            self.package.managed_scope_id.clone(),
+        ))
     }
 
     /// Bind an exact generated model class to an existing Rust database handle.
@@ -4095,13 +4101,16 @@ fn install_projection(
     models: Vec<(Py<PyType>, Option<Py<PyType>>)>,
     schema_authority: Option<&[u8]>,
 ) -> PyResult<Arc<InstalledPackage>> {
-    let runtime = match schema_authority {
-        Some(schema_authority) => install_authority_backed_projection(
-            projection_json,
-            semantic_fingerprint_json,
-            projection_fingerprint_json,
-            schema_authority,
-        )?,
+    let (runtime, managed_scope_id) = match schema_authority {
+        Some(schema_authority) => {
+            let (runtime, scope) = install_authority_backed_projection(
+                projection_json,
+                semantic_fingerprint_json,
+                projection_fingerprint_json,
+                schema_authority,
+            )?;
+            (runtime, Some(scope))
+        }
         None => {
             let runtime = decode_runtime_projection_verified(
                 projection_json.as_bytes(),
@@ -4118,7 +4127,7 @@ fn install_projection(
                 return Err(projection_evidence_mismatch());
             }
             verify_legacy_python_projection_evidence(&runtime)?;
-            runtime
+            (runtime, None)
         }
     };
     let mut expected = BTreeMap::new();
@@ -4245,6 +4254,7 @@ fn install_projection(
         .transpose()?;
     Ok(Arc::new(InstalledPackage {
         projection: installed,
+        managed_scope_id,
         models: registered,
         types_by_label,
         facade_origins: FacadeOriginRegistry::new(py)?,
@@ -4747,7 +4757,7 @@ fn install_authority_backed_projection(
     semantic_fingerprint_json: &str,
     projection_fingerprint_json: &str,
     schema_authority: &[u8],
-) -> PyResult<RuntimeProjection> {
+) -> PyResult<(RuntimeProjection, ManagedScopeId)> {
     let rejection = || projection_evidence_rejection(semantic_fingerprint_json);
     let runtime = decode_runtime_projection_verified(
         projection_json.as_bytes(),
@@ -4762,7 +4772,8 @@ fn install_authority_backed_projection(
         decode_schema_authority(schema_authority, &schema_authority_capability_vocabulary())
             .map_err(|_| rejection())?;
     verify_projection_evidence(&authority, &runtime).map_err(|_| rejection())?;
-    Ok(runtime)
+    let managed_scope_id = authority.managed_scope().id().clone();
+    Ok((runtime, managed_scope_id))
 }
 
 fn projection_evidence_mismatch() -> PyErr {

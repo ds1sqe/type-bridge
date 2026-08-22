@@ -137,10 +137,23 @@ export interface NativeRustDatabase {
     databaseName(): string;
     databaseExists(): boolean;
     createDatabase(): void;
+    createDatabaseOutcome(): DatabaseCreateOutcome;
     deleteDatabase(): void;
+    deleteDatabaseOutcome(): DatabaseDeleteOutcome;
+    inspectDatabasePair(): ManagedDatabasePairState;
+    planDatabaseDelete(): NativeManagedDatabaseDeletionPlan;
     resetDatabase(): void;
     transaction(transactionType?: TransactionType): NativeRustTransactionContext;
 }
+export interface NativeManagedDatabaseDeletionPlan {
+    inspectedState(): ManagedDatabasePairState;
+    execute(): ManagedDatabaseDeleteOutcome;
+    close(): void;
+}
+export type DatabaseCreateOutcome = "created" | "already_exists";
+export type DatabaseDeleteOutcome = "deleted" | "already_absent";
+export type ManagedDatabasePairState = "absent" | "standalone_managed" | "owned_pair" | "owned_journal_orphan";
+export type ManagedDatabaseDeleteOutcome = "already_absent" | "deleted_standalone_managed" | "deleted_owned_pair" | "deleted_owned_journal_orphan";
 export interface NativeRustTransactionContext {
     queryJson(query: string): string;
     commit(): void;
@@ -206,9 +219,21 @@ export declare class RustDatabase {
     databaseName(): string;
     databaseExists(): boolean;
     createDatabase(): void;
+    createDatabaseOutcome(): DatabaseCreateOutcome;
     deleteDatabase(): void;
+    deleteDatabaseOutcome(): DatabaseDeleteOutcome;
+    inspectDatabasePair(): ManagedDatabasePairState;
+    planDatabaseDelete(): ManagedDatabaseDeletionPlan;
     resetDatabase(): void;
     transaction(transactionType?: TransactionType): RustTransactionContext;
+}
+export declare class ManagedDatabaseDeletionPlan {
+    #private;
+    /** @internal */
+    constructor(native: NativeManagedDatabaseDeletionPlan);
+    inspectedState(): ManagedDatabasePairState;
+    execute(): ManagedDatabaseDeleteOutcome;
+    close(): void;
 }
 /** @internal Wrap a generated-package-owned native database handle. */
 export declare function createRustDatabaseFromNative(native: NativeRustDatabase): RustDatabase;
