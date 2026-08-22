@@ -83,7 +83,12 @@ pub enum ManagedDatabasePairDeleteOutcome {
 }
 
 /// Bound administration authority for exactly one managed database and derived journal.
+#[derive(Clone)]
 pub struct ManagedDatabasePairAdministrator {
+    inner: Arc<ManagedDatabasePairAdministratorInner>,
+}
+
+struct ManagedDatabasePairAdministratorInner {
     managed_database: Arc<Database>,
     journal_database: Arc<Database>,
     managed_scope_id: ManagedScopeId,
@@ -98,20 +103,24 @@ impl ManagedDatabasePairAdministrator {
     ) -> Result<Self, Diagnostic> {
         require_migration_database_pair_identity(&managed_database, &journal_database)?;
         Ok(Self {
-            managed_database,
-            journal_database,
-            managed_scope_id,
+            inner: Arc::new(ManagedDatabasePairAdministratorInner {
+                managed_database,
+                journal_database,
+                managed_scope_id,
+            }),
         })
     }
 
     /// Inspect the complete pair and validate journal ownership without mutation.
     pub async fn inspect(&self) -> Result<ManagedDatabasePairState, Diagnostic> {
         let managed_exists = self
+            .inner
             .managed_database
             .database_exists()
             .await
             .map_err(map_orm_error)?;
         let journal_exists = self
+            .inner
             .journal_database
             .database_exists()
             .await
@@ -121,6 +130,7 @@ impl ManagedDatabasePairAdministrator {
                 return Ok(ManagedDatabasePairState::Absent);
             }
             let export = self
+                .inner
                 .managed_database
                 .schema_text()
                 .await
@@ -143,16 +153,17 @@ impl ManagedDatabasePairAdministrator {
     }
 
     /// Create an explicit destructive plan after a complete owner-verified inspection.
-    pub async fn plan_delete(&self) -> Result<ManagedDatabasePairDeletionPlan<'_>, Diagnostic> {
+    pub async fn plan_delete(&self) -> Result<ManagedDatabasePairDeletionPlan, Diagnostic> {
         let inspected = self.inspect().await?;
         Ok(ManagedDatabasePairDeletionPlan {
-            administrator: self,
+            administrator: self.clone(),
             inspected,
         })
     }
 
     async fn require_exact_journal_owner(&self) -> Result<(), Diagnostic> {
         let export = self
+            .inner
             .journal_database
             .schema_text()
             .await
@@ -165,14 +176,15 @@ impl ManagedDatabasePairAdministrator {
             ));
         }
         let mut transaction = self
+            .inner
             .journal_database
             .read_transaction()
             .await
             .map_err(map_orm_error)?;
         let result = require_journal_owner(
             &mut transaction,
-            self.managed_database.database_name(),
-            &self.managed_scope_id,
+            self.inner.managed_database.database_name(),
+            &self.inner.managed_scope_id,
         )
         .await;
         let close = transaction.close().await.map_err(map_orm_error);
@@ -185,12 +197,12 @@ impl ManagedDatabasePairAdministrator {
 }
 
 /// Explicit single-use destructive admission bound to one inspected pair state.
-pub struct ManagedDatabasePairDeletionPlan<'a> {
-    administrator: &'a ManagedDatabasePairAdministrator,
+pub struct ManagedDatabasePairDeletionPlan {
+    administrator: ManagedDatabasePairAdministrator,
     inspected: ManagedDatabasePairState,
 }
 
-impl ManagedDatabasePairDeletionPlan<'_> {
+impl ManagedDatabasePairDeletionPlan {
     /// Return the exact state that was admitted before destructive dispatch.
     pub const fn inspected_state(&self) -> ManagedDatabasePairState {
         self.inspected
@@ -210,6 +222,7 @@ impl ManagedDatabasePairDeletionPlan<'_> {
             ManagedDatabasePairState::Absent => Ok(ManagedDatabasePairDeleteOutcome::AlreadyAbsent),
             ManagedDatabasePairState::StandaloneManaged => {
                 self.administrator
+                    .inner
                     .managed_database
                     .delete_database_outcome()
                     .await
@@ -218,6 +231,7 @@ impl ManagedDatabasePairDeletionPlan<'_> {
             }
             ManagedDatabasePairState::OwnedJournalOrphan => {
                 self.administrator
+                    .inner
                     .journal_database
                     .delete_database_outcome()
                     .await
@@ -227,11 +241,13 @@ impl ManagedDatabasePairDeletionPlan<'_> {
             ManagedDatabasePairState::OwnedPair => {
                 self.administrator.require_exact_journal_owner().await?;
                 self.administrator
+                    .inner
                     .journal_database
                     .delete_database_outcome()
                     .await
                     .map_err(map_orm_error)?;
                 self.administrator
+                    .inner
                     .managed_database
                     .delete_database_outcome()
                     .await
@@ -3116,7 +3132,9 @@ mod tests {
             ManagedScopeId::new("administration-scope").unwrap(),
         )
         .unwrap();
+        let absent_administrator = administrator.clone();
         let plan = administrator.plan_delete().await.unwrap();
+        drop(administrator);
         assert_eq!(
             plan.inspected_state(),
             ManagedDatabasePairState::StandaloneManaged
@@ -3129,7 +3147,7 @@ mod tests {
         assert_eq!(managed_deletes.load(Ordering::SeqCst), 1);
         assert_eq!(journal_deletes.load(Ordering::SeqCst), 0);
 
-        let absent = administrator.plan_delete().await.unwrap();
+        let absent = absent_administrator.plan_delete().await.unwrap();
         assert_eq!(absent.inspected_state(), ManagedDatabasePairState::Absent);
         assert_eq!(
             absent.execute().await.unwrap(),
