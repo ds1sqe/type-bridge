@@ -105,10 +105,12 @@ if [[ "$binding" == "python" ]]; then
         ordered="$scratch/ordered"
         write_workspace \
             "$ordered" python generated_ordered generated-python-ordered \
-            "$WORKFORCE_V3_DIR/schema-v3.yaml" no
+            "$WORKFORCE_V3_DIR/schema-v3.yaml" yes
         generate_workspace "$ordered"
         cp -R "$ordered/generated/generated_ordered" "$output_dir/generated_ordered"
         cp -R "$ordered/generated/generated_ordered" "$output_dir/generated_phase2"
+        cp "$ordered/generated/schema-authority.json" \
+            "$output_dir/schema-authority-ordered.json"
     fi
 
     variant="$scratch/variant"
@@ -144,10 +146,12 @@ if [[ "$semantic_profile" == "typedb-3.12.1/v1" ]]; then
     ordered="$scratch/ordered"
     write_workspace \
         "$ordered" typescript generated_ordered generated-node-ordered \
-        "$WORKFORCE_V3_DIR/schema-v3.yaml" no
+        "$WORKFORCE_V3_DIR/schema-v3.yaml" yes
     generate_workspace "$ordered"
     cp -R "$ordered/generated/generated_ordered" "$output_dir/generated_ordered"
     cp -R "$ordered/generated/generated_ordered" "$output_dir/generated_phase2"
+    cp "$ordered/generated/schema-authority.json" \
+        "$output_dir/schema-authority-ordered.json"
 fi
 
 package_scope="$output_dir/node_modules/@type-bridge"

@@ -2132,6 +2132,11 @@ def generated_v3_package(
     package = stage / "generated_ordered" / "__init__.py"
     if not package.is_file() or package.is_symlink():
         raise AssertionError(f"supplied generated Python V3 fixture is incomplete: {package}")
+    ordered_authority = stage / "schema-authority-ordered.json"
+    if not ordered_authority.is_file() or ordered_authority.is_symlink():
+        raise AssertionError(
+            f"supplied generated Python V3 authority is incomplete: {ordered_authority}"
+        )
     monkeypatch.syspath_prepend(str(stage))
     importlib.invalidate_caches()
     generated = importlib.import_module("generated_ordered")
@@ -2614,6 +2619,175 @@ def test_generated_data_model_runtime_v3_live(
     generated_v3_package: ModuleType,
 ) -> None:
     generated_data_model_runtime_v3_live(clean_db, generated_v3_package)
+
+
+def test_generated_canonical_serialization_v5_live(
+    clean_db: Database,
+    generated_v3_package: ModuleType,
+) -> None:
+    raw_evidence = os.environ.get("TYPE_BRIDGE_WORKFORCE_V5_PYTHON_EVIDENCE")
+    if raw_evidence is None:
+        pytest.skip("Workforce V5 Python live evidence was not requested")
+    generated = generated_v3_package
+    _require_workforce_server_version(clean_db.detected_server_version())
+    clean_db.execute_query(
+        WORKFORCE_V3_PROVIDER_SCHEMA.read_text(encoding="utf-8"),
+        transaction_type="schema",
+    )
+    person_manager = generated.Person.manager(clean_db)
+    employment_manager = generated.Employment.manager(clean_db)
+    person = generated.Person(
+        aliases=[],
+        identifier=generated.Identifier("v5-live-person"),
+        score=generated.Score(70),
+        val_bool=generated.ValBool(True),
+        val_constrained=generated.ValConstrained(55),
+        val_date=generated.ValDate(date(2026, 8, 3)),
+        val_datetime=generated.ValDatetime(datetime(2026, 8, 3, 3, 55)),
+        val_datetime_tz=generated.ValDatetimeTz(datetime(2026, 8, 3, 3, 55, tzinfo=UTC)),
+        val_decimal=generated.ValDecimal(Decimal("128.45")),
+        val_double=generated.ValDouble(8.14),
+        val_duration=generated.ValDuration(timedelta(days=6)),
+    )
+    employment = generated.Employment(employee=person)
+    person_manager.insert(person)
+    employment_manager.insert(employment)
+
+    direct_session = generated.Employment.query(clean_db)
+    direct_employment_var = direct_session.exact(generated.Employment)
+    direct_person_var = direct_session.exact(generated.Person)
+    direct_employment, direct_person = (
+        direct_session.query(direct_employment_var, direct_person_var)
+        .where(
+            direct_employment_var.role(generated.Employment.employee).connects(direct_person_var),
+            direct_person_var.field(generated.Person.identifier).eq(
+                generated.Identifier("v5-live-person")
+            ),
+        )
+        .one()
+    )
+    direct_person_bytes = direct_person.encode_snapshot()
+    direct_employment_bytes = direct_employment.encode_snapshot()
+
+    generated_file = generated.__file__
+    assert generated_file is not None
+    stage = Path(generated_file).resolve().parent.parent
+    authority = (stage / "schema-authority-ordered.json").read_bytes()
+    remote_port = _free_port()
+    server = subprocess.Popen(
+        [
+            "cargo",
+            "run",
+            "--quiet",
+            "-p",
+            "type-bridge-server",
+            "--features",
+            "v2-query",
+            "--example",
+            "v2_smoke_server",
+        ],
+        cwd=CORE,
+        env={
+            **os.environ,
+            "SMOKE_TYPEDB_ADDRESS": clean_db.address,
+            "SMOKE_TYPEDB_USERNAME": clean_db.username or "admin",
+            "SMOKE_TYPEDB_PASSWORD": clean_db.password or "password",
+            "SMOKE_TYPEDB_HTTP_PORT": str(clean_db.http_port),
+            "SMOKE_DATABASE": clean_db.database_name,
+            "SMOKE_AUTHORITY_B64": base64.b64encode(authority).decode(),
+            "SMOKE_PORT": str(remote_port),
+        },
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    requests: list[bytes] = []
+    try:
+        _wait_for_port(remote_port, server, timeout=300)
+        with urllib_request.urlopen(
+            f"http://127.0.0.1:{remote_port}/v2/capabilities", timeout=30
+        ) as response:
+            advertisement = response.read()
+
+        async def exchange(request: bytes) -> bytes:
+            requests.append(request)
+
+            def post() -> bytes:
+                http_request = urllib_request.Request(
+                    f"http://127.0.0.1:{remote_port}/v2/query",
+                    data=request,
+                    headers={"content-type": "application/json"},
+                    method="POST",
+                )
+                with urllib_request.urlopen(http_request, timeout=30) as response:
+                    return response.read()
+
+            return await asyncio.to_thread(post)
+
+        remote_session = generated.RemoteQuerySession(
+            advertisement,
+            exchange,
+            generated.RemoteQueryLimits(
+                max_items=10,
+                max_bytes=1 << 20,
+                max_collection_members=100,
+                max_graph_nodes=30,
+                max_attribute_values=1_000,
+                max_role_players=30,
+                deadline_ms=30_000,
+            ),
+        )
+        remote_employment_var = remote_session.exact(generated.Employment)
+        remote_person_var = remote_session.exact(generated.Person)
+        remote_employment, remote_person = asyncio.run(
+            remote_session.query(remote_employment_var, remote_person_var)
+            .where(
+                remote_employment_var.role(generated.Employment.employee).connects(
+                    remote_person_var
+                ),
+                remote_person_var.field(generated.Person.identifier).eq(
+                    generated.Identifier("v5-live-person")
+                ),
+            )
+            .one()
+        )
+        remote_session.close()
+    finally:
+        server.terminate()
+        try:
+            server.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            server.kill()
+            server.wait(timeout=30)
+
+    assert len(requests) == 1
+    assert remote_person.encode_snapshot() == direct_person_bytes
+    assert remote_employment.encode_snapshot() == direct_employment_bytes
+
+    detached = generated.Person.decode_snapshot(direct_person_bytes)
+    with pytest.raises(MatchRequestError) as detached_rejection:
+        employment_manager.insert(generated.Employment(employee=detached))
+    assert detached_rejection.value.code == "projected_snapshot_detached"
+    rebound = person_manager.filter(identifier=generated.Identifier("v5-live-person")).first()
+    assert rebound is not None
+    employment.employee = rebound
+    employment_manager.update(employment)
+    assert employment_manager.get_by_iid(employment.iid).iid == employment.iid
+
+    _publish_workforce_report(
+        raw_evidence,
+        {
+            "binding": "python",
+            "detached_mutation_code": detached_rejection.value.code,
+            "direct_remote_equal": True,
+            "entity_snapshot_b64": base64.b64encode(direct_person_bytes).decode(),
+            "format": "typebridge.workforce-v5-live-codec-evidence/v1",
+            "rebound_mutation": True,
+            "relation_snapshot_b64": base64.b64encode(direct_employment_bytes).decode(),
+            "remote_exchange_count": len(requests),
+        },
+    )
+    employment_manager.delete(employment)
+    person_manager.delete(person)
 
 
 def test_generated_package_preserves_application_operation_outcomes_live(
