@@ -1,0 +1,23 @@
+define
+entity person;
+
+define
+attribute legacy-name;
+
+define
+attribute person-id;
+
+define
+legacy-name value string;
+
+define
+person-id value string;
+
+define
+person owns legacy-name;
+
+define
+person owns person-id;
+
+define
+person owns person-id @key;

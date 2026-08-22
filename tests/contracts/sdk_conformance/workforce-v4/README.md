@@ -21,3 +21,16 @@ The eight selected rows have two disjoint dispositions:
 
 Persisted migration authority retains semantic profile `typedb-3.12.1/v1`;
 the isolated live acceptance server is exactly TypeDB 3.12.3.
+
+`workspace/` is the canonical V4 source workspace and immutable migration
+fixture. Its four manifests were produced in order through the source-tree CLI:
+
+1. `0001_initial` establishes keyed `person` rows with `legacy-name`.
+2. `0002_expand-display-name` additively introduces `display-name`.
+3. `0003_backfill-display-name` copies values through the retained closed YAML
+   intent with one keyed row per transaction group.
+4. `0004_contract-legacy-name` removes the legacy ownership and attribute.
+
+The final Split-YAML source is the contracted head. The backfill intent remains
+beside the manifests for review and deterministic regeneration; canonical
+manifest JSON is the executable history authority.
