@@ -3755,9 +3755,13 @@ fn generated_rust_workforce_v5_canonical_codec() {
     let corpus = env::var_os("TYPE_BRIDGE_WORKFORCE_V5_RUST_CORPUS")
         .map(PathBuf::from)
         .unwrap_or_else(|| stage.path().join("rust-workforce-v5-corpus.json"));
-    let operational = stage
-        .path()
-        .join("rust-workforce-v5-operational-evidence.json");
+    let operational = env::var_os("TYPE_BRIDGE_WORKFORCE_V5_RUST_OPERATIONAL_EVIDENCE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            stage
+                .path()
+                .join("rust-workforce-v5-operational-evidence.json")
+        });
     let output = cargo_with_env(
         &[
             "run",

@@ -37,9 +37,19 @@ def test_generated_python_workforce_v5_canonical_codec(tmp_path: Path) -> None:
         cwd=ROOT,
         check=True,
     )
-    first = tmp_path / "python-workforce-v5-corpus.json"
+    first = Path(
+        os.environ.get(
+            "TYPE_BRIDGE_WORKFORCE_V5_PYTHON_CORPUS",
+            tmp_path / "python-workforce-v5-corpus.json",
+        )
+    )
     repeated = tmp_path / "python-workforce-v5-corpus-repeat.json"
-    operational = tmp_path / "python-workforce-v5-operational.json"
+    operational = Path(
+        os.environ.get(
+            "TYPE_BRIDGE_WORKFORCE_V5_PYTHON_OPERATIONAL_EVIDENCE",
+            tmp_path / "python-workforce-v5-operational.json",
+        )
+    )
     repeated_operational = tmp_path / "python-workforce-v5-operational-repeat.json"
     run_producer(stage, first, operational)
     run_producer(stage, repeated, repeated_operational)
