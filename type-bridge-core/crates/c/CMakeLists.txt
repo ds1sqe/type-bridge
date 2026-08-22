@@ -86,6 +86,7 @@ install(
   FILES
     "include/typebridge/type_bridge.h"
     "include/typebridge/type_bridge_abi_1_4.h"
+    "include/typebridge/type_bridge_abi_1_5.h"
   DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/typebridge"
 )
 

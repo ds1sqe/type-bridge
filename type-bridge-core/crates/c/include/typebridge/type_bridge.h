@@ -21,7 +21,7 @@
  * product version returned by type_bridge_runtime_version().
  */
 #define TYPE_BRIDGE_C_ABI_MAJOR 1u
-#define TYPE_BRIDGE_C_ABI_MINOR 4u
+#define TYPE_BRIDGE_C_ABI_MINOR 5u
 #define TYPE_BRIDGE_CHUNKED_BYTE_VIEW_VERSION 1u
 #define TYPE_BRIDGE_PROJECTED_TOKEN_VERSION 1u
 

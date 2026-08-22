@@ -216,7 +216,7 @@ fn shared_library_exports(_library: &Path) -> BTreeSet<String> {
 #[test]
 fn base_header_is_byte_frozen_except_for_the_abi_minor_value() {
     let header = include_str!("../include/typebridge/type_bridge.h");
-    let current = "#define TYPE_BRIDGE_C_ABI_MINOR 4u";
+    let current = "#define TYPE_BRIDGE_C_ABI_MINOR 5u";
     let predecessor = "#define TYPE_BRIDGE_C_ABI_MINOR 3u";
     assert_eq!(header.matches(current).count(), 1);
     let normalized = header.replacen(current, predecessor, 1);
@@ -346,7 +346,7 @@ const ABI_1_4_COMPILER_PROBE: &str = r#"#include <stddef.h>
 #endif
 
 ABI14_STATIC_ASSERT(TYPE_BRIDGE_C_ABI_MAJOR == 1u, "ABI major drifted");
-ABI14_STATIC_ASSERT(TYPE_BRIDGE_C_ABI_MINOR == 4u, "ABI minor drifted");
+ABI14_STATIC_ASSERT(TYPE_BRIDGE_C_ABI_MINOR >= 4u, "ABI 1.4 is no longer supported");
 ABI14_STATIC_ASSERT(TYPE_BRIDGE_DATABASE_CONFIG_V2_VERSION == 2u,
                     "database config version drifted");
 ABI14_STATIC_ASSERT(TYPE_BRIDGE_DATABASE_CUSTOM_ROOT_CA_BYTES_MAX == 1048576u,

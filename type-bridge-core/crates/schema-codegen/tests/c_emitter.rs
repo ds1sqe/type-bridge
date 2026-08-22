@@ -445,7 +445,7 @@ fn unordered_c_v2_five_file_package_remains_byte_exact() {
 }
 
 #[test]
-fn ordered_c_v3_emits_exact_abi_1_4_admission_crud_batch_and_package_metadata() {
+fn ordered_c_v3_emits_exact_abi_1_5_admission_crud_batch_and_package_metadata() {
     let emitter = CEmitter::new();
     let (projection, authority) = ordered_successor_projected();
     let package = emitter
@@ -473,12 +473,12 @@ fn ordered_c_v3_emits_exact_abi_1_4_admission_crud_batch_and_package_metadata() 
         std::str::from_utf8(package.get("acme_v3Config.cmake.in").unwrap()).unwrap();
     let pkg_config = std::str::from_utf8(package.get("acme_v3.pc.in").unwrap()).unwrap();
 
-    assert!(header.contains("#include <typebridge/type_bridge_abi_1_4.h>"));
+    assert!(header.contains("#include <typebridge/type_bridge_abi_1_5.h>"));
     assert!(!header.contains("#include <typebridge/type_bridge.h>"));
     assert!(
         source
-            .contains("sizeof(type_bridge_schema_package_chunked_descriptor_v1_t),\n  1u,\n  4u,"),
-        "ordered descriptor must require literal ABI 1.4",
+            .contains("sizeof(type_bridge_schema_package_chunked_descriptor_v1_t),\n  1u,\n  5u,"),
+        "ordered descriptor must require literal ABI 1.5",
     );
     assert!(!source.contains("TYPE_BRIDGE_C_ABI_MINOR"));
     assert!(source.contains("type_bridge_schema_package_open_chunked_v1("));
@@ -486,9 +486,9 @@ fn ordered_c_v3_emits_exact_abi_1_4_admission_crud_batch_and_package_metadata() 
     assert!(header.contains("acme_v3_schema_package_open("));
     assert!(header.contains("acme_v3_schema_package_open_v2("));
     assert!(header.contains("type_bridge_execution_diagnostics_t **out_diagnostics"));
-    assert!(cmake.contains("find_package(TypeBridge 1.4 CONFIG REQUIRED)"));
-    assert!(package_config.contains("find_dependency(TypeBridge 1.4 CONFIG)"));
-    assert!(pkg_config.contains("Requires: type-bridge >= 1.4.0, type-bridge < 2.0.0"));
+    assert!(cmake.contains("find_package(TypeBridge 1.5 CONFIG REQUIRED)"));
+    assert!(package_config.contains("find_dependency(TypeBridge 1.5 CONFIG)"));
+    assert!(pkg_config.contains("Requires: type-bridge >= 1.5.0, type-bridge < 2.0.0"));
     assert!(!cmake.contains("TypeBridge 1.3"));
     assert!(!package_config.contains("TypeBridge 1.3"));
     assert!(!pkg_config.contains("type-bridge >= 1.3.0"));
@@ -2661,7 +2661,7 @@ fn generated_header_and_source_are_strict_c11_and_c17_for_installed_compilers() 
         r#"#include <acme/models.h>
 
 _Static_assert(TYPE_BRIDGE_C_ABI_MAJOR == 1u, "C ABI major changed");
-_Static_assert(TYPE_BRIDGE_C_ABI_MINOR == 4u, "C ABI minor changed");
+_Static_assert(TYPE_BRIDGE_C_ABI_MINOR == 5u, "C ABI minor changed");
 _Static_assert(sizeof(acme_membership_member_player_kind_t) == sizeof(uint32_t),
                "role-player kind ABI is not fixed-width");
 
@@ -3058,7 +3058,7 @@ fn generated_cmake_requires_runtime_abi_1_3_or_newer_within_major_one() {
 
 #[cfg(unix)]
 #[test]
-fn ordered_generated_cmake_requires_runtime_abi_1_4_or_newer_within_major_one() {
+fn ordered_generated_cmake_requires_runtime_abi_1_5_or_newer_within_major_one() {
     assert!(
         command_exists("cmake"),
         "CMake is required for C emitter acceptance"
@@ -3070,7 +3070,7 @@ fn ordered_generated_cmake_requires_runtime_abi_1_4_or_newer_within_major_one() 
         .expect("ordered C-v3 package emits");
     assert_generated_cmake_runtime_floor(
         &package,
-        &[("1.3.0", false), ("1.4.0", true), ("1.9.0", true)],
+        &[("1.4.0", false), ("1.5.0", true), ("1.9.0", true)],
     );
 }
 
@@ -4904,7 +4904,7 @@ fn generated_header_is_strict_cpp17_for_installed_compilers() {
         r#"#include <acme/models.h>
 
 static_assert(TYPE_BRIDGE_C_ABI_MAJOR == 1u, "C ABI major changed");
-static_assert(TYPE_BRIDGE_C_ABI_MINOR == 4u, "C ABI minor changed");
+static_assert(TYPE_BRIDGE_C_ABI_MINOR == 5u, "C ABI minor changed");
 static_assert(sizeof(acme_membership_member_player_kind_t) == sizeof(uint32_t),
               "role-player kind ABI is not fixed-width");
 

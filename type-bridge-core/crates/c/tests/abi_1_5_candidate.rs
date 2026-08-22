@@ -1,6 +1,8 @@
 #![cfg(feature = "abi-1-5")]
 
 use std::collections::BTreeSet;
+use std::fs;
+use std::process::Command;
 
 const ABI_1_5_CANDIDATE_ADDITIONS: [&str; 86] = [
     "type_bridge_database_administration_open",
@@ -102,6 +104,14 @@ fn implementation_exports() -> BTreeSet<&'static str> {
         .collect()
 }
 
+fn header_exports() -> BTreeSet<&'static str> {
+    let header = include_str!("../include/typebridge/type_bridge_abi_1_5.h");
+    ABI_1_5_CANDIDATE_ADDITIONS
+        .into_iter()
+        .filter(|name| header.contains(&format!("{name}(")))
+        .collect()
+}
+
 #[test]
 fn candidate_additive_export_inventory_is_exact_and_duplicate_free() {
     let expected = ABI_1_5_CANDIDATE_ADDITIONS
@@ -109,6 +119,107 @@ fn candidate_additive_export_inventory_is_exact_and_duplicate_free() {
         .collect::<BTreeSet<_>>();
     assert_eq!(expected.len(), ABI_1_5_CANDIDATE_ADDITIONS.len());
     assert_eq!(implementation_exports(), expected);
+    assert_eq!(header_exports(), expected);
+}
+
+#[test]
+fn candidate_header_compiles_as_strict_c17_and_cpp17() {
+    let directory =
+        std::env::temp_dir().join(format!("typebridge-abi-1-5-header-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&directory);
+    fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("probe.c");
+    fs::write(
+        &source,
+        r#"#include <typebridge/type_bridge_abi_1_5.h>
+_Static_assert(sizeof(type_bridge_migration_execution_options_v1_t) == 48, "options size");
+_Static_assert(_Alignof(type_bridge_migration_execution_options_v1_t) == 8, "options alignment");
+int main(void) { return TYPE_BRIDGE_MIGRATION_EXECUTION_OPTIONS_V1 == 1u ? 0 : 1; }
+"#,
+    )
+    .unwrap();
+    let include = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("include");
+    let status = Command::new("cc")
+        .args([
+            "-std=c17",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-pedantic-errors",
+            "-c",
+        ])
+        .arg(&source)
+        .arg("-I")
+        .arg(&include)
+        .arg("-o")
+        .arg(directory.join("probe.o"))
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let cpp = directory.join("probe.cpp");
+    fs::write(
+        &cpp,
+        r#"#include <typebridge/type_bridge_abi_1_5.h>
+static_assert(sizeof(type_bridge_migration_execution_options_v1_t) == 48, "options size");
+static_assert(alignof(type_bridge_migration_execution_options_v1_t) == 8, "options alignment");
+int main() { return TYPE_BRIDGE_MIGRATION_EXECUTION_OPTIONS_V1 == 1u ? 0 : 1; }
+"#,
+    )
+    .unwrap();
+    let status = Command::new("c++")
+        .args([
+            "-std=c++17",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-pedantic-errors",
+            "-c",
+        ])
+        .arg(&cpp)
+        .arg("-I")
+        .arg(&include)
+        .arg("-o")
+        .arg(directory.join("probe-cpp.o"))
+        .status()
+        .unwrap();
+    assert!(status.success());
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn activated_shared_library_exports_the_exact_abi_1_5_additions() {
+    let executable = std::env::current_exe().unwrap();
+    let profile = executable
+        .ancestors()
+        .find(|path| path.file_name().is_some_and(|name| name == "debug"))
+        .expect("test executable is beneath the Cargo profile directory");
+    let direct = profile.join("libtype_bridge_c.so");
+    let library = if direct.is_file() {
+        direct
+    } else {
+        profile.join("deps/libtype_bridge_c.so")
+    };
+    assert!(library.is_file(), "Cargo must build the activated cdylib");
+    let output = Command::new("nm")
+        .args(["-D", "--defined-only"])
+        .arg(library)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let exported = stdout
+        .lines()
+        .filter_map(|line| line.split_whitespace().last())
+        .filter(|name| ABI_1_5_CANDIDATE_ADDITIONS.contains(name))
+        .collect::<BTreeSet<_>>();
+    assert_eq!(exported, ABI_1_5_CANDIDATE_ADDITIONS.into_iter().collect());
+}
+
+#[test]
+fn cmake_install_inventory_carries_the_abi_1_5_header() {
+    let cmake = include_str!("../CMakeLists.txt");
+    assert!(cmake.contains("include/typebridge/type_bridge_abi_1_5.h"));
 }
 
 #[test]
