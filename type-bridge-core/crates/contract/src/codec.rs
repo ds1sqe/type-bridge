@@ -1,8 +1,10 @@
 //! Bounded canonical JSON encoding and fail-closed decoding.
 
-use serde::de::DeserializeOwned;
+use std::fmt;
+
+use serde::de::{DeserializeOwned, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::diagnostic::{Diagnostic, DiagnosticCategory};
 use crate::limits::{CANONICAL_CODEC_LIMITS, CodecLimits};
@@ -133,13 +135,23 @@ where
     T: DeserializeOwned + Serialize,
 {
     ensure_bytes(bytes.len(), limits)?;
-    let mut value: Value = serde_json::from_slice(bytes).map_err(|_| {
-        Diagnostic::stable(
-            DiagnosticCategory::InvalidContract,
-            "malformed_canonical_json",
-            "input is not valid canonical JSON",
-        )
-    })?;
+    let mut value = match serde_json::from_slice::<UniqueValue>(bytes) {
+        Ok(value) => value.0,
+        Err(error) if error.to_string().contains(DUPLICATE_KEY_MARKER) => {
+            return Err(Diagnostic::stable(
+                DiagnosticCategory::InvalidContract,
+                "duplicate_canonical_json_key",
+                "canonical JSON objects cannot contain duplicate keys",
+            ));
+        }
+        Err(_) => {
+            return Err(Diagnostic::stable(
+                DiagnosticCategory::InvalidContract,
+                "malformed_canonical_json",
+                "input is not valid canonical JSON",
+            ));
+        }
+    };
     inspect(&value, 1, limits)?;
     normalize_numbers(&mut value).map_err(|()| {
         Diagnostic::stable(
@@ -172,6 +184,115 @@ where
             "canonical JSON does not satisfy the requested contract type",
         )
     })
+}
+
+const DUPLICATE_KEY_MARKER: &str = "duplicate canonical JSON object key";
+const ARBITRARY_PRECISION_NUMBER_KEY: &str = "$serde_json::private::Number";
+
+/// A JSON value visitor that rejects duplicate object keys before a map can
+/// overwrite them. This preflight is intentionally independent of `T`: every
+/// canonical owning format receives the same strict object-key behavior.
+struct UniqueValue(Value);
+
+impl<'de> Deserialize<'de> for UniqueValue {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_any(UniqueValueVisitor)
+    }
+}
+
+struct UniqueValueVisitor;
+
+impl<'de> Visitor<'de> for UniqueValueVisitor {
+    type Value = UniqueValue;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a JSON value with unique object keys")
+    }
+
+    fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E> {
+        Ok(UniqueValue(Value::Bool(value)))
+    }
+
+    fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E> {
+        Ok(UniqueValue(Value::Number(value.into())))
+    }
+
+    fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E> {
+        Ok(UniqueValue(Value::Number(value.into())))
+    }
+
+    fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        serde_json::Number::from_f64(value)
+            .map(Value::Number)
+            .map(UniqueValue)
+            .ok_or_else(|| E::custom("non-finite JSON number"))
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        self.visit_string(value.to_owned())
+    }
+
+    fn visit_string<E>(self, value: String) -> Result<Self::Value, E> {
+        Ok(UniqueValue(Value::String(value)))
+    }
+
+    fn visit_none<E>(self) -> Result<Self::Value, E> {
+        Ok(UniqueValue(Value::Null))
+    }
+
+    fn visit_unit<E>(self) -> Result<Self::Value, E> {
+        Ok(UniqueValue(Value::Null))
+    }
+
+    fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let mut values = Vec::with_capacity(sequence.size_hint().unwrap_or(0));
+        while let Some(value) = sequence.next_element::<UniqueValue>()? {
+            values.push(value.0);
+        }
+        Ok(UniqueValue(Value::Array(values)))
+    }
+
+    fn visit_map<A>(self, mut object: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let Some(first_key) = object.next_key::<String>()? else {
+            return Ok(UniqueValue(Value::Object(Map::new())));
+        };
+        if first_key == ARBITRARY_PRECISION_NUMBER_KEY {
+            let spelling = object.next_value::<String>()?;
+            if object.next_key::<String>()?.is_some() {
+                return Err(serde::de::Error::custom(DUPLICATE_KEY_MARKER));
+            }
+            let number = spelling
+                .parse::<serde_json::Number>()
+                .map_err(serde::de::Error::custom)?;
+            return Ok(UniqueValue(Value::Number(number)));
+        }
+
+        let mut values = Map::new();
+        let first_value = object.next_value::<UniqueValue>()?.0;
+        values.insert(first_key, first_value);
+        while let Some(key) = object.next_key::<String>()? {
+            if values.contains_key(&key) {
+                return Err(serde::de::Error::custom(DUPLICATE_KEY_MARKER));
+            }
+            values.insert(key, object.next_value::<UniqueValue>()?.0);
+        }
+        Ok(UniqueValue(Value::Object(values)))
+    }
 }
 
 /// Sort every JSON object lexicographically without relying on
@@ -381,6 +502,22 @@ mod tests {
                 .as_str(),
             "malformed_canonical_json"
         );
+    }
+
+    #[test]
+    fn canonical_decoder_rejects_duplicate_keys_at_every_depth() {
+        for duplicate in [
+            br#"{"kind":"long","kind":"long","value":"1"}"# as &[u8],
+            br#"{"outer":{"value":1,"value":2}}"#,
+        ] {
+            assert_eq!(
+                from_canonical_json::<Value>(duplicate)
+                    .unwrap_err()
+                    .code()
+                    .as_str(),
+                "duplicate_canonical_json_key"
+            );
+        }
     }
 
     #[test]
