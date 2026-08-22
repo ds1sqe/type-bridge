@@ -3,6 +3,7 @@
 #![deny(missing_docs)]
 
 mod apply_plan;
+mod catalog;
 mod coordinator;
 mod directory;
 mod execution;
@@ -22,6 +23,7 @@ pub use apply_plan::{
     VerifiedMigrationApplyPlan, VerifiedMigrationApplyStep, VerifiedMigrationTransactionGroup,
     build_verified_migration_apply_plan, partition_transaction_groups,
 };
+pub use catalog::MigrationCatalog;
 pub use coordinator::{
     BackfillExecutionFuture, GroupCommitFailure, GroupCommitFuture, MigrationExecutionOutcome,
     MigrationExecutionPosition, MigrationExecutionProvider, MigrationRollbackOutcome,

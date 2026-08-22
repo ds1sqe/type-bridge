@@ -122,6 +122,13 @@ impl VerifiedMigrationHistoryBundle {
     pub fn heads(&self) -> &[MigrationId] {
         &self.heads
     }
+
+    /// Reconstruct the verified planning graph without source files or a workspace.
+    pub fn history_graph(&self) -> Result<MigrationHistoryGraph, Diagnostic> {
+        MigrationHistoryGraph::from_verified(
+            self.entries.iter().map(|entry| entry.manifest().clone()),
+        )
+    }
 }
 
 #[derive(Deserialize, Serialize)]
