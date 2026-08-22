@@ -388,7 +388,7 @@ fn render_models(
                 model.target_name().as_str()
             );
         }
-        body.push_str("    ],\n)\n");
+        body.push_str("    ],\n    _SCHEMA_AUTHORITY_BYTES,\n)\n");
         body.push('\n');
     }
     let mut function_body = String::new();
@@ -524,7 +524,8 @@ fn render_model_header(body: &str, stub: bool, defer_query_imports: bool) -> Str
     }
     if body.contains("_install_runtime_projection(") {
         output.push_str(
-            "from ._schema import PROJECTION_FINGERPRINT_JSON as _PROJECTION_FINGERPRINT_JSON\n\
+            "from ._authority import SCHEMA_AUTHORITY_BYTES as _SCHEMA_AUTHORITY_BYTES\n\
+             from ._schema import PROJECTION_FINGERPRINT_JSON as _PROJECTION_FINGERPRINT_JSON\n\
              from ._schema import RUNTIME_PROJECTION_JSON as _RUNTIME_PROJECTION_JSON\n\
              from ._schema import SEMANTIC_SCHEMA_FINGERPRINT_JSON as _SEMANTIC_SCHEMA_FINGERPRINT_JSON\n",
         );

@@ -1090,17 +1090,21 @@ def install_runtime_projection(
     semantic_fingerprint_json: str,
     projection_fingerprint_json: str,
     models: Sequence[tuple[type[ModelBase], type[ReferenceBase] | None]],
+    schema_authority: bytes,
 ) -> None:
     global _package_models, _package_runtime_projection
     if _package_runtime_projection is not None:
         raise RuntimeError("generated package runtime projection is already installed")
-    from type_bridge._runtime_projection import install_runtime_projection as install_native
+    from type_bridge._runtime_projection import (
+        install_runtime_projection_with_authority as install_native,
+    )
 
     installed = install_native(
         projection_json,
         semantic_fingerprint_json,
         projection_fingerprint_json,
         models,
+        schema_authority,
     )
     for model, _reference in models:
         model.__runtime_projection__ = installed

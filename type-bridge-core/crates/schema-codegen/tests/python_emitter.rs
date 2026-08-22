@@ -486,6 +486,11 @@ fn emits_exact_deterministic_compound_package_with_migration_resource() {
         .expect("function token assignment is emitted");
     assert!(find_employment.contains("\"find-employment\""));
     assert!(source.contains("_install_runtime_projection("));
+    assert!(
+        source
+            .contains("from ._authority import SCHEMA_AUTHORITY_BYTES as _SCHEMA_AUTHORITY_BYTES")
+    );
+    assert!(source.contains("    _SCHEMA_AUTHORITY_BYTES,\n)"));
     assert!(source.contains("_initialize_attribute(self, value,"));
     assert!(stub.contains(
         "employee: _RoleDescriptor[Employment, Person, _BoundVar[Person] | _SubtypeBoundVar[Person], PersonRef, Person]"

@@ -315,4 +315,5 @@ def install_runtime_projection(
     semantic_fingerprint_json: str,
     projection_fingerprint_json: str,
     models: Sequence[tuple[type[ModelBase], type[ReferenceBase] | None]],
+    schema_authority: bytes,
 ) -> None: ...
