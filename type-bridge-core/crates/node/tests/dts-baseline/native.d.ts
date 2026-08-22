@@ -193,6 +193,8 @@ interface NativeRuntimeProjectionHandle {
     validateHydratedAttributeValueJson(typeKey: string, valueJson: string): void;
     validateFieldValueJson(typeKey: string, fieldName: string, valueJson: string): void;
     validateCreateJson(typeKey: string, valueJson: string): void;
+    encodeAttributeJson(typeKey: string, valueJson: string): Uint8Array;
+    decodeAttributeJson(typeKey: string, bytes: Uint8Array): string;
     encodeCreateJson(typeKey: string, valueJson: string): Uint8Array;
     decodeCreateJson(typeKey: string, bytes: Uint8Array): string;
     encodeReferenceJson(typeKey: string, valueJson: string): Uint8Array;

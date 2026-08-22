@@ -47,6 +47,8 @@ import {
 import type { RustDatabase } from "@type-bridge/node";
 
 const identifier = Identifier.create("person-1");
+const identifierBytes: Uint8Array = Identifier.encodeAttribute(identifier);
+const decodedIdentifier: Identifier = Identifier.decodeAttribute(identifierBytes);
 const score = Score.create(3n);
 const person: Person = Person.create({
   identifier,

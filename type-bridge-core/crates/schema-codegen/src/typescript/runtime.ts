@@ -382,6 +382,8 @@ export type ModelToken<
     readonly valueType: ScalarValueType | null;
     readonly create: CreateFactory;
     readonly reference: ReferenceFactory;
+    readonly encodeAttribute: (value: Complete) => Uint8Array;
+    readonly decodeAttribute: (bytes: Uint8Array) => Complete;
     readonly encodeCreate: (value: Complete) => Uint8Array;
     readonly decodeCreate: (bytes: Uint8Array) => Complete;
     readonly encodeReference: (value: FactoryResult<ReferenceFactory>) => Uint8Array;
@@ -776,6 +778,56 @@ export function defineModel<
       roles: Object.freeze(definition.roles),
       create,
       reference,
+      encodeAttribute: (value: Complete): Uint8Array => {
+        if (definition.valueType === null) {
+          throw new TypeError(
+            `${definition.name}.encodeAttribute requires an attribute token`,
+          );
+        }
+        const wire = lowerProjectedValue(value);
+        if (
+          wire.typeKey !== definition.typeKey ||
+          wire.form !== "complete" ||
+          wire.iid !== null ||
+          wire.value === null
+        ) {
+          throw new TypeError(
+            `${definition.name}.encodeAttribute requires its exact attribute value`,
+          );
+        }
+        return requireProjection().encodeAttributeJson(
+          definition.typeKey,
+          JSON.stringify(wire),
+        );
+      },
+      decodeAttribute: (bytes: Uint8Array): Complete => {
+        if (definition.valueType === null) {
+          throw new TypeError(
+            `${definition.name}.decodeAttribute requires an attribute token`,
+          );
+        }
+        const wire = parseProjectedWire(
+          JSON.parse(
+            requireProjection().decodeAttributeJson(definition.typeKey, bytes),
+          ) as unknown,
+        );
+        if (
+          wire.typeKey !== definition.typeKey ||
+          wire.form !== "complete" ||
+          wire.iid !== null ||
+          wire.value === null
+        ) {
+          throw new TypeError(
+            `${definition.name}.decodeAttribute returned an invalid attribute wire`,
+          );
+        }
+        return materializeComplete(
+          scalarFromWire(wire.value),
+          null,
+          [],
+          `${definition.name}.decodeAttribute`,
+        );
+      },
       encodeCreate: (value: Complete): Uint8Array => {
         const wire = lowerProjectedValue(value);
         if (wire.typeKey !== definition.typeKey || wire.iid !== null) {

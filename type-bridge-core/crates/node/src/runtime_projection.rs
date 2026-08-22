@@ -1977,6 +1977,59 @@ impl NodeRuntimeProjection {
         }
     }
 
+    /// Encode one exact generated attribute wire through the shared canonical record contract.
+    #[napi(js_name = "encodeAttributeJson")]
+    pub fn encode_attribute_json(
+        &self,
+        type_key: String,
+        value_json: String,
+    ) -> napi::Result<Buffer> {
+        let id = type_id_from_key(&type_key)?;
+        if id.kind() != TypeKind::Attribute {
+            return Err(invalid_error(
+                "canonical attribute encoding requires an exact generated attribute type",
+            ));
+        }
+        let wire = parse_wire(&value_json)?;
+        if wire.type_key != type_key {
+            return Err(invalid_error(
+                "attribute wire has the wrong exact generated type",
+            ));
+        }
+        let projected =
+            project_attribute_wire(self.package.as_ref(), &wire).map_err(napi_sdk_diagnostic)?;
+        let record = type_bridge_orm::record_from_attribute(&self.package.projection, &projected)
+            .map_err(|error| invalid_error(error.to_string()))?;
+        record.encode().map(Buffer::from).map_err(diagnostic_error)
+    }
+
+    /// Decode canonical attribute bytes through exact installed package authority.
+    #[napi(js_name = "decodeAttributeJson")]
+    pub fn decode_attribute_json(&self, type_key: String, bytes: Buffer) -> napi::Result<String> {
+        let expected = type_id_from_key(&type_key)?;
+        if expected.kind() != TypeKind::Attribute {
+            return Err(invalid_error(
+                "canonical attribute decoding requires an exact generated attribute type",
+            ));
+        }
+        let record = type_bridge_contract::projected_record::ProjectedRecord::decode(&bytes)
+            .map_err(diagnostic_error)?;
+        let value = type_bridge_orm::materialize_record(&self.package.projection, &record)
+            .map_err(|error| invalid_error(error.to_string()))?;
+        let ProjectedCodecValue::Attribute(value) = value else {
+            return Err(invalid_error("canonical record is not an attribute value"));
+        };
+        if value.attribute_type() != &expected {
+            return Err(invalid_error(
+                "canonical attribute has the wrong exact generated type",
+            ));
+        }
+        wire_json(&projected_attribute_value_wire(
+            self.package.as_ref(),
+            &value,
+        )?)
+    }
+
     /// Validate one complete generated create payload through the common Rust contract.
     #[napi(js_name = "validateCreateJson")]
     pub fn validate_create_json(&self, type_key: String, value_json: String) -> napi::Result<()> {
@@ -7571,6 +7624,37 @@ entities:
     #[test]
     fn canonical_model_codecs_round_trip_exact_node_wires_and_archive() {
         let runtime = ordered_runtime();
+        let tag_key = type_key(TypeKind::Attribute, "tag");
+        let tag = attribute_wire(
+            "tag",
+            ValueTypeTag::String,
+            Value::String("canonical".into()),
+        );
+        let tag_bytes = runtime
+            .encode_attribute_json(tag_key.clone(), serde_json::to_string(&tag).unwrap())
+            .unwrap();
+        let decoded: ProjectedWire = serde_json::from_str(
+            &runtime
+                .decode_attribute_json(tag_key.clone(), Buffer::from(tag_bytes.to_vec()))
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(decoded.type_key, tag.type_key);
+        assert_eq!(decoded.form, WireForm::Complete);
+        assert_eq!(decoded.iid, None);
+        assert_eq!(
+            serde_json::to_value(decoded.value).unwrap(),
+            serde_json::to_value(tag.value).unwrap()
+        );
+        assert!(decoded.values.is_empty());
+        assert!(
+            runtime
+                .decode_attribute_json(
+                    type_key(TypeKind::Attribute, "identifier"),
+                    Buffer::from(tag_bytes.to_vec()),
+                )
+                .is_err()
+        );
         let person_key = type_key(TypeKind::Entity, "person");
         let wire = ProjectedWire {
             type_key: person_key.clone(),
@@ -7658,6 +7742,7 @@ entities:
         assert_eq!(decoded.values, snapshot.values);
 
         let expected_records = [
+            tag_bytes.to_vec(),
             create_bytes.to_vec(),
             reference_bytes.to_vec(),
             snapshot_bytes.to_vec(),

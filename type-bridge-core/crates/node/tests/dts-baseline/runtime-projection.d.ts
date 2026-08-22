@@ -189,6 +189,8 @@ interface NativeProjectionHandle {
     validateHydratedAttributeValueJson(typeKey: string, valueJson: string): void;
     validateFieldValueJson(typeKey: string, fieldName: string, valueJson: string): void;
     validateCreateJson(typeKey: string, valueJson: string): void;
+    encodeAttributeJson(typeKey: string, valueJson: string): Uint8Array;
+    decodeAttributeJson(typeKey: string, bytes: Uint8Array): string;
     encodeCreateJson(typeKey: string, valueJson: string): Uint8Array;
     decodeCreateJson(typeKey: string, bytes: Uint8Array): string;
     encodeReferenceJson(typeKey: string, valueJson: string): Uint8Array;
@@ -236,6 +238,10 @@ export declare class InstalledRuntimeProjection {
     validateFieldValueJson(typeKey: string, fieldName: string, valueJson: string): void;
     /** @internal Validate one complete generated create payload. */
     validateCreateJson(typeKey: string, valueJson: string): void;
+    /** @internal Encode one exact generated attribute value to canonical bytes. */
+    encodeAttributeJson(typeKey: string, valueJson: string): Uint8Array;
+    /** @internal Decode canonical attribute bytes through exact package authority. */
+    decodeAttributeJson(typeKey: string, bytes: Uint8Array): string;
     /** @internal Encode one exact generated create value to canonical bytes. */
     encodeCreateJson(typeKey: string, valueJson: string): Uint8Array;
     /** @internal Decode canonical bytes through this package's exact authority. */
