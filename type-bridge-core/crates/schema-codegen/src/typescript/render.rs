@@ -339,7 +339,7 @@ fn render_model_shell(
     };
     let reference_factory = match model.reference_read().target_name() {
         Some(reference) => format!(
-            "(iid: string, keys: {name}ReferenceInput) => {}",
+            "(iid: string | null, keys: {name}ReferenceInput) => {}",
             reference.as_str()
         ),
         None => "undefined".to_owned(),
@@ -369,7 +369,7 @@ fn render_model_link(
     };
     let reference_factory = match model.reference_read().target_name() {
         Some(reference) => format!(
-            "(iid: string, keys: {name}ReferenceInput) => {}",
+            "(iid: string | null, keys: {name}ReferenceInput) => {}",
             reference.as_str()
         ),
         None => "undefined".to_owned(),

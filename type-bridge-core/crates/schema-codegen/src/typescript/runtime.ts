@@ -100,7 +100,7 @@ export interface ProjectedModelManager<Complete> {
 export interface ReferenceFacet<Id extends string> {
   readonly __typebridgeModel: Id;
   readonly __typebridgeForm: "reference";
-  readonly iid: string;
+  readonly iid: string | null;
   readonly [REFERENCE_BRAND]: Id;
 }
 
@@ -384,6 +384,10 @@ export type ModelToken<
     readonly reference: ReferenceFactory;
     readonly encodeCreate: (value: Complete) => Uint8Array;
     readonly decodeCreate: (bytes: Uint8Array) => Complete;
+    readonly encodeReference: (value: FactoryResult<ReferenceFactory>) => Uint8Array;
+    readonly decodeReference: (bytes: Uint8Array) => FactoryResult<ReferenceFactory>;
+    readonly encodeSnapshot: (value: Complete) => Uint8Array;
+    readonly decodeSnapshot: (bytes: Uint8Array) => Complete;
     readonly manager: (
       connection: RuntimeProjectionConnection,
     ) => ProjectedModelManager<Complete>;
@@ -400,6 +404,10 @@ export type StructFactory<Id extends string, Value, Input> = {
   readonly id: Id;
   readonly metadata: unknown;
 };
+
+type FactoryResult<Factory> = Factory extends (...args: never[]) => infer Value
+  ? Value
+  : never;
 
 interface FieldTokenDefinition<Owner extends string, Attribute extends string> {
   readonly owner: Owner;
@@ -720,8 +728,8 @@ export function defineModel<
         )
     : undefined;
   const reference = definition.referenceEnabled
-    ? (iid: string, keys: unknown): unknown => {
-        if (typeof iid !== "string" || iid.length === 0) {
+    ? (iid: string | null, keys: unknown): unknown => {
+        if (iid !== null && (typeof iid !== "string" || iid.length === 0)) {
           throw new TypeError(
             `${definition.name}.reference iid must be a non-empty string`,
           );
@@ -805,6 +813,85 @@ export function defineModel<
           null,
           definition.createMembers,
           `${definition.name}.decodeCreate`,
+        );
+      },
+      encodeReference: (value: FactoryResult<ReferenceFactory>): Uint8Array => {
+        const wire = lowerProjectedValue(value);
+        if (wire.typeKey !== definition.typeKey || wire.form !== "reference") {
+          throw new TypeError(
+            `${definition.name}.encodeReference requires its exact detached reference`,
+          );
+        }
+        return requireProjection().encodeReferenceJson(
+          definition.typeKey,
+          JSON.stringify(wire),
+        );
+      },
+      decodeReference: (bytes: Uint8Array): FactoryResult<ReferenceFactory> => {
+        const wire = parseProjectedWire(
+          JSON.parse(
+            requireProjection().decodeReferenceJson(definition.typeKey, bytes),
+          ) as unknown,
+        );
+        if (wire.typeKey !== definition.typeKey || wire.form !== "reference") {
+          throw new TypeError(
+            `${definition.name}.decodeReference returned an invalid reference wire`,
+          );
+        }
+        const keys = Object.fromEntries(
+          definition.referenceKeys.map((name) => [
+            name,
+            hydrateMemberValue(wire.values[name]),
+          ]),
+        );
+        if (typeof reference !== "function") {
+          throw new TypeError(`${definition.name} has no reference projection`);
+        }
+        return reference(wire.iid, keys) as FactoryResult<ReferenceFactory>;
+      },
+      encodeSnapshot: (value: Complete): Uint8Array => {
+        const wire = lowerProjectedValue(value);
+        if (
+          wire.typeKey !== definition.typeKey ||
+          wire.form !== "complete" ||
+          wire.iid === null
+        ) {
+          throw new TypeError(
+            `${definition.name}.encodeSnapshot requires its exact hydrated model`,
+          );
+        }
+        return requireProjection().encodeSnapshotJson(
+          definition.typeKey,
+          JSON.stringify(wire),
+        );
+      },
+      decodeSnapshot: (bytes: Uint8Array): Complete => {
+        const wire = parseProjectedWire(
+          JSON.parse(
+            requireProjection().decodeSnapshotJson(definition.typeKey, bytes),
+          ) as unknown,
+        );
+        if (
+          wire.typeKey !== definition.typeKey ||
+          wire.form !== "complete" ||
+          wire.iid === null ||
+          wire.value !== null
+        ) {
+          throw new TypeError(
+            `${definition.name}.decodeSnapshot returned an invalid snapshot wire`,
+          );
+        }
+        const values = Object.fromEntries(
+          definition.completeMembers.map((member) => [
+            member.name,
+            hydrateMemberValue(wire.values[member.name]),
+          ]),
+        );
+        return materializeComplete(
+          values,
+          wire.iid,
+          definition.completeMembers,
+          `${definition.name}.decodeSnapshot`,
         );
       },
       metadata: definition.metadata,
@@ -1189,7 +1276,9 @@ function lowerProjectedValue(value: unknown): ProjectedWire {
   }
   const members =
     form === "complete"
-      ? entry.definition.createMembers
+      ? iid === null
+        ? entry.definition.createMembers
+        : entry.definition.completeMembers
       : entry.definition.referenceKeys.map((name) => ({
           name,
           multiplicity: {
@@ -1788,6 +1877,16 @@ function requireProjection(): InstalledRuntimeProjection {
     throw new TypeError("generated runtime projection is not installed");
   }
   return installedProjection;
+}
+
+/** Compose exact-package canonical records into one deterministic archive. */
+export function encodeArchive(records: readonly Uint8Array[]): Uint8Array {
+  return requireProjection().encodeArchive(records);
+}
+
+/** Verify and split one canonical archive into byte-identical records. */
+export function decodeArchive(bytes: Uint8Array): readonly Uint8Array[] {
+  return requireProjection().decodeArchive(bytes);
 }
 
 export type DirectTlsMode = "disabled" | "native_roots" | "custom_root";

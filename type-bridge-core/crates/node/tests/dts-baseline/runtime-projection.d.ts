@@ -191,6 +191,12 @@ interface NativeProjectionHandle {
     validateCreateJson(typeKey: string, valueJson: string): void;
     encodeCreateJson(typeKey: string, valueJson: string): Uint8Array;
     decodeCreateJson(typeKey: string, bytes: Uint8Array): string;
+    encodeReferenceJson(typeKey: string, valueJson: string): Uint8Array;
+    decodeReferenceJson(typeKey: string, bytes: Uint8Array): string;
+    encodeSnapshotJson(typeKey: string, valueJson: string): Uint8Array;
+    decodeSnapshotJson(typeKey: string, bytes: Uint8Array): string;
+    encodeArchive(records: readonly Uint8Array[]): Uint8Array;
+    decodeArchive(bytes: Uint8Array): Uint8Array[];
     validateThingJson(typeKey: string, valueJson: string): void;
     rejectGeneratedTokenPackageMismatch(pathJson: string): void;
     revalidateMatchDiagnostic(diagnostic: string): string;
@@ -232,6 +238,18 @@ export declare class InstalledRuntimeProjection {
     encodeCreateJson(typeKey: string, valueJson: string): Uint8Array;
     /** @internal Decode canonical bytes through this package's exact authority. */
     decodeCreateJson(typeKey: string, bytes: Uint8Array): string;
+    /** @internal Encode one exact generated detached reference. */
+    encodeReferenceJson(typeKey: string, valueJson: string): Uint8Array;
+    /** @internal Decode one exact generated detached reference. */
+    decodeReferenceJson(typeKey: string, bytes: Uint8Array): string;
+    /** @internal Encode one exact generated detached snapshot. */
+    encodeSnapshotJson(typeKey: string, valueJson: string): Uint8Array;
+    /** @internal Decode one exact generated detached snapshot. */
+    decodeSnapshotJson(typeKey: string, bytes: Uint8Array): string;
+    /** @internal Compose verified canonical records into one archive. */
+    encodeArchive(records: readonly Uint8Array[]): Uint8Array;
+    /** @internal Split and verify one canonical archive. */
+    decodeArchive(bytes: Uint8Array): readonly Uint8Array[];
     /** @internal Validate one complete generated provider result. */
     validateThingJson(typeKey: string, valueJson: string): void;
     /** @internal Surface one exact foreign generated-member package boundary. */

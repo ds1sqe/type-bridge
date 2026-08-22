@@ -195,6 +195,12 @@ interface NativeRuntimeProjectionHandle {
     validateCreateJson(typeKey: string, valueJson: string): void;
     encodeCreateJson(typeKey: string, valueJson: string): Uint8Array;
     decodeCreateJson(typeKey: string, bytes: Uint8Array): string;
+    encodeReferenceJson(typeKey: string, valueJson: string): Uint8Array;
+    decodeReferenceJson(typeKey: string, bytes: Uint8Array): string;
+    encodeSnapshotJson(typeKey: string, valueJson: string): Uint8Array;
+    decodeSnapshotJson(typeKey: string, bytes: Uint8Array): string;
+    encodeArchive(records: readonly Uint8Array[]): Uint8Array;
+    decodeArchive(bytes: Uint8Array): Uint8Array[];
     validateThingJson(typeKey: string, valueJson: string): void;
     rejectGeneratedTokenPackageMismatch(pathJson: string): void;
     revalidateMatchDiagnostic(diagnostic: string): string;

@@ -23,8 +23,8 @@ use type_bridge_contract::limits::{
 };
 use type_bridge_contract::managed_scope::ManagedScopeId;
 use type_bridge_contract::projection::{
-    BindingTarget, ProjectedContainer, ProjectedModelForm, ProjectedMultiplicity,
-    ProjectedTokenIdentity, ProjectionConfig, RuntimeProjection,
+    BindingTarget, ProjectedContainer, ProjectedModelForm, ProjectedModelUse,
+    ProjectedMultiplicity, ProjectedTokenIdentity, ProjectionConfig, RuntimeProjection,
 };
 use type_bridge_contract::projection_wire::decode_runtime_projection_verified;
 use type_bridge_contract::schema::{DeclaredIdentityFingerprint, OwnsFactId};
@@ -2031,6 +2031,123 @@ impl NodeRuntimeProjection {
             ));
         }
         wire_json(&projected_create_wire(self.package.as_ref(), &value)?)
+    }
+
+    /// Encode one exact generated detached reference as canonical bytes.
+    #[napi(js_name = "encodeReferenceJson")]
+    pub fn encode_reference_json(
+        &self,
+        type_key: String,
+        value_json: String,
+    ) -> napi::Result<Buffer> {
+        let id = manageable_type(self.package.as_ref(), &type_key)?;
+        let wire = parse_wire(&value_json)?;
+        if wire.type_key != type_key || wire.form != WireForm::Reference {
+            return Err(invalid_error(
+                "reference wire has the wrong exact generated type",
+            ));
+        }
+        let allowed = BTreeSet::from([ProjectedModelUse::new(id, ProjectedModelForm::Reference)]);
+        let projected = project_reference_wire(self.package.as_ref(), &allowed, &wire, &[])
+            .map_err(napi_sdk_diagnostic)?;
+        let record = type_bridge_orm::record_from_reference(&self.package.projection, &projected)
+            .map_err(|error| invalid_error(error.to_string()))?;
+        record.encode().map(Buffer::from).map_err(diagnostic_error)
+    }
+
+    /// Decode canonical reference bytes through exact installed package authority.
+    #[napi(js_name = "decodeReferenceJson")]
+    pub fn decode_reference_json(&self, type_key: String, bytes: Buffer) -> napi::Result<String> {
+        let expected = manageable_type(self.package.as_ref(), &type_key)?;
+        let record = type_bridge_contract::projected_record::ProjectedRecord::decode(&bytes)
+            .map_err(diagnostic_error)?;
+        let value = type_bridge_orm::materialize_record(&self.package.projection, &record)
+            .map_err(|error| invalid_error(error.to_string()))?;
+        let ProjectedCodecValue::Reference(value) = value else {
+            return Err(invalid_error("canonical record is not a reference"));
+        };
+        if value.type_id() != &expected {
+            return Err(invalid_error(
+                "canonical reference has the wrong exact generated type",
+            ));
+        }
+        wire_json(&projected_detached_reference_wire(
+            self.package.as_ref(),
+            &value,
+        )?)
+    }
+
+    /// Encode one exact generated hydrated model as a detached canonical snapshot.
+    #[napi(js_name = "encodeSnapshotJson")]
+    pub fn encode_snapshot_json(
+        &self,
+        type_key: String,
+        value_json: String,
+    ) -> napi::Result<Buffer> {
+        let id = manageable_type(self.package.as_ref(), &type_key)?;
+        let wire = parse_wire(&value_json)?;
+        if wire.type_key != type_key || wire.form != WireForm::Complete || wire.iid.is_none() {
+            return Err(invalid_error(
+                "snapshot wire has the wrong exact generated type or no IID",
+            ));
+        }
+        let projected =
+            project_thing_wire(self.package.as_ref(), &id, &wire).map_err(napi_sdk_diagnostic)?;
+        let record = type_bridge_orm::record_from_snapshot(&self.package.projection, &projected)
+            .map_err(|error| invalid_error(error.to_string()))?;
+        record.encode().map(Buffer::from).map_err(diagnostic_error)
+    }
+
+    /// Decode canonical snapshot bytes through exact installed package authority.
+    #[napi(js_name = "decodeSnapshotJson")]
+    pub fn decode_snapshot_json(&self, type_key: String, bytes: Buffer) -> napi::Result<String> {
+        let expected = manageable_type(self.package.as_ref(), &type_key)?;
+        let record = type_bridge_contract::projected_record::ProjectedRecord::decode(&bytes)
+            .map_err(diagnostic_error)?;
+        let value = type_bridge_orm::materialize_record(&self.package.projection, &record)
+            .map_err(|error| invalid_error(error.to_string()))?;
+        let ProjectedCodecValue::Snapshot(value) = value else {
+            return Err(invalid_error("canonical record is not a snapshot"));
+        };
+        if value.type_id() != &expected {
+            return Err(invalid_error(
+                "canonical snapshot has the wrong exact generated type",
+            ));
+        }
+        wire_json(&projected_thing_wire(self.package.as_ref(), &value)?)
+    }
+
+    /// Compose already canonical exact-package records into one deterministic archive.
+    #[napi(js_name = "encodeArchive")]
+    pub fn encode_archive(&self, records: Vec<Buffer>) -> napi::Result<Buffer> {
+        let mut verified = Vec::with_capacity(records.len());
+        for bytes in records {
+            let record = type_bridge_contract::projected_record::ProjectedRecord::decode(&bytes)
+                .map_err(diagnostic_error)?;
+            let _ = type_bridge_orm::materialize_record(&self.package.projection, &record)
+                .map_err(|error| invalid_error(error.to_string()))?;
+            verified.push(record);
+        }
+        type_bridge_contract::projected_record::ProjectedArchive::try_new(verified)
+            .and_then(|archive| archive.encode())
+            .map(Buffer::from)
+            .map_err(diagnostic_error)
+    }
+
+    /// Decode one complete archive into canonical individual exact-package records.
+    #[napi(js_name = "decodeArchive")]
+    pub fn decode_archive(&self, bytes: Buffer) -> napi::Result<Vec<Buffer>> {
+        let archive = type_bridge_contract::projected_record::ProjectedArchive::decode(&bytes)
+            .map_err(diagnostic_error)?;
+        archive
+            .records()
+            .iter()
+            .map(|record| {
+                let _ = type_bridge_orm::materialize_record(&self.package.projection, record)
+                    .map_err(|error| invalid_error(error.to_string()))?;
+                record.encode().map(Buffer::from).map_err(diagnostic_error)
+            })
+            .collect()
     }
 
     /// Validate one complete generated provider result through the common Rust contract.
@@ -7290,7 +7407,7 @@ entities:
     }
 
     #[test]
-    fn canonical_create_codec_round_trips_exact_node_wire() {
+    fn canonical_model_codecs_round_trip_exact_node_wires_and_archive() {
         let runtime = ordered_runtime();
         let person_key = type_key(TypeKind::Entity, "person");
         let wire = ProjectedWire {
@@ -7321,15 +7438,79 @@ entities:
             ]),
         };
         let input = serde_json::to_string(&wire).unwrap();
-        let bytes = runtime
+        let create_bytes = runtime
             .encode_create_json(person_key.clone(), input)
             .unwrap();
-        let decoded = runtime.decode_create_json(person_key, bytes).unwrap();
+        let decoded = runtime
+            .decode_create_json(person_key.clone(), Buffer::from(create_bytes.to_vec()))
+            .unwrap();
         let decoded: ProjectedWire = serde_json::from_str(&decoded).unwrap();
         assert_eq!(decoded.type_key, wire.type_key);
         assert_eq!(decoded.form, WireForm::Complete);
         assert_eq!(decoded.iid, None);
         assert_eq!(decoded.values, wire.values);
+
+        let reference = ProjectedWire {
+            type_key: person_key.clone(),
+            form: WireForm::Reference,
+            iid: None,
+            value: None,
+            values: BTreeMap::from([("identifier".into(), wire.values["identifier"].clone())]),
+        };
+        let reference_bytes = runtime
+            .encode_reference_json(
+                person_key.clone(),
+                serde_json::to_string(&reference).unwrap(),
+            )
+            .unwrap();
+        let decoded: ProjectedWire = serde_json::from_str(
+            &runtime
+                .decode_reference_json(person_key.clone(), Buffer::from(reference_bytes.to_vec()))
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(decoded.type_key, reference.type_key);
+        assert_eq!(decoded.form, reference.form);
+        assert_eq!(decoded.iid, reference.iid);
+        assert_eq!(decoded.values, reference.values);
+
+        let snapshot = ProjectedWire {
+            iid: Some("0x1".into()),
+            ..wire.clone()
+        };
+        let snapshot_bytes = runtime
+            .encode_snapshot_json(
+                person_key.clone(),
+                serde_json::to_string(&snapshot).unwrap(),
+            )
+            .unwrap();
+        let decoded: ProjectedWire = serde_json::from_str(
+            &runtime
+                .decode_snapshot_json(person_key, Buffer::from(snapshot_bytes.to_vec()))
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(decoded.type_key, snapshot.type_key);
+        assert_eq!(decoded.form, snapshot.form);
+        assert_eq!(decoded.iid, snapshot.iid);
+        assert_eq!(decoded.values, snapshot.values);
+
+        let expected_records = [
+            create_bytes.to_vec(),
+            reference_bytes.to_vec(),
+            snapshot_bytes.to_vec(),
+        ];
+        let archive = runtime
+            .encode_archive(expected_records.iter().cloned().map(Buffer::from).collect())
+            .unwrap();
+        let decoded = runtime.decode_archive(archive).unwrap();
+        assert_eq!(
+            decoded
+                .iter()
+                .map(|bytes| bytes.to_vec())
+                .collect::<Vec<_>>(),
+            expected_records
+        );
     }
 
     #[test]

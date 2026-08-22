@@ -390,6 +390,12 @@ interface NativeProjectionHandle {
   validateCreateJson(typeKey: string, valueJson: string): void;
   encodeCreateJson(typeKey: string, valueJson: string): Uint8Array;
   decodeCreateJson(typeKey: string, bytes: Uint8Array): string;
+  encodeReferenceJson(typeKey: string, valueJson: string): Uint8Array;
+  decodeReferenceJson(typeKey: string, bytes: Uint8Array): string;
+  encodeSnapshotJson(typeKey: string, valueJson: string): Uint8Array;
+  decodeSnapshotJson(typeKey: string, bytes: Uint8Array): string;
+  encodeArchive(records: readonly Uint8Array[]): Uint8Array;
+  decodeArchive(bytes: Uint8Array): Uint8Array[];
   validateThingJson(typeKey: string, valueJson: string): void;
   rejectGeneratedTokenPackageMismatch(pathJson: string): void;
   revalidateMatchDiagnostic(diagnostic: string): string;
@@ -500,6 +506,36 @@ export class InstalledRuntimeProjection {
   /** @internal Decode canonical bytes through this package's exact authority. */
   decodeCreateJson(typeKey: string, bytes: Uint8Array): string {
     return this.#native.decodeCreateJson(typeKey, bytes);
+  }
+
+  /** @internal Encode one exact generated detached reference. */
+  encodeReferenceJson(typeKey: string, valueJson: string): Uint8Array {
+    return this.#native.encodeReferenceJson(typeKey, valueJson);
+  }
+
+  /** @internal Decode one exact generated detached reference. */
+  decodeReferenceJson(typeKey: string, bytes: Uint8Array): string {
+    return this.#native.decodeReferenceJson(typeKey, bytes);
+  }
+
+  /** @internal Encode one exact generated detached snapshot. */
+  encodeSnapshotJson(typeKey: string, valueJson: string): Uint8Array {
+    return this.#native.encodeSnapshotJson(typeKey, valueJson);
+  }
+
+  /** @internal Decode one exact generated detached snapshot. */
+  decodeSnapshotJson(typeKey: string, bytes: Uint8Array): string {
+    return this.#native.decodeSnapshotJson(typeKey, bytes);
+  }
+
+  /** @internal Compose verified canonical records into one archive. */
+  encodeArchive(records: readonly Uint8Array[]): Uint8Array {
+    return this.#native.encodeArchive(records);
+  }
+
+  /** @internal Split and verify one canonical archive. */
+  decodeArchive(bytes: Uint8Array): readonly Uint8Array[] {
+    return Object.freeze(this.#native.decodeArchive(bytes));
   }
 
   /** @internal Validate one complete generated provider result. */
