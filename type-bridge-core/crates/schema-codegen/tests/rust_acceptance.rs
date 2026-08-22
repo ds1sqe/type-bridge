@@ -210,6 +210,10 @@ fn write_consumer(root: &Path, name: &str, source: &str) {
 static CARGO_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn cargo(arguments: &[&str], _target: &Path) -> Output {
+    cargo_with_env(arguments, &[])
+}
+
+fn cargo_with_env(arguments: &[&str], environment: &[(&str, &std::ffi::OsStr)]) -> Output {
     let _guard = CARGO_MUTEX.lock().unwrap();
     let executable = env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let workspace_target = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -221,11 +225,12 @@ fn cargo(arguments: &[&str], _target: &Path) -> Output {
         .join("tmp_acceptance_target");
     let target_dir = env::var_os("ACCEPTANCE_TARGET_DIR")
         .unwrap_or_else(|| workspace_target.as_os_str().to_os_string());
-    Command::new(executable)
-        .args(arguments)
-        .env("CARGO_TARGET_DIR", target_dir)
-        .output()
-        .unwrap()
+    let mut command = Command::new(executable);
+    command.args(arguments).env("CARGO_TARGET_DIR", target_dir);
+    for (name, value) in environment {
+        command.env(name, value);
+    }
+    command.output().unwrap()
 }
 
 #[test]
@@ -3719,7 +3724,8 @@ fn generated_rust_workforce_v5_canonical_codec() {
     write_package(&emit_from_source(&source), &generated);
     write_consumer(&consumer, "rust-workforce-v5-codec", WORKFORCE_V5_CODEC);
 
-    let output = cargo(
+    let corpus = stage.path().join("rust-workforce-v5-corpus.json");
+    let output = cargo_with_env(
         &[
             "run",
             "--offline",
@@ -3727,13 +3733,51 @@ fn generated_rust_workforce_v5_canonical_codec() {
             "--manifest-path",
             consumer.join("Cargo.toml").to_str().unwrap(),
         ],
-        &stage.path().join("workforce-v5-codec-target"),
+        &[("TYPE_BRIDGE_WORKFORCE_V5_CORPUS", corpus.as_os_str())],
     );
     assert!(
         output.status.success(),
         "generated Rust Workforce V5 codec consumer failed\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
+    );
+    let corpus_bytes = fs::read(&corpus).expect("Rust Workforce V5 corpus was published");
+    let corpus: Value = serde_json::from_slice(&corpus_bytes).expect("corpus JSON parses");
+    assert_eq!(
+        corpus["format"],
+        "typebridge.workforce-v5-provider-free-corpus/v1"
+    );
+    assert_eq!(corpus["binding"], "rust");
+    assert_eq!(corpus["record_b64"].as_array().unwrap().len(), 9);
+    assert!(
+        corpus["archive_b64"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty())
+    );
+    let repeated_corpus = stage.path().join("rust-workforce-v5-corpus-repeat.json");
+    let repeated = cargo_with_env(
+        &[
+            "run",
+            "--offline",
+            "--quiet",
+            "--manifest-path",
+            consumer.join("Cargo.toml").to_str().unwrap(),
+        ],
+        &[(
+            "TYPE_BRIDGE_WORKFORCE_V5_CORPUS",
+            repeated_corpus.as_os_str(),
+        )],
+    );
+    assert!(
+        repeated.status.success(),
+        "repeated Rust Workforce V5 corpus run failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&repeated.stdout),
+        String::from_utf8_lossy(&repeated.stderr),
+    );
+    assert_eq!(
+        corpus_bytes,
+        fs::read(repeated_corpus).expect("repeated Rust Workforce V5 corpus was published"),
+        "provider-free generated Rust V5 bytes must be deterministic across fresh processes",
     );
 }
 

@@ -5,6 +5,59 @@ use type_bridge::__codegen::{
 };
 use type_bridge::{AnswerCancellation, CanonicalCodecLimits, CanonicalCodecOptions, Error};
 
+fn base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut output = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let first = chunk[0];
+        let second = chunk.get(1).copied().unwrap_or(0);
+        let third = chunk.get(2).copied().unwrap_or(0);
+        output.push(ALPHABET[(first >> 2) as usize] as char);
+        output.push(ALPHABET[(((first & 0x03) << 4) | (second >> 4)) as usize] as char);
+        output.push(if chunk.len() > 1 {
+            ALPHABET[(((second & 0x0f) << 2) | (third >> 6)) as usize] as char
+        } else {
+            '='
+        });
+        output.push(if chunk.len() > 2 {
+            ALPHABET[(third & 0x3f) as usize] as char
+        } else {
+            '='
+        });
+    }
+    output
+}
+
+fn publish_provider_free_corpus(records: &[Vec<u8>; 9], archive: &[u8]) -> std::io::Result<()> {
+    let Some(path) = std::env::var_os("TYPE_BRIDGE_WORKFORCE_V5_CORPUS") else {
+        return Ok(());
+    };
+    let path = std::path::PathBuf::from(path);
+    if !path.is_absolute() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Workforce V5 corpus path must be absolute",
+        ));
+    }
+    let record_b64 = records
+        .iter()
+        .map(|record| format!("\"{}\"", base64(record)))
+        .collect::<Vec<_>>()
+        .join(",");
+    let payload = format!(
+        "{{\"archive_b64\":\"{}\",\"binding\":\"rust\",\"format\":\"typebridge.workforce-v5-provider-free-corpus/v1\",\"record_b64\":[{}]}}",
+        base64(archive),
+        record_b64,
+    );
+    use std::io::Write as _;
+    let mut output = std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(path)?;
+    output.write_all(payload.as_bytes())?;
+    output.sync_all()
+}
+
 fn expect_code<T>(result: type_bridge::Result<T>, expected: &str) -> Error {
     let Err(error) = result else {
         panic!("controlled canonical operation must fail");
@@ -156,5 +209,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         SCHEMA.decode_archive_controlled(&archive, &timed_out),
         "projected_codec_deadline_exceeded",
     );
+    publish_provider_free_corpus(&records, &archive)?;
     Ok(())
 }
