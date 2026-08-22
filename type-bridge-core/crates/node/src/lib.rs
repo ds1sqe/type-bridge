@@ -47,6 +47,7 @@ pub use runtime_projection::{NodeProjectedModelManager, NodeRuntimeProjection};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
@@ -60,6 +61,37 @@ use type_bridge_orm::session::backend::QueryResult;
 use type_bridge_orm::{
     AttributeValue, OrmError, ProviderRuntimeOwner, TransactionContext, TxType, ValueType,
 };
+
+fn node_administration_control(
+    timeout_milliseconds: Option<i64>,
+    cancellation: Option<&NodeMigrationCancellation>,
+) -> Result<type_bridge_schema_migration::MigrationExecutionControl> {
+    let milliseconds = timeout_milliseconds
+        .map(u64::try_from)
+        .transpose()
+        .map_err(|_| Error::new(Status::InvalidArg, "timeout must be non-negative"))?;
+    let deadline = milliseconds
+        .map(|value| {
+            Instant::now()
+                .checked_add(Duration::from_millis(value))
+                .ok_or_else(|| {
+                    Error::new(
+                        Status::InvalidArg,
+                        "timeout exceeds the monotonic clock range",
+                    )
+                })
+        })
+        .transpose()?;
+    Ok(
+        type_bridge_schema_migration::MigrationExecutionControl::new(
+            cancellation
+                .map(NodeMigrationCancellation::inner)
+                .unwrap_or_default(),
+            deadline,
+            Default::default(),
+        ),
+    )
+}
 
 /// Private registry fixture used by native match-runtime unit tests only.
 ///
@@ -174,6 +206,24 @@ impl NodeManagedDatabaseDeletionPlan {
             .map_err(napi_administration_error)
     }
 
+    #[napi(js_name = "executeControlled")]
+    pub fn execute_controlled(
+        &mut self,
+        timeout_milliseconds: Option<i64>,
+        cancellation: Option<&NodeMigrationCancellation>,
+    ) -> Result<String> {
+        let control = node_administration_control(timeout_milliseconds, cancellation)?;
+        let plan = self
+            .inner
+            .take()
+            .ok_or_else(|| Error::new(Status::InvalidArg, "database deletion plan is closed"))?;
+        self.runtime
+            .block_on(plan.execute_controlled(&control))
+            .map(node_delete_outcome)
+            .map(str::to_owned)
+            .map_err(napi_administration_error)
+    }
+
     #[napi(js_name = "close")]
     pub fn close(&mut self) {
         self.inner = None;
@@ -241,9 +291,39 @@ impl NodeRustDatabase {
             .map_err(napi_orm_error)
     }
 
+    #[napi(js_name = "databaseExistsControlled")]
+    pub fn database_exists_controlled(
+        &self,
+        timeout_milliseconds: Option<i64>,
+        cancellation: Option<&NodeMigrationCancellation>,
+    ) -> Result<bool> {
+        let control = node_administration_control(timeout_milliseconds, cancellation)?;
+        if self.managed_scope_id.is_some() {
+            return self
+                .runtime
+                .block_on(
+                    self.pair_administrator()?
+                        .database_exists_controlled(&control),
+                )
+                .map_err(napi_administration_error);
+        }
+        control.check().map_err(napi_administration_error)?;
+        self.database_exists()
+    }
+
     #[napi(js_name = "createDatabase")]
     pub fn create_database(&self) -> Result<()> {
         self.create_database_outcome().map(|_| ())
+    }
+
+    #[napi(js_name = "createDatabaseControlled")]
+    pub fn create_database_controlled(
+        &self,
+        timeout_milliseconds: Option<i64>,
+        cancellation: Option<&NodeMigrationCancellation>,
+    ) -> Result<()> {
+        self.create_database_outcome_controlled(timeout_milliseconds, cancellation)
+            .map(|_| ())
     }
 
     #[napi(js_name = "createDatabaseOutcome")]
@@ -267,6 +347,23 @@ impl NodeRustDatabase {
                 }
             })
             .map_err(napi_orm_error)
+    }
+
+    #[napi(js_name = "createDatabaseOutcomeControlled")]
+    pub fn create_database_outcome_controlled(
+        &self,
+        timeout_milliseconds: Option<i64>,
+        cancellation: Option<&NodeMigrationCancellation>,
+    ) -> Result<String> {
+        let control = node_administration_control(timeout_milliseconds, cancellation)?;
+        if self.managed_scope_id.is_some() {
+            return self.runtime.block_on(self.pair_administrator()?.create_database_outcome_controlled(&control)).map(|outcome| match outcome {
+                type_bridge_schema_migration_typedb::ManagedDatabasePairCreateOutcome::Created => "created".to_owned(),
+                type_bridge_schema_migration_typedb::ManagedDatabasePairCreateOutcome::AlreadyExists => "already_exists".to_owned(),
+            }).map_err(napi_administration_error);
+        }
+        control.check().map_err(napi_administration_error)?;
+        self.create_database_outcome()
     }
 
     #[napi(js_name = "deleteDatabase")]
@@ -328,11 +425,42 @@ impl NodeRustDatabase {
             .map_err(napi_administration_error)
     }
 
+    #[napi(js_name = "inspectDatabasePairControlled")]
+    pub fn inspect_database_pair_controlled(
+        &self,
+        timeout_milliseconds: Option<i64>,
+        cancellation: Option<&NodeMigrationCancellation>,
+    ) -> Result<String> {
+        let control = node_administration_control(timeout_milliseconds, cancellation)?;
+        self.runtime
+            .block_on(self.pair_administrator()?.inspect_controlled(&control))
+            .map(node_pair_state)
+            .map(str::to_owned)
+            .map_err(napi_administration_error)
+    }
+
     #[napi(js_name = "planDatabaseDelete")]
     pub fn plan_database_delete(&self) -> Result<NodeManagedDatabaseDeletionPlan> {
         let inner = self
             .runtime
             .block_on(self.pair_administrator()?.plan_delete())
+            .map_err(napi_administration_error)?;
+        Ok(NodeManagedDatabaseDeletionPlan {
+            inner: Some(inner),
+            runtime: Arc::clone(&self.runtime),
+        })
+    }
+
+    #[napi(js_name = "planDatabaseDeleteControlled")]
+    pub fn plan_database_delete_controlled(
+        &self,
+        timeout_milliseconds: Option<i64>,
+        cancellation: Option<&NodeMigrationCancellation>,
+    ) -> Result<NodeManagedDatabaseDeletionPlan> {
+        let control = node_administration_control(timeout_milliseconds, cancellation)?;
+        let inner = self
+            .runtime
+            .block_on(self.pair_administrator()?.plan_delete_controlled(&control))
             .map_err(napi_administration_error)?;
         Ok(NodeManagedDatabaseDeletionPlan {
             inner: Some(inner),
@@ -789,6 +917,13 @@ mod tests {
         };
 
         assert_eq!(database.create_database_outcome().unwrap(), "created");
+        let cancellation = NodeMigrationCancellation::new();
+        cancellation.cancel();
+        assert!(
+            database
+                .database_exists_controlled(None, Some(&cancellation))
+                .is_err()
+        );
         assert_eq!(
             database.inspect_database_pair().unwrap(),
             "standalone_managed"

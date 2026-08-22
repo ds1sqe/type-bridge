@@ -204,12 +204,17 @@ export interface NativeRustDatabase {
   close(): void;
   databaseName(): string;
   databaseExists(): boolean;
+  databaseExistsControlled(timeoutMilliseconds?: number | null, cancellation?: NativeMigrationCancellation | null): boolean;
   createDatabase(): void;
+  createDatabaseControlled(timeoutMilliseconds?: number | null, cancellation?: NativeMigrationCancellation | null): void;
   createDatabaseOutcome(): DatabaseCreateOutcome;
+  createDatabaseOutcomeControlled(timeoutMilliseconds?: number | null, cancellation?: NativeMigrationCancellation | null): DatabaseCreateOutcome;
   deleteDatabase(): void;
   deleteDatabaseOutcome(): DatabaseDeleteOutcome;
   inspectDatabasePair(): ManagedDatabasePairState;
+  inspectDatabasePairControlled(timeoutMilliseconds?: number | null, cancellation?: NativeMigrationCancellation | null): ManagedDatabasePairState;
   planDatabaseDelete(): NativeManagedDatabaseDeletionPlan;
+  planDatabaseDeleteControlled(timeoutMilliseconds?: number | null, cancellation?: NativeMigrationCancellation | null): NativeManagedDatabaseDeletionPlan;
   resetDatabase(): void;
   transaction(transactionType?: TransactionType): NativeRustTransactionContext;
 }
@@ -217,7 +222,13 @@ export interface NativeRustDatabase {
 export interface NativeManagedDatabaseDeletionPlan {
   inspectedState(): ManagedDatabasePairState;
   execute(): ManagedDatabaseDeleteOutcome;
+  executeControlled(timeoutMilliseconds?: number | null, cancellation?: NativeMigrationCancellation | null): ManagedDatabaseDeleteOutcome;
   close(): void;
+}
+
+export interface AdministrationExecutionOptions {
+  timeoutMilliseconds?: number;
+  cancellation?: MigrationCancellation;
 }
 
 export type DatabaseCreateOutcome = "created" | "already_exists";
@@ -859,12 +870,24 @@ export class RustDatabase {
     return this.#native.databaseExists();
   }
 
+  databaseExistsControlled(options: AdministrationExecutionOptions = {}): boolean {
+    return this.#native.databaseExistsControlled(options.timeoutMilliseconds, options.cancellation?.nativeHandle());
+  }
+
   createDatabase(): void {
     this.#native.createDatabase();
   }
 
+  createDatabaseControlled(options: AdministrationExecutionOptions = {}): void {
+    this.#native.createDatabaseControlled(options.timeoutMilliseconds, options.cancellation?.nativeHandle());
+  }
+
   createDatabaseOutcome(): DatabaseCreateOutcome {
     return this.#native.createDatabaseOutcome();
+  }
+
+  createDatabaseOutcomeControlled(options: AdministrationExecutionOptions = {}): DatabaseCreateOutcome {
+    return this.#native.createDatabaseOutcomeControlled(options.timeoutMilliseconds, options.cancellation?.nativeHandle());
   }
 
   deleteDatabase(): void {
@@ -879,8 +902,16 @@ export class RustDatabase {
     return this.#native.inspectDatabasePair();
   }
 
+  inspectDatabasePairControlled(options: AdministrationExecutionOptions = {}): ManagedDatabasePairState {
+    return this.#native.inspectDatabasePairControlled(options.timeoutMilliseconds, options.cancellation?.nativeHandle());
+  }
+
   planDatabaseDelete(): ManagedDatabaseDeletionPlan {
     return new ManagedDatabaseDeletionPlan(this.#native.planDatabaseDelete());
+  }
+
+  planDatabaseDeleteControlled(options: AdministrationExecutionOptions = {}): ManagedDatabaseDeletionPlan {
+    return new ManagedDatabaseDeletionPlan(this.#native.planDatabaseDeleteControlled(options.timeoutMilliseconds, options.cancellation?.nativeHandle()));
   }
 
   resetDatabase(): void {
@@ -910,6 +941,10 @@ export class ManagedDatabaseDeletionPlan {
 
   execute(): ManagedDatabaseDeleteOutcome {
     return this.#native.execute();
+  }
+
+  executeControlled(options: AdministrationExecutionOptions = {}): ManagedDatabaseDeleteOutcome {
+    return this.#native.executeControlled(options.timeoutMilliseconds, options.cancellation?.nativeHandle());
   }
 
   close(): void {

@@ -21,6 +21,12 @@ pub struct NodeMigrationCancellation {
     inner: type_bridge_schema_migration::MigrationCancellation,
 }
 
+impl NodeMigrationCancellation {
+    pub(crate) fn inner(&self) -> type_bridge_schema_migration::MigrationCancellation {
+        self.inner.clone()
+    }
+}
+
 #[napi]
 impl NodeMigrationCancellation {
     #[napi(constructor)]

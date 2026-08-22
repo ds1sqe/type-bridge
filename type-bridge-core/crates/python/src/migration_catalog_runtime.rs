@@ -21,10 +21,16 @@ pub struct PyMigrationCancellation {
     inner: type_bridge_schema_migration::MigrationCancellation,
 }
 
+impl PyMigrationCancellation {
+    pub(crate) fn inner(&self) -> type_bridge_schema_migration::MigrationCancellation {
+        self.inner.clone()
+    }
+}
+
 #[pymethods]
 impl PyMigrationCancellation {
     #[new]
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             inner: type_bridge_schema_migration::MigrationCancellation::default(),
         }

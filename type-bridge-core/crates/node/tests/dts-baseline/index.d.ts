@@ -136,19 +136,29 @@ export interface NativeRustDatabase {
     close(): void;
     databaseName(): string;
     databaseExists(): boolean;
+    databaseExistsControlled(timeoutMilliseconds?: number | null, cancellation?: NativeMigrationCancellation | null): boolean;
     createDatabase(): void;
+    createDatabaseControlled(timeoutMilliseconds?: number | null, cancellation?: NativeMigrationCancellation | null): void;
     createDatabaseOutcome(): DatabaseCreateOutcome;
+    createDatabaseOutcomeControlled(timeoutMilliseconds?: number | null, cancellation?: NativeMigrationCancellation | null): DatabaseCreateOutcome;
     deleteDatabase(): void;
     deleteDatabaseOutcome(): DatabaseDeleteOutcome;
     inspectDatabasePair(): ManagedDatabasePairState;
+    inspectDatabasePairControlled(timeoutMilliseconds?: number | null, cancellation?: NativeMigrationCancellation | null): ManagedDatabasePairState;
     planDatabaseDelete(): NativeManagedDatabaseDeletionPlan;
+    planDatabaseDeleteControlled(timeoutMilliseconds?: number | null, cancellation?: NativeMigrationCancellation | null): NativeManagedDatabaseDeletionPlan;
     resetDatabase(): void;
     transaction(transactionType?: TransactionType): NativeRustTransactionContext;
 }
 export interface NativeManagedDatabaseDeletionPlan {
     inspectedState(): ManagedDatabasePairState;
     execute(): ManagedDatabaseDeleteOutcome;
+    executeControlled(timeoutMilliseconds?: number | null, cancellation?: NativeMigrationCancellation | null): ManagedDatabaseDeleteOutcome;
     close(): void;
+}
+export interface AdministrationExecutionOptions {
+    timeoutMilliseconds?: number;
+    cancellation?: MigrationCancellation;
 }
 export type DatabaseCreateOutcome = "created" | "already_exists";
 export type DatabaseDeleteOutcome = "deleted" | "already_absent";
@@ -194,6 +204,15 @@ interface NativeMigrationApprovalSet {
 interface NativeMigrationPlan {
     readonly executionAuthorized: boolean;
     execute(database: NativeRustDatabase, holder: string): MigrationExecutionReport;
+    executeControlled(database: NativeRustDatabase, holder: string, timeoutMilliseconds?: number | null, resources?: NativeMigrationExecutionResources | null, cancellation?: NativeMigrationCancellation | null): MigrationExecutionReport;
+}
+interface NativeMigrationCancellation {
+    readonly cancelled: boolean;
+    cancel(): void;
+}
+interface NativeMigrationExecutionResources {
+    readonly transactionGroups: number;
+    readonly backfillObservations: number;
 }
 interface NativeMigrationPreview {
     readonly direction: "apply" | "rollback";
@@ -259,6 +278,8 @@ interface NativeQueryV2Runtime {
     queryV2PrepareRemote(authority: NativeQueryV2Authority, plan: Uint8Array, invocationJson: string, advertisement: Uint8Array, maxItems: bigint, maxBytes: bigint, maxCollectionMembers: bigint, deadlineMs?: bigint | null): NativePendingQueryV2Remote;
 }
 export interface NativeRuntime {
+    NodeMigrationCancellation: new () => NativeMigrationCancellation;
+    NodeMigrationExecutionResources: new (transactionGroups: number, backfillObservations: number) => NativeMigrationExecutionResources;
     openMigrationCatalog(schemaAuthority: Uint8Array, historyBundle: Uint8Array): NativeMigrationCatalog;
     ensureRustDatabase(address: string, database: string, username?: string | null, password?: string | null, httpPort?: number | null, serverVersion?: string | null, tlsEnabled?: boolean | null, tlsRootCa?: string | null): void;
     connectRustDatabase(address: string, database: string, username?: string | null, password?: string | null, httpPort?: number | null, serverVersion?: string | null, tlsEnabled?: boolean | null, tlsRootCa?: string | null): NativeRustDatabase;
@@ -297,6 +318,27 @@ export declare class MigrationPlan {
     constructor(native: NativeMigrationPlan);
     get executionAuthorized(): boolean;
     execute(database: RustDatabase, holder: string): MigrationExecutionReport;
+    executeControlled(database: RustDatabase, holder: string, options?: {
+        timeoutMilliseconds?: number;
+        resources?: MigrationExecutionResources;
+        cancellation?: MigrationCancellation;
+    }): MigrationExecutionReport;
+}
+export declare class MigrationCancellation {
+    #private;
+    constructor();
+    cancel(): void;
+    get cancelled(): boolean;
+    /** @internal */
+    nativeHandle(): NativeMigrationCancellation;
+}
+export declare class MigrationExecutionResources {
+    #private;
+    constructor(transactionGroups: number, backfillObservations: number);
+    get transactionGroups(): number;
+    get backfillObservations(): number;
+    /** @internal */
+    nativeHandle(): NativeMigrationExecutionResources;
 }
 export declare class MigrationPreview {
     #private;
@@ -347,12 +389,17 @@ export declare class RustDatabase {
     close(): void;
     databaseName(): string;
     databaseExists(): boolean;
+    databaseExistsControlled(options?: AdministrationExecutionOptions): boolean;
     createDatabase(): void;
+    createDatabaseControlled(options?: AdministrationExecutionOptions): void;
     createDatabaseOutcome(): DatabaseCreateOutcome;
+    createDatabaseOutcomeControlled(options?: AdministrationExecutionOptions): DatabaseCreateOutcome;
     deleteDatabase(): void;
     deleteDatabaseOutcome(): DatabaseDeleteOutcome;
     inspectDatabasePair(): ManagedDatabasePairState;
+    inspectDatabasePairControlled(options?: AdministrationExecutionOptions): ManagedDatabasePairState;
     planDatabaseDelete(): ManagedDatabaseDeletionPlan;
+    planDatabaseDeleteControlled(options?: AdministrationExecutionOptions): ManagedDatabaseDeletionPlan;
     resetDatabase(): void;
     transaction(transactionType?: TransactionType): RustTransactionContext;
 }
@@ -362,6 +409,7 @@ export declare class ManagedDatabaseDeletionPlan {
     constructor(native: NativeManagedDatabaseDeletionPlan);
     inspectedState(): ManagedDatabasePairState;
     execute(): ManagedDatabaseDeleteOutcome;
+    executeControlled(options?: AdministrationExecutionOptions): ManagedDatabaseDeleteOutcome;
     close(): void;
 }
 /** @internal Wrap a generated-package-owned native database handle. */

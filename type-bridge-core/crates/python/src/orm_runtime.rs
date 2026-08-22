@@ -9,8 +9,10 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use crate::match_runtime::py_sdk_diagnostic;
+use crate::migration_catalog_runtime::PyMigrationCancellation;
 use crate::version::VersionError;
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyString};
@@ -70,6 +72,28 @@ where
         }
         drive_provider_future(runtime, future)
     })
+}
+
+fn python_administration_control(
+    timeout_milliseconds: Option<u64>,
+    cancellation: Option<&PyMigrationCancellation>,
+) -> PyResult<type_bridge_schema_migration::MigrationExecutionControl> {
+    let deadline = timeout_milliseconds
+        .map(|milliseconds| {
+            Instant::now()
+                .checked_add(Duration::from_millis(milliseconds))
+                .ok_or_else(|| py_value_error("timeout exceeds the monotonic clock range"))
+        })
+        .transpose()?;
+    Ok(
+        type_bridge_schema_migration::MigrationExecutionControl::new(
+            cancellation
+                .map(PyMigrationCancellation::inner)
+                .unwrap_or_default(),
+            deadline,
+            Default::default(),
+        ),
+    )
 }
 
 /// Drive one successor-batch future while a dedicated worker owns the GIL.
@@ -620,6 +644,23 @@ impl PyManagedDatabaseDeletionPlan {
             .map_err(py_administration_error)
     }
 
+    #[pyo3(signature = (*, timeout_milliseconds = None, cancellation = None))]
+    fn execute_controlled(
+        &mut self,
+        py: Python<'_>,
+        timeout_milliseconds: Option<u64>,
+        cancellation: Option<&PyMigrationCancellation>,
+    ) -> PyResult<&'static str> {
+        let control = python_administration_control(timeout_milliseconds, cancellation)?;
+        let plan = self
+            .inner
+            .take()
+            .ok_or_else(|| py_value_error("database deletion plan is closed"))?;
+        provider_block_on(py, self.runtime.as_ref(), plan.execute_controlled(&control))
+            .map(python_delete_outcome)
+            .map_err(py_administration_error)
+    }
+
     /// Close this plan idempotently without executing it.
     fn close(&mut self) {
         self.inner = None;
@@ -798,9 +839,41 @@ impl PyRustDatabase {
             .map_err(py_orm_error)
     }
 
+    #[pyo3(signature = (*, timeout_milliseconds = None, cancellation = None))]
+    fn database_exists_controlled(
+        &self,
+        py: Python<'_>,
+        timeout_milliseconds: Option<u64>,
+        cancellation: Option<&PyMigrationCancellation>,
+    ) -> PyResult<bool> {
+        let control = python_administration_control(timeout_milliseconds, cancellation)?;
+        if self.managed_scope_id.is_some() {
+            return provider_block_on(
+                py,
+                self.runtime.as_ref(),
+                self.pair_administrator()?
+                    .database_exists_controlled(&control),
+            )
+            .map_err(py_administration_error);
+        }
+        control.check().map_err(py_administration_error)?;
+        self.database_exists(py)
+    }
+
     /// Create the configured database if it does not already exist.
     fn create_database(&self, py: Python<'_>) -> PyResult<()> {
         self.create_database_outcome(py).map(|_| ())
+    }
+
+    #[pyo3(signature = (*, timeout_milliseconds = None, cancellation = None))]
+    fn create_database_controlled(
+        &self,
+        py: Python<'_>,
+        timeout_milliseconds: Option<u64>,
+        cancellation: Option<&PyMigrationCancellation>,
+    ) -> PyResult<()> {
+        self.create_database_outcome_controlled(py, timeout_milliseconds, cancellation)
+            .map(|_| ())
     }
 
     /// Create the configured database and return a normalized outcome token.
@@ -825,6 +898,24 @@ impl PyRustDatabase {
                 type_bridge_orm::session::DatabaseCreateOutcome::AlreadyExists => "already_exists",
             })
             .map_err(py_orm_error)
+    }
+
+    #[pyo3(signature = (*, timeout_milliseconds = None, cancellation = None))]
+    fn create_database_outcome_controlled(
+        &self,
+        py: Python<'_>,
+        timeout_milliseconds: Option<u64>,
+        cancellation: Option<&PyMigrationCancellation>,
+    ) -> PyResult<&'static str> {
+        let control = python_administration_control(timeout_milliseconds, cancellation)?;
+        if self.managed_scope_id.is_some() {
+            return provider_block_on(py, self.runtime.as_ref(), self.pair_administrator()?.create_database_outcome_controlled(&control)).map(|outcome| match outcome {
+                type_bridge_schema_migration_typedb::ManagedDatabasePairCreateOutcome::Created => "created",
+                type_bridge_schema_migration_typedb::ManagedDatabasePairCreateOutcome::AlreadyExists => "already_exists",
+            }).map_err(py_administration_error);
+        }
+        control.check().map_err(py_administration_error)?;
+        self.create_database_outcome(py)
     }
 
     /// Delete the configured database if it exists.
@@ -864,12 +955,49 @@ impl PyRustDatabase {
         .map_err(py_administration_error)
     }
 
+    #[pyo3(signature = (*, timeout_milliseconds = None, cancellation = None))]
+    fn inspect_database_pair_controlled(
+        &self,
+        py: Python<'_>,
+        timeout_milliseconds: Option<u64>,
+        cancellation: Option<&PyMigrationCancellation>,
+    ) -> PyResult<&'static str> {
+        let control = python_administration_control(timeout_milliseconds, cancellation)?;
+        provider_block_on(
+            py,
+            self.runtime.as_ref(),
+            self.pair_administrator()?.inspect_controlled(&control),
+        )
+        .map(python_pair_state)
+        .map_err(py_administration_error)
+    }
+
     /// Inspect and retain an explicit pair-aware destructive deletion plan.
     fn plan_database_delete(&self, py: Python<'_>) -> PyResult<PyManagedDatabaseDeletionPlan> {
         let inner = provider_block_on(
             py,
             self.runtime.as_ref(),
             self.pair_administrator()?.plan_delete(),
+        )
+        .map_err(py_administration_error)?;
+        Ok(PyManagedDatabaseDeletionPlan {
+            inner: Some(inner),
+            runtime: Arc::clone(&self.runtime),
+        })
+    }
+
+    #[pyo3(signature = (*, timeout_milliseconds = None, cancellation = None))]
+    fn plan_database_delete_controlled(
+        &self,
+        py: Python<'_>,
+        timeout_milliseconds: Option<u64>,
+        cancellation: Option<&PyMigrationCancellation>,
+    ) -> PyResult<PyManagedDatabaseDeletionPlan> {
+        let control = python_administration_control(timeout_milliseconds, cancellation)?;
+        let inner = provider_block_on(
+            py,
+            self.runtime.as_ref(),
+            self.pair_administrator()?.plan_delete_controlled(&control),
         )
         .map_err(py_administration_error)?;
         Ok(PyManagedDatabaseDeletionPlan {
@@ -2406,6 +2534,7 @@ mod administration_tests {
     use type_bridge_orm::{Database, ProviderRuntimeOwner};
 
     use super::PyRustDatabase;
+    use crate::migration_catalog_runtime::PyMigrationCancellation;
 
     struct AdministrationBackend {
         databases: Arc<Mutex<BTreeSet<String>>>,
@@ -2476,6 +2605,13 @@ mod administration_tests {
 
         let mut plan = Python::with_gil(|py| {
             assert_eq!(database.create_database_outcome(py).unwrap(), "created");
+            let cancellation = PyMigrationCancellation::new();
+            cancellation.inner().cancel();
+            assert!(
+                database
+                    .database_exists_controlled(py, None, Some(&cancellation))
+                    .is_err()
+            );
             assert_eq!(
                 database.inspect_database_pair(py).unwrap(),
                 "standalone_managed"
