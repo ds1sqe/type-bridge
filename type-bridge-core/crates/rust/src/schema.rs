@@ -268,7 +268,7 @@ impl<S: Schema> SchemaPackage<S> {
         let authority = self.verify_embedded_authority().map_err(|error| {
             classify_admission_error(authority_backed, semantic_fingerprint_presence, error)
         })?;
-        let projection = type_bridge_orm::InstalledRuntimeProjection::from_verified_rust_json(
+        let mut projection = type_bridge_orm::InstalledRuntimeProjection::from_verified_rust_json(
             self.runtime_projection_json.as_bytes(),
             self.semantic_fingerprint_json.as_bytes(),
             self.projection_fingerprint_json.as_bytes(),
@@ -283,6 +283,14 @@ impl<S: Schema> SchemaPackage<S> {
                 },
             )
         })?;
+        if let Some(authority) = authority.as_ref() {
+            projection = projection.with_declared_schema_identity(
+                authority
+                    .resolved_schema()
+                    .declared_identity_fingerprint()
+                    .clone(),
+            );
+        }
         let successor =
             authority_backed || projection_uses_ordered_collections(projection.projection());
         if authority.as_ref().is_some_and(|authority| {

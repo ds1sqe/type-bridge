@@ -5,7 +5,9 @@ use std::sync::Arc;
 
 use type_bridge_contract::id::{TypeId, TypeKind};
 use type_bridge_contract::projection::{ModelProjection, ProjectedAnnotation, RuntimeProjection};
-use type_bridge_contract::schema::{AnnotationKindId, SchemaAnnotationValue};
+use type_bridge_contract::schema::{
+    AnnotationKindId, DeclaredIdentityFingerprint, SchemaAnnotationValue,
+};
 use type_bridge_contract::sdk_diagnostic::{
     SdkDiagnosticCode, SdkDiagnosticDetailValue, SdkDiagnosticMessage, SdkDiagnosticName,
     SdkDiagnosticPathSegment, SdkExecutionDiagnostic,
@@ -30,6 +32,7 @@ use crate::value::AttributeValue;
 /// One package-scoped trusted projection and its provider-facing descriptors.
 pub struct InstalledRuntimeProjection {
     projection: Arc<RuntimeProjection>,
+    declared_schema_identity: Option<DeclaredIdentityFingerprint>,
     descriptors: BTreeMap<TypeId, TypeDescriptor>,
 }
 
@@ -49,8 +52,23 @@ impl InstalledRuntimeProjection {
         }
         Ok(Self {
             projection: Arc::new(projection),
+            declared_schema_identity: None,
             descriptors,
         })
+    }
+
+    /// Bind verified target-independent declared-schema authority to this installation.
+    ///
+    /// Legacy installations may omit this evidence, but canonical projected-record
+    /// encoding and decoding require it and fail closed when it is absent.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_declared_schema_identity(
+        mut self,
+        declared_schema_identity: DeclaredIdentityFingerprint,
+    ) -> Self {
+        self.declared_schema_identity = Some(declared_schema_identity);
+        self
     }
 
     /// Decode a verified Rust runtime projection from JSON bytes and derive provider descriptors.
@@ -83,6 +101,13 @@ impl InstalledRuntimeProjection {
     /// Return the trusted source projection.
     pub fn projection(&self) -> &Arc<RuntimeProjection> {
         &self.projection
+    }
+
+    /// Return the verified declared-schema authority available to canonical codecs.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn declared_schema_identity(&self) -> Option<&DeclaredIdentityFingerprint> {
+        self.declared_schema_identity.as_ref()
     }
 
     /// Resolve one provider descriptor by its kind-qualified identity.
