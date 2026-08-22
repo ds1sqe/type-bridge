@@ -349,7 +349,11 @@ impl<S: Schema> MigrationPlan<S> {
 
     /// Execute this plan through the exact managed database/journal pair.
     #[cfg(feature = "typedb")]
-    pub async fn execute(&self, database: &Database<S>, holder: &str) -> Result<MigrationOutcome> {
+    pub async fn execute(
+        &self,
+        database: &Database<S>,
+        holder: &str,
+    ) -> Result<type_bridge_schema_migration::MigrationExecutionReport> {
         let holder = type_bridge_schema_migration::LeaseHolderId::new(holder)
             .map_err(migration_diagnostic)?;
         let database = Arc::new(database.inner_orm().clone());
@@ -362,7 +366,7 @@ impl<S: Schema> MigrationPlan<S> {
                     plan,
                 )
                 .await
-                .map(MigrationOutcome::Apply)
+                .map(type_bridge_schema_migration::MigrationExecutionReport::from_apply)
                 .map_err(migration_diagnostic)
             }
             MigrationPreviewInner::Rollback(plan) => {
@@ -373,21 +377,11 @@ impl<S: Schema> MigrationPlan<S> {
                     plan,
                 )
                 .await
-                .map(MigrationOutcome::Rollback)
+                .map(type_bridge_schema_migration::MigrationExecutionReport::from_rollback)
                 .map_err(migration_diagnostic)
             }
         }
     }
-}
-
-/// Terminal outcome from an authorized migration execution.
-#[cfg(feature = "typedb")]
-#[derive(Debug)]
-pub enum MigrationOutcome {
-    /// Forward execution outcome.
-    Apply(type_bridge_schema_migration::MigrationExecutionOutcome),
-    /// Rollback execution outcome.
-    Rollback(type_bridge_schema_migration::MigrationRollbackOutcome),
 }
 
 /// Borrowed bounded inspection of one migration preview entry.

@@ -44,6 +44,17 @@ pub struct NodeMigrationVerificationReport {
     pub applied_frontier: Vec<NodeMigrationIdentity>,
 }
 
+#[napi(object)]
+pub struct NodeMigrationExecutionReport {
+    pub direction: String,
+    pub status: String,
+    pub migration_id: Option<NodeMigrationIdentity>,
+    pub position_kind: Option<String>,
+    pub position_ordinal: Option<u32>,
+    pub diagnostic_category: Option<String>,
+    pub diagnostic_code: Option<String>,
+}
+
 /// Generated-package-owned, source-free migration catalog.
 #[napi]
 pub struct NodeMigrationCatalog {
@@ -299,7 +310,11 @@ impl NodeMigrationPlan {
     }
 
     #[napi]
-    pub fn execute(&self, database: &NodeRustDatabase, holder: String) -> Result<String> {
+    pub fn execute(
+        &self,
+        database: &NodeRustDatabase,
+        holder: String,
+    ) -> Result<NodeMigrationExecutionReport> {
         let holder = type_bridge_schema_migration::LeaseHolderId::new(holder)
             .map_err(|error| catalog_error(error.code().as_str()))?;
         let (database, runtime) = database.handles();
@@ -313,8 +328,8 @@ impl NodeMigrationPlan {
                         plan,
                     ),
                 )
-                .map(node_apply_outcome)
-                .map(str::to_owned)
+                .map(type_bridge_schema_migration::MigrationExecutionReport::from_apply)
+                .map(node_execution_report)
                 .map_err(|error| catalog_error(error.code().as_str())),
             NodeMigrationPreviewInner::Rollback(plan) => runtime
                 .block_on(
@@ -325,8 +340,8 @@ impl NodeMigrationPlan {
                         plan,
                     ),
                 )
-                .map(node_rollback_outcome)
-                .map(str::to_owned)
+                .map(type_bridge_schema_migration::MigrationExecutionReport::from_rollback)
+                .map(node_execution_report)
                 .map_err(|error| catalog_error(error.code().as_str())),
         }
     }
@@ -476,27 +491,50 @@ fn catalog_error(code: &str) -> Error {
     Error::from_reason(format!("migration catalog rejected [{code}]"))
 }
 
-fn node_apply_outcome(
-    outcome: type_bridge_schema_migration::MigrationExecutionOutcome,
-) -> &'static str {
-    match outcome {
-        type_bridge_schema_migration::MigrationExecutionOutcome::Applied => "applied",
-        type_bridge_schema_migration::MigrationExecutionOutcome::RetrySafe { .. } => "retry_safe",
-        type_bridge_schema_migration::MigrationExecutionOutcome::RequiresExplicitRecovery {
-            ..
-        } => "requires_explicit_recovery",
-    }
-}
-
-fn node_rollback_outcome(
-    outcome: type_bridge_schema_migration::MigrationRollbackOutcome,
-) -> &'static str {
-    match outcome {
-        type_bridge_schema_migration::MigrationRollbackOutcome::RolledBack => "rolled_back",
-        type_bridge_schema_migration::MigrationRollbackOutcome::RetrySafe { .. } => "retry_safe",
-        type_bridge_schema_migration::MigrationRollbackOutcome::RequiresExplicitRecovery {
-            ..
-        } => "requires_explicit_recovery",
+fn node_execution_report(
+    report: type_bridge_schema_migration::MigrationExecutionReport,
+) -> NodeMigrationExecutionReport {
+    use type_bridge_schema_migration::{
+        MigrationExecutionDirection, MigrationExecutionReportPosition, MigrationExecutionStatus,
+    };
+    let direction = match report.direction() {
+        MigrationExecutionDirection::Apply => "apply",
+        MigrationExecutionDirection::Rollback => "rollback",
+    };
+    let status = match report.status() {
+        MigrationExecutionStatus::Applied => "applied",
+        MigrationExecutionStatus::RolledBack => "rolled_back",
+        MigrationExecutionStatus::RetrySafe => "retry_safe",
+        MigrationExecutionStatus::RequiresExplicitRecovery => "requires_explicit_recovery",
+    };
+    let (position_kind, position_ordinal) = match report.position() {
+        None => (None, None),
+        Some(MigrationExecutionReportPosition::TransactionGroup(value)) => (
+            Some("transaction_group".to_owned()),
+            Some(bounded_u32(value)),
+        ),
+        Some(MigrationExecutionReportPosition::BackfillStep(value)) => {
+            (Some("backfill_step".to_owned()), Some(bounded_u32(value)))
+        }
+        Some(MigrationExecutionReportPosition::ManifestCheckpoint) => {
+            (Some("manifest_checkpoint".to_owned()), None)
+        }
+        Some(MigrationExecutionReportPosition::RollbackStep(value)) => {
+            (Some("rollback_step".to_owned()), Some(bounded_u32(value)))
+        }
+    };
+    NodeMigrationExecutionReport {
+        direction: direction.to_owned(),
+        status: status.to_owned(),
+        migration_id: report.migration_id().map(migration_identity),
+        position_kind,
+        position_ordinal,
+        diagnostic_category: report
+            .diagnostic()
+            .map(|value| value.category().as_str().to_owned()),
+        diagnostic_code: report
+            .diagnostic()
+            .map(|value| value.code().as_str().to_owned()),
     }
 }
 

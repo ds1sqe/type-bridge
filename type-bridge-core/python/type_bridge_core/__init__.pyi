@@ -1235,9 +1235,28 @@ class MigrationApprovalBuilder:
 class MigrationPlan:
     @property
     def execution_authorized(self) -> bool: ...
-    def execute(self, database: PyRustDatabase, holder: str) -> Literal[
+    def execute(self, database: PyRustDatabase, holder: str) -> MigrationExecutionReport: ...
+
+@final
+class MigrationExecutionReport:
+    @property
+    def direction(self) -> Literal["apply", "rollback"]: ...
+    @property
+    def status(self) -> Literal[
         "applied", "rolled_back", "retry_safe", "requires_explicit_recovery"
     ]: ...
+    @property
+    def migration_id(self) -> MigrationIdentity | None: ...
+    @property
+    def position_kind(self) -> Literal[
+        "transaction_group", "backfill_step", "manifest_checkpoint", "rollback_step"
+    ] | None: ...
+    @property
+    def position_ordinal(self) -> int | None: ...
+    @property
+    def diagnostic_category(self) -> str | None: ...
+    @property
+    def diagnostic_code(self) -> str | None: ...
 
 @final
 class MigrationPreview:

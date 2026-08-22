@@ -38,8 +38,6 @@ pub use error::{
 pub use hooks::{
     CrudOperation, HookContext, HookError, HookFuture, LifecycleHook, ModelKind, PreHookResult,
 };
-#[cfg(feature = "typedb")]
-pub use migration::MigrationOutcome;
 pub use migration::{
     MigrationApprovalBuilder, MigrationApprovalSet, MigrationCatalog, MigrationHistoryEntry,
     MigrationPlan, MigrationPreview, MigrationPreviewEntry,
@@ -77,4 +75,7 @@ pub use type_bridge_orm::{
 pub use type_bridge_orm::{DirectConnectionPolicy, DirectTls};
 pub use type_bridge_orm_derive::SelectedRow;
 #[cfg(feature = "typedb")]
-pub use type_bridge_schema_migration::{MigrationDriftFinding, MigrationVerifyReport};
+pub use type_bridge_schema_migration::{
+    MigrationDriftFinding, MigrationExecutionDirection, MigrationExecutionReport,
+    MigrationExecutionReportPosition, MigrationExecutionStatus, MigrationVerifyReport,
+};

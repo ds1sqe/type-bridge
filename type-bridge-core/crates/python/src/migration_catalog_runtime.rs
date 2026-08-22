@@ -323,6 +323,49 @@ pub struct PyMigrationPlan {
     plan: PyMigrationPreviewInner,
 }
 
+#[pyclass(name = "MigrationExecutionReport", frozen)]
+pub struct PyMigrationExecutionReport {
+    direction: String,
+    status: String,
+    migration_id: Option<PyMigrationIdentity>,
+    position_kind: Option<String>,
+    position_ordinal: Option<usize>,
+    diagnostic_category: Option<String>,
+    diagnostic_code: Option<String>,
+}
+
+#[pymethods]
+impl PyMigrationExecutionReport {
+    #[getter]
+    fn direction(&self) -> &str {
+        &self.direction
+    }
+    #[getter]
+    fn status(&self) -> &str {
+        &self.status
+    }
+    #[getter]
+    fn migration_id(&self) -> Option<PyMigrationIdentity> {
+        self.migration_id.clone()
+    }
+    #[getter]
+    fn position_kind(&self) -> Option<&str> {
+        self.position_kind.as_deref()
+    }
+    #[getter]
+    fn position_ordinal(&self) -> Option<usize> {
+        self.position_ordinal
+    }
+    #[getter]
+    fn diagnostic_category(&self) -> Option<&str> {
+        self.diagnostic_category.as_deref()
+    }
+    #[getter]
+    fn diagnostic_code(&self) -> Option<&str> {
+        self.diagnostic_code.as_deref()
+    }
+}
+
 #[pymethods]
 impl PyMigrationPlan {
     #[getter]
@@ -338,7 +381,7 @@ impl PyMigrationPlan {
         py: Python<'_>,
         database: &PyRustDatabase,
         holder: String,
-    ) -> PyResult<&'static str> {
+    ) -> PyResult<PyMigrationExecutionReport> {
         let holder = type_bridge_schema_migration::LeaseHolderId::new(holder)
             .map_err(py_catalog_diagnostic)?;
         let (database, runtime) = database.handles();
@@ -353,7 +396,8 @@ impl PyMigrationPlan {
                     plan,
                 ),
             )
-            .map(python_apply_outcome)
+            .map(type_bridge_schema_migration::MigrationExecutionReport::from_apply)
+            .map(python_execution_report)
             .map_err(py_catalog_diagnostic),
             PyMigrationPreviewInner::Rollback(plan) => provider_block_on(
                 py,
@@ -365,7 +409,8 @@ impl PyMigrationPlan {
                     plan,
                 ),
             )
-            .map(python_rollback_outcome)
+            .map(type_bridge_schema_migration::MigrationExecutionReport::from_rollback)
+            .map(python_execution_report)
             .map_err(py_catalog_diagnostic),
         }
     }
@@ -600,27 +645,49 @@ fn py_catalog_code(code: &str, _detail: String) -> PyErr {
     pyo3::exceptions::PyValueError::new_err(format!("migration catalog rejected [{code}]"))
 }
 
-fn python_apply_outcome(
-    outcome: type_bridge_schema_migration::MigrationExecutionOutcome,
-) -> &'static str {
-    match outcome {
-        type_bridge_schema_migration::MigrationExecutionOutcome::Applied => "applied",
-        type_bridge_schema_migration::MigrationExecutionOutcome::RetrySafe { .. } => "retry_safe",
-        type_bridge_schema_migration::MigrationExecutionOutcome::RequiresExplicitRecovery {
-            ..
-        } => "requires_explicit_recovery",
-    }
-}
-
-fn python_rollback_outcome(
-    outcome: type_bridge_schema_migration::MigrationRollbackOutcome,
-) -> &'static str {
-    match outcome {
-        type_bridge_schema_migration::MigrationRollbackOutcome::RolledBack => "rolled_back",
-        type_bridge_schema_migration::MigrationRollbackOutcome::RetrySafe { .. } => "retry_safe",
-        type_bridge_schema_migration::MigrationRollbackOutcome::RequiresExplicitRecovery {
-            ..
-        } => "requires_explicit_recovery",
+fn python_execution_report(
+    report: type_bridge_schema_migration::MigrationExecutionReport,
+) -> PyMigrationExecutionReport {
+    use type_bridge_schema_migration::{
+        MigrationExecutionDirection, MigrationExecutionReportPosition, MigrationExecutionStatus,
+    };
+    let direction = match report.direction() {
+        MigrationExecutionDirection::Apply => "apply",
+        MigrationExecutionDirection::Rollback => "rollback",
+    };
+    let status = match report.status() {
+        MigrationExecutionStatus::Applied => "applied",
+        MigrationExecutionStatus::RolledBack => "rolled_back",
+        MigrationExecutionStatus::RetrySafe => "retry_safe",
+        MigrationExecutionStatus::RequiresExplicitRecovery => "requires_explicit_recovery",
+    };
+    let (position_kind, position_ordinal) = match report.position() {
+        None => (None, None),
+        Some(MigrationExecutionReportPosition::TransactionGroup(value)) => {
+            (Some("transaction_group".to_owned()), Some(value))
+        }
+        Some(MigrationExecutionReportPosition::BackfillStep(value)) => {
+            (Some("backfill_step".to_owned()), Some(value))
+        }
+        Some(MigrationExecutionReportPosition::ManifestCheckpoint) => {
+            (Some("manifest_checkpoint".to_owned()), None)
+        }
+        Some(MigrationExecutionReportPosition::RollbackStep(value)) => {
+            (Some("rollback_step".to_owned()), Some(value))
+        }
+    };
+    PyMigrationExecutionReport {
+        direction: direction.to_owned(),
+        status: status.to_owned(),
+        migration_id: report.migration_id().map(migration_identity),
+        position_kind,
+        position_ordinal,
+        diagnostic_category: report
+            .diagnostic()
+            .map(|value| value.category().as_str().to_owned()),
+        diagnostic_code: report
+            .diagnostic()
+            .map(|value| value.code().as_str().to_owned()),
     }
 }
 
@@ -681,6 +748,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyMigrationApprovalBuilder>()?;
     m.add_class::<PyMigrationApprovalSet>()?;
     m.add_class::<PyMigrationPlan>()?;
+    m.add_class::<PyMigrationExecutionReport>()?;
     m.add_class::<PyMigrationVerificationFinding>()?;
     m.add_class::<PyMigrationVerificationReport>()?;
     Ok(())

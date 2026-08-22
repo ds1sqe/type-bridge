@@ -227,6 +227,181 @@ pub enum MigrationRollbackOutcome {
     },
 }
 
+/// Direction of one bounded public migration execution report.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MigrationExecutionDirection {
+    /// Forward apply execution.
+    Apply,
+    /// Reverse rollback execution.
+    Rollback,
+}
+
+/// Terminal status of one bounded public migration execution report.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MigrationExecutionStatus {
+    /// Forward execution completed.
+    Applied,
+    /// Rollback execution completed.
+    RolledBack,
+    /// The exact position can be retried safely.
+    RetrySafe,
+    /// The exact position requires explicit operator recovery.
+    RequiresExplicitRecovery,
+}
+
+/// Stable position vocabulary shared by forward and rollback reports.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MigrationExecutionReportPosition {
+    /// One forward schema transaction group.
+    TransactionGroup(usize),
+    /// One forward backfill step.
+    BackfillStep(usize),
+    /// The forward manifest checkpoint.
+    ManifestCheckpoint,
+    /// One rollback operation step.
+    RollbackStep(usize),
+}
+
+/// Bounded owned projection of one terminal apply or rollback outcome.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MigrationExecutionReport {
+    direction: MigrationExecutionDirection,
+    status: MigrationExecutionStatus,
+    migration_id: Option<MigrationId>,
+    position: Option<MigrationExecutionReportPosition>,
+    diagnostic: Option<Diagnostic>,
+}
+
+impl MigrationExecutionReport {
+    /// Return the execution direction.
+    pub const fn direction(&self) -> MigrationExecutionDirection {
+        self.direction
+    }
+    /// Return the terminal status.
+    pub const fn status(&self) -> MigrationExecutionStatus {
+        self.status
+    }
+    /// Return the interrupted migration identity, when execution did not complete.
+    pub const fn migration_id(&self) -> Option<&MigrationId> {
+        self.migration_id.as_ref()
+    }
+    /// Return the exact interrupted execution position, when present.
+    pub const fn position(&self) -> Option<MigrationExecutionReportPosition> {
+        self.position
+    }
+    /// Return the canonical privacy-safe diagnostic, when present.
+    pub const fn diagnostic(&self) -> Option<&Diagnostic> {
+        self.diagnostic.as_ref()
+    }
+
+    /// Consume a forward coordinator outcome into its bounded public projection.
+    pub fn from_apply(outcome: MigrationExecutionOutcome) -> Self {
+        match outcome {
+            MigrationExecutionOutcome::Applied => Self {
+                direction: MigrationExecutionDirection::Apply,
+                status: MigrationExecutionStatus::Applied,
+                migration_id: None,
+                position: None,
+                diagnostic: None,
+            },
+            MigrationExecutionOutcome::RetrySafe {
+                migration_id,
+                position,
+                diagnostic,
+            } => Self::apply_failure(
+                MigrationExecutionStatus::RetrySafe,
+                migration_id,
+                position,
+                diagnostic,
+            ),
+            MigrationExecutionOutcome::RequiresExplicitRecovery {
+                migration_id,
+                position,
+                diagnostic,
+            } => Self::apply_failure(
+                MigrationExecutionStatus::RequiresExplicitRecovery,
+                migration_id,
+                position,
+                diagnostic,
+            ),
+        }
+    }
+
+    /// Consume a rollback coordinator outcome into its bounded public projection.
+    pub fn from_rollback(outcome: MigrationRollbackOutcome) -> Self {
+        match outcome {
+            MigrationRollbackOutcome::RolledBack => Self {
+                direction: MigrationExecutionDirection::Rollback,
+                status: MigrationExecutionStatus::RolledBack,
+                migration_id: None,
+                position: None,
+                diagnostic: None,
+            },
+            MigrationRollbackOutcome::RetrySafe {
+                migration_id,
+                step_ordinal,
+                diagnostic,
+            } => Self::rollback_failure(
+                MigrationExecutionStatus::RetrySafe,
+                migration_id,
+                step_ordinal,
+                diagnostic,
+            ),
+            MigrationRollbackOutcome::RequiresExplicitRecovery {
+                migration_id,
+                step_ordinal,
+                diagnostic,
+            } => Self::rollback_failure(
+                MigrationExecutionStatus::RequiresExplicitRecovery,
+                migration_id,
+                step_ordinal,
+                diagnostic,
+            ),
+        }
+    }
+
+    fn apply_failure(
+        status: MigrationExecutionStatus,
+        migration_id: MigrationId,
+        position: MigrationExecutionPosition,
+        diagnostic: Diagnostic,
+    ) -> Self {
+        let position = match position {
+            MigrationExecutionPosition::TransactionGroup(value) => {
+                MigrationExecutionReportPosition::TransactionGroup(value)
+            }
+            MigrationExecutionPosition::BackfillStep(value) => {
+                MigrationExecutionReportPosition::BackfillStep(value)
+            }
+            MigrationExecutionPosition::ManifestCheckpoint => {
+                MigrationExecutionReportPosition::ManifestCheckpoint
+            }
+        };
+        Self {
+            direction: MigrationExecutionDirection::Apply,
+            status,
+            migration_id: Some(migration_id),
+            position: Some(position),
+            diagnostic: Some(diagnostic),
+        }
+    }
+
+    fn rollback_failure(
+        status: MigrationExecutionStatus,
+        migration_id: MigrationId,
+        step_ordinal: usize,
+        diagnostic: Diagnostic,
+    ) -> Self {
+        Self {
+            direction: MigrationExecutionDirection::Rollback,
+            status,
+            migration_id: Some(migration_id),
+            position: Some(MigrationExecutionReportPosition::RollbackStep(step_ordinal)),
+            diagnostic: Some(diagnostic),
+        }
+    }
+}
+
 /// Execute one complete verified plan under a store-backed fenced lease.
 ///
 /// Planning, lowering, assertion validation, and grouping must already be
@@ -2582,5 +2757,33 @@ mod tests {
             diagnostic.details().get("cleanup"),
             Some(&DiagnosticDetailValue::Text(cleanup.to_string()))
         );
+    }
+
+    #[test]
+    fn bounded_execution_report_preserves_recovery_position_and_diagnostic() {
+        let migration_id = MigrationId::new("example", "0001_expand").unwrap();
+        let diagnostic = failure(
+            DiagnosticCategory::Integrity,
+            "coordinator_test_unknown_commit",
+            "unknown commit",
+        );
+        let report = MigrationExecutionReport::from_apply(
+            MigrationExecutionOutcome::RequiresExplicitRecovery {
+                migration_id: migration_id.clone(),
+                position: MigrationExecutionPosition::BackfillStep(3),
+                diagnostic: diagnostic.clone(),
+            },
+        );
+        assert_eq!(report.direction(), MigrationExecutionDirection::Apply);
+        assert_eq!(
+            report.status(),
+            MigrationExecutionStatus::RequiresExplicitRecovery
+        );
+        assert_eq!(report.migration_id(), Some(&migration_id));
+        assert_eq!(
+            report.position(),
+            Some(MigrationExecutionReportPosition::BackfillStep(3))
+        );
+        assert_eq!(report.diagnostic(), Some(&diagnostic));
     }
 }

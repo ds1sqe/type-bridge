@@ -13,8 +13,8 @@ use type_bridge_contract::migration::MigrationId;
 use type_bridge_schema::{ManagedDeltaContext, SafetyClass, VerifiedSchemaAuthority};
 use type_bridge_schema_migration::{
     LeaseHolderId, MigrationApplyApproval, MigrationApplyPlanError, MigrationApplyTarget,
-    MigrationCatalog, MigrationExecutionOutcome, MigrationRollbackOutcome, MigrationSafetyPolicy,
-    SafetyPolicyDecision, VerifiedMigrationApplyPlan, VerifiedMigrationRollbackPlan,
+    MigrationCatalog, MigrationExecutionReport, MigrationSafetyPolicy, SafetyPolicyDecision,
+    VerifiedMigrationApplyPlan, VerifiedMigrationRollbackPlan,
     migration_runtime_capability_vocabulary, require_authorized_apply_plan,
     require_authorized_rollback_plan,
 };
@@ -399,7 +399,8 @@ impl MigrationPlanState {
                         plan,
                     ),
                 )
-                .map(MigrationPlanExecutionState::Apply),
+                .map(MigrationExecutionReport::from_apply)
+                .map(|report| MigrationPlanExecutionState { report }),
             MigrationPlanKind::Rollback(plan) => database
                 .block_on(
                     type_bridge_schema_migration_typedb::execute_catalog_rollback_plan(
@@ -409,7 +410,8 @@ impl MigrationPlanState {
                         plan,
                     ),
                 )
-                .map(MigrationPlanExecutionState::Rollback),
+                .map(MigrationExecutionReport::from_rollback)
+                .map(|report| MigrationPlanExecutionState { report }),
         }
     }
 
@@ -422,10 +424,15 @@ impl MigrationPlanState {
 }
 
 /// Owned terminal result prepared for the additive ABI 1.5 outcome handles.
-#[derive(Debug)]
-pub(crate) enum MigrationPlanExecutionState {
-    Apply(MigrationExecutionOutcome),
-    Rollback(MigrationRollbackOutcome),
+#[derive(Clone, Debug)]
+pub(crate) struct MigrationPlanExecutionState {
+    report: MigrationExecutionReport,
+}
+
+impl MigrationPlanExecutionState {
+    pub(crate) const fn report(&self) -> &MigrationExecutionReport {
+        &self.report
+    }
 }
 
 /// Mutable, single-owner approval selection bound to one exact preview.

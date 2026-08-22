@@ -193,7 +193,7 @@ interface NativeMigrationApprovalSet {
 }
 interface NativeMigrationPlan {
     readonly executionAuthorized: boolean;
-    execute(database: NativeRustDatabase, holder: string): MigrationExecutionStatus;
+    execute(database: NativeRustDatabase, holder: string): MigrationExecutionReport;
 }
 interface NativeMigrationPreview {
     readonly direction: "apply" | "rollback";
@@ -214,6 +214,15 @@ interface NativeMigrationCatalog {
     previewRollback(applied: MigrationIdentity[], removals: MigrationIdentity[]): NativeMigrationPreview;
 }
 export type MigrationExecutionStatus = "applied" | "rolled_back" | "retry_safe" | "requires_explicit_recovery";
+export interface MigrationExecutionReport {
+    readonly direction: "apply" | "rollback";
+    readonly status: MigrationExecutionStatus;
+    readonly migrationId?: MigrationIdentity | null;
+    readonly positionKind?: "transaction_group" | "backfill_step" | "manifest_checkpoint" | "rollback_step" | null;
+    readonly positionOrdinal?: number | null;
+    readonly diagnosticCategory?: string | null;
+    readonly diagnosticCode?: string | null;
+}
 export interface NativeRustTransactionContext {
     queryJson(query: string): string;
     commit(): void;
@@ -275,7 +284,7 @@ export declare class MigrationPlan {
     /** @internal */
     constructor(native: NativeMigrationPlan);
     get executionAuthorized(): boolean;
-    execute(database: RustDatabase, holder: string): MigrationExecutionStatus;
+    execute(database: RustDatabase, holder: string): MigrationExecutionReport;
 }
 export declare class MigrationPreview {
     #private;
