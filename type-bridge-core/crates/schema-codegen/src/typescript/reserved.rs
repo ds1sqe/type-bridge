@@ -1,6 +1,7 @@
 /// Public names exported by the fixed TypeScript runtime resource.
 pub(super) const PUBLIC_RUNTIME_NAMES: &[&str] = &[
     "Cardinality",
+    "CanonicalCodecOptions",
     "CompleteFacet",
     "FieldToken",
     "FunctionToken",
@@ -49,6 +50,10 @@ pub(super) const PUBLIC_RUNTIME_NAMES: &[&str] = &[
     "definePlaysToken",
     "defineRoleToken",
     "defineStruct",
+    "decodeArchive",
+    "decodeArchiveControlled",
+    "encodeArchive",
+    "encodeArchiveControlled",
     "__installOrderedRuntimeProjectionPackage",
     "__installRuntimeProjectionPackage",
 ];

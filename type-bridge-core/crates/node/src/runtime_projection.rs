@@ -7,6 +7,7 @@ use std::ptr;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
 
 use napi::bindgen_prelude::{
     Array, BigInt, Buffer, Env, External, FromNapiRef, FromNapiValue, Function, FunctionRef,
@@ -19,9 +20,13 @@ use serde_json::Value;
 use type_bridge_contract::codec::to_canonical_json;
 use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind, is_canonical_thing_iid};
 use type_bridge_contract::limits::{
-    MAX_CANONICAL_BYTES, MAX_CANONICAL_COLLECTION_LEN, MAX_CANONICAL_STRING_BYTES,
+    CodecLimits, MAX_CANONICAL_BYTES, MAX_CANONICAL_COLLECTION_LEN, MAX_CANONICAL_DEPTH,
+    MAX_CANONICAL_STRING_BYTES,
 };
 use type_bridge_contract::managed_scope::ManagedScopeId;
+use type_bridge_contract::projected_record::{
+    MAX_PROJECTED_ARCHIVE_BYTES, MAX_PROJECTED_ARCHIVE_RECORDS, MAX_PROJECTED_DECODED_WEIGHT,
+};
 use type_bridge_contract::projection::{
     BindingTarget, ProjectedContainer, ProjectedModelForm, ProjectedModelUse,
     ProjectedMultiplicity, ProjectedTokenIdentity, ProjectionConfig, RuntimeProjection,
@@ -65,6 +70,96 @@ use crate::match_runtime::{
 use crate::{
     NodeMatchSessionHandle, NodeRustDatabase, NodeRustTransactionContext, NodeValidatedThingHandle,
 };
+
+struct NodeCanonicalControl {
+    cancellation: AnswerCancellation,
+    deadline: Option<Instant>,
+    max_input_bytes: usize,
+    max_output_bytes: usize,
+    max_depth: usize,
+    max_records: usize,
+    max_members: usize,
+}
+
+impl NodeCanonicalControl {
+    #[allow(clippy::too_many_arguments)]
+    fn capture(
+        cancellation: Option<&NodeQueryCancellation>,
+        timeout_milliseconds: Option<u32>,
+        max_input_bytes: Option<u32>,
+        max_output_bytes: Option<u32>,
+        max_depth: Option<u32>,
+        max_records: Option<u32>,
+        max_members: Option<u32>,
+    ) -> napi::Result<Self> {
+        let deadline = timeout_milliseconds
+            .map(|milliseconds| {
+                Instant::now()
+                    .checked_add(Duration::from_millis(u64::from(milliseconds)))
+                    .ok_or_else(|| {
+                        napi_sdk_diagnostic(
+                            SdkExecutionDiagnostic::projected_codec_deadline_exceeded(),
+                        )
+                    })
+            })
+            .transpose()?;
+        Ok(Self {
+            cancellation: cancellation.map_or_else(AnswerCancellation::default, |v| v.inner()),
+            deadline,
+            max_input_bytes: usize::try_from(max_input_bytes.unwrap_or(u32::MAX))
+                .unwrap_or(usize::MAX)
+                .min(MAX_PROJECTED_ARCHIVE_BYTES),
+            max_output_bytes: usize::try_from(max_output_bytes.unwrap_or(u32::MAX))
+                .unwrap_or(usize::MAX)
+                .min(MAX_PROJECTED_ARCHIVE_BYTES),
+            max_depth: usize::try_from(max_depth.unwrap_or(u32::MAX))
+                .unwrap_or(usize::MAX)
+                .min(MAX_CANONICAL_DEPTH),
+            max_records: usize::try_from(max_records.unwrap_or(u32::MAX))
+                .unwrap_or(usize::MAX)
+                .min(MAX_PROJECTED_ARCHIVE_RECORDS),
+            max_members: usize::try_from(max_members.unwrap_or(u32::MAX))
+                .unwrap_or(usize::MAX)
+                .min(MAX_PROJECTED_DECODED_WEIGHT)
+                .min(MAX_CANONICAL_COLLECTION_LEN),
+        })
+    }
+
+    fn check(&self) -> napi::Result<()> {
+        if self.cancellation.is_cancelled() {
+            Err(napi_sdk_diagnostic(
+                SdkExecutionDiagnostic::projected_codec_cancelled(),
+            ))
+        } else if self
+            .deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            Err(napi_sdk_diagnostic(
+                SdkExecutionDiagnostic::projected_codec_deadline_exceeded(),
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn input_limits(&self) -> CodecLimits {
+        CodecLimits {
+            max_bytes: self.max_input_bytes,
+            max_depth: self.max_depth,
+            max_collection_len: self.max_members,
+            max_string_bytes: MAX_CANONICAL_STRING_BYTES.min(self.max_input_bytes),
+        }
+    }
+
+    fn output_limits(&self) -> CodecLimits {
+        CodecLimits {
+            max_bytes: self.max_output_bytes,
+            max_depth: self.max_depth,
+            max_collection_len: self.max_members,
+            max_string_bytes: MAX_CANONICAL_STRING_BYTES.min(self.max_output_bytes),
+        }
+    }
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -2260,6 +2355,63 @@ impl NodeRuntimeProjection {
             .map_err(diagnostic_error)
     }
 
+    /// Compose records with cancellation, deadline, and tighten-only limits.
+    #[napi(js_name = "encodeArchiveControlled")]
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_archive_controlled(
+        &self,
+        records: Vec<Buffer>,
+        cancellation: Option<&NodeQueryCancellation>,
+        timeout_milliseconds: Option<u32>,
+        max_input_bytes: Option<u32>,
+        max_output_bytes: Option<u32>,
+        max_depth: Option<u32>,
+        max_records: Option<u32>,
+        max_members: Option<u32>,
+    ) -> napi::Result<Buffer> {
+        let control = NodeCanonicalControl::capture(
+            cancellation,
+            timeout_milliseconds,
+            max_input_bytes,
+            max_output_bytes,
+            max_depth,
+            max_records,
+            max_members,
+        )?;
+        control.check()?;
+        if records.len() > control.max_records {
+            return Err(napi_sdk_diagnostic(
+                SdkExecutionDiagnostic::projected_codec_member_limit(),
+            ));
+        }
+        let mut verified = Vec::with_capacity(records.len());
+        for bytes in records {
+            control.check()?;
+            let record =
+                type_bridge_contract::projected_record::ProjectedRecord::decode_with_limits(
+                    &bytes,
+                    control.input_limits(),
+                )
+                .map_err(|error| node_canonical_limit_error(error, true))?;
+            let _ = type_bridge_orm::materialize_record(&self.package.projection, &record)
+                .map_err(|error| invalid_error(error.to_string()))?;
+            verified.push(record);
+        }
+        let archive = type_bridge_contract::projected_record::ProjectedArchive::try_new(verified)
+            .map_err(diagnostic_error)?;
+        if archive.decoded_weight() > control.max_members {
+            return Err(napi_sdk_diagnostic(
+                SdkExecutionDiagnostic::projected_codec_member_limit(),
+            ));
+        }
+        control.check()?;
+        let bytes = archive
+            .encode_with_limits(control.output_limits())
+            .map_err(|error| node_canonical_limit_error(error, false))?;
+        control.check()?;
+        Ok(Buffer::from(bytes))
+    }
+
     /// Decode one complete archive into canonical individual exact-package records.
     #[napi(js_name = "decodeArchive")]
     pub fn decode_archive(&self, bytes: Buffer) -> napi::Result<Vec<Buffer>> {
@@ -2274,6 +2426,66 @@ impl NodeRuntimeProjection {
                 record.encode().map(Buffer::from).map_err(diagnostic_error)
             })
             .collect()
+    }
+
+    /// Decode an archive with cancellation, deadline, and tighten-only limits.
+    #[napi(js_name = "decodeArchiveControlled")]
+    #[allow(clippy::too_many_arguments)]
+    pub fn decode_archive_controlled(
+        &self,
+        bytes: Buffer,
+        cancellation: Option<&NodeQueryCancellation>,
+        timeout_milliseconds: Option<u32>,
+        max_input_bytes: Option<u32>,
+        max_output_bytes: Option<u32>,
+        max_depth: Option<u32>,
+        max_records: Option<u32>,
+        max_members: Option<u32>,
+    ) -> napi::Result<Vec<Buffer>> {
+        let control = NodeCanonicalControl::capture(
+            cancellation,
+            timeout_milliseconds,
+            max_input_bytes,
+            max_output_bytes,
+            max_depth,
+            max_records,
+            max_members,
+        )?;
+        control.check()?;
+        let archive = type_bridge_contract::projected_record::ProjectedArchive::decode_with_limits(
+            &bytes,
+            control.input_limits(),
+        )
+        .map_err(|error| node_canonical_limit_error(error, true))?;
+        if archive.records().len() > control.max_records
+            || archive.decoded_weight() > control.max_members
+        {
+            return Err(napi_sdk_diagnostic(
+                SdkExecutionDiagnostic::projected_codec_member_limit(),
+            ));
+        }
+        let mut output_bytes = 0_usize;
+        let records = archive
+            .records()
+            .iter()
+            .map(|record| {
+                control.check()?;
+                let _ = type_bridge_orm::materialize_record(&self.package.projection, record)
+                    .map_err(|error| invalid_error(error.to_string()))?;
+                let bytes = record
+                    .encode_with_limits(control.output_limits())
+                    .map_err(|error| node_canonical_limit_error(error, false))?;
+                output_bytes = output_bytes.saturating_add(bytes.len());
+                if output_bytes > control.max_output_bytes {
+                    return Err(napi_sdk_diagnostic(
+                        SdkExecutionDiagnostic::projected_codec_output_limit(),
+                    ));
+                }
+                Ok(Buffer::from(bytes))
+            })
+            .collect::<napi::Result<Vec<_>>>()?;
+        control.check()?;
+        Ok(records)
     }
 
     /// Validate one complete generated provider result through the common Rust contract.
@@ -6180,6 +6392,24 @@ fn diagnostic_error(error: type_bridge_contract::diagnostic::Diagnostic) -> Erro
     invalid_error(error.to_string())
 }
 
+fn node_canonical_limit_error(
+    error: type_bridge_contract::diagnostic::Diagnostic,
+    input: bool,
+) -> Error {
+    let diagnostic = match error.code().as_str() {
+        "canonical_json_too_deep" => SdkExecutionDiagnostic::projected_codec_depth_limit(),
+        "canonical_collection_too_large" => SdkExecutionDiagnostic::projected_codec_member_limit(),
+        "canonical_json_too_large" | "canonical_string_too_large" if input => {
+            SdkExecutionDiagnostic::projected_codec_input_limit()
+        }
+        "canonical_json_too_large" | "canonical_string_too_large" => {
+            SdkExecutionDiagnostic::projected_codec_output_limit()
+        }
+        _ => return diagnostic_error(error),
+    };
+    napi_sdk_diagnostic(diagnostic)
+}
+
 fn orm_error(error: type_bridge_orm::OrmError) -> Error {
     runtime_error(error.to_string())
 }
@@ -7758,6 +7988,89 @@ entities:
                 .collect::<Vec<_>>(),
             expected_records
         );
+
+        let diagnostic_code = |error: napi::Error| {
+            serde_json::from_str::<Value>(&error.reason).unwrap()["code"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        };
+        let records = || expected_records.iter().cloned().map(Buffer::from).collect();
+        let archive = runtime.encode_archive(records()).unwrap();
+
+        let cancelled = NodeQueryCancellation::new();
+        cancelled.cancel();
+        let error = runtime
+            .decode_archive_controlled(
+                Buffer::from(archive.to_vec()),
+                Some(&cancelled),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .err()
+            .expect("cancelled decode is rejected");
+        assert_eq!(diagnostic_code(error), "projected_codec_cancelled");
+
+        let error = runtime
+            .decode_archive_controlled(
+                Buffer::from(archive.to_vec()),
+                None,
+                Some(0),
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .err()
+            .expect("expired decode is rejected");
+        assert_eq!(diagnostic_code(error), "projected_codec_deadline_exceeded");
+
+        let error = runtime
+            .decode_archive_controlled(
+                Buffer::from(archive.to_vec()),
+                None,
+                None,
+                Some(1),
+                None,
+                None,
+                None,
+                None,
+            )
+            .err()
+            .expect("oversized input is rejected");
+        assert_eq!(diagnostic_code(error), "projected_codec_input_limit");
+
+        let error = runtime
+            .encode_archive_controlled(records(), None, None, None, Some(1), None, None, None)
+            .err()
+            .expect("oversized output is rejected");
+        assert_eq!(diagnostic_code(error), "projected_codec_output_limit");
+
+        let error = runtime
+            .encode_archive_controlled(records(), None, None, None, None, None, Some(1), None)
+            .err()
+            .expect("excess records are rejected");
+        assert_eq!(diagnostic_code(error), "projected_codec_member_limit");
+
+        let error = runtime
+            .decode_archive_controlled(
+                Buffer::from(archive.to_vec()),
+                None,
+                None,
+                None,
+                None,
+                Some(1),
+                None,
+                None,
+            )
+            .err()
+            .expect("excess depth is rejected");
+        assert_eq!(diagnostic_code(error), "projected_codec_depth_limit");
     }
 
     #[test]

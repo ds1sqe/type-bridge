@@ -201,11 +201,23 @@ interface NativeProjectionHandle {
     decodeStructJson(typeKey: string, bytes: Uint8Array): string;
     encodeArchive(records: readonly Uint8Array[]): Uint8Array;
     decodeArchive(bytes: Uint8Array): Uint8Array[];
+    encodeArchiveControlled(records: readonly Uint8Array[], cancellation?: NativeQueryCancellation, timeoutMilliseconds?: number, maxInputBytes?: number, maxOutputBytes?: number, maxDepth?: number, maxRecords?: number, maxMembers?: number): Uint8Array;
+    decodeArchiveControlled(bytes: Uint8Array, cancellation?: NativeQueryCancellation, timeoutMilliseconds?: number, maxInputBytes?: number, maxOutputBytes?: number, maxDepth?: number, maxRecords?: number, maxMembers?: number): Uint8Array[];
     validateThingJson(typeKey: string, valueJson: string): void;
     rejectGeneratedTokenPackageMismatch(pathJson: string): void;
     revalidateMatchDiagnostic(diagnostic: string): string;
     materializeMatchThingJson(thing: RuntimeProjectionMatchThing): string;
     materializeMatchThingProjected(thing: RuntimeProjectionMatchThing): NativeProjectedValueEnvelope;
+}
+/** Tighten-only controls for canonical record/archive work. */
+export interface CanonicalCodecOptions {
+    readonly cancellation?: QueryCancellation;
+    readonly timeoutMilliseconds?: number;
+    readonly maxInputBytes?: number;
+    readonly maxOutputBytes?: number;
+    readonly maxDepth?: number;
+    readonly maxRecords?: number;
+    readonly maxMembers?: number;
 }
 /** A verified native projection scoped to one generated package instance. */
 export declare class InstalledRuntimeProjection {
@@ -262,6 +274,10 @@ export declare class InstalledRuntimeProjection {
     encodeArchive(records: readonly Uint8Array[]): Uint8Array;
     /** @internal Split and verify one canonical archive. */
     decodeArchive(bytes: Uint8Array): readonly Uint8Array[];
+    /** @internal Compose records with cancellation, deadline, and resource limits. */
+    encodeArchiveControlled(records: readonly Uint8Array[], options?: CanonicalCodecOptions): Uint8Array;
+    /** @internal Split records with cancellation, deadline, and resource limits. */
+    decodeArchiveControlled(bytes: Uint8Array, options?: CanonicalCodecOptions): readonly Uint8Array[];
     /** @internal Validate one complete generated provider result. */
     validateThingJson(typeKey: string, valueJson: string): void;
     /** @internal Surface one exact foreign generated-member package boundary. */

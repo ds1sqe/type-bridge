@@ -2,6 +2,7 @@ import {
   installGeneratedSchemaAuthority,
   installRuntimeProjection,
   type InstalledRuntimeProjection,
+  type CanonicalCodecOptions,
   type NativeProjectedManager,
   type RuntimeProjectionConnection,
   type RuntimeProjectionMatchBinding,
@@ -1943,6 +1944,24 @@ export function encodeArchive(records: readonly Uint8Array[]): Uint8Array {
 export function decodeArchive(bytes: Uint8Array): readonly Uint8Array[] {
   return requireProjection().decodeArchive(bytes);
 }
+
+/** Compose records with cancellation, deadline, and tighten-only limits. */
+export function encodeArchiveControlled(
+  records: readonly Uint8Array[],
+  options: CanonicalCodecOptions = {},
+): Uint8Array {
+  return requireProjection().encodeArchiveControlled(records, options);
+}
+
+/** Verify and split an archive with cancellation, deadline, and limits. */
+export function decodeArchiveControlled(
+  bytes: Uint8Array,
+  options: CanonicalCodecOptions = {},
+): readonly Uint8Array[] {
+  return requireProjection().decodeArchiveControlled(bytes, options);
+}
+
+export type { CanonicalCodecOptions };
 
 export type DirectTlsMode = "disabled" | "native_roots" | "custom_root";
 

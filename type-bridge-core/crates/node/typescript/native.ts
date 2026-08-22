@@ -489,6 +489,26 @@ interface NativeRuntimeProjectionHandle {
   decodeStructJson(typeKey: string, bytes: Uint8Array): string;
   encodeArchive(records: readonly Uint8Array[]): Uint8Array;
   decodeArchive(bytes: Uint8Array): Uint8Array[];
+  encodeArchiveControlled(
+    records: readonly Uint8Array[],
+    cancellation?: NativeQueryCancellation,
+    timeoutMilliseconds?: number,
+    maxInputBytes?: number,
+    maxOutputBytes?: number,
+    maxDepth?: number,
+    maxRecords?: number,
+    maxMembers?: number,
+  ): Uint8Array;
+  decodeArchiveControlled(
+    bytes: Uint8Array,
+    cancellation?: NativeQueryCancellation,
+    timeoutMilliseconds?: number,
+    maxInputBytes?: number,
+    maxOutputBytes?: number,
+    maxDepth?: number,
+    maxRecords?: number,
+    maxMembers?: number,
+  ): Uint8Array[];
   validateThingJson(typeKey: string, valueJson: string): void;
   rejectGeneratedTokenPackageMismatch(pathJson: string): void;
   revalidateMatchDiagnostic(diagnostic: string): string;
