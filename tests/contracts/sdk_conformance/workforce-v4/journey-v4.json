@@ -1,0 +1,22 @@
+{
+  "format": "typebridge.workforce-journey/v4",
+  "fixture_id": "workforce-v4",
+  "version": 4,
+  "semantic_profile": "typedb-3.12.1/v1",
+  "live_server_version": "3.12.3",
+  "expected_observation_refs": [
+    "bound_database_administration",
+    "rollback_reapply_recovery",
+    "binding_neutral_backfill",
+    "migration_runtime_facade",
+    "administration_migration_cancellation",
+    "administration_migration_resource_limits",
+    "administration_migration_structured_diagnostic",
+    "administration_migration_resource_lifecycle"
+  ],
+  "cleanup_invariant": {
+    "managed_database_absent": true,
+    "journal_database_absent": true,
+    "temporary_evidence_absent": true
+  }
+}

@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://type-bridge.dev/contracts/sdk-conformance/workforce-report-v4.schema.json",
+  "title": "TypeBridge workforce conformance report v4",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "binding", "manifest", "catalog", "journey", "server_version", "results", "cleanup"],
+  "properties": {
+    "format": {"const": "typebridge.sdk-conformance-report/v4"},
+    "binding": {"enum": ["python", "node", "rust", "c"]},
+    "manifest": {"$ref": "#/$defs/sourceIdentity"},
+    "catalog": {"$ref": "#/$defs/sourceIdentity"},
+    "journey": {"$ref": "#/$defs/sourceIdentity"},
+    "server_version": {"const": "3.12.3"},
+    "results": {
+      "type": "array",
+      "minItems": 8,
+      "maxItems": 8,
+      "items": {"$ref": "#/$defs/result"}
+    },
+    "cleanup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["managed_database_absent", "journal_database_absent", "temporary_evidence_absent"],
+      "properties": {
+        "managed_database_absent": {"const": true},
+        "journal_database_absent": {"const": true},
+        "temporary_evidence_absent": {"const": true}
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "sourceIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["case_id", "capability_id", "proof_kind", "outcome", "observation"],
+      "properties": {
+        "case_id": {"type": "string", "pattern": "^workforce\\.[a-z0-9.-]+$"},
+        "capability_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9.-]+$"},
+        "proof_kind": {"enum": ["direct_runtime", "diagnostic", "lifecycle"]},
+        "outcome": {"const": "passed"},
+        "observation": {"type": "object"}
+      }
+    }
+  }
+}
