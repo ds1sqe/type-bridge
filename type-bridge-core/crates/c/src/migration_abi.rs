@@ -14,7 +14,7 @@ use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory};
 use crate::abi::{
     TypeBridgeByteView, TypeBridgeDiagnostics, TypeBridgeSchemaPackage, TypeBridgeStatus, guarded,
 };
-use crate::allocation::{AllocationSite, try_box};
+use crate::allocation::{AllocationSite, ReservedBox, try_box};
 use crate::diagnostic::diagnostics_handle;
 use crate::generated_preflight::direct_output_preflight;
 use crate::migration_runtime::{
@@ -156,13 +156,35 @@ fn return_failure(
     out_diagnostics: *mut *mut TypeBridgeDiagnostics,
 ) -> TypeBridgeStatus {
     let status = failure_status(&diagnostic);
-    // SAFETY: every caller initializes and retains this writable output slot.
-    unsafe {
-        out_diagnostics.write_unaligned(Box::into_raw(Box::new(diagnostics_handle(vec![
-            diagnostic,
-        ]))))
-    };
-    status
+    match unsafe { publish_diagnostics(vec![diagnostic], out_diagnostics) } {
+        Ok(()) => status,
+        Err(status) => status,
+    }
+}
+
+unsafe fn publish_diagnostics(
+    diagnostics: Vec<Diagnostic>,
+    out_diagnostics: *mut *mut TypeBridgeDiagnostics,
+) -> Result<(), TypeBridgeStatus> {
+    let diagnostics = try_box(
+        AllocationSite::MigrationDiagnosticsHandle,
+        diagnostics_handle(diagnostics),
+    )
+    .map_err(|_| TypeBridgeStatus::ResourceLimit)?;
+    // SAFETY: each caller initializes and retains its preflighted output slot.
+    unsafe { out_diagnostics.write_unaligned(Box::into_raw(diagnostics)) };
+    Ok(())
+}
+
+unsafe fn publish_handle<T>(site: AllocationSite, value: T, out: *mut *mut T) -> TypeBridgeStatus {
+    match try_box(site, value) {
+        Ok(value) => {
+            // SAFETY: each caller initializes and retains its preflighted output slot.
+            unsafe { out.write_unaligned(Box::into_raw(value)) };
+            TypeBridgeStatus::Ok
+        }
+        Err(_) => TypeBridgeStatus::ResourceLimit,
+    }
 }
 
 unsafe fn preflight_one_output<T, Input>(
@@ -237,15 +259,13 @@ pub unsafe extern "C" fn type_bridge_database_administration_open(
             return TypeBridgeStatus::InvalidArgument;
         };
         match DatabaseAdministrationState::open(database) {
-            Ok(state) => {
-                // SAFETY: the initialized output slot remains caller-owned.
-                unsafe {
-                    out_administration.write_unaligned(Box::into_raw(Box::new(
-                        TypeBridgeDatabaseAdministration { state },
-                    )))
-                };
-                TypeBridgeStatus::Ok
-            }
+            Ok(state) => unsafe {
+                publish_handle(
+                    AllocationSite::MigrationAdministrationHandle,
+                    TypeBridgeDatabaseAdministration { state },
+                    out_administration,
+                )
+            },
             Err(error) => return_failure(error, out_diagnostics),
         }
     })
@@ -452,14 +472,13 @@ pub unsafe extern "C" fn type_bridge_database_administration_plan_delete(
             return TypeBridgeStatus::InvalidArgument;
         };
         match administration.state.plan_delete_blocking() {
-            Ok(state) => {
-                unsafe {
-                    out_plan.write_unaligned(Box::into_raw(Box::new(
-                        TypeBridgeDatabaseDeletionPlan { state },
-                    )))
-                };
-                TypeBridgeStatus::Ok
-            }
+            Ok(state) => unsafe {
+                publish_handle(
+                    AllocationSite::MigrationDeletionPlanHandle,
+                    TypeBridgeDatabaseDeletionPlan { state },
+                    out_plan,
+                )
+            },
             Err(error) => return_failure(error, out_diagnostics),
         }
     })
@@ -491,14 +510,13 @@ pub unsafe extern "C" fn type_bridge_database_administration_plan_delete_with_op
             .state
             .plan_delete_controlled_blocking(&control)
         {
-            Ok(state) => {
-                unsafe {
-                    out_plan.write_unaligned(Box::into_raw(Box::new(
-                        TypeBridgeDatabaseDeletionPlan { state },
-                    )))
-                };
-                TypeBridgeStatus::Ok
-            }
+            Ok(state) => unsafe {
+                publish_handle(
+                    AllocationSite::MigrationDeletionPlanHandle,
+                    TypeBridgeDatabaseDeletionPlan { state },
+                    out_plan,
+                )
+            },
             Err(error) => return_failure(error, out_diagnostics),
         }
     })
@@ -699,22 +717,20 @@ pub unsafe extern "C" fn type_bridge_migration_catalog_open(
         } {
             Ok(value) => value,
             Err((status, diagnostics)) => {
-                unsafe {
-                    out_diagnostics
-                        .write_unaligned(Box::into_raw(Box::new(diagnostics_handle(diagnostics))))
+                return match unsafe { publish_diagnostics(diagnostics, out_diagnostics) } {
+                    Ok(()) => status,
+                    Err(status) => status,
                 };
-                return status;
             }
         };
         match MigrationCatalogState::open(&package.state()._authority, &bytes) {
-            Ok(state) => {
-                unsafe {
-                    out_catalog.write_unaligned(Box::into_raw(Box::new(
-                        TypeBridgeMigrationCatalog { state },
-                    )))
-                };
-                TypeBridgeStatus::Ok
-            }
+            Ok(state) => unsafe {
+                publish_handle(
+                    AllocationSite::MigrationCatalogHandle,
+                    TypeBridgeMigrationCatalog { state },
+                    out_catalog,
+                )
+            },
             Err(error) => return_failure(error, out_diagnostics),
         }
     })
@@ -766,11 +782,12 @@ pub unsafe extern "C" fn type_bridge_migration_catalog_entry_at(
             return TypeBridgeStatus::InvalidArgument;
         };
         unsafe {
-            out_entry.write_unaligned(Box::into_raw(Box::new(TypeBridgeMigrationHistoryEntry {
-                state,
-            })))
-        };
-        TypeBridgeStatus::Ok
+            publish_handle(
+                AllocationSite::MigrationSnapshotHandle,
+                TypeBridgeMigrationHistoryEntry { state },
+                out_entry,
+            )
+        }
     })
 }
 
@@ -799,11 +816,12 @@ pub unsafe extern "C" fn type_bridge_migration_catalog_head_at(
             return TypeBridgeStatus::InvalidArgument;
         };
         unsafe {
-            out_identity.write_unaligned(Box::into_raw(Box::new(TypeBridgeMigrationIdentity {
-                state,
-            })))
-        };
-        TypeBridgeStatus::Ok
+            publish_handle(
+                AllocationSite::MigrationSnapshotHandle,
+                TypeBridgeMigrationIdentity { state },
+                out_identity,
+            )
+        }
     })
 }
 
@@ -865,11 +883,12 @@ pub unsafe extern "C" fn type_bridge_migration_history_entry_parent_at(
             return TypeBridgeStatus::InvalidArgument;
         };
         unsafe {
-            out_identity.write_unaligned(Box::into_raw(Box::new(TypeBridgeMigrationIdentity {
-                state,
-            })))
-        };
-        TypeBridgeStatus::Ok
+            publish_handle(
+                AllocationSite::MigrationSnapshotHandle,
+                TypeBridgeMigrationIdentity { state },
+                out_identity,
+            )
+        }
     })
 }
 
@@ -994,11 +1013,12 @@ unsafe fn owned_identity<Input>(
         unsafe { out.write_unaligned(ptr::null_mut()) };
         let state = read(unsafe { &*input });
         unsafe {
-            out.write_unaligned(Box::into_raw(Box::new(TypeBridgeMigrationIdentity {
-                state,
-            })))
-        };
-        TypeBridgeStatus::Ok
+            publish_handle(
+                AllocationSite::MigrationSnapshotHandle,
+                TypeBridgeMigrationIdentity { state },
+                out,
+            )
+        }
     })
 }
 
@@ -1057,13 +1077,13 @@ pub unsafe extern "C" fn type_bridge_migration_catalog_preview_apply(
             return TypeBridgeStatus::InvalidArgument;
         };
         match catalog.state.preview_apply(&applied, targets.as_deref()) {
-            Ok(state) => {
-                unsafe {
-                    out_plan
-                        .write_unaligned(Box::into_raw(Box::new(TypeBridgeMigrationPlan { state })))
-                };
-                TypeBridgeStatus::Ok
-            }
+            Ok(state) => unsafe {
+                publish_handle(
+                    AllocationSite::MigrationPlanHandle,
+                    TypeBridgeMigrationPlan { state },
+                    out_plan,
+                )
+            },
             Err(error) => return_failure(error, out_diagnostics),
         }
     })
@@ -1097,13 +1117,13 @@ pub unsafe extern "C" fn type_bridge_migration_catalog_preview_rollback(
             Err(status) => return status,
         };
         match catalog.state.preview_rollback(&applied, &removals) {
-            Ok(state) => {
-                unsafe {
-                    out_plan
-                        .write_unaligned(Box::into_raw(Box::new(TypeBridgeMigrationPlan { state })))
-                };
-                TypeBridgeStatus::Ok
-            }
+            Ok(state) => unsafe {
+                publish_handle(
+                    AllocationSite::MigrationPlanHandle,
+                    TypeBridgeMigrationPlan { state },
+                    out_plan,
+                )
+            },
             Err(error) => return_failure(error, out_diagnostics),
         }
     })
@@ -1161,11 +1181,12 @@ pub unsafe extern "C" fn type_bridge_migration_plan_entry_at(
             return TypeBridgeStatus::InvalidArgument;
         };
         unsafe {
-            out_entry.write_unaligned(Box::into_raw(Box::new(TypeBridgeMigrationPlanEntry {
-                state,
-            })))
-        };
-        TypeBridgeStatus::Ok
+            publish_handle(
+                AllocationSite::MigrationSnapshotHandle,
+                TypeBridgeMigrationPlanEntry { state },
+                out_entry,
+            )
+        }
     })
 }
 
@@ -1182,11 +1203,12 @@ pub unsafe extern "C" fn type_bridge_migration_plan_approval_builder(
         unsafe { out_builder.write_unaligned(ptr::null_mut()) };
         let state = unsafe { &*plan }.state.approval_builder();
         unsafe {
-            out_builder.write_unaligned(Box::into_raw(Box::new(
+            publish_handle(
+                AllocationSite::MigrationApprovalBuilderHandle,
                 TypeBridgeMigrationApprovalBuilder { state: Some(state) },
-            )))
-        };
-        TypeBridgeStatus::Ok
+                out_builder,
+            )
+        }
     })
 }
 
@@ -1209,13 +1231,13 @@ pub unsafe extern "C" fn type_bridge_migration_plan_authorize(
             return TypeBridgeStatus::InvalidArgument;
         };
         match plan.state.authorize(&approvals.state) {
-            Ok(state) => {
-                unsafe {
-                    out_authorized
-                        .write_unaligned(Box::into_raw(Box::new(TypeBridgeMigrationPlan { state })))
-                };
-                TypeBridgeStatus::Ok
-            }
+            Ok(state) => unsafe {
+                publish_handle(
+                    AllocationSite::MigrationPlanHandle,
+                    TypeBridgeMigrationPlan { state },
+                    out_authorized,
+                )
+            },
             Err(error) => return_failure(error, out_diagnostics),
         }
     })
@@ -1379,13 +1401,14 @@ pub unsafe extern "C" fn type_bridge_migration_plan_execute_with_options(
             Ok(value) => value,
             Err(status) => return status,
         };
+        let outcome = match ReservedBox::try_new(AllocationSite::MigrationExecutionOutcomeHandle) {
+            Ok(value) => value,
+            Err(_) => return TypeBridgeStatus::ResourceLimit,
+        };
         match plan.state.execute_controlled(database, holder, &control) {
             Ok(state) => {
-                unsafe {
-                    out_outcome.write_unaligned(Box::into_raw(Box::new(
-                        TypeBridgeMigrationExecutionOutcome { state },
-                    )))
-                };
+                let outcome = outcome.initialize(TypeBridgeMigrationExecutionOutcome { state });
+                unsafe { out_outcome.write_unaligned(Box::into_raw(outcome)) };
                 TypeBridgeStatus::Ok
             }
             Err(error) => return_failure(error, out_diagnostics),
@@ -1559,16 +1582,20 @@ pub unsafe extern "C" fn type_bridge_migration_approval_builder_finish(
         let Some(builder) = (unsafe { builder.as_mut() }) else {
             return TypeBridgeStatus::InvalidArgument;
         };
+        if builder.state.is_none() {
+            return TypeBridgeStatus::InvalidArgument;
+        }
+        let approvals = match ReservedBox::try_new(AllocationSite::MigrationApprovalSetHandle) {
+            Ok(value) => value,
+            Err(_) => return TypeBridgeStatus::ResourceLimit,
+        };
         let Some(state) = builder.state.take() else {
             return TypeBridgeStatus::InvalidArgument;
         };
         match state.finish() {
             Ok(state) => {
-                unsafe {
-                    out_approvals.write_unaligned(Box::into_raw(Box::new(
-                        TypeBridgeMigrationApprovalSet { state },
-                    )))
-                };
+                let approvals = approvals.initialize(TypeBridgeMigrationApprovalSet { state });
+                unsafe { out_approvals.write_unaligned(Box::into_raw(approvals)) };
                 TypeBridgeStatus::Ok
             }
             Err(error) => return_failure(error, out_diagnostics),
@@ -1685,11 +1712,12 @@ pub unsafe extern "C" fn type_bridge_migration_execution_outcome_migration_ident
             name: id.name().as_str().as_bytes().to_vec(),
         };
         unsafe {
-            out_identity.write_unaligned(Box::into_raw(Box::new(TypeBridgeMigrationIdentity {
-                state,
-            })))
-        };
-        TypeBridgeStatus::Ok
+            publish_handle(
+                AllocationSite::MigrationSnapshotHandle,
+                TypeBridgeMigrationIdentity { state },
+                out_identity,
+            )
+        }
     })
 }
 
@@ -1761,11 +1789,10 @@ pub unsafe extern "C" fn type_bridge_migration_execution_outcome_diagnostics(
             .cloned()
             .into_iter()
             .collect();
-        unsafe {
-            out_diagnostics
-                .write_unaligned(Box::into_raw(Box::new(diagnostics_handle(diagnostics))))
-        };
-        TypeBridgeStatus::Ok
+        match unsafe { publish_diagnostics(diagnostics, out_diagnostics) } {
+            Ok(()) => TypeBridgeStatus::Ok,
+            Err(status) => status,
+        }
     })
 }
 
@@ -1804,11 +1831,12 @@ pub unsafe extern "C" fn type_bridge_migration_execution_outcome_backfill_at(
             return TypeBridgeStatus::InvalidArgument;
         };
         unsafe {
-            out_observation.write_unaligned(Box::into_raw(Box::new(
+            publish_handle(
+                AllocationSite::MigrationBackfillObservationHandle,
                 TypeBridgeMigrationBackfillObservation { state },
-            )))
-        };
-        TypeBridgeStatus::Ok
+                out_observation,
+            )
+        }
     })
 }
 
@@ -1837,11 +1865,12 @@ pub unsafe extern "C" fn type_bridge_migration_backfill_observation_identity(
             name: id.name().as_str().as_bytes().to_vec(),
         };
         unsafe {
-            out_identity.write_unaligned(Box::into_raw(Box::new(TypeBridgeMigrationIdentity {
-                state,
-            })))
-        };
-        TypeBridgeStatus::Ok
+            publish_handle(
+                AllocationSite::MigrationSnapshotHandle,
+                TypeBridgeMigrationIdentity { state },
+                out_identity,
+            )
+        }
     })
 }
 
@@ -1965,17 +1994,16 @@ pub unsafe extern "C" fn type_bridge_migration_catalog_verify(
             return TypeBridgeStatus::InvalidArgument;
         };
         match catalog.state.verify(database) {
-            Ok(state) => {
-                unsafe {
-                    out_report.write_unaligned(Box::into_raw(Box::new(
-                        TypeBridgeMigrationVerificationReport {
-                            _catalog: Arc::clone(&catalog.state),
-                            state,
-                        },
-                    )))
-                };
-                TypeBridgeStatus::Ok
-            }
+            Ok(state) => unsafe {
+                publish_handle(
+                    AllocationSite::MigrationVerificationReportHandle,
+                    TypeBridgeMigrationVerificationReport {
+                        _catalog: Arc::clone(&catalog.state),
+                        state,
+                    },
+                    out_report,
+                )
+            },
             Err(error) => return_failure(error, out_diagnostics),
         }
     })
@@ -2015,11 +2043,12 @@ pub unsafe extern "C" fn type_bridge_migration_verification_report_finding_at(
             return TypeBridgeStatus::InvalidArgument;
         };
         unsafe {
-            out_finding.write_unaligned(Box::into_raw(Box::new(
+            publish_handle(
+                AllocationSite::MigrationVerificationFindingHandle,
                 TypeBridgeMigrationVerificationFinding { state },
-            )))
-        };
-        TypeBridgeStatus::Ok
+                out_finding,
+            )
+        }
     })
 }
 
@@ -2057,11 +2086,12 @@ pub unsafe extern "C" fn type_bridge_migration_verification_report_frontier_at(
             return TypeBridgeStatus::InvalidArgument;
         };
         unsafe {
-            out_identity.write_unaligned(Box::into_raw(Box::new(TypeBridgeMigrationIdentity {
-                state,
-            })))
-        };
-        TypeBridgeStatus::Ok
+            publish_handle(
+                AllocationSite::MigrationSnapshotHandle,
+                TypeBridgeMigrationIdentity { state },
+                out_identity,
+            )
+        }
     })
 }
 
@@ -2115,11 +2145,12 @@ pub unsafe extern "C" fn type_bridge_migration_verification_finding_pending_at(
             return TypeBridgeStatus::InvalidArgument;
         };
         unsafe {
-            out_identity.write_unaligned(Box::into_raw(Box::new(TypeBridgeMigrationIdentity {
-                state,
-            })))
-        };
-        TypeBridgeStatus::Ok
+            publish_handle(
+                AllocationSite::MigrationSnapshotHandle,
+                TypeBridgeMigrationIdentity { state },
+                out_identity,
+            )
+        }
     })
 }
 
@@ -2139,11 +2170,10 @@ pub unsafe extern "C" fn type_bridge_migration_verification_finding_diagnostics(
             .clone()
             .into_iter()
             .collect();
-        unsafe {
-            out_diagnostics
-                .write_unaligned(Box::into_raw(Box::new(diagnostics_handle(diagnostics))))
-        };
-        TypeBridgeStatus::Ok
+        match unsafe { publish_diagnostics(diagnostics, out_diagnostics) } {
+            Ok(()) => TypeBridgeStatus::Ok,
+            Err(status) => status,
+        }
     })
 }
 
@@ -2159,6 +2189,50 @@ pub unsafe extern "C" fn type_bridge_migration_verification_finding_close(
 mod tests {
     use super::*;
     use crate::allocation::{AllocationSite, inject_failure};
+
+    #[test]
+    fn candidate_c_all_handle_publication_failpoints_are_atomic_and_retryable() {
+        let sites = [
+            AllocationSite::MigrationAdministrationHandle,
+            AllocationSite::MigrationDeletionPlanHandle,
+            AllocationSite::MigrationCatalogHandle,
+            AllocationSite::MigrationPlanHandle,
+            AllocationSite::MigrationSnapshotHandle,
+            AllocationSite::MigrationApprovalBuilderHandle,
+            AllocationSite::MigrationApprovalSetHandle,
+            AllocationSite::MigrationExecutionOutcomeHandle,
+            AllocationSite::MigrationBackfillObservationHandle,
+            AllocationSite::MigrationVerificationReportHandle,
+            AllocationSite::MigrationVerificationFindingHandle,
+        ];
+        for site in sites {
+            let mut output = ptr::null_mut();
+            let failure = inject_failure(site, 0);
+            assert_eq!(
+                unsafe { publish_handle(site, 7_u8, &mut output) },
+                TypeBridgeStatus::ResourceLimit
+            );
+            assert!(output.is_null());
+            drop(failure);
+
+            assert_eq!(
+                unsafe { publish_handle(site, 7_u8, &mut output) },
+                TypeBridgeStatus::Ok
+            );
+            assert_eq!(unsafe { *Box::from_raw(output) }, 7);
+        }
+    }
+
+    #[test]
+    fn candidate_c_diagnostic_handle_allocation_failure_leaves_null_output() {
+        let mut diagnostics = ptr::null_mut();
+        let _failure = inject_failure(AllocationSite::MigrationDiagnosticsHandle, 0);
+        assert_eq!(
+            unsafe { publish_diagnostics(Vec::new(), &mut diagnostics) },
+            Err(TypeBridgeStatus::ResourceLimit)
+        );
+        assert!(diagnostics.is_null());
+    }
 
     #[test]
     fn candidate_c_migration_cancellation_allocation_failure_is_atomic_and_retryable() {

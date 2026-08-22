@@ -53,6 +53,18 @@ pub(crate) enum AllocationSite {
     QueryFunctionValueHandle,
     QueryFunctionCallHandle,
     QueryFunctionArguments,
+    MigrationAdministrationHandle,
+    MigrationDeletionPlanHandle,
+    MigrationCatalogHandle,
+    MigrationPlanHandle,
+    MigrationSnapshotHandle,
+    MigrationApprovalBuilderHandle,
+    MigrationApprovalSetHandle,
+    MigrationExecutionOutcomeHandle,
+    MigrationBackfillObservationHandle,
+    MigrationVerificationReportHandle,
+    MigrationVerificationFindingHandle,
+    MigrationDiagnosticsHandle,
     MigrationCancellationHandle,
 }
 
