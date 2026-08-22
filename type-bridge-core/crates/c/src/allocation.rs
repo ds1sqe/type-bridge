@@ -73,6 +73,8 @@ pub(crate) enum AllocationSite {
     CanonicalArchiveBuilderHandle,
     CanonicalArchiveBuilderRecords,
     CanonicalArchiveFinishRecords,
+    CanonicalRecordEncodeBytes,
+    CanonicalArchiveEncodeBytes,
     CanonicalArchiveHandle,
 }
 

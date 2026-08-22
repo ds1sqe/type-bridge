@@ -17,7 +17,9 @@ use crate::abi::{
     SchemaPackageState, TypeBridgeByteView, TypeBridgeSchemaPackage, TypeBridgeStatus,
     borrowed_view, close_box, guarded, initialize_view,
 };
-use crate::allocation::{AllocationSite, allocation_exhausted, try_box, try_reserve};
+use crate::allocation::{
+    AllocationSite, allocation_checkpoint, allocation_exhausted, try_box, try_reserve,
+};
 use crate::execution_diagnostic::{
     TypeBridgeExecutionDiagnostics, initialize_execution_outputs, return_execution_error,
 };
@@ -260,9 +262,13 @@ fn publish_record(
         Ok(record) => record,
         Err(_) => return return_execution_error(invalid_value(), out_diagnostics),
     };
-    let bytes = match record.encode() {
+    let bytes = match encode_bytes(
+        AllocationSite::CanonicalRecordEncodeBytes,
+        || record.encode(),
+        invalid_value,
+    ) {
         Ok(bytes) => bytes,
-        Err(_) => return return_execution_error(invalid_value(), out_diagnostics),
+        Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
     };
     let bytes = match try_box(
         AllocationSite::CanonicalBytesHandle,
@@ -274,6 +280,15 @@ fn publish_record(
     // SAFETY: the shared output initializer proved this slot writable.
     unsafe { out_bytes.write_unaligned(Box::into_raw(bytes)) };
     TypeBridgeStatus::Ok
+}
+
+fn encode_bytes(
+    site: AllocationSite,
+    encode: impl FnOnce() -> Result<Vec<u8>, type_bridge_contract::diagnostic::Diagnostic>,
+    invalid: fn() -> SdkExecutionDiagnostic,
+) -> Result<Vec<u8>, SdkExecutionDiagnostic> {
+    allocation_checkpoint(site).map_err(|_| allocation_exhausted())?;
+    encode().map_err(|_| invalid())
 }
 
 /// Encode one exact package-branded projected attribute value as canonical bytes.
@@ -1120,6 +1135,22 @@ fn validate_record(
     Ok(record)
 }
 
+fn reserve_archive_record(records: &mut Vec<ProjectedRecord>) -> Result<(), ()> {
+    try_reserve(records, 1, AllocationSite::CanonicalArchiveBuilderRecords).map_err(|_| ())
+}
+
+fn clone_archive_records(records: &[ProjectedRecord]) -> Result<Vec<ProjectedRecord>, ()> {
+    let mut cloned = Vec::new();
+    try_reserve(
+        &mut cloned,
+        records.len(),
+        AllocationSite::CanonicalArchiveFinishRecords,
+    )
+    .map_err(|_| ())?;
+    cloned.extend(records.iter().cloned());
+    Ok(cloned)
+}
+
 /// Open an empty archive builder bound to one exact installed package.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn type_bridge_canonical_archive_builder_open_v1(
@@ -1210,13 +1241,7 @@ pub unsafe extern "C" fn type_bridge_canonical_archive_builder_append_record_v1(
             Ok(record) => record,
             Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
         };
-        if try_reserve(
-            &mut builder.records,
-            1,
-            AllocationSite::CanonicalArchiveBuilderRecords,
-        )
-        .is_err()
-        {
+        if reserve_archive_record(&mut builder.records).is_err() {
             return return_execution_error(allocation_exhausted(), out_diagnostics);
         }
         builder.records.push(record);
@@ -1266,24 +1291,21 @@ pub unsafe extern "C" fn type_bridge_canonical_archive_builder_finish_v1(
         }
         // SAFETY: the retained builder remains owned by the caller until success.
         let value = unsafe { &*retained };
-        let mut records = Vec::new();
-        if try_reserve(
-            &mut records,
-            value.records.len(),
-            AllocationSite::CanonicalArchiveFinishRecords,
-        )
-        .is_err()
-        {
-            return return_execution_error(allocation_exhausted(), out_diagnostics);
-        }
-        records.extend(value.records.iter().cloned());
+        let records = match clone_archive_records(&value.records) {
+            Ok(records) => records,
+            Err(()) => return return_execution_error(allocation_exhausted(), out_diagnostics),
+        };
         let archive = match ProjectedArchive::try_new(records) {
             Ok(archive) => archive,
             Err(_) => return return_execution_error(invalid_archive(), out_diagnostics),
         };
-        let bytes = match archive.encode() {
+        let bytes = match encode_bytes(
+            AllocationSite::CanonicalArchiveEncodeBytes,
+            || archive.encode(),
+            invalid_archive,
+        ) {
             Ok(bytes) => bytes,
-            Err(_) => return return_execution_error(invalid_archive(), out_diagnostics),
+            Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
         };
         let bytes = match try_box(
             AllocationSite::CanonicalBytesHandle,
@@ -1483,9 +1505,13 @@ pub unsafe extern "C" fn type_bridge_canonical_archive_record_at(
         let Some(record) = archive.archive.records().get(index) else {
             return return_execution_error(invalid_archive(), out_diagnostics);
         };
-        let bytes = match record.encode() {
+        let bytes = match encode_bytes(
+            AllocationSite::CanonicalRecordEncodeBytes,
+            || record.encode(),
+            invalid_archive,
+        ) {
             Ok(bytes) => bytes,
-            Err(_) => return return_execution_error(invalid_archive(), out_diagnostics),
+            Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
         };
         let bytes = match try_box(
             AllocationSite::CanonicalBytesHandle,
@@ -1531,6 +1557,7 @@ pub unsafe extern "C" fn type_bridge_canonical_archive_close(
 mod tests {
     use super::*;
     use crate::allocation::inject_failure;
+    use std::cell::Cell;
 
     #[test]
     fn canonical_input_snapshot_has_bounded_fallible_storage() {
@@ -1558,5 +1585,38 @@ mod tests {
         let diagnostic = unsafe { snapshot_bytes(view, invalid_record) }
             .expect_err("an over-limit canonical input must fail before allocation");
         assert_eq!(diagnostic.code().as_str(), "c_canonical_input_limit");
+    }
+
+    #[test]
+    fn canonical_encode_reserves_before_entering_the_codec() {
+        let entered = Cell::new(false);
+        let _failure = inject_failure(AllocationSite::CanonicalRecordEncodeBytes, 0);
+        let diagnostic = encode_bytes(
+            AllocationSite::CanonicalRecordEncodeBytes,
+            || {
+                entered.set(true);
+                Ok(Vec::new())
+            },
+            invalid_record,
+        )
+        .expect_err("the named canonical encoding allocation must fail");
+        assert!(!entered.get());
+        assert_eq!(diagnostic.code().as_str(), "c_allocation_exhausted");
+    }
+
+    #[test]
+    fn archive_append_and_finish_reservations_fail_without_mutation() {
+        let mut builder_records = Vec::new();
+        let append_failure = inject_failure(AllocationSite::CanonicalArchiveBuilderRecords, 0);
+        assert!(reserve_archive_record(&mut builder_records).is_err());
+        assert!(builder_records.is_empty());
+        drop(append_failure);
+
+        let finish_failure = inject_failure(AllocationSite::CanonicalArchiveFinishRecords, 0);
+        assert!(clone_archive_records(&builder_records).is_err());
+        assert!(builder_records.is_empty());
+        drop(finish_failure);
+
+        assert!(clone_archive_records(&builder_records).is_ok());
     }
 }
