@@ -214,6 +214,24 @@ pub(crate) struct MigrationCatalogState {
 }
 
 impl MigrationCatalogState {
+    #[cfg(test)]
+    pub(crate) fn empty_for_abi_lifecycle_test() -> Arc<Self> {
+        let graph =
+            type_bridge_schema_migration::MigrationHistoryGraph::from_verified(std::iter::empty())
+                .expect("empty migration graph is valid");
+        let bundle =
+            type_bridge_schema_migration::VerifiedMigrationHistoryBundle::from_graph(&graph)
+                .expect("empty migration bundle is valid");
+        let catalog = type_bridge_schema_migration::MigrationCatalog::from_verified_bundle(bundle)
+            .expect("empty migration catalog is valid");
+        let fingerprint_json =
+            serde_json::to_vec(catalog.fingerprint()).expect("catalog fingerprint encodes");
+        Arc::new(Self {
+            catalog,
+            fingerprint_json,
+        })
+    }
+
     /// Open exact generated bundle bytes under their verified package authority.
     pub(crate) fn open(
         authority: &VerifiedSchemaAuthority,

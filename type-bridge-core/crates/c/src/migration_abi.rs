@@ -2235,6 +2235,35 @@ mod tests {
     }
 
     #[test]
+    fn candidate_c_catalog_close_preserves_owner_while_a_child_arc_is_live() {
+        let state = MigrationCatalogState::empty_for_abi_lifecycle_test();
+        let child_guard = Arc::clone(&state);
+        let mut catalog = Box::into_raw(
+            try_box(
+                AllocationSite::MigrationCatalogHandle,
+                TypeBridgeMigrationCatalog { state },
+            )
+            .expect("fixture catalog allocation succeeds"),
+        );
+
+        assert_eq!(
+            unsafe { type_bridge_migration_catalog_close(&mut catalog) },
+            TypeBridgeStatus::InUse
+        );
+        assert!(!catalog.is_null(), "failed close retains caller ownership");
+        drop(child_guard);
+        assert_eq!(
+            unsafe { type_bridge_migration_catalog_close(&mut catalog) },
+            TypeBridgeStatus::Ok
+        );
+        assert!(catalog.is_null());
+        assert_eq!(
+            unsafe { type_bridge_migration_catalog_close(&mut catalog) },
+            TypeBridgeStatus::Ok
+        );
+    }
+
+    #[test]
     fn candidate_c_migration_cancellation_allocation_failure_is_atomic_and_retryable() {
         let mut cancellation = ptr::without_provenance_mut(1);
         let failure = inject_failure(AllocationSite::MigrationCancellationHandle, 0);
