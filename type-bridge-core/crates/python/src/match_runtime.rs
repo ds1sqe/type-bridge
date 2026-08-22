@@ -288,13 +288,13 @@ impl PyQueryCancellation {
 #[pymethods]
 impl PyQueryCancellation {
     #[new]
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             inner: AnswerCancellation::default(),
         }
     }
 
-    fn cancel(&self) {
+    pub(crate) fn cancel(&self) {
         self.inner.cancel();
     }
 

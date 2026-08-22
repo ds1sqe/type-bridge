@@ -2,7 +2,7 @@ from collections.abc import Callable, Mapping, Sequence
 from enum import Enum, StrEnum
 from typing import Literal, Never, overload
 
-from type_bridge_core import PyRuntimeProjection
+from type_bridge_core import PyRuntimeProjection, QueryCancellation
 
 from type_bridge._runtime_projection import GeneratedEntityProjection, GeneratedRelationProjection
 from type_bridge.session import Database, TransactionContext
@@ -261,6 +261,28 @@ class StructValueBase:
 
 def encode_archive(records: Sequence[bytes]) -> bytes: ...
 def decode_archive(data: bytes) -> list[bytes]: ...
+def encode_archive_controlled(
+    records: Sequence[bytes],
+    *,
+    cancellation: QueryCancellation | None = ...,
+    timeout_milliseconds: int | None = ...,
+    max_input_bytes: int | None = ...,
+    max_output_bytes: int | None = ...,
+    max_depth: int | None = ...,
+    max_records: int | None = ...,
+    max_members: int | None = ...,
+) -> bytes: ...
+def decode_archive_controlled(
+    data: bytes,
+    *,
+    cancellation: QueryCancellation | None = ...,
+    timeout_milliseconds: int | None = ...,
+    max_input_bytes: int | None = ...,
+    max_output_bytes: int | None = ...,
+    max_depth: int | None = ...,
+    max_records: int | None = ...,
+    max_members: int | None = ...,
+) -> list[bytes]: ...
 
 class FieldDescriptor[
     OwnerT: ModelBase,

@@ -383,19 +383,19 @@ fn ordered_projection_selects_successor_evidence_and_descriptors_in_all_bindings
         std::str::from_utf8(c_package.get("ordered_codegen.pc.in").unwrap()).unwrap();
     assert!(c_header.contains("ordered_codegen_person_tag_count"));
     assert!(c_header.contains("ordered_codegen_membership_member_count"));
-    assert!(c_header.contains("#include <typebridge/type_bridge_abi_1_5.h>"));
+    assert!(c_header.contains("#include <typebridge/type_bridge_abi_1_6.h>"));
     assert!(c_header.contains("ordered_codegen_schema_package_open_v2("));
     assert!(contains_hex_bytes(c_source, b"ordered_list"));
     assert!(contains_hex_bytes(c_source, b"distinct"));
     assert!(
         c_source
-            .contains("sizeof(type_bridge_schema_package_chunked_descriptor_v1_t),\n  1u,\n  5u,")
+            .contains("sizeof(type_bridge_schema_package_chunked_descriptor_v1_t),\n  1u,\n  6u,")
     );
     assert!(c_source.contains("type_bridge_schema_package_open_chunked_v2("));
     assert!(c_cmake.starts_with("# TypeBridge ordered-collection generator resource v3\n"));
-    assert!(c_cmake.contains("find_package(TypeBridge 1.5 CONFIG REQUIRED)"));
-    assert!(c_package_config.contains("find_dependency(TypeBridge 1.5 CONFIG)"));
-    assert!(c_pkg_config.contains("Requires: type-bridge >= 1.5.0, type-bridge < 2.0.0"));
+    assert!(c_cmake.contains("find_package(TypeBridge 1.6 CONFIG REQUIRED)"));
+    assert!(c_package_config.contains("find_dependency(TypeBridge 1.6 CONFIG)"));
+    assert!(c_pkg_config.contains("Requires: type-bridge >= 1.6.0, type-bridge < 2.0.0"));
 }
 
 #[test]
@@ -2203,11 +2203,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(error.code(), "wrong_scalar_domain");
     assert_eq!(error.field(), "tag[0]");
 
-    let hydrated_player = HydratedPlayer::new(
+    let hydrated_player = HydratedPlayer::from_complete_row(HydratedRow::new(
         Person::TYPE_ID_JSON,
-        Some("0xa".to_owned()),
+        "0xa".to_owned(),
         vec![],
-    );
+        vec![],
+    ));
     let duplicate_role_row = HydratedRow::new(
         Membership::TYPE_ID_JSON,
         "0x2".to_owned(),
@@ -2228,8 +2229,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         vec![(
             MembershipType::participant.role_id_json(),
             vec![
-                HydratedPlayer::new(Person::TYPE_ID_JSON, Some("0xa".to_owned()), vec![]),
-                HydratedPlayer::new(Person::TYPE_ID_JSON, Some("0xb".to_owned()), vec![]),
+                HydratedPlayer::from_complete_row(HydratedRow::new(
+                    Person::TYPE_ID_JSON,
+                    "0xa".to_owned(),
+                    vec![],
+                    vec![],
+                )),
+                HydratedPlayer::from_complete_row(HydratedRow::new(
+                    Person::TYPE_ID_JSON,
+                    "0xb".to_owned(),
+                    vec![],
+                    vec![],
+                )),
             ],
         )],
     );
@@ -2238,11 +2249,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         accepted_membership
             .participant()
             .iter()
-            .map(|player| match player {
-                MembershipParticipantPlayer::Person(reference) => reference.iid(),
-            })
+            .map(Person::iid)
             .collect::<Vec<_>>(),
-        [Some("0xa"), Some("0xb")],
+        ["0xa", "0xb"],
     );
 
     let invalid_player_iid_row = HydratedRow::new(
@@ -2251,16 +2260,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         vec![],
         vec![(
             MembershipType::participant.role_id_json(),
-            vec![HydratedPlayer::new(
+            vec![HydratedPlayer::from_complete_row(HydratedRow::new(
                 Person::TYPE_ID_JSON,
-                Some("person-a".to_owned()),
+                "person-a".to_owned(),
                 vec![],
-            )],
+                vec![],
+            ))],
         )],
     );
     let error = materialize_model_for_test::<Membership>(&invalid_player_iid_row).unwrap_err();
-    assert_eq!(error.code(), "noncanonical_iid");
-    assert_eq!(error.field(), "type.iid");
+    assert_eq!(error.code(), "noncanonical_hydrated_iid");
+    assert_eq!(error.field(), "participant[0].type.iid");
 
     let accepted_row = HydratedRow::new(
         Person::TYPE_ID_JSON,

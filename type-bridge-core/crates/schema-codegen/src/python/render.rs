@@ -154,7 +154,9 @@ fn render_init(projection: &RuntimeProjection, stub: bool, ordered: bool) -> Str
          from ._runtime import ProjectedModelNotFoundError as ProjectedModelNotFoundError\n\
          from ._runtime import RoleToken as RoleToken\n\
          from ._runtime import decode_archive as decode_archive\n\
-         from ._runtime import encode_archive as encode_archive\n",
+         from ._runtime import decode_archive_controlled as decode_archive_controlled\n\
+         from ._runtime import encode_archive as encode_archive\n\
+         from ._runtime import encode_archive_controlled as encode_archive_controlled\n",
     );
     if ordered {
         output.push_str(

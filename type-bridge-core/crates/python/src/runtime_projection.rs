@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use pyo3::prelude::*;
 #[cfg(test)]
@@ -15,8 +16,13 @@ use pythonize::pythonize;
 use type_bridge_contract::codec::to_canonical_json;
 use type_bridge_contract::decimal::parse_decimal;
 use type_bridge_contract::id::{TypeId, TypeKind, is_canonical_thing_iid};
-use type_bridge_contract::limits::MAX_CANONICAL_STRING_BYTES;
+use type_bridge_contract::limits::{
+    CodecLimits, MAX_CANONICAL_COLLECTION_LEN, MAX_CANONICAL_DEPTH, MAX_CANONICAL_STRING_BYTES,
+};
 use type_bridge_contract::managed_scope::ManagedScopeId;
+use type_bridge_contract::projected_record::{
+    MAX_PROJECTED_ARCHIVE_BYTES, MAX_PROJECTED_ARCHIVE_RECORDS, MAX_PROJECTED_DECODED_WEIGHT,
+};
 use type_bridge_contract::projection::{
     BindingTarget, ProjectedContainer, ProjectedModelForm, ProjectedModelUse,
     ProjectedMultiplicity, ProjectedTokenIdentity, ProjectionConfig, RuntimeProjection,
@@ -70,6 +76,114 @@ use crate::orm_runtime::{
     PyRustDatabase, PyRustTransactionContext, provider_block_on, provider_block_on_with_gil,
 };
 use crate::validated_result_runtime::PyValidatedMatchThingHandle;
+
+struct PythonCanonicalControl {
+    cancellation: AnswerCancellation,
+    deadline: Option<Instant>,
+    max_input_bytes: usize,
+    max_output_bytes: usize,
+    max_depth: usize,
+    max_records: usize,
+    max_members: usize,
+}
+
+impl PythonCanonicalControl {
+    fn capture(
+        cancellation: Option<&PyQueryCancellation>,
+        timeout_milliseconds: Option<u64>,
+        max_input_bytes: Option<usize>,
+        max_output_bytes: Option<usize>,
+        max_depth: Option<usize>,
+        max_records: Option<usize>,
+        max_members: Option<usize>,
+    ) -> PyResult<Self> {
+        let deadline = timeout_milliseconds
+            .map(|milliseconds| {
+                Instant::now()
+                    .checked_add(Duration::from_millis(milliseconds))
+                    .ok_or_else(|| {
+                        py_sdk_diagnostic(
+                            SdkExecutionDiagnostic::projected_codec_deadline_exceeded(),
+                        )
+                    })
+            })
+            .transpose()?;
+        Ok(Self {
+            cancellation: cancellation
+                .map_or_else(AnswerCancellation::default, |value| value.inner()),
+            deadline,
+            max_input_bytes: max_input_bytes
+                .unwrap_or(MAX_PROJECTED_ARCHIVE_BYTES)
+                .min(MAX_PROJECTED_ARCHIVE_BYTES),
+            max_output_bytes: max_output_bytes
+                .unwrap_or(MAX_PROJECTED_ARCHIVE_BYTES)
+                .min(MAX_PROJECTED_ARCHIVE_BYTES),
+            max_depth: max_depth
+                .unwrap_or(MAX_CANONICAL_DEPTH)
+                .min(MAX_CANONICAL_DEPTH),
+            max_records: max_records
+                .unwrap_or(MAX_PROJECTED_ARCHIVE_RECORDS)
+                .min(MAX_PROJECTED_ARCHIVE_RECORDS),
+            max_members: max_members
+                .unwrap_or(MAX_PROJECTED_DECODED_WEIGHT)
+                .min(MAX_PROJECTED_DECODED_WEIGHT)
+                .min(MAX_CANONICAL_COLLECTION_LEN),
+        })
+    }
+
+    fn check(&self) -> PyResult<()> {
+        if self.cancellation.is_cancelled() {
+            Err(py_sdk_diagnostic(
+                SdkExecutionDiagnostic::projected_codec_cancelled(),
+            ))
+        } else if self
+            .deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            Err(py_sdk_diagnostic(
+                SdkExecutionDiagnostic::projected_codec_deadline_exceeded(),
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn input_limits(&self) -> CodecLimits {
+        CodecLimits {
+            max_bytes: self.max_input_bytes,
+            max_depth: self.max_depth,
+            max_collection_len: self.max_members,
+            max_string_bytes: MAX_CANONICAL_STRING_BYTES.min(self.max_input_bytes),
+        }
+    }
+
+    fn output_limits(&self) -> CodecLimits {
+        CodecLimits {
+            max_bytes: self.max_output_bytes,
+            max_depth: self.max_depth,
+            max_collection_len: self.max_members,
+            max_string_bytes: MAX_CANONICAL_STRING_BYTES.min(self.max_output_bytes),
+        }
+    }
+}
+
+fn python_canonical_limit_error(
+    error: type_bridge_contract::diagnostic::Diagnostic,
+    input: bool,
+) -> PyErr {
+    let diagnostic = match error.code().as_str() {
+        "canonical_json_too_deep" => SdkExecutionDiagnostic::projected_codec_depth_limit(),
+        "canonical_collection_too_large" => SdkExecutionDiagnostic::projected_codec_member_limit(),
+        "canonical_json_too_large" | "canonical_string_too_large" if input => {
+            SdkExecutionDiagnostic::projected_codec_input_limit()
+        }
+        "canonical_json_too_large" | "canonical_string_too_large" => {
+            SdkExecutionDiagnostic::projected_codec_output_limit()
+        }
+        _ => return py_diagnostic(error),
+    };
+    py_sdk_diagnostic(diagnostic)
+}
 
 struct RegisteredModel {
     complete: Py<PyType>,
@@ -1571,6 +1685,64 @@ impl PyRuntimeProjection {
         Ok(PyBytes::new(py, &bytes))
     }
 
+    /// Compose records with cancellation, deadline, and tighten-only limits.
+    #[pyo3(signature = (records, *, cancellation=None, timeout_milliseconds=None, max_input_bytes=None, max_output_bytes=None, max_depth=None, max_records=None, max_members=None))]
+    #[allow(clippy::too_many_arguments)]
+    fn encode_archive_controlled<'py>(
+        &self,
+        py: Python<'py>,
+        records: Vec<Py<PyBytes>>,
+        cancellation: Option<&PyQueryCancellation>,
+        timeout_milliseconds: Option<u64>,
+        max_input_bytes: Option<usize>,
+        max_output_bytes: Option<usize>,
+        max_depth: Option<usize>,
+        max_records: Option<usize>,
+        max_members: Option<usize>,
+    ) -> PyResult<Bound<'py, PyBytes>> {
+        let control = PythonCanonicalControl::capture(
+            cancellation,
+            timeout_milliseconds,
+            max_input_bytes,
+            max_output_bytes,
+            max_depth,
+            max_records,
+            max_members,
+        )?;
+        control.check()?;
+        if records.len() > control.max_records {
+            return Err(py_sdk_diagnostic(
+                SdkExecutionDiagnostic::projected_codec_member_limit(),
+            ));
+        }
+        let mut verified = Vec::with_capacity(records.len());
+        for bytes in records {
+            control.check()?;
+            let record =
+                type_bridge_contract::projected_record::ProjectedRecord::decode_with_limits(
+                    bytes.bind(py).as_bytes(),
+                    control.input_limits(),
+                )
+                .map_err(|error| python_canonical_limit_error(error, true))?;
+            let _ = type_bridge_orm::materialize_record(&self.package.projection, &record)
+                .map_err(|error| py_value_error(error.to_string()))?;
+            verified.push(record);
+        }
+        let archive = type_bridge_contract::projected_record::ProjectedArchive::try_new(verified)
+            .map_err(py_diagnostic)?;
+        if archive.decoded_weight() > control.max_members {
+            return Err(py_sdk_diagnostic(
+                SdkExecutionDiagnostic::projected_codec_member_limit(),
+            ));
+        }
+        control.check()?;
+        let bytes = archive
+            .encode_with_limits(control.output_limits())
+            .map_err(|error| python_canonical_limit_error(error, false))?;
+        control.check()?;
+        Ok(PyBytes::new(py, &bytes))
+    }
+
     /// Decode one archive into canonical individual exact-package records.
     fn decode_archive<'py>(
         &self,
@@ -1592,6 +1764,67 @@ impl PyRuntimeProjection {
                     .map_err(py_diagnostic)
             })
             .collect::<PyResult<Vec<_>>>()?;
+        PyList::new(py, records)
+    }
+
+    /// Decode an archive with cancellation, deadline, and tighten-only limits.
+    #[pyo3(signature = (bytes, *, cancellation=None, timeout_milliseconds=None, max_input_bytes=None, max_output_bytes=None, max_depth=None, max_records=None, max_members=None))]
+    #[allow(clippy::too_many_arguments)]
+    fn decode_archive_controlled<'py>(
+        &self,
+        py: Python<'py>,
+        bytes: &Bound<'_, PyBytes>,
+        cancellation: Option<&PyQueryCancellation>,
+        timeout_milliseconds: Option<u64>,
+        max_input_bytes: Option<usize>,
+        max_output_bytes: Option<usize>,
+        max_depth: Option<usize>,
+        max_records: Option<usize>,
+        max_members: Option<usize>,
+    ) -> PyResult<Bound<'py, PyList>> {
+        let control = PythonCanonicalControl::capture(
+            cancellation,
+            timeout_milliseconds,
+            max_input_bytes,
+            max_output_bytes,
+            max_depth,
+            max_records,
+            max_members,
+        )?;
+        control.check()?;
+        let archive = type_bridge_contract::projected_record::ProjectedArchive::decode_with_limits(
+            bytes.as_bytes(),
+            control.input_limits(),
+        )
+        .map_err(|error| python_canonical_limit_error(error, true))?;
+        if archive.records().len() > control.max_records
+            || archive.decoded_weight() > control.max_members
+        {
+            return Err(py_sdk_diagnostic(
+                SdkExecutionDiagnostic::projected_codec_member_limit(),
+            ));
+        }
+        let mut output_bytes = 0_usize;
+        let records = archive
+            .records()
+            .iter()
+            .map(|record| {
+                control.check()?;
+                let _ = type_bridge_orm::materialize_record(&self.package.projection, record)
+                    .map_err(|error| py_value_error(error.to_string()))?;
+                let bytes = record
+                    .encode_with_limits(control.output_limits())
+                    .map_err(|error| python_canonical_limit_error(error, false))?;
+                output_bytes = output_bytes.saturating_add(bytes.len());
+                if output_bytes > control.max_output_bytes {
+                    return Err(py_sdk_diagnostic(
+                        SdkExecutionDiagnostic::projected_codec_output_limit(),
+                    ));
+                }
+                Ok(PyBytes::new(py, &bytes).unbind())
+            })
+            .collect::<PyResult<Vec<_>>>()?;
+        control.check()?;
         PyList::new(py, records)
     }
 
@@ -11264,6 +11497,99 @@ class StructBase:
                 })
                 .collect::<Vec<_>>();
             assert_eq!(actual, expected);
+
+            let error_code = |error: PyErr| {
+                error
+                    .value(py)
+                    .getattr("code")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap()
+            };
+            let cancellation = PyQueryCancellation::new();
+            cancellation.cancel();
+            let cancelled = runtime
+                .decode_archive_controlled(
+                    py,
+                    &archive,
+                    Some(&cancellation),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap_err();
+            assert_eq!(error_code(cancelled), "projected_codec_cancelled");
+            let input_limited = runtime
+                .decode_archive_controlled(
+                    py,
+                    &archive,
+                    None,
+                    None,
+                    Some(archive.as_bytes().len() - 1),
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap_err();
+            assert_eq!(error_code(input_limited), "projected_codec_input_limit");
+            let depth_limited = runtime
+                .decode_archive_controlled(
+                    py,
+                    &archive,
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(1),
+                    None,
+                    None,
+                )
+                .unwrap_err();
+            assert_eq!(error_code(depth_limited), "projected_codec_depth_limit");
+            let timed_out = runtime
+                .decode_archive_controlled(
+                    py,
+                    &archive,
+                    None,
+                    Some(0),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap_err();
+            assert_eq!(error_code(timed_out), "projected_codec_deadline_exceeded");
+            let records = expected
+                .iter()
+                .map(|bytes| PyBytes::new(py, bytes).unbind())
+                .collect::<Vec<_>>();
+            let member_limited = runtime
+                .encode_archive_controlled(py, records, None, None, None, None, None, Some(1), None)
+                .unwrap_err();
+            assert_eq!(error_code(member_limited), "projected_codec_member_limit");
+            let records = expected
+                .iter()
+                .map(|bytes| PyBytes::new(py, bytes).unbind())
+                .collect::<Vec<_>>();
+            let output_limited = runtime
+                .encode_archive_controlled(
+                    py,
+                    records,
+                    None,
+                    None,
+                    None,
+                    Some(archive.as_bytes().len() - 1),
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap_err();
+            assert_eq!(error_code(output_limited), "projected_codec_output_limit");
         });
     }
 

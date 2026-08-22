@@ -26,6 +26,7 @@ if TYPE_CHECKING:
         PyProjectedManagerFilter,
         PyProjectedModelManager,
         PyRuntimeProjection,
+        QueryCancellation,
     )
 
     from type_bridge.session import Database, TransactionContext
@@ -1136,6 +1137,52 @@ def encode_archive(records: Sequence[bytes]) -> bytes:
 
 def decode_archive(data: bytes) -> list[bytes]:
     return _require_package_runtime_projection().decode_archive(data)
+
+
+def encode_archive_controlled(
+    records: Sequence[bytes],
+    *,
+    cancellation: QueryCancellation | None = None,
+    timeout_milliseconds: int | None = None,
+    max_input_bytes: int | None = None,
+    max_output_bytes: int | None = None,
+    max_depth: int | None = None,
+    max_records: int | None = None,
+    max_members: int | None = None,
+) -> bytes:
+    return _require_package_runtime_projection().encode_archive_controlled(
+        records,
+        cancellation=cancellation,
+        timeout_milliseconds=timeout_milliseconds,
+        max_input_bytes=max_input_bytes,
+        max_output_bytes=max_output_bytes,
+        max_depth=max_depth,
+        max_records=max_records,
+        max_members=max_members,
+    )
+
+
+def decode_archive_controlled(
+    data: bytes,
+    *,
+    cancellation: QueryCancellation | None = None,
+    timeout_milliseconds: int | None = None,
+    max_input_bytes: int | None = None,
+    max_output_bytes: int | None = None,
+    max_depth: int | None = None,
+    max_records: int | None = None,
+    max_members: int | None = None,
+) -> list[bytes]:
+    return _require_package_runtime_projection().decode_archive_controlled(
+        data,
+        cancellation=cancellation,
+        timeout_milliseconds=timeout_milliseconds,
+        max_input_bytes=max_input_bytes,
+        max_output_bytes=max_output_bytes,
+        max_depth=max_depth,
+        max_records=max_records,
+        max_members=max_members,
+    )
 
 
 def install_runtime_projection(

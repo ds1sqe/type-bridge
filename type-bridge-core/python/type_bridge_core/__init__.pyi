@@ -1100,6 +1100,30 @@ class PyRuntimeProjection:
     def decode_struct(self, structure: type[object], data: bytes) -> object: ...
     def encode_archive(self, records: Sequence[bytes]) -> bytes: ...
     def decode_archive(self, data: bytes) -> list[bytes]: ...
+    def encode_archive_controlled(
+        self,
+        records: Sequence[bytes],
+        *,
+        cancellation: QueryCancellation | None = ...,
+        timeout_milliseconds: int | None = ...,
+        max_input_bytes: int | None = ...,
+        max_output_bytes: int | None = ...,
+        max_depth: int | None = ...,
+        max_records: int | None = ...,
+        max_members: int | None = ...,
+    ) -> bytes: ...
+    def decode_archive_controlled(
+        self,
+        data: bytes,
+        *,
+        cancellation: QueryCancellation | None = ...,
+        timeout_milliseconds: int | None = ...,
+        max_input_bytes: int | None = ...,
+        max_output_bytes: int | None = ...,
+        max_depth: int | None = ...,
+        max_records: int | None = ...,
+        max_members: int | None = ...,
+    ) -> list[bytes]: ...
     def query_builder_match_entity(
         self,
         model: type[object],
