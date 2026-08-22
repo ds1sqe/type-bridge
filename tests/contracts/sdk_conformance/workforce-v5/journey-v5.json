@@ -8,14 +8,14 @@
     {
       "id": "integer-key",
       "kind": "attribute_value",
-      "type": {"kind": "attribute", "label": "employee-number"},
+      "type": {"kind": "attribute", "label": "robot_id"},
       "semantic_value": {"kind": "long", "value": "9007199254740993"}
     },
     {
-      "id": "contact-struct",
+      "id": "player-stats",
       "kind": "struct_value",
-      "type": {"kind": "struct", "label": "contact-card"},
-      "member_order": ["display-name", "email", "timezone"]
+      "type": {"kind": "struct", "label": "player-stats"},
+      "member_order": ["nickname", "wins"]
     },
     {
       "id": "person-create",
@@ -55,7 +55,7 @@
     "mode": "ordered",
     "record_ids": [
       "integer-key",
-      "contact-struct",
+      "player-stats",
       "person-create",
       "person-snapshot",
       "membership-create",

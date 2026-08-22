@@ -33,6 +33,66 @@ OBSERVATIONS = (
     "serialization_structured_diagnostic",
     "serialization_resource_lifecycle",
 )
+JOURNEY_RECORDS = [
+    {
+        "id": "integer-key",
+        "kind": "attribute_value",
+        "type": {"kind": "attribute", "label": "robot_id"},
+        "semantic_value": {"kind": "long", "value": "9007199254740993"},
+    },
+    {
+        "id": "player-stats",
+        "kind": "struct_value",
+        "type": {"kind": "struct", "label": "player-stats"},
+        "member_order": ["nickname", "wins"],
+    },
+    {
+        "id": "person-create",
+        "kind": "entity_create",
+        "type": {"kind": "entity", "label": "person"},
+        "requires_absent_vs_empty": True,
+    },
+    {
+        "id": "person-snapshot",
+        "kind": "entity_snapshot",
+        "type": {"kind": "entity", "label": "person"},
+        "requires_canonical_iid": True,
+        "decoded_state": "detached",
+    },
+    {
+        "id": "membership-create",
+        "kind": "relation_create",
+        "type": {"kind": "relation", "label": "membership"},
+        "requires_polymorphic_optional_role": True,
+        "requires_relation_as_player": True,
+    },
+    {
+        "id": "membership-snapshot",
+        "kind": "relation_snapshot",
+        "type": {"kind": "relation", "label": "membership"},
+        "requires_inherited_roles": True,
+        "decoded_state": "detached",
+    },
+    {
+        "id": "player-reference",
+        "kind": "reference",
+        "requires_iid_or_exact_key": True,
+        "decoded_state": "detached",
+    },
+]
+JOURNEY_HOSTILE_MUTATIONS = [
+    "foreign-declared-schema",
+    "wrong-semantic-profile",
+    "wrong-record-kind",
+    "wrong-concrete-type",
+    "duplicate-object-key",
+    "reordered-object-key",
+    "unknown-member",
+    "noncanonical-long",
+    "noncanonical-double-bits",
+    "oversize-archive",
+    "invalid-final-record",
+]
 
 
 class ContractError(ValueError):
@@ -161,6 +221,16 @@ def load_contracts(root: Path = ROOT) -> Contracts:
         "direct-remote-relation-snapshot-bytes",
     ]:
         reject("journey_equality_drift", "V5 required equalities are not exact")
+    if journey.get("records") != JOURNEY_RECORDS:
+        reject("journey_record_drift", "V5 record corpus is not exact")
+    if journey.get("archive") != {
+        "mode": "ordered",
+        "record_ids": [record["id"] for record in JOURNEY_RECORDS],
+        "whole_archive_rejection": True,
+    }:
+        reject("journey_archive_drift", "V5 archive corpus is not exact")
+    if journey.get("hostile_mutations") != JOURNEY_HOSTILE_MUTATIONS:
+        reject("journey_hostility_drift", "V5 hostile corpus is not exact")
     if report_schema.get("$defs", {}).get("result", {}).get("properties", {}).get(
         "observation"
     ) != {"$ref": "observation-schema-v5.json"}:

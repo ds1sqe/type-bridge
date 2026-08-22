@@ -133,6 +133,17 @@ def test_accepts_exact_four_binding_candidate_fan_in(tmp_path: Path) -> None:
     ]
 
 
+def test_journey_corpus_uses_types_owned_by_its_frozen_schema() -> None:
+    journey = json.loads((ROOT / comparator.JOURNEY).read_text(encoding="utf-8"))
+    schema = (ROOT / "tests/contracts/sdk_conformance/workforce-v3/schema-v3.yaml").read_text(
+        encoding="utf-8"
+    )
+
+    assert journey["records"] == comparator.JOURNEY_RECORDS
+    for source_name in ("robot_id", "player-stats", "person", "membership"):
+        assert f"{source_name}:" in schema
+
+
 def test_rejects_cross_binding_digest_drift(tmp_path: Path) -> None:
     root = _stage_contracts(tmp_path)
     paths = _write_reports(root)
