@@ -69,7 +69,10 @@ pub(crate) enum AllocationSite {
     MigrationDiagnosticsHandle,
     MigrationCancellationHandle,
     CanonicalBytesHandle,
+    CanonicalInputBytes,
     CanonicalArchiveBuilderHandle,
+    CanonicalArchiveBuilderRecords,
+    CanonicalArchiveFinishRecords,
     CanonicalArchiveHandle,
 }
 

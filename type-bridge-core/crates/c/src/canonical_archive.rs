@@ -17,7 +17,7 @@ use crate::abi::{
     SchemaPackageState, TypeBridgeByteView, TypeBridgeSchemaPackage, TypeBridgeStatus,
     borrowed_view, close_box, guarded, initialize_view,
 };
-use crate::allocation::{AllocationSite, allocation_exhausted, try_box};
+use crate::allocation::{AllocationSite, allocation_exhausted, try_box, try_reserve};
 use crate::execution_diagnostic::{
     TypeBridgeExecutionDiagnostics, initialize_execution_outputs, return_execution_error,
 };
@@ -185,6 +185,13 @@ fn invalid_archive() -> SdkExecutionDiagnostic {
     )
 }
 
+fn canonical_input_limit() -> SdkExecutionDiagnostic {
+    SdkExecutionDiagnostic::resource_limit(
+        code("c_canonical_input_limit"),
+        message("Canonical input bytes exceed the supported bounded allocation"),
+    )
+}
+
 fn invalid_value() -> SdkExecutionDiagnostic {
     SdkExecutionDiagnostic::invalid_input(
         code("c_canonical_value_invalid"),
@@ -239,7 +246,7 @@ unsafe fn decode_record(
     // SAFETY: caller retains one live immutable package for this call.
     let package = unsafe { &*package };
     // SAFETY: caller retains the bounded byte range for this call.
-    let bytes = unsafe { snapshot_bytes(bytes) }.map_err(|_| invalid_record())?;
+    let bytes = unsafe { snapshot_bytes(bytes, invalid_record) }?;
     let record = ProjectedRecord::decode(&bytes).map_err(|_| invalid_record())?;
     Ok((Arc::clone(package.state()), record))
 }
@@ -1080,16 +1087,27 @@ pub unsafe extern "C" fn type_bridge_projected_struct_member_close(
     unsafe { close_box(value) }
 }
 
-unsafe fn snapshot_bytes(view: TypeBridgeByteView) -> Result<Vec<u8>, TypeBridgeStatus> {
+unsafe fn snapshot_bytes(
+    view: TypeBridgeByteView,
+    invalid: fn() -> SdkExecutionDiagnostic,
+) -> Result<Vec<u8>, SdkExecutionDiagnostic> {
     if view.data.is_null() || view.length == 0 {
-        return Err(TypeBridgeStatus::InvalidArgument);
+        return Err(invalid());
     }
     if view.length > MAX_CANONICAL_BYTES {
-        return Err(TypeBridgeStatus::ResourceLimit);
+        return Err(canonical_input_limit());
     }
+    let mut snapshot = Vec::new();
+    try_reserve(
+        &mut snapshot,
+        view.length,
+        AllocationSite::CanonicalInputBytes,
+    )
+    .map_err(|_| allocation_exhausted())?;
     // SAFETY: the C contract requires the non-null input range to remain readable
     // for this call; u8 has alignment one and the stable ceiling bounds the copy.
-    Ok(unsafe { std::slice::from_raw_parts(view.data, view.length) }.to_vec())
+    snapshot.extend_from_slice(unsafe { std::slice::from_raw_parts(view.data, view.length) });
+    Ok(snapshot)
 }
 
 fn validate_record(
@@ -1184,15 +1202,21 @@ pub unsafe extern "C" fn type_bridge_canonical_archive_builder_append_record_v1(
         // SAFETY: the builder is uniquely borrowed for this mutating call.
         let builder = unsafe { &mut *builder };
         // SAFETY: the caller retains the byte range for this call.
-        let bytes = match unsafe { snapshot_bytes(record) } {
+        let bytes = match unsafe { snapshot_bytes(record, invalid_record) } {
             Ok(bytes) => bytes,
-            Err(status) => return status,
+            Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
         };
         let record = match validate_record(&builder.package, &bytes) {
             Ok(record) => record,
             Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
         };
-        if builder.records.try_reserve(1).is_err() {
+        if try_reserve(
+            &mut builder.records,
+            1,
+            AllocationSite::CanonicalArchiveBuilderRecords,
+        )
+        .is_err()
+        {
             return return_execution_error(allocation_exhausted(), out_diagnostics);
         }
         builder.records.push(record);
@@ -1242,7 +1266,18 @@ pub unsafe extern "C" fn type_bridge_canonical_archive_builder_finish_v1(
         }
         // SAFETY: the retained builder remains owned by the caller until success.
         let value = unsafe { &*retained };
-        let archive = match ProjectedArchive::try_new(value.records.clone()) {
+        let mut records = Vec::new();
+        if try_reserve(
+            &mut records,
+            value.records.len(),
+            AllocationSite::CanonicalArchiveFinishRecords,
+        )
+        .is_err()
+        {
+            return return_execution_error(allocation_exhausted(), out_diagnostics);
+        }
+        records.extend(value.records.iter().cloned());
+        let archive = match ProjectedArchive::try_new(records) {
             Ok(archive) => archive,
             Err(_) => return return_execution_error(invalid_archive(), out_diagnostics),
         };
@@ -1304,9 +1339,9 @@ pub unsafe extern "C" fn type_bridge_canonical_archive_open_v1(
         }
         // SAFETY: caller retains both input objects for this call.
         let package = unsafe { &*package };
-        let bytes = match unsafe { snapshot_bytes(bytes) } {
+        let bytes = match unsafe { snapshot_bytes(bytes, invalid_archive) } {
             Ok(bytes) => bytes,
-            Err(status) => return status,
+            Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
         };
         let archive = match ProjectedArchive::decode(&bytes) {
             Ok(archive) => archive,
@@ -1490,4 +1525,38 @@ pub unsafe extern "C" fn type_bridge_canonical_archive_close(
 ) -> TypeBridgeStatus {
     // SAFETY: forwarded pointer-to-pointer ownership contract is documented by the header.
     unsafe { close_box(archive) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::allocation::inject_failure;
+
+    #[test]
+    fn canonical_input_snapshot_has_bounded_fallible_storage() {
+        let input = [1_u8, 2, 3];
+        let view = TypeBridgeByteView {
+            data: input.as_ptr(),
+            length: input.len(),
+        };
+        let _failure = inject_failure(AllocationSite::CanonicalInputBytes, 0);
+        // SAFETY: the fixed test input remains live and readable for this call.
+        let diagnostic = unsafe { snapshot_bytes(view, invalid_record) }
+            .expect_err("the named canonical input allocation must fail");
+        assert_eq!(diagnostic.code().as_str(), "c_allocation_exhausted");
+    }
+
+    #[test]
+    fn canonical_input_limit_precedes_allocation() {
+        let input = [1_u8];
+        let view = TypeBridgeByteView {
+            data: input.as_ptr(),
+            length: MAX_CANONICAL_BYTES + 1,
+        };
+        let _failure = inject_failure(AllocationSite::CanonicalInputBytes, 0);
+        // SAFETY: the stable length ceiling is checked before the byte range is read.
+        let diagnostic = unsafe { snapshot_bytes(view, invalid_record) }
+            .expect_err("an over-limit canonical input must fail before allocation");
+        assert_eq!(diagnostic.code().as_str(), "c_canonical_input_limit");
+    }
 }
