@@ -577,6 +577,7 @@ struct ProjectedFacadeSlots {
 #[derive(Clone)]
 enum FacadeProjectionProof {
     Thing(Arc<ProjectedThing>),
+    DetachedSnapshot,
     Reference(Arc<ProjectedReference>),
     RolePlayer {
         parent: Arc<ProjectedThing>,
@@ -605,6 +606,7 @@ impl FacadeProjectionProof {
     ) -> Result<ProjectedReference, SdkExecutionDiagnostic> {
         match self {
             Self::Thing(thing) => thing.try_to_reference(installed),
+            Self::DetachedSnapshot => Err(SdkExecutionDiagnostic::projected_snapshot_detached()),
             Self::Reference(reference) => Ok(reference.as_ref().clone()),
             Self::RolePlayer {
                 parent,
@@ -622,6 +624,7 @@ impl FacadeProjectionProof {
     fn origin_carrier(&self) -> Result<Option<ProjectedReferenceOrigin>, SdkExecutionDiagnostic> {
         match self {
             Self::Thing(thing) => Ok(thing.origin_carrier()),
+            Self::DetachedSnapshot => Err(SdkExecutionDiagnostic::projected_snapshot_detached()),
             Self::Reference(reference) => Ok(reference.origin_carrier()),
             Self::RolePlayer {
                 parent,
@@ -7042,6 +7045,10 @@ fn hydrate_projected_thing_value(
             .facade_origins
             .install(pending.origin, pending.proof);
     }
+    let origin = package.facade_origins.prepare(instance.bind(py))?;
+    package
+        .facade_origins
+        .install(origin, FacadeProjectionProof::DetachedSnapshot);
     Ok(instance)
 }
 
@@ -12199,6 +12206,81 @@ class StructBase:
     }
 
     #[test]
+    fn canonical_snapshot_role_player_rejects_mutation_before_provider_io() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            let (_, package) = install_ordered(py);
+            let person_id = package
+                .type_by_label("person", TypeKind::Entity)
+                .unwrap()
+                .clone();
+            let gathering_id = package
+                .type_by_label("gathering", TypeKind::Relation)
+                .unwrap()
+                .clone();
+            let complete_class = package
+                .class(&person_id, ProjectedModelForm::Complete)
+                .unwrap()
+                .clone_ref(py);
+            let provider_runtime =
+                Arc::new(ProviderRuntimeOwner::new().expect("provider runtime should start"));
+            let (source_backend, _) =
+                OriginRecordingBackend::new(vec![QueryResult::Documents(vec![
+                    origin_person_document("0xabc"),
+                ])]);
+            let source_manager = origin_manager(
+                Arc::clone(&package),
+                person_id,
+                Some(Arc::new(Database::with_backend(
+                    Box::new(source_backend),
+                    "detached-snapshot-source",
+                ))),
+                None,
+                Arc::clone(&provider_runtime),
+            );
+            let snapshot = source_manager.get_by_iid(py, "0xabc").unwrap();
+            let runtime_projection = PyRuntimeProjection {
+                package: Arc::clone(&package),
+            };
+            let snapshot_bytes = runtime_projection
+                .encode_snapshot(py, complete_class.clone_ref(py), snapshot.bind(py).clone())
+                .unwrap();
+            let detached = runtime_projection
+                .decode_snapshot(py, complete_class, &snapshot_bytes)
+                .unwrap();
+
+            let (backend, state) = OriginRecordingBackend::new(vec![]);
+            let manager = origin_manager(
+                Arc::clone(&package),
+                gathering_id.clone(),
+                Some(Arc::new(Database::with_backend(
+                    Box::new(backend),
+                    "detached-snapshot-target",
+                ))),
+                None,
+                provider_runtime,
+            );
+            let gathering =
+                gathering_with_player(py, package.as_ref(), &gathering_id, detached.bind(py));
+            let error = manager.insert(py, gathering).unwrap_err();
+            assert_eq!(
+                error
+                    .value(py)
+                    .getattr("code")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "projected_snapshot_detached"
+            );
+            let state = state.lock().unwrap();
+            assert!(state.opens.is_empty());
+            assert!(state.queries.is_empty());
+            assert_eq!(state.commits, 0);
+            assert_eq!(state.rollbacks, 0);
+        });
+    }
+
+    #[test]
     fn ordered_match_sessions_enable_successor_projected_companions() {
         pyo3::prepare_freethreaded_python();
         Python::with_gil(|py| {
@@ -13569,6 +13651,9 @@ def public_state(value):
                     FacadeProjectionProof::RolePlayer { .. } => {
                         panic!("insert/put retained a nested role-player proof")
                     }
+                    FacadeProjectionProof::DetachedSnapshot => {
+                        panic!("insert/put retained a detached snapshot proof")
+                    }
                 };
                 let field_id = package.projection.projection().models()[&person_id]
                     .complete_read()
@@ -13782,6 +13867,9 @@ def failing_initialize(target, original):
                 FacadeProjectionProof::RolePlayer { .. } => {
                     panic!("manager get retained a nested role-player proof")
                 }
+                FacadeProjectionProof::DetachedSnapshot => {
+                    panic!("manager get retained a detached snapshot proof")
+                }
             };
             let class = package
                 .class(&person_id, ProjectedModelForm::Complete)
@@ -13818,6 +13906,9 @@ def failing_initialize(target, original):
                 FacadeProjectionProof::Reference(_) => panic!("update retained a reference"),
                 FacadeProjectionProof::RolePlayer { .. } => {
                     panic!("update retained a nested role-player proof")
+                }
+                FacadeProjectionProof::DetachedSnapshot => {
+                    panic!("update retained a detached snapshot proof")
                 }
             };
             assert!(Arc::ptr_eq(&prior_proof, &after_proof));
