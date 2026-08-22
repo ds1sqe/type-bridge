@@ -53,6 +53,7 @@ pub(crate) enum AllocationSite {
     QueryFunctionValueHandle,
     QueryFunctionCallHandle,
     QueryFunctionArguments,
+    MigrationCancellationHandle,
 }
 
 #[derive(Clone, Copy, Debug)]

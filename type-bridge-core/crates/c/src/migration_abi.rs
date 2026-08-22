@@ -14,6 +14,7 @@ use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory};
 use crate::abi::{
     TypeBridgeByteView, TypeBridgeDiagnostics, TypeBridgeSchemaPackage, TypeBridgeStatus, guarded,
 };
+use crate::allocation::{AllocationSite, try_box};
 use crate::diagnostic::diagnostics_handle;
 use crate::generated_preflight::direct_output_preflight;
 use crate::migration_runtime::{
@@ -1251,13 +1252,16 @@ pub unsafe extern "C" fn type_bridge_migration_cancellation_new(
             return TypeBridgeStatus::InvalidArgument;
         }
         unsafe { out_cancellation.write_unaligned(ptr::null_mut()) };
-        unsafe {
-            out_cancellation.write_unaligned(Box::into_raw(Box::new(
-                TypeBridgeMigrationCancellation {
-                    state: type_bridge_schema_migration::MigrationCancellation::default(),
-                },
-            )))
+        let cancellation = match try_box(
+            AllocationSite::MigrationCancellationHandle,
+            TypeBridgeMigrationCancellation {
+                state: type_bridge_schema_migration::MigrationCancellation::default(),
+            },
+        ) {
+            Ok(value) => value,
+            Err(_) => return TypeBridgeStatus::ResourceLimit,
         };
+        unsafe { out_cancellation.write_unaligned(Box::into_raw(cancellation)) };
         TypeBridgeStatus::Ok
     })
 }
@@ -2154,6 +2158,29 @@ pub unsafe extern "C" fn type_bridge_migration_verification_finding_close(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::allocation::{AllocationSite, inject_failure};
+
+    #[test]
+    fn candidate_c_migration_cancellation_allocation_failure_is_atomic_and_retryable() {
+        let mut cancellation = ptr::without_provenance_mut(1);
+        let failure = inject_failure(AllocationSite::MigrationCancellationHandle, 0);
+        assert_eq!(
+            unsafe { type_bridge_migration_cancellation_new(&mut cancellation) },
+            TypeBridgeStatus::ResourceLimit
+        );
+        assert!(cancellation.is_null());
+        drop(failure);
+
+        assert_eq!(
+            unsafe { type_bridge_migration_cancellation_new(&mut cancellation) },
+            TypeBridgeStatus::Ok
+        );
+        assert_eq!(
+            unsafe { type_bridge_migration_cancellation_close(&mut cancellation) },
+            TypeBridgeStatus::Ok
+        );
+        assert!(cancellation.is_null());
+    }
 
     #[test]
     fn candidate_c_migration_cancellation_is_owned_and_idempotently_closed() {
