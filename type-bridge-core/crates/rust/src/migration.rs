@@ -21,6 +21,12 @@ pub struct MigrationCatalog<S: Schema> {
 }
 
 impl<S: Schema> MigrationCatalog<S> {
+    /// Construct one validated portable compound identity for catalog planning.
+    pub fn identity(&self, app_label: &str, name: &str) -> Result<MigrationId> {
+        let _ = self;
+        MigrationId::new(app_label, name).map_err(migration_diagnostic)
+    }
+
     /// Return the canonical history-bundle fingerprint.
     #[must_use]
     pub const fn fingerprint(&self) -> &Fingerprint {
@@ -107,6 +113,17 @@ impl<S: Schema> MigrationCatalog<S> {
         database: &Database<S>,
     ) -> Result<type_bridge_schema_migration::MigrationVerifyReport> {
         type_bridge_schema_migration_typedb::verify_catalog_state(
+            Arc::new(database.inner_orm().clone()),
+            &self.inner,
+        )
+        .await
+        .map_err(migration_diagnostic)
+    }
+
+    /// Read the exact active applied set from this generated catalog's journal.
+    #[cfg(feature = "typedb")]
+    pub async fn applied_migrations(&self, database: &Database<S>) -> Result<Vec<MigrationId>> {
+        type_bridge_schema_migration_typedb::load_catalog_applied_migrations(
             Arc::new(database.inner_orm().clone()),
             &self.inner,
         )

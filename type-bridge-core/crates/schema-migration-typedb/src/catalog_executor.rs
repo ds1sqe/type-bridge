@@ -158,6 +158,23 @@ pub async fn verify_catalog_state(
     )
 }
 
+/// Load the active applied identities from the exact generated catalog journal.
+///
+/// This is read-only and does not bootstrap either database or control schema.
+pub async fn load_catalog_applied_migrations(
+    managed_database: Arc<Database>,
+    catalog: &MigrationCatalog,
+) -> Result<Vec<MigrationId>, Diagnostic> {
+    let binding = catalog_binding(managed_database, catalog)?;
+    let verified =
+        VerifiedMigrationCatalog::new(catalog.graph().manifests().map(|(_, value)| value))?;
+    let store = TypeDbMigrationStore::new(&binding, verified)?;
+    let scope = ExecutionScope::new(catalog.execution_context()?.scope_id().clone());
+    Ok(applied_basis(store.load_applied_read_only(&scope).await?)
+        .into_iter()
+        .collect())
+}
+
 fn applied_basis(
     entries: Vec<
         type_bridge_schema_migration::JournalEntry<type_bridge_schema_migration::AppliedRecord>,
