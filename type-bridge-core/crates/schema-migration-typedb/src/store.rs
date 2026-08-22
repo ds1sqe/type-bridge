@@ -909,6 +909,11 @@ impl<'a> TypeDbMigrationStore<'a> {
             return Ok(());
         }
 
+        self.journal_database
+            .create_database_outcome()
+            .await
+            .map_err(map_orm_error)?;
+
         // A schema transaction is exclusive with both schema and write
         // transactions. Inspecting the committed export while this handle is
         // retained therefore serializes concurrent bootstrap attempts without
@@ -2333,6 +2338,7 @@ fn parse_stored_row(document: Value) -> Result<StoredRow, Diagnostic> {
         kind.as_str(),
         PLAN_RECORD_KIND
             | EVENT_RECORD_KIND
+            | BACKFILL_EVENT_RECORD_KIND
             | APPLIED_RECORD_KIND
             | ROLLBACK_PLAN_RECORD_KIND
             | ROLLBACK_EVENT_RECORD_KIND
@@ -3713,5 +3719,20 @@ mod tests {
         assert!(
             control_schema_matches(&export, MANAGED_FENCE_SCHEMA_TYPEQL, "managed-fence").unwrap()
         );
+    }
+
+    #[test]
+    fn stored_row_parser_accepts_the_closed_backfill_event_kind() {
+        let payload = b"backfill-event";
+        let row = serde_json::json!({
+            "key": "record-key",
+            "kind": BACKFILL_EVENT_RECORD_KIND,
+            "payload": String::from_utf8_lossy(payload),
+            "digest": payload_digest(payload),
+            "sequence": "1",
+        });
+        let parsed = parse_stored_row(row).expect("backfill journal row parses");
+        assert_eq!(parsed.kind, BACKFILL_EVENT_RECORD_KIND);
+        assert_eq!(parsed.payload, payload);
     }
 }
