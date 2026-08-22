@@ -17,8 +17,8 @@ use type_bridge_contract::migration_backfill::{
 };
 use type_bridge_contract::schema::{
     AnnotationFact, AnnotationFactId, AnnotationKindId, AnnotationSubjectId, CanonicalValueRange,
-    DeclaredSchema, DocumentId, SchemaAnnotationValue, SchemaFact, SourceSpan, SourcedSchemaFact,
-    SubFact, SubFactId, TypeFact, ValueFact, ValueFactId,
+    DeclaredSchema, DocumentId, OwnsFact, OwnsFactId, SchemaAnnotationValue, SchemaFact,
+    SourceSpan, SourcedSchemaFact, SubFact, SubFactId, TypeFact, ValueFact, ValueFactId,
 };
 use type_bridge_contract::value::{CanonicalValue, ValueTypeTag};
 use type_bridge_query::{MigrationAssertionValidationContext, lower_condition_to_plan};
@@ -62,6 +62,78 @@ fn declared(facts: Vec<SchemaFact>) -> DeclaredSchema {
         .collect::<Vec<_>>();
     DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced)
         .expect("fixture schema")
+}
+
+fn backfill_declared() -> DeclaredSchema {
+    backfill_declared_with_partition_key(true)
+}
+
+fn backfill_declared_with_partition_key(with_partition_key: bool) -> DeclaredSchema {
+    let owner = TypeId::new(TypeKind::Entity, "person").unwrap();
+    let source = AttributeId::new("legacy-name").unwrap();
+    let destination = AttributeId::new("display-name").unwrap();
+    let partition = AttributeId::new("person-id").unwrap();
+    let mut facts = vec![type_fact("person")];
+    for attribute in [&source, &destination, &partition] {
+        facts.push(SchemaFact::Type(
+            TypeFact::new(TypeId::new(TypeKind::Attribute, attribute.label().as_str()).unwrap())
+                .unwrap(),
+        ));
+        facts.push(SchemaFact::Value(ValueFact::new(
+            ValueFactId::new(attribute.clone()),
+            ValueTypeTag::String,
+        )));
+        facts.push(SchemaFact::Owns(OwnsFact::new(
+            OwnsFactId::new(owner.clone(), attribute.clone()).unwrap(),
+        )));
+    }
+    if with_partition_key {
+        facts.push(SchemaFact::Annotation(
+            AnnotationFact::new(
+                AnnotationFactId::new(
+                    AnnotationSubjectId::Owns(OwnsFactId::new(owner, partition).unwrap()),
+                    AnnotationKindId::Key,
+                ),
+                SchemaAnnotationValue::Presence,
+            )
+            .unwrap(),
+        ));
+    }
+    declared(facts)
+}
+
+#[test]
+fn backfill_partition_must_be_a_historical_owner_key() {
+    let source = backfill_declared_with_partition_key(false);
+    let capabilities = [COPY_ATTRIBUTE_BACKFILL_CAPABILITY]
+        .into_iter()
+        .map(|value| type_bridge_contract::capability::CapabilityId::new(value).unwrap())
+        .collect();
+    let context = context_with_capabilities(capabilities);
+    let semantics = managed_schema_state(&source, &context)
+        .unwrap()
+        .managed_semantic_schema()
+        .clone();
+    let plan = AttributeBackfillPlan::new(
+        TypeId::new(TypeKind::Entity, "person").unwrap(),
+        AttributeId::new("legacy-name").unwrap(),
+        AttributeId::new("display-name").unwrap(),
+        BackfillPartition::new(256, AttributeId::new("person-id").unwrap()).unwrap(),
+        semantics,
+        Some(BackfillReverseProgram::RemoveEqualCopiedDestination),
+    )
+    .unwrap();
+    let draft = SchemaMigrationDraft::new(
+        migration_id("0001_invalid_partition"),
+        Vec::new(),
+        vec![MigrationStep::backfill(MigrationStepId::new("copy-name").unwrap(), plan).unwrap()],
+    )
+    .unwrap();
+    let error = build_verified_manifest(draft, (&source, &context)).unwrap_err();
+    assert_eq!(
+        error.code().as_str(),
+        "migration_manifest_backfill_partition_not_key"
+    );
 }
 
 fn context() -> ManagedDeltaContext {
@@ -117,7 +189,7 @@ fn migration_id(name: &str) -> MigrationId {
 
 #[test]
 fn migration_v1_adds_tagged_backfill_without_changing_old_step_bytes() {
-    let source = declared(vec![type_fact("person")]);
+    let source = backfill_declared();
     let old_step = MigrationStep::from(
         SchemaDeltaStep::new(
             MigrationStepId::new("schema").unwrap(),

@@ -396,6 +396,7 @@ pub fn build_verified_manifest(
                     "backfill plan does not bind the exact historical intermediate schema",
                 ));
             }
+            validate_backfill_historical_schema(plan, &current_schema, delta_context)?;
             for capability in step.required_capabilities().iter().cloned() {
                 required_capabilities.insert(capability);
             }
@@ -532,6 +533,59 @@ pub fn build_verified_manifest(
         target_schema: current_schema,
         target_state,
     })
+}
+
+fn validate_backfill_historical_schema(
+    plan: &type_bridge_contract::migration_backfill::AttributeBackfillPlan,
+    schema: &DeclaredSchema,
+    context: &ManagedDeltaContext,
+) -> Result<(), Diagnostic> {
+    let resolved = resolve(schema, context.semantic_profile()).map_err(|diagnostics| {
+        diagnostics
+            .iter()
+            .next()
+            .map(|diagnostic| diagnostic.diagnostic().clone())
+            .unwrap_or_else(|| {
+                failure(
+                    DiagnosticCategory::Integrity,
+                    "migration_manifest_backfill_resolution_failed",
+                    "backfill historical schema resolution failed without a diagnostic",
+                )
+            })
+    })?;
+    let owner = resolved.types().get(plan.owner()).ok_or_else(|| {
+        failure(
+            DiagnosticCategory::InvalidContract,
+            "migration_manifest_backfill_owner_missing",
+            "backfill owner does not exist in the historical intermediate schema",
+        )
+    })?;
+    for (role, attribute) in [
+        ("source", plan.source()),
+        ("destination", plan.destination()),
+        ("partition", plan.partition().stable_attribute()),
+    ] {
+        if !owner.owns().contains_key(attribute) {
+            return Err(failure(
+                DiagnosticCategory::InvalidContract,
+                "migration_manifest_backfill_attribute_not_owned",
+                "backfill attribute is not effectively owned by the historical owner",
+            )
+            .with_detail("attribute_role", role)
+            .with_detail("attribute", attribute.label().as_str().to_owned()));
+        }
+    }
+    if !owner
+        .key_attributes()
+        .contains(plan.partition().stable_attribute())
+    {
+        return Err(failure(
+            DiagnosticCategory::InvalidContract,
+            "migration_manifest_backfill_partition_not_key",
+            "backfill partition attribute must be an effective key of the historical owner",
+        ));
+    }
+    Ok(())
 }
 
 /// Decode canonical bytes and return only a fully replay-verified manifest.

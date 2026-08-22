@@ -21,9 +21,10 @@ use type_bridge_contract::migration_backfill::{
 };
 use type_bridge_contract::schema::{
     AnnotationFact, AnnotationFactId, AnnotationKindId, AnnotationSubjectId, DeclaredSchema,
-    DocumentId, SchemaAnnotationValue, SchemaFact, SourceSpan, SourcedSchemaFact, SubFact,
-    SubFactId, TypeFact,
+    DocumentId, OwnsFact, OwnsFactId, SchemaAnnotationValue, SchemaFact, SourceSpan,
+    SourcedSchemaFact, SubFact, SubFactId, TypeFact, ValueFact, ValueFactId,
 };
+use type_bridge_contract::value::ValueTypeTag;
 use type_bridge_query::{MigrationAssertionValidationContext, lower_condition_to_plan};
 use type_bridge_schema::{
     ManagedDeltaContext, SafetyClass, SafetyDerivationProfile, derive_safety_conditions,
@@ -93,6 +94,38 @@ fn declared_facts(facts: Vec<SchemaFact>) -> DeclaredSchema {
     });
     DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced)
         .expect("declared schema")
+}
+
+fn backfill_declared() -> DeclaredSchema {
+    let owner = TypeId::new(TypeKind::Entity, "person").unwrap();
+    let source = AttributeId::new("legacy-name").unwrap();
+    let destination = AttributeId::new("display-name").unwrap();
+    let partition = AttributeId::new("person-id").unwrap();
+    let mut facts = vec![type_fact("person")];
+    for attribute in [&source, &destination, &partition] {
+        facts.push(SchemaFact::Type(
+            TypeFact::new(TypeId::new(TypeKind::Attribute, attribute.label().as_str()).unwrap())
+                .unwrap(),
+        ));
+        facts.push(SchemaFact::Value(ValueFact::new(
+            ValueFactId::new(attribute.clone()),
+            ValueTypeTag::String,
+        )));
+        facts.push(SchemaFact::Owns(OwnsFact::new(
+            OwnsFactId::new(owner.clone(), attribute.clone()).unwrap(),
+        )));
+    }
+    facts.push(SchemaFact::Annotation(
+        AnnotationFact::new(
+            AnnotationFactId::new(
+                AnnotationSubjectId::Owns(OwnsFactId::new(owner, partition).unwrap()),
+                AnnotationKindId::Key,
+            ),
+            SchemaAnnotationValue::Presence,
+        )
+        .unwrap(),
+    ));
+    declared_facts(facts)
 }
 
 fn abstract_fact(label: &str) -> SchemaFact {
@@ -201,7 +234,7 @@ fn additive_policy() -> MigrationSafetyPolicy {
 
 #[test]
 fn backfill_apply_evidence_retains_exact_manifest_position_and_requires_approval() {
-    let source = declared(&["person"]);
+    let source = backfill_declared();
     let mut capabilities = context().available_capabilities().clone();
     capabilities.insert(CapabilityId::new(COPY_ATTRIBUTE_BACKFILL_CAPABILITY).unwrap());
     let context = ManagedDeltaContext::new(
