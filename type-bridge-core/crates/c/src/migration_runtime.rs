@@ -12,9 +12,11 @@ use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, Diagnosti
 use type_bridge_contract::migration::MigrationId;
 use type_bridge_schema::{ManagedDeltaContext, SafetyClass, VerifiedSchemaAuthority};
 use type_bridge_schema_migration::{
-    MigrationApplyApproval, MigrationApplyPlanError, MigrationApplyTarget, MigrationCatalog,
-    MigrationSafetyPolicy, SafetyPolicyDecision, VerifiedMigrationApplyPlan,
-    VerifiedMigrationRollbackPlan, migration_runtime_capability_vocabulary,
+    LeaseHolderId, MigrationApplyApproval, MigrationApplyPlanError, MigrationApplyTarget,
+    MigrationCatalog, MigrationExecutionOutcome, MigrationRollbackOutcome, MigrationSafetyPolicy,
+    SafetyPolicyDecision, VerifiedMigrationApplyPlan, VerifiedMigrationRollbackPlan,
+    migration_runtime_capability_vocabulary, require_authorized_apply_plan,
+    require_authorized_rollback_plan,
 };
 
 use crate::diagnostic::stable;
@@ -340,6 +342,53 @@ impl MigrationPlanState {
             plan,
         }))
     }
+
+    /// Execute an authorized plan through the database's exact provider runtime.
+    pub(crate) fn execute(
+        &self,
+        database: &TypeBridgeDatabase,
+        holder: &str,
+    ) -> Result<MigrationPlanExecutionState, Diagnostic> {
+        self.require_execution_authorized()?;
+        let holder = LeaseHolderId::new(holder)?;
+        let managed_database = database.orm_database_arc();
+        match &self.plan {
+            MigrationPlanKind::Apply(plan) => database
+                .block_on(
+                    type_bridge_schema_migration_typedb::execute_catalog_apply_plan(
+                        managed_database,
+                        &self.catalog.catalog,
+                        &holder,
+                        plan,
+                    ),
+                )
+                .map(MigrationPlanExecutionState::Apply),
+            MigrationPlanKind::Rollback(plan) => database
+                .block_on(
+                    type_bridge_schema_migration_typedb::execute_catalog_rollback_plan(
+                        managed_database,
+                        &self.catalog.catalog,
+                        &holder,
+                        plan,
+                    ),
+                )
+                .map(MigrationPlanExecutionState::Rollback),
+        }
+    }
+
+    fn require_execution_authorized(&self) -> Result<(), Diagnostic> {
+        match &self.plan {
+            MigrationPlanKind::Apply(plan) => require_authorized_apply_plan(plan),
+            MigrationPlanKind::Rollback(plan) => require_authorized_rollback_plan(plan),
+        }
+    }
+}
+
+/// Owned terminal result prepared for the additive ABI 1.5 outcome handles.
+#[derive(Debug)]
+pub(crate) enum MigrationPlanExecutionState {
+    Apply(MigrationExecutionOutcome),
+    Rollback(MigrationRollbackOutcome),
 }
 
 /// Mutable, single-owner approval selection bound to one exact preview.
@@ -725,6 +774,15 @@ mod tests {
         let bytes = encode_verified_migration_history_bundle(&bundle).unwrap();
         let catalog = MigrationCatalogState::open(&authority, &bytes).unwrap();
         let preview = catalog.preview_apply(&[], None).unwrap();
+
+        assert_eq!(
+            preview
+                .require_execution_authorized()
+                .unwrap_err()
+                .code()
+                .as_str(),
+            "migration_apply_preview_not_executable"
+        );
 
         assert_eq!(preview.direction(), super::MigrationPlanDirection::Apply);
         assert!(!preview.execution_authorized());

@@ -518,7 +518,12 @@ mod tests {
         let preview = catalog.preview_apply(Vec::new(), None).unwrap();
         let approvals = preview.approval_builder().finish().unwrap();
         assert_eq!(approvals.length(), 0);
-        assert!(preview.authorize(&approvals).unwrap().execution_authorized());
+        assert!(
+            preview
+                .authorize(&approvals)
+                .unwrap()
+                .execution_authorized()
+        );
         let foreign = catalog.preview_apply(Vec::new(), None).unwrap();
         assert!(foreign.authorize(&approvals).is_err());
     }
