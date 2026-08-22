@@ -12,10 +12,10 @@ use type_bridge_contract::schema::{
 };
 use type_bridge_schema::{ManagedDeltaContext, diff_managed, inverse_delta};
 use type_bridge_schema_migration::{
-    MigrationApplyTarget, MigrationCatalog, MigrationHistoryGraph, SchemaMigrationDraft,
-    VerifiedMigrationHistoryBundle, build_verified_manifest,
-    decode_verified_migration_history_bundle, encode_verified_migration_history_bundle,
-    migration_runtime_capability_vocabulary,
+    MigrationApplyApproval, MigrationApplyTarget, MigrationCatalog, MigrationHistoryGraph,
+    MigrationSafetyPolicy, SchemaMigrationDraft, VerifiedMigrationHistoryBundle,
+    build_verified_manifest, decode_verified_migration_history_bundle,
+    encode_verified_migration_history_bundle, migration_runtime_capability_vocabulary,
 };
 
 fn declared(labels: &[&str]) -> DeclaredSchema {
@@ -126,6 +126,34 @@ fn bundle_round_trips_full_historical_authority_and_is_deterministic() {
         .expect("catalog authority builds its own rollback preview");
     assert!(!rollback_preview.execution_authorized());
     assert_eq!(rollback_preview.rollbacks().len(), 1);
+    let approvals = decoded
+        .entries()
+        .iter()
+        .map(|entry| MigrationApplyApproval::for_manifest(entry.manifest()).unwrap())
+        .collect::<Vec<_>>();
+    let authorized_apply = catalog
+        .authorize_apply(
+            &BTreeSet::new(),
+            &MigrationApplyTarget::DefaultHead,
+            &MigrationSafetyPolicy::default_policy(),
+            &approvals,
+        )
+        .expect("exact approvals rebuild an executable forward plan");
+    assert!(authorized_apply.execution_authorized());
+    let rollback_approval = MigrationApplyApproval::for_rollback(
+        decoded.entries()[1].manifest(),
+        rollback_preview.rollbacks()[0].rollback_safety(),
+    )
+    .unwrap();
+    let authorized_rollback = catalog
+        .authorize_rollback(
+            &applied,
+            &removals,
+            &MigrationSafetyPolicy::default_policy(),
+            &[rollback_approval],
+        )
+        .expect("exact reverse approval rebuilds an executable rollback plan");
+    assert!(authorized_rollback.execution_authorized());
     assert_eq!(decoded.entries().len(), 2);
     let reconstructed = decoded
         .history_graph()
