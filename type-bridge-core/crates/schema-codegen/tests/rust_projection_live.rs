@@ -43,7 +43,7 @@ const WORKFORCE_V3_JOURNEY: &[u8] =
 const WORKFORCE_V2_CATALOG_RELATIVE: &str =
     "tests/contracts/sdk_conformance/workforce-v2/catalog-v2.json";
 const WORKFORCE_PROFILE: &str = "typedb-3.12.1/v1";
-const CONSUMER_TESTS: [&str; 11] = [
+const CONSUMER_TESTS: [&str; 12] = [
     "generated_workforce_report_journeys",
     "generated_schema_handshake_and_tokens",
     "generated_entity_crud_batches_and_scalar_domains",
@@ -55,6 +55,7 @@ const CONSUMER_TESTS: [&str; 11] = [
     "generated_lifecycle_hooks_and_atomic_mutation_batches",
     "generated_write_transaction_commit_rollback_and_drop",
     "generated_data_model_runtime_v3_live",
+    "generated_canonical_serialization_v5_live",
 ];
 
 struct Stage(PathBuf);
@@ -260,6 +261,24 @@ fn requested_workforce_v3_supplement(profile_name: &str) -> Option<PathBuf> {
     Some(path)
 }
 
+fn requested_workforce_v5_evidence(profile_name: &str) -> Option<PathBuf> {
+    let raw = env::var_os("TYPE_BRIDGE_WORKFORCE_V5_RUST_EVIDENCE")?;
+    assert_eq!(profile_name, WORKFORCE_PROFILE);
+    let path = PathBuf::from(raw);
+    assert!(
+        path.is_absolute(),
+        "Workforce V5 evidence path must be absolute"
+    );
+    let parent = path.parent().expect("Workforce V5 evidence has a parent");
+    let metadata =
+        fs::symlink_metadata(parent).expect("Workforce V5 evidence parent must already exist");
+    assert!(metadata.is_dir() && !metadata.file_type().is_symlink());
+    assert!(
+        matches!(fs::symlink_metadata(&path), Err(error) if error.kind() == std::io::ErrorKind::NotFound)
+    );
+    Some(path)
+}
+
 #[test]
 fn external_consumer_remains_a_focused_public_api_suite() {
     fn consumer_test<'a>(source: &'a str, name: &str) -> &'a str {
@@ -366,16 +385,22 @@ fn generated_rust_projection_round_trips_exact_live_models() {
     let workforce_report = requested_workforce_report(&profile_name);
     let workforce_v2_report = requested_workforce_v2_report(&profile_name);
     let workforce_v3_supplement = requested_workforce_v3_supplement(&profile_name);
+    let workforce_v5_evidence = requested_workforce_v5_evidence(&profile_name);
     assert!(
-        workforce_v3_supplement.is_none()
+        (workforce_v3_supplement.is_none() && workforce_v5_evidence.is_none())
             || (workforce_report.is_none() && workforce_v2_report.is_none()),
-        "Workforce V3 uses an isolated generated package and consumer run"
+        "Workforce V3/V5 use an isolated generated package and consumer run"
     );
-    let (schema, provider_schema) = if workforce_v3_supplement.is_some() {
-        (WORKFORCE_V3_SCHEMA, WORKFORCE_V3_PROVIDER_SCHEMA)
-    } else {
-        (schema, provider_schema)
-    };
+    assert!(
+        workforce_v3_supplement.is_none() || workforce_v5_evidence.is_none(),
+        "Workforce V3 and V5 evidence use separate live runs"
+    );
+    let (schema, provider_schema) =
+        if workforce_v3_supplement.is_some() || workforce_v5_evidence.is_some() {
+            (WORKFORCE_V3_SCHEMA, WORKFORCE_V3_PROVIDER_SCHEMA)
+        } else {
+            (schema, provider_schema)
+        };
     let workforce_v2_proof_fragments = workforce_v2_report.as_ref().map(|_| {
         let raw = env::var_os("TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENTS")
             .expect("TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENTS is required for a V2 report");
@@ -834,6 +859,8 @@ tokio = {{ version = "1", features = ["macros", "rt-multi-thread"] }}
         .env_remove("TYPE_BRIDGE_WORKFORCE_V2_VALIDATED_OBSERVATIONS");
     if workforce_v3_supplement.is_some() {
         consumer_command.arg("generated_data_model_runtime_v3_live");
+    } else if workforce_v5_evidence.is_some() {
+        consumer_command.arg("generated_canonical_serialization_v5_live");
     }
     if let (Some(report), Some((manifest, catalog, journey, schema, provider_schema))) =
         (&workforce_report, &workforce_files)
@@ -853,6 +880,9 @@ tokio = {{ version = "1", features = ["macros", "rt-multi-thread"] }}
             .env("TYPE_BRIDGE_WORKFORCE_V3_RUST_SUPPLEMENT", supplement)
             .env("TYPE_BRIDGE_WORKFORCE_V3_CATALOG", catalog)
             .env("TYPE_BRIDGE_WORKFORCE_V3_JOURNEY", journey);
+    }
+    if let Some(evidence) = &workforce_v5_evidence {
+        consumer_command.env("TYPE_BRIDGE_WORKFORCE_V5_RUST_EVIDENCE", evidence);
     }
     if let (Some(report), Some((manifest, catalog, journey, schema, provider_schema))) =
         (&workforce_v2_report, &workforce_v2_files)
@@ -882,11 +912,12 @@ tokio = {{ version = "1", features = ["macros", "rt-multi-thread"] }}
         String::from_utf8_lossy(&consumer_output.stderr),
     );
     let consumer_stdout = String::from_utf8_lossy(&consumer_output.stdout);
-    let expected_consumer_tests = if workforce_v3_supplement.is_some() {
-        1
-    } else {
-        CONSUMER_TESTS.len()
-    };
+    let expected_consumer_tests =
+        if workforce_v3_supplement.is_some() || workforce_v5_evidence.is_some() {
+            1
+        } else {
+            CONSUMER_TESTS.len()
+        };
     assert!(consumer_stdout.contains(&format!(
         "test result: ok. {expected_consumer_tests} passed; 0 failed"
     )));
@@ -897,6 +928,37 @@ tokio = {{ version = "1", features = ["macros", "rt-multi-thread"] }}
                 .as_ref()
                 .is_some_and(|path| path.is_file())
         );
+        return;
+    }
+    if let Some(evidence_path) = &workforce_v5_evidence {
+        assert!(consumer_stdout.contains("generated Workforce V5 Rust live evidence: passed"));
+        assert!(evidence_path.is_file());
+        let evidence: Value = serde_json::from_slice(
+            fs::read(evidence_path)
+                .expect("V5 evidence reads")
+                .strip_suffix(b"\n")
+                .expect("V5 evidence ends in one LF"),
+        )
+        .expect("V5 evidence parses");
+        assert_eq!(
+            evidence["format"],
+            "typebridge.workforce-v5-live-codec-evidence/v1"
+        );
+        assert_eq!(evidence["binding"], "rust");
+        assert_eq!(evidence["direct_remote_equal"], true);
+        assert_eq!(
+            evidence["detached_mutation_code"],
+            "projected_snapshot_detached"
+        );
+        assert_eq!(evidence["remote_exchange_count"], 1);
+        assert_eq!(evidence["rebound_mutation"], true);
+        for field in ["entity_snapshot_b64", "relation_snapshot_b64"] {
+            assert!(
+                evidence[field]
+                    .as_str()
+                    .is_some_and(|value| !value.is_empty())
+            );
+        }
         return;
     }
     assert!(consumer_stdout.contains("public generated schema handshake and tokens: passed"));

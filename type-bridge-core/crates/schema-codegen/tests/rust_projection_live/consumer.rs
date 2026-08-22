@@ -30,14 +30,13 @@ use type_bridge_generated_schema::{
     CounterType, CounterValue, Date, DateTime, DateTimeTz, Decimal, Duration, Employee,
     EmployeeCreate, EmployeeFamily, EmployeeType, Employment, EmploymentCreate, EmploymentType,
     Event, EventCreate, EventType, FooBar, Identifier, IntegerCall, IntegerInput, Interaction,
-    InteractionActorPlayer, InteractionActorRef, InteractionCreate, InteractionTargetPlayer,
-    InteractionType, Manager, ManagerCreate, ManagerNote, ManagerType, Membership,
+    InteractionActorPlayer, InteractionActorRef, InteractionCreate, InteractionType, Manager,
+    ManagerCreate, ManagerNote, ManagerType, Membership,
     MembershipCreate, MembershipFamily, MembershipMemberPlayer, MembershipMemberRef,
-    MembershipType, NetworkLink, NetworkLinkCreate, NetworkLinkDestinationPlayer,
-    NetworkLinkOriginPlayer, NetworkLinkParticipantPlayer, NetworkLinkType, Nickname,
+    MembershipType, NetworkLink, NetworkLinkCreate, NetworkLinkType, Nickname,
     PROJECTION_FINGERPRINT_JSON, Party, PartyFamily, PartyName, Person, PersonCreate, PersonRef,
-    PersonType, PlainActivity, PlainActivityCreate, PlainActivityParticipantPlayer,
-    PlainActivityType, Rank, Robot, RobotCreate, RobotId, RobotType, SCHEMA,
+    PersonType, PlainActivity, PlainActivityCreate, PlainActivityType, Rank, Robot, RobotCreate,
+    RobotId, RobotType, SCHEMA,
     SEMANTIC_SCHEMA_FINGERPRINT_JSON, Score, ScoreGte, ValBool, ValConstrained, ValDate,
     ValDatetime, ValDatetimeTz, ValDecimal, ValDouble, ValDuration, integer_input,
     plays_event_container_item, qualifying_score,
@@ -724,6 +723,30 @@ fn publish_workforce_report(path: &Path, mut report: Value) {
     );
 }
 
+fn workforce_base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut output = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let first = chunk[0];
+        let second = chunk.get(1).copied().unwrap_or(0);
+        let third = chunk.get(2).copied().unwrap_or(0);
+        output.push(ALPHABET[(first >> 2) as usize] as char);
+        output.push(ALPHABET[(((first & 3) << 4) | (second >> 4)) as usize] as char);
+        output.push(if chunk.len() > 1 {
+            ALPHABET[(((second & 15) << 2) | (third >> 6)) as usize] as char
+        } else {
+            '='
+        });
+        output.push(if chunk.len() > 2 {
+            ALPHABET[(third & 63) as usize] as char
+        } else {
+            '='
+        });
+    }
+    output
+}
+
 fn workforce_version_endpoint() -> String {
     assert_ne!(
         env::var("TYPE_BRIDGE_RUST_PROJECTION_TLS").as_deref(),
@@ -1182,31 +1205,16 @@ fn workforce_v2_role_label(role_id_json: &str) -> String {
         .to_owned()
 }
 
-fn workforce_v2_network_player_key(player: &NetworkLinkParticipantPlayer) -> &str {
-    match player {
-        NetworkLinkParticipantPlayer::Person(reference) => reference
-            .identifier()
-            .expect("workforce-v2 network participant carries its key")
-            .value(),
-    }
+fn workforce_v2_network_player_key(player: &Person) -> &str {
+    player.identifier().value()
 }
 
-fn workforce_v2_network_origin_key(player: &NetworkLinkOriginPlayer) -> &str {
-    match player {
-        NetworkLinkOriginPlayer::Person(reference) => reference
-            .identifier()
-            .expect("workforce-v2 network origin carries its key")
-            .value(),
-    }
+fn workforce_v2_network_origin_key(player: &Person) -> &str {
+    player.identifier().value()
 }
 
-fn workforce_v2_network_destination_key(player: &NetworkLinkDestinationPlayer) -> &str {
-    match player {
-        NetworkLinkDestinationPlayer::Person(reference) => reference
-            .identifier()
-            .expect("workforce-v2 network destination carries its key")
-            .value(),
-    }
+fn workforce_v2_network_destination_key(player: &Person) -> &str {
+    player.identifier().value()
 }
 
 fn workforce_v2_query_category(error: &Error) -> Option<&'static str> {
@@ -4454,14 +4462,7 @@ async fn generated_relation_query_and_remote_lifecycle() {
         keyed_put.nickname().expect("put nickname").value(),
         "put-replaced"
     );
-    match keyed_put.destination() {
-        NetworkLinkDestinationPlayer::Person(value) => {
-            assert_eq!(
-                value.identifier().expect("destination key").value(),
-                "p-202"
-            )
-        }
-    }
+    assert_eq!(keyed_put.destination().identifier().value(), "p-202");
     assert_eq!(keyed_put.participant().len(), 2);
 
     let put_new = db
@@ -4499,19 +4500,8 @@ async fn generated_relation_query_and_remote_lifecycle() {
         .expect("network update replaces attributes and roles");
     assert_eq!(updated_new.iid(), put_new_iid);
     assert!(updated_new.nickname().is_none());
-    match updated_new.origin() {
-        NetworkLinkOriginPlayer::Person(value) => {
-            assert_eq!(value.identifier().expect("origin key").value(), "p-202")
-        }
-    }
-    match updated_new.destination() {
-        NetworkLinkDestinationPlayer::Person(value) => {
-            assert_eq!(
-                value.identifier().expect("destination key").value(),
-                "p-203"
-            )
-        }
-    }
+    assert_eq!(updated_new.origin().identifier().value(), "p-202");
+    assert_eq!(updated_new.destination().identifier().value(), "p-203");
     assert_eq!(
         db.relations::<NetworkLink>()
             .count()
@@ -5496,14 +5486,10 @@ async fn generated_integer_keys_and_polymorphic_role_parity() {
         }
         InteractionActorPlayer::Person(_) => panic!("robot interaction hydrated as a person"),
     }
-    match robot_interaction.target() {
-        InteractionTargetPlayer::Person(reference) => {
-            assert_eq!(
-                reference.identifier().expect("target key").value(),
-                "parity-person-target"
-            );
-        }
-    }
+    assert_eq!(
+        robot_interaction.target().identifier().value(),
+        "parity-person-target"
+    );
 
     {
         let mut session = db.query().expect("integer-key query session");
@@ -5635,11 +5621,7 @@ async fn generated_integer_keys_and_polymorphic_role_parity() {
         .expect("surviving interaction read")
         .expect("interaction survives optional actor deletion");
     assert!(surviving.actor().is_none());
-    match surviving.target() {
-        InteractionTargetPlayer::Person(reference) => {
-            assert_eq!(reference.iid(), Some(target.iid()));
-        }
-    }
+    assert_eq!(surviving.target().iid(), target.iid());
 
     db.relations::<Interaction>()
         .delete(surviving.iid())
@@ -5713,11 +5695,7 @@ async fn generated_plain_inherited_abstract_role_parity() {
         )
         .await
         .expect("plain activity insert");
-    match activity.participant() {
-        PlainActivityParticipantPlayer::Person(reference) => {
-            assert_eq!(reference.iid(), Some(person.iid()));
-        }
-    }
+    assert_eq!(activity.participant().iid(), person.iid());
 
     let stored = db
         .relations::<PlainActivity>()
@@ -5725,11 +5703,7 @@ async fn generated_plain_inherited_abstract_role_parity() {
         .await
         .expect("plain activity lookup")
         .expect("plain activity exists");
-    match stored.participant() {
-        PlainActivityParticipantPlayer::Person(reference) => {
-            assert_eq!(reference.iid(), Some(person.iid()));
-        }
-    }
+    assert_eq!(stored.participant().iid(), person.iid());
 
     {
         let mut session = db.query().expect("plain activity query session");
@@ -6165,6 +6139,153 @@ async fn generated_write_transaction_commit_rollback_and_drop() {
         transaction_person_baseline
     );
     println!("F2D public write transaction lifecycle: passed");
+}
+
+#[tokio::test]
+async fn generated_canonical_serialization_v5_live() {
+    let Some(_) = env::var_os("TYPE_BRIDGE_WORKFORCE_V5_RUST_EVIDENCE") else {
+        println!("generated Workforce V5 Rust live evidence: not requested");
+        return;
+    };
+    require_workforce_server_version().await;
+    let db = database().await;
+    let person = db
+        .entities::<Person>()
+        .insert(ownership_edge_person_input("v5-live-person", &[], None))
+        .await
+        .expect("V5 live person insert");
+    let employment = db
+        .relations::<Employment>()
+        .insert(EmploymentCreate::new(person.reference()).expect("V5 employment input"))
+        .await
+        .expect("V5 live employment insert");
+
+    let (direct_employment, direct_person) = {
+        let mut session = db.query().expect("V5 direct query session");
+        let relation = session.exact::<Employment>().expect("V5 employment binding");
+        let person_binding = session.exact::<Person>().expect("V5 person binding");
+        session
+            .query((relation, person_binding))
+            .expect("V5 direct selection")
+            .where_(
+                relation.role(EmploymentType::employee).connects(person_binding)
+                    & person_binding.field(PersonType::identifier).eq(
+                        Identifier::new("v5-live-person").expect("V5 direct key"),
+                    ),
+            )
+            .expect("V5 direct predicate")
+            .one()
+            .await
+            .expect("V5 direct result")
+    };
+    let direct_person_bytes = SCHEMA
+        .encode_snapshot(direct_person)
+        .expect("V5 direct person snapshot encodes");
+    let direct_employment_bytes = SCHEMA
+        .encode_snapshot(direct_employment)
+        .expect("V5 direct employment snapshot encodes");
+
+    let exchange_count = Arc::new(AtomicUsize::new(0));
+    let remote: RemoteDatabase<AppSchema> =
+        RemoteDatabase::connect(RemoteConnectionOptions::generated(
+            RemoteQueryLimits::new(100, 8 << 20, 1000, 1000, 1000, 1000).deadline_ms(30_000),
+            HttpTransport::recording(
+                env::var("TYPE_BRIDGE_REMOTE_URL").expect("V5 remote URL"),
+                Arc::clone(&exchange_count),
+            ),
+        ))
+        .await
+        .expect("V5 remote connects")
+        .with_schema(SCHEMA)
+        .expect("V5 remote schema binds");
+    let (remote_employment, remote_person) = {
+        let mut session = remote.query().expect("V5 remote query session");
+        let relation = session.exact::<Employment>().expect("V5 remote employment binding");
+        let person_binding = session.exact::<Person>().expect("V5 remote person binding");
+        session
+            .query((relation, person_binding))
+            .expect("V5 remote selection")
+            .where_(
+                relation.role(EmploymentType::employee).connects(person_binding)
+                    & person_binding.field(PersonType::identifier).eq(
+                        Identifier::new("v5-live-person").expect("V5 remote key"),
+                    ),
+            )
+            .expect("V5 remote predicate")
+            .one()
+            .await
+            .expect("V5 remote result")
+    };
+    assert_eq!(exchange_count.load(Ordering::SeqCst), 1);
+    let remote_person_bytes = SCHEMA
+        .encode_snapshot(remote_person)
+        .expect("V5 remote person snapshot encodes");
+    let remote_employment_bytes = SCHEMA
+        .encode_snapshot(remote_employment)
+        .expect("V5 remote employment snapshot encodes");
+    assert_eq!(direct_person_bytes, remote_person_bytes);
+    assert_eq!(direct_employment_bytes, remote_employment_bytes);
+
+    let detached: Person = SCHEMA
+        .decode_snapshot(&direct_person_bytes)
+        .expect("V5 person snapshot decodes detached");
+    let detached_error = db
+        .relations::<Employment>()
+        .insert(
+            EmploymentCreate::new(detached.reference())
+                .expect("V5 detached employment input is structurally valid"),
+        )
+        .await
+        .expect_err("V5 detached snapshot cannot authorize mutation");
+    assert_eq!(detached_error.code(), Some("projected_snapshot_detached"));
+
+    let rebound = {
+        let mut session = db.query().expect("V5 rebound query session");
+        let binding = session.exact::<Person>().expect("V5 rebound person binding");
+        session
+            .query(binding)
+            .expect("V5 rebound selection")
+            .where_(binding.field(PersonType::identifier).eq(
+                Identifier::new("v5-live-person").expect("V5 rebound key"),
+            ))
+            .expect("V5 rebound predicate")
+            .one()
+            .await
+            .expect("V5 fresh key lookup finds the person")
+    };
+    let rebound_employment = db
+        .relations::<Employment>()
+        .update(
+            employment.iid(),
+            EmploymentCreate::new(rebound.reference()).expect("V5 rebound input"),
+        )
+        .await
+        .expect("V5 rebound mutation succeeds");
+
+    let evidence = json!({
+        "binding": "rust",
+        "detached_mutation_code": detached_error.code(),
+        "direct_remote_equal": true,
+        "entity_snapshot_b64": workforce_base64(&direct_person_bytes),
+        "format": "typebridge.workforce-v5-live-codec-evidence/v1",
+        "relation_snapshot_b64": workforce_base64(&direct_employment_bytes),
+        "remote_exchange_count": exchange_count.load(Ordering::SeqCst),
+        "rebound_mutation": true,
+    });
+    publish_workforce_report(
+        &workforce_env_path("TYPE_BRIDGE_WORKFORCE_V5_RUST_EVIDENCE"),
+        evidence,
+    );
+    assert_eq!(rebound_employment.iid(), employment.iid());
+    db.relations::<Employment>()
+        .delete(employment.iid())
+        .await
+        .expect("V5 employment cleanup");
+    db.entities::<Person>()
+        .delete(person.iid())
+        .await
+        .expect("V5 person cleanup");
+    println!("generated Workforce V5 Rust live evidence: passed");
 }
 
 #[tokio::test]
@@ -6646,11 +6767,8 @@ async fn generated_data_model_runtime_v3_live() {
     let roles_preserved = put_networks.iter().all(|relation| {
         !relation.iid().is_empty()
             && relation.participant().is_empty()
-            && matches!(relation.origin(), NetworkLinkOriginPlayer::Person(_))
-            && matches!(
-                relation.destination(),
-                NetworkLinkDestinationPlayer::Person(_)
-            )
+            && !relation.origin().iid().is_empty()
+            && !relation.destination().iid().is_empty()
     });
     for relation in &put_networks {
         db.relations::<NetworkLink>()
