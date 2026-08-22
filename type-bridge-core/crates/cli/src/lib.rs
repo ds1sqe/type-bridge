@@ -80,6 +80,9 @@ enum MigrationCommand {
         /// Descriptive migration name; the ordinal prefix is allocated.
         #[arg(long)]
         name: String,
+        /// Closed backfill-intent YAML inside the configured migration directory.
+        #[arg(long)]
+        backfill_intent: Option<PathBuf>,
     },
     /// Order the committed chain and report each manifest's safety class.
     Plan,
@@ -219,8 +222,24 @@ fn run(cli: &Cli) -> Result<(), String> {
             command: SchemaCommand::ExportDeclared { output },
         } => run_schema_export_declared(&workspace, output),
         Command::Migration { command } => match command {
-            MigrationCommand::Make { name } => {
+            MigrationCommand::Make {
+                name,
+                backfill_intent,
+            } => {
                 let directory = workspace.ensure_migration_directory().map_err(display)?;
+                if let Some(intent) = backfill_intent {
+                    let generated = workspace
+                        .author_backfill_migration_in(&directory, name, intent)
+                        .map_err(display)?;
+                    let path = directory.display_path().join(generated.file_name());
+                    println!(
+                        "wrote {}\n  safety: {:?}\n  preview: {}",
+                        path.display(),
+                        generated.manifest().safety(),
+                        path.with_file_name(generated.preview_file_name()).display(),
+                    );
+                    return Ok(());
+                }
                 match workspace
                     .migration_make_in(&directory, name)
                     .map_err(display)?
@@ -2522,6 +2541,7 @@ mod migration_command_tests {
             command: Command::Migration {
                 command: MigrationCommand::Make {
                     name: "initial".to_owned(),
+                    backfill_intent: None,
                 },
             },
         })
@@ -2533,6 +2553,50 @@ mod migration_command_tests {
                 .is_file()
         );
         assert!(migration_directory.join("0001_initial.typeql").is_file());
+    }
+
+    #[test]
+    fn migration_make_accepts_a_confined_backfill_intent() {
+        let directory = tempfile::tempdir().expect("workspace directory");
+        let manifest = write_workspace_manifest(directory.path(), "typedb-3.11.5/v1");
+        fs::write(
+            directory.path().join("schema/fragments/model.yaml"),
+            "format: typebridge.schema/v2\nattributes:\n  display-name: { value: string }\n  legacy-name: { value: string }\n  person-id: { value: string }\nentities:\n  person:\n    owns:\n      display-name: {}\n      legacy-name: {}\n      person-id: { key: true }\n",
+        )
+        .expect("backfill schema writes");
+        let initial = Cli {
+            manifest: manifest.clone(),
+            command: Command::Migration {
+                command: MigrationCommand::Make {
+                    name: "initial".to_owned(),
+                    backfill_intent: None,
+                },
+            },
+        };
+        run(&initial).expect("initial migration");
+        fs::write(
+            directory.path().join("migrations/v2/copy-name.backfill.yaml"),
+            "format: typebridge.migration-backfill-intent/v1\ncopy-attribute:\n  owner-kind: entity\n  owner: person\n  source: legacy-name\n  destination: display-name\n  partition-key: person-id\n  batch-rows: 128\n  reverse: remove-equal-copied-destination\n",
+        )
+        .expect("backfill intent writes");
+
+        run(&Cli {
+            manifest,
+            command: Command::Migration {
+                command: MigrationCommand::Make {
+                    name: "copy-name".to_owned(),
+                    backfill_intent: Some(PathBuf::from("copy-name.backfill.yaml")),
+                },
+            },
+        })
+        .expect("backfill migration authors");
+
+        assert!(
+            directory
+                .path()
+                .join("migrations/v2/0002_copy-name.tbmigration.json")
+                .is_file()
+        );
     }
 
     #[test]

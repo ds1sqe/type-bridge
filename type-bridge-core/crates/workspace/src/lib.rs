@@ -32,6 +32,7 @@ use unicode_casefold::UnicodeCaseFold as _;
 use unicode_normalization::UnicodeNormalization as _;
 
 mod authority;
+mod backfill_intent;
 mod bundle;
 mod lock;
 mod migration;
@@ -39,6 +40,9 @@ mod workspace;
 mod workspace_yaml;
 
 pub use authority::{WorkspaceDirectoryAuthority, WorkspaceOutputDirectory};
+pub use backfill_intent::{
+    MAX_BACKFILL_INTENT_BYTES, TYPEBRIDGE_BACKFILL_INTENT_V1, parse_backfill_intent,
+};
 pub use bundle::{
     BundleProjectionContext, BundleVerificationContext, MAX_SCHEMA_BUNDLE_BYTES,
     SCHEMA_BUNDLE_FINGERPRINT_CANONICALIZATION, SCHEMA_BUNDLE_FINGERPRINT_DOMAIN,
