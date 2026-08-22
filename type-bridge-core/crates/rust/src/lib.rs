@@ -10,6 +10,7 @@ extern crate self as type_bridge;
 
 pub mod __codegen;
 pub mod aggregate;
+mod canonical_codec;
 #[allow(dead_code)]
 mod entity_codec;
 mod entity_manager;
@@ -30,6 +31,7 @@ pub mod session;
 mod transaction;
 pub mod value;
 
+pub use canonical_codec::{CanonicalCodecLimits, CanonicalCodecOptions};
 pub use entity_manager::{EntityManager, EntitySubtypeManager};
 pub use error::{
     Error, ErrorCategory, ErrorDetail, ErrorDiagnostic, ErrorPathSegment, ModelValidationPhase,

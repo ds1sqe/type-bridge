@@ -18,6 +18,11 @@ use crate::__codegen::{
     IntoHydratedSnapshot, MaterializeCreate, MaterializeModel, MaterializeReference,
     MaterializeStruct, Model, StructValue, ValidationError, ValidationPath,
 };
+use crate::CanonicalCodecOptions;
+use crate::canonical_codec::{
+    CapturedCanonicalCodecControl, input_error as canonical_input_error,
+    output_error as canonical_output_error,
+};
 use crate::error::{Error, ModelValidationPhase, Result};
 
 #[doc(hidden)]
@@ -122,11 +127,31 @@ impl<S: Schema> SchemaPackage<S> {
     where
         T: Model<Schema = S> + IntoEncodedScalar,
     {
+        self.encode_attribute_controlled(value, &CanonicalCodecOptions::default())
+    }
+
+    /// Encode one generated attribute under cancellation, deadline, and tighten-only limits.
+    pub fn encode_attribute_controlled<T>(
+        &self,
+        value: T,
+        options: &CanonicalCodecOptions,
+    ) -> Result<Vec<u8>>
+    where
+        T: Model<Schema = S> + IntoEncodedScalar,
+    {
+        let control = CapturedCanonicalCodecControl::capture(options, false)?;
+        control.check()?;
         let installed = self.verify_and_install()?;
         let projected = crate::projected_codec::project_attribute_inferred(&value, &installed)?;
         let record = type_bridge_orm::record_from_attribute(&installed, &projected)
             .map_err(canonical_codec_error)?;
-        record.encode().map_err(canonical_contract_error)
+        control.check_decoded_weight(record.decoded_weight())?;
+        control.check()?;
+        let bytes = record
+            .encode_with_limits(control.output_limits())
+            .map_err(canonical_output_error)?;
+        control.check()?;
+        Ok(bytes)
     }
 
     /// Decode canonical projected-record bytes as one exact generated attribute value.
@@ -134,9 +159,28 @@ impl<S: Schema> SchemaPackage<S> {
     where
         T: Model<Schema = S> + GroupedQueryValue,
     {
+        self.decode_attribute_controlled(bytes, &CanonicalCodecOptions::default())
+    }
+
+    /// Decode one exact generated attribute under cancellation, deadline, and limits.
+    pub fn decode_attribute_controlled<T>(
+        &self,
+        bytes: &[u8],
+        options: &CanonicalCodecOptions,
+    ) -> Result<T>
+    where
+        T: Model<Schema = S> + GroupedQueryValue,
+    {
+        let control = CapturedCanonicalCodecControl::capture(options, false)?;
+        control.check()?;
         let installed = self.verify_and_install()?;
-        let record = type_bridge_contract::projected_record::ProjectedRecord::decode(bytes)
-            .map_err(canonical_contract_error)?;
+        let record = type_bridge_contract::projected_record::ProjectedRecord::decode_with_limits(
+            bytes,
+            control.input_limits(),
+        )
+        .map_err(canonical_input_error)?;
+        control.check_decoded_weight(record.decoded_weight())?;
+        control.check()?;
         let value = type_bridge_orm::materialize_record(&installed, &record)
             .map_err(canonical_codec_error)?;
         let type_bridge_orm::ProjectedCodecValue::Attribute(value) = value else {
@@ -162,7 +206,7 @@ impl<S: Schema> SchemaPackage<S> {
             ));
         }
         let scalar = crate::projected_codec::projected_to_decoded_attribute(&value)?;
-        T::from_group_scalar(scalar).map_err(|error| {
+        let decoded = T::from_group_scalar(scalar).map_err(|error| {
             Error::model_validation(
                 ModelValidationPhase::Input,
                 "canonical_attribute_materialization_failed",
@@ -170,7 +214,9 @@ impl<S: Schema> SchemaPackage<S> {
                 "canonical attribute could not materialize as the requested generated type",
                 Some(Box::new(error)),
             )
-        })
+        })?;
+        control.check()?;
+        Ok(decoded)
     }
 
     /// Construct a type-branded schema package marker from verified JSON evidence (generated-code SPI).
@@ -245,11 +291,31 @@ impl<S: Schema> SchemaPackage<S> {
     where
         T: IntoEncodedCreate,
     {
+        self.encode_create_controlled(value, &CanonicalCodecOptions::default())
+    }
+
+    /// Encode one generated create under cancellation, deadline, and tighten-only limits.
+    pub fn encode_create_controlled<T>(
+        &self,
+        value: T,
+        options: &CanonicalCodecOptions,
+    ) -> Result<Vec<u8>>
+    where
+        T: IntoEncodedCreate,
+    {
+        let control = CapturedCanonicalCodecControl::capture(options, false)?;
+        control.check()?;
         let installed = self.verify_and_install()?;
         let projected = crate::projected_codec::project_create_inferred(value, &installed)?;
         let record = type_bridge_orm::record_from_create(&installed, &projected)
             .map_err(canonical_codec_error)?;
-        record.encode().map_err(canonical_contract_error)
+        control.check_decoded_weight(record.decoded_weight())?;
+        control.check()?;
+        let bytes = record
+            .encode_with_limits(control.output_limits())
+            .map_err(canonical_output_error)?;
+        control.check()?;
+        Ok(bytes)
     }
 
     /// Decode canonical projected-record bytes as one exact generated create type.
@@ -257,9 +323,28 @@ impl<S: Schema> SchemaPackage<S> {
     where
         T: MaterializeCreate<Schema = S>,
     {
+        self.decode_create_controlled(bytes, &CanonicalCodecOptions::default())
+    }
+
+    /// Decode one exact generated create under cancellation, deadline, and limits.
+    pub fn decode_create_controlled<T>(
+        &self,
+        bytes: &[u8],
+        options: &CanonicalCodecOptions,
+    ) -> Result<T>
+    where
+        T: MaterializeCreate<Schema = S>,
+    {
+        let control = CapturedCanonicalCodecControl::capture(options, false)?;
+        control.check()?;
         let installed = self.verify_and_install()?;
-        let record = type_bridge_contract::projected_record::ProjectedRecord::decode(bytes)
-            .map_err(canonical_contract_error)?;
+        let record = type_bridge_contract::projected_record::ProjectedRecord::decode_with_limits(
+            bytes,
+            control.input_limits(),
+        )
+        .map_err(canonical_input_error)?;
+        control.check_decoded_weight(record.decoded_weight())?;
+        control.check()?;
         let value = type_bridge_orm::materialize_record(&installed, &record)
             .map_err(canonical_codec_error)?;
         let type_bridge_orm::ProjectedCodecValue::Create(value) = value else {
@@ -272,15 +357,18 @@ impl<S: Schema> SchemaPackage<S> {
             ));
         };
         let decoded = crate::projected_codec::projected_to_decoded_create(&value, &installed)?;
-        T::materialize_create(&decoded, &ValidationPath::root()).map_err(|error| {
-            Error::model_validation(
-                ModelValidationPhase::Input,
-                "canonical_create_materialization_failed",
-                Vec::new(),
-                "canonical create could not materialize as the requested generated type",
-                Some(Box::new(error)),
-            )
-        })
+        let decoded =
+            T::materialize_create(&decoded, &ValidationPath::root()).map_err(|error| {
+                Error::model_validation(
+                    ModelValidationPhase::Input,
+                    "canonical_create_materialization_failed",
+                    Vec::new(),
+                    "canonical create could not materialize as the requested generated type",
+                    Some(Box::new(error)),
+                )
+            })?;
+        control.check()?;
+        Ok(decoded)
     }
 
     /// Encode one exact generated detached reference as canonical projected-record bytes.
@@ -288,11 +376,31 @@ impl<S: Schema> SchemaPackage<S> {
     where
         T: IntoEncodedReference,
     {
+        self.encode_reference_controlled(value, &CanonicalCodecOptions::default())
+    }
+
+    /// Encode one generated reference under cancellation, deadline, and tighten-only limits.
+    pub fn encode_reference_controlled<T>(
+        &self,
+        value: T,
+        options: &CanonicalCodecOptions,
+    ) -> Result<Vec<u8>>
+    where
+        T: IntoEncodedReference,
+    {
+        let control = CapturedCanonicalCodecControl::capture(options, false)?;
+        control.check()?;
         let installed = self.verify_and_install()?;
         let projected = crate::projected_codec::project_reference_inferred(value, &installed)?;
         let record = type_bridge_orm::record_from_reference(&installed, &projected)
             .map_err(canonical_codec_error)?;
-        record.encode().map_err(canonical_contract_error)
+        control.check_decoded_weight(record.decoded_weight())?;
+        control.check()?;
+        let bytes = record
+            .encode_with_limits(control.output_limits())
+            .map_err(canonical_output_error)?;
+        control.check()?;
+        Ok(bytes)
     }
 
     /// Decode canonical projected-record bytes as one exact generated detached reference.
@@ -300,9 +408,28 @@ impl<S: Schema> SchemaPackage<S> {
     where
         T: MaterializeReference<Schema = S>,
     {
+        self.decode_reference_controlled(bytes, &CanonicalCodecOptions::default())
+    }
+
+    /// Decode one exact generated reference under cancellation, deadline, and limits.
+    pub fn decode_reference_controlled<T>(
+        &self,
+        bytes: &[u8],
+        options: &CanonicalCodecOptions,
+    ) -> Result<T>
+    where
+        T: MaterializeReference<Schema = S>,
+    {
+        let control = CapturedCanonicalCodecControl::capture(options, false)?;
+        control.check()?;
         let installed = self.verify_and_install()?;
-        let record = type_bridge_contract::projected_record::ProjectedRecord::decode(bytes)
-            .map_err(canonical_contract_error)?;
+        let record = type_bridge_contract::projected_record::ProjectedRecord::decode_with_limits(
+            bytes,
+            control.input_limits(),
+        )
+        .map_err(canonical_input_error)?;
+        control.check_decoded_weight(record.decoded_weight())?;
+        control.check()?;
         let value = type_bridge_orm::materialize_record(&installed, &record)
             .map_err(canonical_codec_error)?;
         let type_bridge_orm::ProjectedCodecValue::Reference(value) = value else {
@@ -315,15 +442,18 @@ impl<S: Schema> SchemaPackage<S> {
             ));
         };
         let decoded = crate::projected_codec::projected_to_hydrated_player(&value, &installed)?;
-        T::materialize_reference(&decoded, &ValidationPath::root()).map_err(|error| {
-            Error::model_validation(
-                ModelValidationPhase::Input,
-                "canonical_reference_materialization_failed",
-                Vec::new(),
-                "canonical reference could not materialize as the requested generated type",
-                Some(Box::new(error)),
-            )
-        })
+        let decoded =
+            T::materialize_reference(&decoded, &ValidationPath::root()).map_err(|error| {
+                Error::model_validation(
+                    ModelValidationPhase::Input,
+                    "canonical_reference_materialization_failed",
+                    Vec::new(),
+                    "canonical reference could not materialize as the requested generated type",
+                    Some(Box::new(error)),
+                )
+            })?;
+        control.check()?;
+        Ok(decoded)
     }
 
     /// Encode one exact generated hydrated model as a provider-free canonical snapshot.
@@ -331,11 +461,31 @@ impl<S: Schema> SchemaPackage<S> {
     where
         T: IntoHydratedSnapshot + Model<Schema = S>,
     {
+        self.encode_snapshot_controlled(value, &CanonicalCodecOptions::default())
+    }
+
+    /// Encode one generated snapshot under cancellation, deadline, and tighten-only limits.
+    pub fn encode_snapshot_controlled<T>(
+        &self,
+        value: T,
+        options: &CanonicalCodecOptions,
+    ) -> Result<Vec<u8>>
+    where
+        T: IntoHydratedSnapshot + Model<Schema = S>,
+    {
+        let control = CapturedCanonicalCodecControl::capture(options, false)?;
+        control.check()?;
         let installed = self.verify_and_install()?;
         let projected = crate::projected_codec::project_snapshot_inferred(value, &installed)?;
         let record = type_bridge_orm::record_from_snapshot(&installed, &projected)
             .map_err(canonical_codec_error)?;
-        record.encode().map_err(canonical_contract_error)
+        control.check_decoded_weight(record.decoded_weight())?;
+        control.check()?;
+        let bytes = record
+            .encode_with_limits(control.output_limits())
+            .map_err(canonical_output_error)?;
+        control.check()?;
+        Ok(bytes)
     }
 
     /// Decode canonical snapshot bytes as one exact detached generated model.
@@ -343,9 +493,28 @@ impl<S: Schema> SchemaPackage<S> {
     where
         T: CompleteModel<Schema = S> + MaterializeModel,
     {
+        self.decode_snapshot_controlled(bytes, &CanonicalCodecOptions::default())
+    }
+
+    /// Decode one exact detached snapshot under cancellation, deadline, and limits.
+    pub fn decode_snapshot_controlled<T>(
+        &self,
+        bytes: &[u8],
+        options: &CanonicalCodecOptions,
+    ) -> Result<T>
+    where
+        T: CompleteModel<Schema = S> + MaterializeModel,
+    {
+        let control = CapturedCanonicalCodecControl::capture(options, false)?;
+        control.check()?;
         let installed = self.verify_and_install()?;
-        let record = type_bridge_contract::projected_record::ProjectedRecord::decode(bytes)
-            .map_err(canonical_contract_error)?;
+        let record = type_bridge_contract::projected_record::ProjectedRecord::decode_with_limits(
+            bytes,
+            control.input_limits(),
+        )
+        .map_err(canonical_input_error)?;
+        control.check_decoded_weight(record.decoded_weight())?;
+        control.check()?;
         let value = type_bridge_orm::materialize_record(&installed, &record)
             .map_err(canonical_codec_error)?;
         let type_bridge_orm::ProjectedCodecValue::Snapshot(value) = value else {
@@ -358,9 +527,11 @@ impl<S: Schema> SchemaPackage<S> {
             ));
         };
         let row = crate::projected_codec::projected_to_hydrated_row(&value, &installed)?;
-        T::materialize(&row, &HydrationCapability::new()).map_err(|error| {
+        let decoded = T::materialize(&row, &HydrationCapability::new()).map_err(|error| {
             crate::entity_codec::map_validation_error(error, ModelValidationPhase::Hydration)
-        })
+        })?;
+        control.check()?;
+        Ok(decoded)
     }
 
     /// Perform offline fingerprint, authority, and exact emitter-evidence verification
@@ -425,11 +596,31 @@ impl<S: Schema> SchemaPackage<S> {
     where
         T: IntoEncodedStruct + StructValue<Schema = S>,
     {
+        self.encode_struct_controlled(value, &CanonicalCodecOptions::default())
+    }
+
+    /// Encode one generated struct under cancellation, deadline, and tighten-only limits.
+    pub fn encode_struct_controlled<T>(
+        &self,
+        value: T,
+        options: &CanonicalCodecOptions,
+    ) -> Result<Vec<u8>>
+    where
+        T: IntoEncodedStruct + StructValue<Schema = S>,
+    {
+        let control = CapturedCanonicalCodecControl::capture(options, false)?;
+        control.check()?;
         let installed = self.verify_and_install()?;
         let projected = crate::projected_codec::project_struct_inferred(value, &installed)?;
         let record = type_bridge_orm::record_from_struct(&installed, &projected)
             .map_err(canonical_codec_error)?;
-        record.encode().map_err(canonical_contract_error)
+        control.check_decoded_weight(record.decoded_weight())?;
+        control.check()?;
+        let bytes = record
+            .encode_with_limits(control.output_limits())
+            .map_err(canonical_output_error)?;
+        control.check()?;
+        Ok(bytes)
     }
 
     /// Decode canonical projected-record bytes as one exact generated struct.
@@ -437,9 +628,28 @@ impl<S: Schema> SchemaPackage<S> {
     where
         T: MaterializeStruct + StructValue<Schema = S>,
     {
+        self.decode_struct_controlled(bytes, &CanonicalCodecOptions::default())
+    }
+
+    /// Decode one exact generated struct under cancellation, deadline, and limits.
+    pub fn decode_struct_controlled<T>(
+        &self,
+        bytes: &[u8],
+        options: &CanonicalCodecOptions,
+    ) -> Result<T>
+    where
+        T: MaterializeStruct + StructValue<Schema = S>,
+    {
+        let control = CapturedCanonicalCodecControl::capture(options, false)?;
+        control.check()?;
         let installed = self.verify_and_install()?;
-        let record = type_bridge_contract::projected_record::ProjectedRecord::decode(bytes)
-            .map_err(canonical_contract_error)?;
+        let record = type_bridge_contract::projected_record::ProjectedRecord::decode_with_limits(
+            bytes,
+            control.input_limits(),
+        )
+        .map_err(canonical_input_error)?;
+        control.check_decoded_weight(record.decoded_weight())?;
+        control.check()?;
         let value = type_bridge_orm::materialize_record(&installed, &record)
             .map_err(canonical_codec_error)?;
         let type_bridge_orm::ProjectedCodecValue::Struct(value) = value else {
@@ -452,15 +662,18 @@ impl<S: Schema> SchemaPackage<S> {
             ));
         };
         let decoded = crate::projected_codec::projected_to_decoded_struct(&value, &installed)?;
-        T::materialize_struct(&decoded, &ValidationPath::root()).map_err(|error| {
-            Error::model_validation(
-                ModelValidationPhase::Input,
-                "canonical_struct_materialization_failed",
-                Vec::new(),
-                "canonical struct could not materialize as the requested generated type",
-                Some(Box::new(error)),
-            )
-        })
+        let decoded =
+            T::materialize_struct(&decoded, &ValidationPath::root()).map_err(|error| {
+                Error::model_validation(
+                    ModelValidationPhase::Input,
+                    "canonical_struct_materialization_failed",
+                    Vec::new(),
+                    "canonical struct could not materialize as the requested generated type",
+                    Some(Box::new(error)),
+                )
+            })?;
+        control.check()?;
+        Ok(decoded)
     }
 
     /// Compose already canonical package records into one deterministic ordered archive.
@@ -469,32 +682,82 @@ impl<S: Schema> SchemaPackage<S> {
         I: IntoIterator<Item = B>,
         B: AsRef<[u8]>,
     {
+        self.encode_archive_controlled(records, &CanonicalCodecOptions::default())
+    }
+
+    /// Compose canonical records under cancellation, deadline, and tighten-only limits.
+    pub fn encode_archive_controlled<I, B>(
+        &self,
+        records: I,
+        options: &CanonicalCodecOptions,
+    ) -> Result<Vec<u8>>
+    where
+        I: IntoIterator<Item = B>,
+        B: AsRef<[u8]>,
+    {
+        let control = CapturedCanonicalCodecControl::capture(options, true)?;
+        control.check()?;
         let installed = self.verify_and_install()?;
         let mut verified = Vec::new();
         for bytes in records {
+            control.check_record_count(verified.len().saturating_add(1))?;
+            control.check()?;
             let record =
-                type_bridge_contract::projected_record::ProjectedRecord::decode(bytes.as_ref())
-                    .map_err(canonical_contract_error)?;
+                type_bridge_contract::projected_record::ProjectedRecord::decode_with_limits(
+                    bytes.as_ref(),
+                    control.input_limits(),
+                )
+                .map_err(canonical_input_error)?;
             let _ = type_bridge_orm::materialize_record(&installed, &record)
                 .map_err(canonical_codec_error)?;
             verified.push(record);
         }
-        type_bridge_contract::projected_record::ProjectedArchive::try_new(verified)
-            .and_then(|archive| archive.encode())
-            .map_err(canonical_contract_error)
+        let archive = type_bridge_contract::projected_record::ProjectedArchive::try_new(verified)
+            .map_err(canonical_contract_error)?;
+        control.check_decoded_weight(archive.decoded_weight())?;
+        control.check()?;
+        let bytes = archive
+            .encode_with_limits(control.output_limits())
+            .map_err(canonical_output_error)?;
+        control.check()?;
+        Ok(bytes)
     }
 
     /// Strictly decode one complete package archive into canonical individual records.
     pub fn decode_archive(&self, bytes: &[u8]) -> Result<Vec<Vec<u8>>> {
+        self.decode_archive_controlled(bytes, &CanonicalCodecOptions::default())
+    }
+
+    /// Decode one complete archive under cancellation, deadline, and tighten-only limits.
+    pub fn decode_archive_controlled(
+        &self,
+        bytes: &[u8],
+        options: &CanonicalCodecOptions,
+    ) -> Result<Vec<Vec<u8>>> {
+        let control = CapturedCanonicalCodecControl::capture(options, true)?;
+        control.check()?;
         let installed = self.verify_and_install()?;
-        let archive = type_bridge_contract::projected_record::ProjectedArchive::decode(bytes)
-            .map_err(canonical_contract_error)?;
+        let archive = type_bridge_contract::projected_record::ProjectedArchive::decode_with_limits(
+            bytes,
+            control.input_limits(),
+        )
+        .map_err(canonical_input_error)?;
+        control.check_record_count(archive.records().len())?;
+        control.check_decoded_weight(archive.decoded_weight())?;
         let mut records = Vec::with_capacity(archive.records().len());
+        let mut output_bytes = 0_usize;
         for record in archive.records() {
+            control.check()?;
             let _ = type_bridge_orm::materialize_record(&installed, record)
                 .map_err(canonical_codec_error)?;
-            records.push(record.encode().map_err(canonical_contract_error)?);
+            let encoded = record
+                .encode_with_limits(control.output_limits())
+                .map_err(canonical_output_error)?;
+            output_bytes = output_bytes.saturating_add(encoded.len());
+            control.check_output_bytes(output_bytes)?;
+            records.push(encoded);
         }
+        control.check()?;
         Ok(records)
     }
 

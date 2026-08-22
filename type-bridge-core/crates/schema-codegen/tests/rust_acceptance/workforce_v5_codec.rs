@@ -3,6 +3,15 @@ use type_bridge::__codegen::{
     CanonicalDouble, Date, DateTime, DateTimeTz, Decimal, Duration, HydratedPlayer, HydratedRow,
     IntoEncodedScalar, materialize_model_for_test,
 };
+use type_bridge::{AnswerCancellation, CanonicalCodecLimits, CanonicalCodecOptions, Error};
+
+fn expect_code<T>(result: type_bridge::Result<T>, expected: &str) -> Error {
+    let Err(error) = result else {
+        panic!("controlled canonical operation must fail");
+    };
+    assert_eq!(error.code(), Some(expected));
+    error
+}
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let integer_key = SCHEMA.encode_attribute(RobotId::new(9_007_199_254_740_993_i64)?)?;
@@ -108,5 +117,44 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _: EventRef = SCHEMA.decode_reference(&decoded[8])?;
     assert_eq!(SCHEMA.encode_snapshot(detached_person)?, decoded[3]);
     assert_eq!(SCHEMA.encode_snapshot(detached_employment)?, decoded[7]);
+
+    let cancellation = AnswerCancellation::default();
+    cancellation.cancel();
+    let cancelled = CanonicalCodecOptions::new().with_cancellation(cancellation);
+    expect_code(
+        SCHEMA.encode_archive_controlled(records.iter().map(Vec::as_slice), &cancelled),
+        "projected_codec_cancelled",
+    );
+    let input_limited = CanonicalCodecOptions::new().with_limits(
+        CanonicalCodecLimits::new().with_max_input_bytes(archive.len() - 1),
+    );
+    expect_code(
+        SCHEMA.decode_archive_controlled(&archive, &input_limited),
+        "projected_codec_input_limit",
+    );
+    let output_limited = CanonicalCodecOptions::new().with_limits(
+        CanonicalCodecLimits::new().with_max_output_bytes(archive.len() - 1),
+    );
+    expect_code(
+        SCHEMA.encode_archive_controlled(records.iter().map(Vec::as_slice), &output_limited),
+        "projected_codec_output_limit",
+    );
+    let member_limited = CanonicalCodecOptions::new()
+        .with_limits(CanonicalCodecLimits::new().with_max_records(records.len() - 1));
+    expect_code(
+        SCHEMA.encode_archive_controlled(records.iter().map(Vec::as_slice), &member_limited),
+        "projected_codec_member_limit",
+    );
+    let depth_limited = CanonicalCodecOptions::new()
+        .with_limits(CanonicalCodecLimits::new().with_max_depth(1));
+    expect_code(
+        SCHEMA.decode_archive_controlled(&archive, &depth_limited),
+        "projected_codec_depth_limit",
+    );
+    let timed_out = CanonicalCodecOptions::new().with_timeout(std::time::Duration::ZERO);
+    expect_code(
+        SCHEMA.decode_archive_controlled(&archive, &timed_out),
+        "projected_codec_deadline_exceeded",
+    );
     Ok(())
 }
