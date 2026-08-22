@@ -479,6 +479,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert!(SCHEMA
         .decode_struct::<PlayerStats>(&person_snapshot_bytes)
         .is_err());
+    let archive_bytes = SCHEMA.encode_archive([
+        person_create_bytes.as_slice(),
+        key_ref_bytes.as_slice(),
+        person_snapshot_bytes.as_slice(),
+        stats_bytes.as_slice(),
+    ])?;
+    let archive_records = SCHEMA.decode_archive(&archive_bytes)?;
+    assert_eq!(
+        archive_records,
+        vec![
+            person_create_bytes,
+            key_ref_bytes,
+            person_snapshot_bytes,
+            stats_bytes,
+        ]
+    );
+    let _: PersonCreate = SCHEMA.decode_create(&archive_records[0])?;
+    let _: PersonRef = SCHEMA.decode_reference(&archive_records[1])?;
+    let _: Person = SCHEMA.decode_snapshot(&archive_records[2])?;
+    let _: PlayerStats = SCHEMA.decode_struct(&archive_records[3])?;
     assert_eq!(PLAYING_FACTS.len(), 12);
     assert!(RUNTIME_PROJECTION_JSON.contains("validated-create-input"));
     assert!(

@@ -407,6 +407,41 @@ impl<S: Schema> SchemaPackage<S> {
         })
     }
 
+    /// Compose already canonical package records into one deterministic ordered archive.
+    pub fn encode_archive<I, B>(&self, records: I) -> Result<Vec<u8>>
+    where
+        I: IntoIterator<Item = B>,
+        B: AsRef<[u8]>,
+    {
+        let installed = self.verify_and_install()?;
+        let mut verified = Vec::new();
+        for bytes in records {
+            let record =
+                type_bridge_contract::projected_record::ProjectedRecord::decode(bytes.as_ref())
+                    .map_err(canonical_contract_error)?;
+            let _ = type_bridge_orm::materialize_record(&installed, &record)
+                .map_err(canonical_codec_error)?;
+            verified.push(record);
+        }
+        type_bridge_contract::projected_record::ProjectedArchive::try_new(verified)
+            .and_then(|archive| archive.encode())
+            .map_err(canonical_contract_error)
+    }
+
+    /// Strictly decode one complete package archive into canonical individual records.
+    pub fn decode_archive(&self, bytes: &[u8]) -> Result<Vec<Vec<u8>>> {
+        let installed = self.verify_and_install()?;
+        let archive = type_bridge_contract::projected_record::ProjectedArchive::decode(bytes)
+            .map_err(canonical_contract_error)?;
+        let mut records = Vec::with_capacity(archive.records().len());
+        for record in archive.records() {
+            let _ = type_bridge_orm::materialize_record(&installed, record)
+                .map_err(canonical_codec_error)?;
+            records.push(record.encode().map_err(canonical_contract_error)?);
+        }
+        Ok(records)
+    }
+
     /// Return the semantic schema fingerprint JSON string (generated-code SPI).
     #[doc(hidden)]
     #[must_use]
