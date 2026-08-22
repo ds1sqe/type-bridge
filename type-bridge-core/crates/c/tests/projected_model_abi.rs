@@ -301,6 +301,13 @@ unsafe extern "C" {
         out_bytes: *mut *mut TypeBridgeCanonicalBytes,
         out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
     ) -> TypeBridgeStatus;
+    fn type_bridge_canonical_record_decode_create_v1(
+        package: *const TypeBridgeSchemaPackage,
+        bytes: TypeBridgeByteView,
+        expected_model: *const TypeBridgeProjectedTokenV1,
+        out_value: *mut *mut TypeBridgeProjectedCreate,
+        out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+    ) -> TypeBridgeStatus;
     fn type_bridge_canonical_bytes_view(
         bytes: *const TypeBridgeCanonicalBytes,
         out_view: *mut TypeBridgeByteView,
@@ -1026,6 +1033,45 @@ fn all_nine_domains_person_create_reference_and_membership_are_package_branded()
         TypeBridgeStatus::Ok,
     );
     assert_eq!(copied(recovered_view), expected_record);
+    let mut decoded_create = ptr::null_mut();
+    // SAFETY: package, canonical bytes, exact generated token, and outputs remain live.
+    assert_eq!(
+        unsafe {
+            type_bridge_canonical_record_decode_create_v1(
+                fixture.package,
+                recovered_view,
+                &person_model,
+                &mut decoded_create,
+                &mut diagnostics,
+            )
+        },
+        TypeBridgeStatus::Ok,
+    );
+    assert!(!decoded_create.is_null());
+    // SAFETY: the decoded create owns one exact handle.
+    assert_eq!(
+        unsafe { type_bridge_projected_create_close(&mut decoded_create) },
+        TypeBridgeStatus::Ok,
+    );
+    // A foreign generated target is rejected before any decoded handle is published.
+    let status = unsafe {
+        type_bridge_canonical_record_decode_create_v1(
+            fixture.package,
+            recovered_view,
+            &membership_model,
+            &mut decoded_create,
+            &mut diagnostics,
+        )
+    };
+    assert!(decoded_create.is_null());
+    assert_execution_error(
+        status,
+        TypeBridgeStatus::InvalidArgument,
+        diagnostics,
+        TypeBridgeExecutionDiagnosticCategory::InvalidInput,
+        "c_canonical_record_type_mismatch",
+    );
+    diagnostics = ptr::null_mut();
     // SAFETY: each slot owns one exact ABI 1.6 handle.
     assert_eq!(
         unsafe { type_bridge_canonical_bytes_close(&mut recovered) },

@@ -3,6 +3,7 @@
 use std::ptr;
 use std::sync::Arc;
 
+use type_bridge_contract::id::{TypeId, TypeKind};
 use type_bridge_contract::limits::MAX_CANONICAL_BYTES;
 use type_bridge_contract::projected_record::{ProjectedArchive, ProjectedRecord};
 use type_bridge_contract::sdk_diagnostic::{
@@ -19,6 +20,9 @@ use crate::execution_diagnostic::{
 };
 use crate::projected_model::{
     TypeBridgeProjectedCreate, TypeBridgeProjectedReference, TypeBridgeProjectedThing,
+};
+use crate::projected_token::{
+    TypeBridgeProjectedTokenV1, resolve_field_token, resolve_model_token, resolve_struct_token,
 };
 use crate::projected_value::TypeBridgeProjectedValue;
 
@@ -37,6 +41,12 @@ pub struct TypeBridgeCanonicalArchiveBuilder {
 pub struct TypeBridgeCanonicalArchive {
     package: Arc<SchemaPackageState>,
     archive: ProjectedArchive,
+}
+
+/// Opaque immutable package-branded projected struct value.
+pub struct TypeBridgeProjectedStruct {
+    package: Arc<SchemaPackageState>,
+    value: type_bridge_orm::ProjectedStructValue,
 }
 
 fn code(value: &'static str) -> SdkDiagnosticCode {
@@ -66,6 +76,35 @@ fn invalid_value() -> SdkExecutionDiagnostic {
         code("c_canonical_value_invalid"),
         message("Projected value cannot be encoded by this installed schema package"),
     )
+}
+
+fn wrong_record_kind() -> SdkExecutionDiagnostic {
+    SdkExecutionDiagnostic::invalid_input(
+        code("c_canonical_record_kind_mismatch"),
+        message("Canonical record kind differs from the requested generated result kind"),
+    )
+}
+
+fn wrong_record_type() -> SdkExecutionDiagnostic {
+    SdkExecutionDiagnostic::invalid_input(
+        code("c_canonical_record_type_mismatch"),
+        message("Canonical record type differs from the requested generated token"),
+    )
+}
+
+unsafe fn decode_record(
+    package: *const TypeBridgeSchemaPackage,
+    bytes: TypeBridgeByteView,
+) -> Result<(Arc<SchemaPackageState>, ProjectedRecord), SdkExecutionDiagnostic> {
+    if package.is_null() {
+        return Err(invalid_record());
+    }
+    // SAFETY: caller retains one live immutable package for this call.
+    let package = unsafe { &*package };
+    // SAFETY: caller retains the bounded byte range for this call.
+    let bytes = unsafe { snapshot_bytes(bytes) }.map_err(|_| invalid_record())?;
+    let record = ProjectedRecord::decode(&bytes).map_err(|_| invalid_record())?;
+    Ok((Arc::clone(package.state()), record))
 }
 
 fn publish_record(
@@ -200,6 +239,294 @@ pub unsafe extern "C" fn type_bridge_canonical_record_encode_snapshot_v1(
             out_diagnostics,
         )
     })
+}
+
+/// Encode one exact package-branded generated struct as canonical bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_canonical_record_encode_struct_v1(
+    value: *const TypeBridgeProjectedStruct,
+    out_bytes: *mut *mut TypeBridgeCanonicalBytes,
+    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+) -> TypeBridgeStatus {
+    // SAFETY: shared initializer validates and clears distinct writable outputs.
+    if let Err(status) = unsafe { initialize_execution_outputs(out_bytes, out_diagnostics) } {
+        return status;
+    }
+    guarded(|| {
+        if value.is_null() {
+            return TypeBridgeStatus::InvalidArgument;
+        }
+        // SAFETY: caller retains one immutable projected struct for this call.
+        let value = unsafe { &*value };
+        publish_record(
+            type_bridge_orm::record_from_struct(&value.package.installed_projection, &value.value),
+            out_bytes,
+            out_diagnostics,
+        )
+    })
+}
+
+fn publish_decoded<T>(
+    site: AllocationSite,
+    value: T,
+    out_value: *mut *mut T,
+    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+) -> TypeBridgeStatus {
+    let value = match try_box(site, value) {
+        Ok(value) => value,
+        Err(_) => return return_execution_error(allocation_exhausted(), out_diagnostics),
+    };
+    // SAFETY: the shared output initializer proved this slot writable.
+    unsafe { out_value.write_unaligned(Box::into_raw(value)) };
+    TypeBridgeStatus::Ok
+}
+
+fn materialize(
+    package: &SchemaPackageState,
+    record: &ProjectedRecord,
+) -> Result<type_bridge_orm::ProjectedCodecValue, SdkExecutionDiagnostic> {
+    type_bridge_orm::materialize_record(&package.installed_projection, record)
+        .map_err(|_| invalid_record())
+}
+
+/// Decode an exact generated attribute-field record without publishing on mismatch.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_canonical_record_decode_attribute_v1(
+    package: *const TypeBridgeSchemaPackage,
+    bytes: TypeBridgeByteView,
+    expected_field: *const TypeBridgeProjectedTokenV1,
+    out_value: *mut *mut TypeBridgeProjectedValue,
+    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+) -> TypeBridgeStatus {
+    // SAFETY: shared initializer validates and clears distinct writable outputs.
+    if let Err(status) = unsafe { initialize_execution_outputs(out_value, out_diagnostics) } {
+        return status;
+    }
+    guarded(|| {
+        // SAFETY: package and byte ranges remain caller-owned for this call.
+        let (package, record) = match unsafe { decode_record(package, bytes) } {
+            Ok(value) => value,
+            Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
+        };
+        // SAFETY: generated token storage remains readable for this call.
+        let (_, field) = match unsafe { resolve_field_token(&package, expected_field) } {
+            Ok(value) => value,
+            Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
+        };
+        let expected = match TypeId::new(TypeKind::Attribute, field.attribute().label().as_str()) {
+            Ok(value) => value,
+            Err(_) => return return_execution_error(wrong_record_type(), out_diagnostics),
+        };
+        let type_bridge_contract::projected_record::ProjectedRecordContent::AttributeValue {
+            r#type,
+            ..
+        } = record.content()
+        else {
+            return return_execution_error(wrong_record_kind(), out_diagnostics);
+        };
+        if r#type != &expected {
+            return return_execution_error(wrong_record_type(), out_diagnostics);
+        }
+        let value = match materialize(&package, &record) {
+            Ok(type_bridge_orm::ProjectedCodecValue::Attribute(value)) => value,
+            Ok(_) => return return_execution_error(wrong_record_kind(), out_diagnostics),
+            Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
+        };
+        publish_decoded(
+            AllocationSite::ProjectedValueHandle,
+            TypeBridgeProjectedValue::from_owned(package, value),
+            out_value,
+            out_diagnostics,
+        )
+    })
+}
+
+macro_rules! decode_model_record {
+    ($function:ident, $variant:ident, $type_id:ident, $kind_pattern:pat, $output:ty, $site:expr, $wrap:expr) => {
+        #[doc = "Decode one exact generated model record without publishing on mismatch."]
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $function(
+            package: *const TypeBridgeSchemaPackage,
+            bytes: TypeBridgeByteView,
+            expected_model: *const TypeBridgeProjectedTokenV1,
+            out_value: *mut *mut $output,
+            out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+        ) -> TypeBridgeStatus {
+            // SAFETY: shared initializer validates and clears distinct writable outputs.
+            if let Err(status) = unsafe { initialize_execution_outputs(out_value, out_diagnostics) }
+            {
+                return status;
+            }
+            guarded(|| {
+                // SAFETY: package and byte ranges remain caller-owned for this call.
+                let (package, record) = match unsafe { decode_record(package, bytes) } {
+                    Ok(value) => value,
+                    Err(diagnostic) => {
+                        return return_execution_error(diagnostic, out_diagnostics);
+                    }
+                };
+                // SAFETY: generated token storage remains readable for this call.
+                let expected = match unsafe { resolve_model_token(&package, expected_model) } {
+                    Ok(value) => value,
+                    Err(diagnostic) => {
+                        return return_execution_error(diagnostic, out_diagnostics);
+                    }
+                };
+                let $kind_pattern = record.content() else {
+                    return return_execution_error(wrong_record_kind(), out_diagnostics);
+                };
+                if $type_id != &expected {
+                    return return_execution_error(wrong_record_type(), out_diagnostics);
+                }
+                let value = match materialize(&package, &record) {
+                    Ok(type_bridge_orm::ProjectedCodecValue::$variant(value)) => value,
+                    Ok(_) => return return_execution_error(wrong_record_kind(), out_diagnostics),
+                    Err(diagnostic) => {
+                        return return_execution_error(diagnostic, out_diagnostics);
+                    }
+                };
+                publish_decoded($site, ($wrap)(package, value), out_value, out_diagnostics)
+            })
+        }
+    };
+}
+
+decode_model_record!(
+    type_bridge_canonical_record_decode_create_v1,
+    Create,
+    record_type,
+    (type_bridge_contract::projected_record::ProjectedRecordContent::EntityCreate {
+        r#type: record_type,
+        ..
+    } | type_bridge_contract::projected_record::ProjectedRecordContent::RelationCreate {
+        r#type: record_type,
+        ..
+    }),
+    TypeBridgeProjectedCreate,
+    AllocationSite::ProjectedCreateHandle,
+    |package, value| TypeBridgeProjectedCreate { package, value }
+);
+
+decode_model_record!(
+    type_bridge_canonical_record_decode_snapshot_v1,
+    Snapshot,
+    record_type,
+    (type_bridge_contract::projected_record::ProjectedRecordContent::EntitySnapshot {
+        r#type: record_type,
+        ..
+    } | type_bridge_contract::projected_record::ProjectedRecordContent::RelationSnapshot {
+        r#type: record_type,
+        ..
+    }),
+    TypeBridgeProjectedThing,
+    AllocationSite::ProjectedThingHandle,
+    |package, value| TypeBridgeProjectedThing {
+        package,
+        value: Arc::new(value),
+    }
+);
+
+/// Decode one exact generated reference record without publishing on mismatch.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_canonical_record_decode_reference_v1(
+    package: *const TypeBridgeSchemaPackage,
+    bytes: TypeBridgeByteView,
+    expected_model: *const TypeBridgeProjectedTokenV1,
+    out_value: *mut *mut TypeBridgeProjectedReference,
+    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+) -> TypeBridgeStatus {
+    // SAFETY: shared initializer validates and clears distinct writable outputs.
+    if let Err(status) = unsafe { initialize_execution_outputs(out_value, out_diagnostics) } {
+        return status;
+    }
+    guarded(|| {
+        // SAFETY: package and byte ranges remain caller-owned for this call.
+        let (package, record) = match unsafe { decode_record(package, bytes) } {
+            Ok(value) => value,
+            Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
+        };
+        // SAFETY: generated token storage remains readable for this call.
+        let expected = match unsafe { resolve_model_token(&package, expected_model) } {
+            Ok(value) => value,
+            Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
+        };
+        let type_bridge_contract::projected_record::ProjectedRecordContent::Reference { reference } =
+            record.content()
+        else {
+            return return_execution_error(wrong_record_kind(), out_diagnostics);
+        };
+        if reference.type_id() != &expected {
+            return return_execution_error(wrong_record_type(), out_diagnostics);
+        }
+        let value = match materialize(&package, &record) {
+            Ok(type_bridge_orm::ProjectedCodecValue::Reference(value)) => value,
+            Ok(_) => return return_execution_error(wrong_record_kind(), out_diagnostics),
+            Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
+        };
+        publish_decoded(
+            AllocationSite::ProjectedReferenceHandle,
+            TypeBridgeProjectedReference { package, value },
+            out_value,
+            out_diagnostics,
+        )
+    })
+}
+
+/// Decode one exact generated struct record without publishing on mismatch.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_canonical_record_decode_struct_v1(
+    package: *const TypeBridgeSchemaPackage,
+    bytes: TypeBridgeByteView,
+    expected_struct: *const TypeBridgeProjectedTokenV1,
+    out_value: *mut *mut TypeBridgeProjectedStruct,
+    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+) -> TypeBridgeStatus {
+    // SAFETY: shared initializer validates and clears distinct writable outputs.
+    if let Err(status) = unsafe { initialize_execution_outputs(out_value, out_diagnostics) } {
+        return status;
+    }
+    guarded(|| {
+        // SAFETY: package and byte ranges remain caller-owned for this call.
+        let (package, record) = match unsafe { decode_record(package, bytes) } {
+            Ok(value) => value,
+            Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
+        };
+        // SAFETY: generated token storage remains readable for this call.
+        let expected = match unsafe { resolve_struct_token(&package, expected_struct) } {
+            Ok(value) => value,
+            Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
+        };
+        let type_bridge_contract::projected_record::ProjectedRecordContent::StructValue {
+            r#type,
+            ..
+        } = record.content()
+        else {
+            return return_execution_error(wrong_record_kind(), out_diagnostics);
+        };
+        if r#type.label() != expected.label() {
+            return return_execution_error(wrong_record_type(), out_diagnostics);
+        }
+        let value = match materialize(&package, &record) {
+            Ok(type_bridge_orm::ProjectedCodecValue::Struct(value)) => value,
+            Ok(_) => return return_execution_error(wrong_record_kind(), out_diagnostics),
+            Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
+        };
+        publish_decoded(
+            AllocationSite::ProjectedStructHandle,
+            TypeBridgeProjectedStruct { package, value },
+            out_value,
+            out_diagnostics,
+        )
+    })
+}
+
+/// Close one decoded projected struct and clear its ownership slot.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_projected_struct_close(
+    value: *mut *mut TypeBridgeProjectedStruct,
+) -> TypeBridgeStatus {
+    // SAFETY: forwarded pointer-to-pointer ownership contract is documented by the public header.
+    unsafe { close_box(value) }
 }
 
 unsafe fn snapshot_bytes(view: TypeBridgeByteView) -> Result<Vec<u8>, TypeBridgeStatus> {

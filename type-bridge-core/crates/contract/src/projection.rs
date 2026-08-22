@@ -67,6 +67,8 @@ pub enum ProjectedTokenKind {
     Role,
     /// One exact projected schema-function identity.
     Function,
+    /// One exact projected generated-struct identity.
+    Struct,
 }
 
 impl ProjectedTokenKind {
@@ -78,6 +80,7 @@ impl ProjectedTokenKind {
             Self::Field => 2,
             Self::Role => 3,
             Self::Function => 4,
+            Self::Struct => 5,
         }
     }
 
@@ -89,6 +92,7 @@ impl ProjectedTokenKind {
             2 => Some(Self::Field),
             3 => Some(Self::Role),
             4 => Some(Self::Function),
+            5 => Some(Self::Struct),
             _ => None,
         }
     }
@@ -120,6 +124,8 @@ pub enum ProjectedTokenIdentity {
     },
     /// One exact projected schema function.
     Function(FunctionId),
+    /// One exact projected generated struct.
+    Struct(StructId),
 }
 
 impl ProjectedTokenIdentity {
@@ -131,6 +137,7 @@ impl ProjectedTokenIdentity {
             Self::Field { .. } => ProjectedTokenKind::Field,
             Self::Role { .. } => ProjectedTokenKind::Role,
             Self::Function(_) => ProjectedTokenKind::Function,
+            Self::Struct(_) => ProjectedTokenKind::Struct,
         }
     }
 }
@@ -3242,6 +3249,12 @@ impl RuntimeProjection {
                 .nth(index)
                 .cloned()
                 .map(ProjectedTokenIdentity::Function),
+            ProjectedTokenKind::Struct => self
+                .structs
+                .keys()
+                .nth(index)
+                .cloned()
+                .map(ProjectedTokenIdentity::Struct),
         }
     }
 
@@ -3286,6 +3299,10 @@ impl RuntimeProjection {
                 .position(|(owner, role)| owner == expected_owner && role == expected_role),
             ProjectedTokenIdentity::Function(expected) => self
                 .functions
+                .keys()
+                .position(|candidate| candidate == expected),
+            ProjectedTokenIdentity::Struct(expected) => self
+                .structs
                 .keys()
                 .position(|candidate| candidate == expected),
         }?;

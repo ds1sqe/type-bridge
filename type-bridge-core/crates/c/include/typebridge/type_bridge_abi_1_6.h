@@ -10,6 +10,7 @@ typedef struct type_bridge_canonical_bytes type_bridge_canonical_bytes_t;
 typedef struct type_bridge_canonical_archive_builder
     type_bridge_canonical_archive_builder_t;
 typedef struct type_bridge_canonical_archive type_bridge_canonical_archive_t;
+typedef struct type_bridge_projected_struct type_bridge_projected_struct_t;
 
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_canonical_record_encode_attribute_v1(
@@ -31,6 +32,49 @@ type_bridge_canonical_record_encode_snapshot_v1(
     const type_bridge_projected_thing_t *value,
     type_bridge_canonical_bytes_t **out_bytes,
     type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_canonical_record_encode_struct_v1(
+    const type_bridge_projected_struct_t *value,
+    type_bridge_canonical_bytes_t **out_bytes,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_canonical_record_decode_attribute_v1(
+    const type_bridge_schema_package_t *package,
+    type_bridge_byte_view_t bytes,
+    const type_bridge_projected_token_v1_t *expected_field,
+    type_bridge_projected_value_t **out_value,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_canonical_record_decode_create_v1(
+    const type_bridge_schema_package_t *package,
+    type_bridge_byte_view_t bytes,
+    const type_bridge_projected_token_v1_t *expected_model,
+    type_bridge_projected_create_t **out_value,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_canonical_record_decode_reference_v1(
+    const type_bridge_schema_package_t *package,
+    type_bridge_byte_view_t bytes,
+    const type_bridge_projected_token_v1_t *expected_model,
+    type_bridge_projected_reference_t **out_value,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_canonical_record_decode_snapshot_v1(
+    const type_bridge_schema_package_t *package,
+    type_bridge_byte_view_t bytes,
+    const type_bridge_projected_token_v1_t *expected_model,
+    type_bridge_projected_thing_t **out_value,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_canonical_record_decode_struct_v1(
+    const type_bridge_schema_package_t *package,
+    type_bridge_byte_view_t bytes,
+    const type_bridge_projected_token_v1_t *expected_struct,
+    type_bridge_projected_struct_t **out_value,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_projected_struct_close(type_bridge_projected_struct_t **value);
 
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_canonical_archive_builder_open_v1(

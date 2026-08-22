@@ -450,12 +450,13 @@ fn render_source(
     Ok(output)
 }
 
-fn projected_token_kinds() -> [(ProjectedTokenKind, &'static str); 4] {
+fn projected_token_kinds() -> [(ProjectedTokenKind, &'static str); 5] {
     [
         (ProjectedTokenKind::Model, "model"),
         (ProjectedTokenKind::Field, "field"),
         (ProjectedTokenKind::Role, "role"),
         (ProjectedTokenKind::Function, "function"),
+        (ProjectedTokenKind::Struct, "struct"),
     ]
 }
 

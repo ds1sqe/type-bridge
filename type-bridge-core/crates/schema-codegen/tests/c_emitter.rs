@@ -423,8 +423,8 @@ fn unordered_c_v2_five_file_package_remains_byte_exact() {
             "CMakeLists.txt 04af839fb3caa4234c17af6c2820da09c2cf1e32d4ab38b6e7dda906e6eec30a",
             "acme.pc.in 69a197ee74e47e9181184c214944227fad207cda5da286b5d51543414614e9a7",
             "acmeConfig.cmake.in dcf6298f6ea3427c9c4976d5e8deb3ad2a27fd9ce4405a6dc5a78b21a9235ce7",
-            "include/acme/models.h 01ab3f24a6f05768294a63a3c87d73ce077f66d2a95606d8088b23096ebcfd33",
-            "src/models.c 12c81896dbb83925de4dc51b3e6f3a76d2fa01f63b1c2d4235585e4470675a7d",
+            "include/acme/models.h 2243e082080756a909aa0dc050c01ff9e2083faf8cac05b35fa5a82c276ac2f5",
+            "src/models.c f545a44566d31baba523a0c1c47537702e7f302aff3ce0451f5004176ee2d7f3",
         ],
         "unordered C-v2 generated resources and embedded ABI 1.3 metadata changed",
     );
@@ -1342,6 +1342,7 @@ fn emits_one_deterministic_package_with_exact_canonical_evidence_and_nominal_nam
         (ProjectedTokenKind::Field, "field"),
         (ProjectedTokenKind::Role, "role"),
         (ProjectedTokenKind::Function, "function"),
+        (ProjectedTokenKind::Struct, "struct"),
     ] {
         let mut ordinal = 0_u32;
         while projection.projected_token_identity(kind, ordinal).is_some() {
