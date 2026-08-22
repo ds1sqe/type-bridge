@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[3]
 CONTRACT_ROOT = ROOT / "tests/contracts/sdk_conformance/workforce-v4"
 MANIFEST = ROOT / "tests/contracts/sdk_conformance/manifest-v1.json"
@@ -51,9 +50,7 @@ def test_v4_freezes_exact_plan06_case_partition() -> None:
     assert isinstance(cases, list)
     assert [case["id"] for case in cases] == TRANSITION_CASES + EVIDENCE_ONLY_CASES
     assert [case["disposition"] for case in cases[:4]] == ["shared_smoke"] * 4
-    assert [case["disposition"] for case in cases[4:]] == [
-        "retained_gap_evidence"
-    ] * 4
+    assert [case["disposition"] for case in cases[4:]] == ["retained_gap_evidence"] * 4
 
 
 def test_v4_rows_are_exact_manifest_cases_and_capabilities() -> None:
@@ -72,9 +69,7 @@ def test_v4_rows_are_exact_manifest_cases_and_capabilities() -> None:
     transitioned_codes = [
         capabilities[case["capability_id"]]["code"] for case in catalog["cases"][:4]
     ]
-    retained_codes = [
-        capabilities[case["capability_id"]]["code"] for case in catalog["cases"][4:]
-    ]
+    retained_codes = [capabilities[case["capability_id"]]["code"] for case in catalog["cases"][4:]]
     assert transitioned_codes == ["G04", "G09", "G10", "G11"]
     assert retained_codes == ["G05", "G06", "G08", "G13"]
 
@@ -101,12 +96,8 @@ def test_v4_producer_and_report_envelopes_are_exact() -> None:
     schema = _load(CONTRACT_ROOT / "report-schema-v4.json")
 
     assert list(catalog["report_producers"]) == ["python", "node", "rust", "c"]
-    assert schema["properties"]["format"] == {
-        "const": "typebridge.sdk-conformance-report/v4"
-    }
-    assert schema["properties"]["binding"] == {
-        "enum": ["python", "node", "rust", "c"]
-    }
+    assert schema["properties"]["format"] == {"const": "typebridge.sdk-conformance-report/v4"}
+    assert schema["properties"]["binding"] == {"enum": ["python", "node", "rust", "c"]}
     assert schema["properties"]["server_version"] == {"const": "3.12.3"}
     assert schema["properties"]["results"]["minItems"] == 8
     assert schema["properties"]["results"]["maxItems"] == 8
