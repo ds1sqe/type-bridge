@@ -410,8 +410,15 @@ impl MigrationExecutionProvider for CoordinatorProvider {
         _lease: &'a MigrationLease,
         plan: &'a AttributeBackfillPlan,
         direction: BackfillExecutionDirection,
+        control: &'a type_bridge_schema_migration::MigrationExecutionControl,
     ) -> BackfillExecutionFuture<'a> {
         Box::pin(async move {
+            control.check().map_err(|diagnostic| {
+                type_bridge_schema_migration::GroupCommitFailure::new(
+                    type_bridge_schema_migration::GroupCommitCertainty::DefinitelyAborted,
+                    diagnostic,
+                )
+            })?;
             let call = match direction {
                 BackfillExecutionDirection::Forward => "execute-backfill-forward",
                 BackfillExecutionDirection::Reverse => "execute-backfill-reverse",

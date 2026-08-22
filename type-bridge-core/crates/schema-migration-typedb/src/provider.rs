@@ -275,6 +275,7 @@ impl MigrationExecutionProvider for TypeDbMigrationProvider {
         lease: &'a MigrationLease,
         plan: &'a AttributeBackfillPlan,
         direction: BackfillExecutionDirection,
+        control: &'a type_bridge_schema_migration::MigrationExecutionControl,
     ) -> BackfillExecutionFuture<'a> {
         Box::pin(async move {
             self.binding
@@ -288,6 +289,9 @@ impl MigrationExecutionProvider for TypeDbMigrationProvider {
             let mut changed = 0_u64;
             let mut transaction_groups = 0_u32;
             loop {
+                control
+                    .check()
+                    .map_err(|error| backfill_failure(transaction_groups, error))?;
                 let mut transaction = self
                     .binding
                     .managed_database
@@ -362,6 +366,9 @@ impl MigrationExecutionProvider for TypeDbMigrationProvider {
                         ),
                     )
                 })?;
+                control
+                    .check()
+                    .map_err(|error| backfill_failure(transaction_groups, error))?;
             }
             let observation = self
                 .observe_backfill(lease, plan, direction)

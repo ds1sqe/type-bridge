@@ -3,7 +3,10 @@
 use std::collections::BTreeSet;
 use std::future::Future;
 use std::pin::Pin;
+use std::time::Instant;
 
+use futures_timer::Delay;
+use futures_util::future::{Either, select};
 use type_bridge_contract::capability::CapabilitySet;
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use type_bridge_contract::migration::MigrationId;
@@ -34,6 +37,51 @@ pub type GroupCommitFuture<'a> =
 pub type BackfillExecutionFuture<'a> = Pin<
     Box<dyn Future<Output = Result<BackfillCompletionEvidence, GroupCommitFailure>> + Send + 'a>,
 >;
+
+async fn await_interruptible<F, T>(
+    control: &MigrationExecutionControl,
+    future: F,
+) -> Result<T, Diagnostic>
+where
+    F: Future<Output = Result<T, Diagnostic>>,
+{
+    control.check()?;
+    let operation = Box::pin(future);
+    let cancellation = Box::pin(control.cancellation().cancelled());
+    match control.deadline() {
+        None => match select(operation, cancellation).await {
+            Either::Left((result, _)) => result,
+            Either::Right(((), _)) => control.check().and_then(|()| {
+                Err(failure(
+                    DiagnosticCategory::Cancelled,
+                    "migration_execution_cancelled",
+                    "migration execution was cancelled while awaiting a safe provider operation",
+                ))
+            }),
+        },
+        Some(deadline) => {
+            let delay = Box::pin(Delay::new(
+                deadline.saturating_duration_since(Instant::now()),
+            ));
+            let interruption = Box::pin(select(cancellation, delay));
+            match select(operation, interruption).await {
+                Either::Left((result, _)) => result,
+                Either::Right((Either::Left(((), _)), _)) => control.check().and_then(|()| {
+                    Err(failure(
+                        DiagnosticCategory::Cancelled,
+                        "migration_execution_cancelled",
+                        "migration execution was cancelled while awaiting a safe provider operation",
+                    ))
+                }),
+                Either::Right((Either::Right(((), _)), _)) => Err(failure(
+                    DiagnosticCategory::ResourceLimit,
+                    "migration_execution_deadline_exceeded",
+                    "migration execution reached its absolute deadline while awaiting a safe provider operation",
+                )),
+            }
+        }
+    }
+}
 
 /// A provider commit failure with explicit asymmetric certainty.
 #[derive(Debug)]
@@ -152,8 +200,9 @@ pub trait MigrationExecutionProvider: Send + Sync {
         lease: &'a MigrationLease,
         plan: &'a AttributeBackfillPlan,
         direction: BackfillExecutionDirection,
+        control: &'a MigrationExecutionControl,
     ) -> BackfillExecutionFuture<'a> {
-        let _ = (lease, plan, direction);
+        let _ = (lease, plan, direction, control);
         Box::pin(async {
             Err(GroupCommitFailure::new(
                 GroupCommitCertainty::DefinitelyAborted,
@@ -573,9 +622,11 @@ where
         let source = plan
             .source_state()
             .expect("non-empty plan has source state");
-        let live_source = provider
-            .observe_managed_state(lease, source, source)
-            .await?;
+        let live_source = await_interruptible(
+            control,
+            provider.observe_managed_state(lease, source, source),
+        )
+        .await?;
         let applied_migrations = loaded_applied_migrations(&applied)?;
         let record =
             PlanRecord::from_verified_plan(lease, plan, &applied_migrations, &live_source)?;
@@ -597,7 +648,7 @@ where
             {
                 let step_index = backfills.next().expect("peeked backfill position");
                 match execute_apply_backfill(
-                    store, provider, lease, migration, step_index, snapshot,
+                    store, provider, lease, migration, step_index, snapshot, control,
                 )
                 .await?
                 {
@@ -618,9 +669,11 @@ where
             let (source, target, lowering) = group_evidence(migration, group)?;
             if observed.is_none() {
                 observed = Some(
-                    provider
-                        .observe_managed_state(lease, source, target)
-                        .await?,
+                    await_interruptible(
+                        control,
+                        provider.observe_managed_state(lease, source, target),
+                    )
+                    .await?,
                 );
             }
             let observation = exact_observation(
@@ -680,7 +733,8 @@ where
                 continue;
             }
 
-            let mut transaction = provider.prepare_group(lease, source, target).await?;
+            let mut transaction =
+                await_interruptible(control, provider.prepare_group(lease, source, target)).await?;
             let steps = &migration.steps()[group.first_step_index()..group.end_step_index()];
             for step in &steps[..group.assertion_count()] {
                 let validated = step.validated_assertion().ok_or_else(|| {
@@ -690,7 +744,9 @@ where
                         "stored transaction group lost validated assertion evidence",
                     )
                 })?;
-                if let Err(error) = transaction.execute_assertion(validated).await {
+                if let Err(error) =
+                    await_interruptible(control, transaction.execute_assertion(validated)).await
+                {
                     return Err(rollback_prepared_group_error(
                         transaction,
                         error,
@@ -700,7 +756,9 @@ where
                 }
             }
             for unit in lowering.units() {
-                if let Err(error) = transaction.execute_statement_unit(unit).await {
+                if let Err(error) =
+                    await_interruptible(control, transaction.execute_statement_unit(unit)).await
+                {
                     return Err(rollback_prepared_group_error(
                         transaction,
                         error,
@@ -816,8 +874,10 @@ where
         }
         for step_index in backfills {
             control.check()?;
-            match execute_apply_backfill(store, provider, lease, migration, step_index, snapshot)
-                .await?
+            match execute_apply_backfill(
+                store, provider, lease, migration, step_index, snapshot, control,
+            )
+            .await?
             {
                 ApplyBackfillResult::Completed(observation) => {
                     retain_backfill_observation(&mut backfill_observations, observation, control)?;
@@ -895,6 +955,7 @@ async fn execute_apply_backfill<S, P>(
     migration: &VerifiedMigrationApplyManifest,
     step_index: usize,
     snapshot: Option<&OpenPlanRecord>,
+    control: &MigrationExecutionControl,
 ) -> Result<ApplyBackfillResult, Diagnostic>
 where
     S: MigrationExecutionJournal,
@@ -951,9 +1012,11 @@ where
         ));
     }
 
-    let observation = provider
-        .observe_backfill(lease, plan, BackfillExecutionDirection::Forward)
-        .await?;
+    let observation = await_interruptible(
+        control,
+        provider.observe_backfill(lease, plan, BackfillExecutionDirection::Forward),
+    )
+    .await?;
     match decide_backfill_recovery(
         last_event,
         &observation,
@@ -1012,7 +1075,7 @@ where
     )?;
     store.record_backfill_event(lease, before).await?;
     match provider
-        .execute_backfill(lease, plan, BackfillExecutionDirection::Forward)
+        .execute_backfill(lease, plan, BackfillExecutionDirection::Forward, control)
         .await
     {
         Ok(completion) => {
@@ -1272,9 +1335,11 @@ where
 
     if open.is_none() {
         let source = plan.source_state();
-        let live_source = provider
-            .observe_managed_state(lease, source, source)
-            .await?;
+        let live_source = await_interruptible(
+            control,
+            provider.observe_managed_state(lease, source, source),
+        )
+        .await?;
         let applied_migrations = loaded_applied_migrations(&applied)?;
         let record = RollbackPlanRecord::from_verified_rollback_plan(
             lease,
@@ -1302,6 +1367,7 @@ where
                         rollback,
                         operation_index,
                         snapshot,
+                        control,
                     )
                     .await?
                     {
@@ -1335,9 +1401,11 @@ where
             let target = reverse.target();
             if observed.is_none() {
                 observed = Some(
-                    provider
-                        .observe_managed_state(lease, source, target)
-                        .await?,
+                    await_interruptible(
+                        control,
+                        provider.observe_managed_state(lease, source, target),
+                    )
+                    .await?,
                 );
             }
             let observation =
@@ -1393,9 +1461,12 @@ where
                 continue;
             }
 
-            let mut transaction = provider.prepare_group(lease, source, target).await?;
+            let mut transaction =
+                await_interruptible(control, provider.prepare_group(lease, source, target)).await?;
             for unit in step.lowering().units() {
-                if let Err(error) = transaction.execute_statement_unit(unit).await {
+                if let Err(error) =
+                    await_interruptible(control, transaction.execute_statement_unit(unit)).await
+                {
                     return Err(rollback_prepared_group_error(
                         transaction,
                         error,
@@ -1560,6 +1631,7 @@ async fn execute_rollback_backfill<S, P>(
     rollback: &VerifiedMigrationRollbackManifest,
     operation_index: usize,
     snapshot: Option<&OpenRollbackPlanRecord>,
+    control: &MigrationExecutionControl,
 ) -> Result<RollbackBackfillResult, Diagnostic>
 where
     S: MigrationExecutionJournal,
@@ -1624,9 +1696,11 @@ where
         ));
     }
 
-    let observation = provider
-        .observe_backfill(lease, plan, BackfillExecutionDirection::Reverse)
-        .await?;
+    let observation = await_interruptible(
+        control,
+        provider.observe_backfill(lease, plan, BackfillExecutionDirection::Reverse),
+    )
+    .await?;
     match decide_backfill_recovery(
         last_event,
         &observation,
@@ -1687,7 +1761,7 @@ where
     )?;
     store.record_backfill_event(lease, before).await?;
     match provider
-        .execute_backfill(lease, plan, BackfillExecutionDirection::Reverse)
+        .execute_backfill(lease, plan, BackfillExecutionDirection::Reverse, control)
         .await
     {
         Ok(completion) => {
@@ -2777,6 +2851,47 @@ mod tests {
     use type_bridge_contract::migration::{MigrationAppLabel, MigrationName};
 
     use super::*;
+
+    #[test]
+    fn safe_provider_wait_is_woken_by_cancellation() {
+        let cancellation = crate::MigrationCancellation::default();
+        let control = MigrationExecutionControl::new(
+            cancellation.clone(),
+            None,
+            crate::MigrationExecutionResourceLimits::default(),
+        );
+        let canceller = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            cancellation.cancel();
+        });
+        let diagnostic = futures_executor::block_on(await_interruptible(
+            &control,
+            std::future::pending::<Result<(), Diagnostic>>(),
+        ))
+        .expect_err("cancellation wakes a pending safe wait");
+        canceller.join().expect("canceller thread");
+        assert_eq!(diagnostic.category(), DiagnosticCategory::Cancelled);
+        assert_eq!(diagnostic.code().as_str(), "migration_execution_cancelled");
+    }
+
+    #[test]
+    fn safe_provider_wait_is_woken_by_absolute_deadline() {
+        let control = MigrationExecutionControl::new(
+            crate::MigrationCancellation::default(),
+            Some(Instant::now() + std::time::Duration::from_millis(10)),
+            crate::MigrationExecutionResourceLimits::default(),
+        );
+        let diagnostic = futures_executor::block_on(await_interruptible(
+            &control,
+            std::future::pending::<Result<(), Diagnostic>>(),
+        ))
+        .expect_err("deadline wakes a pending safe wait");
+        assert_eq!(diagnostic.category(), DiagnosticCategory::ResourceLimit);
+        assert_eq!(
+            diagnostic.code().as_str(),
+            "migration_execution_deadline_exceeded"
+        );
+    }
 
     fn test_migration_id() -> MigrationId {
         MigrationId::from_components(
