@@ -447,6 +447,14 @@ impl MigrationIdentitySnapshot {
             String::from_utf8(self.name.clone()).map_err(|_| identity_encoding_failed())?,
         )
     }
+
+    pub(crate) fn from_parts(app_label: &[u8], name: &[u8]) -> Result<Self, Diagnostic> {
+        let id = MigrationId::new(
+            String::from_utf8(app_label.to_vec()).map_err(|_| identity_encoding_failed())?,
+            String::from_utf8(name.to_vec()).map_err(|_| identity_encoding_failed())?,
+        )?;
+        Ok(Self::from_id(&id))
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

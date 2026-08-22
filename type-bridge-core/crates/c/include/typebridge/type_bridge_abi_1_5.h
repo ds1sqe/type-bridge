@@ -112,6 +112,7 @@ type_bridge_status_t type_bridge_migration_history_entry_reversible(const type_b
 type_bridge_status_t type_bridge_migration_history_entry_close(type_bridge_migration_history_entry_t **);
 type_bridge_status_t type_bridge_migration_identity_app_label(const type_bridge_migration_identity_t *, type_bridge_byte_view_t *);
 type_bridge_status_t type_bridge_migration_identity_name(const type_bridge_migration_identity_t *, type_bridge_byte_view_t *);
+type_bridge_status_t type_bridge_migration_identity_new(type_bridge_byte_view_t, type_bridge_byte_view_t, type_bridge_migration_identity_t **, type_bridge_diagnostics_t **);
 type_bridge_status_t type_bridge_migration_identity_close(type_bridge_migration_identity_t **);
 type_bridge_status_t type_bridge_migration_catalog_preview_apply(const type_bridge_migration_catalog_t *, const type_bridge_migration_identity_t *const *, size_t, const type_bridge_migration_identity_t *const *, size_t, uint8_t, type_bridge_migration_plan_t **, type_bridge_diagnostics_t **);
 type_bridge_status_t type_bridge_migration_catalog_preview_rollback(const type_bridge_migration_catalog_t *, const type_bridge_migration_identity_t *const *, size_t, const type_bridge_migration_identity_t *const *, size_t, type_bridge_migration_plan_t **, type_bridge_diagnostics_t **);

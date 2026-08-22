@@ -966,6 +966,78 @@ pub unsafe extern "C" fn type_bridge_migration_identity_name(
     unsafe { identity_view(identity, out_name, |value| &value.state.name) }
 }
 
+/// Construct one bounded typed identity for explicit offline target planning.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_migration_identity_new(
+    app_label: TypeBridgeByteView,
+    name: TypeBridgeByteView,
+    out_identity: *mut *mut TypeBridgeMigrationIdentity,
+    out_diagnostics: *mut *mut TypeBridgeDiagnostics,
+) -> TypeBridgeStatus {
+    let outputs = match direct_output_preflight(&[
+        (
+            out_identity.cast(),
+            size_of::<*mut TypeBridgeMigrationIdentity>(),
+        ),
+        (
+            out_diagnostics.cast(),
+            size_of::<*mut TypeBridgeDiagnostics>(),
+        ),
+    ]) {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    if outputs
+        .check_bytes(app_label.data.cast(), app_label.length)
+        .and_then(|()| outputs.check_bytes(name.data.cast(), name.length))
+        .is_err()
+        || out_identity.is_null()
+    {
+        return TypeBridgeStatus::InvalidArgument;
+    }
+    if let Err(status) = unsafe { initialize_diagnostics(out_diagnostics) } {
+        return status;
+    }
+    unsafe { out_identity.write_unaligned(ptr::null_mut()) };
+    guarded(|| {
+        let app_label = match unsafe {
+            app_label.snapshot(
+                "migration_app_label",
+                type_bridge_contract::id::MAX_LABEL_BYTES,
+            )
+        } {
+            Ok(value) => value,
+            Err((status, diagnostics)) => {
+                return match unsafe { publish_diagnostics(diagnostics, out_diagnostics) } {
+                    Ok(()) => status,
+                    Err(status) => status,
+                };
+            }
+        };
+        let name = match unsafe {
+            name.snapshot("migration_name", type_bridge_contract::id::MAX_LABEL_BYTES)
+        } {
+            Ok(value) => value,
+            Err((status, diagnostics)) => {
+                return match unsafe { publish_diagnostics(diagnostics, out_diagnostics) } {
+                    Ok(()) => status,
+                    Err(status) => status,
+                };
+            }
+        };
+        match MigrationIdentitySnapshot::from_parts(&app_label, &name) {
+            Ok(state) => unsafe {
+                publish_handle(
+                    AllocationSite::MigrationSnapshotHandle,
+                    TypeBridgeMigrationIdentity { state },
+                    out_identity,
+                )
+            },
+            Err(error) => return_failure(error, out_diagnostics),
+        }
+    })
+}
+
 /// Close a migration identity idempotently.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn type_bridge_migration_identity_close(
