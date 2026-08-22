@@ -51,6 +51,7 @@ use crate::query_execution_limits::QueryExecutionResourceLimits;
 ///
 /// `Database` is `Send + Sync`, so it can be shared across tasks via
 /// [`Arc`]. The TypeDB driver handles connection pooling internally.
+#[derive(Clone)]
 pub struct Database {
     backend: Arc<dyn DriverBackend>,
     connection_authority: DatabaseConnectionAuthority,

@@ -57,6 +57,10 @@ pub use remote::{
 };
 pub use schema::{Schema, SchemaPackage, Unbound};
 pub use session::{ConnectionOptions, Database, DatabaseCreateOutcome, DatabaseDeleteOutcome};
+#[cfg(feature = "typedb")]
+pub use session::{
+    ManagedDatabaseDeleteOutcome, ManagedDatabaseDeletionPlan, ManagedDatabasePairState,
+};
 pub use transaction::{
     ReadTransaction, TransactionEntityManager, TransactionRelationManager, WriteTransaction,
 };

@@ -187,7 +187,7 @@ impl<S: Schema> SchemaPackage<S> {
         policy: type_bridge_orm::DirectConnectionPolicy,
         cancellation: type_bridge_orm::AnswerCancellation,
     ) -> Result<crate::session::Database<S>> {
-        let installed = self.verify_and_install()?;
+        let (installed, authority) = self.verify_and_install_with_authority()?;
         let match_registry = crate::session::build_match_registry(&installed)?;
         let inner =
             type_bridge_orm::Database::connect_direct(installed.as_ref(), &policy, cancellation)
@@ -197,6 +197,7 @@ impl<S: Schema> SchemaPackage<S> {
             inner,
             installed,
             match_registry,
+            authority.map(|authority| authority.managed_scope().id().clone()),
         ))
     }
 
