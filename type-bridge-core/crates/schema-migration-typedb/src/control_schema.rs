@@ -37,6 +37,7 @@ pub(crate) const LEASE_HELD: &str = "held";
 pub(crate) const LEASE_FREE: &str = "free";
 pub(crate) const PLAN_RECORD_KIND: &str = "plan";
 pub(crate) const EVENT_RECORD_KIND: &str = "event";
+pub(crate) const BACKFILL_EVENT_RECORD_KIND: &str = "backfill-event";
 pub(crate) const APPLIED_RECORD_KIND: &str = "applied";
 pub(crate) const ROLLBACK_PLAN_RECORD_KIND: &str = "rollback-plan";
 pub(crate) const ROLLBACK_EVENT_RECORD_KIND: &str = "rollback-event";

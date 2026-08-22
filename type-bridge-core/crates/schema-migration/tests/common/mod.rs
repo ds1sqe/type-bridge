@@ -9,10 +9,11 @@ use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, Diagnosti
 use type_bridge_contract::schema::ManagedSchemaState;
 use type_bridge_query::ValidatedMigrationAssertionPlan;
 use type_bridge_schema_migration::{
-    AppliedRecord, ExecutionFence, ExecutionFuture, ExecutionScope, GroupCommitFuture,
-    GroupEventRecord, GroupJournalEventKind, JournalEntry, JournalSequence, LeaseHolderId,
-    MigrationExecutionJournal, MigrationExecutionProvider, MigrationLease, MigrationLeaseStore,
-    OpenPlanRecord, OpenRollbackPlanRecord, PlanRecord, PreparedMigrationGroup, RollbackPlanRecord,
+    AppliedRecord, BackfillEventRecord, BackfillExecutionDirection, ExecutionFence,
+    ExecutionFuture, ExecutionScope, GroupCommitFuture, GroupEventRecord, GroupJournalEventKind,
+    JournalEntry, JournalSequence, LeaseHolderId, MigrationExecutionJournal,
+    MigrationExecutionProvider, MigrationLease, MigrationLeaseStore, OpenPlanRecord,
+    OpenRollbackPlanRecord, PlanRecord, PreparedMigrationGroup, RollbackPlanRecord,
     RollbackStepEventRecord, RolledBackRecord, StatementUnit, active_applied_entries,
 };
 
@@ -22,6 +23,7 @@ pub struct CoordinatorStoreState {
     pub applied: Vec<JournalEntry<AppliedRecord>>,
     pub rolled_back: Vec<JournalEntry<RolledBackRecord>>,
     pub events: Vec<JournalEntry<GroupEventRecord>>,
+    pub backfill_events: Vec<JournalEntry<BackfillEventRecord>>,
     pub event_audit: Vec<GroupJournalEventKind>,
     pub rollback_events: Vec<JournalEntry<RollbackStepEventRecord>>,
     pub rollback_event_audit: Vec<GroupJournalEventKind>,
@@ -126,6 +128,20 @@ impl MigrationExecutionJournal for CoordinatorStore {
         })
     }
 
+    fn record_backfill_event<'a>(
+        &'a self,
+        lease: &'a MigrationLease,
+        record: BackfillEventRecord,
+    ) -> ExecutionFuture<'a, JournalEntry<BackfillEventRecord>> {
+        Box::pin(async move {
+            let mut state = self.state.lock().expect("coordinator store");
+            Self::checked(&mut state, lease)?;
+            let entry = JournalEntry::from_store(Self::sequence(&mut state)?, record);
+            state.backfill_events.push(entry.clone());
+            Ok(entry)
+        })
+    }
+
     fn record_applied<'a>(
         &'a self,
         lease: &'a MigrationLease,
@@ -151,6 +167,7 @@ impl MigrationExecutionJournal for CoordinatorStore {
             if complete {
                 state.open = None;
                 state.events.clear();
+                state.backfill_events.clear();
             }
             Ok(entry)
         })
@@ -177,9 +194,17 @@ impl MigrationExecutionJournal for CoordinatorStore {
             let Some(open) = state.open.clone() else {
                 return Ok(None);
             };
-            Ok(Some(OpenPlanRecord::from_store(
+            Ok(Some(OpenPlanRecord::from_store_with_backfills(
                 open,
                 state.events.clone(),
+                state
+                    .backfill_events
+                    .iter()
+                    .filter(|event| {
+                        event.record().direction() == BackfillExecutionDirection::Forward
+                    })
+                    .cloned()
+                    .collect(),
             )?))
         })
     }
@@ -255,6 +280,7 @@ impl MigrationExecutionJournal for CoordinatorStore {
             if complete {
                 state.open_rollback = None;
                 state.rollback_events.clear();
+                state.backfill_events.clear();
             }
             Ok(entry)
         })
@@ -281,9 +307,17 @@ impl MigrationExecutionJournal for CoordinatorStore {
             let Some(open) = state.open_rollback.clone() else {
                 return Ok(None);
             };
-            Ok(Some(OpenRollbackPlanRecord::from_store(
+            Ok(Some(OpenRollbackPlanRecord::from_store_with_backfills(
                 open,
                 state.rollback_events.clone(),
+                state
+                    .backfill_events
+                    .iter()
+                    .filter(|event| {
+                        event.record().direction() == BackfillExecutionDirection::Reverse
+                    })
+                    .cloned()
+                    .collect(),
             )?))
         })
     }

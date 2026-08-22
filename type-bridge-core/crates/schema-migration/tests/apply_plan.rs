@@ -30,15 +30,17 @@ use type_bridge_schema::{
     diff_managed, inverse_delta, managed_schema_state, resolve,
 };
 use type_bridge_schema_migration::{
-    AppliedRecord, ExecutionFence, ExecutionScope, GroupEventRecord, GroupJournalEventKind,
-    JournalEntry, JournalSequence, LeaseHolderId, LegacyAppliedSetDigest, LegacyMigrationChecksum,
-    LegacyMigrationReference, MigrationApplyApproval, MigrationApplyPlanError,
-    MigrationApplyTarget, MigrationExecutionOutcome, MigrationExecutionPosition,
-    MigrationHistoryGraph, MigrationLease, MigrationSafetyPolicy, PlanRecord, SafetyPolicyDecision,
-    SchemaLoweringBinding, SchemaMigrationDraft, StatementUnit, VerifiedMigrationApplyStep,
-    VerifiedMigrationRollbackOperation, build_legacy_frontier_bridge, build_verified_manifest,
-    build_verified_migration_apply_plan, build_verified_migration_rollback_plan,
-    execute_verified_migration_apply_plan, schema_lowering_profile_binding, typedb_3_12_1_profile,
+    AppliedRecord, BackfillCompletionEvidence, BackfillEventRecord, BackfillExecutionCounts,
+    BackfillExecutionDirection, ExecutionFence, ExecutionScope, GroupEventRecord,
+    GroupJournalEventKind, JournalEntry, JournalSequence, LeaseHolderId, LegacyAppliedSetDigest,
+    LegacyMigrationChecksum, LegacyMigrationReference, MigrationApplyApproval,
+    MigrationApplyPlanError, MigrationApplyTarget, MigrationExecutionOutcome,
+    MigrationExecutionPosition, MigrationHistoryGraph, MigrationLease, MigrationSafetyPolicy,
+    PlanRecord, SafetyPolicyDecision, SchemaLoweringBinding, SchemaMigrationDraft, StatementUnit,
+    VerifiedMigrationApplyStep, VerifiedMigrationRollbackOperation, build_legacy_frontier_bridge,
+    build_verified_manifest, build_verified_migration_apply_plan,
+    build_verified_migration_rollback_plan, execute_verified_migration_apply_plan,
+    schema_lowering_profile_binding, typedb_3_12_1_profile,
 };
 
 fn type_fact(label: &str) -> SchemaFact {
@@ -284,6 +286,72 @@ fn backfill_apply_evidence_retains_exact_manifest_position_and_requires_approval
     assert_eq!(
         rollback_manifest.operations(),
         &[VerifiedMigrationRollbackOperation::Backfill(0)]
+    );
+
+    let lease = MigrationLease::new(
+        ExecutionScope::new(context.scope_id().clone()),
+        LeaseHolderId::new("backfill-events").unwrap(),
+        ExecutionFence::new(1).unwrap(),
+    );
+    let (_, persisted_plan) = migration.steps()[0].step().as_backfill().unwrap();
+    let plan_fingerprint = persisted_plan.fingerprint().unwrap();
+    let before = BackfillEventRecord::new_apply(
+        &lease,
+        migration,
+        0,
+        GroupJournalEventKind::BeforeCommit,
+        None,
+    )
+    .unwrap();
+    assert_eq!(before.operation_ordinal(), 0);
+    assert_eq!(before.manifest_step_index(), 0);
+    assert_eq!(before.plan_fingerprint(), &plan_fingerprint);
+    assert_eq!(before.direction(), BackfillExecutionDirection::Forward);
+
+    let counts = BackfillExecutionCounts::new(7, 5, 2, 2).unwrap();
+    let forward_completion = BackfillCompletionEvidence::new(
+        plan_fingerprint.clone(),
+        BackfillExecutionDirection::Forward,
+        counts,
+    );
+    let committed = BackfillEventRecord::new_apply(
+        &lease,
+        migration,
+        0,
+        GroupJournalEventKind::Committed,
+        Some(forward_completion),
+    )
+    .unwrap();
+    assert_eq!(committed.completion().unwrap().counts(), counts);
+
+    let reverse_completion = BackfillCompletionEvidence::new(
+        plan_fingerprint,
+        BackfillExecutionDirection::Reverse,
+        counts,
+    );
+    let reversed = BackfillEventRecord::new_rollback(
+        &lease,
+        rollback_manifest,
+        0,
+        GroupJournalEventKind::Committed,
+        Some(reverse_completion),
+    )
+    .unwrap();
+    assert_eq!(reversed.direction(), BackfillExecutionDirection::Reverse);
+    assert_eq!(reversed.operation_ordinal(), 0);
+    assert_eq!(reversed.manifest_step_index(), 0);
+    assert_eq!(
+        BackfillEventRecord::new_apply(
+            &lease,
+            migration,
+            0,
+            GroupJournalEventKind::FormalOnlyAdvanced,
+            None,
+        )
+        .unwrap_err()
+        .code()
+        .as_str(),
+        "migration_execution_backfill_formal_advance"
     );
 }
 

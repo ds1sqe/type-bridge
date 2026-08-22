@@ -25,18 +25,19 @@ use type_bridge_orm::session::backend::QueryResult;
 use type_bridge_orm::{CommitFailureCertainty, Database, OrmError};
 use type_bridge_schema::{DeltaError, ManagedDeltaContext, managed_schema_state};
 use type_bridge_schema_migration::{
-    AppliedRecord, CanonicalMigrationHistoryEvidence, ExecutionFuture, ExecutionScope,
-    GroupEventRecord, JournalEntry, LeaseHolderId, MigrationApplyApproval, MigrationApplyPlanError,
-    MigrationApplyTarget, MigrationDirectory, MigrationExecutionJournal, MigrationExecutionOutcome,
-    MigrationHistoryGraph, MigrationLease, MigrationLeaseStore, MigrationRollbackOutcome,
-    MigrationSafetyPolicy, MigrationVerifyReport, OpenPlanRecord, OpenRollbackPlanRecord,
-    PlanRecord, RollbackPlanRecord, RollbackStepEventRecord, RolledBackRecord,
-    SchemaLoweringBinding, VerifiedMigrationApplyPlan, VerifiedSchemaMigrationManifest,
-    build_verified_migration_apply_plan, build_verified_migration_rollback_plan,
-    canonical_history_declared_legacy_bridge_count_in, discover_verified_migration_chain_in,
-    discover_verified_migration_chain_with_evidence_in, execute_verified_migration_apply_plan,
-    execute_verified_migration_rollback_plan, require_adoption_authority_pair,
-    require_adoption_authority_pair_state, verified_manifest_digest, verify_migration_state,
+    AppliedRecord, BackfillEventRecord, CanonicalMigrationHistoryEvidence, ExecutionFuture,
+    ExecutionScope, GroupEventRecord, JournalEntry, LeaseHolderId, MigrationApplyApproval,
+    MigrationApplyPlanError, MigrationApplyTarget, MigrationDirectory, MigrationExecutionJournal,
+    MigrationExecutionOutcome, MigrationHistoryGraph, MigrationLease, MigrationLeaseStore,
+    MigrationRollbackOutcome, MigrationSafetyPolicy, MigrationVerifyReport, OpenPlanRecord,
+    OpenRollbackPlanRecord, PlanRecord, RollbackPlanRecord, RollbackStepEventRecord,
+    RolledBackRecord, SchemaLoweringBinding, VerifiedMigrationApplyPlan,
+    VerifiedSchemaMigrationManifest, build_verified_migration_apply_plan,
+    build_verified_migration_rollback_plan, canonical_history_declared_legacy_bridge_count_in,
+    discover_verified_migration_chain_in, discover_verified_migration_chain_with_evidence_in,
+    execute_verified_migration_apply_plan, execute_verified_migration_rollback_plan,
+    require_adoption_authority_pair, require_adoption_authority_pair_state,
+    verified_manifest_digest, verify_migration_state,
 };
 
 use type_bridge_migration::{
@@ -930,6 +931,14 @@ impl MigrationExecutionJournal for LegacyCheckpointStore<'_> {
         self.inner.record_group_event(lease, record)
     }
 
+    fn record_backfill_event<'a>(
+        &'a self,
+        lease: &'a MigrationLease,
+        record: BackfillEventRecord,
+    ) -> ExecutionFuture<'a, JournalEntry<BackfillEventRecord>> {
+        self.inner.record_backfill_event(lease, record)
+    }
+
     fn record_applied<'a>(
         &'a self,
         lease: &'a MigrationLease,
@@ -1235,6 +1244,14 @@ impl MigrationExecutionJournal for LegacyBoundStore<'_> {
         record: GroupEventRecord,
     ) -> ExecutionFuture<'a, JournalEntry<GroupEventRecord>> {
         self.inner.record_group_event(lease, record)
+    }
+
+    fn record_backfill_event<'a>(
+        &'a self,
+        lease: &'a MigrationLease,
+        record: BackfillEventRecord,
+    ) -> ExecutionFuture<'a, JournalEntry<BackfillEventRecord>> {
+        self.inner.record_backfill_event(lease, record)
     }
 
     fn record_applied<'a>(

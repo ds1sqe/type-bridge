@@ -16,30 +16,31 @@ use type_bridge_orm::{Database, OrmError, Transaction};
 use type_bridge_schema::ManagedDeltaContext;
 use type_bridge_schema_compat::typeql_to_declared;
 use type_bridge_schema_migration::{
-    AppliedRecord, ExecutionBindingToken, ExecutionFence, ExecutionFuture, ExecutionScope,
-    GroupEventRecord, GroupJournalEventKind, JournalEntry, JournalSequence, LeaseHolderId,
-    MigrationExecutionJournal, MigrationLease, MigrationLeaseStore, OpenPlanRecord,
-    OpenRollbackPlanRecord, PlanRecord, RollbackPlanRecord, RollbackStepEventRecord,
-    RolledBackRecord, VerifiedMigrationApplyPlan, VerifiedMigrationRollbackPlan,
-    VerifiedMigrationTransactionGroup, VerifiedSchemaMigrationManifest, active_applied_entries,
-    verified_manifest_digest,
+    AppliedRecord, BackfillEventRecord, BackfillExecutionDirection, ExecutionBindingToken,
+    ExecutionFence, ExecutionFuture, ExecutionScope, GroupEventRecord, GroupJournalEventKind,
+    JournalEntry, JournalSequence, LeaseHolderId, MigrationExecutionJournal, MigrationLease,
+    MigrationLeaseStore, OpenPlanRecord, OpenRollbackPlanRecord, PlanRecord, RollbackPlanRecord,
+    RollbackStepEventRecord, RolledBackRecord, VerifiedMigrationApplyPlan,
+    VerifiedMigrationRollbackPlan, VerifiedMigrationTransactionGroup,
+    VerifiedSchemaMigrationManifest, active_applied_entries, verified_manifest_digest,
 };
 
 use crate::control_schema::{
-    APPLIED_RECORD_KIND, CONTROL_ENTITY, CONTROL_SCOPE, EVENT_RECORD_KIND,
-    JOURNAL_CONTROL_SCHEMA_TYPEQL, JOURNAL_ENTITY, JOURNAL_OWNER_ENTITY, JOURNAL_OWNER_KEY,
-    JOURNAL_OWNER_MANAGED_DATABASE, JOURNAL_OWNER_MANAGED_SCOPE, JOURNAL_OWNER_SINGLETON_KEY,
-    LEASE_FENCE, LEASE_FREE, LEASE_HELD, LEASE_HOLDER, LEASE_STATE, MANAGED_FENCE_SCHEMA_TYPEQL,
-    NEXT_SEQUENCE, PLAN_RECORD_KIND, RECORD_KEY, RECORD_KIND, RECORD_PAYLOAD,
-    RECORD_PAYLOAD_DIGEST, RECORD_SEQUENCE, ROLLBACK_EVENT_RECORD_KIND, ROLLBACK_PLAN_RECORD_KIND,
-    ROLLED_BACK_RECORD_KIND,
+    APPLIED_RECORD_KIND, BACKFILL_EVENT_RECORD_KIND, CONTROL_ENTITY, CONTROL_SCOPE,
+    EVENT_RECORD_KIND, JOURNAL_CONTROL_SCHEMA_TYPEQL, JOURNAL_ENTITY, JOURNAL_OWNER_ENTITY,
+    JOURNAL_OWNER_KEY, JOURNAL_OWNER_MANAGED_DATABASE, JOURNAL_OWNER_MANAGED_SCOPE,
+    JOURNAL_OWNER_SINGLETON_KEY, LEASE_FENCE, LEASE_FREE, LEASE_HELD, LEASE_HOLDER, LEASE_STATE,
+    MANAGED_FENCE_SCHEMA_TYPEQL, NEXT_SEQUENCE, PLAN_RECORD_KIND, RECORD_KEY, RECORD_KIND,
+    RECORD_PAYLOAD, RECORD_PAYLOAD_DIGEST, RECORD_SEQUENCE, ROLLBACK_EVENT_RECORD_KIND,
+    ROLLBACK_PLAN_RECORD_KIND, ROLLED_BACK_RECORD_KIND,
 };
 use crate::observation::{partition_typeql_export, partition_typeql_export_lossless};
 use crate::provider::{TypeDbExecutionBinding, require_managed_state_execution_context};
 use crate::wire::{
-    decode_applied, decode_event, decode_plan, decode_rollback_event, decode_rollback_plan,
-    decode_rolled_back, encode_applied, encode_event, encode_plan, encode_rollback_event,
-    encode_rollback_plan, encode_rolled_back, persisted_fence,
+    decode_applied, decode_backfill_event, decode_backfill_event_evidence, decode_event,
+    decode_plan, decode_rollback_event, decode_rollback_plan, decode_rolled_back, encode_applied,
+    encode_backfill_event, encode_event, encode_plan, encode_rollback_event, encode_rollback_plan,
+    encode_rolled_back, persisted_fence,
 };
 
 /// Derive the one-to-one companion journal database name.
@@ -1097,6 +1098,60 @@ impl<'a> TypeDbMigrationStore<'a> {
         Ok(JournalEntry::from_store(sequence, record))
     }
 
+    async fn record_backfill_event_inner(
+        &self,
+        lease: &MigrationLease,
+        record: BackfillEventRecord,
+    ) -> Result<JournalEntry<BackfillEventRecord>, Diagnostic> {
+        ensure_record_lease(lease, record.scope(), record.fence())?;
+        self.ensure_schema_for_scope(lease.scope()).await?;
+        let mut transaction = self
+            .journal_database
+            .write_transaction()
+            .await
+            .map_err(map_orm_error)?;
+        let current = load_active_control(&mut transaction, lease).await?;
+        let member = match record.direction() {
+            BackfillExecutionDirection::Forward => {
+                let plan = self.require_plan()?;
+                self.load_open_plan_in_transaction(&mut transaction, lease, plan)
+                    .await?
+                    .is_some_and(|open| {
+                        open.plan()
+                            .record()
+                            .manifest_digests()
+                            .contains(&record.manifest_digest())
+                    })
+            }
+            BackfillExecutionDirection::Reverse => {
+                let plan = self.require_rollback_plan()?;
+                self.load_open_rollback_plan_in_transaction(&mut transaction, lease, plan)
+                    .await?
+                    .is_some_and(|open| {
+                        open.plan()
+                            .record()
+                            .manifest_digests()
+                            .contains(&record.manifest_digest())
+                    })
+            }
+        };
+        if !member {
+            let _ = transaction.rollback().await;
+            return Err(record_identity_mismatch());
+        }
+        let payload = encode_backfill_event(&record)?;
+        let sequence = append_record(
+            &mut transaction,
+            lease,
+            current,
+            BACKFILL_EVENT_RECORD_KIND,
+            &payload,
+        )
+        .await?;
+        transaction.commit().await.map_err(map_orm_error)?;
+        Ok(JournalEntry::from_store(sequence, record))
+    }
+
     async fn record_applied_inner(
         &self,
         lease: &MigrationLease,
@@ -1383,7 +1438,14 @@ impl<'a> TypeDbMigrationStore<'a> {
             let record = decode_event_against_plan(&event_row.payload, lease, plan)?;
             events.push(JournalEntry::from_store(event_row.sequence, record));
         }
-        OpenPlanRecord::from_store(plan_entry, events).map(Some)
+        let backfill_rows =
+            load_rows(transaction, lease.scope(), Some(BACKFILL_EVENT_RECORD_KIND)).await?;
+        let mut backfill_events = Vec::with_capacity(backfill_rows.len());
+        for event_row in backfill_rows {
+            let record = decode_apply_backfill_event_against_plan(&event_row.payload, lease, plan)?;
+            backfill_events.push(JournalEntry::from_store(event_row.sequence, record));
+        }
+        OpenPlanRecord::from_store_with_backfills(plan_entry, events, backfill_events).map(Some)
     }
 
     async fn begin_rollback_plan_inner(
@@ -1647,7 +1709,16 @@ impl<'a> TypeDbMigrationStore<'a> {
             let record = decode_rollback_event_against_plan(&event_row.payload, lease, plan)?;
             events.push(JournalEntry::from_store(event_row.sequence, record));
         }
-        OpenRollbackPlanRecord::from_store(plan_entry, events).map(Some)
+        let backfill_rows =
+            load_rows(transaction, lease.scope(), Some(BACKFILL_EVENT_RECORD_KIND)).await?;
+        let mut backfill_events = Vec::with_capacity(backfill_rows.len());
+        for event_row in backfill_rows {
+            let record =
+                decode_rollback_backfill_event_against_plan(&event_row.payload, lease, plan)?;
+            backfill_events.push(JournalEntry::from_store(event_row.sequence, record));
+        }
+        OpenRollbackPlanRecord::from_store_with_backfills(plan_entry, events, backfill_events)
+            .map(Some)
     }
 }
 
@@ -1688,6 +1759,17 @@ impl MigrationExecutionJournal for TypeDbMigrationStore<'_> {
         Box::pin(async move {
             self.require_owned_lease(lease)?;
             self.record_event_inner(lease, record).await
+        })
+    }
+
+    fn record_backfill_event<'a>(
+        &'a self,
+        lease: &'a MigrationLease,
+        record: BackfillEventRecord,
+    ) -> ExecutionFuture<'a, JournalEntry<BackfillEventRecord>> {
+        Box::pin(async move {
+            self.require_owned_lease(lease)?;
+            self.record_backfill_event_inner(lease, record).await
         })
     }
 
@@ -2240,7 +2322,11 @@ async fn delete_open_plan(
     transaction: &mut Transaction,
     scope: &ExecutionScope,
 ) -> Result<(), Diagnostic> {
-    for kind in [PLAN_RECORD_KIND, EVENT_RECORD_KIND] {
+    for kind in [
+        PLAN_RECORD_KIND,
+        EVENT_RECORD_KIND,
+        BACKFILL_EVENT_RECORD_KIND,
+    ] {
         let query = format!(
             "match $record isa {JOURNAL_ENTITY}, has {CONTROL_SCOPE} {}, has {RECORD_KIND} {}; delete $record;",
             literal(scope.managed_scope_id().as_str()),
@@ -2255,7 +2341,11 @@ async fn delete_open_rollback_plan(
     transaction: &mut Transaction,
     scope: &ExecutionScope,
 ) -> Result<(), Diagnostic> {
-    for kind in [ROLLBACK_PLAN_RECORD_KIND, ROLLBACK_EVENT_RECORD_KIND] {
+    for kind in [
+        ROLLBACK_PLAN_RECORD_KIND,
+        ROLLBACK_EVENT_RECORD_KIND,
+        BACKFILL_EVENT_RECORD_KIND,
+    ] {
         let query = format!(
             "match $record isa {JOURNAL_ENTITY}, has {CONTROL_SCOPE} {}, has {RECORD_KIND} {}; delete $record;",
             literal(scope.managed_scope_id().as_str()),
@@ -2374,6 +2464,98 @@ fn decode_event_against_plan(
                 {
                     return Err(record_identity_mismatch());
                 }
+            }
+        }
+    }
+    matched.ok_or_else(record_identity_mismatch)
+}
+
+fn decode_apply_backfill_event_against_plan(
+    bytes: &[u8],
+    lease: &MigrationLease,
+    plan: &VerifiedMigrationApplyPlan,
+) -> Result<BackfillEventRecord, Diagnostic> {
+    let fence = persisted_fence(bytes, BACKFILL_EVENT_RECORD_KIND)?;
+    let historical = MigrationLease::new(lease.scope().clone(), lease.holder().clone(), fence);
+    let mut matched = None;
+    for migration in plan.migrations() {
+        for &step_index in migration.backfill_step_indices() {
+            let Some((contract, _)) = migration
+                .steps()
+                .get(step_index)
+                .and_then(|step| step.step().as_backfill())
+            else {
+                continue;
+            };
+            let Ok((kind, completion)) = decode_backfill_event_evidence(
+                bytes,
+                contract.plan_fingerprint(),
+                BackfillExecutionDirection::Forward,
+            ) else {
+                continue;
+            };
+            let Ok(candidate) = BackfillEventRecord::new_apply(
+                &historical,
+                migration,
+                step_index,
+                kind,
+                completion,
+            ) else {
+                continue;
+            };
+            if let Ok(record) = decode_backfill_event(bytes, candidate)
+                && matched.replace(record).is_some()
+            {
+                return Err(record_identity_mismatch());
+            }
+        }
+    }
+    matched.ok_or_else(record_identity_mismatch)
+}
+
+fn decode_rollback_backfill_event_against_plan(
+    bytes: &[u8],
+    lease: &MigrationLease,
+    plan: &VerifiedMigrationRollbackPlan,
+) -> Result<BackfillEventRecord, Diagnostic> {
+    let fence = persisted_fence(bytes, BACKFILL_EVENT_RECORD_KIND)?;
+    let historical = MigrationLease::new(lease.scope().clone(), lease.holder().clone(), fence);
+    let mut matched = None;
+    for rollback in plan.rollbacks() {
+        for (operation_index, operation) in rollback.operations().iter().enumerate() {
+            let type_bridge_schema_migration::VerifiedMigrationRollbackOperation::Backfill(
+                backfill_index,
+            ) = operation
+            else {
+                continue;
+            };
+            let Some((contract, _)) = rollback
+                .backfills()
+                .get(*backfill_index)
+                .and_then(|backfill| backfill.forward_step().as_backfill())
+            else {
+                continue;
+            };
+            let Ok((kind, completion)) = decode_backfill_event_evidence(
+                bytes,
+                contract.plan_fingerprint(),
+                BackfillExecutionDirection::Reverse,
+            ) else {
+                continue;
+            };
+            let Ok(candidate) = BackfillEventRecord::new_rollback(
+                &historical,
+                rollback,
+                operation_index,
+                kind,
+                completion,
+            ) else {
+                continue;
+            };
+            if let Ok(record) = decode_backfill_event(bytes, candidate)
+                && matched.replace(record).is_some()
+            {
+                return Err(record_identity_mismatch());
             }
         }
     }
