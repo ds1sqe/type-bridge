@@ -30,6 +30,20 @@ pub struct NodeMigrationHistoryEntry {
     pub reversible: bool,
 }
 
+#[napi(object)]
+pub struct NodeMigrationVerificationFinding {
+    pub kind: String,
+    pub pending: Vec<NodeMigrationIdentity>,
+    pub diagnostic_code: Option<String>,
+}
+
+#[napi(object)]
+pub struct NodeMigrationVerificationReport {
+    pub clean: bool,
+    pub findings: Vec<NodeMigrationVerificationFinding>,
+    pub applied_frontier: Vec<NodeMigrationIdentity>,
+}
+
 /// Generated-package-owned, source-free migration catalog.
 #[napi]
 pub struct NodeMigrationCatalog {
@@ -111,6 +125,18 @@ impl NodeMigrationCatalog {
                 }),
             })
             .map_err(plan_error)
+    }
+
+    #[napi]
+    pub fn verify(&self, database: &NodeRustDatabase) -> Result<NodeMigrationVerificationReport> {
+        let (database, runtime) = database.handles();
+        runtime
+            .block_on(type_bridge_schema_migration_typedb::verify_catalog_state(
+                database,
+                &self.inner,
+            ))
+            .map(verification_report)
+            .map_err(|error| catalog_error(error.code().as_str()))
     }
 }
 
@@ -471,6 +497,53 @@ fn node_rollback_outcome(
         type_bridge_schema_migration::MigrationRollbackOutcome::RequiresExplicitRecovery {
             ..
         } => "requires_explicit_recovery",
+    }
+}
+
+fn verification_report(
+    report: type_bridge_schema_migration::MigrationVerifyReport,
+) -> NodeMigrationVerificationReport {
+    let findings = report
+        .findings()
+        .iter()
+        .map(|finding| {
+            use type_bridge_schema_migration::MigrationDriftFinding;
+            let (kind, pending, diagnostic_code) = match finding {
+                MigrationDriftFinding::AppliedLedger { diagnostic } => (
+                    "applied_ledger",
+                    Vec::new(),
+                    Some(diagnostic.code().as_str().to_owned()),
+                ),
+                MigrationDriftFinding::LiveSemantics { .. } => ("live_semantics", Vec::new(), None),
+                MigrationDriftFinding::DesiredDivergence { .. } => {
+                    ("desired_divergence", Vec::new(), None)
+                }
+                MigrationDriftFinding::PendingMigrations { pending } => (
+                    "pending_migrations",
+                    pending.iter().map(migration_identity).collect(),
+                    None,
+                ),
+                MigrationDriftFinding::Capabilities { diagnostic } => (
+                    "capabilities",
+                    Vec::new(),
+                    Some(diagnostic.code().as_str().to_owned()),
+                ),
+            };
+            NodeMigrationVerificationFinding {
+                kind: kind.to_owned(),
+                pending,
+                diagnostic_code,
+            }
+        })
+        .collect();
+    NodeMigrationVerificationReport {
+        clean: report.is_clean(),
+        findings,
+        applied_frontier: report
+            .applied_frontier()
+            .iter()
+            .map(migration_identity)
+            .collect(),
     }
 }
 

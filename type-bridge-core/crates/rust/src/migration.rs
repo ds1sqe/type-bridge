@@ -99,6 +99,20 @@ impl<S: Schema> MigrationCatalog<S> {
             })
             .map_err(plan_error)
     }
+
+    /// Verify the applied ledger and live managed semantics without mutation.
+    #[cfg(feature = "typedb")]
+    pub async fn verify(
+        &self,
+        database: &Database<S>,
+    ) -> Result<type_bridge_schema_migration::MigrationVerifyReport> {
+        type_bridge_schema_migration_typedb::verify_catalog_state(
+            Arc::new(database.inner_orm().clone()),
+            &self.inner,
+        )
+        .await
+        .map_err(migration_diagnostic)
+    }
 }
 
 #[derive(Clone, Debug)]

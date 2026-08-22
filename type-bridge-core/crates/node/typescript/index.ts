@@ -256,6 +256,23 @@ export interface MigrationPreviewEntry {
   readonly reversible: boolean;
 }
 
+export interface MigrationVerificationFinding {
+  readonly kind:
+    | "applied_ledger"
+    | "live_semantics"
+    | "desired_divergence"
+    | "pending_migrations"
+    | "capabilities";
+  readonly pending: MigrationIdentity[];
+  readonly diagnosticCode?: string | null;
+}
+
+export interface MigrationVerificationReport {
+  readonly clean: boolean;
+  readonly findings: MigrationVerificationFinding[];
+  readonly appliedFrontier: MigrationIdentity[];
+}
+
 interface NativeMigrationApprovalBuilder {
   approve(index: number): void;
   finish(): NativeMigrationApprovalSet;
@@ -285,6 +302,7 @@ interface NativeMigrationCatalog {
   isEmpty(): boolean;
   heads(): MigrationIdentity[];
   entry(index: number): MigrationHistoryEntry | null;
+  verify(database: NativeRustDatabase): MigrationVerificationReport;
   previewApply(
     applied: MigrationIdentity[],
     targets?: MigrationIdentity[] | null,
@@ -510,6 +528,10 @@ export class MigrationCatalog {
 
   entry(index: number): MigrationHistoryEntry | null {
     return this.#native.entry(index);
+  }
+
+  verify(database: RustDatabase): MigrationVerificationReport {
+    return this.#native.verify(preparedV2DatabaseHandle(database));
   }
 
   previewApply(

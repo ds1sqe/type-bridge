@@ -210,6 +210,43 @@ impl MigrationCatalogState {
             })
             .map_err(plan_diagnostic)
     }
+
+    /// Verify the exact catalog/ledger/live triad without mutation.
+    pub(crate) fn verify(
+        &self,
+        database: &TypeBridgeDatabase,
+    ) -> Result<MigrationVerificationState, Diagnostic> {
+        database
+            .block_on(type_bridge_schema_migration_typedb::verify_catalog_state(
+                database.orm_database_arc(),
+                &self.catalog,
+            ))
+            .map(|report| MigrationVerificationState { report })
+    }
+}
+
+/// Owned read-only verification report prepared for ABI 1.5 handles.
+#[derive(Clone, Debug)]
+pub(crate) struct MigrationVerificationState {
+    report: type_bridge_schema_migration::MigrationVerifyReport,
+}
+
+impl MigrationVerificationState {
+    pub(crate) fn is_clean(&self) -> bool {
+        self.report.is_clean()
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.report.findings().len()
+    }
+
+    pub(crate) fn applied_frontier(&self) -> Vec<MigrationIdentitySnapshot> {
+        self.report
+            .applied_frontier()
+            .iter()
+            .map(MigrationIdentitySnapshot::from_id)
+            .collect()
+    }
 }
 
 /// Copied compound migration identity with no delimiter-joined representation.

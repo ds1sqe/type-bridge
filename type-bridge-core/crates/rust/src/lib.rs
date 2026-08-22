@@ -76,3 +76,5 @@ pub use type_bridge_orm::{
 #[cfg(feature = "typedb")]
 pub use type_bridge_orm::{DirectConnectionPolicy, DirectTls};
 pub use type_bridge_orm_derive::SelectedRow;
+#[cfg(feature = "typedb")]
+pub use type_bridge_schema_migration::{MigrationDriftFinding, MigrationVerifyReport};

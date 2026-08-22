@@ -31,7 +31,8 @@ pub use match_runtime::{
 pub use migration_catalog_runtime::{
     NodeMigrationApprovalBuilder, NodeMigrationApprovalSet, NodeMigrationCatalog,
     NodeMigrationHistoryEntry, NodeMigrationIdentity, NodeMigrationPlan, NodeMigrationPreview,
-    NodeMigrationPreviewEntry, open_migration_catalog,
+    NodeMigrationPreviewEntry, NodeMigrationVerificationFinding, NodeMigrationVerificationReport,
+    open_migration_catalog,
 };
 pub use query_v2_model_remote_runtime::{
     NodePendingRemoteModelQuery, NodeRemoteModelQueryContext, query_v2_prepare_remote_model_count,

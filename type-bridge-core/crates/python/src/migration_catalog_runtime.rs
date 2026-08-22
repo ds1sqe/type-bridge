@@ -160,6 +160,21 @@ impl PyMigrationCatalog {
             })
             .map_err(py_plan_error)
     }
+
+    fn verify(
+        &self,
+        py: Python<'_>,
+        database: &PyRustDatabase,
+    ) -> PyResult<PyMigrationVerificationReport> {
+        let (database, runtime) = database.handles();
+        provider_block_on(
+            py,
+            runtime.as_ref(),
+            type_bridge_schema_migration_typedb::verify_catalog_state(database, &self.inner),
+        )
+        .map(verification_report)
+        .map_err(py_catalog_diagnostic)
+    }
 }
 
 enum PyMigrationPreviewInner {
@@ -367,6 +382,53 @@ pub struct PyMigrationPreviewEntry {
     reversible: bool,
 }
 
+#[pyclass(name = "MigrationVerificationFinding", frozen)]
+#[derive(Clone)]
+pub struct PyMigrationVerificationFinding {
+    kind: String,
+    pending: Vec<PyMigrationIdentity>,
+    diagnostic_code: Option<String>,
+}
+
+#[pymethods]
+impl PyMigrationVerificationFinding {
+    #[getter]
+    fn kind(&self) -> &str {
+        &self.kind
+    }
+    #[getter]
+    fn pending(&self) -> Vec<PyMigrationIdentity> {
+        self.pending.clone()
+    }
+    #[getter]
+    fn diagnostic_code(&self) -> Option<&str> {
+        self.diagnostic_code.as_deref()
+    }
+}
+
+#[pyclass(name = "MigrationVerificationReport", frozen)]
+pub struct PyMigrationVerificationReport {
+    clean: bool,
+    findings: Vec<PyMigrationVerificationFinding>,
+    applied_frontier: Vec<PyMigrationIdentity>,
+}
+
+#[pymethods]
+impl PyMigrationVerificationReport {
+    #[getter]
+    fn clean(&self) -> bool {
+        self.clean
+    }
+    #[getter]
+    fn findings(&self) -> Vec<PyMigrationVerificationFinding> {
+        self.findings.clone()
+    }
+    #[getter]
+    fn applied_frontier(&self) -> Vec<PyMigrationIdentity> {
+        self.applied_frontier.clone()
+    }
+}
+
 #[pymethods]
 impl PyMigrationPreviewEntry {
     #[getter]
@@ -562,6 +624,53 @@ fn python_rollback_outcome(
     }
 }
 
+fn verification_report(
+    report: type_bridge_schema_migration::MigrationVerifyReport,
+) -> PyMigrationVerificationReport {
+    let findings = report
+        .findings()
+        .iter()
+        .map(|finding| {
+            use type_bridge_schema_migration::MigrationDriftFinding;
+            let (kind, pending, diagnostic_code) = match finding {
+                MigrationDriftFinding::AppliedLedger { diagnostic } => (
+                    "applied_ledger",
+                    Vec::new(),
+                    Some(diagnostic.code().as_str().to_owned()),
+                ),
+                MigrationDriftFinding::LiveSemantics { .. } => ("live_semantics", Vec::new(), None),
+                MigrationDriftFinding::DesiredDivergence { .. } => {
+                    ("desired_divergence", Vec::new(), None)
+                }
+                MigrationDriftFinding::PendingMigrations { pending } => (
+                    "pending_migrations",
+                    pending.iter().map(migration_identity).collect(),
+                    None,
+                ),
+                MigrationDriftFinding::Capabilities { diagnostic } => (
+                    "capabilities",
+                    Vec::new(),
+                    Some(diagnostic.code().as_str().to_owned()),
+                ),
+            };
+            PyMigrationVerificationFinding {
+                kind: kind.to_owned(),
+                pending,
+                diagnostic_code,
+            }
+        })
+        .collect();
+    PyMigrationVerificationReport {
+        clean: report.is_clean(),
+        findings,
+        applied_frontier: report
+            .applied_frontier()
+            .iter()
+            .map(migration_identity)
+            .collect(),
+    }
+}
+
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(open_migration_catalog, m)?)?;
     m.add_class::<PyMigrationIdentity>()?;
@@ -572,6 +681,8 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyMigrationApprovalBuilder>()?;
     m.add_class::<PyMigrationApprovalSet>()?;
     m.add_class::<PyMigrationPlan>()?;
+    m.add_class::<PyMigrationVerificationFinding>()?;
+    m.add_class::<PyMigrationVerificationReport>()?;
     Ok(())
 }
 
