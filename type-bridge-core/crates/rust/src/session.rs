@@ -602,10 +602,7 @@ fn map_delete_outcome(
 
 #[cfg(feature = "typedb")]
 fn administration_error(error: type_bridge_contract::diagnostic::Diagnostic) -> Error {
-    Error::Database {
-        message: format!("database administration failed [{}]", error.code().as_str()),
-        source: Some(Box::new(error)),
-    }
+    Error::from_contract_diagnostic(error)
 }
 
 #[cfg(test)]
@@ -739,6 +736,20 @@ mod tests {
             ),
             marker: std::marker::PhantomData,
         };
+
+        let cancellation = type_bridge_schema_migration::MigrationCancellation::default();
+        cancellation.cancel();
+        let control = type_bridge_schema_migration::MigrationExecutionControl::new(
+            cancellation,
+            None,
+            type_bridge_schema_migration::MigrationExecutionResourceLimits::default(),
+        );
+        let cancelled = database
+            .database_exists_controlled(&control)
+            .await
+            .expect_err("pre-cancelled administration rejects before an effect");
+        assert_eq!(cancelled.code(), Some("migration_execution_cancelled"));
+        assert_eq!(cancelled.category(), crate::ErrorCategory::Cancelled);
 
         assert_eq!(
             database.create_database().await.unwrap(),

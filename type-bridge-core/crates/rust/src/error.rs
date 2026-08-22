@@ -331,6 +331,31 @@ pub enum Error {
 }
 
 impl Error {
+    pub(crate) fn from_contract_diagnostic(
+        error: type_bridge_contract::diagnostic::Diagnostic,
+    ) -> Self {
+        use type_bridge_contract::diagnostic::DiagnosticCategory;
+
+        let category = match error.category() {
+            DiagnosticCategory::InvalidContract => ErrorCategory::Other,
+            DiagnosticCategory::UnsupportedCapability => ErrorCategory::Capability,
+            DiagnosticCategory::ResourceLimit => ErrorCategory::ResourceLimit,
+            DiagnosticCategory::Cancelled => ErrorCategory::Cancelled,
+            DiagnosticCategory::Integrity => ErrorCategory::Integrity,
+        };
+        let code = error.code().as_str().to_owned();
+        let message = error.to_string();
+        Self::classified_with_diagnostic(
+            category,
+            None,
+            code,
+            Vec::new(),
+            None,
+            message,
+            Some(Box::new(error)),
+        )
+    }
+
     #[allow(dead_code)]
     pub(crate) fn model_validation(
         phase: ModelValidationPhase,

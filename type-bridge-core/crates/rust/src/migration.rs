@@ -590,11 +590,5 @@ fn migration_error(code: &str) -> Error {
 }
 
 fn migration_diagnostic(error: type_bridge_contract::diagnostic::Diagnostic) -> Error {
-    Error::SchemaVerification {
-        message: format!(
-            "generated migration operation was rejected [{}]",
-            error.code().as_str()
-        ),
-        source: Some(Box::new(error)),
-    }
+    Error::from_contract_diagnostic(error)
 }
