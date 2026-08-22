@@ -52,3 +52,5 @@ pub use store::{
     require_active_managed_fence,
 };
 mod backfill;
+mod catalog_executor;
+pub use catalog_executor::{execute_catalog_apply_plan, execute_catalog_rollback_plan};

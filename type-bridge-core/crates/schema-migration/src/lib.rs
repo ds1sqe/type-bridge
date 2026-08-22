@@ -29,7 +29,8 @@ pub use coordinator::{
     BackfillExecutionFuture, GroupCommitFailure, GroupCommitFuture, MigrationExecutionOutcome,
     MigrationExecutionPosition, MigrationExecutionProvider, MigrationRollbackOutcome,
     PreparedMigrationGroup, execute_verified_migration_apply_plan,
-    execute_verified_migration_rollback_plan,
+    execute_verified_migration_rollback_plan, require_authorized_apply_plan,
+    require_authorized_rollback_plan,
 };
 pub use directory::{
     MigrationAuthoringLock, MigrationDirectory, MigrationDirectoryEntry,

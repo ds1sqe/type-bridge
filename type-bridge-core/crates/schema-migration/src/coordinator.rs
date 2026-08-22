@@ -243,13 +243,7 @@ where
     S: MigrationLeaseStore + MigrationExecutionJournal,
     P: MigrationExecutionProvider,
 {
-    if !plan.execution_authorized() {
-        return Err(failure(
-            DiagnosticCategory::InvalidContract,
-            "migration_apply_preview_not_executable",
-            "a provider-free forward preview carries no execution authority",
-        ));
-    }
+    require_authorized_apply_plan(plan)?;
     plan.required_capabilities()
         .ensure_supported_by(provider.available_capabilities())?;
     let source = plan.source_state().ok_or_else(|| {
@@ -786,13 +780,7 @@ where
     S: MigrationLeaseStore + MigrationExecutionJournal,
     P: MigrationExecutionProvider,
 {
-    if !plan.execution_authorized() {
-        return Err(failure(
-            DiagnosticCategory::InvalidContract,
-            "migration_rollback_preview_not_executable",
-            "a provider-free rollback preview carries no execution authority",
-        ));
-    }
+    require_authorized_rollback_plan(plan)?;
     if plan.rollbacks().is_empty() {
         return Err(failure(
             DiagnosticCategory::InvalidContract,
@@ -837,6 +825,34 @@ where
     let result = execute_rollback_under_lease(store, provider, &lease, plan).await;
     let release = store.release(&lease).await;
     finish_rollback_lease_release(result, release)
+}
+
+/// Reject a provider-free forward preview before any connected setup or I/O.
+pub fn require_authorized_apply_plan(plan: &VerifiedMigrationApplyPlan) -> Result<(), Diagnostic> {
+    if plan.execution_authorized() {
+        Ok(())
+    } else {
+        Err(failure(
+            DiagnosticCategory::InvalidContract,
+            "migration_apply_preview_not_executable",
+            "a provider-free forward preview carries no execution authority",
+        ))
+    }
+}
+
+/// Reject a provider-free rollback preview before any connected setup or I/O.
+pub fn require_authorized_rollback_plan(
+    plan: &VerifiedMigrationRollbackPlan,
+) -> Result<(), Diagnostic> {
+    if plan.execution_authorized() {
+        Ok(())
+    } else {
+        Err(failure(
+            DiagnosticCategory::InvalidContract,
+            "migration_rollback_preview_not_executable",
+            "a provider-free rollback preview carries no execution authority",
+        ))
+    }
 }
 
 async fn execute_rollback_under_lease<S, P>(
