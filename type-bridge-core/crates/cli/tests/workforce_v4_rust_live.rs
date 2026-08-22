@@ -136,5 +136,13 @@ fn generated_rust_observes_v4_administration_controls_and_lifecycle_on_3_12_3() 
         observation["migration_probe"]["rollback_status"],
         "rolledback"
     );
+    assert_eq!(
+        observation["migration_probe"]["unknown_target_code"],
+        "migration_history_unknown_rollback_target"
+    );
+    assert_eq!(
+        observation["migration_probe"]["repeat_rollback_status"],
+        "up_to_date"
+    );
     assert_eq!(observation["migration_probe"]["reapply_status"], "applied");
 }

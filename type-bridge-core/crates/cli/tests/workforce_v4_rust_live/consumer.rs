@@ -241,6 +241,21 @@ async fn main() {
         "match $person isa person, has display-name $name; fetch { \"name\": $name };",
     )
     .await;
+    let applied_after_rollback = catalog
+        .applied_migrations(&database)
+        .await
+        .expect("live applied ledger reads after rollback");
+    let unknown_id = catalog
+        .identity("workforcev4", "9999_unknown")
+        .expect("portable unknown identity constructs");
+    let unknown_target = catalog
+        .preview_rollback(applied_after_rollback.clone(), vec![unknown_id])
+        .expect_err("identity outside embedded history rejects");
+    let repeat_rollback_status = if applied_after_rollback.contains(&backfill_id) {
+        "unexpected"
+    } else {
+        "up_to_date"
+    };
     let reapply_report = backfill_plan
         .execute(&database, "workforce-v4-rust-backfill-reapply")
         .await
@@ -308,6 +323,8 @@ async fn main() {
                 "reverse_changed": reverse.changed(),
                 "remaining_destination_count": remaining_destination_count,
                 "rollback_status": format!("{:?}", rollback_report.status()).to_lowercase(),
+                "unknown_target_code": unknown_target.code(),
+                "repeat_rollback_status": repeat_rollback_status,
                 "reapply_status": format!("{:?}", reapply_report.status()).to_lowercase()
             },
             "lifecycle": {"explicit_close": true, "repeat_close": true},
