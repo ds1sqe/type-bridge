@@ -1,0 +1,74 @@
+{
+  "format": "typebridge.c-abi-candidate/v1",
+  "version": "1.6.0",
+  "parent_version": "1.5.0",
+  "parent_header": "type-bridge-core/crates/c/include/typebridge/type_bridge_abi_1_5.h",
+  "parent_header_sha256": "987e2cf83a3b3f445d30cd8853efd38fde64029f1c4e86b29e20e501a2ef6e6a",
+  "handles": [
+    "type_bridge_owned_bytes_t",
+    "type_bridge_projected_record_t",
+    "type_bridge_projected_archive_builder_t",
+    "type_bridge_projected_archive_t",
+    "type_bridge_projected_decoded_t"
+  ],
+  "record_kind_values": {
+    "attribute_value": 1,
+    "struct_value": 2,
+    "entity_create": 3,
+    "relation_create": 4,
+    "entity_snapshot": 5,
+    "relation_snapshot": 6,
+    "reference": 7
+  },
+  "options": {
+    "name": "type_bridge_projected_codec_options_v1_t",
+    "version_macro": "TYPE_BRIDGE_PROJECTED_CODEC_OPTIONS_V1",
+    "version": 1,
+    "size_64_bit": 72,
+    "alignment_64_bit": 8,
+    "fields": [
+      "struct_size",
+      "version",
+      "flags",
+      "timeout_milliseconds",
+      "max_input_bytes",
+      "max_output_bytes",
+      "max_depth",
+      "max_records",
+      "max_members",
+      "cancellation"
+    ]
+  },
+  "exports": [
+    "type_bridge_owned_bytes_data",
+    "type_bridge_owned_bytes_size",
+    "type_bridge_owned_bytes_close",
+    "type_bridge_projected_record_encode",
+    "type_bridge_projected_record_encode_with_options",
+    "type_bridge_projected_record_decode",
+    "type_bridge_projected_record_decode_with_options",
+    "type_bridge_projected_record_kind",
+    "type_bridge_projected_record_bytes",
+    "type_bridge_projected_record_close",
+    "type_bridge_projected_archive_builder_open",
+    "type_bridge_projected_archive_builder_append",
+    "type_bridge_projected_archive_builder_finish",
+    "type_bridge_projected_archive_builder_close",
+    "type_bridge_projected_archive_open",
+    "type_bridge_projected_archive_open_with_options",
+    "type_bridge_projected_archive_count",
+    "type_bridge_projected_archive_record_at",
+    "type_bridge_projected_archive_bytes",
+    "type_bridge_projected_archive_close",
+    "type_bridge_projected_decoded_kind",
+    "type_bridge_projected_decoded_value",
+    "type_bridge_projected_decoded_close"
+  ],
+  "ownership": {
+    "all_results_owned": true,
+    "accessors_return_independent_owners": true,
+    "close_idempotent": true,
+    "failure_initializes_outputs": true,
+    "partial_archive_result": false
+  }
+}

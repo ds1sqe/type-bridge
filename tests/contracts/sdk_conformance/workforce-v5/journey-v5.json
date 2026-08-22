@@ -1,0 +1,86 @@
+{
+  "format": "typebridge.workforce-journey/v5",
+  "fixture_id": "workforce-v5",
+  "semantic_profile": "typedb-3.12.1/v1",
+  "record_contract": "typebridge.projected-record/v1",
+  "archive_contract": "typebridge.projected-archive/v1",
+  "records": [
+    {
+      "id": "integer-key",
+      "kind": "attribute_value",
+      "type": {"kind": "attribute", "label": "employee-number"},
+      "semantic_value": {"kind": "long", "value": "9007199254740993"}
+    },
+    {
+      "id": "contact-struct",
+      "kind": "struct_value",
+      "type": {"kind": "struct", "label": "contact-card"},
+      "member_order": ["display-name", "email", "timezone"]
+    },
+    {
+      "id": "person-create",
+      "kind": "entity_create",
+      "type": {"kind": "entity", "label": "person"},
+      "requires_absent_vs_empty": true
+    },
+    {
+      "id": "person-snapshot",
+      "kind": "entity_snapshot",
+      "type": {"kind": "entity", "label": "person"},
+      "requires_canonical_iid": true,
+      "decoded_state": "detached"
+    },
+    {
+      "id": "membership-create",
+      "kind": "relation_create",
+      "type": {"kind": "relation", "label": "membership"},
+      "requires_polymorphic_optional_role": true,
+      "requires_relation_as_player": true
+    },
+    {
+      "id": "membership-snapshot",
+      "kind": "relation_snapshot",
+      "type": {"kind": "relation", "label": "membership"},
+      "requires_inherited_roles": true,
+      "decoded_state": "detached"
+    },
+    {
+      "id": "player-reference",
+      "kind": "reference",
+      "requires_iid_or_exact_key": true,
+      "decoded_state": "detached"
+    }
+  ],
+  "archive": {
+    "mode": "ordered",
+    "record_ids": [
+      "integer-key",
+      "contact-struct",
+      "person-create",
+      "person-snapshot",
+      "membership-create",
+      "membership-snapshot",
+      "player-reference"
+    ],
+    "whole_archive_rejection": true
+  },
+  "required_equalities": [
+    "python-node-rust-c-record-bytes",
+    "python-node-rust-c-archive-bytes",
+    "direct-remote-entity-snapshot-bytes",
+    "direct-remote-relation-snapshot-bytes"
+  ],
+  "hostile_mutations": [
+    "foreign-declared-schema",
+    "wrong-semantic-profile",
+    "wrong-record-kind",
+    "wrong-concrete-type",
+    "duplicate-object-key",
+    "reordered-object-key",
+    "unknown-member",
+    "noncanonical-long",
+    "noncanonical-double-bits",
+    "oversize-archive",
+    "invalid-final-record"
+  ]
+}
