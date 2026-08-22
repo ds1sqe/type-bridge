@@ -921,7 +921,8 @@ fn render_struct(
     let name = structure.target_name().as_str();
     let _ = writeln!(output, "class {name}(_StructValue):");
     if !stub {
-        let id = canonical_text!(structure.id());
+        let id = TypeId::new(TypeKind::Struct, structure.id().label().as_str())?;
+        let id = canonical_text!(&id);
         let _ = writeln!(output, "    __struct_id__ = {}", python_string(&id)?);
         let slots = structure
             .fields()

@@ -6220,6 +6220,11 @@ fn project_hydrated_thing(
             .get(field.token())
             .ok_or_else(|| py_runtime_error("projected read field has no query token"))?;
         let value = values.get_item(token.target_name().as_str())?;
+        if field.multiplicity().container() == ProjectedContainer::Scalar
+            && value.as_ref().is_none_or(Bound::is_none)
+        {
+            continue;
+        }
         let projected = projected_items(value.as_ref(), field.multiplicity())?
             .into_iter()
             .enumerate()
@@ -6256,10 +6261,7 @@ fn project_hydrated_thing(
                     SdkDiagnosticPathSegment::Role(role_id.clone()),
                     SdkDiagnosticPathSegment::Index(projected_index(index)),
                 ];
-                let reference =
-                    project_hydrated_reference(py, package, &value, role.players(), &path)?;
-                ProjectedRolePlayer::try_new(&package.projection, reference)
-                    .map_err(py_sdk_diagnostic)
+                project_hydrated_role_player(py, package, &value, role, &path)
             })
             .collect::<PyResult<Vec<_>>>()?;
         roles.push((role_id.clone(), players));
@@ -6383,6 +6385,75 @@ fn project_hydrated_reference(
     }
     ProjectedReference::try_new_for_hydration(&package.projection, id, projected_iid(value)?, keys)
         .map_err(py_sdk_diagnostic)
+}
+
+fn project_hydrated_role_player(
+    py: Python<'_>,
+    package: &InstalledPackage,
+    value: &Bound<'_, PyAny>,
+    read_role: &type_bridge_contract::projection::ReadRoleProjection,
+    operation_path: &[SdkDiagnosticPathSegment],
+) -> PyResult<ProjectedRolePlayer> {
+    let (id, form) = package.identify_value(py, value).map_err(|_| {
+        py_sdk_diagnostic(generated_token_package_mismatch_at(
+            operation_path.iter().cloned(),
+        ))
+    })?;
+    let reference =
+        project_hydrated_reference(py, package, value, read_role.players(), operation_path)?;
+    if form == ProjectedModelForm::Reference {
+        return ProjectedRolePlayer::try_new_reference_for_hydration(
+            &package.projection,
+            read_role,
+            reference,
+        )
+        .map_err(py_sdk_diagnostic);
+    }
+    let model = package
+        .projection
+        .projection()
+        .models()
+        .get(&id)
+        .ok_or_else(|| py_runtime_error("projection hydrated role-player model is absent"))?;
+    let values = value.call_method0("runtime_values")?;
+    let values = values.downcast_exact::<PyDict>()?;
+    let mut fields = Vec::with_capacity(model.complete_read().fields().len());
+    for field in model.complete_read().fields() {
+        let token = model
+            .query_tokens()
+            .fields()
+            .get(field.token())
+            .ok_or_else(|| py_runtime_error("projected role-player field has no query token"))?;
+        let raw = values.get_item(token.target_name().as_str())?;
+        if field.multiplicity().container() == ProjectedContainer::Scalar
+            && raw.as_ref().is_none_or(Bound::is_none)
+        {
+            continue;
+        }
+        let projected = projected_items(raw.as_ref(), field.multiplicity())?
+            .into_iter()
+            .enumerate()
+            .map(|(index, item)| {
+                let path = extended_projected_path(
+                    operation_path,
+                    [
+                        SdkDiagnosticPathSegment::Type(id.clone()),
+                        SdkDiagnosticPathSegment::Field(field.token().clone()),
+                        SdkDiagnosticPathSegment::Index(projected_index(index)),
+                    ],
+                )?;
+                project_hydrated_attribute_value(py, package, &item, &path)
+            })
+            .collect::<PyResult<Vec<_>>>()?;
+        fields.push((field.token().clone(), projected));
+    }
+    ProjectedRolePlayer::try_new_complete_for_hydration(
+        &package.projection,
+        read_role,
+        reference,
+        fields,
+    )
+    .map_err(py_sdk_diagnostic)
 }
 
 fn projected_items<'py>(
@@ -15740,20 +15811,6 @@ entities:
                 "player-tag",
                 Some("0x10"),
             );
-            let player_values = player
-                .bind(py)
-                .call_method0("runtime_values")
-                .unwrap()
-                .downcast_into::<PyDict>()
-                .unwrap();
-            let projected_player = project_hydrated_thing(
-                py,
-                package.as_ref(),
-                &person_id,
-                &player_values,
-                Some("0x10"),
-            )
-            .unwrap();
             let membership = batch_membership(
                 py,
                 package.as_ref(),
@@ -15777,37 +15834,6 @@ entities:
             .unwrap();
             assert_eq!(
                 projected_batch_hydration_pool_capacity(std::slice::from_ref(&membership)).unwrap(),
-                3,
-            );
-            let (role_id, players) = membership.roles().iter().next().unwrap();
-            let read_role = &package.projection.projection().models()[&membership_id]
-                .complete_read()
-                .roles()[role_id];
-            let exact_player = ProjectedRolePlayer::try_new_complete_for_hydration(
-                &package.projection,
-                read_role,
-                players[0].reference().clone(),
-                projected_player
-                    .fields()
-                    .iter()
-                    .map(|(field, values)| (field.clone(), values.clone()))
-                    .collect(),
-            )
-            .unwrap();
-            let exact_membership = ProjectedThing::try_new(
-                &package.projection,
-                membership_id,
-                "0x30".to_owned(),
-                membership
-                    .fields()
-                    .iter()
-                    .map(|(field, values)| (field.clone(), values.clone()))
-                    .collect(),
-                vec![(role_id.clone(), vec![exact_player])],
-            )
-            .unwrap();
-            assert_eq!(
-                projected_batch_hydration_pool_capacity(&[exact_membership]).unwrap(),
                 5,
             );
 

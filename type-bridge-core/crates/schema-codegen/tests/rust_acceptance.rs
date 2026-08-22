@@ -3724,7 +3724,9 @@ fn generated_rust_workforce_v5_canonical_codec() {
     write_package(&emit_from_source(&source), &generated);
     write_consumer(&consumer, "rust-workforce-v5-codec", WORKFORCE_V5_CODEC);
 
-    let corpus = stage.path().join("rust-workforce-v5-corpus.json");
+    let corpus = env::var_os("TYPE_BRIDGE_WORKFORCE_V5_RUST_CORPUS")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| stage.path().join("rust-workforce-v5-corpus.json"));
     let output = cargo_with_env(
         &[
             "run",

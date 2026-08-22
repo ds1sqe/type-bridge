@@ -88,6 +88,7 @@ def _install_runtime_projection_with_authority(
     projection_fingerprint_json: str,
     models: Sequence[tuple[type[ModelBase], type[ReferenceBase] | None]],
     schema_authority: bytes,
+    structs: Sequence[type[StructValueBase]] = (),
 ) -> None:
     global _package_models, _package_runtime_projection
     if _package_runtime_projection is not None:
@@ -105,9 +106,12 @@ def _install_runtime_projection_with_authority(
         projection_fingerprint_json,
         models,
         schema_authority,
+        structs=structs,
     )
     for model, _reference in models:
         model.__runtime_projection__ = installed
+    for structure in structs:
+        structure.__runtime_projection__ = installed
     _package_models = tuple(model for model, _reference in models)
     _package_runtime_projection = installed
     from ._query import install_projection

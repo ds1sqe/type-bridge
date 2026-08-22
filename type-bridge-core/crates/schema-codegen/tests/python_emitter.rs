@@ -480,6 +480,10 @@ fn emits_exact_deterministic_compound_package_with_migration_resource() {
                 .unwrap()
     );
     assert!(source.contains("class PlayerStats(_StructValue):"));
+    assert!(
+        source
+            .contains(r#"    __struct_id__ = "{\"kind\":\"struct\",\"label\":\"player-stats\"}""#)
+    );
     let find_employment = source
         .lines()
         .find(|line| line.starts_with("find_employment = "))
