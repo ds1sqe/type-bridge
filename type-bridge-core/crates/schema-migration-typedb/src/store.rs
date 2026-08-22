@@ -11,6 +11,7 @@ use type_bridge_contract::managed_scope::ManagedScopeId;
 use type_bridge_contract::migration::MigrationId;
 use type_bridge_contract::reserved::TYPEBRIDGE_JOURNAL_DATABASE_SUFFIX;
 use type_bridge_contract::schema::{DocumentId, ManagedSchemaState};
+use type_bridge_orm::session::DatabaseCreateOutcome;
 use type_bridge_orm::session::backend::QueryResult;
 use type_bridge_orm::{Database, OrmError, Transaction};
 use type_bridge_schema::ManagedDeltaContext;
@@ -69,6 +70,15 @@ pub enum ManagedDatabasePairState {
     OwnedJournalOrphan,
 }
 
+/// Normalized outcome of creating the managed member of one verified pair.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ManagedDatabasePairCreateOutcome {
+    /// This operation created the managed database.
+    Created,
+    /// The managed database already existed or a concurrent creator won.
+    AlreadyExists,
+}
+
 /// Terminal result of one explicitly admitted pair deletion.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ManagedDatabasePairDeleteOutcome {
@@ -95,6 +105,15 @@ struct ManagedDatabasePairAdministratorInner {
 }
 
 impl ManagedDatabasePairAdministrator {
+    /// Bind one managed database and its reserved journal through one backend.
+    pub fn from_managed_database(
+        managed_database: Arc<Database>,
+        managed_scope_id: ManagedScopeId,
+    ) -> Result<Self, Diagnostic> {
+        let journal_database = Arc::new(managed_database.derived_journal_database());
+        Self::new(managed_database, journal_database, managed_scope_id)
+    }
+
     /// Bind exact provider authority, derived names, and managed scope without I/O.
     pub fn new(
         managed_database: Arc<Database>,
@@ -150,6 +169,38 @@ impl ManagedDatabasePairAdministrator {
         } else {
             ManagedDatabasePairState::OwnedJournalOrphan
         })
+    }
+
+    /// Return whether the exact bound managed database exists.
+    pub async fn database_exists(&self) -> Result<bool, Diagnostic> {
+        self.inner
+            .managed_database
+            .database_exists()
+            .await
+            .map_err(map_orm_error)
+    }
+
+    /// Create the managed member only after validating the complete pair state.
+    pub async fn create_database_outcome(
+        &self,
+    ) -> Result<ManagedDatabasePairCreateOutcome, Diagnostic> {
+        match self.inspect().await? {
+            ManagedDatabasePairState::StandaloneManaged | ManagedDatabasePairState::OwnedPair => {
+                Ok(ManagedDatabasePairCreateOutcome::AlreadyExists)
+            }
+            ManagedDatabasePairState::Absent | ManagedDatabasePairState::OwnedJournalOrphan => self
+                .inner
+                .managed_database
+                .create_database_outcome()
+                .await
+                .map(|outcome| match outcome {
+                    DatabaseCreateOutcome::Created => ManagedDatabasePairCreateOutcome::Created,
+                    DatabaseCreateOutcome::AlreadyExists => {
+                        ManagedDatabasePairCreateOutcome::AlreadyExists
+                    }
+                })
+                .map_err(map_orm_error),
+        }
     }
 
     /// Create an explicit destructive plan after a complete owner-verified inspection.
@@ -3103,6 +3154,72 @@ mod tests {
         );
         assert!(TypeDbMigrationStore::new(&binding, catalog).is_ok());
         assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn managed_database_binding_derives_one_journal_without_io() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let managed = no_io_database("managed".to_owned(), Arc::clone(&calls), None);
+        let administrator = ManagedDatabasePairAdministrator::from_managed_database(
+            managed,
+            ManagedScopeId::new("administration-scope").unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            administrator.inner.managed_database.database_name(),
+            "managed"
+        );
+        assert_eq!(
+            administrator.inner.journal_database.database_name(),
+            "managed__tbv2_journal"
+        );
+        assert!(
+            administrator
+                .inner
+                .managed_database
+                .shares_connection_authority_with(&administrator.inner.journal_database)
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn pair_administration_creates_only_the_verified_bound_database() {
+        let authority = DatabaseConnectionAuthority::isolated();
+        let managed_exists = Arc::new(AtomicBool::new(false));
+        let journal_exists = Arc::new(AtomicBool::new(false));
+        let deletes = Arc::new(AtomicUsize::new(0));
+        let administrator = ManagedDatabasePairAdministrator::new(
+            administration_database(
+                "managed",
+                authority.clone(),
+                Arc::clone(&managed_exists),
+                "",
+                Arc::clone(&deletes),
+            ),
+            administration_database(
+                derived_journal_database_name("managed"),
+                authority,
+                Arc::clone(&journal_exists),
+                "",
+                Arc::clone(&deletes),
+            ),
+            ManagedScopeId::new("administration-scope").unwrap(),
+        )
+        .unwrap();
+
+        assert!(!administrator.database_exists().await.unwrap());
+        assert_eq!(
+            administrator.create_database_outcome().await.unwrap(),
+            ManagedDatabasePairCreateOutcome::Created
+        );
+        assert!(administrator.database_exists().await.unwrap());
+        assert_eq!(
+            administrator.create_database_outcome().await.unwrap(),
+            ManagedDatabasePairCreateOutcome::AlreadyExists
+        );
+        assert!(!journal_exists.load(Ordering::SeqCst));
+        assert_eq!(deletes.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]

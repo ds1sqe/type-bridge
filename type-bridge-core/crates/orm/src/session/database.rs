@@ -52,7 +52,7 @@ use crate::query_execution_limits::QueryExecutionResourceLimits;
 /// `Database` is `Send + Sync`, so it can be shared across tasks via
 /// [`Arc`]. The TypeDB driver handles connection pooling internally.
 pub struct Database {
-    backend: Box<dyn DriverBackend>,
+    backend: Arc<dyn DriverBackend>,
     connection_authority: DatabaseConnectionAuthority,
     database_name: String,
     answer_limits: Option<QueryExecutionResourceLimits>,
@@ -271,7 +271,7 @@ impl Database {
         connection_authority: DatabaseConnectionAuthority,
     ) -> Self {
         Self {
-            backend,
+            backend: Arc::from(backend),
             connection_authority,
             database_name: database_name.into(),
             answer_limits: None,
@@ -313,7 +313,7 @@ impl Database {
         let backend =
             super::real_driver::RealBackend::connect(address, username, password, options).await?;
         Ok(Self {
-            backend: Box::new(backend),
+            backend: Arc::new(backend),
             connection_authority: DatabaseConnectionAuthority::for_typedb_address(address),
             database_name: database.to_string(),
             answer_limits: None,
@@ -337,7 +337,7 @@ impl Database {
             super::real_driver::RealBackend::connect_secure(address, username, password, options)
                 .await?;
         Ok(Self {
-            backend: Box::new(backend),
+            backend: Arc::new(backend),
             connection_authority: DatabaseConnectionAuthority::for_typedb_address(address),
             database_name: database.to_string(),
             answer_limits: None,
@@ -359,7 +359,7 @@ impl Database {
         )
         .await?;
         Ok(Self {
-            backend: Box::new(backend),
+            backend: Arc::new(backend),
             connection_authority: DatabaseConnectionAuthority::for_typedb_address(address),
             database_name: database.to_string(),
             answer_limits: None,
@@ -535,6 +535,26 @@ impl Database {
     /// Get the database name.
     pub fn database_name(&self) -> &str {
         &self.database_name
+    }
+
+    /// Bind the reserved migration journal name through this exact backend.
+    ///
+    /// The returned handle shares provider authority, transport lifecycle, and
+    /// immutable answer limits with this handle. It cannot select an arbitrary
+    /// application database name and performs no provider I/O.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn derived_journal_database(&self) -> Self {
+        Self {
+            backend: Arc::clone(&self.backend),
+            connection_authority: self.connection_authority.clone(),
+            database_name: format!(
+                "{}{}",
+                self.database_name,
+                type_bridge_contract::reserved::TYPEBRIDGE_JOURNAL_DATABASE_SUFFIX
+            ),
+            answer_limits: self.answer_limits,
+        }
     }
 
     /// Return the immutable generated direct-connection answer ceiling.
@@ -850,6 +870,15 @@ mod tests {
             }),
             "bound-database",
         )
+    }
+
+    #[test]
+    fn derived_journal_binding_retains_exact_provider_authority() {
+        let database = lifecycle_database(false, false, false);
+        let journal = database.derived_journal_database();
+
+        assert_eq!(journal.database_name(), "bound-database__tbv2_journal");
+        assert!(database.shares_connection_authority_with(&journal));
     }
 
     #[tokio::test]

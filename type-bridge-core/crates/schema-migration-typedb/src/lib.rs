@@ -46,8 +46,9 @@ pub use runner::{
     MigrationDirectoryRollbackOutcome, TypeDbMigrationRunner,
 };
 pub use store::{
-    ManagedDatabasePairAdministrator, ManagedDatabasePairDeleteOutcome,
-    ManagedDatabasePairDeletionPlan, ManagedDatabasePairState, TypeDbMigrationStore,
-    VerifiedMigrationCatalog, derived_journal_database_name, require_active_managed_fence,
+    ManagedDatabasePairAdministrator, ManagedDatabasePairCreateOutcome,
+    ManagedDatabasePairDeleteOutcome, ManagedDatabasePairDeletionPlan, ManagedDatabasePairState,
+    TypeDbMigrationStore, VerifiedMigrationCatalog, derived_journal_database_name,
+    require_active_managed_fence,
 };
 mod backfill;
