@@ -8,7 +8,9 @@ use type_bridge_contract::projected_record::{
     ProjectedRecord, ProjectedRecordContent, ProjectedRecordReference, ProjectedRecordRolePlayer,
     ProjectedReferenceKey, ProjectedRole, ProjectedStructMember,
 };
-use type_bridge_contract::projection::{ProjectedMultiplicity, ReadRoleProjection};
+use type_bridge_contract::projection::{
+    ProjectedContainer, ProjectedMultiplicity, ReadRoleProjection,
+};
 use type_bridge_contract::schema::{CollectionMode, OwnsFactId};
 use type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic;
 use type_bridge_contract::value::CanonicalValue;
@@ -480,7 +482,9 @@ fn projected_field(
     values: &[ProjectedAttributeValue],
 ) -> Result<ProjectedField, ProjectedCodecError> {
     let identity = ProjectedFieldId::new(owner.clone(), field.attribute().clone())?;
-    let member = if present {
+    let member = if present
+        && !(multiplicity.container() == ProjectedContainer::Scalar && values.is_empty())
+    {
         ProjectedMemberValues::Present {
             collection: collection_mode(multiplicity),
             values: values.iter().map(|value| value.value().clone()).collect(),
@@ -497,7 +501,9 @@ fn projected_reference_role(
     present: bool,
     values: &[ProjectedReference],
 ) -> Result<ProjectedRole, ProjectedCodecError> {
-    let member = if present {
+    let member = if present
+        && !(multiplicity.container() == ProjectedContainer::Scalar && values.is_empty())
+    {
         ProjectedMemberValues::Present {
             collection: collection_mode(multiplicity),
             values: values
@@ -522,7 +528,9 @@ fn projected_player_role(
     role: &ReadRoleProjection,
     values: &[ProjectedRolePlayer],
 ) -> Result<ProjectedRole, ProjectedCodecError> {
-    let member = if thing.role_is_present(role_id) {
+    let member = if thing.role_is_present(role_id)
+        && !(role.multiplicity().container() == ProjectedContainer::Scalar && values.is_empty())
+    {
         ProjectedMemberValues::Present {
             collection: collection_mode(role.multiplicity()),
             values: values
@@ -870,11 +878,13 @@ mod tests {
         const SCHEMA: &str = r#"format: typebridge.schema/v2
 attributes:
   identifier: { value: string }
+  middle: { value: string }
   nickname: { value: string }
 entities:
   person:
     owns:
       identifier: { key: true }
+      middle: { card: { min: 0, max: 1 } }
       nickname: { card: { min: 0, max: 3 } }
 structs:
   display:
@@ -1004,6 +1014,38 @@ structs:
             record_from_create(&installed, &decoded_empty).unwrap(),
             empty_record
         );
+    }
+
+    #[test]
+    fn empty_hydrated_scalar_normalizes_to_absent_without_erasing_empty_sequence() {
+        let installed = codec_projection();
+        let person = TypeId::new(TypeKind::Entity, "person").unwrap();
+        let model = installed.projection().models().get(&person).unwrap();
+        let field = |name: &str| {
+            let id = OwnsFactId::new(person.clone(), AttributeId::new(name).unwrap()).unwrap();
+            let read = model
+                .complete_read()
+                .fields()
+                .iter()
+                .find(|candidate| candidate.token() == &id)
+                .unwrap();
+            (id, read.multiplicity())
+        };
+        let (middle, middle_multiplicity) = field("middle");
+        let (nickname, nickname_multiplicity) = field("nickname");
+
+        assert!(matches!(
+            projected_field(&person, &middle, middle_multiplicity, true, &[])
+                .unwrap()
+                .member(),
+            ProjectedMemberValues::Absent
+        ));
+        assert!(matches!(
+            projected_field(&person, &nickname, nickname_multiplicity, true, &[])
+                .unwrap()
+                .member(),
+            ProjectedMemberValues::Present { values, .. } if values.is_empty()
+        ));
     }
 
     #[test]
