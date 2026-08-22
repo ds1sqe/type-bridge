@@ -207,8 +207,8 @@ fn conditional_manifest(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires an isolated TypeDB 3.12.1 server"]
-async fn coordinator_applies_verified_plan_through_live_provider_on_3_12_1() {
+#[ignore = "requires an isolated TypeDB 3.12.3 server"]
+async fn coordinator_applies_verified_plan_through_live_provider_on_3_12_3() {
     let (managed, journal_database) = databases().await;
     let context = context();
     let genesis = declared_facts(Vec::new());
