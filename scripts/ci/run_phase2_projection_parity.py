@@ -23,6 +23,15 @@ FOREIGN_PLAYING_FACT = "member: { card: { min: 0, max: 2 }, doc: membership play
 FOREIGN_PLAYING_REPLACEMENT = "member: { card: { min: 0, max: 3 }, doc: membership player }"
 
 
+def _c_shared_library() -> Path:
+    target = CORE / "target" / "debug"
+    if sys.platform == "win32":
+        return target / "type_bridge_c.dll"
+    if sys.platform == "darwin":
+        return target / "libtype_bridge_c.dylib"
+    return target / "libtype_bridge_c.so"
+
+
 class RunnerError(RuntimeError):
     """The isolated producer fan-in could not complete safely."""
 
@@ -106,6 +115,7 @@ def command_plan(layout: Layout) -> tuple[CommandSpec, ...]:
     }
     c_environment = {
         "TYPE_BRIDGE_C_REQUIRE_SHARED_CONSUMER": "1",
+        "TYPE_BRIDGE_C_SHARED_LIBRARY": str(_c_shared_library()),
         "TYPE_BRIDGE_PHASE2_PARITY_REPORT_C": str(layout.c_report),
     }
     tsc = NODE_PACKAGE / "node_modules/.bin/tsc"
