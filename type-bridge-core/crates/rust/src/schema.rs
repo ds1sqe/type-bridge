@@ -5,7 +5,9 @@ use std::sync::Arc;
 
 use type_bridge_contract::projection::{ProjectionConfig, RuntimeProjection};
 use type_bridge_contract::schema::encode_declared_schema;
-use type_bridge_contract::sdk_diagnostic::SdkProjectionEvidenceSlotPresence;
+use type_bridge_contract::sdk_diagnostic::{
+    SdkExecutionDiagnostic, SdkProjectionEvidenceSlotPresence,
+};
 use type_bridge_schema::{
     MAX_SCHEMA_AUTHORITY_BYTES, VerifiedSchemaAuthority, decode_schema_authority,
     schema_authority_capability_vocabulary,
@@ -52,6 +54,16 @@ fn canonical_contract_error(error: type_bridge_contract::diagnostic::Diagnostic)
 }
 
 fn canonical_codec_error(error: type_bridge_orm::ProjectedCodecError) -> Error {
+    if matches!(
+        &error,
+        type_bridge_orm::ProjectedCodecError::Contract(diagnostic)
+            if diagnostic.code().as_str() == "projected_codec_declared_schema_mismatch"
+    ) {
+        return Error::from_sdk_execution(
+            SdkExecutionDiagnostic::projected_record_schema_mismatch(),
+            ModelValidationPhase::Input,
+        );
+    }
     Error::model_validation(
         ModelValidationPhase::Input,
         "canonical_projected_codec_failure",

@@ -13,6 +13,7 @@
   },
   "report_schema_path": "tests/contracts/sdk_conformance/workforce-v5/report-schema-v5.json",
   "observation_schema_path": "tests/contracts/sdk_conformance/workforce-v5/observation-schema-v5.json",
+  "operational_evidence_schema_path": "tests/contracts/sdk_conformance/workforce-v5/operational-evidence-schema-v5.json",
   "report_bindings": ["python", "node", "rust", "c"],
   "manifest_transition_cases": ["workforce.model.serialization"],
   "evidence_only_gap_cases": [

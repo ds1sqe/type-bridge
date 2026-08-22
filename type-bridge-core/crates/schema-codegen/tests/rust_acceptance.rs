@@ -182,7 +182,13 @@ fn write_package(package: &GeneratedPackage, root: &Path) {
     }
 }
 
-fn write_consumer_with_features(root: &Path, name: &str, source: &str, features: &[&str]) {
+fn write_consumer_with_features_and_dependencies(
+    root: &Path,
+    name: &str,
+    source: &str,
+    features: &[&str],
+    additional_dependencies: &str,
+) {
     let rust_crate = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
@@ -197,10 +203,14 @@ fn write_consumer_with_features(root: &Path, name: &str, source: &str, features:
     fs::write(
         root.join("Cargo.toml"),
         format!(
-            "[package]\nname = \"{name}\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[dependencies]\ngenerated = {{ package = \"type-bridge-generated-schema\", path = \"../generated\" }}\ntype-bridge = {{ path = \"{rust_path}\", default-features = false{feat_str} }}\n\n[patch.crates-io]\ntype-bridge = {{ path = \"{rust_path}\" }}\n\n[workspace]\n"
+            "[package]\nname = \"{name}\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[dependencies]\ngenerated = {{ package = \"type-bridge-generated-schema\", path = \"../generated\" }}\n{additional_dependencies}type-bridge = {{ path = \"{rust_path}\", default-features = false{feat_str} }}\n\n[patch.crates-io]\ntype-bridge = {{ path = \"{rust_path}\" }}\n\n[workspace]\n"
         ),
     ).unwrap();
     fs::write(root.join("src/main.rs"), source).unwrap();
+}
+
+fn write_consumer_with_features(root: &Path, name: &str, source: &str, features: &[&str]) {
+    write_consumer_with_features_and_dependencies(root, name, source, features, "");
 }
 
 fn write_consumer(root: &Path, name: &str, source: &str) {
@@ -3716,17 +3726,38 @@ fn workforce_v3_generated_package_integrity() {
 fn generated_rust_workforce_v5_canonical_codec() {
     let stage = Stage::new();
     let generated = stage.path().join("generated");
+    let generated_foreign = stage.path().join("generated-foreign");
     let consumer = stage.path().join("workforce-v5-codec");
     let source = fs::read_to_string(
         repository_root().join("tests/contracts/sdk_conformance/workforce-v3/schema-v3.yaml"),
     )
     .expect("Workforce V3 schema reads");
     write_package(&emit_from_source(&source), &generated);
-    write_consumer(&consumer, "rust-workforce-v5-codec", WORKFORCE_V5_CODEC);
+    let foreign_source = source.replacen("max: 80", "max: 79", 1);
+    assert_ne!(foreign_source, source, "foreign V5 authority must differ");
+    write_package(&emit_from_source(&foreign_source), &generated_foreign);
+    let foreign_manifest = generated_foreign.join("Cargo.toml");
+    let manifest = fs::read_to_string(&foreign_manifest).expect("foreign manifest reads");
+    let manifest = manifest.replacen(
+        "name = \"type-bridge-generated-schema\"",
+        "name = \"type-bridge-generated-schema-foreign\"",
+        1,
+    );
+    fs::write(&foreign_manifest, manifest).expect("foreign manifest is uniquely named");
+    write_consumer_with_features_and_dependencies(
+        &consumer,
+        "rust-workforce-v5-codec",
+        WORKFORCE_V5_CODEC,
+        &["test-harness"],
+        "generated_foreign = { package = \"type-bridge-generated-schema-foreign\", path = \"../generated-foreign\" }\n",
+    );
 
     let corpus = env::var_os("TYPE_BRIDGE_WORKFORCE_V5_RUST_CORPUS")
         .map(PathBuf::from)
         .unwrap_or_else(|| stage.path().join("rust-workforce-v5-corpus.json"));
+    let operational = stage
+        .path()
+        .join("rust-workforce-v5-operational-evidence.json");
     let output = cargo_with_env(
         &[
             "run",
@@ -3735,7 +3766,13 @@ fn generated_rust_workforce_v5_canonical_codec() {
             "--manifest-path",
             consumer.join("Cargo.toml").to_str().unwrap(),
         ],
-        &[("TYPE_BRIDGE_WORKFORCE_V5_CORPUS", corpus.as_os_str())],
+        &[
+            ("TYPE_BRIDGE_WORKFORCE_V5_CORPUS", corpus.as_os_str()),
+            (
+                "TYPE_BRIDGE_WORKFORCE_V5_OPERATIONAL_EVIDENCE",
+                operational.as_os_str(),
+            ),
+        ],
     );
     assert!(
         output.status.success(),
@@ -3756,7 +3793,29 @@ fn generated_rust_workforce_v5_canonical_codec() {
             .as_str()
             .is_some_and(|value| !value.is_empty())
     );
+    let operational_bytes =
+        fs::read(&operational).expect("Rust Workforce V5 operational evidence was published");
+    let operational: Value =
+        serde_json::from_slice(&operational_bytes).expect("operational evidence JSON parses");
+    assert_eq!(
+        operational["format"],
+        "typebridge.workforce-v5-operational-evidence/v1"
+    );
+    assert_eq!(operational["binding"], "rust");
+    assert_eq!(
+        operational["diagnostic"],
+        json!({
+            "category": "invalid_input",
+            "code": "projected_record_schema_mismatch",
+            "path": ["declared_schema_identity"],
+            "payload_absent": true,
+        })
+    );
+    assert_eq!(operational["lifecycle"]["sibling_usable"], true);
     let repeated_corpus = stage.path().join("rust-workforce-v5-corpus-repeat.json");
+    let repeated_operational = stage
+        .path()
+        .join("rust-workforce-v5-operational-evidence-repeat.json");
     let repeated = cargo_with_env(
         &[
             "run",
@@ -3765,10 +3824,16 @@ fn generated_rust_workforce_v5_canonical_codec() {
             "--manifest-path",
             consumer.join("Cargo.toml").to_str().unwrap(),
         ],
-        &[(
-            "TYPE_BRIDGE_WORKFORCE_V5_CORPUS",
-            repeated_corpus.as_os_str(),
-        )],
+        &[
+            (
+                "TYPE_BRIDGE_WORKFORCE_V5_CORPUS",
+                repeated_corpus.as_os_str(),
+            ),
+            (
+                "TYPE_BRIDGE_WORKFORCE_V5_OPERATIONAL_EVIDENCE",
+                repeated_operational.as_os_str(),
+            ),
+        ],
     );
     assert!(
         repeated.status.success(),
@@ -3780,6 +3845,12 @@ fn generated_rust_workforce_v5_canonical_codec() {
         corpus_bytes,
         fs::read(repeated_corpus).expect("repeated Rust Workforce V5 corpus was published"),
         "provider-free generated Rust V5 bytes must be deterministic across fresh processes",
+    );
+    assert_eq!(
+        operational_bytes,
+        fs::read(repeated_operational)
+            .expect("repeated Rust Workforce V5 operational evidence was published"),
+        "generated Rust V5 operational evidence must be deterministic across fresh processes",
     );
 }
 
