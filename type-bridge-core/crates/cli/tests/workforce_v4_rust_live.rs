@@ -46,6 +46,10 @@ fn generated_rust_observes_v4_administration_controls_and_lifecycle_on_3_12_3() 
         .join("../rust")
         .canonicalize()
         .expect("in-tree Rust runtime resolves");
+    let typedb_runtime = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../typedb-runtime")
+        .canonicalize()
+        .expect("in-tree TypeDB runtime resolves");
     let manifest = fs::read_to_string(&generated_manifest).expect("generated manifest reads");
     fs::write(
         &generated_manifest,
@@ -66,9 +70,10 @@ fn generated_rust_observes_v4_administration_controls_and_lifecycle_on_3_12_3() 
         consumer.join("Cargo.toml"),
         format!(
             "[package]\nname = \"workforce-v4-rust-live\"\nversion = \"0.0.0\"\nedition = \"2024\"\npublish = false\n\
-             [dependencies]\ntype-bridge-generated-schema = {{ path = {:?} }}\ntype-bridge = {{ path = {:?}, features = [\"typedb\"] }}\nserde_json = \"1\"\ntokio = {{ version = \"1\", features = [\"macros\", \"rt-multi-thread\"] }}\n[workspace]\n",
+             [dependencies]\ntype-bridge-generated-schema = {{ path = {:?} }}\ntype-bridge = {{ path = {:?}, features = [\"typedb\"] }}\ntype-bridge-typedb-runtime = {{ path = {:?} }}\nserde_json = \"1\"\ntokio = {{ version = \"1\", features = [\"macros\", \"rt-multi-thread\"] }}\n[workspace]\n",
             generated,
             runtime,
+            typedb_runtime,
         ),
     )
     .expect("consumer manifest writes");
@@ -103,4 +108,33 @@ fn generated_rust_observes_v4_administration_controls_and_lifecycle_on_3_12_3() 
     );
     assert_eq!(observation["cleanup"]["managed_database_absent"], true);
     assert_eq!(observation["cleanup"]["journal_database_absent"], true);
+    assert_eq!(
+        observation["migration_probe"]["conflict_code"],
+        "migration_typedb_backfill_destination_conflict"
+    );
+    assert_eq!(
+        observation["migration_probe"]["conflict_visible_destination_count"],
+        1
+    );
+    assert_eq!(observation["migration_probe"]["forward_changed"], 2);
+    assert_eq!(
+        observation["migration_probe"]["forward_transaction_groups"],
+        2
+    );
+    assert_eq!(observation["migration_probe"]["equal_copy_count"], 2);
+    assert_eq!(observation["migration_probe"]["retry_changed"], 0);
+    assert_eq!(observation["migration_probe"]["reverse_changed"], 2);
+    assert_eq!(
+        observation["migration_probe"]["remaining_destination_count"],
+        0
+    );
+    assert_eq!(
+        observation["migration_probe"]["rollback_without_approval_code"],
+        "migration_rollback_approval_required"
+    );
+    assert_eq!(
+        observation["migration_probe"]["rollback_status"],
+        "rolledback"
+    );
+    assert_eq!(observation["migration_probe"]["reapply_status"], "applied");
 }
