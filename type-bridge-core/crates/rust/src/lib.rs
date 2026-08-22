@@ -38,8 +38,11 @@ pub use error::{
 pub use hooks::{
     CrudOperation, HookContext, HookError, HookFuture, LifecycleHook, ModelKind, PreHookResult,
 };
+#[cfg(feature = "typedb")]
+pub use migration::MigrationOutcome;
 pub use migration::{
-    MigrationCatalog, MigrationHistoryEntry, MigrationPreview, MigrationPreviewEntry,
+    MigrationApprovalBuilder, MigrationApprovalSet, MigrationCatalog, MigrationHistoryEntry,
+    MigrationPlan, MigrationPreview, MigrationPreviewEntry,
 };
 pub use projected_filter::{
     ProjectedEntityFilter, ProjectedRelationFilter, ReadEntityManager, ReadRelationManager,

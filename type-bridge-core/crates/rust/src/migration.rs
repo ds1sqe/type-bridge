@@ -1,6 +1,8 @@
 //! Generated-package-owned immutable migration catalog inspection.
 
+use std::collections::BTreeSet;
 use std::marker::PhantomData;
+use std::sync::Arc;
 
 use type_bridge_contract::fingerprint::Fingerprint;
 use type_bridge_contract::migration::{MigrationId, MigrationStep};
@@ -8,6 +10,8 @@ use type_bridge_schema::{ManagedDeltaContext, SafetyClass};
 
 use crate::error::{Error, Result};
 use crate::schema::{Schema, SchemaPackage};
+#[cfg(feature = "typedb")]
+use crate::session::Database;
 
 /// Immutable replay-verified migration catalog branded by one generated schema.
 #[derive(Clone, Debug)]
@@ -66,7 +70,10 @@ impl<S: Schema> MigrationCatalog<S> {
         self.inner
             .preview_apply(&applied, &target)
             .map(|plan| MigrationPreview {
-                inner: MigrationPreviewInner::Apply(plan),
+                inner: Arc::new(MigrationPreviewState {
+                    catalog: self.inner.clone(),
+                    plan: MigrationPreviewInner::Apply(plan),
+                }),
                 marker: PhantomData,
             })
             .map_err(plan_error)
@@ -84,7 +91,10 @@ impl<S: Schema> MigrationCatalog<S> {
                 &removals.into_iter().collect(),
             )
             .map(|plan| MigrationPreview {
-                inner: MigrationPreviewInner::Rollback(plan),
+                inner: Arc::new(MigrationPreviewState {
+                    catalog: self.inner.clone(),
+                    plan: MigrationPreviewInner::Rollback(plan),
+                }),
                 marker: PhantomData,
             })
             .map_err(plan_error)
@@ -97,24 +107,30 @@ enum MigrationPreviewInner {
     Rollback(type_bridge_schema_migration::VerifiedMigrationRollbackPlan),
 }
 
+#[derive(Clone, Debug)]
+struct MigrationPreviewState {
+    catalog: type_bridge_schema_migration::MigrationCatalog,
+    plan: MigrationPreviewInner,
+}
+
 /// Generated-schema-branded immutable provider-free migration preview.
 #[derive(Clone, Debug)]
 pub struct MigrationPreview<S: Schema> {
-    inner: MigrationPreviewInner,
+    inner: Arc<MigrationPreviewState>,
     marker: PhantomData<fn() -> S>,
 }
 
 impl<S: Schema> MigrationPreview<S> {
     /// Return whether this is a forward apply preview.
     #[must_use]
-    pub const fn is_apply(&self) -> bool {
-        matches!(self.inner, MigrationPreviewInner::Apply(_))
+    pub fn is_apply(&self) -> bool {
+        matches!(self.inner.plan, MigrationPreviewInner::Apply(_))
     }
 
     /// Preview objects never grant provider execution authority.
     #[must_use]
     pub fn execution_authorized(&self) -> bool {
-        match &self.inner {
+        match &self.inner.plan {
             MigrationPreviewInner::Apply(plan) => plan.execution_authorized(),
             MigrationPreviewInner::Rollback(plan) => plan.execution_authorized(),
         }
@@ -123,7 +139,7 @@ impl<S: Schema> MigrationPreview<S> {
     /// Return the number of migrations in execution order.
     #[must_use]
     pub fn len(&self) -> usize {
-        match &self.inner {
+        match &self.inner.plan {
             MigrationPreviewInner::Apply(plan) => plan.migrations().len(),
             MigrationPreviewInner::Rollback(plan) => plan.rollbacks().len(),
         }
@@ -138,7 +154,7 @@ impl<S: Schema> MigrationPreview<S> {
     /// Inspect one migration by deterministic execution ordinal.
     #[must_use]
     pub fn entry(&self, index: usize) -> Option<MigrationPreviewEntry<'_>> {
-        match &self.inner {
+        match &self.inner.plan {
             MigrationPreviewInner::Apply(plan) => {
                 plan.migrations()
                     .get(index)
@@ -165,6 +181,199 @@ impl<S: Schema> MigrationPreview<S> {
             }
         }
     }
+
+    /// Begin selecting exact transitions that require explicit approval.
+    #[must_use]
+    pub fn approval_builder(&self) -> MigrationApprovalBuilder<S> {
+        MigrationApprovalBuilder {
+            preview: Arc::clone(&self.inner),
+            selected: BTreeSet::new(),
+            marker: PhantomData,
+        }
+    }
+
+    /// Rebuild a fresh executable plan from approvals owned by this preview.
+    pub fn authorize(&self, approvals: &MigrationApprovalSet<S>) -> Result<MigrationPlan<S>> {
+        if !Arc::ptr_eq(&self.inner, &approvals.preview) {
+            return Err(migration_error("migration_approval_plan_mismatch"));
+        }
+        let policy = type_bridge_schema_migration::MigrationSafetyPolicy::default_policy();
+        let plan = match &self.inner.plan {
+            MigrationPreviewInner::Apply(plan) => self
+                .inner
+                .catalog
+                .authorize_apply(
+                    &plan.applied_migrations().iter().cloned().collect(),
+                    &type_bridge_schema_migration::MigrationApplyTarget::Explicit(
+                        plan.target_frontier().iter().cloned().collect(),
+                    ),
+                    &policy,
+                    &approvals.approvals,
+                )
+                .map(MigrationPreviewInner::Apply),
+            MigrationPreviewInner::Rollback(plan) => self
+                .inner
+                .catalog
+                .authorize_rollback(
+                    &plan.applied_basis(),
+                    &plan
+                        .rollbacks()
+                        .iter()
+                        .map(|entry| entry.manifest().id().clone())
+                        .collect(),
+                    &policy,
+                    &approvals.approvals,
+                )
+                .map(MigrationPreviewInner::Rollback),
+        }
+        .map_err(plan_error)?;
+        Ok(MigrationPlan {
+            catalog: self.inner.catalog.clone(),
+            plan,
+            marker: PhantomData,
+        })
+    }
+}
+
+/// Mutable exact-approval selection owned by one provider-free preview.
+#[derive(Debug)]
+pub struct MigrationApprovalBuilder<S: Schema> {
+    preview: Arc<MigrationPreviewState>,
+    selected: BTreeSet<usize>,
+    marker: PhantomData<fn() -> S>,
+}
+
+impl<S: Schema> MigrationApprovalBuilder<S> {
+    /// Approve one preview entry when the default policy requires approval.
+    pub fn approve(&mut self, index: usize) -> Result<()> {
+        let safety = preview_entry(&self.preview.plan, index)
+            .ok_or_else(|| migration_error("migration_approval_index_invalid"))?
+            .safety();
+        match type_bridge_schema_migration::MigrationSafetyPolicy::default_policy().decision(safety)
+        {
+            type_bridge_schema_migration::SafetyPolicyDecision::RequireApproval => {
+                self.selected.insert(index);
+                Ok(())
+            }
+            type_bridge_schema_migration::SafetyPolicyDecision::Allow => {
+                Err(migration_error("migration_approval_not_required"))
+            }
+            type_bridge_schema_migration::SafetyPolicyDecision::Reject => {
+                Err(migration_error("migration_approval_policy_rejected"))
+            }
+        }
+    }
+
+    /// Freeze the selected exact transitions into an immutable approval set.
+    pub fn finish(self) -> Result<MigrationApprovalSet<S>> {
+        let approvals = self
+            .selected
+            .iter()
+            .map(|index| match &self.preview.plan {
+                MigrationPreviewInner::Apply(plan) => {
+                    type_bridge_schema_migration::MigrationApplyApproval::for_manifest(
+                        plan.migrations()[*index].manifest(),
+                    )
+                }
+                MigrationPreviewInner::Rollback(plan) => {
+                    type_bridge_schema_migration::MigrationApplyApproval::for_rollback(
+                        plan.rollbacks()[*index].manifest(),
+                        plan.rollbacks()[*index].rollback_safety(),
+                    )
+                }
+            })
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(migration_diagnostic)?;
+        Ok(MigrationApprovalSet {
+            preview: self.preview,
+            approvals,
+            marker: PhantomData,
+        })
+    }
+}
+
+/// Immutable exact approvals retained with their originating preview owner.
+#[derive(Clone, Debug)]
+pub struct MigrationApprovalSet<S: Schema> {
+    preview: Arc<MigrationPreviewState>,
+    approvals: Vec<type_bridge_schema_migration::MigrationApplyApproval>,
+    marker: PhantomData<fn() -> S>,
+}
+
+impl<S: Schema> MigrationApprovalSet<S> {
+    /// Return the number of exact approved transitions.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.approvals.len()
+    }
+
+    /// Report whether no transitions were explicitly approved.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.approvals.is_empty()
+    }
+}
+
+/// Generated-schema-branded executable migration plan.
+#[derive(Clone, Debug)]
+pub struct MigrationPlan<S: Schema> {
+    #[cfg_attr(not(feature = "typedb"), allow(dead_code))]
+    catalog: type_bridge_schema_migration::MigrationCatalog,
+    plan: MigrationPreviewInner,
+    marker: PhantomData<fn() -> S>,
+}
+
+impl<S: Schema> MigrationPlan<S> {
+    /// Confirm that policy and exact approvals granted execution authority.
+    #[must_use]
+    pub fn execution_authorized(&self) -> bool {
+        match &self.plan {
+            MigrationPreviewInner::Apply(plan) => plan.execution_authorized(),
+            MigrationPreviewInner::Rollback(plan) => plan.execution_authorized(),
+        }
+    }
+
+    /// Execute this plan through the exact managed database/journal pair.
+    #[cfg(feature = "typedb")]
+    pub async fn execute(&self, database: &Database<S>, holder: &str) -> Result<MigrationOutcome> {
+        let holder = type_bridge_schema_migration::LeaseHolderId::new(holder)
+            .map_err(migration_diagnostic)?;
+        let database = Arc::new(database.inner_orm().clone());
+        match &self.plan {
+            MigrationPreviewInner::Apply(plan) => {
+                type_bridge_schema_migration_typedb::execute_catalog_apply_plan(
+                    database,
+                    &self.catalog,
+                    &holder,
+                    plan,
+                )
+                .await
+                .map(MigrationOutcome::Apply)
+                .map_err(migration_diagnostic)
+            }
+            MigrationPreviewInner::Rollback(plan) => {
+                type_bridge_schema_migration_typedb::execute_catalog_rollback_plan(
+                    database,
+                    &self.catalog,
+                    &holder,
+                    plan,
+                )
+                .await
+                .map(MigrationOutcome::Rollback)
+                .map_err(migration_diagnostic)
+            }
+        }
+    }
+}
+
+/// Terminal outcome from an authorized migration execution.
+#[cfg(feature = "typedb")]
+#[derive(Debug)]
+pub enum MigrationOutcome {
+    /// Forward execution outcome.
+    Apply(type_bridge_schema_migration::MigrationExecutionOutcome),
+    /// Rollback execution outcome.
+    Rollback(type_bridge_schema_migration::MigrationRollbackOutcome),
 }
 
 /// Borrowed bounded inspection of one migration preview entry.
@@ -202,6 +411,35 @@ impl MigrationPreviewEntry<'_> {
     /// Report verified reversibility.
     pub const fn is_reversible(&self) -> bool {
         self.reversible
+    }
+}
+
+fn preview_entry(plan: &MigrationPreviewInner, index: usize) -> Option<MigrationPreviewEntry<'_>> {
+    match plan {
+        MigrationPreviewInner::Apply(plan) => {
+            plan.migrations()
+                .get(index)
+                .map(|entry| MigrationPreviewEntry {
+                    id: entry.manifest().id(),
+                    safety: entry.manifest().safety(),
+                    step_count: entry.steps().len(),
+                    transaction_group_count: entry.transaction_groups().len(),
+                    backfill_count: entry.backfill_step_indices().len(),
+                    reversible: entry.manifest().reversible(),
+                })
+        }
+        MigrationPreviewInner::Rollback(plan) => {
+            plan.rollbacks()
+                .get(index)
+                .map(|entry| MigrationPreviewEntry {
+                    id: entry.manifest().id(),
+                    safety: entry.rollback_safety(),
+                    step_count: entry.operations().len(),
+                    transaction_group_count: entry.steps().len(),
+                    backfill_count: entry.backfills().len(),
+                    reversible: true,
+                })
+        }
     }
 }
 
@@ -314,6 +552,23 @@ fn plan_error(error: type_bridge_schema_migration::MigrationApplyPlanError) -> E
     };
     Error::SchemaVerification {
         message,
+        source: Some(Box::new(error)),
+    }
+}
+
+fn migration_error(code: &str) -> Error {
+    Error::SchemaVerification {
+        message: format!("generated migration operation was rejected [{code}]"),
+        source: None,
+    }
+}
+
+fn migration_diagnostic(error: type_bridge_contract::diagnostic::Diagnostic) -> Error {
+    Error::SchemaVerification {
+        message: format!(
+            "generated migration operation was rejected [{}]",
+            error.code().as_str()
+        ),
         source: Some(Box::new(error)),
     }
 }

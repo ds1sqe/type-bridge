@@ -597,6 +597,24 @@ mod tests {
         assert!(preview.is_apply());
         assert!(preview.is_empty());
         assert!(!preview.execution_authorized());
+        let approvals = preview
+            .approval_builder()
+            .finish()
+            .expect("empty exact approval set freezes");
+        assert!(approvals.is_empty());
+        let executable = preview
+            .authorize(&approvals)
+            .expect("fresh plan is authorized from the exact preview owner");
+        assert!(executable.execution_authorized());
+        let foreign_preview = catalog.preview_apply(Vec::new(), None).unwrap();
+        let mismatch = foreign_preview
+            .authorize(&approvals)
+            .expect_err("approval owner mismatch rejects");
+        assert!(
+            mismatch
+                .message()
+                .contains("migration_approval_plan_mismatch")
+        );
 
         let mut tampered: Value = serde_json::from_slice(&bytes).unwrap();
         tampered["format"] = Value::String("foreign.history/v1".to_owned());
