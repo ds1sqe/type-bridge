@@ -680,7 +680,7 @@ if [[ "$integration" == 1 ]]; then
         env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
             TYPE_BRIDGE_SCHEMA_MIGRATION_TYPEDB_DATABASE="type_bridge_local_rollback_${$}" \
         bash scripts/ci/run_exact_ignored_rust_test.sh \
-            runner_rolls_back_the_applied_head_and_reapplies_on_3_12_1 \
+            runner_rolls_back_the_applied_head_and_reapplies_on_3_12_3 \
             --manifest-path type-bridge-core/Cargo.toml --locked \
             -p type-bridge-schema-migration-typedb --test live_runner
     run_step "interrupted-plan fenced recovery lifecycle" \
@@ -688,7 +688,7 @@ if [[ "$integration" == 1 ]]; then
         env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
             TYPE_BRIDGE_SCHEMA_MIGRATION_TYPEDB_DATABASE="type_bridge_local_recovery_${$}" \
         bash scripts/ci/run_exact_ignored_rust_test.sh \
-            control_schema_and_fenced_lease_round_trip_on_3_12_1 \
+            control_schema_and_fenced_lease_round_trip_on_3_12_3 \
             --manifest-path type-bridge-core/Cargo.toml --locked \
             -p type-bridge-schema-migration-typedb --test live_store
 

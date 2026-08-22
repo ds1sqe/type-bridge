@@ -87,6 +87,7 @@ def _install_runtime_projection_with_authority(
     semantic_fingerprint_json: str,
     projection_fingerprint_json: str,
     models: Sequence[tuple[type[ModelBase], type[ReferenceBase] | None]],
+    schema_authority: bytes,
 ) -> None:
     global _package_models, _package_runtime_projection
     if _package_runtime_projection is not None:
@@ -95,13 +96,15 @@ def _install_runtime_projection_with_authority(
         install_runtime_projection_with_authority as install_native,
     )
     from ._authority import SCHEMA_AUTHORITY_BYTES
+    if schema_authority != SCHEMA_AUTHORITY_BYTES:
+        raise ValueError("generated schema authority does not match the package authority")
 
     installed = install_native(
         projection_json,
         semantic_fingerprint_json,
         projection_fingerprint_json,
         models,
-        SCHEMA_AUTHORITY_BYTES,
+        schema_authority,
     )
     for model, _reference in models:
         model.__runtime_projection__ = installed

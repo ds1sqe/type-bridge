@@ -1,6 +1,5 @@
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[3]
 PRODUCER = (
     ROOT
@@ -49,7 +48,7 @@ def test_rust_phase2_producer_does_not_import_expected_parity_evidence() -> None
     for forbidden in (
         "expected_report",
         "compare_phase2_projection_parity",
-        "journey-v3.json\")?",
+        'journey-v3.json")?',
         "batch_parity",
         "filter_parity",
     ):

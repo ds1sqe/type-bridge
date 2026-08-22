@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[3]
 CONTRACT_ROOT = ROOT / "tests/contracts/sdk_conformance/workforce-v4"
@@ -33,7 +34,7 @@ EXPECTED_OBSERVATIONS = [
 ]
 
 
-def _load(path: Path) -> dict[str, object]:
+def _load(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 

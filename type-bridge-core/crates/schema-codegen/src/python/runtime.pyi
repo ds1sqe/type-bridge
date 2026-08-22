@@ -38,7 +38,9 @@ class RoleToken[OwnerT: ModelBase, PlayerT_co: ModelBase, CompatibleBindingT_con
 class FunctionRef[**P, R_co]:
     def __new__(cls) -> Never: ...
 
-def function_identity_for_query(function: FunctionRef[..., object]) -> tuple[str, Mapping[str, object]]: ...
+def function_identity_for_query(
+    function: FunctionRef[..., object],
+) -> tuple[str, Mapping[str, object]]: ...
 def function_ref_for_projection(
     function_id: str,
     signature: Mapping[str, object],

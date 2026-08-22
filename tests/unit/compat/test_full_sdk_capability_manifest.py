@@ -297,7 +297,8 @@ def test_seed_workflows_classify_every_existing_row_without_parity_exemptions() 
                 _seed_binding_status(operations[operation_id], binding)
                 for operation_id in capability["seed_operations"]
             }
-            expected = min(statuses, key={"gap": 0, "accepted_offline": 1, "accepted_live": 2}.get)
+            rank = {"gap": 0, "accepted_offline": 1, "accepted_live": 2}
+            expected = min(statuses, key=lambda status: rank[status])
             if capability["code"] in FOUR_LIVE_CAPABILITY_CODES:
                 expected = "accepted_live"
             assert expanded[binding] == expected, (

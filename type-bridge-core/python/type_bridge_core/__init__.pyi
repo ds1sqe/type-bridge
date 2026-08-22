@@ -571,21 +571,44 @@ class PyRustDatabase:
     ) -> PyRustDatabase: ...
     def close(self) -> None: ...
     def database_exists(self) -> bool: ...
-    def database_exists_controlled(self, *, timeout_milliseconds: int | None = ..., cancellation: MigrationCancellation | None = ...) -> bool: ...
+    def database_exists_controlled(
+        self,
+        *,
+        timeout_milliseconds: int | None = ...,
+        cancellation: MigrationCancellation | None = ...,
+    ) -> bool: ...
     def create_database(self) -> None: ...
-    def create_database_controlled(self, *, timeout_milliseconds: int | None = ..., cancellation: MigrationCancellation | None = ...) -> None: ...
+    def create_database_controlled(
+        self,
+        *,
+        timeout_milliseconds: int | None = ...,
+        cancellation: MigrationCancellation | None = ...,
+    ) -> None: ...
     def create_database_outcome(self) -> Literal["created", "already_exists"]: ...
-    def create_database_outcome_controlled(self, *, timeout_milliseconds: int | None = ..., cancellation: MigrationCancellation | None = ...) -> Literal["created", "already_exists"]: ...
+    def create_database_outcome_controlled(
+        self,
+        *,
+        timeout_milliseconds: int | None = ...,
+        cancellation: MigrationCancellation | None = ...,
+    ) -> Literal["created", "already_exists"]: ...
     def delete_database(self) -> None: ...
     def delete_database_outcome(self) -> Literal["deleted", "already_absent"]: ...
-    def inspect_database_pair(self) -> Literal[
-        "absent", "standalone_managed", "owned_pair", "owned_journal_orphan"
-    ]: ...
-    def inspect_database_pair_controlled(self, *, timeout_milliseconds: int | None = ..., cancellation: MigrationCancellation | None = ...) -> Literal[
-        "absent", "standalone_managed", "owned_pair", "owned_journal_orphan"
-    ]: ...
+    def inspect_database_pair(
+        self,
+    ) -> Literal["absent", "standalone_managed", "owned_pair", "owned_journal_orphan"]: ...
+    def inspect_database_pair_controlled(
+        self,
+        *,
+        timeout_milliseconds: int | None = ...,
+        cancellation: MigrationCancellation | None = ...,
+    ) -> Literal["absent", "standalone_managed", "owned_pair", "owned_journal_orphan"]: ...
     def plan_database_delete(self) -> PyManagedDatabaseDeletionPlan: ...
-    def plan_database_delete_controlled(self, *, timeout_milliseconds: int | None = ..., cancellation: MigrationCancellation | None = ...) -> PyManagedDatabaseDeletionPlan: ...
+    def plan_database_delete_controlled(
+        self,
+        *,
+        timeout_milliseconds: int | None = ...,
+        cancellation: MigrationCancellation | None = ...,
+    ) -> PyManagedDatabaseDeletionPlan: ...
     def server_version(self) -> str | None: ...
     def transaction(self, transaction_type: str = "read") -> PyRustTransactionContext: ...
     def __getattr__(self, name: str) -> Any: ...
@@ -593,17 +616,27 @@ class PyRustDatabase:
 class PyManagedDatabaseDeletionPlan:
     """Owned single-use pair-aware managed database deletion plan."""
 
-    def inspected_state(self) -> Literal[
-        "absent", "standalone_managed", "owned_pair", "owned_journal_orphan"
-    ]: ...
-    def execute(self) -> Literal[
+    def inspected_state(
+        self,
+    ) -> Literal["absent", "standalone_managed", "owned_pair", "owned_journal_orphan"]: ...
+    def execute(
+        self,
+    ) -> Literal[
         "already_absent",
         "deleted_standalone_managed",
         "deleted_owned_pair",
         "deleted_owned_journal_orphan",
     ]: ...
-    def execute_controlled(self, *, timeout_milliseconds: int | None = ..., cancellation: MigrationCancellation | None = ...) -> Literal[
-        "already_absent", "deleted_standalone_managed", "deleted_owned_pair", "deleted_owned_journal_orphan"
+    def execute_controlled(
+        self,
+        *,
+        timeout_milliseconds: int | None = ...,
+        cancellation: MigrationCancellation | None = ...,
+    ) -> Literal[
+        "already_absent",
+        "deleted_standalone_managed",
+        "deleted_owned_pair",
+        "deleted_owned_journal_orphan",
     ]: ...
     def close(self) -> None: ...
 
@@ -683,18 +716,14 @@ class QueryCancellation:
 class MatchFunctionArgumentHandle: ...
 
 class MatchFunctionHandle:
-    def call(
-        self, arguments: Sequence[MatchFunctionArgumentHandle]
-    ) -> MatchFunctionCallHandle: ...
+    def call(self, arguments: Sequence[MatchFunctionArgumentHandle]) -> MatchFunctionCallHandle: ...
 
 class MatchFunctionValueHandle:
     def function_argument(self) -> MatchFunctionArgumentHandle: ...
 
 class MatchFunctionCallHandle:
     def function_argument(self) -> MatchFunctionArgumentHandle: ...
-    def compare_field(
-        self, operator: str, field: MatchFieldHandle
-    ) -> MatchPredicateHandle: ...
+    def compare_field(self, operator: str, field: MatchFieldHandle) -> MatchPredicateHandle: ...
     def compare_value(
         self, operator: str, value: MatchFunctionValueHandle
     ) -> MatchPredicateHandle: ...
@@ -1212,7 +1241,9 @@ class MigrationPreviewEntry:
 @final
 class MigrationVerificationFinding:
     @property
-    def kind(self) -> Literal[
+    def kind(
+        self,
+    ) -> Literal[
         "applied_ledger",
         "live_semantics",
         "desired_divergence",
@@ -1275,15 +1306,17 @@ class MigrationExecutionReport:
     @property
     def direction(self) -> Literal["apply", "rollback"]: ...
     @property
-    def status(self) -> Literal[
-        "applied", "rolled_back", "retry_safe", "requires_explicit_recovery"
-    ]: ...
+    def status(
+        self,
+    ) -> Literal["applied", "rolled_back", "retry_safe", "requires_explicit_recovery"]: ...
     @property
     def migration_id(self) -> MigrationIdentity | None: ...
     @property
-    def position_kind(self) -> Literal[
-        "transaction_group", "backfill_step", "manifest_checkpoint", "rollback_step"
-    ] | None: ...
+    def position_kind(
+        self,
+    ) -> (
+        Literal["transaction_group", "backfill_step", "manifest_checkpoint", "rollback_step"] | None
+    ): ...
     @property
     def position_ordinal(self) -> int | None: ...
     @property

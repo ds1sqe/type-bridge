@@ -57,10 +57,17 @@ def main() -> None:
     catalog = open_migration_catalog()
     catalog_ids = [catalog.entry(index).id for index in range(len(catalog))]
     full_apply = catalog.preview_apply([], None)
-    apply_order = [identity(full_apply.migration(index).id) for index in range(full_apply.migration_count())]
-    backfill_steps = sum(full_apply.migration(index).backfill_count for index in range(full_apply.migration_count()))
+    apply_order = [
+        identity(full_apply.migration(index).id) for index in range(full_apply.migration_count())
+    ]
+    backfill_steps = sum(
+        full_apply.migration(index).backfill_count for index in range(full_apply.migration_count())
+    )
     full_rollback = catalog.preview_rollback(catalog_ids, catalog_ids)
-    rollback_order = [identity(full_rollback.migration(index).id) for index in range(full_rollback.migration_count())]
+    rollback_order = [
+        identity(full_rollback.migration(index).id)
+        for index in range(full_rollback.migration_count())
+    ]
 
     initial_id, expand_id, backfill_id = catalog_ids[:3]
     limited_preview = catalog.preview_apply([], [initial_id])
@@ -96,7 +103,13 @@ def main() -> None:
         raise AssertionError("conflicting backfill succeeded")
     except (RuntimeError, ValueError) as error:
         conflict_code = error_code(error)
-    conflict_count = len(execute(database, "read", 'match $person isa person, has display-name $name; fetch { "name": $name };'))
+    conflict_count = len(
+        execute(
+            database,
+            "read",
+            'match $person isa person, has display-name $name; fetch { "name": $name };',
+        )
+    )
     execute(
         database,
         "write",
@@ -104,7 +117,13 @@ def main() -> None:
     )
     forward_report = backfill_plan.execute(database, "workforce-v4-python-backfill-forward")
     forward = forward_report.backfills[0]
-    equal_count = len(execute(database, "read", 'match $person isa person, has legacy-name $source, has display-name $destination; $source == $destination; fetch { "name": $destination };'))
+    equal_count = len(
+        execute(
+            database,
+            "read",
+            'match $person isa person, has legacy-name $source, has display-name $destination; $source == $destination; fetch { "name": $destination };',
+        )
+    )
     retry_preview = catalog.preview_apply([initial_id, expand_id, backfill_id], [backfill_id])
     assert retry_preview.migration_count() == 0
 
@@ -119,14 +138,26 @@ def main() -> None:
     rollback_plan = rollback_preview.authorize(rollback_builder.finish())
     rollback_report = rollback_plan.execute(database, "workforce-v4-python-backfill-reverse")
     reverse = rollback_report.backfills[0]
-    remaining_count = len(execute(database, "read", 'match $person isa person, has display-name $name; fetch { "name": $name };'))
+    remaining_count = len(
+        execute(
+            database,
+            "read",
+            'match $person isa person, has display-name $name; fetch { "name": $name };',
+        )
+    )
     applied_after_rollback = catalog.applied_migrations(database)
     try:
-        catalog.preview_rollback(applied_after_rollback, [MigrationIdentity("workforcev4", "9999_unknown")])
+        catalog.preview_rollback(
+            applied_after_rollback, [MigrationIdentity("workforcev4", "9999_unknown")]
+        )
         raise AssertionError("unknown rollback target succeeded")
     except (RuntimeError, ValueError) as error:
         unknown_code = error_code(error)
-    repeat_status = "up_to_date" if not any(identity(item) == identity(backfill_id) for item in applied_after_rollback) else "unexpected"
+    repeat_status = (
+        "up_to_date"
+        if not any(identity(item) == identity(backfill_id) for item in applied_after_rollback)
+        else "unexpected"
+    )
     reapply_report = backfill_plan.execute(database, "workforce-v4-python-backfill-reapply")
 
     deletion = database.plan_database_delete().execute()
@@ -135,17 +166,63 @@ def main() -> None:
     database.close()
     database.close()
 
-    print(json.dumps({
-        "administration": {"create": create, "repeat_create": repeat_create, "pair_state": pair_state, "delete": deletion, "repeat_delete": repeat_deletion},
-        "rollback": {"apply_status": initial_report.status, "rollback_without_approval_code": approval_code, "rollback_status": rollback_report.status, "unknown_target_code": unknown_code, "repeat_rollback_status": repeat_status, "reapply_status": reapply_report.status},
-        "backfill": {"conflict_certainty": "definitely_aborted", "conflict_code": conflict_code, "conflict_visible_destination_count": conflict_count, "forward_changed": forward.changed, "forward_transaction_groups": forward.transaction_groups, "equal_copy_count": equal_count, "retry_changed": 0, "reverse_changed": reverse.changed, "remaining_destination_count": remaining_count},
-        "runtime_facade": {"catalog_entries": len(catalog), "catalog_fingerprint": json.loads(catalog.fingerprint_json())["digest"], "apply_order": apply_order, "rollback_order": rollback_order, "backfill_steps": backfill_steps},
-        "cancellation": {"code": cancellation_code, "before_effect": True},
-        "resource_limits": {"code": resource_code, "bounded": True},
-        "diagnostic": {"code": cancellation_code, "category": "cancelled", "provider_text_absent": True},
-        "lifecycle": {"explicit_close": True, "repeat_close": True, "temporary_evidence_absent": True},
-        "cleanup": {"managed_database_absent": final_state == "absent", "journal_database_absent": final_state == "absent", "temporary_evidence_absent": True},
-    }, sort_keys=True))
+    print(
+        json.dumps(
+            {
+                "administration": {
+                    "create": create,
+                    "repeat_create": repeat_create,
+                    "pair_state": pair_state,
+                    "delete": deletion,
+                    "repeat_delete": repeat_deletion,
+                },
+                "rollback": {
+                    "apply_status": initial_report.status,
+                    "rollback_without_approval_code": approval_code,
+                    "rollback_status": rollback_report.status,
+                    "unknown_target_code": unknown_code,
+                    "repeat_rollback_status": repeat_status,
+                    "reapply_status": reapply_report.status,
+                },
+                "backfill": {
+                    "conflict_certainty": "definitely_aborted",
+                    "conflict_code": conflict_code,
+                    "conflict_visible_destination_count": conflict_count,
+                    "forward_changed": forward.changed,
+                    "forward_transaction_groups": forward.transaction_groups,
+                    "equal_copy_count": equal_count,
+                    "retry_changed": 0,
+                    "reverse_changed": reverse.changed,
+                    "remaining_destination_count": remaining_count,
+                },
+                "runtime_facade": {
+                    "catalog_entries": len(catalog),
+                    "catalog_fingerprint": json.loads(catalog.fingerprint_json())["digest"],
+                    "apply_order": apply_order,
+                    "rollback_order": rollback_order,
+                    "backfill_steps": backfill_steps,
+                },
+                "cancellation": {"code": cancellation_code, "before_effect": True},
+                "resource_limits": {"code": resource_code, "bounded": True},
+                "diagnostic": {
+                    "code": cancellation_code,
+                    "category": "cancelled",
+                    "provider_text_absent": True,
+                },
+                "lifecycle": {
+                    "explicit_close": True,
+                    "repeat_close": True,
+                    "temporary_evidence_absent": True,
+                },
+                "cleanup": {
+                    "managed_database_absent": final_state == "absent",
+                    "journal_database_absent": final_state == "absent",
+                    "temporary_evidence_absent": True,
+                },
+            },
+            sort_keys=True,
+        )
+    )
 
 
 if __name__ == "__main__":

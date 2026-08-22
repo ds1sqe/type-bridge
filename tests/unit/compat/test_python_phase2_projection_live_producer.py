@@ -216,7 +216,7 @@ def test_create_failure_is_never_claimed_or_deleted() -> None:
             self.events.append("create")
             raise RuntimeError("create failed")
 
-    def factory(**arguments: object) -> CreateFailure:
+    def factory(**arguments: Any) -> CreateFailure:
         return CreateFailure(**arguments, events=events)
 
     with pytest.raises(RuntimeError, match="create failed"):
@@ -431,7 +431,7 @@ def test_http_port_is_bounded_and_forwarded() -> None:
     events: list[str] = []
     constructed: list[dict[str, object]] = []
 
-    def factory(**arguments: object) -> _FakeDatabase:
+    def factory(**arguments: Any) -> _FakeDatabase:
         constructed.append(arguments)
         return _FakeDatabase(**arguments, events=events)
 

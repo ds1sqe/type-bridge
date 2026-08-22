@@ -58,7 +58,7 @@ def test_c_phase2_report_is_canonical_bounded_create_new_and_compared() -> None:
 def test_c_phase2_producer_is_persistently_gated_after_shared_build() -> None:
     check = CHECK.read_text()
     ci = CI.read_text()
-    check_build = 'run_step "build the C ABI shared library"'
+    check_build = 'run_step "build the isolated C ABI shared library"'
     check_gate = 'run_step "C provider-free Phase-2 parity producer"'
     ci_build = "- name: Build C ABI shared library"
     ci_gate = "- name: Check C provider-free Phase-2 parity producer"

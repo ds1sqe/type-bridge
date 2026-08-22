@@ -1321,16 +1321,28 @@ def _emit_workforce_v3_package_proof_fragment() -> None:
     ]
     constraint = {
         "scalar_domains": [
-            "boolean", "date", "datetime", "datetime_tz", "decimal", "double",
-            "duration", "long", "string",
+            "boolean",
+            "date",
+            "datetime",
+            "datetime_tz",
+            "decimal",
+            "double",
+            "duration",
+            "long",
+            "string",
         ],
         "rejection_families": rejection_families,
-        "provider_enforced_families": [{
-            "family": "unique", "projection_fact_retained": True,
-            "local_preflight": "not_applicable", "provider_enforced": True,
-        }],
+        "provider_enforced_families": [
+            {
+                "family": "unique",
+                "projection_fact_retained": True,
+                "local_preflight": "not_applicable",
+                "provider_enforced": True,
+            }
+        ],
         "representative_diagnostic": {
-            "category": "invalid_input", "code": "range_constraint_violation",
+            "category": "invalid_input",
+            "code": "range_constraint_violation",
             "path": [{"kind": "type", "value": "attribute:val_constrained"}],
             "details": {
                 "actual": {"kind": "signed", "value": "81"},
@@ -1340,10 +1352,19 @@ def _emit_workforce_v3_package_proof_fragment() -> None:
         },
     }
     evidence = {
-        "rejected_mutations": ["duplicated", "extra", "foreign", "forged", "missing", "reordered", "stale"],
+        "rejected_mutations": [
+            "duplicated",
+            "extra",
+            "foreign",
+            "forged",
+            "missing",
+            "reordered",
+            "stale",
+        ],
         "representative_mutation": {"evidence": "semantic_schema_fingerprint", "kind": "missing"},
         "diagnostic": {
-            "category": "integrity", "code": "projection_evidence_mismatch",
+            "category": "integrity",
+            "code": "projection_evidence_mismatch",
             "path": [
                 {"kind": "argument", "value": "projection_evidence"},
                 {"kind": "index", "value": 0},
@@ -1360,10 +1381,26 @@ def _emit_workforce_v3_package_proof_fragment() -> None:
     fencing = {
         "accepted_local": {"construction": True, "batch": True, "filter": True, "hydration": True},
         "rejections": {
-            "construction": {"category": "integrity", "code": "generated_token_package_mismatch", "rejected_before_provider_io": True},
-            "batch": {"category": "integrity", "code": "generated_token_package_mismatch", "rejected_before_provider_io": True},
-            "filter": {"category": "integrity", "code": "generated_token_package_mismatch", "rejected_before_provider_io": True},
-            "hydration": {"category": "integrity", "code": "generated_token_package_mismatch", "public_result_published": False},
+            "construction": {
+                "category": "integrity",
+                "code": "generated_token_package_mismatch",
+                "rejected_before_provider_io": True,
+            },
+            "batch": {
+                "category": "integrity",
+                "code": "generated_token_package_mismatch",
+                "rejected_before_provider_io": True,
+            },
+            "filter": {
+                "category": "integrity",
+                "code": "generated_token_package_mismatch",
+                "rejected_before_provider_io": True,
+            },
+            "hydration": {
+                "category": "integrity",
+                "code": "generated_token_package_mismatch",
+                "public_result_published": False,
+            },
         },
         "rejected_token_states": ["foreign", "forged", "reordered", "stale"],
         "provider_text_exposed": False,
@@ -1374,15 +1411,40 @@ def _emit_workforce_v3_package_proof_fragment() -> None:
         "binding": "python",
         "semantic_profile": "typedb-3.12.1/v1",
         "run_nonce": run_nonce,
-        "contract": {name: _proof_source_identity(root, path) for name, path in contract_paths.items()},
-        "producer": {"id": "python.generated-package-v3-proof", "sources": [_proof_source_identity(root, path) for path in producer_paths]},
+        "contract": {
+            name: _proof_source_identity(root, path) for name, path in contract_paths.items()
+        },
+        "producer": {
+            "id": "python.generated-package-v3-proof",
+            "sources": [_proof_source_identity(root, path) for path in producer_paths],
+        },
         "results": [
-            {"observation_ref": "projected_constraint_validation", "proof_kind": "diagnostic", "test_id": test_id, "outcome": "passed", "observation": constraint},
-            {"observation_ref": "projection_evidence_integrity", "proof_kind": "diagnostic", "test_id": test_id, "outcome": "passed", "observation": evidence},
-            {"observation_ref": "token_package_fencing", "proof_kind": "diagnostic", "test_id": test_id, "outcome": "passed", "observation": fencing},
+            {
+                "observation_ref": "projected_constraint_validation",
+                "proof_kind": "diagnostic",
+                "test_id": test_id,
+                "outcome": "passed",
+                "observation": constraint,
+            },
+            {
+                "observation_ref": "projection_evidence_integrity",
+                "proof_kind": "diagnostic",
+                "test_id": test_id,
+                "outcome": "passed",
+                "observation": evidence,
+            },
+            {
+                "observation_ref": "token_package_fencing",
+                "proof_kind": "diagnostic",
+                "test_id": test_id,
+                "outcome": "passed",
+                "observation": fencing,
+            },
         ],
     }
-    payload = (json.dumps(fragment, ensure_ascii=False, separators=(",", ":"), sort_keys=True) + "\n").encode()
+    payload = (
+        json.dumps(fragment, ensure_ascii=False, separators=(",", ":"), sort_keys=True) + "\n"
+    ).encode()
     with destination.open("xb") as output:
         output.write(payload)
         output.flush()

@@ -339,8 +339,7 @@ def test_final_promoted_reports_have_no_pending_manifest_transition(
         later_plan05["binding_profile"],
     )
     assert all(
-        later_plan05_statuses[binding] == "accepted_live"
-        for binding in comparator.REPORT_BINDINGS
+        later_plan05_statuses[binding] == "accepted_live" for binding in comparator.REPORT_BINDINGS
     )
 
 

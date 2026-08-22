@@ -63,6 +63,10 @@ fn main() {
 
     fs::create_dir_all(&output_path).expect("output directory is created");
     for (relative, bytes) in package.files() {
-        fs::write(output_path.join(relative), bytes).expect("generated file is written");
+        let destination = output_path.join(relative);
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent).expect("generated parent directory is created");
+        }
+        fs::write(destination, bytes).expect("generated file is written");
     }
 }

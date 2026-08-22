@@ -16,12 +16,9 @@ ROOT = Path(__file__).resolve().parents[2]
 CORE = ROOT / "type-bridge-core"
 COMPARATOR = ROOT / "scripts/ci/compare_workforce_conformance_v4.py"
 REPORTS = tuple(
-    f"{binding}-workforce-v4-report.json"
-    for binding in ("python", "node", "rust", "c")
+    f"{binding}-workforce-v4-report.json" for binding in ("python", "node", "rust", "c")
 )
-TESTS = tuple(
-    f"workforce_v4_{binding}_live" for binding in ("python", "node", "rust", "c")
-)
+TESTS = tuple(f"workforce_v4_{binding}_live" for binding in ("python", "node", "rust", "c"))
 
 
 class RunnerError(RuntimeError):
