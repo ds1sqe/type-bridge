@@ -26,6 +26,7 @@ use crate::runtime::TypeBridgeDatabase;
 #[derive(Clone)]
 pub(crate) struct DatabaseAdministrationState {
     administrator: type_bridge_schema_migration_typedb::ManagedDatabasePairAdministrator,
+    runtime: tokio::runtime::Handle,
 }
 
 impl DatabaseAdministrationState {
@@ -34,18 +35,28 @@ impl DatabaseAdministrationState {
             database.orm_database_arc(),
             database.package_state()._authority.managed_scope().id().clone(),
         )?;
-        Ok(Arc::new(Self { administrator }))
+        Ok(Arc::new(Self {
+            administrator,
+            runtime: database.runtime_handle(),
+        }))
     }
 
     #[cfg(test)]
     fn from_administrator(
         administrator: type_bridge_schema_migration_typedb::ManagedDatabasePairAdministrator,
     ) -> Arc<Self> {
-        Arc::new(Self { administrator })
+        Arc::new(Self {
+            administrator,
+            runtime: tokio::runtime::Handle::current(),
+        })
     }
 
     pub(crate) async fn database_exists(&self) -> Result<bool, Diagnostic> {
         self.administrator.database_exists().await
+    }
+
+    pub(crate) fn database_exists_blocking(&self) -> Result<bool, Diagnostic> {
+        self.runtime.block_on(self.database_exists())
     }
 
     pub(crate) async fn create_database_outcome(
@@ -55,10 +66,23 @@ impl DatabaseAdministrationState {
         self.administrator.create_database_outcome().await
     }
 
+    pub(crate) fn create_database_outcome_blocking(
+        &self,
+    ) -> Result<type_bridge_schema_migration_typedb::ManagedDatabasePairCreateOutcome, Diagnostic>
+    {
+        self.runtime.block_on(self.create_database_outcome())
+    }
+
     pub(crate) async fn inspect(
         &self,
     ) -> Result<type_bridge_schema_migration_typedb::ManagedDatabasePairState, Diagnostic> {
         self.administrator.inspect().await
+    }
+
+    pub(crate) fn inspect_blocking(
+        &self,
+    ) -> Result<type_bridge_schema_migration_typedb::ManagedDatabasePairState, Diagnostic> {
+        self.runtime.block_on(self.inspect())
     }
 
     pub(crate) async fn plan_delete(
@@ -71,6 +95,12 @@ impl DatabaseAdministrationState {
                 administration: Arc::clone(self),
                 plan: Some(plan),
             })
+    }
+
+    pub(crate) fn plan_delete_blocking(
+        self: &Arc<Self>,
+    ) -> Result<DatabaseDeletionPlanState, Diagnostic> {
+        self.runtime.block_on(self.plan_delete())
     }
 }
 
@@ -99,6 +129,14 @@ impl DatabaseDeletionPlanState {
             )
         })?;
         plan.execute().await
+    }
+
+    pub(crate) fn execute_blocking(
+        &mut self,
+    ) -> Result<type_bridge_schema_migration_typedb::ManagedDatabasePairDeleteOutcome, Diagnostic>
+    {
+        let runtime = self.administration.runtime.clone();
+        runtime.block_on(self.execute())
     }
 
     pub(crate) fn close(&mut self) {

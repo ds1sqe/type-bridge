@@ -197,6 +197,10 @@ pub struct TypeBridgeCancellation {
 }
 
 impl TypeBridgeDatabase {
+    pub(crate) fn runtime_handle(&self) -> tokio::runtime::Handle {
+        self.state.runtime.runtime.handle().clone()
+    }
+
     pub(crate) fn package_state(&self) -> &Arc<SchemaPackageState> {
         &self.state._package
     }

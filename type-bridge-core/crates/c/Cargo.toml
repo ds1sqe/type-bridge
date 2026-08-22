@@ -10,6 +10,10 @@ authors.workspace = true
 publish = false
 rust-version = "1.88"
 
+[features]
+default = []
+abi-1-5 = []
+
 [lib]
 name = "type_bridge_c"
 crate-type = ["cdylib", "rlib"]

@@ -9,6 +9,8 @@ mod diagnostic;
 mod entity_crud;
 mod execution_diagnostic;
 mod generated_preflight;
+#[cfg(feature = "abi-1-5")]
+mod migration_abi;
 mod migration_runtime;
 mod policy;
 mod projected_batch;
