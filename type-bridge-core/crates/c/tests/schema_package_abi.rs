@@ -5277,12 +5277,15 @@ fn standalone_generated_consumer_is_clean_under_address_and_undefined_sanitizers
         r#"#include <stddef.h>
 
 #include <typebridge/type_bridge.h>
+#include <typebridge/type_bridge_abi_1_5.h>
 #include <fixture/models.h>
 
 int main(void) {
   type_bridge_byte_view_t view = {0};
   type_bridge_schema_package_t *package = NULL;
   type_bridge_diagnostics_t *diagnostics = NULL;
+  type_bridge_migration_cancellation_t *cancellation = NULL;
+  uint8_t cancelled = 9u;
   if (fixture_schema_package_open(&package, &diagnostics) !=
       TYPE_BRIDGE_STATUS_OK || package == NULL || diagnostics != NULL) {
     return 1;
@@ -5295,6 +5298,30 @@ int main(void) {
   if (type_bridge_schema_package_close(&package) != TYPE_BRIDGE_STATUS_OK ||
       package != NULL) {
     return 3;
+  }
+  if (type_bridge_migration_cancellation_new(&cancellation) !=
+          TYPE_BRIDGE_STATUS_OK ||
+      cancellation == NULL) {
+    return 4;
+  }
+  if (type_bridge_migration_cancellation_is_cancelled(
+          cancellation, &cancelled) != TYPE_BRIDGE_STATUS_OK ||
+      cancelled != 0u) {
+    return 5;
+  }
+  if (type_bridge_migration_cancellation_cancel(cancellation) !=
+          TYPE_BRIDGE_STATUS_OK ||
+      type_bridge_migration_cancellation_is_cancelled(
+          cancellation, &cancelled) != TYPE_BRIDGE_STATUS_OK ||
+      cancelled != 1u) {
+    return 6;
+  }
+  if (type_bridge_migration_cancellation_close(&cancellation) !=
+          TYPE_BRIDGE_STATUS_OK ||
+      cancellation != NULL ||
+      type_bridge_migration_cancellation_close(&cancellation) !=
+          TYPE_BRIDGE_STATUS_OK) {
+    return 7;
   }
 
   return 0;
