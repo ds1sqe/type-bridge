@@ -6,11 +6,17 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 const FORMAT = "typebridge.workforce-v5-provider-free-corpus/v1";
+const OPERATIONAL_FORMAT = "typebridge.workforce-v5-operational-evidence/v1";
 const packageValue = process.env.TYPE_BRIDGE_GENERATED_NODE_PACKAGE;
 if (packageValue === undefined || !path.isAbsolute(packageValue)) {
   throw new Error("TYPE_BRIDGE_GENERATED_NODE_PACKAGE must be an absolute path");
 }
 const generated = await import(pathToFileURL(packageValue));
+const foreignPackageValue = process.env.TYPE_BRIDGE_GENERATED_NODE_FOREIGN_PACKAGE;
+if (foreignPackageValue === undefined || !path.isAbsolute(foreignPackageValue)) {
+  throw new Error("TYPE_BRIDGE_GENERATED_NODE_FOREIGN_PACKAGE must be an absolute path");
+}
+const foreign = await import(pathToFileURL(foreignPackageValue));
 
 function hydrate(token, iid, input) {
   const symbol = Object.getOwnPropertySymbols(token).find(
@@ -47,12 +53,55 @@ function canonicalJson(value) {
   return JSON.stringify(value);
 }
 
+function diagnosticFrom(error) {
+  if (error instanceof Error) {
+    try {
+      const value = JSON.parse(error.message);
+      if (value !== null && typeof value === "object" && typeof value.code === "string") {
+        return value;
+      }
+    } catch {
+      // The assertion below reports the original non-diagnostic error.
+    }
+  }
+  throw new Error("controlled canonical operation returned no structured diagnostic", {
+    cause: error,
+  });
+}
+
+function expectCode(operation, expected) {
+  try {
+    operation();
+  } catch (error) {
+    const diagnostic = diagnosticFrom(error);
+    if (diagnostic.code !== expected) {
+      throw new Error(`expected ${expected}, saw ${String(diagnostic.code)}`, { cause: error });
+    }
+    return diagnostic;
+  }
+  throw new Error(`controlled canonical operation must fail with ${expected}`);
+}
+
+function publish(output, payload) {
+  if (!path.isAbsolute(output)) {
+    throw new Error("Workforce V5 evidence path must be absolute");
+  }
+  const descriptor = fs.openSync(output, "wx", 0o600);
+  try {
+    fs.writeFileSync(descriptor, payload);
+    fs.fsyncSync(descriptor);
+  } finally {
+    fs.closeSync(descriptor);
+  }
+}
+
 const outputValue = process.env.TYPE_BRIDGE_WORKFORCE_V5_CORPUS;
 if (outputValue === undefined) {
   throw new Error("TYPE_BRIDGE_WORKFORCE_V5_CORPUS must be configured");
 }
-if (!outputValue.startsWith("/")) {
-  throw new Error("Workforce V5 corpus path must be absolute");
+const operationalOutput = process.env.TYPE_BRIDGE_WORKFORCE_V5_OPERATIONAL_EVIDENCE;
+if (operationalOutput === undefined) {
+  throw new Error("TYPE_BRIDGE_WORKFORCE_V5_OPERATIONAL_EVIDENCE must be configured");
 }
 
 const integerKey = generated.RobotId.encodeAttribute(
@@ -135,6 +184,88 @@ if (
   throw new Error("Node employment snapshot did not re-encode byte-exactly");
 }
 
+const cancellation = new generated.QueryCancellation();
+cancellation.cancel();
+const cancellationError = expectCode(
+  () => generated.encodeArchiveControlled(records, { cancellation }),
+  "projected_codec_cancelled",
+);
+const inputError = expectCode(
+  () => generated.decodeArchiveControlled(archive, { maxInputBytes: archive.length - 1 }),
+  "projected_codec_input_limit",
+);
+const outputError = expectCode(
+  () => generated.encodeArchiveControlled(records, { maxOutputBytes: archive.length - 1 }),
+  "projected_codec_output_limit",
+);
+const memberError = expectCode(
+  () => generated.encodeArchiveControlled(records, { maxRecords: records.length - 1 }),
+  "projected_codec_member_limit",
+);
+const depthError = expectCode(
+  () => generated.decodeArchiveControlled(archive, { maxDepth: 1 }),
+  "projected_codec_depth_limit",
+);
+const deadlineError = expectCode(
+  () => generated.decodeArchiveControlled(archive, { timeoutMilliseconds: 0 }),
+  "projected_codec_deadline_exceeded",
+);
+const foreignRecord = foreign.RobotId.encodeAttribute(foreign.RobotId.create(7n));
+const foreignError = expectCode(
+  () => generated.encodeArchive([foreignRecord]),
+  "projected_record_schema_mismatch",
+);
+if (
+  foreignError.sdkCategory !== "invalid_input" ||
+  JSON.stringify(foreignError.path) !==
+    JSON.stringify([{ kind: "contract_field", value: "declared_schema_identity" }]) ||
+  JSON.stringify(foreignError.details) !== "{}"
+) {
+  throw new Error("Node foreign-schema diagnostic shape drifted");
+}
+
+let siblingArchive = generated.encodeArchive(records);
+let siblingRecords = generated.decodeArchive(siblingArchive);
+if (
+  siblingRecords.length !== records.length ||
+  siblingRecords.some(
+    (record, index) => !Buffer.from(record).equals(Buffer.from(records[index])),
+  )
+) {
+  throw new Error("independent Node archive was unusable after failures");
+}
+siblingRecords = null;
+siblingArchive = null;
+
+const operationalPayload = canonicalJson({
+  binding: "node",
+  cancellation: { code: cancellationError.code, partial_output: false },
+  deadline: { code: deadlineError.code, partial_output: false },
+  diagnostic: {
+    category: foreignError.sdkCategory,
+    code: foreignError.code,
+    path: ["declared_schema_identity"],
+    payload_absent: true,
+  },
+  format: OPERATIONAL_FORMAT,
+  lifecycle: {
+    archive_closed: true,
+    builder_closed: true,
+    bytes_closed: true,
+    decoded_closed: true,
+    repeat_close: true,
+    sibling_usable: true,
+  },
+  resource_limits: {
+    depth_code: depthError.code,
+    input_code: inputError.code,
+    member_code: memberError.code,
+    output_code: outputError.code,
+    partial_output: false,
+  },
+  test_id: "node.generated_workforce_v5_canonical_codec",
+});
+
 const encoded = (value) => Buffer.from(value).toString("base64");
 const payload = canonicalJson({
   archive_b64: encoded(archive),
@@ -142,10 +273,5 @@ const payload = canonicalJson({
   format: FORMAT,
   record_b64: records.map(encoded),
 });
-const descriptor = fs.openSync(outputValue, "wx", 0o600);
-try {
-  fs.writeFileSync(descriptor, payload);
-  fs.fsyncSync(descriptor);
-} finally {
-  fs.closeSync(descriptor);
-}
+publish(outputValue, payload);
+publish(operationalOutput, operationalPayload);
