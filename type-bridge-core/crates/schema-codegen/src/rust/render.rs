@@ -1080,7 +1080,7 @@ fn render_reference(projection: &RuntimeProjection) -> Result<String, Diagnostic
         );
         let _ = writeln!(
             output,
-            "impl MaterializeReference for {name} {{\n  fn materialize_reference(__tb_value: &HydratedPlayer, __tb_path: &ValidationPath) -> Result<Self, ValidationError> {{\n    Self::__tb_from_player(__tb_value, __tb_path)\n  }}\n}}\n"
+            "impl MaterializeReference for {name} {{\n  type Schema = crate::AppSchema;\n  fn materialize_reference(__tb_value: &HydratedPlayer, __tb_path: &ValidationPath) -> Result<Self, ValidationError> {{\n    Self::__tb_from_player(__tb_value, __tb_path)\n  }}\n}}\n"
         );
     }
     Ok(output)
@@ -2151,7 +2151,7 @@ fn create_role_player_union<'a>(
     code.push_str("    }\n  }\n}\n\n");
     code.push_str("impl MaterializeReference for ");
     code.push_str(&union_name);
-    code.push_str(" {\n  fn materialize_reference(__tb_value: &HydratedPlayer, __tb_path: &ValidationPath) -> Result<Self, ValidationError> {\n    match __tb_value.type_id_json() {\n");
+    code.push_str(" {\n  type Schema = crate::AppSchema;\n  fn materialize_reference(__tb_value: &HydratedPlayer, __tb_path: &ValidationPath) -> Result<Self, ValidationError> {\n    match __tb_value.type_id_json() {\n");
     for (variant, ref_t) in &ref_types {
         let _ = writeln!(
             code,

@@ -349,6 +349,41 @@ pub(crate) fn projected_to_decoded_create(
     Ok(DecodedCreate::new(type_id_json, fields, roles))
 }
 
+pub(crate) fn project_reference_inferred(
+    input: impl crate::__codegen::IntoEncodedReference,
+    installed: &InstalledRuntimeProjection,
+) -> Result<ProjectedReference> {
+    let encoded = input
+        .into_encoded_reference()
+        .map_err(|error| map_validation_error(error, ModelValidationPhase::Input))?;
+    project_reference(&encoded, "reference", 0, installed)
+}
+
+pub(crate) fn projected_to_hydrated_player(
+    value: &ProjectedReference,
+    installed: &InstalledRuntimeProjection,
+) -> Result<HydratedPlayer> {
+    value
+        .validate_for(installed)
+        .map_err(|error| Error::from_sdk_execution(error, ModelValidationPhase::Input))?;
+    let type_id_json = encode_type_identity(value.type_id(), vec!["type".into()])?;
+    let mut keys = Vec::with_capacity(value.keys().len());
+    for (field, scalar) in value.keys() {
+        keys.push((
+            encode_owns_identity(
+                declaring_owns_identity(installed, value.type_id(), field, vec!["keys".into()])?,
+                vec!["keys".into()],
+            )?,
+            encoded_scalar(scalar.value())?,
+        ));
+    }
+    Ok(HydratedPlayer::from_owned(
+        type_id_json,
+        value.iid().map(str::to_owned),
+        keys,
+    ))
+}
+
 fn project_reference(
     reference: &EncodedReference,
     role_segment: &str,

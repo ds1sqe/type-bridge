@@ -401,6 +401,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let key_ref = PersonRef::from_key(identifier)?;
     assert_eq!(key_ref.iid(), None);
     assert_eq!(key_ref.identifier().unwrap().value(), "person-1");
+    let key_ref_bytes = SCHEMA.encode_reference(key_ref.clone())?;
+    let decoded_key_ref: PersonRef = SCHEMA.decode_reference(&key_ref_bytes)?;
+    assert_eq!(decoded_key_ref.iid(), None);
+    assert_eq!(decoded_key_ref.identifier().unwrap().value(), "person-1");
+    assert!(SCHEMA.decode_reference::<EventRef>(&key_ref_bytes).is_err());
 
     let person_player_evidence = HydratedPlayer::new(
         Person::TYPE_ID_JSON,

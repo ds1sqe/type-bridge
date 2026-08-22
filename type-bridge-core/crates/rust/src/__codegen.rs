@@ -1288,6 +1288,7 @@ pub trait MaterializeCreate: IntoEncodedCreate + Sized {
 /// Materializing trait for one exact generated reference type from detached evidence.
 #[doc(hidden)]
 pub trait MaterializeReference: IntoEncodedReference + Sized {
+    type Schema: crate::schema::Schema;
     fn materialize_reference(
         value: &HydratedPlayer,
         path: &ValidationPath,
