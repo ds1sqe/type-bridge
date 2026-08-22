@@ -1,12 +1,18 @@
 //! Owned, source-free runtime catalog over a verified history bundle.
 
+use std::collections::BTreeSet;
+
 use type_bridge_contract::diagnostic::Diagnostic;
+use type_bridge_contract::diagnostic::{DiagnosticCategory, DiagnosticCode};
 use type_bridge_contract::fingerprint::Fingerprint;
 use type_bridge_contract::migration::MigrationId;
 use type_bridge_schema::ManagedDeltaContext;
 
 use crate::{
-    MigrationHistoryGraph, VerifiedMigrationHistoryBundle, VerifiedMigrationHistoryBundleEntry,
+    MigrationApplyPlanError, MigrationApplyTarget, MigrationHistoryGraph, SchemaLoweringBinding,
+    VerifiedMigrationApplyPlan, VerifiedMigrationHistoryBundle,
+    VerifiedMigrationHistoryBundleEntry, VerifiedMigrationRollbackPlan,
+    build_verified_migration_apply_preview, build_verified_migration_rollback_preview,
     decode_verified_migration_history_bundle,
 };
 
@@ -15,12 +21,16 @@ use crate::{
 pub struct MigrationCatalog {
     bundle: VerifiedMigrationHistoryBundle,
     graph: MigrationHistoryGraph,
+    context: Option<ManagedDeltaContext>,
 }
 
 impl MigrationCatalog {
     /// Decode, replay, and open one generated canonical history bundle.
     pub fn open(bytes: &[u8], context: &ManagedDeltaContext) -> Result<Self, Diagnostic> {
-        Self::from_verified_bundle(decode_verified_migration_history_bundle(bytes, context)?)
+        let mut catalog =
+            Self::from_verified_bundle(decode_verified_migration_history_bundle(bytes, context)?)?;
+        catalog.context = Some(context.clone());
+        Ok(catalog)
     }
 
     /// Open one already verified immutable bundle.
@@ -28,7 +38,11 @@ impl MigrationCatalog {
         bundle: VerifiedMigrationHistoryBundle,
     ) -> Result<Self, Diagnostic> {
         let graph = bundle.history_graph()?;
-        Ok(Self { bundle, graph })
+        Ok(Self {
+            bundle,
+            graph,
+            context: None,
+        })
     }
 
     /// Return the exact canonical bundle content identity.
@@ -54,5 +68,44 @@ impl MigrationCatalog {
     /// Borrow the complete verified bundle authority.
     pub const fn bundle(&self) -> &VerifiedMigrationHistoryBundle {
         &self.bundle
+    }
+
+    /// Build a fully replayed provider-free forward preview under this catalog's authority.
+    pub fn preview_apply(
+        &self,
+        applied: &BTreeSet<MigrationId>,
+        target: &MigrationApplyTarget,
+    ) -> Result<VerifiedMigrationApplyPlan, MigrationApplyPlanError> {
+        let context = self.runtime_context()?;
+        let lowering = SchemaLoweringBinding::current(context.available_capabilities().clone())?;
+        build_verified_migration_apply_preview(&self.graph, applied, target, context, &lowering)
+    }
+
+    /// Build a fully replayed provider-free rollback preview under this catalog's authority.
+    pub fn preview_rollback(
+        &self,
+        applied: &BTreeSet<MigrationId>,
+        removals: &BTreeSet<MigrationId>,
+    ) -> Result<VerifiedMigrationRollbackPlan, MigrationApplyPlanError> {
+        let context = self.runtime_context()?;
+        let lowering = SchemaLoweringBinding::current(context.available_capabilities().clone())?;
+        build_verified_migration_rollback_preview(
+            &self.graph,
+            applied,
+            removals,
+            context,
+            &lowering,
+        )
+    }
+
+    fn runtime_context(&self) -> Result<&ManagedDeltaContext, Diagnostic> {
+        self.context.as_ref().ok_or_else(|| {
+            Diagnostic::new(
+                DiagnosticCategory::InvalidContract,
+                DiagnosticCode::new("migration_catalog_runtime_context_required")
+                    .expect("static catalog diagnostic code"),
+                "migration planning requires a catalog opened under generated authority",
+            )
+        })
     }
 }

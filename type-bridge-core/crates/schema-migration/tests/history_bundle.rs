@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use type_bridge_contract::capability::CapabilitySet;
 use type_bridge_contract::codec::{FormatVersion, to_canonical_json};
 use type_bridge_contract::fingerprint::SemanticProfileId;
@@ -10,9 +12,10 @@ use type_bridge_contract::schema::{
 };
 use type_bridge_schema::{ManagedDeltaContext, diff_managed, inverse_delta};
 use type_bridge_schema_migration::{
-    MigrationCatalog, MigrationHistoryGraph, SchemaMigrationDraft, VerifiedMigrationHistoryBundle,
-    build_verified_manifest, decode_verified_migration_history_bundle,
-    encode_verified_migration_history_bundle,
+    MigrationApplyTarget, MigrationCatalog, MigrationHistoryGraph, SchemaMigrationDraft,
+    VerifiedMigrationHistoryBundle, build_verified_manifest,
+    decode_verified_migration_history_bundle, encode_verified_migration_history_bundle,
+    migration_runtime_capability_vocabulary,
 };
 
 fn declared(labels: &[&str]) -> DeclaredSchema {
@@ -44,7 +47,7 @@ fn context() -> ManagedDeltaContext {
     ManagedDeltaContext::new(
         ManagedScopeId::new("bundle-schema").expect("fixture scope"),
         SemanticProfileId::new("typedb-3.12.1/v1").expect("fixture profile"),
-        CapabilitySet::new(),
+        migration_runtime_capability_vocabulary().expect("runtime capabilities"),
     )
 }
 
@@ -110,6 +113,19 @@ fn bundle_round_trips_full_historical_authority_and_is_deterministic() {
         catalog.graph().topological_order(),
         graph.topological_order()
     );
+    let apply_preview = catalog
+        .preview_apply(&BTreeSet::new(), &MigrationApplyTarget::DefaultHead)
+        .expect("catalog authority builds its own forward preview");
+    assert!(!apply_preview.execution_authorized());
+    assert_eq!(apply_preview.migrations().len(), 2);
+    let applied = graph.topological_order().into_iter().cloned().collect();
+    let removals =
+        BTreeSet::from([MigrationId::new("example", "0002_contract").expect("fixture removal")]);
+    let rollback_preview = catalog
+        .preview_rollback(&applied, &removals)
+        .expect("catalog authority builds its own rollback preview");
+    assert!(!rollback_preview.execution_authorized());
+    assert_eq!(rollback_preview.rollbacks().len(), 1);
     assert_eq!(decoded.entries().len(), 2);
     let reconstructed = decoded
         .history_graph()
