@@ -209,6 +209,10 @@ impl TypeBridgeDatabase {
         &self.state.database
     }
 
+    pub(crate) fn orm_database_arc(&self) -> Arc<Database> {
+        Arc::clone(&self.state.database)
+    }
+
     pub(crate) fn answer_ceiling(&self) -> QueryExecutionResourceLimits {
         self.state.answer_ceiling.unwrap_or_default()
     }

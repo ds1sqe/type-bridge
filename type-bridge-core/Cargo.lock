@@ -3143,6 +3143,7 @@ dependencies = [
  "type-bridge-schema",
  "type-bridge-schema-codegen",
  "type-bridge-schema-migration",
+ "type-bridge-schema-migration-typedb",
 ]
 
 [[package]]

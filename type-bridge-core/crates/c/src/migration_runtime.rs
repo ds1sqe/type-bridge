@@ -18,6 +18,95 @@ use type_bridge_schema_migration::{
 };
 
 use crate::diagnostic::stable;
+use crate::runtime::TypeBridgeDatabase;
+
+/// Bound administration owner retaining the exact managed database and scope.
+#[derive(Clone)]
+pub(crate) struct DatabaseAdministrationState {
+    administrator: type_bridge_schema_migration_typedb::ManagedDatabasePairAdministrator,
+}
+
+impl DatabaseAdministrationState {
+    pub(crate) fn open(database: &TypeBridgeDatabase) -> Result<Arc<Self>, Diagnostic> {
+        let administrator = type_bridge_schema_migration_typedb::ManagedDatabasePairAdministrator::from_managed_database(
+            database.orm_database_arc(),
+            database.package_state()._authority.managed_scope().id().clone(),
+        )?;
+        Ok(Arc::new(Self { administrator }))
+    }
+
+    #[cfg(test)]
+    fn from_administrator(
+        administrator: type_bridge_schema_migration_typedb::ManagedDatabasePairAdministrator,
+    ) -> Arc<Self> {
+        Arc::new(Self { administrator })
+    }
+
+    pub(crate) async fn database_exists(&self) -> Result<bool, Diagnostic> {
+        self.administrator.database_exists().await
+    }
+
+    pub(crate) async fn create_database_outcome(
+        &self,
+    ) -> Result<type_bridge_schema_migration_typedb::ManagedDatabasePairCreateOutcome, Diagnostic>
+    {
+        self.administrator.create_database_outcome().await
+    }
+
+    pub(crate) async fn inspect(
+        &self,
+    ) -> Result<type_bridge_schema_migration_typedb::ManagedDatabasePairState, Diagnostic> {
+        self.administrator.inspect().await
+    }
+
+    pub(crate) async fn plan_delete(
+        self: &Arc<Self>,
+    ) -> Result<DatabaseDeletionPlanState, Diagnostic> {
+        self.administrator
+            .plan_delete()
+            .await
+            .map(|plan| DatabaseDeletionPlanState {
+                administration: Arc::clone(self),
+                plan: Some(plan),
+            })
+    }
+}
+
+/// C-owned, single-use pair-aware deletion plan retaining its administration owner.
+pub(crate) struct DatabaseDeletionPlanState {
+    administration: Arc<DatabaseAdministrationState>,
+    plan: Option<type_bridge_schema_migration_typedb::ManagedDatabasePairDeletionPlan>,
+}
+
+impl DatabaseDeletionPlanState {
+    pub(crate) fn inspected_state(
+        &self,
+    ) -> Option<type_bridge_schema_migration_typedb::ManagedDatabasePairState> {
+        self.plan.as_ref().map(|plan| plan.inspected_state())
+    }
+
+    pub(crate) async fn execute(
+        &mut self,
+    ) -> Result<type_bridge_schema_migration_typedb::ManagedDatabasePairDeleteOutcome, Diagnostic>
+    {
+        let plan = self.plan.take().ok_or_else(|| {
+            stable(
+                DiagnosticCategory::InvalidContract,
+                "c_database_deletion_plan_closed",
+                "The database deletion plan is already closed or consumed",
+            )
+        })?;
+        plan.execute().await
+    }
+
+    pub(crate) fn close(&mut self) {
+        self.plan = None;
+    }
+
+    pub(crate) fn retains_administration(&self, owner: &Arc<DatabaseAdministrationState>) -> bool {
+        Arc::ptr_eq(&self.administration, owner)
+    }
+}
 
 /// Immutable catalog state shared by C catalog and entry handles.
 #[derive(Debug)]
@@ -449,6 +538,9 @@ impl MigrationHistoryEntryState {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+    use std::sync::{Arc, Mutex};
+
     use type_bridge_contract::capability::CapabilitySet;
     use type_bridge_contract::codec::FormatVersion;
     use type_bridge_contract::id::{TypeId, TypeKind};
@@ -456,6 +548,9 @@ mod tests {
     use type_bridge_contract::schema::{
         DeclaredSchema, DocumentId, SchemaFact, SourceSpan, SourcedSchemaFact, TypeFact,
     };
+    use type_bridge_orm::error::OrmError;
+    use type_bridge_orm::session::backend::{BoxFuture, DriverBackend, TransactionOps, TxType};
+    use type_bridge_orm::{Database, DatabaseConnectionAuthority};
     use type_bridge_schema::decode_schema_authority;
     use type_bridge_schema::{ManagedDeltaContext, diff_managed, inverse_delta};
     use type_bridge_schema_migration::{
@@ -464,7 +559,92 @@ mod tests {
         migration_runtime_capability_vocabulary,
     };
 
-    use super::MigrationCatalogState;
+    use super::{DatabaseAdministrationState, MigrationCatalogState};
+
+    struct AdministrationBackend {
+        databases: Arc<Mutex<BTreeSet<String>>>,
+    }
+
+    impl DriverBackend for AdministrationBackend {
+        fn open_transaction(
+            &self,
+            _database: &str,
+            _tx_type: TxType,
+        ) -> BoxFuture<'_, Result<Box<dyn TransactionOps>, OrmError>> {
+            Box::pin(async { Err(OrmError::Connection("unexpected transaction".into())) })
+        }
+
+        fn is_open(&self) -> bool {
+            true
+        }
+
+        fn database_exists(&self, database: &str) -> BoxFuture<'_, Result<bool, OrmError>> {
+            let exists = self.databases.lock().unwrap().contains(database);
+            Box::pin(async move { Ok(exists) })
+        }
+
+        fn create_database(&self, database: &str) -> BoxFuture<'_, Result<(), OrmError>> {
+            self.databases.lock().unwrap().insert(database.to_owned());
+            Box::pin(async { Ok(()) })
+        }
+
+        fn delete_database(&self, database: &str) -> BoxFuture<'_, Result<(), OrmError>> {
+            self.databases.lock().unwrap().remove(database);
+            Box::pin(async { Ok(()) })
+        }
+
+        fn schema_text(&self, _database: &str) -> BoxFuture<'_, Result<String, OrmError>> {
+            Box::pin(async { Ok(String::new()) })
+        }
+    }
+
+    #[tokio::test]
+    async fn c_administration_owner_retains_pair_aware_single_use_plan() {
+        let databases = Arc::new(Mutex::new(BTreeSet::new()));
+        let authority = DatabaseConnectionAuthority::isolated();
+        let managed = Arc::new(Database::with_backend_authority(
+            Box::new(AdministrationBackend {
+                databases: Arc::clone(&databases),
+            }),
+            "app",
+            authority.clone(),
+        ));
+        let journal = Arc::new(Database::with_backend_authority(
+            Box::new(AdministrationBackend {
+                databases: Arc::clone(&databases),
+            }),
+            type_bridge_schema_migration_typedb::derived_journal_database_name("app"),
+            authority,
+        ));
+        let administrator =
+            type_bridge_schema_migration_typedb::ManagedDatabasePairAdministrator::new(
+                managed,
+                journal,
+                type_bridge_contract::managed_scope::ManagedScopeId::new("generated-scope")
+                    .unwrap(),
+            )
+            .unwrap();
+        let owner = DatabaseAdministrationState::from_administrator(administrator);
+
+        assert!(!owner.database_exists().await.unwrap());
+        assert_eq!(
+            owner.create_database_outcome().await.unwrap(),
+            type_bridge_schema_migration_typedb::ManagedDatabasePairCreateOutcome::Created
+        );
+        assert_eq!(
+            owner.inspect().await.unwrap(),
+            type_bridge_schema_migration_typedb::ManagedDatabasePairState::StandaloneManaged
+        );
+        let mut plan = owner.plan_delete().await.unwrap();
+        assert!(plan.retains_administration(&owner));
+        drop(owner);
+        assert_eq!(
+            plan.execute().await.unwrap(),
+            type_bridge_schema_migration_typedb::ManagedDatabasePairDeleteOutcome::DeletedStandaloneManaged
+        );
+        assert!(plan.execute().await.is_err());
+        assert!(databases.lock().unwrap().is_empty());
+    }
 
     fn declared(labels: &[&str]) -> DeclaredSchema {
         let facts = labels.iter().enumerate().map(|(index, label)| {
