@@ -1100,7 +1100,55 @@ pub unsafe extern "C" fn type_bridge_migration_plan_execute_with_options(
     out_outcome: *mut *mut TypeBridgeMigrationExecutionOutcome,
     out_diagnostics: *mut *mut TypeBridgeDiagnostics,
 ) -> TypeBridgeStatus {
-    if let Err(status) = unsafe { preflight_one_output(plan, out_outcome, out_diagnostics) } {
+    let outputs = match direct_output_preflight(&[
+        (
+            out_outcome.cast(),
+            size_of::<*mut TypeBridgeMigrationExecutionOutcome>(),
+        ),
+        (
+            out_diagnostics.cast(),
+            size_of::<*mut TypeBridgeDiagnostics>(),
+        ),
+    ]) {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    if !options.is_null() {
+        if let Err(status) = outputs.check_bytes(
+            options.cast(),
+            size_of::<TypeBridgeMigrationExecutionOptionsV1>(),
+        ) {
+            return status;
+        }
+        let cancellation = unsafe { options.read_unaligned().cancellation };
+        if !cancellation.is_null()
+            && let Err(status) = outputs.check_bytes(
+                cancellation.cast(),
+                size_of::<TypeBridgeMigrationCancellation>(),
+            )
+        {
+            return status;
+        }
+    }
+    for (input, length) in [
+        (
+            plan.cast::<std::ffi::c_void>(),
+            size_of::<TypeBridgeMigrationPlan>(),
+        ),
+        (
+            database.cast::<std::ffi::c_void>(),
+            size_of::<TypeBridgeDatabase>(),
+        ),
+        (holder.data.cast::<std::ffi::c_void>(), holder.length),
+    ] {
+        if let Err(status) = outputs.check_bytes(input, length) {
+            return status;
+        }
+    }
+    if out_outcome.is_null() || out_diagnostics.is_null() {
+        return TypeBridgeStatus::InvalidArgument;
+    }
+    if let Err(status) = unsafe { initialize_diagnostics(out_diagnostics) } {
         return status;
     }
     unsafe { out_outcome.write_unaligned(ptr::null_mut()) };
@@ -1137,9 +1185,10 @@ pub unsafe extern "C" fn type_bridge_migration_plan_execute_with_options(
 unsafe fn migration_execution_control(
     options: *const TypeBridgeMigrationExecutionOptionsV1,
 ) -> Result<type_bridge_schema_migration::MigrationExecutionControl, TypeBridgeStatus> {
-    let Some(options) = (unsafe { options.as_ref() }) else {
+    if options.is_null() {
         return Ok(type_bridge_schema_migration::MigrationExecutionControl::default());
-    };
+    }
+    let options = unsafe { options.read_unaligned() };
     if options.struct_size
         != u64::try_from(size_of::<TypeBridgeMigrationExecutionOptionsV1>())
             .expect("options structure size fits u64")
@@ -1963,5 +2012,39 @@ mod tests {
             unsafe { migration_execution_control(&invalid) }.unwrap_err(),
             TypeBridgeStatus::InvalidArgument
         );
+    }
+
+    #[test]
+    fn candidate_c_execution_rejects_options_output_alias_before_writing() {
+        let mut options = TypeBridgeMigrationExecutionOptionsV1 {
+            struct_size: size_of::<TypeBridgeMigrationExecutionOptionsV1>() as u64,
+            version: MIGRATION_EXECUTION_OPTIONS_V1,
+            flags: 0,
+            timeout_milliseconds: 0,
+            max_transaction_groups: 1,
+            max_backfill_observations: 1,
+            cancellation: ptr::null(),
+        };
+        let mut diagnostics = ptr::null_mut();
+        let aliased_output = (&mut options.timeout_milliseconds as *mut u64)
+            .cast::<*mut TypeBridgeMigrationExecutionOutcome>();
+        assert_eq!(
+            unsafe {
+                type_bridge_migration_plan_execute_with_options(
+                    ptr::null(),
+                    ptr::null(),
+                    TypeBridgeByteView {
+                        data: ptr::null(),
+                        length: 0,
+                    },
+                    &options,
+                    aliased_output,
+                    &mut diagnostics,
+                )
+            },
+            TypeBridgeStatus::InvalidArgument
+        );
+        assert!(diagnostics.is_null());
+        assert_eq!(options.timeout_milliseconds, 0);
     }
 }
