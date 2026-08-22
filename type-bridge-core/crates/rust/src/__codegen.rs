@@ -434,7 +434,9 @@ pub struct HydrationCapability {
 }
 
 impl HydrationCapability {
-    pub(crate) const fn new() -> Self {
+    /// Construct the generated-code-only materialization capability.
+    #[doc(hidden)]
+    pub const fn new() -> Self {
         Self { _private: () }
     }
 }
@@ -1058,6 +1060,8 @@ pub struct HydratedPlayer {
     type_id_json: String,
     iid: Option<String>,
     keys: Vec<(String, EncodedScalar)>,
+    fields: Option<Vec<(String, Vec<EncodedScalar>)>>,
+    exact_reference: bool,
     origin: ReferenceOrigin,
 }
 
@@ -1075,6 +1079,8 @@ impl HydratedPlayer {
                 .into_iter()
                 .map(|(identity, value)| (identity.to_owned(), value))
                 .collect(),
+            fields: None,
+            exact_reference: false,
             origin: ReferenceOrigin::default(),
         }
     }
@@ -1090,7 +1096,39 @@ impl HydratedPlayer {
             type_id_json,
             iid,
             keys,
+            fields: None,
+            exact_reference: false,
             origin: ReferenceOrigin::default(),
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn from_reference_owned(
+        type_id_json: String,
+        iid: Option<String>,
+        keys: Vec<(String, EncodedScalar)>,
+    ) -> Self {
+        Self {
+            type_id_json,
+            iid,
+            keys,
+            fields: None,
+            exact_reference: true,
+            origin: ReferenceOrigin::default(),
+        }
+    }
+
+    /// Convert one complete nonrecursive hydrated entity row into exact role-player evidence.
+    #[must_use]
+    pub fn from_complete_row(row: HydratedRow) -> Self {
+        debug_assert!(row.roles.is_empty());
+        Self {
+            type_id_json: row.type_id_json,
+            iid: Some(row.iid),
+            keys: Vec::new(),
+            fields: Some(row.fields),
+            exact_reference: false,
+            origin: row.origin,
         }
     }
 
@@ -1105,6 +1143,8 @@ impl HydratedPlayer {
             type_id_json,
             iid,
             keys,
+            fields: None,
+            exact_reference: true,
             origin,
         }
     }
@@ -1122,6 +1162,29 @@ impl HydratedPlayer {
     #[must_use]
     pub fn keys(&self) -> &[(String, EncodedScalar)] {
         &self.keys
+    }
+
+    /// Return complete nonrecursive field evidence, or `None` for reference-form players.
+    #[must_use]
+    pub fn fields(&self) -> Option<&[(String, Vec<EncodedScalar>)]> {
+        self.fields.as_deref()
+    }
+
+    #[must_use]
+    pub(crate) const fn is_exact_reference(&self) -> bool {
+        self.exact_reference
+    }
+
+    /// Reconstruct the complete nonrecursive hydrated row carried by this player.
+    #[must_use]
+    pub fn complete_row(&self) -> Option<HydratedRow> {
+        Some(HydratedRow {
+            type_id_json: self.type_id_json.clone(),
+            iid: self.iid.clone()?,
+            fields: self.fields.clone()?,
+            roles: Vec::new(),
+            origin: self.origin.clone(),
+        })
     }
 
     #[doc(hidden)]
@@ -1369,7 +1432,7 @@ pub trait IntoHydratedSnapshot: Model + Sized {
 /// Convert generated encoded reference evidence into a detached hydrated role player.
 #[doc(hidden)]
 pub fn hydrated_player_from_encoded_reference(value: EncodedReference) -> HydratedPlayer {
-    HydratedPlayer::from_owned(
+    HydratedPlayer::from_reference_owned(
         value.type_id_json().to_owned(),
         value.iid().map(str::to_owned),
         value

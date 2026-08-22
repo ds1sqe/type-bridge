@@ -638,20 +638,35 @@ fn project_hydrated_row(
             vec![format!("roles[{role_index}]")],
             "hydrated role identity is not canonical",
         )?;
-        let role_segment = installed
+        let model = installed
             .projection()
             .models()
             .get(&type_id)
-            .and_then(|model| model.query_tokens().roles().get(&role_id))
-            .map_or_else(
-                || role_id.label().as_str().to_owned(),
-                |token| token.target_name().as_str().to_owned(),
-            );
+            .ok_or_else(|| {
+                model_error(
+                    ModelValidationPhase::Hydration,
+                    "unknown_model_identity",
+                    vec![format!("roles[{role_index}]")],
+                    "hydrated relation model is not installed",
+                )
+            })?;
+        let read_role = model.complete_read().roles().get(&role_id).ok_or_else(|| {
+            model_error(
+                ModelValidationPhase::Hydration,
+                "unexpected_role_evidence",
+                vec![format!("roles[{role_index}]")],
+                "hydrated role identity is not one projected role of the selected model",
+            )
+        })?;
+        let role_segment = model.query_tokens().roles().get(&role_id).map_or_else(
+            || role_id.label().as_str().to_owned(),
+            |token| token.target_name().as_str().to_owned(),
+        );
         let projected_players = players
             .iter()
             .enumerate()
             .map(|(player_index, player)| {
-                project_hydrated_player(player, &role_segment, player_index, installed)
+                project_hydrated_player(player, &role_segment, player_index, read_role, installed)
             })
             .collect::<Result<Vec<_>>>()?;
         roles.push((role_id, projected_players));
@@ -672,6 +687,7 @@ fn project_hydrated_player(
     player: &HydratedPlayer,
     role_segment: &str,
     player_index: usize,
+    read_role: &type_bridge_contract::projection::ReadRoleProjection,
     installed: &InstalledRuntimeProjection,
 ) -> Result<ProjectedRolePlayer> {
     let base = format!("{role_segment}[{player_index}]");
@@ -709,6 +725,64 @@ fn project_hydrated_player(
         let value = project_hydrated_attribute_value(installed, attribute_type, scalar)?;
         keys.push((field_id, value));
     }
+    let mut complete_fields = Vec::new();
+    if let Some(fields) = player.fields() {
+        complete_fields.reserve(fields.len());
+        for (field_index, (identity, values)) in fields.iter().enumerate() {
+            let field_path = vec![base.clone(), format!("fields[{field_index}]")];
+            let field_id = resolve_owns_identity(
+                installed,
+                &type_id,
+                identity,
+                ModelValidationPhase::Hydration,
+                "unexpected_field_evidence",
+                field_path.clone(),
+                "complete role-player field is not projected for its concrete model",
+            )?;
+            let attribute_type =
+                TypeId::new(TypeKind::Attribute, field_id.attribute().label().as_str()).map_err(
+                    |source| {
+                        Error::model_validation(
+                            ModelValidationPhase::Hydration,
+                            "invalid_field_identity",
+                            field_path.clone(),
+                            "complete role-player field has an invalid attribute type",
+                            Some(Box::new(source)),
+                        )
+                    },
+                )?;
+            let values = values
+                .iter()
+                .map(|value| {
+                    project_hydrated_attribute_value(installed, attribute_type.clone(), value)
+                })
+                .collect::<Result<Vec<_>>>()?;
+            complete_fields.push((field_id, values));
+        }
+        let model = installed
+            .projection()
+            .models()
+            .get(&type_id)
+            .ok_or_else(|| {
+                model_error(
+                    ModelValidationPhase::Hydration,
+                    "unknown_model_identity",
+                    vec![base.clone()],
+                    "complete role-player model is not installed",
+                )
+            })?;
+        for key in model.reference_read().key_fields() {
+            if keys.iter().any(|(identity, _)| identity == key) {
+                continue;
+            }
+            if let Some([value]) = complete_fields
+                .iter()
+                .find_map(|(identity, values)| (identity == key).then_some(values.as_slice()))
+            {
+                keys.push((key.clone(), value.clone()));
+            }
+        }
+    }
     let reference = ProjectedReference::try_new_for_hydration_with_origin_carrier(
         installed,
         type_id,
@@ -717,8 +791,19 @@ fn project_hydrated_player(
         player.origin().projected(),
     )
     .map_err(|error| Error::from_sdk_execution(error, ModelValidationPhase::Hydration))?;
-    ProjectedRolePlayer::try_new(installed, reference)
-        .map_err(|error| Error::from_sdk_execution(error, ModelValidationPhase::Hydration))
+    let result = if player.fields().is_some() {
+        ProjectedRolePlayer::try_new_complete_for_hydration(
+            installed,
+            read_role,
+            reference,
+            complete_fields,
+        )
+    } else if player.is_exact_reference() {
+        ProjectedRolePlayer::try_new_reference_for_hydration(installed, read_role, reference)
+    } else {
+        ProjectedRolePlayer::try_new(installed, reference)
+    };
+    result.map_err(|error| Error::from_sdk_execution(error, ModelValidationPhase::Hydration))
 }
 
 fn project_hydrated_attribute_value(
@@ -809,12 +894,63 @@ pub(crate) fn projected_to_hydrated_row(
                     encoded_scalar(value.value())?,
                 ));
             }
-            hydrated_players.push(HydratedPlayer::from_owned_with_origin(
-                player_type,
-                Some(player.iid().to_owned()),
-                keys,
-                ReferenceOrigin::from_projected(player.reference().origin_carrier()),
-            ));
+            let origin = ReferenceOrigin::from_projected(player.reference().origin_carrier());
+            if player.exact_form()
+                == Some(type_bridge_contract::projection::ProjectedModelForm::Complete)
+            {
+                let player_model = installed
+                    .projection()
+                    .models()
+                    .get(player.type_id())
+                    .ok_or_else(|| {
+                        model_error(
+                            ModelValidationPhase::Hydration,
+                            "unknown_model_identity",
+                            vec!["roles".into()],
+                            "complete role-player model is not installed",
+                        )
+                    })?;
+                let mut player_fields = Vec::new();
+                for field in player_model.complete_read().fields() {
+                    if !player.field_is_present(field.token()) {
+                        continue;
+                    }
+                    let identity = encode_owns_identity(
+                        declaring_owns_identity(
+                            installed,
+                            player.type_id(),
+                            field.token(),
+                            vec!["roles".into(), "fields".into()],
+                        )?,
+                        vec!["roles".into(), "fields".into()],
+                    )?;
+                    let values = player
+                        .fields()
+                        .get(field.token())
+                        .map(Vec::as_slice)
+                        .unwrap_or(&[])
+                        .iter()
+                        .map(|value| encoded_scalar(value.value()))
+                        .collect::<Result<Vec<_>>>()?;
+                    player_fields.push((identity, values));
+                }
+                hydrated_players.push(HydratedPlayer::from_complete_row(
+                    HydratedRow::from_owned_with_origin(
+                        player_type,
+                        player.iid().to_owned(),
+                        player_fields,
+                        vec![],
+                        origin,
+                    ),
+                ));
+            } else {
+                hydrated_players.push(HydratedPlayer::from_owned_with_origin(
+                    player_type,
+                    Some(player.iid().to_owned()),
+                    keys,
+                    origin,
+                ));
+            }
         }
         roles.push((identity, hydrated_players));
     }

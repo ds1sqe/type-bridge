@@ -22,6 +22,7 @@ const POSITIVE: &str = include_str!("rust_acceptance/positive.rs");
 const NEGATIVE: &str = include_str!("rust_acceptance/negative.rs");
 const PHASE2_PARITY: &str = include_str!("rust_acceptance/phase2_parity.rs");
 const PHASE2_FOREIGN_NEGATIVE: &str = include_str!("rust_acceptance/phase2_foreign_negative.rs");
+const WORKFORCE_V5_CODEC: &str = include_str!("rust_acceptance/workforce_v5_codec.rs");
 static STAGE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 const WORKFORCE_V3_PROOF_FRAGMENT_ENV: &str = "TYPE_BRIDGE_WORKFORCE_V3_PROOF_FRAGMENT";
@@ -3704,6 +3705,36 @@ fn workforce_v3_generated_package_integrity() {
         json!({"observation": evidence, "observation_ref": "projection_evidence_integrity", "outcome": "passed", "proof_kind": "diagnostic", "test_id": "rust_acceptance::workforce_v3_generated_package_integrity"}),
         json!({"observation": fencing, "observation_ref": "token_package_fencing", "outcome": "passed", "proof_kind": "diagnostic", "test_id": "rust_acceptance::workforce_v3_generated_package_integrity"}),
     ]);
+}
+
+#[test]
+fn generated_rust_workforce_v5_canonical_codec() {
+    let stage = Stage::new();
+    let generated = stage.path().join("generated");
+    let consumer = stage.path().join("workforce-v5-codec");
+    let source = fs::read_to_string(
+        repository_root().join("tests/contracts/sdk_conformance/workforce-v3/schema-v3.yaml"),
+    )
+    .expect("Workforce V3 schema reads");
+    write_package(&emit_from_source(&source), &generated);
+    write_consumer(&consumer, "rust-workforce-v5-codec", WORKFORCE_V5_CODEC);
+
+    let output = cargo(
+        &[
+            "run",
+            "--offline",
+            "--quiet",
+            "--manifest-path",
+            consumer.join("Cargo.toml").to_str().unwrap(),
+        ],
+        &stage.path().join("workforce-v5-codec-target"),
+    );
+    assert!(
+        output.status.success(),
+        "generated Rust Workforce V5 codec consumer failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
 }
 
 fn run_phase2_consumer(

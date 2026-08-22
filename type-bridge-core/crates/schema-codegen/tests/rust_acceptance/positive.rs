@@ -418,11 +418,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(decoded_key_ref.identifier().unwrap().value(), "person-1");
     assert!(SCHEMA.decode_reference::<EventRef>(&key_ref_bytes).is_err());
 
-    let person_player_evidence = HydratedPlayer::new(
-        Person::TYPE_ID_JSON,
-        Some("0x1".to_owned()),
-        vec![(PersonType::identifier.owns_id_json(), id_scalar)],
-    );
+    let person_player_evidence = HydratedPlayer::from_complete_row(person_row);
 
     let event_row = HydratedRow::new(
         Event::TYPE_ID_JSON,

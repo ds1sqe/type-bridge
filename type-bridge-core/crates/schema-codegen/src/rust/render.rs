@@ -882,6 +882,10 @@ fn render_read(projection: &RuntimeProjection, ordered: bool) -> Result<String, 
             } else {
                 "    })\n  }\n}\n\n"
             });
+            let _ = writeln!(
+                output,
+                "impl {name} {{\n  pub(crate) fn __tb_from_player(__tb_player: &HydratedPlayer, __tb_path: &ValidationPath) -> Result<Self, ValidationError> {{\n    let __tb_row = __tb_player.complete_row().ok_or_else(|| ValidationError::new(__tb_path.path(), \"complete_role_player_evidence_missing\"))?;\n    Self::materialize(&__tb_row, &HydrationCapability::new()).map_err(|__tb_error| prefix_validation_path(__tb_error, __tb_path))\n  }}\n}}\n"
+            );
 
             let mut snapshot_fields = String::new();
             let mut snapshot_roles = String::new();
@@ -897,7 +901,11 @@ fn render_read(projection: &RuntimeProjection, ordered: bool) -> Result<String, 
                     &mut snapshot_fields
                 };
                 let encode = if member.is_role {
-                    "hydrated_player_from_encoded_reference(__tb_value.clone().into_encoded_reference()?)"
+                    if member.role_complete {
+                        "HydratedPlayer::from_complete_row(__tb_value.clone().into_hydrated_snapshot()?)"
+                    } else {
+                        "hydrated_player_from_encoded_reference(__tb_value.clone().into_encoded_reference()?)"
+                    }
                 } else {
                     "__tb_value.into_encoded_scalar()"
                 };
@@ -1916,6 +1924,7 @@ struct Member {
     max: Option<u64>,
     token: Option<String>,
     is_role: bool,
+    role_complete: bool,
 }
 
 impl Member {
@@ -1936,6 +1945,7 @@ impl Member {
             max: cardinality.max(),
             token,
             is_role,
+            role_complete: false,
         }
     }
 
@@ -1949,6 +1959,7 @@ impl Member {
             max: Some(1),
             token: None,
             is_role: false,
+            role_complete: false,
         }
     }
 
@@ -2377,18 +2388,27 @@ fn read_members(
             .roles()
             .get(role_id)
             .ok_or_else(|| facet_error("read role has no query token"))?;
-        let role_type = if let Some(union_name) = token.player_union_target_name() {
+        let role_complete = role.players().len() == 1
+            && role
+                .players()
+                .iter()
+                .all(|player| player.form() == ProjectedModelForm::Complete);
+        let role_type = if role_complete {
+            model_use_union(projection, role.players())?
+        } else if let Some(union_name) = token.player_union_target_name() {
             union_name.as_str().to_owned()
         } else {
             model_use_union(projection, role.players())?
         };
-        members.push(Member::from_multiplicity(
+        let mut member = Member::from_multiplicity(
             token.target_name().as_str(),
             role_type,
             role.multiplicity(),
             Some(canonical_text!(role_id)),
             true,
-        ));
+        );
+        member.role_complete = role_complete;
+        members.push(member);
     }
     Ok(members)
 }
