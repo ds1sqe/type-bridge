@@ -224,7 +224,7 @@ fn shared_library_exports(_library: &Path) -> BTreeSet<String> {
 #[test]
 fn base_header_is_byte_frozen_except_for_the_abi_minor_value() {
     let header = include_str!("../include/typebridge/type_bridge.h");
-    let current = "#define TYPE_BRIDGE_C_ABI_MINOR 5u";
+    let current = "#define TYPE_BRIDGE_C_ABI_MINOR 6u";
     let predecessor = "#define TYPE_BRIDGE_C_ABI_MINOR 3u";
     assert_eq!(header.matches(current).count(), 1);
     let normalized = header.replacen(current, predecessor, 1);
@@ -791,8 +791,8 @@ fn activated_cmake_package_preserves_the_exact_abi_1_4_predecessor_headers() {
         .expect("installed CMake config is UTF-8");
     let pkg_config = fs::read_to_string(install.join("lib/pkgconfig/type-bridge.pc"))
         .expect("installed pkg-config metadata is UTF-8");
-    assert!(config.contains("set(TypeBridge_C_ABI_VERSION \"1.5.0\")"));
-    assert!(pkg_config.contains("\nVersion: 1.5.0\n"));
+    assert!(config.contains("set(TypeBridge_C_ABI_VERSION \"1.6.0\")"));
+    assert!(pkg_config.contains("\nVersion: 1.6.0\n"));
 
     let consumer_source = stage.path().join("consumer");
     let consumer_build = stage.path().join("consumer-build");
@@ -801,8 +801,8 @@ fn activated_cmake_package_preserves_the_exact_abi_1_4_predecessor_headers() {
         consumer_source.join("CMakeLists.txt"),
         r#"cmake_minimum_required(VERSION 3.20)
 project(type_bridge_abi_1_4_consumer LANGUAGES NONE)
-find_package(TypeBridge 1.5.0 EXACT CONFIG REQUIRED)
-if(NOT TypeBridge_C_ABI_VERSION STREQUAL "1.5.0")
+find_package(TypeBridge 1.6.0 EXACT CONFIG REQUIRED)
+if(NOT TypeBridge_C_ABI_VERSION STREQUAL "1.6.0")
   message(FATAL_ERROR "unexpected TypeBridge C ABI version")
 endif()
 if(NOT TARGET TypeBridge::C)
@@ -821,6 +821,6 @@ endif()
             install.join("lib/cmake/TypeBridge").display()
         ))
         .output()
-        .expect("ABI 1.5 package consumer configure launches");
-    assert_command_succeeded(&output, "exact ABI 1.5 package consumer configure");
+        .expect("ABI 1.6 package consumer configure launches");
+    assert_command_succeeded(&output, "exact ABI 1.6 package consumer configure");
 }

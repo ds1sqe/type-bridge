@@ -30,7 +30,7 @@ const C_BASE_RUNTIME_HEADER_MACRO_IDENTIFIER_COUNT: usize = 205;
 const C_ABI_1_4_RUNTIME_HEADER_EXTERNAL_IDENTIFIER_COUNT: usize = 225;
 const C_ABI_1_4_RUNTIME_HEADER_MACRO_IDENTIFIER_COUNT: usize = 215;
 const C_UNORDERED_DESCRIPTOR_ABI_MINOR: u32 = 3;
-const C_ORDERED_DESCRIPTOR_ABI_MINOR: u32 = 5;
+const C_ORDERED_DESCRIPTOR_ABI_MINOR: u32 = 6;
 // GCC, Clang, MinGW GCC, and clang-cl require at most 715 predefined or
 // stddef/stdint platform macros beyond the repository-owned runtime header.
 // Keep a power-of-two reserve above that measured maximum so compiler updates
@@ -122,7 +122,7 @@ fn render_header(
     let guard = format!("{}_TYPE_BRIDGE_MODELS_H", prefix.to_ascii_uppercase());
     let macro_prefix = prefix.to_ascii_uppercase();
     let runtime_header = if ordered {
-        "typebridge/type_bridge_abi_1_5.h"
+        "typebridge/type_bridge_abi_1_6.h"
     } else {
         "typebridge/type_bridge.h"
     };

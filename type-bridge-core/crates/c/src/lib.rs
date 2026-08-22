@@ -4,6 +4,7 @@
 
 mod abi;
 mod allocation;
+mod canonical_archive;
 mod crud_v2;
 mod diagnostic;
 mod entity_crud;
@@ -27,6 +28,9 @@ pub use abi::{
     TYPE_BRIDGE_CHUNKED_BYTE_VIEW_VERSION, TypeBridgeByteView, TypeBridgeChunkedByteViewV1,
     TypeBridgeDiagnostics, TypeBridgeSchemaPackage, TypeBridgeSchemaPackageChunkedDescriptorV1,
     TypeBridgeSchemaPackageDescriptorV1, TypeBridgeStatus,
+};
+pub use canonical_archive::{
+    TypeBridgeCanonicalArchive, TypeBridgeCanonicalArchiveBuilder, TypeBridgeCanonicalBytes,
 };
 pub use execution_diagnostic::{
     TypeBridgeExecutionDiagnosticCategory, TypeBridgeExecutionDiagnosticDetailKind,

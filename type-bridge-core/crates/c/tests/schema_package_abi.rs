@@ -1105,7 +1105,7 @@ fn native_import_library(native_library: &Path) -> PathBuf {
 fn rust_abi_layout() -> Vec<usize> {
     let mut layout = vec![
         1,
-        5,
+        6,
         TypeBridgeStatus::Ok as usize,
         TypeBridgeStatus::InvalidArgument as usize,
         TypeBridgeStatus::SchemaPackageRejected as usize,
@@ -6382,7 +6382,7 @@ fn abi_metadata_and_null_handle_paths_are_stable_and_initialize_views() {
     // SAFETY: these ABI metadata functions take no caller-owned inputs.
     assert_eq!(unsafe { type_bridge_c_abi_major() }, 1);
     // SAFETY: these ABI metadata functions take no caller-owned inputs.
-    assert_eq!(unsafe { type_bridge_c_abi_minor() }, 5);
+    assert_eq!(unsafe { type_bridge_c_abi_minor() }, 6);
 
     let mut version = TypeBridgeByteView {
         data: ptr::null(),

@@ -66,6 +66,9 @@ pub(crate) enum AllocationSite {
     MigrationVerificationFindingHandle,
     MigrationDiagnosticsHandle,
     MigrationCancellationHandle,
+    CanonicalBytesHandle,
+    CanonicalArchiveBuilderHandle,
+    CanonicalArchiveHandle,
 }
 
 #[derive(Clone, Copy, Debug)]
