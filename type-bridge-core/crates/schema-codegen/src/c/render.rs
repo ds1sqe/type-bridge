@@ -2686,6 +2686,12 @@ fn canonical_codec_symbols(projection: &RuntimeProjection) -> Result<BTreeSet<St
             structure.target_name().as_str(),
             "canonical_close",
         )?);
+        for field in structure.fields() {
+            symbols.insert(generated_symbol(
+                structure.target_name().as_str(),
+                &format!("{}_member", field.target_name().as_str()),
+            )?);
+        }
     }
     Ok(symbols)
 }
@@ -2719,6 +2725,17 @@ fn render_canonical_codec_declarations(
             "type_bridge_status_t TYPE_BRIDGE_CALL {close}({} **value);",
             structure.target_name().as_str(),
         );
+        for field in structure.fields() {
+            let member = generated_symbol(
+                structure.target_name().as_str(),
+                &format!("{}_member", field.target_name().as_str()),
+            )?;
+            let _ = writeln!(
+                output,
+                "type_bridge_status_t TYPE_BRIDGE_CALL {member}(\n  const {} *value,\n  type_bridge_projected_struct_member_t **out_member,\n  type_bridge_execution_diagnostics_t **out_diagnostics);",
+                structure.target_name().as_str(),
+            );
+        }
     }
     Ok(())
 }
@@ -2834,6 +2851,21 @@ fn render_canonical_codec_definitions(
                return status;\n\
              }}\n\n",
         );
+        for (index, field) in structure.fields().iter().enumerate() {
+            let member =
+                generated_symbol(target, &format!("{}_member", field.target_name().as_str()))?;
+            let _ = write!(
+                output,
+                "type_bridge_status_t TYPE_BRIDGE_CALL {member}(\n\
+                   const {target} *value,\n\
+                   type_bridge_projected_struct_member_t **out_member,\n\
+                   type_bridge_execution_diagnostics_t **out_diagnostics) {{\n\
+                   return type_bridge_projected_struct_member_at_v1(\n\
+                       (const type_bridge_projected_struct_t *)value, &{token}, {index}u,\n\
+                       out_member, out_diagnostics);\n\
+                 }}\n\n",
+            );
+        }
     }
     Ok(())
 }

@@ -1,7 +1,7 @@
 use std::fs;
 use std::process::Command;
 
-const ABI_1_6_EXPORTS: [&str; 21] = [
+const ABI_1_6_EXPORTS: [&str; 28] = [
     "type_bridge_canonical_record_encode_attribute_v1",
     "type_bridge_canonical_record_encode_create_v1",
     "type_bridge_canonical_record_encode_reference_v1",
@@ -13,6 +13,13 @@ const ABI_1_6_EXPORTS: [&str; 21] = [
     "type_bridge_canonical_record_decode_snapshot_v1",
     "type_bridge_canonical_record_decode_struct_v1",
     "type_bridge_projected_struct_close",
+    "type_bridge_projected_struct_member_at_v1",
+    "type_bridge_projected_struct_member_kind",
+    "type_bridge_projected_struct_member_text",
+    "type_bridge_projected_struct_member_long",
+    "type_bridge_projected_struct_member_double_bits",
+    "type_bridge_projected_struct_member_boolean",
+    "type_bridge_projected_struct_member_close",
     "type_bridge_canonical_archive_builder_open_v1",
     "type_bridge_canonical_archive_builder_append_record_v1",
     "type_bridge_canonical_archive_builder_finish_v1",

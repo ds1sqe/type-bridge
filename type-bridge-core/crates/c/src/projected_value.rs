@@ -66,13 +66,13 @@ pub struct TypeBridgeProjectedValue {
 // query scalar require only the already-reserved outer opaque handle.
 const INLINE_CANONICAL_TEXT_CAPACITY: usize = 320;
 
-struct InlineCanonicalText {
+pub(crate) struct InlineCanonicalText {
     bytes: [u8; INLINE_CANONICAL_TEXT_CAPACITY],
     len: usize,
 }
 
 impl InlineCanonicalText {
-    fn new(value: &CanonicalValue) -> Option<Self> {
+    pub(crate) fn new(value: &CanonicalValue) -> Option<Self> {
         let mut text = Self {
             bytes: [0; INLINE_CANONICAL_TEXT_CAPACITY],
             len: 0,
@@ -92,7 +92,7 @@ impl InlineCanonicalText {
         Some(text)
     }
 
-    fn as_bytes(&self) -> &[u8] {
+    pub(crate) fn as_bytes(&self) -> &[u8] {
         &self.bytes[..self.len]
     }
 

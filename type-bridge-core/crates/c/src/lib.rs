@@ -31,7 +31,7 @@ pub use abi::{
 };
 pub use canonical_archive::{
     TypeBridgeCanonicalArchive, TypeBridgeCanonicalArchiveBuilder, TypeBridgeCanonicalBytes,
-    TypeBridgeProjectedStruct,
+    TypeBridgeProjectedStruct, TypeBridgeProjectedStructMember,
 };
 pub use execution_diagnostic::{
     TypeBridgeExecutionDiagnosticCategory, TypeBridgeExecutionDiagnosticDetailKind,

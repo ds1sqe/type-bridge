@@ -16,21 +16,25 @@ use type_bridge_c::{
     TypeBridgeGeneratedOpaqueInputV1, TypeBridgeGeneratedOutputRangeV1, TypeBridgeProjectedCreate,
     TypeBridgeProjectedCreateDescriptorV1, TypeBridgeProjectedFieldInputV1,
     TypeBridgeProjectedReference, TypeBridgeProjectedReferenceDescriptorV1,
-    TypeBridgeProjectedRoleInputV1, TypeBridgeProjectedThing, TypeBridgeProjectedThingDescriptorV1,
-    TypeBridgeProjectedTokenV1, TypeBridgeProjectedValue, TypeBridgeProjectedValueKind,
-    TypeBridgeSchemaPackage, TypeBridgeSchemaPackageDescriptorV1, TypeBridgeStatus,
+    TypeBridgeProjectedRoleInputV1, TypeBridgeProjectedStruct, TypeBridgeProjectedStructMember,
+    TypeBridgeProjectedThing, TypeBridgeProjectedThingDescriptorV1, TypeBridgeProjectedTokenV1,
+    TypeBridgeProjectedValue, TypeBridgeProjectedValueKind, TypeBridgeSchemaPackage,
+    TypeBridgeSchemaPackageDescriptorV1, TypeBridgeStatus,
 };
 use type_bridge_contract::capability::{CapabilityId, CapabilitySet};
 use type_bridge_contract::codec::to_canonical_json;
 use type_bridge_contract::fingerprint::SemanticProfileId;
-use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind};
+use type_bridge_contract::id::{AttributeId, RoleId, StructId, TypeId, TypeKind};
 use type_bridge_contract::limits::MAX_CANONICAL_STRING_BYTES;
 use type_bridge_contract::managed_scope::ManagedScopeId;
 use type_bridge_contract::projection::{
     BindingTarget, CSymbolPrefix, ProjectedTokenIdentity, ProjectionConfig, RuntimeProjection,
     TYPE_BRIDGE_PROJECTED_TOKEN_VERSION,
 };
-use type_bridge_contract::schema::{DocumentId, OwnsFactId, encode_declared_schema};
+use type_bridge_contract::schema::{
+    DeclaredIdentityFingerprint, DocumentId, OwnsFactId, encode_declared_schema,
+};
+use type_bridge_contract::value::CanonicalValue;
 use type_bridge_schema::{
     BUILTIN_SCHEMA_CAPABILITY_IDS, ManagedDeltaContext, SchemaDocumentSet, build_schema_authority,
     encode_schema_authority, normalize_documents, project, resolve,
@@ -81,6 +85,11 @@ plays:
     membership: [member]
     optional-membership: [member]
     team: [participant]
+structs:
+  score-card:
+    fields:
+      - { name: score, type: integer }
+      - { name: note, type: string, optional: true }
 "#;
 
 #[allow(improper_ctypes)]
@@ -308,6 +317,30 @@ unsafe extern "C" {
         out_value: *mut *mut TypeBridgeProjectedCreate,
         out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
     ) -> TypeBridgeStatus;
+    fn type_bridge_canonical_record_decode_struct_v1(
+        package: *const TypeBridgeSchemaPackage,
+        bytes: TypeBridgeByteView,
+        expected_struct: *const TypeBridgeProjectedTokenV1,
+        out_value: *mut *mut TypeBridgeProjectedStruct,
+        out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+    ) -> TypeBridgeStatus;
+    fn type_bridge_projected_struct_member_at_v1(
+        value: *const TypeBridgeProjectedStruct,
+        expected_struct: *const TypeBridgeProjectedTokenV1,
+        index: usize,
+        out_member: *mut *mut TypeBridgeProjectedStructMember,
+        out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+    ) -> TypeBridgeStatus;
+    fn type_bridge_projected_struct_member_long(
+        value: *const TypeBridgeProjectedStructMember,
+        out_value: *mut i64,
+    ) -> TypeBridgeStatus;
+    fn type_bridge_projected_struct_member_close(
+        value: *mut *mut TypeBridgeProjectedStructMember,
+    ) -> TypeBridgeStatus;
+    fn type_bridge_projected_struct_close(
+        value: *mut *mut TypeBridgeProjectedStruct,
+    ) -> TypeBridgeStatus;
     fn type_bridge_canonical_bytes_view(
         bytes: *const TypeBridgeCanonicalBytes,
         out_view: *mut TypeBridgeByteView,
@@ -397,6 +430,7 @@ unsafe extern "C" {
 struct Fixture {
     package: *mut TypeBridgeSchemaPackage,
     projection: RuntimeProjection,
+    declared_identity: DeclaredIdentityFingerprint,
 }
 
 impl Drop for Fixture {
@@ -526,6 +560,10 @@ fn open_fixture(source: &str, prefix: &str, scope: &str) -> Fixture {
     Fixture {
         package,
         projection,
+        declared_identity: authority
+            .resolved_schema()
+            .declared_identity_fingerprint()
+            .clone(),
     }
 }
 
@@ -1072,6 +1110,86 @@ fn all_nine_domains_person_create_reference_and_membership_are_package_branded()
         "c_canonical_record_type_mismatch",
     );
     diagnostics = ptr::null_mut();
+
+    let installed =
+        type_bridge_orm::InstalledRuntimeProjection::try_new(fixture.projection.clone())
+            .expect("fixture projection installs")
+            .with_declared_schema_identity(fixture.declared_identity.clone());
+    let score_card_id = TypeId::new(TypeKind::Struct, "score-card").unwrap();
+    let score_card = type_bridge_orm::ProjectedStructValue::try_new(
+        &installed,
+        score_card_id,
+        vec![Some(CanonicalValue::Long(42)), None],
+    )
+    .expect("fixture struct projects");
+    let score_card_bytes = type_bridge_orm::record_from_struct(&installed, &score_card)
+        .expect("fixture struct records")
+        .encode()
+        .expect("fixture struct record encodes");
+    let score_card_token = token(
+        &fixture.projection,
+        ProjectedTokenIdentity::Struct(StructId::new("score-card").unwrap()),
+    );
+    let mut decoded_struct = ptr::null_mut();
+    // SAFETY: package, canonical record, exact struct token, and outputs remain live.
+    assert_eq!(
+        unsafe {
+            type_bridge_canonical_record_decode_struct_v1(
+                fixture.package,
+                bytes(&score_card_bytes),
+                &score_card_token,
+                &mut decoded_struct,
+                &mut diagnostics,
+            )
+        },
+        TypeBridgeStatus::Ok,
+    );
+    let mut score_member = ptr::null_mut();
+    // SAFETY: decoded struct, exact generated token, and outputs remain live.
+    assert_eq!(
+        unsafe {
+            type_bridge_projected_struct_member_at_v1(
+                decoded_struct,
+                &score_card_token,
+                0,
+                &mut score_member,
+                &mut diagnostics,
+            )
+        },
+        TypeBridgeStatus::Ok,
+    );
+    let mut score = 0;
+    // SAFETY: member handle and scalar output remain live.
+    assert_eq!(
+        unsafe { type_bridge_projected_struct_member_long(score_member, &mut score) },
+        TypeBridgeStatus::Ok,
+    );
+    assert_eq!(score, 42);
+    // The absent optional member is represented by a successful null owner.
+    let mut absent_member = ptr::null_mut();
+    // SAFETY: decoded struct, exact generated token, and outputs remain live.
+    assert_eq!(
+        unsafe {
+            type_bridge_projected_struct_member_at_v1(
+                decoded_struct,
+                &score_card_token,
+                1,
+                &mut absent_member,
+                &mut diagnostics,
+            )
+        },
+        TypeBridgeStatus::Ok,
+    );
+    assert!(absent_member.is_null());
+    // SAFETY: each slot owns one exact independent handle.
+    assert_eq!(
+        unsafe { type_bridge_projected_struct_member_close(&mut score_member) },
+        TypeBridgeStatus::Ok,
+    );
+    assert_eq!(
+        unsafe { type_bridge_projected_struct_close(&mut decoded_struct) },
+        TypeBridgeStatus::Ok,
+    );
     // SAFETY: each slot owns one exact ABI 1.6 handle.
     assert_eq!(
         unsafe { type_bridge_canonical_bytes_close(&mut recovered) },

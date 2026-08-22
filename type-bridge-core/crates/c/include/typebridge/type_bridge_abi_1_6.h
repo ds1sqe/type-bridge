@@ -11,6 +11,8 @@ typedef struct type_bridge_canonical_archive_builder
     type_bridge_canonical_archive_builder_t;
 typedef struct type_bridge_canonical_archive type_bridge_canonical_archive_t;
 typedef struct type_bridge_projected_struct type_bridge_projected_struct_t;
+typedef struct type_bridge_projected_struct_member
+    type_bridge_projected_struct_member_t;
 
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_canonical_record_encode_attribute_v1(
@@ -75,6 +77,36 @@ type_bridge_canonical_record_decode_struct_v1(
     type_bridge_execution_diagnostics_t **out_diagnostics);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_projected_struct_close(type_bridge_projected_struct_t **value);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_projected_struct_member_at_v1(
+    const type_bridge_projected_struct_t *value,
+    const type_bridge_projected_token_v1_t *expected_struct,
+    size_t index,
+    type_bridge_projected_struct_member_t **out_member,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_projected_struct_member_kind(
+    const type_bridge_projected_struct_member_t *value,
+    type_bridge_projected_value_kind_t *out_kind);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_projected_struct_member_text(
+    const type_bridge_projected_struct_member_t *value,
+    type_bridge_byte_view_t *out_text);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_projected_struct_member_long(
+    const type_bridge_projected_struct_member_t *value,
+    int64_t *out_value);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_projected_struct_member_double_bits(
+    const type_bridge_projected_struct_member_t *value,
+    uint64_t *out_bits);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_projected_struct_member_boolean(
+    const type_bridge_projected_struct_member_t *value,
+    uint8_t *out_boolean);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_projected_struct_member_close(
+    type_bridge_projected_struct_member_t **value);
 
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_canonical_archive_builder_open_v1(

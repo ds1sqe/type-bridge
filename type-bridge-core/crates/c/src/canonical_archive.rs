@@ -9,10 +9,11 @@ use type_bridge_contract::projected_record::{ProjectedArchive, ProjectedRecord};
 use type_bridge_contract::sdk_diagnostic::{
     SdkDiagnosticCode, SdkDiagnosticMessage, SdkExecutionDiagnostic,
 };
+use type_bridge_contract::value::CanonicalValue;
 
 use crate::abi::{
-    SchemaPackageState, TypeBridgeByteView, TypeBridgeSchemaPackage, TypeBridgeStatus, close_box,
-    guarded,
+    SchemaPackageState, TypeBridgeByteView, TypeBridgeSchemaPackage, TypeBridgeStatus,
+    borrowed_view, close_box, guarded, initialize_view,
 };
 use crate::allocation::{AllocationSite, allocation_exhausted, try_box};
 use crate::execution_diagnostic::{
@@ -24,7 +25,9 @@ use crate::projected_model::{
 use crate::projected_token::{
     TypeBridgeProjectedTokenV1, resolve_attribute_token, resolve_model_token, resolve_struct_token,
 };
-use crate::projected_value::TypeBridgeProjectedValue;
+use crate::projected_value::{
+    InlineCanonicalText, TypeBridgeProjectedValue, TypeBridgeProjectedValueKind,
+};
 
 /// Opaque owned immutable canonical byte buffer.
 pub struct TypeBridgeCanonicalBytes {
@@ -47,6 +50,53 @@ pub struct TypeBridgeCanonicalArchive {
 pub struct TypeBridgeProjectedStruct {
     package: Arc<SchemaPackageState>,
     value: type_bridge_orm::ProjectedStructValue,
+}
+
+/// Opaque independently owned canonical member from a projected struct.
+pub struct TypeBridgeProjectedStructMember {
+    value: CanonicalValue,
+    canonical_text: Option<InlineCanonicalText>,
+}
+
+impl TypeBridgeProjectedStructMember {
+    fn new(value: CanonicalValue) -> Self {
+        let canonical_text = InlineCanonicalText::new(&value);
+        Self {
+            value,
+            canonical_text,
+        }
+    }
+
+    fn kind(&self) -> TypeBridgeProjectedValueKind {
+        match &self.value {
+            CanonicalValue::String(_) => TypeBridgeProjectedValueKind::String,
+            CanonicalValue::Long(_) => TypeBridgeProjectedValueKind::Long,
+            CanonicalValue::Double(_) => TypeBridgeProjectedValueKind::Double,
+            CanonicalValue::Boolean(_) => TypeBridgeProjectedValueKind::Boolean,
+            CanonicalValue::Date(_) => TypeBridgeProjectedValueKind::Date,
+            CanonicalValue::DateTime(_) => TypeBridgeProjectedValueKind::DateTime,
+            CanonicalValue::DateTimeTz(_) => TypeBridgeProjectedValueKind::DateTimeTz,
+            CanonicalValue::Decimal(_) => TypeBridgeProjectedValueKind::Decimal,
+            CanonicalValue::Duration(_) => TypeBridgeProjectedValueKind::Duration,
+        }
+    }
+
+    fn text(&self) -> Option<&[u8]> {
+        match &self.value {
+            CanonicalValue::String(value) => Some(value.as_str().as_bytes()),
+            CanonicalValue::Decimal(value) => Some(value.as_str().as_bytes()),
+            CanonicalValue::Date(_)
+            | CanonicalValue::DateTime(_)
+            | CanonicalValue::DateTimeTz(_)
+            | CanonicalValue::Duration(_) => self
+                .canonical_text
+                .as_ref()
+                .map(InlineCanonicalText::as_bytes),
+            CanonicalValue::Long(_) | CanonicalValue::Double(_) | CanonicalValue::Boolean(_) => {
+                None
+            }
+        }
+    }
 }
 
 fn code(value: &'static str) -> SdkDiagnosticCode {
@@ -89,6 +139,13 @@ fn wrong_record_type() -> SdkExecutionDiagnostic {
     SdkExecutionDiagnostic::invalid_input(
         code("c_canonical_record_type_mismatch"),
         message("Canonical record type differs from the requested generated token"),
+    )
+}
+
+fn invalid_struct_member() -> SdkExecutionDiagnostic {
+    SdkExecutionDiagnostic::invalid_input(
+        code("c_canonical_struct_member_invalid"),
+        message("Projected struct member index is outside the exact generated declaration"),
     )
 }
 
@@ -524,6 +581,186 @@ pub unsafe extern "C" fn type_bridge_canonical_record_decode_struct_v1(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn type_bridge_projected_struct_close(
     value: *mut *mut TypeBridgeProjectedStruct,
+) -> TypeBridgeStatus {
+    // SAFETY: forwarded pointer-to-pointer ownership contract is documented by the public header.
+    unsafe { close_box(value) }
+}
+
+/// Return one independently owned present member from an exact generated struct.
+///
+/// An absent optional member returns `OK` with a null member output.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_projected_struct_member_at_v1(
+    value: *const TypeBridgeProjectedStruct,
+    expected_struct: *const TypeBridgeProjectedTokenV1,
+    index: usize,
+    out_member: *mut *mut TypeBridgeProjectedStructMember,
+    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+) -> TypeBridgeStatus {
+    // SAFETY: shared initializer validates and clears distinct writable outputs.
+    if let Err(status) = unsafe { initialize_execution_outputs(out_member, out_diagnostics) } {
+        return status;
+    }
+    guarded(|| {
+        if value.is_null() {
+            return TypeBridgeStatus::InvalidArgument;
+        }
+        // SAFETY: caller retains one immutable struct handle for this call.
+        let value = unsafe { &*value };
+        // SAFETY: generated token storage remains readable for this call.
+        let expected = match unsafe { resolve_struct_token(&value.package, expected_struct) } {
+            Ok(value) => value,
+            Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
+        };
+        if value.value.type_id().label() != expected.label() {
+            return return_execution_error(wrong_record_type(), out_diagnostics);
+        }
+        let Some(member) = value.value.members().get(index) else {
+            return return_execution_error(invalid_struct_member(), out_diagnostics);
+        };
+        let Some(member) = member.clone() else {
+            return TypeBridgeStatus::Ok;
+        };
+        publish_decoded(
+            AllocationSite::ProjectedStructMemberHandle,
+            TypeBridgeProjectedStructMember::new(member),
+            out_member,
+            out_diagnostics,
+        )
+    })
+}
+
+/// Return the stable scalar kind of one independently owned struct member.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_projected_struct_member_kind(
+    value: *const TypeBridgeProjectedStructMember,
+    out_kind: *mut TypeBridgeProjectedValueKind,
+) -> TypeBridgeStatus {
+    guarded(|| {
+        if out_kind.is_null() {
+            return TypeBridgeStatus::InvalidArgument;
+        }
+        // SAFETY: caller supplied one writable scalar output.
+        unsafe { out_kind.write_unaligned(TypeBridgeProjectedValueKind::String) };
+        if value.is_null() {
+            return TypeBridgeStatus::InvalidArgument;
+        }
+        // SAFETY: caller retains one immutable member handle for this call.
+        unsafe { out_kind.write_unaligned((&*value).kind()) };
+        TypeBridgeStatus::Ok
+    })
+}
+
+/// Borrow canonical lexical text from a textual or temporal struct member.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_projected_struct_member_text(
+    value: *const TypeBridgeProjectedStructMember,
+    out_text: *mut TypeBridgeByteView,
+) -> TypeBridgeStatus {
+    guarded(|| {
+        // SAFETY: initialize the complete view before inspecting the input.
+        if let Err(status) = unsafe { initialize_view(out_text) } {
+            return status;
+        }
+        if value.is_null() {
+            return TypeBridgeStatus::InvalidArgument;
+        }
+        // SAFETY: caller retains one immutable member handle for this call.
+        let Some(text) = (unsafe { &*value }).text() else {
+            return TypeBridgeStatus::InvalidArgument;
+        };
+        match borrowed_view(text, out_text) {
+            Ok(()) => TypeBridgeStatus::Ok,
+            Err(status) => status,
+        }
+    })
+}
+
+/// Return one exact signed 64-bit struct member.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_projected_struct_member_long(
+    value: *const TypeBridgeProjectedStructMember,
+    out_value: *mut i64,
+) -> TypeBridgeStatus {
+    guarded(|| {
+        if out_value.is_null() {
+            return TypeBridgeStatus::InvalidArgument;
+        }
+        // SAFETY: caller supplied one writable scalar output.
+        unsafe { out_value.write_unaligned(0) };
+        if value.is_null() {
+            return TypeBridgeStatus::InvalidArgument;
+        }
+        // SAFETY: caller retains one immutable member handle for this call.
+        match unsafe { &(*value).value } {
+            CanonicalValue::Long(value) => {
+                // SAFETY: output was validated and initialized above.
+                unsafe { out_value.write_unaligned(*value) };
+                TypeBridgeStatus::Ok
+            }
+            _ => TypeBridgeStatus::InvalidArgument,
+        }
+    })
+}
+
+/// Return exact finite IEEE-754 binary64 bits from a struct member.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_projected_struct_member_double_bits(
+    value: *const TypeBridgeProjectedStructMember,
+    out_bits: *mut u64,
+) -> TypeBridgeStatus {
+    guarded(|| {
+        if out_bits.is_null() {
+            return TypeBridgeStatus::InvalidArgument;
+        }
+        // SAFETY: caller supplied one writable scalar output.
+        unsafe { out_bits.write_unaligned(0) };
+        if value.is_null() {
+            return TypeBridgeStatus::InvalidArgument;
+        }
+        // SAFETY: caller retains one immutable member handle for this call.
+        match unsafe { &(*value).value } {
+            CanonicalValue::Double(value) => {
+                // SAFETY: output was validated and initialized above.
+                unsafe { out_bits.write_unaligned(value.bits()) };
+                TypeBridgeStatus::Ok
+            }
+            _ => TypeBridgeStatus::InvalidArgument,
+        }
+    })
+}
+
+/// Return an exact zero-or-one Boolean struct member.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_projected_struct_member_boolean(
+    value: *const TypeBridgeProjectedStructMember,
+    out_boolean: *mut u8,
+) -> TypeBridgeStatus {
+    guarded(|| {
+        if out_boolean.is_null() {
+            return TypeBridgeStatus::InvalidArgument;
+        }
+        // SAFETY: caller supplied one writable scalar output.
+        unsafe { out_boolean.write_unaligned(0) };
+        if value.is_null() {
+            return TypeBridgeStatus::InvalidArgument;
+        }
+        // SAFETY: caller retains one immutable member handle for this call.
+        match unsafe { &(*value).value } {
+            CanonicalValue::Boolean(value) => {
+                // SAFETY: output was validated and initialized above.
+                unsafe { out_boolean.write_unaligned(u8::from(*value)) };
+                TypeBridgeStatus::Ok
+            }
+            _ => TypeBridgeStatus::InvalidArgument,
+        }
+    })
+}
+
+/// Close one independently owned projected struct member and clear its slot.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_projected_struct_member_close(
+    value: *mut *mut TypeBridgeProjectedStructMember,
 ) -> TypeBridgeStatus {
     // SAFETY: forwarded pointer-to-pointer ownership contract is documented by the public header.
     unsafe { close_box(value) }

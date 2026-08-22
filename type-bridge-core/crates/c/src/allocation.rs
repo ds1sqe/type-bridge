@@ -15,6 +15,7 @@ pub(crate) enum AllocationSite {
     ProjectedCreateHandle,
     ProjectedThingHandle,
     ProjectedStructHandle,
+    ProjectedStructMemberHandle,
     ProjectedCreateBuilderHandle,
     ProjectedCreateBuilderChunk,
     ProjectedBatchBuilderHandle,
