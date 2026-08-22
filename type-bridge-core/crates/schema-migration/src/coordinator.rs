@@ -243,6 +243,13 @@ where
     S: MigrationLeaseStore + MigrationExecutionJournal,
     P: MigrationExecutionProvider,
 {
+    if !plan.execution_authorized() {
+        return Err(failure(
+            DiagnosticCategory::InvalidContract,
+            "migration_apply_preview_not_executable",
+            "a provider-free forward preview carries no execution authority",
+        ));
+    }
     plan.required_capabilities()
         .ensure_supported_by(provider.available_capabilities())?;
     let source = plan.source_state().ok_or_else(|| {

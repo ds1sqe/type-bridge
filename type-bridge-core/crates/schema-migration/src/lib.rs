@@ -21,7 +21,8 @@ mod verify;
 pub use apply_plan::{
     MigrationApplyPlanError, MigrationApplyTarget, VerifiedMigrationApplyManifest,
     VerifiedMigrationApplyPlan, VerifiedMigrationApplyStep, VerifiedMigrationTransactionGroup,
-    build_verified_migration_apply_plan, partition_transaction_groups,
+    build_verified_migration_apply_plan, build_verified_migration_apply_preview,
+    partition_transaction_groups,
 };
 pub use catalog::MigrationCatalog;
 pub use coordinator::{

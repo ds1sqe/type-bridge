@@ -40,9 +40,9 @@ use type_bridge_schema_migration::{
     PlanRecord, SafetyPolicyDecision, SchemaLoweringBinding, SchemaMigrationDraft, StatementUnit,
     VerifiedMigrationApplyStep, VerifiedMigrationRollbackOperation, build_legacy_frontier_bridge,
     build_verified_manifest, build_verified_migration_apply_plan,
-    build_verified_migration_rollback_plan, execute_verified_migration_apply_plan,
-    execute_verified_migration_rollback_plan, schema_lowering_profile_binding,
-    typedb_3_12_1_profile,
+    build_verified_migration_apply_preview, build_verified_migration_rollback_plan,
+    execute_verified_migration_apply_plan, execute_verified_migration_rollback_plan,
+    schema_lowering_profile_binding, typedb_3_12_1_profile,
 };
 
 fn type_fact(label: &str) -> SchemaFact {
@@ -1125,6 +1125,36 @@ fn destructive_manifest_requires_an_identity_bound_approval() {
     let lowering =
         SchemaLoweringBinding::current(context.available_capabilities().clone()).expect("lowering");
     let policy = MigrationSafetyPolicy::default_policy();
+
+    let preview = build_verified_migration_apply_preview(
+        &graph,
+        &BTreeSet::new(),
+        &MigrationApplyTarget::DefaultHead,
+        &context,
+        &lowering,
+    )
+    .expect("provider-free preview inspects gated work without an approval");
+    assert!(!preview.execution_authorized());
+    assert_eq!(preview.migrations().len(), 1);
+    let store = CoordinatorStore::default();
+    let provider = CoordinatorProvider {
+        available: context.available_capabilities().clone(),
+        calls: Mutex::new(Vec::new()),
+        observed: Mutex::new(preview.source_state().unwrap().clone()),
+    };
+    let rejected = block_on(execute_verified_migration_apply_plan(
+        &store,
+        &provider,
+        &LeaseHolderId::new("preview-must-not-execute").unwrap(),
+        &preview,
+    ))
+    .expect_err("preview carries no provider execution authority");
+    assert_eq!(
+        rejected.code().as_str(),
+        "migration_apply_preview_not_executable"
+    );
+    assert!(provider.calls.lock().unwrap().is_empty());
+
     let build = |approvals: &[MigrationApplyApproval]| {
         build_verified_migration_apply_plan(
             &graph,
@@ -1170,6 +1200,7 @@ fn destructive_manifest_requires_an_identity_bound_approval() {
     let approval = MigrationApplyApproval::for_manifest(&migration).expect("bound approval");
     assert!(approval.binds(&migration).expect("binding check"));
     let plan = build(std::slice::from_ref(&approval)).expect("approved plan");
+    assert!(plan.execution_authorized());
     let rendered_undefine = plan.migrations()[0].steps().iter().any(|step| match step {
         VerifiedMigrationApplyStep::SchemaDelta { lowering, .. } => lowering
             .units()
