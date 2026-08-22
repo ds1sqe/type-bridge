@@ -49,6 +49,7 @@ pub async fn execute_catalog_apply_plan_controlled(
 ) -> Result<MigrationExecutionOutcome, Diagnostic> {
     control.check()?;
     require_authorized_apply_plan(plan)?;
+    require_apply_group_limit(plan, control)?;
     let binding = catalog_binding(managed_database, catalog)?;
     let verified =
         VerifiedMigrationCatalog::new(catalog.graph().manifests().map(|(_, value)| value))?;
@@ -88,6 +89,7 @@ pub async fn execute_catalog_rollback_plan_controlled(
 ) -> Result<MigrationRollbackOutcome, Diagnostic> {
     control.check()?;
     require_authorized_rollback_plan(plan)?;
+    require_rollback_group_limit(plan, control)?;
     let binding = catalog_binding(managed_database, catalog)?;
     let verified =
         VerifiedMigrationCatalog::new(catalog.graph().manifests().map(|(_, value)| value))?;
@@ -165,6 +167,49 @@ fn applied_basis(
         .into_iter()
         .map(|entry| entry.record().migration_id().clone())
         .collect()
+}
+
+fn require_apply_group_limit(
+    plan: &VerifiedMigrationApplyPlan,
+    control: &MigrationExecutionControl,
+) -> Result<(), Diagnostic> {
+    let groups = plan
+        .migrations()
+        .iter()
+        .try_fold(0usize, |count, migration| {
+            count.checked_add(migration.transaction_groups().len())
+        })
+        .ok_or_else(execution_group_limit)?;
+    if groups > control.resources().transaction_groups() {
+        return Err(execution_group_limit());
+    }
+    Ok(())
+}
+
+fn require_rollback_group_limit(
+    plan: &VerifiedMigrationRollbackPlan,
+    control: &MigrationExecutionControl,
+) -> Result<(), Diagnostic> {
+    let groups = plan
+        .rollbacks()
+        .iter()
+        .try_fold(0usize, |count, migration| {
+            count.checked_add(migration.operations().len())
+        })
+        .ok_or_else(execution_group_limit)?;
+    if groups > control.resources().transaction_groups() {
+        return Err(execution_group_limit());
+    }
+    Ok(())
+}
+
+fn execution_group_limit() -> Diagnostic {
+    Diagnostic::new(
+        DiagnosticCategory::ResourceLimit,
+        DiagnosticCode::new("migration_execution_group_limit")
+            .expect("static catalog executor diagnostic code"),
+        "migration plan exceeds the transaction-group execution ceiling",
+    )
 }
 
 fn failure(code: &str, message: &str) -> Diagnostic {
