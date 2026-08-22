@@ -10,6 +10,7 @@
 #[cfg(feature = "contract-test-adapter")]
 mod contract_test_adapter;
 mod match_runtime;
+mod migration_catalog_runtime;
 mod query_v2_builder_runtime;
 mod query_v2_model_remote_runtime;
 pub mod query_v2_runtime;
@@ -26,6 +27,9 @@ pub use match_runtime::{
     NodeMatchOrderHandle, NodeMatchPredicateHandle, NodeMatchQueryHandle, NodeMatchRoleHandle,
     NodeMatchSelectionHandle, NodeMatchSessionHandle, NodeMatchShapeHandle, NodeQueryCancellation,
     NodeQueryExecutionResources, NodeValidatedMatchResultHandle, NodeValidatedThingHandle,
+};
+pub use migration_catalog_runtime::{
+    NodeMigrationCatalog, NodeMigrationHistoryEntry, NodeMigrationIdentity, open_migration_catalog,
 };
 pub use query_v2_model_remote_runtime::{
     NodePendingRemoteModelQuery, NodeRemoteModelQueryContext, query_v2_prepare_remote_model_count,

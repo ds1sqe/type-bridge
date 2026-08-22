@@ -22,6 +22,7 @@ type-bridge-orm = { path = "../orm", version = "2.1.0" }
 type-bridge-schema = { path = "../schema", version = "2.1.0" }
 type-bridge-schema-codegen = { path = "../schema-codegen", version = "2.1.0" }
 type-bridge-schema-compat = { path = "../schema-compat", version = "2.1.0" }
+type-bridge-schema-migration = { path = "../schema-migration", version = "2.1.0" }
 type-bridge-toml-transpiler = { path = "../toml-transpiler", version = "2.1.0" }
 # Keep ordinary Rust test binaries linked to libpython. Maturin enables
 # `pyo3/extension-module` only for extension builds (see ../../pyproject.toml).
