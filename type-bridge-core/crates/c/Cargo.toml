@@ -20,10 +20,11 @@ type-bridge-core-lib = { path = "../core", version = "2.1.0" }
 type-bridge-orm = { path = "../orm", version = "2.1.0", default-features = false, features = ["band9"] }
 type-bridge-schema = { path = "../schema", version = "2.1.0" }
 type-bridge-schema-codegen = { path = "../schema-codegen", version = "2.1.0" }
+type-bridge-schema-migration = { path = "../schema-migration", version = "2.1.0" }
+serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 
 [dev-dependencies]
-serde_json = "1"
 sha2 = "0.10"
 
 [lints]
