@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -118,11 +119,17 @@ def main() -> int:
         missing = [path.name for path in paths if not path.is_file()]
         if missing:
             raise RunnerError(f"validated report publication is incomplete: {missing}")
-        comparison = run(
-            [sys.executable, str(COMPARATOR), *(str(path) for path in paths)],
-            capture=True,
+        comparison = json.loads(
+            run(
+                [sys.executable, str(COMPARATOR), *(str(path) for path in paths)],
+                capture=True,
+            )
         )
-        print(json.dumps(json.loads(comparison), indent=2, sort_keys=True))
+        comparison["report_sha256"] = {
+            binding: hashlib.sha256(path.read_bytes()).hexdigest()
+            for binding, path in zip(("python", "node", "rust", "c"), paths, strict=True)
+        }
+        print(json.dumps(comparison, indent=2, sort_keys=True))
         return 0
     except (KeyboardInterrupt, RunnerError) as error:
         if interrupted:
