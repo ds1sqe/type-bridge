@@ -1050,6 +1050,7 @@ class PyRuntimeProjection:
         semantic_fingerprint_json: str,
         projection_fingerprint_json: str,
         models: Sequence[tuple[type[object], type[object] | None]],
+        schema_authority: bytes | None = ...,
     ) -> None: ...
     def connect_direct(
         self,
@@ -1085,6 +1086,9 @@ class PyRuntimeProjection:
         field_name: str,
         value: object,
     ) -> None: ...
+    def validate_create(self, model: type[object], instance: object) -> None: ...
+    def encode_create(self, model: type[object], instance: object) -> bytes: ...
+    def decode_create(self, model: type[object], data: bytes) -> object: ...
     def query_builder_match_entity(
         self,
         model: type[object],

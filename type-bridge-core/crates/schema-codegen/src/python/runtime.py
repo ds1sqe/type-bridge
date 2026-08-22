@@ -211,6 +211,13 @@ class ModelBase:
     def runtime_values(self) -> dict[str, object]:
         return self._values
 
+    def encode_create(self) -> bytes:
+        return self.__runtime_projection__.encode_create(type(self), self)
+
+    @classmethod
+    def decode_create(cls, data: bytes) -> Self:
+        return cls.__runtime_projection__.decode_create(cls, data)
+
     def initialize_runtime_values(
         self,
         values: Mapping[str, object],
@@ -781,11 +788,11 @@ class ReferenceBase:
     __projection__: Mapping[str, object]
     __type_id__: str
     __model_form__: str
-    _iid: str
+    _iid: str | None
     _values: dict[str, object]
 
     @property
-    def iid(self) -> str:
+    def iid(self) -> str | None:
         return self._iid
 
     def runtime_values(self) -> dict[str, object]:
@@ -793,9 +800,11 @@ class ReferenceBase:
 
     def initialize_runtime_reference(
         self,
-        iid: str,
+        iid: str | None,
         values: Mapping[str, object],
     ) -> None:
+        if iid is not None and not iid:
+            raise TypeError("projected IID must be null or a non-empty string")
         self._iid = iid
         self._values = dict(values)
 

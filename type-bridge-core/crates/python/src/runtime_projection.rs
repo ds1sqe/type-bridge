@@ -22,6 +22,7 @@ use type_bridge_contract::projection::{
     ProjectedMultiplicity, ProjectedTokenIdentity, ProjectionConfig, RuntimeProjection,
 };
 use type_bridge_contract::projection_wire::decode_runtime_projection_verified;
+use type_bridge_contract::schema::DeclaredIdentityFingerprint;
 use type_bridge_contract::sdk_diagnostic::{
     SdkDiagnosticCode, SdkDiagnosticDetailValue, SdkDiagnosticMessage, SdkDiagnosticName,
     SdkDiagnosticPathSegment, SdkExecutionDiagnostic, SdkProjectionEvidenceSlotPresence,
@@ -52,10 +53,11 @@ use type_bridge_orm::{
     AnswerCancellation, HydratedAttribute, HydratedRolePlayer, HydratedThing,
     ProjectedAttributeValue, ProjectedBatch, ProjectedBatchExecutor,
     ProjectedBatchInvocationControl, ProjectedBatchOperation, ProjectedBatchResult,
-    ProjectedBatchRow, ProjectedCreate, ProjectedCreateBudget, ProjectedCrudExecutor,
-    ProjectedManagerComparison, ProjectedManagerFilter, ProjectedManagerFilterExecutor,
-    ProjectedReference, ProjectedReferenceOrigin, ProjectedRolePlayer, ProjectedThing,
-    QueryExecutionResourceLimits, ThingKind, resolve_generated_manager_lookup,
+    ProjectedBatchRow, ProjectedCodecValue, ProjectedCreate, ProjectedCreateBudget,
+    ProjectedCrudExecutor, ProjectedManagerComparison, ProjectedManagerFilter,
+    ProjectedManagerFilterExecutor, ProjectedReference, ProjectedReferenceOrigin,
+    ProjectedRolePlayer, ProjectedThing, QueryExecutionResourceLimits, ThingKind,
+    resolve_generated_manager_lookup,
 };
 use type_bridge_orm::{InstalledRuntimeProjection, ProviderRuntimeOwner};
 use type_bridge_schema::{decode_schema_authority, schema_authority_capability_vocabulary};
@@ -1232,6 +1234,45 @@ impl PyRuntimeProjection {
             ])));
         }
         project_create(py, self.package.as_ref(), &id, &instance).map(|_| ())
+    }
+
+    /// Encode one exact generated create payload as canonical record bytes.
+    fn encode_create<'py>(
+        &self,
+        py: Python<'py>,
+        model: Py<PyType>,
+        instance: Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyBytes>> {
+        let id = self.package.model_id_for_class(py, &model)?;
+        let projected = project_create(py, self.package.as_ref(), &id, &instance)?;
+        let record = type_bridge_orm::record_from_create(&self.package.projection, &projected)
+            .map_err(|error| py_value_error(error.to_string()))?;
+        let bytes = record.encode().map_err(py_diagnostic)?;
+        Ok(PyBytes::new(py, &bytes))
+    }
+
+    /// Decode canonical create bytes through exact installed package authority.
+    fn decode_create(
+        &self,
+        py: Python<'_>,
+        model: Py<PyType>,
+        bytes: &Bound<'_, PyBytes>,
+    ) -> PyResult<PyObject> {
+        let expected = self.package.model_id_for_class(py, &model)?;
+        let record =
+            type_bridge_contract::projected_record::ProjectedRecord::decode(bytes.as_bytes())
+                .map_err(py_diagnostic)?;
+        let value = type_bridge_orm::materialize_record(&self.package.projection, &record)
+            .map_err(|error| py_value_error(error.to_string()))?;
+        let ProjectedCodecValue::Create(value) = value else {
+            return Err(py_value_error("canonical record is not a create payload"));
+        };
+        if value.type_id() != &expected {
+            return Err(py_value_error(
+                "canonical create has the wrong exact generated type",
+            ));
+        }
+        hydrate_projected_create(py, self.package.as_ref(), &value)
     }
 
     /// Compile a retained raw-query entity match from one exact generated class.
@@ -4101,15 +4142,15 @@ fn install_projection(
     models: Vec<(Py<PyType>, Option<Py<PyType>>)>,
     schema_authority: Option<&[u8]>,
 ) -> PyResult<Arc<InstalledPackage>> {
-    let (runtime, managed_scope_id) = match schema_authority {
+    let (runtime, managed_scope_id, declared_schema_identity) = match schema_authority {
         Some(schema_authority) => {
-            let (runtime, scope) = install_authority_backed_projection(
+            let (runtime, scope, declared) = install_authority_backed_projection(
                 projection_json,
                 semantic_fingerprint_json,
                 projection_fingerprint_json,
                 schema_authority,
             )?;
-            (runtime, Some(scope))
+            (runtime, Some(scope), Some(declared))
         }
         None => {
             let runtime = decode_runtime_projection_verified(
@@ -4127,7 +4168,7 @@ fn install_projection(
                 return Err(projection_evidence_mismatch());
             }
             verify_legacy_python_projection_evidence(&runtime)?;
-            (runtime, None)
+            (runtime, None, None)
         }
     };
     let mut expected = BTreeMap::new();
@@ -4233,7 +4274,11 @@ fn install_projection(
             "projection model registration coverage is incomplete",
         ));
     }
-    let installed = Arc::new(InstalledRuntimeProjection::try_new(runtime).map_err(py_orm_error)?);
+    let mut installed = InstalledRuntimeProjection::try_new(runtime).map_err(py_orm_error)?;
+    if let Some(declared) = declared_schema_identity {
+        installed = installed.with_declared_schema_identity(declared);
+    }
+    let installed = Arc::new(installed);
     let named_zone_marker = ordered_projection
         .then(|| named_zone_marker_class(py))
         .transpose()?;
@@ -4757,7 +4802,11 @@ fn install_authority_backed_projection(
     semantic_fingerprint_json: &str,
     projection_fingerprint_json: &str,
     schema_authority: &[u8],
-) -> PyResult<(RuntimeProjection, ManagedScopeId)> {
+) -> PyResult<(
+    RuntimeProjection,
+    ManagedScopeId,
+    DeclaredIdentityFingerprint,
+)> {
     let rejection = || projection_evidence_rejection(semantic_fingerprint_json);
     let runtime = decode_runtime_projection_verified(
         projection_json.as_bytes(),
@@ -4773,7 +4822,11 @@ fn install_authority_backed_projection(
             .map_err(|_| rejection())?;
     verify_projection_evidence(&authority, &runtime).map_err(|_| rejection())?;
     let managed_scope_id = authority.managed_scope().id().clone();
-    Ok((runtime, managed_scope_id))
+    let declared_schema_identity = authority
+        .resolved_schema()
+        .declared_identity_fingerprint()
+        .clone();
+    Ok((runtime, managed_scope_id, declared_schema_identity))
 }
 
 fn projection_evidence_mismatch() -> PyErr {
@@ -4910,6 +4963,104 @@ fn project_create(
     instance: &Bound<'_, PyAny>,
 ) -> PyResult<ProjectedCreate> {
     project_create_at(py, package, id, instance, &[])
+}
+
+fn hydrate_projected_create(
+    py: Python<'_>,
+    package: &InstalledPackage,
+    projected: &ProjectedCreate,
+) -> PyResult<PyObject> {
+    projected
+        .validate_for(&package.projection)
+        .map_err(py_sdk_diagnostic)?;
+    let id = projected.type_id();
+    let model = package
+        .projection
+        .projection()
+        .models()
+        .get(id)
+        .ok_or_else(|| py_runtime_error("projected create model is absent"))?;
+    let descriptors = match package.projection.descriptor(id).map_err(py_orm_error)? {
+        TypeDescriptor::Entity(descriptor) => &descriptor.owned_attributes,
+        TypeDescriptor::Relation(descriptor) => &descriptor.owned_attributes,
+    };
+    let values = PyDict::new(py);
+    for field in model.create().fields() {
+        if !projected.field_is_present(field.token()) {
+            continue;
+        }
+        let token = model
+            .query_tokens()
+            .fields()
+            .get(field.token())
+            .ok_or_else(|| py_runtime_error("projected create field has no query token"))?;
+        let descriptor = descriptors
+            .iter()
+            .find(|descriptor| descriptor.field_name == token.target_name().as_str())
+            .ok_or_else(|| py_runtime_error("projected create field has no descriptor"))?;
+        let projected_values = projected
+            .fields()
+            .get(field.token())
+            .map_or_else(|| &[][..], Vec::as_slice);
+        let mut hydrated = Vec::with_capacity(projected_values.len());
+        for value in projected_values {
+            hydrated.push(hydrate_attribute(
+                py,
+                package,
+                descriptor,
+                &value.to_attribute_value(),
+            )?);
+        }
+        set_projected_hydrated_values(
+            py,
+            &values,
+            token.target_name().as_str(),
+            hydrated,
+            field.multiplicity(),
+        )?;
+    }
+    for (role_id, role) in model.create().roles() {
+        if !projected.role_is_present(role_id) {
+            continue;
+        }
+        let token = model
+            .query_tokens()
+            .roles()
+            .get(role_id)
+            .ok_or_else(|| py_runtime_error("projected create role has no query token"))?;
+        let references = projected
+            .roles()
+            .get(role_id)
+            .map_or_else(|| &[][..], Vec::as_slice);
+        let mut hydrated = Vec::with_capacity(references.len());
+        for reference in references {
+            let reference_values = hydrate_projected_fields(
+                py,
+                package,
+                reference.type_id(),
+                HydratedProjectedFields::Reference(reference.keys()),
+                false,
+                None,
+            )?;
+            hydrated.push(allocate_projected_detached_reference(
+                py,
+                package,
+                reference.type_id(),
+                &reference_values,
+                reference.iid(),
+            )?);
+        }
+        set_projected_hydrated_values(
+            py,
+            &values,
+            token.target_name().as_str(),
+            hydrated,
+            role.multiplicity(),
+        )?;
+    }
+    let instance = allocate(py, package.class(id, ProjectedModelForm::Complete)?)?;
+    instance.call_method1("initialize_runtime_values", (&values,))?;
+    Ok(instance.unbind())
 }
 
 fn project_create_at(
@@ -6557,6 +6708,18 @@ fn allocate_projected_reference(
     id: &TypeId,
     values: &Bound<'_, PyDict>,
     iid: &str,
+) -> PyResult<PyObject> {
+    let instance = allocate(py, package.class(id, ProjectedModelForm::Reference)?)?;
+    instance.call_method1("initialize_runtime_reference", (iid, values))?;
+    Ok(instance.unbind())
+}
+
+fn allocate_projected_detached_reference(
+    py: Python<'_>,
+    package: &InstalledPackage,
+    id: &TypeId,
+    values: &Bound<'_, PyDict>,
+    iid: Option<&str>,
 ) -> PyResult<PyObject> {
     let instance = allocate(py, package.class(id, ProjectedModelForm::Reference)?)?;
     instance.call_method1("initialize_runtime_reference", (iid, values))?;
@@ -10372,6 +10535,40 @@ class Reference:
                 value.getattr("code").unwrap().extract::<String>().unwrap(),
                 "generated_token_package_mismatch"
             );
+        });
+    }
+
+    #[test]
+    fn canonical_create_codec_round_trips_exact_python_nominal_value() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            let (_, package) = install_ordered(py);
+            let person_id = package
+                .type_by_label("person", TypeKind::Entity)
+                .unwrap()
+                .clone();
+            let class = package
+                .class(&person_id, ProjectedModelForm::Complete)
+                .unwrap()
+                .clone_ref(py);
+            let instance = class.bind(py).call0().unwrap();
+            let runtime = PyRuntimeProjection { package };
+            let bytes = runtime
+                .encode_create(py, class.clone_ref(py), instance)
+                .unwrap();
+            let decoded = runtime
+                .decode_create(py, class.clone_ref(py), &bytes)
+                .unwrap();
+            assert!(decoded.bind(py).is_instance(class.bind(py)).unwrap());
+            assert!(decoded.bind(py).getattr("iid").unwrap().is_none());
+            let values = decoded
+                .bind(py)
+                .call_method0("runtime_values")
+                .unwrap()
+                .downcast_into::<PyDict>()
+                .unwrap();
+            let tags = values.get_item("tag").unwrap().unwrap();
+            assert_eq!(tags.len().unwrap(), 0);
         });
     }
 
