@@ -11,18 +11,22 @@ use type_bridge_contract::fingerprint::{
     CanonicalizationVersion, FingerprintDomain, SemanticProfileId,
 };
 use type_bridge_contract::id::FunctionId;
+use type_bridge_contract::migration::CONDITIONAL_RESOLUTION_CAPABILITY;
+use type_bridge_contract::migration_assertion_capability_vocabulary;
+use type_bridge_contract::migration_backfill::COPY_ATTRIBUTE_BACKFILL_CAPABILITY;
 use type_bridge_contract::schema::{
     AnnotationFact, AnnotationKindId, AnnotationSubjectId, SchemaAnnotationValue, SchemaFact,
     SchemaOperation, SchemaOperationKind,
 };
 use type_bridge_contract::schema_delta::{
-    SCHEMA_TRANSITION_CAPABILITY_IDS, schema_transition_capability_vocabulary,
+    SCHEMA_REDEFINE_CAPABILITY, SCHEMA_TRANSITION_CAPABILITY_IDS,
+    schema_transition_capability_vocabulary,
 };
 use type_bridge_contract::schema_lowering::{
     SCHEMA_LOWERING_PROFILE_CANONICALIZATION, SCHEMA_LOWERING_PROFILE_FINGERPRINT_DOMAIN,
     SchemaLoweringProfileBinding, SchemaLoweringProfileFingerprint, SchemaLoweringProfileId,
 };
-use type_bridge_schema::{SafetyClass, SafetyClassificationError};
+use type_bridge_schema::{BUILTIN_SCHEMA_CAPABILITY_IDS, SafetyClass, SafetyClassificationError};
 
 const PROVIDER: &str = "typedb";
 const PROVIDER_VERSION: &str = "3.12.1";
@@ -37,6 +41,25 @@ const CAP_REDEFINE_RELATES_SPECIALIZATION: &str = SCHEMA_TRANSITION_CAPABILITY_I
 const CAP_REDEFINE_ANNOTATION: &str = SCHEMA_TRANSITION_CAPABILITY_IDS[6];
 const CAP_REDEFINE_FUNCTION: &str = SCHEMA_TRANSITION_CAPABILITY_IDS[7];
 const CAP_REPLACE_SUB_ANNOTATION: &str = SCHEMA_TRANSITION_CAPABILITY_IDS[8];
+
+/// Closed binding-neutral capability vocabulary for generated migration catalogs.
+pub fn migration_runtime_capability_vocabulary() -> Result<CapabilitySet, Diagnostic> {
+    let mut capabilities = schema_transition_capability_vocabulary();
+    for capability in BUILTIN_SCHEMA_CAPABILITY_IDS {
+        capabilities.insert(CapabilityId::new(*capability)?);
+    }
+    for capability in migration_assertion_capability_vocabulary().iter().cloned() {
+        capabilities.insert(capability);
+    }
+    for capability in [
+        SCHEMA_REDEFINE_CAPABILITY,
+        CONDITIONAL_RESOLUTION_CAPABILITY,
+        COPY_ATTRIBUTE_BACKFILL_CAPABILITY,
+    ] {
+        capabilities.insert(CapabilityId::new(capability)?);
+    }
+    Ok(capabilities)
+}
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]

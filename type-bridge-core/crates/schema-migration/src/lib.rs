@@ -88,8 +88,8 @@ pub use profile::{
     AnnotationKind, AnnotationSubjectKind, AnnotationTransition, EvidenceFlag, EvidenceRequirement,
     FactKind, FactTransition, InterfaceDefault, InterfaceKind, LoweringMechanism, SafetyScenario,
     SafetyScenarioRule, SchemaLoweringProfile, TransitionRule, annotation_transition_rule,
-    canonical_profile_bytes, fact_transition_rule, profile_fingerprint,
-    schema_lowering_profile_binding, typedb_3_12_1_profile,
+    canonical_profile_bytes, fact_transition_rule, migration_runtime_capability_vocabulary,
+    profile_fingerprint, schema_lowering_profile_binding, typedb_3_12_1_profile,
 };
 pub use type_bridge_contract::schema_lowering::{
     SCHEMA_LOWERING_PROFILE_CANONICALIZATION, SCHEMA_LOWERING_PROFILE_FINGERPRINT_DOMAIN,

@@ -11,15 +11,10 @@ use std::sync::Arc;
 use type_bridge_contract::capability::{CapabilityId, CapabilitySet};
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use type_bridge_contract::limits::StructuralLimits;
-use type_bridge_contract::migration::CONDITIONAL_RESOLUTION_CAPABILITY;
-use type_bridge_contract::migration_assertion_capability_vocabulary;
 use type_bridge_contract::migration_backfill::{
     AttributeBackfillPlan, COPY_ATTRIBUTE_BACKFILL_CAPABILITY,
 };
 use type_bridge_contract::schema::{DocumentId, ManagedSchemaState};
-use type_bridge_contract::schema_delta::{
-    SCHEMA_REDEFINE_CAPABILITY, schema_transition_capability_vocabulary,
-};
 use type_bridge_orm::migration_assertion::{
     MigrationAssertionExecutionContext, MigrationAssertionExecutionError,
     execute_migration_assertion,
@@ -29,12 +24,13 @@ use type_bridge_orm::{
     ClassifiedCommitError, CommitFailureCertainty, Database, OrmError, Transaction,
 };
 use type_bridge_query::ValidatedMigrationAssertionPlan;
-use type_bridge_schema::{BUILTIN_SCHEMA_CAPABILITY_IDS, ManagedDeltaContext};
+use type_bridge_schema::ManagedDeltaContext;
 use type_bridge_schema_migration::{
     BackfillCompletionEvidence, BackfillExecutionCounts, BackfillExecutionDirection,
     BackfillExecutionFuture, BackfillRecoveryObservation, ExecutionBindingToken, ExecutionFuture,
     GroupCommitCertainty, GroupCommitFailure, GroupCommitFuture, MigrationExecutionProvider,
-    MigrationLease, PreparedMigrationGroup, StatementUnit, typedb_3_12_1_profile,
+    MigrationLease, PreparedMigrationGroup, StatementUnit, migration_runtime_capability_vocabulary,
+    typedb_3_12_1_profile,
 };
 
 use crate::backfill::LoweredBackfill;
@@ -573,17 +569,7 @@ fn group_commit_certainty(error: &ClassifiedCommitError) -> GroupCommitCertainty
 
 /// Compose the exact execution capability vocabulary for TypeDB 3.12.1.
 pub fn execution_capability_vocabulary() -> Result<CapabilitySet, Diagnostic> {
-    let mut capabilities = schema_transition_capability_vocabulary();
-    for capability in BUILTIN_SCHEMA_CAPABILITY_IDS {
-        capabilities.insert(CapabilityId::new(*capability)?);
-    }
-    for capability in migration_assertion_capability_vocabulary().iter().cloned() {
-        capabilities.insert(capability);
-    }
-    capabilities.insert(CapabilityId::new(SCHEMA_REDEFINE_CAPABILITY)?);
-    capabilities.insert(CapabilityId::new(CONDITIONAL_RESOLUTION_CAPABILITY)?);
-    capabilities.insert(CapabilityId::new(COPY_ATTRIBUTE_BACKFILL_CAPABILITY)?);
-    Ok(capabilities)
+    migration_runtime_capability_vocabulary()
 }
 
 async fn require_no_backfill_conflict(
@@ -853,8 +839,12 @@ mod tests {
     use super::*;
     use type_bridge_contract::fingerprint::SemanticProfileId;
     use type_bridge_contract::managed_scope::ManagedScopeId;
+    use type_bridge_contract::migration::CONDITIONAL_RESOLUTION_CAPABILITY;
+    use type_bridge_contract::migration_assertion_capability_vocabulary;
+    use type_bridge_contract::schema_delta::SCHEMA_REDEFINE_CAPABILITY;
     use type_bridge_orm::DatabaseConnectionAuthority;
     use type_bridge_orm::session::backend::{BoxFuture, DriverBackend, TransactionOps, TxType};
+    use type_bridge_schema::BUILTIN_SCHEMA_CAPABILITY_IDS;
     use type_bridge_schema_migration::typedb_3_12_1_profile;
 
     struct NoIoBackend {
