@@ -231,6 +231,23 @@ impl NodeMigrationCatalog {
             .map(verification_report)
             .map_err(|error| catalog_error(error.code().as_str()))
     }
+
+    #[napi]
+    pub fn applied_migrations(
+        &self,
+        database: &NodeRustDatabase,
+    ) -> Result<Vec<NodeMigrationIdentity>> {
+        let (database, runtime) = database.handles();
+        runtime
+            .block_on(
+                type_bridge_schema_migration_typedb::load_catalog_applied_migrations(
+                    database,
+                    &self.inner,
+                ),
+            )
+            .map(|identities| identities.iter().map(migration_identity).collect())
+            .map_err(|error| catalog_error(error.code().as_str()))
+    }
 }
 
 enum NodeMigrationPreviewInner {

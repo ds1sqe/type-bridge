@@ -331,6 +331,7 @@ interface NativeMigrationCatalog {
   heads(): MigrationIdentity[];
   entry(index: number): MigrationHistoryEntry | null;
   verify(database: NativeRustDatabase): MigrationVerificationReport;
+  appliedMigrations(database: NativeRustDatabase): MigrationIdentity[];
   previewApply(
     applied: MigrationIdentity[],
     targets?: MigrationIdentity[] | null,
@@ -658,6 +659,10 @@ export class MigrationCatalog {
 
   verify(database: RustDatabase): MigrationVerificationReport {
     return this.#native.verify(preparedV2DatabaseHandle(database));
+  }
+
+  appliedMigrations(database: RustDatabase): MigrationIdentity[] {
+    return this.#native.appliedMigrations(preparedV2DatabaseHandle(database));
   }
 
   previewApply(
