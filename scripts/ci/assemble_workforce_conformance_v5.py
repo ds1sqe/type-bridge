@@ -134,8 +134,8 @@ def assemble_report(
         reject("run_nonce_mismatch", "producer evidence is not from this requested run")
 
     record_values = evidence["record_b64"]
-    if not isinstance(record_values, list) or len(record_values) != 7:
-        reject("invalid_evidence_shape", "producer must publish seven exact records")
+    if not isinstance(record_values, list) or len(record_values) != 9:
+        reject("invalid_evidence_shape", "producer must publish nine exact records")
     records = [
         decode_b64(value, f"record[{index}]", MAX_RECORD_BYTES)
         for index, value in enumerate(record_values)

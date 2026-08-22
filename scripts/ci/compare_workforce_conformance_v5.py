@@ -63,19 +63,31 @@ JOURNEY_RECORDS = [
         "id": "membership-create",
         "kind": "relation_create",
         "type": {"kind": "relation", "label": "membership"},
-        "requires_polymorphic_optional_role": True,
+        "requires_polymorphic_role": True,
+    },
+    {
+        "id": "interaction-create",
+        "kind": "relation_create",
+        "type": {"kind": "relation", "label": "interaction"},
+        "requires_optional_polymorphic_role": True,
+    },
+    {
+        "id": "container-create",
+        "kind": "relation_create",
+        "type": {"kind": "relation", "label": "container"},
         "requires_relation_as_player": True,
     },
     {
-        "id": "membership-snapshot",
+        "id": "employment-snapshot",
         "kind": "relation_snapshot",
-        "type": {"kind": "relation", "label": "membership"},
+        "type": {"kind": "relation", "label": "employment"},
         "requires_inherited_roles": True,
         "decoded_state": "detached",
     },
     {
         "id": "player-reference",
         "kind": "reference",
+        "type": {"kind": "relation", "label": "event"},
         "requires_iid_or_exact_key": True,
         "decoded_state": "detached",
     },
@@ -272,8 +284,8 @@ def validate_observation(index: int, value: Any) -> None:
             "canonical record/archive observation",
         )
         records = observation["record_sha256"]
-        if not isinstance(records, list) or len(records) != 7:
-            reject("invalid_observation_shape", "V5 requires seven record digests")
+        if not isinstance(records, list) or len(records) != 9:
+            reject("invalid_observation_shape", "V5 requires nine record digests")
         for ordinal, digest in enumerate(records):
             exact_sha256(digest, f"record digest {ordinal}")
         exact_sha256(observation["archive_sha256"], "archive digest")

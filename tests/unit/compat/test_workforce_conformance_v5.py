@@ -48,7 +48,7 @@ def _identity(root: Path, relative: str) -> dict[str, str]:
 def _observations() -> list[dict[str, object]]:
     return [
         {
-            "record_sha256": [hashlib.sha256(bytes([index])).hexdigest() for index in range(7)],
+            "record_sha256": [hashlib.sha256(bytes([index])).hexdigest() for index in range(9)],
             "archive_sha256": hashlib.sha256(b"archive").hexdigest(),
             "round_trip": True,
             "foreign_schema_code": "projected_record_schema_mismatch",
@@ -140,7 +140,16 @@ def test_journey_corpus_uses_types_owned_by_its_frozen_schema() -> None:
     )
 
     assert journey["records"] == comparator.JOURNEY_RECORDS
-    for source_name in ("robot_id", "player-stats", "person", "membership"):
+    for source_name in (
+        "robot_id",
+        "player-stats",
+        "person",
+        "membership",
+        "interaction",
+        "container",
+        "employment",
+        "event",
+    ):
         assert f"{source_name}:" in schema
 
 

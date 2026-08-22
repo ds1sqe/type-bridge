@@ -32,7 +32,7 @@ def _evidence(binding: str = "rust") -> dict[str, Any]:
         "producer": producer["id"],
         "test_id": producer["test_id"],
         "run_nonce": "a" * 64,
-        "record_b64": [base64.b64encode(f"record-{index}".encode()).decode() for index in range(7)],
+        "record_b64": [base64.b64encode(f"record-{index}".encode()).decode() for index in range(9)],
         "archive_b64": base64.b64encode(b"archive").decode(),
         "round_trip": True,
         "foreign_schema_code": "projected_record_schema_mismatch",
@@ -78,7 +78,7 @@ def test_assembler_computes_digests_and_binds_exact_report() -> None:
 
     observation = report["results"][0]["observation"]
     assert observation["record_sha256"] == [
-        hashlib.sha256(f"record-{index}".encode()).hexdigest() for index in range(7)
+        hashlib.sha256(f"record-{index}".encode()).hexdigest() for index in range(9)
     ]
     assert observation["archive_sha256"] == hashlib.sha256(b"archive").hexdigest()
     assembler.conformance.validate_report(report, assembler.conformance.load_contracts(ROOT), ROOT)

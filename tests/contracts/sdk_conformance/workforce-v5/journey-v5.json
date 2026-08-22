@@ -34,19 +34,31 @@
       "id": "membership-create",
       "kind": "relation_create",
       "type": {"kind": "relation", "label": "membership"},
-      "requires_polymorphic_optional_role": true,
+      "requires_polymorphic_role": true
+    },
+    {
+      "id": "interaction-create",
+      "kind": "relation_create",
+      "type": {"kind": "relation", "label": "interaction"},
+      "requires_optional_polymorphic_role": true
+    },
+    {
+      "id": "container-create",
+      "kind": "relation_create",
+      "type": {"kind": "relation", "label": "container"},
       "requires_relation_as_player": true
     },
     {
-      "id": "membership-snapshot",
+      "id": "employment-snapshot",
       "kind": "relation_snapshot",
-      "type": {"kind": "relation", "label": "membership"},
+      "type": {"kind": "relation", "label": "employment"},
       "requires_inherited_roles": true,
       "decoded_state": "detached"
     },
     {
       "id": "player-reference",
       "kind": "reference",
+      "type": {"kind": "relation", "label": "event"},
       "requires_iid_or_exact_key": true,
       "decoded_state": "detached"
     }
@@ -59,7 +71,9 @@
       "person-create",
       "person-snapshot",
       "membership-create",
-      "membership-snapshot",
+      "interaction-create",
+      "container-create",
+      "employment-snapshot",
       "player-reference"
     ],
     "whole_archive_rejection": true

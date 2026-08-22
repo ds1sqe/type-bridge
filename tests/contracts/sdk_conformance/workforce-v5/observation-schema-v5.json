@@ -17,7 +17,7 @@
       "required": ["record_sha256", "archive_sha256", "round_trip", "foreign_schema_code", "direct_remote_equal", "detached_mutation_code"],
       "properties": {
         "record_sha256": {
-          "type": "array", "minItems": 7, "maxItems": 7,
+          "type": "array", "minItems": 9, "maxItems": 9,
           "items": {"$ref": "#/$defs/sha256"}
         },
         "archive_sha256": {"$ref": "#/$defs/sha256"},
