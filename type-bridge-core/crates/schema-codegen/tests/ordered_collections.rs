@@ -1448,6 +1448,17 @@ assert.equal(exactPerson.iid, "0xa7");
 const exactPersonProof = Runtime.__testOrderedFacadeProof(exactPerson);
 assert.notEqual(exactPersonProof, null);
 
+const detachedPerson = Local.Person.decodeSnapshot(
+  Local.Person.encodeSnapshot(exactPerson),
+);
+assert.equal(detachedPerson.iid, "0xa7");
+assert.notEqual(Runtime.__testOrderedFacadeProof(detachedPerson), null);
+const detachedTarget = fixture([]);
+assert.throws(() => Local.Membership.manager(detachedTarget.connection).insert(
+  Local.Membership.create({ participant: [detachedPerson] }),
+), (error) => diagnostic(error).code === "projected_snapshot_detached");
+assert.deepEqual(counters(detachedTarget), zeroCounters);
+
 const sameEntity = fixture([
   iidDocument("0xb7"),
   documents(membershipDocument("0xb7", "0xa7")),

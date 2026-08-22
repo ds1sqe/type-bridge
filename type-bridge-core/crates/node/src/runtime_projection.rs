@@ -1442,6 +1442,7 @@ fn frozen_empty_array<'env>(env: &Env) -> napi::Result<Array<'env>> {
 #[derive(Clone)]
 enum FacadeProjectionProof {
     Thing(Arc<ProjectedThing>),
+    DetachedSnapshot,
     Reference(Arc<ProjectedReference>),
 }
 
@@ -1452,6 +1453,7 @@ impl FacadeProjectionProof {
     ) -> Result<ProjectedReference, SdkExecutionDiagnostic> {
         match self {
             Self::Thing(thing) => thing.try_to_reference(installed),
+            Self::DetachedSnapshot => Err(SdkExecutionDiagnostic::projected_snapshot_detached()),
             Self::Reference(reference) => {
                 reference.validate_for(installed)?;
                 Ok(reference.as_ref().clone())
@@ -2263,6 +2265,14 @@ impl NodeRuntimeProjection {
             ));
         }
         wire_json(&projected_thing_wire(self.package.as_ref(), &value)?)
+    }
+
+    /// Create the opaque mutation fence installed on one decoded snapshot facade.
+    #[napi(js_name = "detachedSnapshotProof")]
+    pub fn detached_snapshot_proof(&self) -> External<NodeProjectedFacadeProof> {
+        External::new(NodeProjectedFacadeProof {
+            proof: FacadeProjectionProof::DetachedSnapshot,
+        })
     }
 
     /// Encode one exact generated struct value as canonical bytes.
@@ -8302,6 +8312,19 @@ entities:
         )
         .unwrap();
         assert_eq!(restored, visible);
+
+        let detached_proof = NodeProjectedFacadeProof {
+            proof: FacadeProjectionProof::DetachedSnapshot,
+        };
+        let error = project_reference_wire_with_proof(
+            package,
+            role.players(),
+            &person,
+            &operation_path,
+            Some(&detached_proof),
+        )
+        .unwrap_err();
+        assert_eq!(error.code().as_str(), "projected_snapshot_detached");
 
         let mut changed_iid = person.clone();
         changed_iid.iid = Some("0xa2".into());

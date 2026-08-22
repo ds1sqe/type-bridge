@@ -7,6 +7,7 @@ import type {
 } from "./index.js";
 import { ownedByteSnapshot } from "./owned-bytes.js";
 import type {
+  NativeProjectedFacadeProof,
   NativeProjectedManager,
   NativeProjectedValueEnvelope,
   RuntimeProjectionInstall,
@@ -485,6 +486,7 @@ interface NativeRuntimeProjectionHandle {
   decodeReferenceJson(typeKey: string, bytes: Uint8Array): string;
   encodeSnapshotJson(typeKey: string, valueJson: string): Uint8Array;
   decodeSnapshotJson(typeKey: string, bytes: Uint8Array): string;
+  detachedSnapshotProof(): NativeProjectedFacadeProof;
   encodeStructJson(typeKey: string, valueJson: string): Uint8Array;
   decodeStructJson(typeKey: string, bytes: Uint8Array): string;
   encodeArchive(records: readonly Uint8Array[]): Uint8Array;

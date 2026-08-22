@@ -197,6 +197,7 @@ interface NativeProjectionHandle {
     decodeReferenceJson(typeKey: string, bytes: Uint8Array): string;
     encodeSnapshotJson(typeKey: string, valueJson: string): Uint8Array;
     decodeSnapshotJson(typeKey: string, bytes: Uint8Array): string;
+    detachedSnapshotProof(): NativeProjectedFacadeProof;
     encodeStructJson(typeKey: string, valueJson: string): Uint8Array;
     decodeStructJson(typeKey: string, bytes: Uint8Array): string;
     encodeArchive(records: readonly Uint8Array[]): Uint8Array;
@@ -268,6 +269,8 @@ export declare class InstalledRuntimeProjection {
     encodeSnapshotJson(typeKey: string, valueJson: string): Uint8Array;
     /** @internal Decode one exact generated detached snapshot. */
     decodeSnapshotJson(typeKey: string, bytes: Uint8Array): string;
+    /** @internal Return an opaque mutation fence for one decoded snapshot facade. */
+    detachedSnapshotProof(): NativeProjectedFacadeProof;
     /** @internal Encode one exact generated struct. */
     encodeStructJson(typeKey: string, valueJson: string): Uint8Array;
     /** @internal Decode one exact generated struct. */

@@ -1,5 +1,5 @@
 import type { NativeModule, NativeRustDatabase, NativeRustTransactionContext } from "./index.js";
-import type { NativeProjectedManager, NativeProjectedValueEnvelope, RuntimeProjectionInstall } from "./runtime-projection.js";
+import type { NativeProjectedFacadeProof, NativeProjectedManager, NativeProjectedValueEnvelope, RuntimeProjectionInstall } from "./runtime-projection.js";
 type NativeProjectedBatchAuthority = Parameters<NonNullable<RuntimeProjectionInstall["projectedBatchMaterializer"]>>[3];
 type NativeMatchComparison = "equal" | "not_equal" | "less_than" | "less_than_or_equal" | "greater_than" | "greater_than_or_equal" | "contains" | "starts_with" | "ends_with" | "regex";
 type NativeMatchDirection = "ascending" | "descending";
@@ -201,6 +201,7 @@ interface NativeRuntimeProjectionHandle {
     decodeReferenceJson(typeKey: string, bytes: Uint8Array): string;
     encodeSnapshotJson(typeKey: string, valueJson: string): Uint8Array;
     decodeSnapshotJson(typeKey: string, bytes: Uint8Array): string;
+    detachedSnapshotProof(): NativeProjectedFacadeProof;
     encodeStructJson(typeKey: string, valueJson: string): Uint8Array;
     decodeStructJson(typeKey: string, bytes: Uint8Array): string;
     encodeArchive(records: readonly Uint8Array[]): Uint8Array;

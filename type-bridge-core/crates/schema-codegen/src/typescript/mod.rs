@@ -124,6 +124,13 @@ type OrderedFacadeProof = NonNullable<
   Parameters<NativeProjectedManager["insertProjected"]>[1][number]
 >;
 const orderedFacadeProofs = new WeakMap<object, OrderedFacadeProof>();
+retainDecodedSnapshot = <Complete>(
+  projection: InstalledRuntimeProjection,
+  value: Complete,
+): Complete => {
+  orderedFacadeProofs.set(value as object, projection.detachedSnapshotProof());
+  return value;
+};
 const orderedModelDefinitions = new Map<
   string,
   ModelDefinition<string, object, object>
@@ -1301,15 +1308,15 @@ mod tests {
     #[test]
     fn legacy_runtime_source_remains_byte_exact() {
         assert_eq!(runtime_source(false).unwrap(), RUNTIME_SOURCE);
-        assert_eq!(RUNTIME_SOURCE.len(), 128_057);
+        assert_eq!(RUNTIME_SOURCE.len(), 132_332);
         assert_eq!(
             format!("{:x}", Sha256::digest(RUNTIME_SOURCE)),
-            "59669982df2d14d5e3902bc467b97560d8e076e800e8b9d2189fa2a606bd9d3e"
+            "f9f3521c3c94fa8959b46f20e794dfdd145608318d06e079a6957f51cbdb8916"
         );
         let resource = CodeResourceDigest::from_bytes(RUNTIME_SOURCE_ID, RUNTIME_SOURCE).unwrap();
         assert_eq!(
             resource.content_fingerprint().digest().to_hex(),
-            "2be214eed28f125ce054756400ac7572bbb1844607931a9b0e4f1eeb933f2277"
+            "37f8c5d6d05e4aa69952fccb564ba36acbf174a7cde9aa39f19732971b720b91"
         );
     }
 

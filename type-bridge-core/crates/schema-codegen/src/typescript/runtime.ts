@@ -995,12 +995,13 @@ export function defineModel<
             hydrateMemberValue(wire.values[member.name]),
           ]),
         );
-        return materializeComplete(
+        const snapshot = materializeComplete(
           values,
           wire.iid,
           definition.completeMembers,
           `${definition.name}.decodeSnapshot`,
         );
+        return retainDecodedSnapshot(requireProjection(), snapshot);
       },
       metadata: definition.metadata,
     },
@@ -3981,6 +3982,11 @@ function materializeThing(
     parseProjectedWire(JSON.parse(encoded) as unknown),
   );
 }
+
+let retainDecodedSnapshot = <Complete>(
+  _projection: InstalledRuntimeProjection,
+  value: Complete,
+): Complete => value;
 
 function materializeUngroupedReduction(
   state: QueryState,
