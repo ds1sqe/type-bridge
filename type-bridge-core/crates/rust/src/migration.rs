@@ -563,11 +563,14 @@ impl<S: Schema> SchemaPackage<S> {
 }
 
 fn plan_error(error: type_bridge_schema_migration::MigrationApplyPlanError) -> Error {
+    let error = match error {
+        type_bridge_schema_migration::MigrationApplyPlanError::Contract(diagnostic) => {
+            return Error::from_contract_diagnostic(diagnostic);
+        }
+        error => error,
+    };
     let message = match &error {
-        type_bridge_schema_migration::MigrationApplyPlanError::Contract(diagnostic) => format!(
-            "generated migration preview was rejected [{}]",
-            diagnostic.code().as_str()
-        ),
+        type_bridge_schema_migration::MigrationApplyPlanError::Contract(_) => unreachable!(),
         type_bridge_schema_migration::MigrationApplyPlanError::Schema(_) => {
             "generated migration preview schema replay failed".to_owned()
         }
