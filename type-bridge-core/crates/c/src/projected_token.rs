@@ -15,7 +15,7 @@ pub struct TypeBridgeProjectedTokenV1 {
     pub struct_size: u32,
     /// Generated projection-token layout version.
     pub version: u32,
-    /// Frozen token kind: model `1`, field `2`, role `3`, function `4`, or struct `5`.
+    /// Frozen token kind: model `1`, field `2`, role `3`, function `4`, struct `5`, or attribute `6`.
     pub kind: u32,
     /// Zero-based canonical ordinal within the token kind.
     pub ordinal: u32,
@@ -147,6 +147,17 @@ pub(crate) unsafe fn resolve_struct_token(
     // SAFETY: token validation and snapshotting are delegated to the shared resolver.
     match unsafe { resolve_token(package, token, ProjectedTokenKind::Struct) }? {
         ProjectedTokenIdentity::Struct(id) => Ok(id),
+        _ => Err(invalid_layout()),
+    }
+}
+
+pub(crate) unsafe fn resolve_attribute_token(
+    package: &SchemaPackageState,
+    token: *const TypeBridgeProjectedTokenV1,
+) -> Result<type_bridge_contract::id::AttributeId, SdkExecutionDiagnostic> {
+    // SAFETY: token validation and snapshotting are delegated to the shared resolver.
+    match unsafe { resolve_token(package, token, ProjectedTokenKind::Attribute) }? {
+        ProjectedTokenIdentity::Attribute(id) => Ok(id),
         _ => Err(invalid_layout()),
     }
 }

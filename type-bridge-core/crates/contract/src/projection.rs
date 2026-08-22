@@ -69,6 +69,8 @@ pub enum ProjectedTokenKind {
     Function,
     /// One exact projected generated-struct identity.
     Struct,
+    /// One exact projected attribute-value identity.
+    Attribute,
 }
 
 impl ProjectedTokenKind {
@@ -81,6 +83,7 @@ impl ProjectedTokenKind {
             Self::Role => 3,
             Self::Function => 4,
             Self::Struct => 5,
+            Self::Attribute => 6,
         }
     }
 
@@ -93,6 +96,7 @@ impl ProjectedTokenKind {
             3 => Some(Self::Role),
             4 => Some(Self::Function),
             5 => Some(Self::Struct),
+            6 => Some(Self::Attribute),
             _ => None,
         }
     }
@@ -126,6 +130,8 @@ pub enum ProjectedTokenIdentity {
     Function(FunctionId),
     /// One exact projected generated struct.
     Struct(StructId),
+    /// One exact projected attribute value.
+    Attribute(AttributeId),
 }
 
 impl ProjectedTokenIdentity {
@@ -138,6 +144,7 @@ impl ProjectedTokenIdentity {
             Self::Role { .. } => ProjectedTokenKind::Role,
             Self::Function(_) => ProjectedTokenKind::Function,
             Self::Struct(_) => ProjectedTokenKind::Struct,
+            Self::Attribute(_) => ProjectedTokenKind::Attribute,
         }
     }
 }
@@ -3255,6 +3262,13 @@ impl RuntimeProjection {
                 .nth(index)
                 .cloned()
                 .map(ProjectedTokenIdentity::Struct),
+            ProjectedTokenKind::Attribute => self
+                .models
+                .keys()
+                .filter(|model| model.kind() == TypeKind::Attribute)
+                .nth(index)
+                .and_then(|model| AttributeId::new(model.label().as_str()).ok())
+                .map(ProjectedTokenIdentity::Attribute),
         }
     }
 
@@ -3305,6 +3319,11 @@ impl RuntimeProjection {
                 .structs
                 .keys()
                 .position(|candidate| candidate == expected),
+            ProjectedTokenIdentity::Attribute(expected) => self
+                .models
+                .keys()
+                .filter(|model| model.kind() == TypeKind::Attribute)
+                .position(|candidate| candidate.label() == expected.label()),
         }?;
         u32::try_from(index).ok()
     }

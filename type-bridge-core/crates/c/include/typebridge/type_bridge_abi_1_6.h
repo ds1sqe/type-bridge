@@ -42,7 +42,7 @@ TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_canonical_record_decode_attribute_v1(
     const type_bridge_schema_package_t *package,
     type_bridge_byte_view_t bytes,
-    const type_bridge_projected_token_v1_t *expected_field,
+    const type_bridge_projected_token_v1_t *expected_attribute,
     type_bridge_projected_value_t **out_value,
     type_bridge_execution_diagnostics_t **out_diagnostics);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL

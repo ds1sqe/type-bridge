@@ -22,7 +22,7 @@ use crate::projected_model::{
     TypeBridgeProjectedCreate, TypeBridgeProjectedReference, TypeBridgeProjectedThing,
 };
 use crate::projected_token::{
-    TypeBridgeProjectedTokenV1, resolve_field_token, resolve_model_token, resolve_struct_token,
+    TypeBridgeProjectedTokenV1, resolve_attribute_token, resolve_model_token, resolve_struct_token,
 };
 use crate::projected_value::TypeBridgeProjectedValue;
 
@@ -294,7 +294,7 @@ fn materialize(
 pub unsafe extern "C" fn type_bridge_canonical_record_decode_attribute_v1(
     package: *const TypeBridgeSchemaPackage,
     bytes: TypeBridgeByteView,
-    expected_field: *const TypeBridgeProjectedTokenV1,
+    expected_attribute: *const TypeBridgeProjectedTokenV1,
     out_value: *mut *mut TypeBridgeProjectedValue,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
@@ -309,11 +309,11 @@ pub unsafe extern "C" fn type_bridge_canonical_record_decode_attribute_v1(
             Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
         };
         // SAFETY: generated token storage remains readable for this call.
-        let (_, field) = match unsafe { resolve_field_token(&package, expected_field) } {
+        let attribute = match unsafe { resolve_attribute_token(&package, expected_attribute) } {
             Ok(value) => value,
             Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
         };
-        let expected = match TypeId::new(TypeKind::Attribute, field.attribute().label().as_str()) {
+        let expected = match TypeId::new(TypeKind::Attribute, attribute.label().as_str()) {
             Ok(value) => value,
             Err(_) => return return_execution_error(wrong_record_type(), out_diagnostics),
         };
