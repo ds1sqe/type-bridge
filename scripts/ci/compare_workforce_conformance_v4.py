@@ -32,6 +32,13 @@ EXPECTED_RETAINED_GAPS = (
     "workforce.diagnostic.all-workflows",
     "workforce.runtime.explicit-close",
 )
+EXPECTED_MIGRATION_ORDER = (
+    "workforcev4/0001_initial",
+    "workforcev4/0002_expand-display-name",
+    "workforcev4/0003_backfill-display-name",
+    "workforcev4/0004_contract-legacy-name",
+)
+EXPECTED_CATALOG_FINGERPRINT = "b59eb4988620a941a7531432eb622d04fc0aafe0238dabf047056138c78ea99c"
 
 
 class ContractError(ValueError):
@@ -342,6 +349,17 @@ def _validate_observation(reference: str, observation: dict[str, Any]) -> None:
                     "invalid_observation_shape",
                     f"{reference}.{field} must be canonical migration identities",
                 )
+        if (
+            observation["catalog_entries"] != 4
+            or observation["backfill_steps"] != 1
+            or observation["catalog_fingerprint"] != EXPECTED_CATALOG_FINGERPRINT
+            or tuple(observation["apply_order"]) != EXPECTED_MIGRATION_ORDER
+            or tuple(observation["rollback_order"]) != tuple(reversed(EXPECTED_MIGRATION_ORDER))
+        ):
+            _reject(
+                "migration_catalog_observation_drift",
+                "generated runtime facade did not observe the exact V4 catalog",
+            )
     elif reference == "administration_migration_cancellation":
         _exact_keys(observation, {"code", "before_effect"}, reference)
         _enum(observation["code"], {"migration_execution_cancelled"}, f"{reference}.code")

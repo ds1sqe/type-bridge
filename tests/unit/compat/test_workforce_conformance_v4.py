@@ -56,7 +56,7 @@ def _valid_report(root: Path, binding: str) -> dict[str, object]:
         **journey["shared_fixture_oracles"],
         "migration_runtime_facade": {
             "catalog_entries": 4,
-            "catalog_fingerprint": "0" * 64,
+            "catalog_fingerprint": comparator.EXPECTED_CATALOG_FINGERPRINT,
             "apply_order": [
                 "workforcev4/0001_initial",
                 "workforcev4/0002_expand-display-name",

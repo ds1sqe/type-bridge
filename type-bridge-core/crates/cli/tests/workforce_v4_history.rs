@@ -98,3 +98,108 @@ fn all_four_generated_packages_embed_identical_canonical_history() {
         "091cad62b2db770c886898101b281f327206da3285ad64239b53c9c6c2f0cfff",
     );
 }
+
+#[test]
+fn generated_rust_public_facade_observes_the_v4_catalog() {
+    let temporary = tempfile::tempdir().expect("isolated workspace creates");
+    copy_tree(&fixture(), temporary.path());
+    let generation = Command::new(env!("CARGO_BIN_EXE_type-bridge"))
+        .current_dir(temporary.path())
+        .args(["schema", "generate"])
+        .output()
+        .expect("schema generation runs");
+    assert!(generation.status.success());
+
+    let package = temporary.path().join("generated/rust");
+    let manifest = package.join("Cargo.toml");
+    let runtime = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../rust")
+        .canonicalize()
+        .expect("local Rust runtime resolves");
+    let source = fs::read_to_string(&manifest).expect("generated manifest reads");
+    fs::write(
+        &manifest,
+        source.replace(
+            "type-bridge = { version = \"=2.1.0\", default-features = false }",
+            &format!(
+                "type-bridge = {{ path = {:?}, default-features = false }}",
+                runtime
+            ),
+        ),
+    )
+    .expect("consumer binds the in-tree public runtime");
+    fs::create_dir_all(package.join("src/bin")).expect("consumer bin directory creates");
+    fs::write(
+        package.join("src/bin/observe.rs"),
+        r#"use type_bridge_generated_schema::open_migration_catalog;
+
+fn main() {
+    let catalog = open_migration_catalog().expect("generated catalog opens");
+    let applied = (0..catalog.len())
+        .map(|index| catalog.entry(index).expect("catalog entry").id().clone())
+        .collect::<Vec<_>>();
+    let apply = catalog.preview_apply(Vec::new(), None).expect("apply preview");
+    let rollback = catalog
+        .preview_rollback(applied.clone(), applied)
+        .expect("rollback preview");
+    let apply_order = (0..apply.len())
+        .map(|index| {
+            let entry = apply.entry(index).expect("apply entry");
+            format!("{}/{}", entry.id().app_label().as_str(), entry.id().name().as_str())
+        })
+        .collect::<Vec<_>>();
+    let rollback_order = (0..rollback.len())
+        .map(|index| {
+            let entry = rollback.entry(index).expect("rollback entry");
+            format!("{}/{}", entry.id().app_label().as_str(), entry.id().name().as_str())
+        })
+        .collect::<Vec<_>>();
+    let backfills = (0..apply.len())
+        .map(|index| apply.entry(index).expect("apply entry").backfill_count())
+        .sum::<usize>();
+    println!(
+        "{}|{}|{}|{}|{}",
+        catalog.len(),
+        catalog.fingerprint().digest().to_hex(),
+        apply_order.join(","),
+        rollback_order.join(","),
+        backfills,
+    );
+}
+"#,
+    )
+    .expect("source-bound producer writes");
+    let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target");
+    let observation = Command::new("cargo")
+        .current_dir(&package)
+        .env("CARGO_TARGET_DIR", target)
+        .args(["run", "--quiet", "--bin", "observe"])
+        .output()
+        .expect("generated Rust producer runs");
+    assert!(
+        observation.status.success(),
+        "producer failed: {}",
+        String::from_utf8_lossy(&observation.stderr),
+    );
+    let fields = String::from_utf8(observation.stdout)
+        .expect("observation is UTF-8")
+        .trim()
+        .split('|')
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    assert_eq!(fields.len(), 5);
+    assert_eq!(fields[0], "4");
+    assert_eq!(
+        fields[1],
+        "b59eb4988620a941a7531432eb622d04fc0aafe0238dabf047056138c78ea99c",
+    );
+    assert_eq!(
+        fields[2],
+        "workforcev4/0001_initial,workforcev4/0002_expand-display-name,workforcev4/0003_backfill-display-name,workforcev4/0004_contract-legacy-name",
+    );
+    assert_eq!(
+        fields[3],
+        "workforcev4/0004_contract-legacy-name,workforcev4/0003_backfill-display-name,workforcev4/0002_expand-display-name,workforcev4/0001_initial",
+    );
+    assert_eq!(fields[4], "1");
+}

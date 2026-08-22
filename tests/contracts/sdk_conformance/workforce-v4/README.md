@@ -39,3 +39,5 @@ manifest JSON is the executable history authority.
 internal C packages. Every package embeds byte-identical canonical history at
 `typebridge/migration-history.json`; the frozen resource is 48,902 bytes with
 SHA-256 `091cad62b2db770c886898101b281f327206da3285ad64239b53c9c6c2f0cfff`.
+The replay-verified catalog fingerprint observed through generated public
+facades is `b59eb4988620a941a7531432eb622d04fc0aafe0238dabf047056138c78ea99c`.
