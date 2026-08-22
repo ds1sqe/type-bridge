@@ -140,6 +140,7 @@ fn render_header(
          #define {macro_prefix}_HOSTED_OBJECT_BYTES_MIN {C_HOSTED_OBJECT_BYTES_MIN}u\n\n\
          #define {macro_prefix}_EMBEDDED_BYTE_CHUNK_MAX {C_EMBEDDED_BYTE_CHUNK_MAX}u\n\
          #define {macro_prefix}_SEQUENCE_OBJECT_BYTES_MAX {C_HOSTED_OBJECT_BYTES_MIN}u\n\n\
+         #define {macro_prefix}_MIGRATION_HISTORY_RESOURCE \"typebridge/migration-history.json\"\n\n\
          #if defined(__cplusplus)\n\
          static_assert(TYPE_BRIDGE_PROJECTED_CREATE_BUILDER_CHUNK_LEN_MAX <=\n\
              {macro_prefix}_HOSTED_OBJECT_BYTES_MIN /\n\
@@ -184,6 +185,10 @@ fn render_header(
              type_bridge_status_t TYPE_BRIDGE_CALL {prefix}_schema_package_open_v2(\n\
                type_bridge_schema_package_t **out_package,\n\
                type_bridge_execution_diagnostics_t **out_diagnostics);\n\n\
+             type_bridge_status_t TYPE_BRIDGE_CALL {prefix}_migration_catalog_open(\n\
+               type_bridge_byte_view_t history_bundle,\n\
+               type_bridge_migration_catalog_t **out_catalog,\n\
+               type_bridge_diagnostics_t **out_diagnostics);\n\n\
              #ifdef __cplusplus\n}}\n#endif\n\n#endif /* {guard} */\n"
         );
     } else {
@@ -395,6 +400,7 @@ fn render_source(
         ),
     );
     if ordered {
+        let [add_alias_input, alias_preflight] = generated_alias_helper_symbols(prefix)?;
         let _ = write!(
             output,
             "\n\
@@ -403,6 +409,41 @@ fn render_source(
                  type_bridge_execution_diagnostics_t **out_diagnostics) {{\n\
                return type_bridge_schema_package_open_chunked_v2(\n\
                    &{prefix}_schema_package_chunks_v1, out_package, out_diagnostics);\n\
+             }}\n"
+        );
+        let _ = write!(
+            output,
+            "\n\
+             type_bridge_status_t TYPE_BRIDGE_CALL {prefix}_migration_catalog_open(\n\
+                 type_bridge_byte_view_t history_bundle,\n\
+                 type_bridge_migration_catalog_t **out_catalog,\n\
+                 type_bridge_diagnostics_t **out_diagnostics) {{\n\
+               type_bridge_generated_opaque_input_v1_t alias_inputs[1];\n\
+               size_t alias_input_count = 0u;\n\
+               type_bridge_schema_package_t *package = NULL;\n\
+               type_bridge_status_t status;\n\
+               if (out_catalog == NULL || out_diagnostics == NULL) {{\n\
+                 return TYPE_BRIDGE_STATUS_INVALID_ARGUMENT;\n\
+               }}\n\
+               {add_alias_input}(alias_inputs, &alias_input_count,\n\
+                   TYPE_BRIDGE_GENERATED_INPUT_BYTES, history_bundle.data,\n\
+                   history_bundle.length);\n\
+               status = {alias_preflight}(alias_inputs, alias_input_count,\n\
+                   out_catalog, sizeof(*out_catalog),\n\
+                   out_diagnostics, sizeof(*out_diagnostics));\n\
+               if (status != TYPE_BRIDGE_STATUS_OK) {{ return status; }}\n\
+               *out_catalog = NULL;\n\
+               *out_diagnostics = NULL;\n\
+               status = {prefix}_schema_package_open(\n\
+                   &package, out_diagnostics);\n\
+               if (status != TYPE_BRIDGE_STATUS_OK) {{\n\
+                 return status;\n\
+               }}\n\
+               status = type_bridge_migration_catalog_open(\n\
+                   package, history_bundle, out_catalog, out_diagnostics);\n\
+               type_bridge_status_t close_status =\n\
+                   type_bridge_schema_package_close(&package);\n\
+               return status == TYPE_BRIDGE_STATUS_OK ? close_status : status;\n\
              }}\n"
         );
     }
@@ -1094,6 +1135,7 @@ fn validate_generated_symbols(
     insert(format!("{prefix}_schema_package_open"))?;
     if ordered {
         insert(format!("{prefix}_schema_package_open_v2"))?;
+        insert(format!("{prefix}_migration_catalog_open"))?;
     }
     for symbol in query::auxiliary_type_names(projection, prefix, ordered)? {
         insert(symbol)?;
@@ -1285,6 +1327,7 @@ fn generated_external_identifiers(
     symbols.insert(format!("{prefix}_schema_package_open"));
     if ordered {
         symbols.insert(format!("{prefix}_schema_package_open_v2"));
+        symbols.insert(format!("{prefix}_migration_catalog_open"));
     }
     for (_, kind_name, ordinal) in projected_tokens(projection) {
         symbols.insert(projected_token_symbol(prefix, kind_name, ordinal));
@@ -1342,6 +1385,7 @@ fn generated_macro_identifiers(
         format!("{macro_prefix}_HOSTED_OBJECT_BYTES_MIN"),
         format!("{macro_prefix}_EMBEDDED_BYTE_CHUNK_MAX"),
         format!("{macro_prefix}_SEQUENCE_OBJECT_BYTES_MAX"),
+        format!("{macro_prefix}_MIGRATION_HISTORY_RESOURCE"),
     ]);
     for model in projection
         .models()

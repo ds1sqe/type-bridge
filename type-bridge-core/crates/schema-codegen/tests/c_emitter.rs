@@ -474,6 +474,8 @@ fn ordered_c_v3_emits_exact_abi_1_5_admission_crud_batch_and_package_metadata() 
     let pkg_config = std::str::from_utf8(package.get("acme_v3.pc.in").unwrap()).unwrap();
 
     assert!(header.contains("#include <typebridge/type_bridge_abi_1_5.h>"));
+    assert!(header.contains("ACME_V3_MIGRATION_HISTORY_RESOURCE"));
+    assert!(header.contains("acme_v3_migration_catalog_open("));
     assert!(!header.contains("#include <typebridge/type_bridge.h>"));
     assert!(
         source
@@ -483,6 +485,7 @@ fn ordered_c_v3_emits_exact_abi_1_5_admission_crud_batch_and_package_metadata() 
     assert!(!source.contains("TYPE_BRIDGE_C_ABI_MINOR"));
     assert!(source.contains("type_bridge_schema_package_open_chunked_v1("));
     assert!(source.contains("type_bridge_schema_package_open_chunked_v2("));
+    assert!(source.contains("type_bridge_migration_catalog_open("));
     assert!(header.contains("acme_v3_schema_package_open("));
     assert!(header.contains("acme_v3_schema_package_open_v2("));
     assert!(header.contains("type_bridge_execution_diagnostics_t **out_diagnostics"));
