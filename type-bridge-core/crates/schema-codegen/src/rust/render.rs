@@ -58,6 +58,9 @@ const FIXED_PUBLIC_NAMES: &[&str] = &[
     "SubtypeRootModel",
     "ReferenceModel",
     "StructValue",
+    "MaterializeCreate",
+    "MaterializeReference",
+    "DecodedCreate",
     "NominalUpcast",
     "RoleUpcast",
     "RoleTokenCompatible",
@@ -455,7 +458,7 @@ fn render_create(projection: &RuntimeProjection, ordered: bool) -> Result<String
                     (ProjectedContainer::Scalar, false) => {
                         let _ = writeln!(
                             enc_roles_code,
-                            "    if let Some(__tb_reference) = self.{mname}.as_ref() {{ __tb_roles.push(({token_str:?}, vec![__tb_reference.clone().into_encoded_reference()?])); }} else {{ __tb_roles.push(({token_str:?}, vec![])); }}"
+                            "    if let Some(__tb_reference) = self.{mname}.as_ref() {{ __tb_roles.push(({token_str:?}, vec![__tb_reference.clone().into_encoded_reference()?])); }}"
                         );
                     }
                     (ProjectedContainer::Sequence, _) => {
@@ -476,7 +479,7 @@ fn render_create(projection: &RuntimeProjection, ordered: bool) -> Result<String
                     (ProjectedContainer::Scalar, false) => {
                         let _ = writeln!(
                             enc_fields_code,
-                            "    if let Some(__tb_value) = self.{mname}.as_ref() {{ __tb_fields.push(({token_str:?}, vec![__tb_value.value().into_encoded_scalar()])); }} else {{ __tb_fields.push(({token_str:?}, vec![])); }}"
+                            "    if let Some(__tb_value) = self.{mname}.as_ref() {{ __tb_fields.push(({token_str:?}, vec![__tb_value.value().into_encoded_scalar()])); }}"
                         );
                     }
                     (ProjectedContainer::Sequence, _) => {
@@ -492,6 +495,70 @@ fn render_create(projection: &RuntimeProjection, ordered: bool) -> Result<String
         let _ = writeln!(
             output,
             "impl IntoEncodedCreate for {name} {{\n  fn into_encoded_create(self) -> Result<EncodedCreate, ValidationError> {{\n    let mut __tb_fields = Vec::new();\n{enc_fields_code}    let mut __tb_roles = Vec::new();\n{enc_roles_code}    Ok(EncodedCreate::new({read_name}::TYPE_ID_JSON, __tb_fields, __tb_roles))\n  }}\n}}\n"
+        );
+
+        let expected_fields = members
+            .iter()
+            .filter(|member| !member.is_role)
+            .map(|member| format!("{:?}", member.token.as_deref().unwrap_or(&member.name)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let expected_roles = members
+            .iter()
+            .filter(|member| member.is_role)
+            .map(|member| format!("{:?}", member.token.as_deref().unwrap_or(&member.name)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut decode_members = String::new();
+        for member in &members {
+            let mname = &member.name;
+            let mtype = &member.value;
+            let token = member.token.as_deref().unwrap_or(mname);
+            let source = if member.is_role { "roles" } else { "fields" };
+            let duplicate = if member.is_role {
+                "duplicate_role_evidence"
+            } else {
+                "duplicate_scalar_evidence"
+            };
+            let materialize = if member.is_role {
+                format!("{mtype}::materialize_reference(__tb_item, &__tb_path.join({mname:?}))?")
+            } else {
+                decode_field_expr(
+                    projection,
+                    mtype,
+                    "__tb_item",
+                    &format!("__tb_path.join({mname:?})"),
+                )?
+            };
+            match (member.container, member.required) {
+                (ProjectedContainer::Scalar, true) => {
+                    let _ = writeln!(
+                        decode_members,
+                        "    let {mname} = {{ let __tb_values = __tb_value.{source}().iter().find(|(__tb_token, _)| __tb_token.as_str() == {token:?}).map(|(_, __tb_values)| __tb_values.as_slice()).ok_or_else(|| ValidationError::new(__tb_path.join({mname:?}).path(), \"missing_required_member\"))?; if __tb_values.len() != 1 {{ return Err(ValidationError::new(__tb_path.join({mname:?}).path(), {duplicate:?})); }} let __tb_item = &__tb_values[0]; {materialize} }};"
+                    );
+                }
+                (ProjectedContainer::Scalar, false) => {
+                    let _ = writeln!(
+                        decode_members,
+                        "    let {mname} = if let Some(__tb_values) = __tb_value.{source}().iter().find(|(__tb_token, _)| __tb_token.as_str() == {token:?}).map(|(_, __tb_values)| __tb_values.as_slice()) {{ if __tb_values.len() != 1 {{ return Err(ValidationError::new(__tb_path.join({mname:?}).path(), {duplicate:?})); }} let __tb_item = &__tb_values[0]; Some({materialize}) }} else {{ None }};"
+                    );
+                }
+                (ProjectedContainer::Sequence, _) => {
+                    let _ = writeln!(
+                        decode_members,
+                        "    let {mname} = {{ let __tb_values = __tb_value.{source}().iter().find(|(__tb_token, _)| __tb_token.as_str() == {token:?}).map(|(_, __tb_values)| __tb_values.as_slice()).ok_or_else(|| ValidationError::new(__tb_path.join({mname:?}).path(), \"missing_collection_member\"))?; let mut __tb_output = Vec::with_capacity(__tb_values.len()); for __tb_item in __tb_values {{ __tb_output.push({materialize}); }} __tb_output }};"
+                    );
+                }
+            }
+        }
+        let arguments = members
+            .iter()
+            .map(|member| member.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let _ = writeln!(
+            output,
+            "impl MaterializeCreate for {name} {{\n  type Schema = crate::AppSchema;\n  fn materialize_create(__tb_value: &DecodedCreate, __tb_path: &ValidationPath) -> Result<Self, ValidationError> {{\n    if __tb_value.type_id_json() != {read_name}::TYPE_ID_JSON {{ return Err(ValidationError::new(__tb_path.path(), \"wrong_concrete_model_type\")); }}\n    let mut __tb_seen = std::collections::BTreeSet::<&str>::new();\n    for (__tb_token, _) in __tb_value.fields() {{ if !__tb_seen.insert(__tb_token.as_str()) {{ return Err(ValidationError::new(__tb_path.path(), \"duplicate_scalar_evidence\")); }} if ![{expected_fields}].contains(&__tb_token.as_str()) {{ return Err(ValidationError::new(__tb_path.path(), \"unexpected_field_evidence\")); }} }}\n    __tb_seen.clear();\n    for (__tb_token, _) in __tb_value.roles() {{ if !__tb_seen.insert(__tb_token.as_str()) {{ return Err(ValidationError::new(__tb_path.path(), \"duplicate_role_evidence\")); }} if ![{expected_roles}].contains(&__tb_token.as_str()) {{ return Err(ValidationError::new(__tb_path.path(), \"unexpected_role_evidence\")); }} }}\n{decode_members}    Self::try_new({arguments})\n  }}\n}}\n"
         );
     }
     Ok(output)
@@ -1010,6 +1077,10 @@ fn render_reference(projection: &RuntimeProjection) -> Result<String, Diagnostic
         let _ = writeln!(
             output,
             "impl IntoEncodedReference for {name} {{\n  fn into_encoded_reference(self) -> Result<EncodedReference, ValidationError> {{\n    let mut __tb_keys = Vec::new();\n{enc_keys_code}    EncodedReference::try_new_with_origin({read_name}::TYPE_ID_JSON, self.iid, __tb_keys, self.__tb_origin, &ValidationPath::root())\n  }}\n}}\n"
+        );
+        let _ = writeln!(
+            output,
+            "impl MaterializeReference for {name} {{\n  fn materialize_reference(__tb_value: &HydratedPlayer, __tb_path: &ValidationPath) -> Result<Self, ValidationError> {{\n    Self::__tb_from_player(__tb_value, __tb_path)\n  }}\n}}\n"
         );
     }
     Ok(output)
@@ -2078,6 +2149,16 @@ fn create_role_player_union<'a>(
         );
     }
     code.push_str("    }\n  }\n}\n\n");
+    code.push_str("impl MaterializeReference for ");
+    code.push_str(&union_name);
+    code.push_str(" {\n  fn materialize_reference(__tb_value: &HydratedPlayer, __tb_path: &ValidationPath) -> Result<Self, ValidationError> {\n    match __tb_value.type_id_json() {\n");
+    for (variant, ref_t) in &ref_types {
+        let _ = writeln!(
+            code,
+            "      {ref_t}::TYPE_ID_JSON => {ref_t}::materialize_reference(__tb_value, __tb_path).map(Self::{variant}),"
+        );
+    }
+    code.push_str("      _ => Err(ValidationError::new(__tb_path.path(), \"wrong_concrete_model_type\")),\n    }\n  }\n}\n\n");
     Ok((union_name, Some(code)))
 }
 fn scalar_literal_expr(

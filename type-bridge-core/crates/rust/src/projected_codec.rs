@@ -14,9 +14,9 @@ use type_bridge_orm::{
 };
 
 use crate::__codegen::{
-    CanonicalDouble, CompleteModel, Date, DateTime, DateTimeTz, Decimal, Duration, EncodedCreate,
-    EncodedReference, EncodedScalar, FieldToken, HydratedPlayer, HydratedRow, HydrationCapability,
-    IntoEncodedCreate, Model, QueryValued, ReferenceOrigin, ValidationPath,
+    CanonicalDouble, CompleteModel, Date, DateTime, DateTimeTz, Decimal, DecodedCreate, Duration,
+    EncodedCreate, EncodedReference, EncodedScalar, FieldToken, HydratedPlayer, HydratedRow,
+    HydrationCapability, IntoEncodedCreate, Model, QueryValued, ReferenceOrigin, ValidationPath,
 };
 use crate::Result;
 use crate::entity_codec::map_validation_error;
@@ -154,6 +154,23 @@ pub(crate) fn project_create<T: IntoEncodedCreate>(
     project_encoded_create(&encoded, expected_type, installed)
 }
 
+pub(crate) fn project_create_inferred<T: IntoEncodedCreate>(
+    input: T,
+    installed: &InstalledRuntimeProjection,
+) -> Result<ProjectedCreate> {
+    let encoded = input
+        .into_encoded_create()
+        .map_err(|error| map_validation_error(error, ModelValidationPhase::Input))?;
+    let expected_type = decode_type_identity(
+        encoded.type_id_json(),
+        ModelValidationPhase::Input,
+        "invalid_model_identity",
+        vec!["type".into()],
+        "generated model identity is not canonical",
+    )?;
+    project_encoded_create(&encoded, &expected_type, installed)
+}
+
 pub(crate) fn validate_encoded_create(
     encoded: &EncodedCreate,
     installed: &InstalledRuntimeProjection,
@@ -270,6 +287,66 @@ pub(crate) fn project_encoded_create(
 
     ProjectedCreate::try_new(installed, expected_type.clone(), fields, roles)
         .map_err(|error| Error::from_sdk_execution(error, ModelValidationPhase::Input))
+}
+
+pub(crate) fn projected_to_decoded_create(
+    value: &ProjectedCreate,
+    installed: &InstalledRuntimeProjection,
+) -> Result<DecodedCreate> {
+    value
+        .validate_for(installed)
+        .map_err(|error| Error::from_sdk_execution(error, ModelValidationPhase::Input))?;
+    let type_id_json = encode_type_identity(value.type_id(), vec!["type".into()])?;
+    let mut fields = Vec::new();
+    for (field, values) in value.fields() {
+        if !value.field_is_present(field) {
+            continue;
+        }
+        let identity = encode_owns_identity(
+            declaring_owns_identity(installed, value.type_id(), field, vec!["fields".into()])?,
+            vec!["fields".into()],
+        )?;
+        fields.push((
+            identity,
+            values
+                .iter()
+                .map(|value| encoded_scalar(value.value()))
+                .collect::<Result<Vec<_>>>()?,
+        ));
+    }
+    let mut roles = Vec::new();
+    for (role, references) in value.roles() {
+        if !value.role_is_present(role) {
+            continue;
+        }
+        let identity = encode_role_identity(role, vec!["roles".into()])?;
+        let mut players = Vec::with_capacity(references.len());
+        for reference in references {
+            let player_type = encode_type_identity(reference.type_id(), vec!["roles".into()])?;
+            let mut keys = Vec::with_capacity(reference.keys().len());
+            for (field, scalar) in reference.keys() {
+                keys.push((
+                    encode_owns_identity(
+                        declaring_owns_identity(
+                            installed,
+                            reference.type_id(),
+                            field,
+                            vec!["roles".into(), "keys".into()],
+                        )?,
+                        vec!["roles".into(), "keys".into()],
+                    )?,
+                    encoded_scalar(scalar.value())?,
+                ));
+            }
+            players.push(HydratedPlayer::from_owned(
+                player_type,
+                reference.iid().map(str::to_owned),
+                keys,
+            ));
+        }
+        roles.push((identity, players));
+    }
+    Ok(DecodedCreate::new(type_id_json, fields, roles))
 }
 
 fn project_reference(

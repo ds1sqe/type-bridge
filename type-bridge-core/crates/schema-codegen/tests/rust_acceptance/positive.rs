@@ -332,6 +332,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     assert_eq!(person_create.aliases().len(), 2);
 
+    let person_create_bytes = SCHEMA.encode_create(person_create.clone())?;
+    let decoded_person_create: PersonCreate = SCHEMA.decode_create(&person_create_bytes)?;
+    assert_eq!(decoded_person_create.identifier().value(), "person-1");
+    assert_eq!(decoded_person_create.aliases().len(), 2);
+    assert!(decoded_person_create.nickname().is_some());
+    assert!(SCHEMA
+        .decode_create::<CounterCreate>(&person_create_bytes)
+        .is_err());
+
     let id_scalar = identifier.value().into_encoded_scalar();
     let score_scalar = score.value().into_encoded_scalar();
     let double_scalar = v_double.value().into_encoded_scalar();

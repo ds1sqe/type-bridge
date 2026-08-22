@@ -12,8 +12,11 @@ use type_bridge_schema::{
 };
 use type_bridge_schema_codegen::RustEmitter;
 
-use crate::__codegen::{EncodedCreate, HydratedRow, ValidationError};
-use crate::error::{Error, Result};
+use crate::__codegen::{
+    EncodedCreate, HydratedRow, IntoEncodedCreate, MaterializeCreate, ValidationError,
+    ValidationPath,
+};
+use crate::error::{Error, ModelValidationPhase, Result};
 
 #[doc(hidden)]
 pub mod sealed {
@@ -29,6 +32,27 @@ pub struct Unbound;
 
 impl sealed::Sealed for Unbound {}
 impl Schema for Unbound {}
+
+fn canonical_contract_error(error: type_bridge_contract::diagnostic::Diagnostic) -> Error {
+    let code = error.code().as_str().to_owned();
+    Error::model_validation(
+        ModelValidationPhase::Input,
+        code,
+        Vec::new(),
+        "canonical projected-record contract rejected the value",
+        Some(Box::new(error)),
+    )
+}
+
+fn canonical_codec_error(error: type_bridge_orm::ProjectedCodecError) -> Error {
+    Error::model_validation(
+        ModelValidationPhase::Input,
+        "canonical_projected_codec_failure",
+        Vec::new(),
+        "installed projection rejected canonical record materialization",
+        Some(Box::new(error)),
+    )
+}
 
 /// Opaque installed projection used by generated successor runtimes.
 #[doc(hidden)]
@@ -156,6 +180,49 @@ impl<S: Schema> SchemaPackage<S> {
             semantic_profile_id: Some(semantic_profile_id),
             marker: PhantomData,
         }
+    }
+
+    /// Encode one exact generated create payload as canonical projected-record bytes.
+    pub fn encode_create<T>(&self, value: T) -> Result<Vec<u8>>
+    where
+        T: IntoEncodedCreate,
+    {
+        let installed = self.verify_and_install()?;
+        let projected = crate::projected_codec::project_create_inferred(value, &installed)?;
+        let record = type_bridge_orm::record_from_create(&installed, &projected)
+            .map_err(canonical_codec_error)?;
+        record.encode().map_err(canonical_contract_error)
+    }
+
+    /// Decode canonical projected-record bytes as one exact generated create type.
+    pub fn decode_create<T>(&self, bytes: &[u8]) -> Result<T>
+    where
+        T: MaterializeCreate<Schema = S>,
+    {
+        let installed = self.verify_and_install()?;
+        let record = type_bridge_contract::projected_record::ProjectedRecord::decode(bytes)
+            .map_err(canonical_contract_error)?;
+        let value = type_bridge_orm::materialize_record(&installed, &record)
+            .map_err(canonical_codec_error)?;
+        let type_bridge_orm::ProjectedCodecValue::Create(value) = value else {
+            return Err(Error::model_validation(
+                ModelValidationPhase::Input,
+                "canonical_record_kind_mismatch",
+                Vec::new(),
+                "canonical record is not a generated create payload",
+                None,
+            ));
+        };
+        let decoded = crate::projected_codec::projected_to_decoded_create(&value, &installed)?;
+        T::materialize_create(&decoded, &ValidationPath::root()).map_err(|error| {
+            Error::model_validation(
+                ModelValidationPhase::Input,
+                "canonical_create_materialization_failed",
+                Vec::new(),
+                "canonical create could not materialize as the requested generated type",
+                Some(Box::new(error)),
+            )
+        })
     }
 
     /// Perform offline fingerprint, authority, and exact emitter-evidence verification

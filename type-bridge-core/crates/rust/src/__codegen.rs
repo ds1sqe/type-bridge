@@ -1275,6 +1275,64 @@ pub trait IntoEncodedCreate: sealed::Sealed {
     fn into_encoded_create(self) -> Result<EncodedCreate, ValidationError>;
 }
 
+/// Materializing trait for one exact generated create type from canonical evidence.
+#[doc(hidden)]
+pub trait MaterializeCreate: IntoEncodedCreate + Sized {
+    type Schema: crate::schema::Schema;
+    fn materialize_create(
+        value: &DecodedCreate,
+        path: &ValidationPath,
+    ) -> Result<Self, ValidationError>;
+}
+
+/// Materializing trait for one exact generated reference type from detached evidence.
+#[doc(hidden)]
+pub trait MaterializeReference: IntoEncodedReference + Sized {
+    fn materialize_reference(
+        value: &HydratedPlayer,
+        path: &ValidationPath,
+    ) -> Result<Self, ValidationError>;
+}
+
+/// Owned canonical create evidence used only at generated nominal decode.
+#[doc(hidden)]
+#[derive(Clone, Debug, PartialEq)]
+pub struct DecodedCreate {
+    type_id_json: String,
+    fields: Vec<(String, Vec<EncodedScalar>)>,
+    roles: Vec<(String, Vec<HydratedPlayer>)>,
+}
+
+impl DecodedCreate {
+    #[must_use]
+    pub fn new(
+        type_id_json: String,
+        fields: Vec<(String, Vec<EncodedScalar>)>,
+        roles: Vec<(String, Vec<HydratedPlayer>)>,
+    ) -> Self {
+        Self {
+            type_id_json,
+            fields,
+            roles,
+        }
+    }
+
+    #[must_use]
+    pub fn type_id_json(&self) -> &str {
+        &self.type_id_json
+    }
+
+    #[must_use]
+    pub fn fields(&self) -> &[(String, Vec<EncodedScalar>)] {
+        &self.fields
+    }
+
+    #[must_use]
+    pub fn roles(&self) -> &[(String, Vec<HydratedPlayer>)] {
+        &self.roles
+    }
+}
+
 /// Uninhabited create payload for a concrete read model whose schema shape
 /// cannot be instantiated at its own scope.
 #[doc(hidden)]
