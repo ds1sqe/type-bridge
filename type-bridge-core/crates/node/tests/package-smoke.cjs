@@ -201,6 +201,7 @@ assert.deepEqual(Object.keys(runtimeProjection).sort(), [
   "QueryExecutionResourceLimits",
   "installGeneratedSchemaAuthority",
   "installRuntimeProjection",
+  "projectedManagerNativeCall",
 ]);
 
 const packed = JSON.parse(execSync("npm pack --dry-run --json", { encoding: "utf8" }));

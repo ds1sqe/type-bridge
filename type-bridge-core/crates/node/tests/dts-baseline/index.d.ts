@@ -229,6 +229,7 @@ interface NativeMigrationCatalog {
     heads(): MigrationIdentity[];
     entry(index: number): MigrationHistoryEntry | null;
     verify(database: NativeRustDatabase): MigrationVerificationReport;
+    appliedMigrations(database: NativeRustDatabase): MigrationIdentity[];
     previewApply(applied: MigrationIdentity[], targets?: MigrationIdentity[] | null): NativeMigrationPreview;
     previewRollback(applied: MigrationIdentity[], removals: MigrationIdentity[]): NativeMigrationPreview;
 }
@@ -361,6 +362,7 @@ export declare class MigrationCatalog {
     heads(): MigrationIdentity[];
     entry(index: number): MigrationHistoryEntry | null;
     verify(database: RustDatabase): MigrationVerificationReport;
+    appliedMigrations(database: RustDatabase): MigrationIdentity[];
     previewApply(applied: MigrationIdentity[], targets?: MigrationIdentity[]): MigrationPreview;
     previewRollback(applied: MigrationIdentity[], removals: MigrationIdentity[]): MigrationPreview;
 }
