@@ -28,10 +28,10 @@ use type_bridge_schema::{
 };
 use type_bridge_schema_migration::{
     BackfillExecutionDirection, ExecutionScope, GroupCommitCertainty, LeaseHolderId,
-    MigrationApplyTarget, MigrationExecutionJournal, MigrationExecutionOutcome,
-    MigrationExecutionProvider, MigrationHistoryGraph, MigrationLeaseStore, MigrationSafetyPolicy,
-    SchemaLoweringBinding, SchemaMigrationDraft, VerifiedSchemaMigrationManifest,
-    build_verified_manifest, build_verified_migration_apply_plan,
+    MigrationApplyTarget, MigrationExecutionControl, MigrationExecutionJournal,
+    MigrationExecutionOutcome, MigrationExecutionProvider, MigrationHistoryGraph,
+    MigrationLeaseStore, MigrationSafetyPolicy, SchemaLoweringBinding, SchemaMigrationDraft,
+    VerifiedSchemaMigrationManifest, build_verified_manifest, build_verified_migration_apply_plan,
     execute_verified_migration_apply_plan, schema_lowering_profile_binding,
 };
 use type_bridge_schema_migration_typedb::{
@@ -165,7 +165,7 @@ async fn query_document_count(database: &Database, query: &str) -> usize {
         type_bridge_orm::session::backend::QueryResult::Documents(documents) => documents.len(),
         result => panic!("fixture query must return documents, got {result:?}"),
     };
-    transaction.rollback().await.expect("close fixture read");
+    transaction.close().await.expect("close fixture read");
     count
 }
 
@@ -460,9 +460,15 @@ async fn closed_backfill_conflict_retry_and_reverse_round_trip_on_3_12_3() {
         )
         .await
         .expect("backfill lease");
+    let control = MigrationExecutionControl::default();
 
     let conflict = provider
-        .execute_backfill(&lease, &backfill, BackfillExecutionDirection::Forward)
+        .execute_backfill(
+            &lease,
+            &backfill,
+            BackfillExecutionDirection::Forward,
+            &control,
+        )
         .await
         .expect_err("unequal destination rejects before mutation");
     assert_eq!(
@@ -496,7 +502,12 @@ async fn closed_backfill_conflict_retry_and_reverse_round_trip_on_3_12_3() {
     repair.commit().await.expect("commit conflict repair");
 
     let applied = provider
-        .execute_backfill(&lease, &backfill, BackfillExecutionDirection::Forward)
+        .execute_backfill(
+            &lease,
+            &backfill,
+            BackfillExecutionDirection::Forward,
+            &control,
+        )
         .await
         .expect("execute exact copy backfill");
     assert_eq!(applied.counts().changed(), 2);
@@ -511,13 +522,23 @@ async fn closed_backfill_conflict_retry_and_reverse_round_trip_on_3_12_3() {
     );
 
     let retried = provider
-        .execute_backfill(&lease, &backfill, BackfillExecutionDirection::Forward)
+        .execute_backfill(
+            &lease,
+            &backfill,
+            BackfillExecutionDirection::Forward,
+            &control,
+        )
         .await
         .expect("idempotent retry");
     assert_eq!(retried.counts().changed(), 0);
 
     let reversed = provider
-        .execute_backfill(&lease, &backfill, BackfillExecutionDirection::Reverse)
+        .execute_backfill(
+            &lease,
+            &backfill,
+            BackfillExecutionDirection::Reverse,
+            &control,
+        )
         .await
         .expect("checked reverse");
     assert_eq!(reversed.counts().changed(), 2);
