@@ -2,6 +2,7 @@
 
 use std::collections::BTreeSet;
 use std::fs;
+use std::path::Path;
 use std::process::Command;
 
 const ABI_1_5_CANDIDATE_ADDITIONS: [&str; 86] = [
@@ -221,6 +222,112 @@ fn cmake_install_inventory_carries_the_abi_1_5_header() {
     let cmake = include_str!("../CMakeLists.txt");
     assert!(cmake.contains("project(TypeBridge VERSION 1.5.0 LANGUAGES NONE)"));
     assert!(cmake.contains("include/typebridge/type_bridge_abi_1_5.h"));
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+#[test]
+fn installed_abi_1_5_c17_consumer_links_and_runs() {
+    let executable = std::env::current_exe().unwrap();
+    let profile = executable
+        .ancestors()
+        .find(|path| path.file_name().is_some_and(|name| name == "debug"))
+        .expect("test executable is beneath the Cargo profile directory");
+    let direct = profile.join("libtype_bridge_c.so");
+    let library = if direct.is_file() {
+        direct
+    } else {
+        profile.join("deps/libtype_bridge_c.so")
+    };
+    assert!(library.is_file(), "Cargo must build the activated cdylib");
+
+    let stage = std::env::temp_dir().join(format!(
+        "typebridge-abi-1-5-installed-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&stage);
+    let build = stage.join("build");
+    let install = stage.join("install");
+    let crate_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let output = Command::new("cmake")
+        .arg("-S")
+        .arg(crate_root)
+        .arg("-B")
+        .arg(&build)
+        .arg(format!("-DTYPE_BRIDGE_C_LIBRARY={}", library.display()))
+        .args([
+            "-DCMAKE_INSTALL_LIBDIR=lib",
+            "-DCMAKE_INSTALL_INCLUDEDIR=include",
+            "-DCMAKE_INSTALL_BINDIR=bin",
+        ])
+        .output()
+        .expect("ABI 1.5 runtime package configure launches");
+    assert!(
+        output.status.success(),
+        "ABI 1.5 package configure failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let output = Command::new("cmake")
+        .arg("--install")
+        .arg(&build)
+        .arg("--prefix")
+        .arg(&install)
+        .output()
+        .expect("ABI 1.5 runtime package install launches");
+    assert!(
+        output.status.success(),
+        "ABI 1.5 package install failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let source = stage.join("consumer.c");
+    fs::write(
+        &source,
+        r#"#include <stdint.h>
+#include <typebridge/type_bridge_abi_1_5.h>
+
+int main(void) {
+  type_bridge_migration_cancellation_t *cancellation = NULL;
+  uint8_t cancelled = 9u;
+  if (type_bridge_migration_cancellation_new(&cancellation) != TYPE_BRIDGE_STATUS_OK || cancellation == NULL) return 1;
+  if (type_bridge_migration_cancellation_is_cancelled(cancellation, &cancelled) != TYPE_BRIDGE_STATUS_OK || cancelled != 0u) return 2;
+  if (type_bridge_migration_cancellation_cancel(cancellation) != TYPE_BRIDGE_STATUS_OK) return 3;
+  if (type_bridge_migration_cancellation_is_cancelled(cancellation, &cancelled) != TYPE_BRIDGE_STATUS_OK || cancelled != 1u) return 4;
+  if (type_bridge_migration_cancellation_close(&cancellation) != TYPE_BRIDGE_STATUS_OK || cancellation != NULL) return 5;
+  return 0;
+}
+"#,
+    )
+    .unwrap();
+    let consumer = stage.join("consumer");
+    let output = Command::new("cc")
+        .args([
+            "-std=c17",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-pedantic-errors",
+        ])
+        .arg(&source)
+        .arg("-I")
+        .arg(install.join("include"))
+        .arg("-L")
+        .arg(install.join("lib"))
+        .arg("-ltype_bridge_c")
+        .arg(format!("-Wl,-rpath,{}", install.join("lib").display()))
+        .arg("-o")
+        .arg(&consumer)
+        .output()
+        .expect("installed ABI 1.5 consumer compile launches");
+    assert!(
+        output.status.success(),
+        "installed ABI 1.5 consumer compile failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let output = Command::new(&consumer)
+        .output()
+        .expect("installed ABI 1.5 consumer launches");
+    assert!(output.status.success(), "installed ABI 1.5 consumer failed");
+    fs::remove_dir_all(stage).unwrap();
 }
 
 #[test]
