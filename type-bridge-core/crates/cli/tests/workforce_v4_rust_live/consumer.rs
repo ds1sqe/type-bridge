@@ -87,6 +87,32 @@ async fn main() {
         .expect_err("pre-cancelled operation rejects before an effect");
 
     let catalog = open_migration_catalog().expect("embedded migration catalog opens");
+    let catalog_ids = (0..catalog.len())
+        .map(|index| catalog.entry(index).expect("catalog entry").id().clone())
+        .collect::<Vec<_>>();
+    let full_apply_preview = catalog
+        .preview_apply(Vec::new(), None)
+        .expect("full apply preview builds");
+    let apply_order = (0..full_apply_preview.len())
+        .map(|index| {
+            let entry = full_apply_preview.entry(index).expect("apply entry");
+            let id = entry.id();
+            format!("{}/{}", id.app_label().as_str(), id.name().as_str())
+        })
+        .collect::<Vec<_>>();
+    let backfill_steps = (0..full_apply_preview.len())
+        .map(|index| full_apply_preview.entry(index).expect("apply entry").backfill_count())
+        .sum::<usize>();
+    let full_rollback_preview = catalog
+        .preview_rollback(catalog_ids.clone(), catalog_ids.clone())
+        .expect("full rollback preview builds");
+    let rollback_order = (0..full_rollback_preview.len())
+        .map(|index| {
+            let entry = full_rollback_preview.entry(index).expect("rollback entry");
+            let id = entry.id();
+            format!("{}/{}", id.app_label().as_str(), id.name().as_str())
+        })
+        .collect::<Vec<_>>();
     let initial = catalog.entry(0).expect("initial catalog entry").id().clone();
     let preview = catalog
         .preview_apply(Vec::new(), Some(vec![initial]))
@@ -294,6 +320,7 @@ async fn main() {
                 },
                 "delete": match deletion {
                     type_bridge::ManagedDatabaseDeleteOutcome::DeletedStandaloneManaged => "deleted_standalone_managed",
+                    type_bridge::ManagedDatabaseDeleteOutcome::DeletedOwnedPair => "deleted_owned_pair",
                     _ => "unexpected",
                 },
                 "repeat_delete": match repeat_deletion {
@@ -326,6 +353,13 @@ async fn main() {
                 "unknown_target_code": unknown_target.code(),
                 "repeat_rollback_status": repeat_rollback_status,
                 "reapply_status": format!("{:?}", reapply_report.status()).to_lowercase()
+            },
+            "runtime_facade": {
+                "catalog_entries": catalog.len(),
+                "catalog_fingerprint": catalog.fingerprint().digest().to_hex(),
+                "apply_order": apply_order,
+                "rollback_order": rollback_order,
+                "backfill_steps": backfill_steps
             },
             "lifecycle": {"explicit_close": true, "repeat_close": true},
             "cleanup": {

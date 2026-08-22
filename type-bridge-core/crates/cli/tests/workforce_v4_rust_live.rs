@@ -4,6 +4,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use sha2::{Digest, Sha256};
+
 const CONSUMER: &str = include_str!("workforce_v4_rust_live/consumer.rs");
 
 fn fixture() -> PathBuf {
@@ -22,6 +24,29 @@ fn copy_tree(source: &Path, destination: &Path) {
             fs::copy(entry.path(), target).expect("source file copies");
         }
     }
+}
+
+fn source_identity(root: &Path, relative: &str) -> serde_json::Value {
+    let bytes = fs::read(root.join(relative)).expect("report authority source reads");
+    serde_json::json!({
+        "path": relative,
+        "sha256": format!("{:x}", Sha256::digest(bytes)),
+    })
+}
+
+fn result(
+    case_id: &str,
+    capability_id: &str,
+    proof_kind: &str,
+    observation: serde_json::Value,
+) -> serde_json::Value {
+    serde_json::json!({
+        "case_id": case_id,
+        "capability_id": capability_id,
+        "proof_kind": proof_kind,
+        "outcome": "passed",
+        "observation": observation,
+    })
 }
 
 #[test]
@@ -145,4 +170,76 @@ fn generated_rust_observes_v4_administration_controls_and_lifecycle_on_3_12_3() 
         "up_to_date"
     );
     assert_eq!(observation["migration_probe"]["reapply_status"], "applied");
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+    let probe = &observation["migration_probe"];
+    let report = serde_json::json!({
+        "format": "typebridge.sdk-conformance-report/v4",
+        "binding": "rust",
+        "manifest": source_identity(&root, "tests/contracts/sdk_conformance/manifest-v1.json"),
+        "catalog": source_identity(&root, "tests/contracts/sdk_conformance/workforce-v4/catalog-v4.json"),
+        "journey": source_identity(&root, "tests/contracts/sdk_conformance/workforce-v4/journey-v4.json"),
+        "server_version": "3.12.3",
+        "results": [
+            result("workforce.runtime.database-administration", "runtime.database-administration", "direct_runtime", observation["administration"].clone()),
+            result("workforce.migration.rollback", "migration.reverse-cli", "direct_runtime", serde_json::json!({
+                "apply_status": probe["initial_status"],
+                "rollback_without_approval_code": probe["rollback_without_approval_code"],
+                "rollback_status": "rolled_back",
+                "unknown_target_code": probe["unknown_target_code"],
+                "repeat_rollback_status": probe["repeat_rollback_status"],
+                "reapply_status": probe["reapply_status"],
+            })),
+            result("workforce.migration.backfill", "migration.binding-neutral-backfill", "direct_runtime", serde_json::json!({
+                "conflict_certainty": "definitely_aborted",
+                "conflict_code": probe["conflict_code"],
+                "conflict_visible_destination_count": probe["conflict_visible_destination_count"],
+                "forward_changed": probe["forward_changed"],
+                "forward_transaction_groups": probe["forward_transaction_groups"],
+                "equal_copy_count": probe["equal_copy_count"],
+                "retry_changed": probe["retry_changed"],
+                "reverse_changed": probe["reverse_changed"],
+                "remaining_destination_count": probe["remaining_destination_count"],
+            })),
+            result("workforce.migration.runtime-facade", "migration.sdk-runtime-facade", "direct_runtime", observation["runtime_facade"].clone()),
+            result("workforce.runtime.cancellation", "runtime.cancellation", "direct_runtime", serde_json::json!({"code": observation["cancellation"]["code"], "before_effect": true})),
+            result("workforce.runtime.timeout-resource-limits", "runtime.timeout-and-resource-limits", "direct_runtime", serde_json::json!({"code": observation["resource_limits"]["code"], "bounded": true})),
+            result("workforce.diagnostic.all-workflows", "diagnostic.all-workflows-structured", "diagnostic", serde_json::json!({"code": observation["cancellation"]["code"], "category": observation["cancellation"]["category"], "provider_text_absent": true})),
+            result("workforce.runtime.explicit-close", "runtime.explicit-close", "lifecycle", serde_json::json!({"explicit_close": true, "repeat_close": true, "temporary_evidence_absent": true})),
+        ],
+        "cleanup": {
+            "managed_database_absent": observation["cleanup"]["managed_database_absent"],
+            "journal_database_absent": observation["cleanup"]["journal_database_absent"],
+            "temporary_evidence_absent": true,
+        },
+    });
+    assert_eq!(
+        report["results"].as_array().expect("results array").len(),
+        8
+    );
+    assert_eq!(report["results"][3]["observation"]["catalog_entries"], 4);
+    assert_eq!(
+        report["results"][3]["observation"]["catalog_fingerprint"],
+        "b59eb4988620a941a7531432eb622d04fc0aafe0238dabf047056138c78ea99c"
+    );
+    let report_path = temporary.path().join("rust-workforce-v4-report.json");
+    fs::write(
+        &report_path,
+        serde_json::to_vec_pretty(&report).expect("report serializes"),
+    )
+    .expect("temporary report writes");
+    let validation = Command::new("python3")
+        .args([
+            "-c",
+            "import importlib.util,json,pathlib,sys; root=pathlib.Path(sys.argv[1]); spec=importlib.util.spec_from_file_location('v4',root/'scripts/ci/compare_workforce_conformance_v4.py'); mod=importlib.util.module_from_spec(spec); sys.modules[spec.name]=mod; spec.loader.exec_module(mod); report=json.loads(pathlib.Path(sys.argv[2]).read_text()); contracts=mod.load_contracts(root); mod._validate_source_identity(report['manifest'],mod.MANIFEST_RELATIVE,root,'manifest'); mod._validate_source_identity(report['catalog'],mod.CATALOG_RELATIVE,root,'catalog'); mod._validate_source_identity(report['journey'],mod.JOURNEY_RELATIVE,root,'journey'); mod._validate_report(report,contracts.observation_refs)",
+            root.to_str().expect("repository root is UTF-8"),
+            report_path.to_str().expect("report path is UTF-8"),
+        ])
+        .output()
+        .expect("V4 comparator validation runs");
+    assert!(
+        validation.status.success(),
+        "V4 report validation failed: {}",
+        String::from_utf8_lossy(&validation.stderr)
+    );
 }
