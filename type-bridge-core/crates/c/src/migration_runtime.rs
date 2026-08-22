@@ -5,11 +5,16 @@
 // ABI 1.5 migration surface can be activated atomically.
 #![allow(dead_code)]
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory};
+use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
+use type_bridge_contract::migration::MigrationId;
 use type_bridge_schema::{ManagedDeltaContext, SafetyClass, VerifiedSchemaAuthority};
-use type_bridge_schema_migration::{MigrationCatalog, migration_runtime_capability_vocabulary};
+use type_bridge_schema_migration::{
+    MigrationApplyPlanError, MigrationApplyTarget, MigrationCatalog, VerifiedMigrationApplyPlan,
+    VerifiedMigrationRollbackPlan, migration_runtime_capability_vocabulary,
+};
 
 use crate::diagnostic::stable;
 
@@ -75,6 +80,44 @@ impl MigrationCatalogState {
             .map(MigrationIdentitySnapshot::from_id)
             .collect()
     }
+
+    /// Build a catalog-bound provider-free apply preview.
+    pub(crate) fn preview_apply(
+        self: &Arc<Self>,
+        applied: &[MigrationIdentitySnapshot],
+        targets: Option<&[MigrationIdentitySnapshot]>,
+    ) -> Result<Arc<MigrationPlanState>, Diagnostic> {
+        let target = match targets {
+            None => MigrationApplyTarget::DefaultHead,
+            Some(targets) => MigrationApplyTarget::Explicit(identity_set(targets)?),
+        };
+        self.catalog
+            .preview_apply(&identity_set(applied)?, &target)
+            .map(|plan| {
+                Arc::new(MigrationPlanState {
+                    catalog: Arc::clone(self),
+                    plan: MigrationPlanKind::Apply(plan),
+                })
+            })
+            .map_err(plan_diagnostic)
+    }
+
+    /// Build a catalog-bound provider-free rollback preview.
+    pub(crate) fn preview_rollback(
+        self: &Arc<Self>,
+        applied: &[MigrationIdentitySnapshot],
+        removals: &[MigrationIdentitySnapshot],
+    ) -> Result<Arc<MigrationPlanState>, Diagnostic> {
+        self.catalog
+            .preview_rollback(&identity_set(applied)?, &identity_set(removals)?)
+            .map(|plan| {
+                Arc::new(MigrationPlanState {
+                    catalog: Arc::clone(self),
+                    plan: MigrationPlanKind::Rollback(plan),
+                })
+            })
+            .map_err(plan_diagnostic)
+    }
 }
 
 /// Copied compound migration identity with no delimiter-joined representation.
@@ -90,6 +133,148 @@ impl MigrationIdentitySnapshot {
             app_label: id.app_label().as_str().as_bytes().to_vec(),
             name: id.name().as_str().as_bytes().to_vec(),
         }
+    }
+
+    fn to_id(&self) -> Result<MigrationId, Diagnostic> {
+        MigrationId::new(
+            String::from_utf8(self.app_label.clone()).map_err(|_| identity_encoding_failed())?,
+            String::from_utf8(self.name.clone()).map_err(|_| identity_encoding_failed())?,
+        )
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum MigrationPlanDirection {
+    Apply,
+    Rollback,
+}
+
+#[derive(Clone, Debug)]
+enum MigrationPlanKind {
+    Apply(VerifiedMigrationApplyPlan),
+    Rollback(VerifiedMigrationRollbackPlan),
+}
+
+/// Immutable preview-plan owner retaining its exact catalog authority.
+#[derive(Clone, Debug)]
+pub(crate) struct MigrationPlanState {
+    catalog: Arc<MigrationCatalogState>,
+    plan: MigrationPlanKind,
+}
+
+impl MigrationPlanState {
+    pub(crate) fn direction(&self) -> MigrationPlanDirection {
+        match self.plan {
+            MigrationPlanKind::Apply(_) => MigrationPlanDirection::Apply,
+            MigrationPlanKind::Rollback(_) => MigrationPlanDirection::Rollback,
+        }
+    }
+
+    pub(crate) fn execution_authorized(&self) -> bool {
+        match &self.plan {
+            MigrationPlanKind::Apply(plan) => plan.execution_authorized(),
+            MigrationPlanKind::Rollback(plan) => plan.execution_authorized(),
+        }
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        match &self.plan {
+            MigrationPlanKind::Apply(plan) => plan.migrations().len(),
+            MigrationPlanKind::Rollback(plan) => plan.rollbacks().len(),
+        }
+    }
+
+    pub(crate) fn entry(self: &Arc<Self>, index: usize) -> Option<MigrationPlanEntryState> {
+        (index < self.len()).then(|| MigrationPlanEntryState {
+            plan: Arc::clone(self),
+            index,
+        })
+    }
+
+    pub(crate) fn catalog_fingerprint_json(&self) -> &[u8] {
+        self.catalog.fingerprint_json()
+    }
+}
+
+/// Independently owned immutable preview-entry snapshot.
+#[derive(Clone, Debug)]
+pub(crate) struct MigrationPlanEntryState {
+    plan: Arc<MigrationPlanState>,
+    index: usize,
+}
+
+impl MigrationPlanEntryState {
+    pub(crate) fn identity(&self) -> MigrationIdentitySnapshot {
+        let id = match &self.plan.plan {
+            MigrationPlanKind::Apply(plan) => plan.migrations()[self.index].manifest().id(),
+            MigrationPlanKind::Rollback(plan) => plan.rollbacks()[self.index].manifest().id(),
+        };
+        MigrationIdentitySnapshot::from_id(id)
+    }
+
+    pub(crate) fn safety(&self) -> SafetyClass {
+        match &self.plan.plan {
+            MigrationPlanKind::Apply(plan) => plan.migrations()[self.index].manifest().safety(),
+            MigrationPlanKind::Rollback(plan) => plan.rollbacks()[self.index].rollback_safety(),
+        }
+    }
+
+    pub(crate) fn operation_count(&self) -> usize {
+        match &self.plan.plan {
+            MigrationPlanKind::Apply(plan) => plan.migrations()[self.index].steps().len(),
+            MigrationPlanKind::Rollback(plan) => plan.rollbacks()[self.index].operations().len(),
+        }
+    }
+
+    pub(crate) fn transaction_group_count(&self) -> usize {
+        match &self.plan.plan {
+            MigrationPlanKind::Apply(plan) => {
+                plan.migrations()[self.index].transaction_groups().len()
+            }
+            MigrationPlanKind::Rollback(plan) => plan.rollbacks()[self.index].steps().len(),
+        }
+    }
+
+    pub(crate) fn backfill_count(&self) -> usize {
+        match &self.plan.plan {
+            MigrationPlanKind::Apply(plan) => {
+                plan.migrations()[self.index].backfill_step_indices().len()
+            }
+            MigrationPlanKind::Rollback(plan) => plan.rollbacks()[self.index].backfills().len(),
+        }
+    }
+}
+
+fn identity_set(
+    identities: &[MigrationIdentitySnapshot],
+) -> Result<BTreeSet<MigrationId>, Diagnostic> {
+    identities
+        .iter()
+        .map(MigrationIdentitySnapshot::to_id)
+        .collect()
+}
+
+fn identity_encoding_failed() -> Diagnostic {
+    stable(
+        DiagnosticCategory::Integrity,
+        "c_migration_identity_encoding_invalid",
+        "A retained migration identity is not valid UTF-8",
+    )
+}
+
+fn plan_diagnostic(error: MigrationApplyPlanError) -> Diagnostic {
+    match error {
+        MigrationApplyPlanError::Contract(diagnostic) => diagnostic,
+        MigrationApplyPlanError::Schema(_) => stable(
+            DiagnosticCategory::Integrity,
+            "c_migration_preview_schema_replay_failed",
+            "Migration preview schema replay failed",
+        ),
+        MigrationApplyPlanError::Lowering(diagnostic) => Diagnostic::new(
+            DiagnosticCategory::InvalidContract,
+            DiagnosticCode::new(diagnostic.code()).expect("lowering diagnostic code is canonical"),
+            "Migration preview lowering was rejected",
+        ),
     }
 }
 
@@ -137,9 +322,45 @@ impl MigrationHistoryEntryState {
 
 #[cfg(test)]
 mod tests {
-    use type_bridge_schema_migration::{MigrationHistoryGraph, VerifiedMigrationHistoryBundle};
+    use type_bridge_contract::capability::CapabilitySet;
+    use type_bridge_contract::codec::FormatVersion;
+    use type_bridge_contract::id::{TypeId, TypeKind};
+    use type_bridge_contract::migration::{MigrationId, MigrationStepId, SchemaDeltaStep};
+    use type_bridge_contract::schema::{
+        DeclaredSchema, DocumentId, SchemaFact, SourceSpan, SourcedSchemaFact, TypeFact,
+    };
+    use type_bridge_schema::decode_schema_authority;
+    use type_bridge_schema::{ManagedDeltaContext, diff_managed, inverse_delta};
+    use type_bridge_schema_migration::{
+        MigrationHistoryGraph, SchemaMigrationDraft, VerifiedMigrationHistoryBundle,
+        build_verified_manifest, encode_verified_migration_history_bundle,
+        migration_runtime_capability_vocabulary,
+    };
 
     use super::MigrationCatalogState;
+
+    fn declared(labels: &[&str]) -> DeclaredSchema {
+        let facts = labels.iter().enumerate().map(|(index, label)| {
+            let ordinal = u64::try_from(index).unwrap();
+            let line = u32::try_from(index + 1).unwrap();
+            SourcedSchemaFact::new(
+                SchemaFact::Type(
+                    TypeFact::new(TypeId::new(TypeKind::Entity, *label).unwrap()).unwrap(),
+                ),
+                SourceSpan::new(
+                    DocumentId::new("c-migration-owner-fixture").unwrap(),
+                    ordinal,
+                    ordinal + 1,
+                    line,
+                    1,
+                    line,
+                    2,
+                )
+                .unwrap(),
+            )
+        });
+        DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), facts).unwrap()
+    }
 
     #[test]
     fn empty_catalog_owner_has_bounded_independent_shape() {
@@ -157,5 +378,61 @@ mod tests {
         assert!(owner.heads().is_empty());
         assert!(owner.entry(0).is_none());
         assert!(owner.fingerprint_json().starts_with(b"{"));
+    }
+
+    #[test]
+    fn authority_opened_catalog_owns_non_executable_preview_resources() {
+        let capabilities = migration_runtime_capability_vocabulary().unwrap();
+        let authority = decode_schema_authority(
+            include_bytes!("../../server/tests/fixtures/schema-authority.json"),
+            &capabilities,
+        )
+        .unwrap();
+        let context = ManagedDeltaContext::new(
+            authority.managed_scope().id().clone(),
+            authority.semantic_profile().id().clone(),
+            capabilities,
+        );
+        let source = declared(&["person"]);
+        let target = declared(&["person", "team"]);
+        let delta = diff_managed(&source, &target, &context).unwrap();
+        let reverse = inverse_delta(&delta).unwrap();
+        let step = SchemaDeltaStep::new(
+            MigrationStepId::new("step-expand").unwrap(),
+            delta,
+            Some(reverse),
+        )
+        .unwrap();
+        let manifest = build_verified_manifest(
+            SchemaMigrationDraft::new(
+                MigrationId::new("example", "0001_expand").unwrap(),
+                Vec::new(),
+                vec![step],
+            )
+            .unwrap(),
+            (&source, &context),
+        )
+        .unwrap();
+        let graph = MigrationHistoryGraph::from_verified([manifest]).unwrap();
+        let bundle = VerifiedMigrationHistoryBundle::from_graph(&graph).unwrap();
+        let bytes = encode_verified_migration_history_bundle(&bundle).unwrap();
+        let catalog = MigrationCatalogState::open(&authority, &bytes).unwrap();
+        let preview = catalog.preview_apply(&[], None).unwrap();
+
+        assert_eq!(preview.direction(), super::MigrationPlanDirection::Apply);
+        assert!(!preview.execution_authorized());
+        assert_eq!(preview.len(), 1);
+        let entry = preview.entry(0).unwrap();
+        assert_eq!(entry.identity().app_label, b"example");
+        assert_eq!(entry.identity().name, b"0001_expand");
+        assert_eq!(entry.operation_count(), 1);
+        assert_eq!(entry.transaction_group_count(), 1);
+        assert_eq!(entry.backfill_count(), 0);
+        assert!(entry.safety() <= type_bridge_schema::SafetyClass::Additive);
+        assert!(preview.entry(1).is_none());
+        assert_eq!(
+            preview.catalog_fingerprint_json(),
+            catalog.fingerprint_json()
+        );
     }
 }
