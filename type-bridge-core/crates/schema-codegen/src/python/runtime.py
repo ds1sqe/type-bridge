@@ -160,6 +160,7 @@ class FunctionRef:
 
 
 _function_refs = {}
+CREATE_ABSENT = object()
 
 
 def function_ref_for_projection(

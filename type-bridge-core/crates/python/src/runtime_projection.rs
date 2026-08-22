@@ -5133,6 +5133,9 @@ fn project_create_from_values_at(
             .ok_or_else(|| py_runtime_error("projected create field has no query token"))?;
         let target_name = fallible_python_string(py, token.target_name().as_str())?;
         let value = values.get_item(target_name.bind(py))?;
+        if value.is_none() || value.as_ref().is_some_and(Bound::is_none) {
+            continue;
+        }
         let collection_path = extended_projected_path(
             operation_path,
             [
@@ -5184,6 +5187,9 @@ fn project_create_from_values_at(
             .ok_or_else(|| py_runtime_error("projected create role has no query token"))?;
         let target_name = fallible_python_string(py, token.target_name().as_str())?;
         let value = values.get_item(target_name.bind(py))?;
+        if value.is_none() || value.as_ref().is_some_and(Bound::is_none) {
+            continue;
+        }
         let collection_path = extended_projected_path(
             operation_path,
             [
@@ -10551,24 +10557,53 @@ class Reference:
                 .class(&person_id, ProjectedModelForm::Complete)
                 .unwrap()
                 .clone_ref(py);
-            let instance = class.bind(py).call0().unwrap();
+            let absent_instance = class.bind(py).call0().unwrap();
+            let present_empty_args = PyDict::new(py);
+            present_empty_args
+                .set_item("tag", PyTuple::empty(py))
+                .unwrap();
+            let present_empty_instance =
+                class.bind(py).call((), Some(&present_empty_args)).unwrap();
             let runtime = PyRuntimeProjection { package };
-            let bytes = runtime
-                .encode_create(py, class.clone_ref(py), instance)
+            let absent_bytes = runtime
+                .encode_create(py, class.clone_ref(py), absent_instance)
                 .unwrap();
-            let decoded = runtime
-                .decode_create(py, class.clone_ref(py), &bytes)
+            let present_empty_bytes = runtime
+                .encode_create(py, class.clone_ref(py), present_empty_instance)
                 .unwrap();
-            assert!(decoded.bind(py).is_instance(class.bind(py)).unwrap());
-            assert!(decoded.bind(py).getattr("iid").unwrap().is_none());
-            let values = decoded
+            assert_ne!(absent_bytes.as_bytes(), present_empty_bytes.as_bytes());
+
+            let absent = runtime
+                .decode_create(py, class.clone_ref(py), &absent_bytes)
+                .unwrap();
+            assert!(absent.bind(py).is_instance(class.bind(py)).unwrap());
+            assert!(absent.bind(py).getattr("iid").unwrap().is_none());
+            let absent_values = absent
                 .bind(py)
                 .call_method0("runtime_values")
                 .unwrap()
                 .downcast_into::<PyDict>()
                 .unwrap();
-            let tags = values.get_item("tag").unwrap().unwrap();
-            assert_eq!(tags.len().unwrap(), 0);
+            assert!(absent_values.get_item("tag").unwrap().is_none());
+
+            let present_empty = runtime
+                .decode_create(py, class.clone_ref(py), &present_empty_bytes)
+                .unwrap();
+            let present_empty_values = present_empty
+                .bind(py)
+                .call_method0("runtime_values")
+                .unwrap()
+                .downcast_into::<PyDict>()
+                .unwrap();
+            assert_eq!(
+                present_empty_values
+                    .get_item("tag")
+                    .unwrap()
+                    .unwrap()
+                    .len()
+                    .unwrap(),
+                0
+            );
         });
     }
 

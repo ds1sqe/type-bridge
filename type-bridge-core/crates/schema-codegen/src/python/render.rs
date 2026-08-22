@@ -501,6 +501,9 @@ fn render_model_header(body: &str, stub: bool, defer_query_imports: bool) -> Str
     if body.contains("_initialize(") {
         runtime.push("initialize_model as _initialize");
     }
+    if body.contains("_CREATE_ABSENT") {
+        runtime.push("CREATE_ABSENT as _CREATE_ABSENT");
+    }
     if body.contains("_initialize_attribute(") {
         runtime.push("initialize_attribute as _initialize_attribute");
     }
@@ -795,11 +798,16 @@ fn render_constructor(
             field.multiplicity(),
             Position::Create,
         );
-        parameters.push(format!(
-            "{name}: {annotation}{}",
+        let default = if !stub
+            && !field.multiplicity().required()
+            && field.multiplicity().container() == ProjectedContainer::Sequence
+        {
+            " = _CREATE_ABSENT"
+        } else {
             default_value(field.multiplicity())
-        ));
-        names.push(name);
+        };
+        parameters.push(format!("{name}: {annotation}{default}"));
+        names.push((name, default == " = _CREATE_ABSENT"));
     }
     for (id, role) in model.create().roles() {
         let name = model.query_tokens().roles()[id].target_name().as_str();
@@ -808,11 +816,16 @@ fn render_constructor(
             role.multiplicity(),
             Position::Create,
         );
-        parameters.push(format!(
-            "{name}: {annotation}{}",
+        let default = if !stub
+            && !role.multiplicity().required()
+            && role.multiplicity().container() == ProjectedContainer::Sequence
+        {
+            " = _CREATE_ABSENT"
+        } else {
             default_value(role.multiplicity())
-        ));
-        names.push(name);
+        };
+        parameters.push(format!("{name}: {annotation}{default}"));
+        names.push((name, default == " = _CREATE_ABSENT"));
     }
     let signature = if parameters.is_empty() {
         "self".to_owned()
@@ -824,8 +837,15 @@ fn render_constructor(
         output.push_str("        ...\n");
     } else {
         output.push_str("        _initialize(self, {\n");
-        for name in names {
-            let _ = writeln!(output, "            \"{name}\": {name},");
+        for (name, absent_sentinel) in names {
+            if absent_sentinel {
+                let _ = writeln!(
+                    output,
+                    "            **({{}} if {name} is _CREATE_ABSENT else {{\"{name}\": {name}}}),"
+                );
+            } else {
+                let _ = writeln!(output, "            \"{name}\": {name},");
+            }
         }
         output.push_str("        })\n");
     }
