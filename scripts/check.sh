@@ -139,6 +139,15 @@ run_node() {
 run_c() {
     printf "${BOLD}━━━ C foundation (internal) ━━━${RESET}\n\n"
 
+    local c_shared_target c_shared_library
+    c_shared_target="$(mktemp -d)"
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        c_shared_library="$c_shared_target/debug/libtype_bridge_c.dylib"
+    else
+        c_shared_library="$c_shared_target/debug/libtype_bridge_c.so"
+    fi
+    trap 'rm -rf -- "$c_shared_target"' EXIT
+
     run_step "generated C package and strict installed-compiler checks" \
         cargo test --locked --manifest-path type-bridge-core/Cargo.toml \
         -p type-bridge-schema-codegen --test c_emitter
@@ -160,28 +169,35 @@ run_c() {
         --test query_function_abi \
         --test query_remote_abi
 
-    run_step "build the C ABI shared library" \
+    run_step "build the isolated C ABI shared library" \
+        env CARGO_TARGET_DIR="$c_shared_target" \
         cargo build --locked --manifest-path type-bridge-core/Cargo.toml \
         -p type-bridge-c --lib
 
     run_step "C ABI 1.4 additive header, export, and package ledger" \
         env TYPE_BRIDGE_C_REQUIRE_SHARED_CONSUMER=1 \
+        TYPE_BRIDGE_C_SHARED_LIBRARY="$c_shared_library" \
         cargo test --locked --manifest-path type-bridge-core/Cargo.toml \
         -p type-bridge-c --test abi_1_4
 
     run_step "C provider-free Phase-2 parity producer" \
         env TYPE_BRIDGE_C_REQUIRE_SHARED_CONSUMER=1 \
+        TYPE_BRIDGE_C_SHARED_LIBRARY="$c_shared_library" \
         cargo test --locked --manifest-path type-bridge-core/Cargo.toml \
         -p type-bridge-c --test phase2_projection_parity
+
+    run_step "C schema-package ABI and standalone consumer" \
+        env TYPE_BRIDGE_C_REQUIRE_SHARED_CONSUMER=1 \
+        TYPE_BRIDGE_C_SHARED_LIBRARY="$c_shared_library" \
+        cargo test --locked --manifest-path type-bridge-core/Cargo.toml \
+        -p type-bridge-c --test schema_package_abi
 
     run_step "C foundation on MSRV 1.88" \
         cargo +1.88.0 check --locked --manifest-path type-bridge-core/Cargo.toml \
         -p type-bridge-c --all-targets
 
-    run_step "C schema-package ABI and standalone consumer" \
-        env TYPE_BRIDGE_C_REQUIRE_SHARED_CONSUMER=1 \
-        cargo test --locked --manifest-path type-bridge-core/Cargo.toml \
-        -p type-bridge-c --test schema_package_abi
+    rm -rf -- "$c_shared_target"
+    trap - EXIT
 }
 
 run_generated_examples() {

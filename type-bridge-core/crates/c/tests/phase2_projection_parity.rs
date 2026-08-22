@@ -662,6 +662,14 @@ fn command_exists(program: &str) -> bool {
 }
 
 fn native_library() -> PathBuf {
+    if let Some(path) = env::var_os("TYPE_BRIDGE_C_SHARED_LIBRARY") {
+        let path = PathBuf::from(path);
+        assert!(
+            path.is_file(),
+            "explicit TypeBridge C shared library is absent"
+        );
+        return path;
+    }
     let executable = env::current_exe().expect("current test executable is available");
     let dependencies = executable.parent().expect("test executable has a parent");
     let profile = dependencies

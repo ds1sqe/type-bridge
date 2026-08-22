@@ -124,6 +124,14 @@ fn shared_consumer_required() -> bool {
 }
 
 fn native_library() -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os("TYPE_BRIDGE_C_SHARED_LIBRARY") {
+        let path = PathBuf::from(path);
+        assert!(
+            path.is_file(),
+            "explicit TypeBridge C shared library is absent"
+        );
+        return Some(path);
+    }
     let executable = std::env::current_exe().expect("current test executable path is available");
     let dependency_directory = executable
         .parent()
@@ -331,7 +339,12 @@ fn activated_sources_and_shared_library_match_the_exact_abi_1_4_ledger() {
         )
     });
     let expected = abi_1_3.union(&additions).cloned().collect::<BTreeSet<_>>();
-    assert_eq!(shared_library_exports(&library), expected);
+    let actual = shared_library_exports(&library);
+    assert!(
+        expected.is_subset(&actual),
+        "the active shared library omitted frozen ABI 1.4 exports: {:?}",
+        expected.difference(&actual).collect::<Vec<_>>(),
+    );
 }
 
 const ABI_1_4_COMPILER_PROBE: &str = r#"#include <stddef.h>

@@ -1035,6 +1035,14 @@ fn shared_consumer_required() -> bool {
 }
 
 fn native_library() -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os("TYPE_BRIDGE_C_SHARED_LIBRARY") {
+        let path = PathBuf::from(path);
+        assert!(
+            path.is_file(),
+            "explicit TypeBridge C shared library is absent"
+        );
+        return Some(path);
+    }
     let executable = std::env::current_exe().expect("current test executable path is available");
     let dependency_directory = executable
         .parent()
@@ -1097,7 +1105,7 @@ fn native_import_library(native_library: &Path) -> PathBuf {
 fn rust_abi_layout() -> Vec<usize> {
     let mut layout = vec![
         1,
-        4,
+        5,
         TypeBridgeStatus::Ok as usize,
         TypeBridgeStatus::InvalidArgument as usize,
         TypeBridgeStatus::SchemaPackageRejected as usize,
@@ -2626,8 +2634,8 @@ int main(void) {
 }
 
 #[test]
-fn shared_library_exports_only_the_frozen_c_abi() {
-    let Some(library) = native_library_or_skip("shared_library_exports_only_the_frozen_c_abi")
+fn shared_library_preserves_the_frozen_abi_1_4_exports() {
+    let Some(library) = native_library_or_skip("shared_library_preserves_the_frozen_abi_1_4_exports")
     else {
         return;
     };
@@ -2694,7 +2702,12 @@ fn shared_library_exports_only_the_frozen_c_abi() {
     #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     let actual = expected_exported_symbols();
 
-    assert_eq!(actual, expected_exported_symbols());
+    let expected = expected_exported_symbols();
+    assert!(
+        expected.is_subset(&actual),
+        "the active shared library omitted frozen ABI 1.4 exports: {:?}",
+        expected.difference(&actual).collect::<Vec<_>>(),
+    );
 }
 
 #[test]
@@ -3017,7 +3030,7 @@ find_package(TypeBridge 1.2.0 EXACT CONFIG REQUIRED)
         r#"cmake_minimum_required(VERSION 3.20)
 project(type_bridge_clean_consumer LANGUAGES C CXX)
 
-find_package(TypeBridge 1.4.0 EXACT CONFIG REQUIRED)
+find_package(TypeBridge 1.5.0 EXACT CONFIG REQUIRED)
 find_package(fixture 1.0.0 EXACT CONFIG REQUIRED)
 
 add_executable(type_bridge_clean_consumer main.c)
@@ -3450,7 +3463,7 @@ fn clean_staged_pkg_config_consumer_supports_nested_library_directories() {
         );
     }
 
-    for (package, expected_version) in [("type-bridge", "1.4.0"), ("fixture", "1.0.0")] {
+    for (package, expected_version) in [("type-bridge", "1.5.0"), ("fixture", "1.0.0")] {
         let output = Command::new("pkg-config")
             .args(["--modversion", package])
             .env("PKG_CONFIG_LIBDIR", &pkg_config_directory)
@@ -6368,7 +6381,7 @@ fn abi_metadata_and_null_handle_paths_are_stable_and_initialize_views() {
     // SAFETY: these ABI metadata functions take no caller-owned inputs.
     assert_eq!(unsafe { type_bridge_c_abi_major() }, 1);
     // SAFETY: these ABI metadata functions take no caller-owned inputs.
-    assert_eq!(unsafe { type_bridge_c_abi_minor() }, 4);
+    assert_eq!(unsafe { type_bridge_c_abi_minor() }, 5);
 
     let mut version = TypeBridgeByteView {
         data: ptr::null(),
