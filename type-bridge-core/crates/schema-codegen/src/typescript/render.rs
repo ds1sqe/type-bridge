@@ -598,8 +598,9 @@ fn render_structs(projection: &RuntimeProjection) -> Result<String, Diagnostic> 
         for field in structure.fields() {
             let _ = writeln!(
                 output,
-                "    {{ name: {}, optional: {} }},",
+                "    {{ name: {}, valueType: {}, optional: {} }},",
                 js_string(field.target_name().as_str())?,
+                canonical_text!(&field.value_type()),
                 field.optional()
             );
         }

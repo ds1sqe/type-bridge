@@ -52,9 +52,9 @@ use type_bridge_orm::{
     ProjectedBatchInvocationControl, ProjectedBatchOperation, ProjectedBatchResult,
     ProjectedBatchRow, ProjectedCodecValue, ProjectedCreate, ProjectedCrudExecutor,
     ProjectedManagerComparison, ProjectedManagerFilter, ProjectedManagerFilterExecutor,
-    ProjectedReference, ProjectedRolePlayer, ProjectedThing, ProviderRuntimeOwner,
-    QueryExecutionResourceLimits, ThingKind, TransactionContext, TransactionContextState,
-    ValueType, resolve_generated_manager_lookup,
+    ProjectedReference, ProjectedRolePlayer, ProjectedStructValue, ProjectedThing,
+    ProviderRuntimeOwner, QueryExecutionResourceLimits, ThingKind, TransactionContext,
+    TransactionContextState, ValueType, resolve_generated_manager_lookup,
 };
 use type_bridge_schema::{decode_schema_authority, schema_authority_capability_vocabulary};
 use type_bridge_schema_codegen::{TypeScriptEmitter, verify_projection_evidence};
@@ -2117,6 +2117,79 @@ impl NodeRuntimeProjection {
         wire_json(&projected_thing_wire(self.package.as_ref(), &value)?)
     }
 
+    /// Encode one exact generated struct value as canonical bytes.
+    #[napi(js_name = "encodeStructJson")]
+    pub fn encode_struct_json(&self, type_key: String, value_json: String) -> napi::Result<Buffer> {
+        let id = type_id_from_key(&type_key)?;
+        if id.kind() != TypeKind::Struct {
+            return Err(invalid_error("struct wire has a non-struct type"));
+        }
+        let wire: ProjectedStructWire = serde_json::from_str(&value_json).map_err(json_error)?;
+        if wire.type_key != type_key {
+            return Err(invalid_error(
+                "struct wire has the wrong exact generated type",
+            ));
+        }
+        let projection = self
+            .package
+            .projection
+            .projection()
+            .structs()
+            .values()
+            .find(|projection| projection.id().label() == id.label())
+            .ok_or_else(|| invalid_error("struct is absent from installed projection"))?;
+        if wire.values.len() != projection.fields().len() {
+            return Err(invalid_error(
+                "struct wire has the wrong exact member inventory",
+            ));
+        }
+        let members = projection
+            .fields()
+            .iter()
+            .map(|field| {
+                let value = wire
+                    .values
+                    .get(field.target_name().as_str())
+                    .ok_or_else(|| invalid_error("struct wire omitted a declared member"))?;
+                value
+                    .as_ref()
+                    .map(|wire| {
+                        scalar_to_ordered_attribute(wire, projected_value_type(field.value_type()))
+                            .and_then(|value| canonical_struct_scalar(&value))
+                    })
+                    .transpose()
+            })
+            .collect::<napi::Result<Vec<_>>>()?;
+        let projected = ProjectedStructValue::try_new(&self.package.projection, id, members)
+            .map_err(|error| invalid_error(error.to_string()))?;
+        let record = type_bridge_orm::record_from_struct(&self.package.projection, &projected)
+            .map_err(|error| invalid_error(error.to_string()))?;
+        record.encode().map(Buffer::from).map_err(diagnostic_error)
+    }
+
+    /// Decode canonical struct bytes through exact installed package authority.
+    #[napi(js_name = "decodeStructJson")]
+    pub fn decode_struct_json(&self, type_key: String, bytes: Buffer) -> napi::Result<String> {
+        let expected = type_id_from_key(&type_key)?;
+        if expected.kind() != TypeKind::Struct {
+            return Err(invalid_error("requested canonical type is not a struct"));
+        }
+        let record = type_bridge_contract::projected_record::ProjectedRecord::decode(&bytes)
+            .map_err(diagnostic_error)?;
+        let value = type_bridge_orm::materialize_record(&self.package.projection, &record)
+            .map_err(|error| invalid_error(error.to_string()))?;
+        let ProjectedCodecValue::Struct(value) = value else {
+            return Err(invalid_error("canonical record is not a struct"));
+        };
+        if value.type_id() != &expected {
+            return Err(invalid_error(
+                "canonical struct has the wrong exact generated type",
+            ));
+        }
+        serde_json::to_string(&projected_struct_wire(self.package.as_ref(), &value))
+            .map_err(json_error)
+    }
+
     /// Compose already canonical exact-package records into one deterministic archive.
     #[napi(js_name = "encodeArchive")]
     pub fn encode_archive(&self, records: Vec<Buffer>) -> napi::Result<Buffer> {
@@ -3321,6 +3394,13 @@ struct ProjectedWire {
     iid: Option<String>,
     value: Option<ScalarWire>,
     values: BTreeMap<String, Value>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct ProjectedStructWire {
+    type_key: String,
+    values: BTreeMap<String, Option<ScalarWire>>,
 }
 
 #[derive(Deserialize)]
@@ -5318,6 +5398,88 @@ fn projected_create_wire(
         value: None,
         values,
     })
+}
+
+fn canonical_struct_scalar(value: &AttributeValue) -> napi::Result<CanonicalValue> {
+    match value {
+        AttributeValue::String(value) => {
+            type_bridge_contract::value::CanonicalString::new(value.clone())
+                .map(CanonicalValue::String)
+                .map_err(diagnostic_error)
+        }
+        AttributeValue::Long(value) => Ok(CanonicalValue::Long(*value)),
+        AttributeValue::Double(value) => type_bridge_contract::value::CanonicalDouble::new(*value)
+            .map(CanonicalValue::Double)
+            .map_err(diagnostic_error),
+        AttributeValue::Boolean(value) => Ok(CanonicalValue::Boolean(*value)),
+        AttributeValue::Date(value) => value
+            .parse::<CanonicalDate>()
+            .map(CanonicalValue::Date)
+            .map_err(diagnostic_error),
+        AttributeValue::DateTime(value) => value
+            .parse::<CanonicalDateTime>()
+            .map(CanonicalValue::DateTime)
+            .map_err(diagnostic_error),
+        AttributeValue::DateTimeTZ(value) => {
+            type_bridge_schema::parse_provider_datetime_tz_evidence(value)
+                .map(CanonicalValue::DateTimeTz)
+                .map_err(diagnostic_error)
+        }
+        AttributeValue::Decimal(value) => DecimalValue::new(value)
+            .map(CanonicalValue::Decimal)
+            .map_err(diagnostic_error),
+        AttributeValue::Duration(value) => value
+            .parse::<CanonicalDuration>()
+            .map(CanonicalValue::Duration)
+            .map_err(diagnostic_error),
+    }
+}
+
+fn projected_struct_wire(
+    package: &InstalledPackage,
+    value: &ProjectedStructValue,
+) -> ProjectedStructWire {
+    let projection = package
+        .projection
+        .projection()
+        .structs()
+        .values()
+        .find(|projection| projection.id().label() == value.type_id().label())
+        .expect("validated projected struct retains its installed projection");
+    let values = projection
+        .fields()
+        .iter()
+        .zip(value.members())
+        .map(|(field, value)| {
+            let value = value.as_ref().map(|value| {
+                attribute_to_scalar(
+                    &canonical_struct_attribute(value),
+                    projected_value_type(field.value_type()),
+                )
+                .expect("validated projected struct scalar retains its declared domain")
+            });
+            (field.target_name().as_str().to_owned(), value)
+        })
+        .collect();
+    ProjectedStructWire {
+        type_key: canonical_type_key(value.type_id())
+            .expect("validated projected struct identity is canonical"),
+        values,
+    }
+}
+
+fn canonical_struct_attribute(value: &CanonicalValue) -> AttributeValue {
+    match value {
+        CanonicalValue::String(value) => AttributeValue::String(value.as_str().to_owned()),
+        CanonicalValue::Long(value) => AttributeValue::Long(*value),
+        CanonicalValue::Double(value) => AttributeValue::Double(value.get()),
+        CanonicalValue::Boolean(value) => AttributeValue::Boolean(*value),
+        CanonicalValue::Date(value) => AttributeValue::Date(value.to_string()),
+        CanonicalValue::DateTime(value) => AttributeValue::DateTime(value.to_string()),
+        CanonicalValue::DateTimeTz(value) => AttributeValue::DateTimeTZ(value.to_string()),
+        CanonicalValue::Decimal(value) => AttributeValue::Decimal(value.as_str().to_owned()),
+        CanonicalValue::Duration(value) => AttributeValue::Duration(value.to_string()),
+    }
 }
 
 fn projected_detached_reference_wire(

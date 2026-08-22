@@ -402,6 +402,8 @@ export type ModelToken<
 export type StructFactory<Id extends string, Value, Input> = {
   (input: Input): Value;
   readonly id: Id;
+  readonly encode: (value: Value) => Uint8Array;
+  readonly decode: (bytes: Uint8Array) => Value;
   readonly metadata: unknown;
 };
 
@@ -520,6 +522,7 @@ let installedQueryAuthority: QueryV2Authority | null = null;
 
 interface StructFieldDefinition {
   readonly name: string;
+  readonly valueType: ScalarValueType;
   readonly optional: boolean;
 }
 
@@ -1417,7 +1420,7 @@ function hydrateProjectedValue(
   if (wire.form === "complete") {
     return entry.token[HYDRATE_COMPLETE_BRAND](wire.iid, values);
   }
-  if (wire.iid === null || typeof entry.token.reference !== "function") {
+  if (typeof entry.token.reference !== "function") {
     throw new TypeError(
       "native reference wire has no IID or reference factory",
     );
@@ -4134,6 +4137,58 @@ export function defineStruct<Id extends string, Value, Input>(definition: {
   };
   Object.defineProperties(factory, {
     id: { value: definition.id, enumerable: true },
+    encode: {
+      value: (value: Value): Uint8Array => {
+        assertRecord(value, "struct value");
+        if (
+          value["__typebridgeStruct"] !== definition.id ||
+          Object.getOwnPropertyDescriptor(value, STRUCT_BRAND)?.value !==
+            definition.id
+        ) {
+          throw new TypeError("struct value has the wrong generated identity");
+        }
+        const values = Object.fromEntries(
+          definition.fields.map((field) => [
+            field.name,
+            value[field.name] === null || value[field.name] === undefined
+              ? null
+              : scalarToWire(field.valueType, value[field.name]),
+          ]),
+        );
+        return requireProjection().encodeStructJson(
+          definition.id,
+          JSON.stringify({ typeKey: definition.id, values }),
+        );
+      },
+      enumerable: true,
+    },
+    decode: {
+      value: (bytes: Uint8Array): Value => {
+        const wire = JSON.parse(
+          requireProjection().decodeStructJson(definition.id, bytes),
+        ) as unknown;
+        assertRecord(wire, "native struct wire");
+        if (wire["typeKey"] !== definition.id) {
+          throw new TypeError("native struct wire has the wrong identity");
+        }
+        const values = wire["values"];
+        assertRecord(values, "native struct wire values");
+        return factory(
+          Object.fromEntries(
+            definition.fields.map((field) => {
+              const member = values[field.name];
+              if (member === null) return [field.name, null];
+              assertRecord(member, `native struct member ${field.name}`);
+              return [
+                field.name,
+                scalarFromWire(member as unknown as ScalarWire),
+              ];
+            }),
+          ),
+        );
+      },
+      enumerable: true,
+    },
     metadata: { value: definition.metadata, enumerable: true },
   });
   return Object.freeze(factory) as StructFactory<Id, Value, Input>;
