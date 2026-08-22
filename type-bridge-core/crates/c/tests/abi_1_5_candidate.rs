@@ -219,6 +219,7 @@ fn activated_shared_library_exports_the_exact_abi_1_5_additions() {
 #[test]
 fn cmake_install_inventory_carries_the_abi_1_5_header() {
     let cmake = include_str!("../CMakeLists.txt");
+    assert!(cmake.contains("project(TypeBridge VERSION 1.5.0 LANGUAGES NONE)"));
     assert!(cmake.contains("include/typebridge/type_bridge_abi_1_5.h"));
 }
 

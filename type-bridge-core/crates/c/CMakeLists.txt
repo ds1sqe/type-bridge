@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 # This package version tracks the stable native ABI. The product/runtime
 # version is reported at run time by type_bridge_runtime_version().
-project(TypeBridge VERSION 1.4.0 LANGUAGES NONE)
+project(TypeBridge VERSION 1.5.0 LANGUAGES NONE)
 
 include(CMakePackageConfigHelpers)
 include(GNUInstallDirs)

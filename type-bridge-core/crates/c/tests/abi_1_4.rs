@@ -710,7 +710,7 @@ fn aggregate_header_compiles_exact_prototypes_and_hosted_layouts() {
 }
 
 #[test]
-fn cmake_package_installs_both_headers_as_exact_abi_1_4() {
+fn activated_cmake_package_preserves_the_exact_abi_1_4_predecessor_headers() {
     assert!(
         command_exists("cmake"),
         "cmake is required for the package probe"
@@ -778,8 +778,8 @@ fn cmake_package_installs_both_headers_as_exact_abi_1_4() {
         .expect("installed CMake config is UTF-8");
     let pkg_config = fs::read_to_string(install.join("lib/pkgconfig/type-bridge.pc"))
         .expect("installed pkg-config metadata is UTF-8");
-    assert!(config.contains("set(TypeBridge_C_ABI_VERSION \"1.4.0\")"));
-    assert!(pkg_config.contains("\nVersion: 1.4.0\n"));
+    assert!(config.contains("set(TypeBridge_C_ABI_VERSION \"1.5.0\")"));
+    assert!(pkg_config.contains("\nVersion: 1.5.0\n"));
 
     let consumer_source = stage.path().join("consumer");
     let consumer_build = stage.path().join("consumer-build");
@@ -788,8 +788,8 @@ fn cmake_package_installs_both_headers_as_exact_abi_1_4() {
         consumer_source.join("CMakeLists.txt"),
         r#"cmake_minimum_required(VERSION 3.20)
 project(type_bridge_abi_1_4_consumer LANGUAGES NONE)
-find_package(TypeBridge 1.4.0 EXACT CONFIG REQUIRED)
-if(NOT TypeBridge_C_ABI_VERSION STREQUAL "1.4.0")
+find_package(TypeBridge 1.5.0 EXACT CONFIG REQUIRED)
+if(NOT TypeBridge_C_ABI_VERSION STREQUAL "1.5.0")
   message(FATAL_ERROR "unexpected TypeBridge C ABI version")
 endif()
 if(NOT TARGET TypeBridge::C)
@@ -808,6 +808,6 @@ endif()
             install.join("lib/cmake/TypeBridge").display()
         ))
         .output()
-        .expect("ABI 1.4 consumer configure launches");
-    assert_command_succeeded(&output, "exact ABI 1.4 consumer configure");
+        .expect("ABI 1.5 package consumer configure launches");
+    assert_command_succeeded(&output, "exact ABI 1.5 package consumer configure");
 }
