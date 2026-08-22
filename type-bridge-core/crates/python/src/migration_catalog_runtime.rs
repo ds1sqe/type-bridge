@@ -2,6 +2,7 @@
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
@@ -13,6 +14,60 @@ use type_bridge_schema_migration::{
 use type_bridge_schema_migration::{MigrationCatalog, migration_runtime_capability_vocabulary};
 
 use crate::orm_runtime::{PyRustDatabase, provider_block_on};
+
+/// Wakeable cancellation owner for migration execution.
+#[pyclass(name = "MigrationCancellation")]
+pub struct PyMigrationCancellation {
+    inner: type_bridge_schema_migration::MigrationCancellation,
+}
+
+#[pymethods]
+impl PyMigrationCancellation {
+    #[new]
+    fn new() -> Self {
+        Self {
+            inner: type_bridge_schema_migration::MigrationCancellation::default(),
+        }
+    }
+
+    fn cancel(&self) {
+        self.inner.cancel();
+    }
+
+    #[getter]
+    fn cancelled(&self) -> bool {
+        self.inner.is_cancelled()
+    }
+}
+
+/// Tighten-only migration execution ceilings.
+#[pyclass(name = "MigrationExecutionResources", frozen)]
+pub struct PyMigrationExecutionResources {
+    inner: type_bridge_schema_migration::MigrationExecutionResourceLimits,
+}
+
+#[pymethods]
+impl PyMigrationExecutionResources {
+    #[new]
+    fn new(transaction_groups: usize, backfill_observations: usize) -> Self {
+        Self {
+            inner: type_bridge_schema_migration::MigrationExecutionResourceLimits::tightened(
+                transaction_groups,
+                backfill_observations,
+            ),
+        }
+    }
+
+    #[getter]
+    fn transaction_groups(&self) -> usize {
+        self.inner.transaction_groups()
+    }
+
+    #[getter]
+    fn backfill_observations(&self) -> usize {
+        self.inner.backfill_observations()
+    }
+}
 
 /// One canonical compound migration identity.
 #[pyclass(name = "MigrationIdentity", frozen)]
@@ -441,18 +496,51 @@ impl PyMigrationPlan {
         database: &PyRustDatabase,
         holder: String,
     ) -> PyResult<PyMigrationExecutionReport> {
+        self.execute_controlled(py, database, holder, None, None, None)
+    }
+
+    #[pyo3(signature = (database, holder, *, timeout_milliseconds = None, resources = None, cancellation = None))]
+    fn execute_controlled(
+        &self,
+        py: Python<'_>,
+        database: &PyRustDatabase,
+        holder: String,
+        timeout_milliseconds: Option<u64>,
+        resources: Option<&PyMigrationExecutionResources>,
+        cancellation: Option<&PyMigrationCancellation>,
+    ) -> PyResult<PyMigrationExecutionReport> {
         let holder = type_bridge_schema_migration::LeaseHolderId::new(holder)
             .map_err(py_catalog_diagnostic)?;
+        let deadline = timeout_milliseconds
+            .map(|milliseconds| {
+                Instant::now()
+                    .checked_add(Duration::from_millis(milliseconds))
+                    .ok_or_else(|| {
+                        py_catalog_code(
+                            "migration_execution_invalid_timeout",
+                            "timeout exceeds the monotonic clock range".to_owned(),
+                        )
+                    })
+            })
+            .transpose()?;
+        let control = type_bridge_schema_migration::MigrationExecutionControl::new(
+            cancellation
+                .map(|value| value.inner.clone())
+                .unwrap_or_default(),
+            deadline,
+            resources.map(|value| value.inner).unwrap_or_default(),
+        );
         let (database, runtime) = database.handles();
         match &self.plan {
             PyMigrationPreviewInner::Apply(plan) => provider_block_on(
                 py,
                 runtime.as_ref(),
-                type_bridge_schema_migration_typedb::execute_catalog_apply_plan(
+                type_bridge_schema_migration_typedb::execute_catalog_apply_plan_controlled(
                     database,
                     &self.catalog,
                     &holder,
                     plan,
+                    &control,
                 ),
             )
             .map(type_bridge_schema_migration::MigrationExecutionReport::from_apply)
@@ -461,11 +549,12 @@ impl PyMigrationPlan {
             PyMigrationPreviewInner::Rollback(plan) => provider_block_on(
                 py,
                 runtime.as_ref(),
-                type_bridge_schema_migration_typedb::execute_catalog_rollback_plan(
+                type_bridge_schema_migration_typedb::execute_catalog_rollback_plan_controlled(
                     database,
                     &self.catalog,
                     &holder,
                     plan,
+                    &control,
                 ),
             )
             .map(type_bridge_schema_migration::MigrationExecutionReport::from_rollback)
@@ -834,6 +923,8 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyMigrationApprovalBuilder>()?;
     m.add_class::<PyMigrationApprovalSet>()?;
     m.add_class::<PyMigrationPlan>()?;
+    m.add_class::<PyMigrationCancellation>()?;
+    m.add_class::<PyMigrationExecutionResources>()?;
     m.add_class::<PyMigrationBackfillObservation>()?;
     m.add_class::<PyMigrationExecutionReport>()?;
     m.add_class::<PyMigrationVerificationFinding>()?;
@@ -851,7 +942,22 @@ mod tests {
         encode_verified_migration_history_bundle, migration_runtime_capability_vocabulary,
     };
 
-    use super::PyMigrationCatalog;
+    use super::{PyMigrationCancellation, PyMigrationCatalog, PyMigrationExecutionResources};
+
+    #[test]
+    fn python_migration_controls_share_tighten_only_semantics() {
+        let cancellation = PyMigrationCancellation::new();
+        assert!(!cancellation.cancelled());
+        cancellation.cancel();
+        assert!(cancellation.cancelled());
+
+        let resources = PyMigrationExecutionResources::new(3, usize::MAX);
+        assert_eq!(resources.transaction_groups(), 3);
+        assert_eq!(
+            resources.backfill_observations(),
+            type_bridge_schema_migration::MAX_MIGRATION_BACKFILL_OBSERVATIONS
+        );
+    }
 
     #[test]
     fn empty_catalog_has_bounded_immutable_python_shape() {

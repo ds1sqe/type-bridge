@@ -30,8 +30,9 @@ pub use match_runtime::{
 };
 pub use migration_catalog_runtime::{
     NodeMigrationApprovalBuilder, NodeMigrationApprovalSet, NodeMigrationBackfillObservation,
-    NodeMigrationCatalog, NodeMigrationExecutionReport, NodeMigrationHistoryEntry,
-    NodeMigrationIdentity, NodeMigrationPlan, NodeMigrationPreview, NodeMigrationPreviewEntry,
+    NodeMigrationCancellation, NodeMigrationCatalog, NodeMigrationExecutionReport,
+    NodeMigrationExecutionResources, NodeMigrationHistoryEntry, NodeMigrationIdentity,
+    NodeMigrationPlan, NodeMigrationPreview, NodeMigrationPreviewEntry,
     NodeMigrationVerificationFinding, NodeMigrationVerificationReport, open_migration_catalog,
 };
 pub use query_v2_model_remote_runtime::{

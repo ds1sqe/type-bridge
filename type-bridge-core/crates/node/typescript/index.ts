@@ -285,6 +285,23 @@ interface NativeMigrationApprovalSet {
 interface NativeMigrationPlan {
   readonly executionAuthorized: boolean;
   execute(database: NativeRustDatabase, holder: string): MigrationExecutionReport;
+  executeControlled(
+    database: NativeRustDatabase,
+    holder: string,
+    timeoutMilliseconds?: number | null,
+    resources?: NativeMigrationExecutionResources | null,
+    cancellation?: NativeMigrationCancellation | null,
+  ): MigrationExecutionReport;
+}
+
+interface NativeMigrationCancellation {
+  readonly cancelled: boolean;
+  cancel(): void;
+}
+
+interface NativeMigrationExecutionResources {
+  readonly transactionGroups: number;
+  readonly backfillObservations: number;
 }
 
 interface NativeMigrationPreview {
@@ -402,6 +419,11 @@ interface NativeQueryV2Runtime {
 }
 
 export interface NativeRuntime {
+  NodeMigrationCancellation: new () => NativeMigrationCancellation;
+  NodeMigrationExecutionResources: new (
+    transactionGroups: number,
+    backfillObservations: number,
+  ) => NativeMigrationExecutionResources;
   openMigrationCatalog(
     schemaAuthority: Uint8Array,
     historyBundle: Uint8Array,
@@ -494,6 +516,71 @@ export class MigrationPlan {
 
   execute(database: RustDatabase, holder: string): MigrationExecutionReport {
     return this.#native.execute(preparedV2DatabaseHandle(database), holder);
+  }
+
+  executeControlled(
+    database: RustDatabase,
+    holder: string,
+    options: {
+      timeoutMilliseconds?: number;
+      resources?: MigrationExecutionResources;
+      cancellation?: MigrationCancellation;
+    } = {},
+  ): MigrationExecutionReport {
+    return this.#native.executeControlled(
+      preparedV2DatabaseHandle(database),
+      holder,
+      options.timeoutMilliseconds,
+      options.resources?.nativeHandle(),
+      options.cancellation?.nativeHandle(),
+    );
+  }
+}
+
+export class MigrationCancellation {
+  readonly #native: NativeMigrationCancellation;
+
+  constructor() {
+    const Native = loadNative().NodeMigrationCancellation as new () => NativeMigrationCancellation;
+    this.#native = new Native();
+  }
+
+  cancel(): void {
+    this.#native.cancel();
+  }
+
+  get cancelled(): boolean {
+    return this.#native.cancelled;
+  }
+
+  /** @internal */
+  nativeHandle(): NativeMigrationCancellation {
+    return this.#native;
+  }
+}
+
+export class MigrationExecutionResources {
+  readonly #native: NativeMigrationExecutionResources;
+
+  constructor(transactionGroups: number, backfillObservations: number) {
+    const Native = loadNative().NodeMigrationExecutionResources as new (
+      transactionGroups: number,
+      backfillObservations: number,
+    ) => NativeMigrationExecutionResources;
+    this.#native = new Native(transactionGroups, backfillObservations);
+  }
+
+  get transactionGroups(): number {
+    return this.#native.transactionGroups;
+  }
+
+  get backfillObservations(): number {
+    return this.#native.backfillObservations;
+  }
+
+  /** @internal */
+  nativeHandle(): NativeMigrationExecutionResources {
+    return this.#native;
   }
 }
 

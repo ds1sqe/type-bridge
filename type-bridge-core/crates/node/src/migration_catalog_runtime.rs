@@ -2,6 +2,7 @@
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use napi::bindgen_prelude::{Buffer, Error, Result};
 use napi_derive::napi;
@@ -13,6 +14,67 @@ use type_bridge_schema_migration::{
 };
 
 use crate::NodeRustDatabase;
+
+/// Wakeable cancellation owner for migration execution.
+#[napi]
+pub struct NodeMigrationCancellation {
+    inner: type_bridge_schema_migration::MigrationCancellation,
+}
+
+#[napi]
+impl NodeMigrationCancellation {
+    #[napi(constructor)]
+    pub fn new() -> Self {
+        Self {
+            inner: type_bridge_schema_migration::MigrationCancellation::default(),
+        }
+    }
+
+    #[napi]
+    pub fn cancel(&self) {
+        self.inner.cancel();
+    }
+
+    #[napi(getter)]
+    pub fn cancelled(&self) -> bool {
+        self.inner.is_cancelled()
+    }
+}
+
+impl Default for NodeMigrationCancellation {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Tighten-only migration execution ceilings.
+#[napi]
+pub struct NodeMigrationExecutionResources {
+    inner: type_bridge_schema_migration::MigrationExecutionResourceLimits,
+}
+
+#[napi]
+impl NodeMigrationExecutionResources {
+    #[napi(constructor)]
+    pub fn new(transaction_groups: u32, backfill_observations: u32) -> Self {
+        Self {
+            inner: type_bridge_schema_migration::MigrationExecutionResourceLimits::tightened(
+                transaction_groups as usize,
+                backfill_observations as usize,
+            ),
+        }
+    }
+
+    #[napi(getter)]
+    pub fn transaction_groups(&self) -> u32 {
+        bounded_u32(self.inner.transaction_groups())
+    }
+
+    #[napi(getter)]
+    pub fn backfill_observations(&self) -> u32 {
+        bounded_u32(self.inner.backfill_observations())
+    }
+}
 
 #[napi(object)]
 pub struct NodeMigrationIdentity {
@@ -329,17 +391,48 @@ impl NodeMigrationPlan {
         database: &NodeRustDatabase,
         holder: String,
     ) -> Result<NodeMigrationExecutionReport> {
+        self.execute_controlled(database, holder, None, None, None)
+    }
+
+    #[napi]
+    pub fn execute_controlled(
+        &self,
+        database: &NodeRustDatabase,
+        holder: String,
+        timeout_milliseconds: Option<i64>,
+        resources: Option<&NodeMigrationExecutionResources>,
+        cancellation: Option<&NodeMigrationCancellation>,
+    ) -> Result<NodeMigrationExecutionReport> {
+        let timeout_milliseconds = timeout_milliseconds
+            .map(u64::try_from)
+            .transpose()
+            .map_err(|_| catalog_error("migration_execution_invalid_timeout"))?;
+        let deadline = timeout_milliseconds
+            .map(|milliseconds| {
+                Instant::now()
+                    .checked_add(Duration::from_millis(milliseconds))
+                    .ok_or_else(|| catalog_error("migration_execution_invalid_timeout"))
+            })
+            .transpose()?;
+        let control = type_bridge_schema_migration::MigrationExecutionControl::new(
+            cancellation
+                .map(|value| value.inner.clone())
+                .unwrap_or_default(),
+            deadline,
+            resources.map(|value| value.inner).unwrap_or_default(),
+        );
         let holder = type_bridge_schema_migration::LeaseHolderId::new(holder)
             .map_err(|error| catalog_error(error.code().as_str()))?;
         let (database, runtime) = database.handles();
         match &self.plan {
             NodeMigrationPreviewInner::Apply(plan) => runtime
                 .block_on(
-                    type_bridge_schema_migration_typedb::execute_catalog_apply_plan(
+                    type_bridge_schema_migration_typedb::execute_catalog_apply_plan_controlled(
                         database,
                         &self.catalog,
                         &holder,
                         plan,
+                        &control,
                     ),
                 )
                 .map(type_bridge_schema_migration::MigrationExecutionReport::from_apply)
@@ -347,11 +440,12 @@ impl NodeMigrationPlan {
                 .map_err(|error| catalog_error(error.code().as_str())),
             NodeMigrationPreviewInner::Rollback(plan) => runtime
                 .block_on(
-                    type_bridge_schema_migration_typedb::execute_catalog_rollback_plan(
+                    type_bridge_schema_migration_typedb::execute_catalog_rollback_plan_controlled(
                         database,
                         &self.catalog,
                         &holder,
                         plan,
+                        &control,
                     ),
                 )
                 .map(type_bridge_schema_migration::MigrationExecutionReport::from_rollback)
@@ -640,7 +734,23 @@ mod tests {
         encode_verified_migration_history_bundle, migration_runtime_capability_vocabulary,
     };
 
-    use super::NodeMigrationCatalog;
+    use super::{NodeMigrationCancellation, NodeMigrationCatalog, NodeMigrationExecutionResources};
+
+    #[test]
+    fn node_migration_controls_share_tighten_only_semantics() {
+        let cancellation = NodeMigrationCancellation::new();
+        assert!(!cancellation.cancelled());
+        cancellation.cancel();
+        assert!(cancellation.cancelled());
+
+        let resources = NodeMigrationExecutionResources::new(3, u32::MAX);
+        assert_eq!(resources.transaction_groups(), 3);
+        assert_eq!(
+            resources.backfill_observations(),
+            u32::try_from(type_bridge_schema_migration::MAX_MIGRATION_BACKFILL_OBSERVATIONS)
+                .unwrap()
+        );
+    }
 
     #[test]
     fn empty_catalog_has_bounded_immutable_node_shape() {
