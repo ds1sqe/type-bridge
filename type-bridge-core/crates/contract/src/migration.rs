@@ -14,6 +14,7 @@ use crate::fingerprint::{
 use crate::migration_assertion::{
     AssertionExpectation, MigrationAssertionPlan, MigrationAssertionPlanFingerprint,
 };
+use crate::migration_backfill::AttributeBackfillPlan;
 use crate::schema_delta::{SchemaDelta, SchemaOperation};
 use crate::schema_fingerprint::ManagedSemanticSchemaFingerprint;
 
@@ -299,6 +300,62 @@ pub enum MigrationStepKind {
     SchemaDelta,
     /// One canonical verifier-derived no-rows assertion.
     Assertion,
+    /// One closed binding-neutral data backfill.
+    Backfill,
+}
+
+/// Context-free claims derived exactly from one closed backfill plan.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct BackfillStepContract {
+    id: MigrationStepId,
+    plan_fingerprint: Fingerprint,
+    recovery: RecoveryPolicy,
+    required_capabilities: CapabilitySet,
+    retry: RetryPolicy,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reverse: Option<crate::migration_backfill::BackfillReverseProgram>,
+    source_semantics: ManagedSemanticSchemaFingerprint,
+    target_semantics: ManagedSemanticSchemaFingerprint,
+}
+
+impl BackfillStepContract {
+    fn derive(id: MigrationStepId, plan: &AttributeBackfillPlan) -> Result<Self, Diagnostic> {
+        Ok(Self {
+            id,
+            plan_fingerprint: plan.fingerprint()?,
+            recovery: RecoveryPolicy::OperatorRequired,
+            required_capabilities: plan.required_capabilities().clone(),
+            retry: RetryPolicy::Never,
+            reverse: plan.reverse(),
+            source_semantics: plan.managed_semantics().clone(),
+            target_semantics: plan.managed_semantics().clone(),
+        })
+    }
+
+    /// Return the step-local identity.
+    pub const fn id(&self) -> &MigrationStepId {
+        &self.id
+    }
+    /// Return the exact canonical backfill-plan fingerprint.
+    pub const fn plan_fingerprint(&self) -> &Fingerprint {
+        &self.plan_fingerprint
+    }
+    /// Return capabilities derived from the closed plan.
+    pub const fn required_capabilities(&self) -> &CapabilitySet {
+        &self.required_capabilities
+    }
+    /// Return the optional independently verifiable reverse program.
+    pub const fn reverse(&self) -> Option<crate::migration_backfill::BackfillReverseProgram> {
+        self.reverse
+    }
+    /// Return the exact historical intermediate-schema precondition.
+    pub const fn source_semantics(&self) -> &ManagedSemanticSchemaFingerprint {
+        &self.source_semantics
+    }
+    /// Return the schema semantics preserved by the data step.
+    pub const fn target_semantics(&self) -> &ManagedSemanticSchemaFingerprint {
+        &self.target_semantics
+    }
 }
 
 /// Context-free claims derived exactly from a trusted schema delta.
@@ -538,9 +595,24 @@ pub enum MigrationStep {
         /// Closed expected outcome.
         expected: AssertionExpectation,
     },
+    /// One state-preserving schema, state-changing data backfill.
+    Backfill {
+        /// Constructor-derived backfill contract.
+        contract: Box<BackfillStepContract>,
+        /// Closed canonical data plan.
+        plan: Box<AttributeBackfillPlan>,
+    },
 }
 
 impl MigrationStep {
+    /// Construct a trusted closed backfill step and derive all contract claims.
+    pub fn backfill(id: MigrationStepId, plan: AttributeBackfillPlan) -> Result<Self, Diagnostic> {
+        let contract = BackfillStepContract::derive(id, &plan)?;
+        Ok(Self::Backfill {
+            contract: Box::new(contract),
+            plan: Box::new(plan),
+        })
+    }
     /// Construct a trusted assertion step and derive all contract claims.
     pub fn assertion(
         id: MigrationStepId,
@@ -560,6 +632,7 @@ impl MigrationStep {
         match self {
             Self::SchemaDelta(_) => MigrationStepKind::SchemaDelta,
             Self::Assertion { .. } => MigrationStepKind::Assertion,
+            Self::Backfill { .. } => MigrationStepKind::Backfill,
         }
     }
 
@@ -568,6 +641,7 @@ impl MigrationStep {
         match self {
             Self::SchemaDelta(step) => step.contract().id(),
             Self::Assertion { contract, .. } => contract.id(),
+            Self::Backfill { contract, .. } => contract.id(),
         }
     }
 
@@ -576,6 +650,7 @@ impl MigrationStep {
         match self {
             Self::SchemaDelta(step) => step.contract().required_capabilities(),
             Self::Assertion { contract, .. } => contract.required_capabilities(),
+            Self::Backfill { contract, .. } => contract.required_capabilities(),
         }
     }
 
@@ -583,7 +658,7 @@ impl MigrationStep {
     pub fn as_schema_delta(&self) -> Option<&SchemaDeltaStep> {
         match self {
             Self::SchemaDelta(step) => Some(step),
-            Self::Assertion { .. } => None,
+            Self::Assertion { .. } | Self::Backfill { .. } => None,
         }
     }
 
@@ -596,12 +671,20 @@ impl MigrationStep {
         AssertionExpectation,
     )> {
         match self {
-            Self::SchemaDelta(_) => None,
+            Self::SchemaDelta(_) | Self::Backfill { .. } => None,
             Self::Assertion {
                 contract,
                 plan,
                 expected,
             } => Some((contract, plan, *expected)),
+        }
+    }
+
+    /// Return backfill contract and plan when this is a data step.
+    pub fn as_backfill(&self) -> Option<(&BackfillStepContract, &AttributeBackfillPlan)> {
+        match self {
+            Self::Backfill { contract, plan } => Some((contract, plan)),
+            Self::SchemaDelta(_) | Self::Assertion { .. } => None,
         }
     }
 
@@ -618,6 +701,9 @@ impl MigrationStep {
                 plan,
                 expected,
             } => Self::assertion(contract.id().clone(), plan.as_ref().clone(), *expected)?,
+            Self::Backfill { contract, plan } => {
+                Self::backfill(contract.id().clone(), plan.as_ref().clone())?
+            }
         };
         if &rebuilt != self {
             return Err(Diagnostic::stable(
@@ -649,6 +735,13 @@ struct AssertionStepView<'a> {
     plan: &'a MigrationAssertionPlan,
 }
 
+#[derive(Serialize)]
+struct BackfillStepView<'a> {
+    contract: &'a BackfillStepContract,
+    kind: MigrationStepKind,
+    plan: &'a AttributeBackfillPlan,
+}
+
 impl Serialize for MigrationStep {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -664,6 +757,12 @@ impl Serialize for MigrationStep {
                 contract,
                 expected: *expected,
                 kind: MigrationStepKind::Assertion,
+                plan,
+            }
+            .serialize(serializer),
+            Self::Backfill { contract, plan } => BackfillStepView {
+                contract,
+                kind: MigrationStepKind::Backfill,
                 plan,
             }
             .serialize(serializer),

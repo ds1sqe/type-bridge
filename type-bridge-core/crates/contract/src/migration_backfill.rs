@@ -1,10 +1,12 @@
 //! Closed binding-neutral data plans used by canonical migration steps.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::capability::{CapabilityId, CapabilitySet};
-use crate::codec::{FormatVersion, to_canonical_json};
+use crate::codec::{FormatVersion, from_canonical_json, to_canonical_json};
 use crate::diagnostic::{Diagnostic, DiagnosticCategory};
+use crate::fingerprint::Fingerprint as GenericFingerprint;
 use crate::fingerprint::{CanonicalizationVersion, Fingerprint, FingerprintDomain};
 use crate::id::{AttributeId, TypeId, TypeKind};
 use crate::schema_fingerprint::ManagedSemanticSchemaFingerprint;
@@ -212,6 +214,82 @@ impl AttributeBackfillPlan {
             &self.canonical_bytes()?,
         ))
     }
+}
+
+/// Decode exact canonical bytes and rebuild every derived backfill claim.
+pub fn decode_attribute_backfill_plan(bytes: &[u8]) -> Result<AttributeBackfillPlan, Diagnostic> {
+    let candidate = from_canonical_json::<AttributeBackfillCandidate>(bytes)?;
+    let format = match candidate.format {
+        1 => FormatVersion::V1,
+        _ => {
+            return Err(backfill_failure(
+                DiagnosticCategory::InvalidContract,
+                "migration_backfill_format_unsupported",
+                "backfill plan format is not supported",
+            ));
+        }
+    };
+    let _ = format;
+    let semantics =
+        ManagedSemanticSchemaFingerprint::from_wire(from_canonical_json::<GenericFingerprint>(
+            &to_canonical_json(&candidate.managed_semantics)?,
+        )?)?;
+    let reverse = match candidate.reverse.as_deref() {
+        None => None,
+        Some("remove_equal_copied_destination") => {
+            Some(BackfillReverseProgram::RemoveEqualCopiedDestination)
+        }
+        Some(_) => {
+            return Err(backfill_failure(
+                DiagnosticCategory::InvalidContract,
+                "migration_backfill_reverse_unsupported",
+                "backfill reverse program is not supported",
+            ));
+        }
+    };
+    let plan = AttributeBackfillPlan::new(
+        candidate.owner,
+        candidate.source,
+        candidate.destination,
+        BackfillPartition::new(
+            candidate.partition.batch_rows,
+            candidate.partition.stable_attribute,
+        )?,
+        semantics,
+        reverse,
+    )?;
+    if plan.canonical_bytes()? != bytes {
+        return Err(backfill_failure(
+            DiagnosticCategory::Integrity,
+            "migration_backfill_contract_mismatch",
+            "backfill plan claims differ from constructor-derived canonical claims",
+        ));
+    }
+    Ok(plan)
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct AttributeBackfillCandidate {
+    conflict: String,
+    destination: AttributeId,
+    format: u32,
+    managed_semantics: Value,
+    owner: TypeId,
+    partition: BackfillPartitionCandidate,
+    postcondition: String,
+    required_capabilities: CapabilitySet,
+    #[serde(default)]
+    reverse: Option<String>,
+    source: AttributeId,
+    transform: String,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct BackfillPartitionCandidate {
+    batch_rows: u32,
+    stable_attribute: AttributeId,
 }
 
 fn backfill_failure(

@@ -11,6 +11,10 @@ use type_bridge_contract::migration::{
     MigrationPlanFingerprint, MigrationStep, MigrationStepId, SchemaDeltaStep,
 };
 use type_bridge_contract::migration_assertion::AssertionExpectation;
+use type_bridge_contract::migration_backfill::{
+    AttributeBackfillPlan, BackfillPartition, BackfillReverseProgram,
+    COPY_ATTRIBUTE_BACKFILL_CAPABILITY,
+};
 use type_bridge_contract::schema::{
     AnnotationFact, AnnotationFactId, AnnotationKindId, AnnotationSubjectId, CanonicalValueRange,
     DeclaredSchema, DocumentId, SchemaAnnotationValue, SchemaFact, SourceSpan, SourcedSchemaFact,
@@ -109,6 +113,63 @@ fn migration_id(name: &str) -> MigrationId {
         MigrationAppLabel::new("example").expect("fixture app label"),
         MigrationName::new(name).expect("fixture migration name"),
     )
+}
+
+#[test]
+fn migration_v1_adds_tagged_backfill_without_changing_old_step_bytes() {
+    let source = declared(vec![type_fact("person")]);
+    let old_step = MigrationStep::from(
+        SchemaDeltaStep::new(
+            MigrationStepId::new("schema").unwrap(),
+            diff_managed(
+                &source,
+                &declared(vec![type_fact("person"), type_fact("company")]),
+                &context(),
+            )
+            .unwrap(),
+            None,
+        )
+        .unwrap(),
+    );
+    let old_bytes = old_step.canonical_bytes().unwrap();
+    assert_eq!(old_bytes, old_step.canonical_bytes().unwrap());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&old_bytes).unwrap()["kind"],
+        "schema_delta"
+    );
+
+    let capabilities = [COPY_ATTRIBUTE_BACKFILL_CAPABILITY]
+        .into_iter()
+        .map(|value| type_bridge_contract::capability::CapabilityId::new(value).unwrap())
+        .collect();
+    let context = context_with_capabilities(capabilities);
+    let semantics = managed_schema_state(&source, &context)
+        .unwrap()
+        .managed_semantic_schema()
+        .clone();
+    let plan = AttributeBackfillPlan::new(
+        TypeId::new(TypeKind::Entity, "person").unwrap(),
+        AttributeId::new("legacy-name").unwrap(),
+        AttributeId::new("display-name").unwrap(),
+        BackfillPartition::new(256, AttributeId::new("person-id").unwrap()).unwrap(),
+        semantics,
+        Some(BackfillReverseProgram::RemoveEqualCopiedDestination),
+    )
+    .unwrap();
+    let draft = SchemaMigrationDraft::new(
+        migration_id("0002_backfill_name"),
+        Vec::new(),
+        vec![MigrationStep::backfill(MigrationStepId::new("copy-name").unwrap(), plan).unwrap()],
+    )
+    .unwrap();
+    let verified = build_verified_manifest(draft, (&source, &context)).unwrap();
+    let bytes = encode_verified_manifest(&verified).unwrap();
+    let decoded = decode_verified_manifest(&bytes, (&source, &context)).unwrap();
+    assert_eq!(encode_verified_manifest(&decoded).unwrap(), bytes);
+    assert_eq!(decoded.format().as_str(), "typebridge.migration/v1");
+    assert_eq!(decoded.safety(), SafetyClass::BackfillRequired);
+    assert!(decoded.reversible());
+    assert!(decoded.steps()[0].as_backfill().is_some());
 }
 
 fn abstract_fact(label: &str) -> SchemaFact {

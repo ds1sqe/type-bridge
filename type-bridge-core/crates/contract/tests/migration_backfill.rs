@@ -5,7 +5,7 @@ use type_bridge_contract::id::{AttributeId, TypeId, TypeKind};
 use type_bridge_contract::migration_backfill::{
     AttributeBackfillPlan, BackfillConflictPolicy, BackfillPartition, BackfillPostcondition,
     BackfillReverseProgram, BackfillValueTransform, COPY_ATTRIBUTE_BACKFILL_CAPABILITY,
-    MAX_BACKFILL_BATCH_ROWS,
+    MAX_BACKFILL_BATCH_ROWS, decode_attribute_backfill_plan,
 };
 use type_bridge_contract::schema_fingerprint::ManagedSemanticSchemaFingerprint;
 
@@ -82,6 +82,20 @@ fn copy_attribute_plan_freezes_closed_semantics_and_canonical_wire() {
         to_canonical_json(&value).unwrap()
     );
     assert_eq!(plan.fingerprint().unwrap(), plan.fingerprint().unwrap());
+    assert_eq!(
+        decode_attribute_backfill_plan(&plan.canonical_bytes().unwrap()).unwrap(),
+        plan
+    );
+
+    let mut tampered = value;
+    tampered["conflict"] = json!("overwrite");
+    assert_eq!(
+        decode_attribute_backfill_plan(&to_canonical_json(&tampered).unwrap())
+            .unwrap_err()
+            .code()
+            .as_str(),
+        "migration_backfill_contract_mismatch"
+    );
 }
 
 #[test]

@@ -16,6 +16,7 @@ use type_bridge_contract::migration::{
 use type_bridge_contract::migration_assertion::{
     AssertionExpectation, decode_migration_assertion_plan,
 };
+use type_bridge_contract::migration_backfill::decode_attribute_backfill_plan;
 use type_bridge_contract::schema::{
     DeclaredIdentityFingerprint, DeclaredSchema, decode_schema_delta,
 };
@@ -372,6 +373,36 @@ pub fn build_verified_manifest(
     let mut pending_assertions = Vec::new();
 
     for step in &steps {
+        if let Some((contract, plan)) = step.as_backfill() {
+            if !pending_assertions.is_empty() {
+                return Err(failure(
+                    DiagnosticCategory::InvalidContract,
+                    "migration_manifest_assertion_before_backfill",
+                    "assertion steps must be immediately followed by a schema delta",
+                ));
+            }
+            step.validate()?;
+            step.required_capabilities()
+                .ensure_supported_by(delta_context.available_capabilities())?;
+            let intermediate_state =
+                managed_schema_state(&current_schema, delta_context).map_err(delta_diagnostic)?;
+            if plan.managed_semantics() != intermediate_state.managed_semantic_schema()
+                || contract.source_semantics() != intermediate_state.managed_semantic_schema()
+                || contract.target_semantics() != intermediate_state.managed_semantic_schema()
+            {
+                return Err(failure(
+                    DiagnosticCategory::Integrity,
+                    "migration_manifest_backfill_schema_mismatch",
+                    "backfill plan does not bind the exact historical intermediate schema",
+                ));
+            }
+            for capability in step.required_capabilities().iter().cloned() {
+                required_capabilities.insert(capability);
+            }
+            safety = safety.max(SafetyClass::BackfillRequired);
+            reversible &= contract.reverse().is_some();
+            continue;
+        }
         let Some(schema_step) = step.as_schema_delta() else {
             step.validate()?;
             step.required_capabilities()
@@ -1207,11 +1238,43 @@ fn rebuild_step_candidate(value: &Value) -> Result<MigrationStep, Diagnostic> {
     match kind {
         "schema_delta" => from_canonical_json::<SchemaStepCandidate>(&bytes)?.rebuild(),
         "assertion" => from_canonical_json::<AssertionStepCandidate>(&bytes)?.rebuild(),
+        "backfill" => from_canonical_json::<BackfillStepCandidate>(&bytes)?.rebuild(),
         _ => Err(failure(
             DiagnosticCategory::InvalidContract,
             "migration_manifest_unknown_step_kind",
             "migration step kind is not in the closed step vocabulary",
         )),
+    }
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct BackfillStepCandidate {
+    contract: BackfillStepContractCandidate,
+    kind: String,
+    plan: Value,
+}
+
+impl BackfillStepCandidate {
+    fn rebuild(&self) -> Result<MigrationStep, Diagnostic> {
+        if self.kind != "backfill" {
+            return Err(failure(
+                DiagnosticCategory::InvalidContract,
+                "migration_manifest_backfill_kind_mismatch",
+                "persisted backfill kind is not supported",
+            ));
+        }
+        let plan = decode_attribute_backfill_plan(&to_canonical_json(&self.plan)?)?;
+        let trusted =
+            MigrationStep::backfill(MigrationStepId::new(self.contract.id.clone())?, plan)?;
+        if to_canonical_json(self)? != trusted.canonical_bytes()? {
+            return Err(failure(
+                DiagnosticCategory::Integrity,
+                "migration_manifest_backfill_contract_mismatch",
+                "backfill step claims do not match the trusted plan-derived contract",
+            ));
+        }
+        Ok(trusted)
     }
 }
 
@@ -1258,6 +1321,20 @@ struct AssertionStepContractCandidate {
     recovery: String,
     required_capabilities: CapabilitySet,
     retry: String,
+    source_semantics: Value,
+    target_semantics: Value,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct BackfillStepContractCandidate {
+    id: String,
+    plan_fingerprint: Value,
+    recovery: String,
+    required_capabilities: CapabilitySet,
+    retry: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reverse: Option<String>,
     source_semantics: Value,
     target_semantics: Value,
 }
