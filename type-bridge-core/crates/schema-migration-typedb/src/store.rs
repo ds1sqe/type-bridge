@@ -55,6 +55,192 @@ pub fn derived_journal_database_name(managed_database_name: &str) -> String {
     format!("{managed_database_name}{TYPEBRIDGE_JOURNAL_DATABASE_SUFFIX}")
 }
 
+/// Read-only classification of one exact bound managed/journal pair.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ManagedDatabasePairState {
+    /// Neither database exists.
+    Absent,
+    /// Only a standalone managed database without TypeBridge control schema exists.
+    StandaloneManaged,
+    /// Both databases exist and the journal owner binds this exact pair and scope.
+    OwnedPair,
+    /// Only the exact owner-verified journal remains.
+    OwnedJournalOrphan,
+}
+
+/// Terminal result of one explicitly admitted pair deletion.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ManagedDatabasePairDeleteOutcome {
+    /// Neither member existed when execution began.
+    AlreadyAbsent,
+    /// A standalone bound managed database was deleted.
+    DeletedStandaloneManaged,
+    /// The owner-verified journal was deleted before its managed database.
+    DeletedOwnedPair,
+    /// An owner-verified orphan journal was removed.
+    DeletedOwnedJournalOrphan,
+}
+
+/// Bound administration authority for exactly one managed database and derived journal.
+pub struct ManagedDatabasePairAdministrator {
+    managed_database: Arc<Database>,
+    journal_database: Arc<Database>,
+    managed_scope_id: ManagedScopeId,
+}
+
+impl ManagedDatabasePairAdministrator {
+    /// Bind exact provider authority, derived names, and managed scope without I/O.
+    pub fn new(
+        managed_database: Arc<Database>,
+        journal_database: Arc<Database>,
+        managed_scope_id: ManagedScopeId,
+    ) -> Result<Self, Diagnostic> {
+        require_migration_database_pair_identity(&managed_database, &journal_database)?;
+        Ok(Self {
+            managed_database,
+            journal_database,
+            managed_scope_id,
+        })
+    }
+
+    /// Inspect the complete pair and validate journal ownership without mutation.
+    pub async fn inspect(&self) -> Result<ManagedDatabasePairState, Diagnostic> {
+        let managed_exists = self
+            .managed_database
+            .database_exists()
+            .await
+            .map_err(map_orm_error)?;
+        let journal_exists = self
+            .journal_database
+            .database_exists()
+            .await
+            .map_err(map_orm_error)?;
+        if !journal_exists {
+            if !managed_exists {
+                return Ok(ManagedDatabasePairState::Absent);
+            }
+            let export = self
+                .managed_database
+                .schema_text()
+                .await
+                .map_err(map_orm_error)?;
+            if export.contains(crate::TYPEBRIDGE_INTERNAL_PREFIX) {
+                return Err(failure(
+                    DiagnosticCategory::Integrity,
+                    "migration_typedb_managed_pair_incomplete",
+                    "managed database carries TypeBridge control state but its journal is absent",
+                ));
+            }
+            return Ok(ManagedDatabasePairState::StandaloneManaged);
+        }
+        self.require_exact_journal_owner().await?;
+        Ok(if managed_exists {
+            ManagedDatabasePairState::OwnedPair
+        } else {
+            ManagedDatabasePairState::OwnedJournalOrphan
+        })
+    }
+
+    /// Create an explicit destructive plan after a complete owner-verified inspection.
+    pub async fn plan_delete(&self) -> Result<ManagedDatabasePairDeletionPlan<'_>, Diagnostic> {
+        let inspected = self.inspect().await?;
+        Ok(ManagedDatabasePairDeletionPlan {
+            administrator: self,
+            inspected,
+        })
+    }
+
+    async fn require_exact_journal_owner(&self) -> Result<(), Diagnostic> {
+        let export = self
+            .journal_database
+            .schema_text()
+            .await
+            .map_err(map_orm_error)?;
+        if journal_schema_state(&export)? != JournalSchemaState::Exact {
+            return Err(failure(
+                DiagnosticCategory::Integrity,
+                "migration_typedb_journal_control_schema_absent",
+                "existing journal database has no exact owned migration control schema",
+            ));
+        }
+        let mut transaction = self
+            .journal_database
+            .read_transaction()
+            .await
+            .map_err(map_orm_error)?;
+        let result = require_journal_owner(
+            &mut transaction,
+            self.managed_database.database_name(),
+            &self.managed_scope_id,
+        )
+        .await;
+        let close = transaction.close().await.map_err(map_orm_error);
+        match (result, close) {
+            (Err(error), _) => Err(error),
+            (Ok(()), Err(error)) => Err(error),
+            (Ok(()), Ok(())) => Ok(()),
+        }
+    }
+}
+
+/// Explicit single-use destructive admission bound to one inspected pair state.
+pub struct ManagedDatabasePairDeletionPlan<'a> {
+    administrator: &'a ManagedDatabasePairAdministrator,
+    inspected: ManagedDatabasePairState,
+}
+
+impl ManagedDatabasePairDeletionPlan<'_> {
+    /// Return the exact state that was admitted before destructive dispatch.
+    pub const fn inspected_state(&self) -> ManagedDatabasePairState {
+        self.inspected
+    }
+
+    /// Revalidate the pair and delete journal-first so no trusted orphan remains.
+    pub async fn execute(self) -> Result<ManagedDatabasePairDeleteOutcome, Diagnostic> {
+        let current = self.administrator.inspect().await?;
+        if current != self.inspected {
+            return Err(failure(
+                DiagnosticCategory::Integrity,
+                "migration_typedb_pair_changed_after_delete_preview",
+                "database pair changed after destructive admission; inspect and approve again",
+            ));
+        }
+        match current {
+            ManagedDatabasePairState::Absent => Ok(ManagedDatabasePairDeleteOutcome::AlreadyAbsent),
+            ManagedDatabasePairState::StandaloneManaged => {
+                self.administrator
+                    .managed_database
+                    .delete_database_outcome()
+                    .await
+                    .map_err(map_orm_error)?;
+                Ok(ManagedDatabasePairDeleteOutcome::DeletedStandaloneManaged)
+            }
+            ManagedDatabasePairState::OwnedJournalOrphan => {
+                self.administrator
+                    .journal_database
+                    .delete_database_outcome()
+                    .await
+                    .map_err(map_orm_error)?;
+                Ok(ManagedDatabasePairDeleteOutcome::DeletedOwnedJournalOrphan)
+            }
+            ManagedDatabasePairState::OwnedPair => {
+                self.administrator.require_exact_journal_owner().await?;
+                self.administrator
+                    .journal_database
+                    .delete_database_outcome()
+                    .await
+                    .map_err(map_orm_error)?;
+                self.administrator
+                    .managed_database
+                    .delete_database_outcome()
+                    .await
+                    .map_err(map_orm_error)?;
+                Ok(ManagedDatabasePairDeleteOutcome::DeletedOwnedPair)
+            }
+        }
+    }
+}
+
 /// Require the immutable provider authority and names of one migration pair.
 ///
 /// This consumes only in-memory handle identity and performs no provider I/O.
@@ -2456,7 +2642,7 @@ fn failure(category: DiagnosticCategory, code: &'static str, message: &'static s
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     use type_bridge_contract::capability::CapabilitySet;
     use type_bridge_contract::codec::FormatVersion;
@@ -2481,6 +2667,73 @@ mod tests {
 
     struct NoIoBackend {
         calls: Arc<AtomicUsize>,
+    }
+
+    struct AdministrationBackend {
+        exists: Arc<AtomicBool>,
+        schema: String,
+        deletes: Arc<AtomicUsize>,
+    }
+
+    impl DriverBackend for AdministrationBackend {
+        fn open_transaction(
+            &self,
+            _database: &str,
+            _tx_type: TxType,
+        ) -> BoxFuture<'_, Result<Box<dyn TransactionOps>, OrmError>> {
+            Box::pin(async { Err(OrmError::Connection("unexpected transaction".to_owned())) })
+        }
+
+        fn is_open(&self) -> bool {
+            true
+        }
+
+        fn server_version(&self) -> Option<Version> {
+            Some(Version::new(3, 12, 3))
+        }
+
+        fn close_connection(&self) -> Result<(), OrmError> {
+            Ok(())
+        }
+
+        fn database_exists(&self, _database: &str) -> BoxFuture<'_, Result<bool, OrmError>> {
+            let exists = self.exists.load(Ordering::SeqCst);
+            Box::pin(async move { Ok(exists) })
+        }
+
+        fn create_database(&self, _database: &str) -> BoxFuture<'_, Result<(), OrmError>> {
+            self.exists.store(true, Ordering::SeqCst);
+            Box::pin(async { Ok(()) })
+        }
+
+        fn delete_database(&self, _database: &str) -> BoxFuture<'_, Result<(), OrmError>> {
+            self.deletes.fetch_add(1, Ordering::SeqCst);
+            self.exists.store(false, Ordering::SeqCst);
+            Box::pin(async { Ok(()) })
+        }
+
+        fn schema_text(&self, _database: &str) -> BoxFuture<'_, Result<String, OrmError>> {
+            let schema = self.schema.clone();
+            Box::pin(async move { Ok(schema) })
+        }
+    }
+
+    fn administration_database(
+        name: impl Into<String>,
+        authority: DatabaseConnectionAuthority,
+        exists: Arc<AtomicBool>,
+        schema: impl Into<String>,
+        deletes: Arc<AtomicUsize>,
+    ) -> Arc<Database> {
+        Arc::new(Database::with_backend_authority(
+            Box::new(AdministrationBackend {
+                exists,
+                schema: schema.into(),
+                deletes,
+            }),
+            name,
+            authority,
+        ))
     }
 
     impl DriverBackend for NoIoBackend {
@@ -2603,7 +2856,7 @@ mod tests {
         let managed = no_io_database(managed_name, Arc::clone(&calls), None);
         let journal = no_io_database(journal_name, Arc::clone(&calls), None);
         let scope = ManagedScopeId::new("authority-test-scope").unwrap();
-        let context = supported_context(scope);
+        let context = supported_context(scope.clone());
 
         let result = TypeDbExecutionBinding::new(managed, journal, context);
         let Err(error) = result else {
@@ -2634,15 +2887,137 @@ mod tests {
             Some(authority),
         );
         let scope = ManagedScopeId::new("authority-test-scope").unwrap();
-        let context = supported_context(scope);
+        let context = supported_context(scope.clone());
         let catalog =
             VerifiedMigrationCatalog::new(std::iter::empty::<&VerifiedSchemaMigrationManifest>())
                 .unwrap();
 
         let binding = TypeDbExecutionBinding::new(managed, journal, context)
             .expect("shared authority must create one exact execution binding");
+        assert!(
+            ManagedDatabasePairAdministrator::new(
+                Arc::clone(binding.managed_database()),
+                Arc::clone(binding.journal_database()),
+                scope,
+            )
+            .is_ok(),
+            "pair administration binds the same immutable provider and name authority",
+        );
         assert!(TypeDbMigrationStore::new(&binding, catalog).is_ok());
         assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn pair_administration_deletes_only_absent_or_standalone_bound_state() {
+        let authority = DatabaseConnectionAuthority::isolated();
+        let managed_exists = Arc::new(AtomicBool::new(true));
+        let journal_exists = Arc::new(AtomicBool::new(false));
+        let managed_deletes = Arc::new(AtomicUsize::new(0));
+        let journal_deletes = Arc::new(AtomicUsize::new(0));
+        let managed = administration_database(
+            "managed",
+            authority.clone(),
+            Arc::clone(&managed_exists),
+            "",
+            Arc::clone(&managed_deletes),
+        );
+        let journal = administration_database(
+            derived_journal_database_name("managed"),
+            authority,
+            Arc::clone(&journal_exists),
+            "",
+            Arc::clone(&journal_deletes),
+        );
+        let administrator = ManagedDatabasePairAdministrator::new(
+            managed,
+            journal,
+            ManagedScopeId::new("administration-scope").unwrap(),
+        )
+        .unwrap();
+        let plan = administrator.plan_delete().await.unwrap();
+        assert_eq!(
+            plan.inspected_state(),
+            ManagedDatabasePairState::StandaloneManaged
+        );
+        assert_eq!(
+            plan.execute().await.unwrap(),
+            ManagedDatabasePairDeleteOutcome::DeletedStandaloneManaged
+        );
+        assert!(!managed_exists.load(Ordering::SeqCst));
+        assert_eq!(managed_deletes.load(Ordering::SeqCst), 1);
+        assert_eq!(journal_deletes.load(Ordering::SeqCst), 0);
+
+        let absent = administrator.plan_delete().await.unwrap();
+        assert_eq!(absent.inspected_state(), ManagedDatabasePairState::Absent);
+        assert_eq!(
+            absent.execute().await.unwrap(),
+            ManagedDatabasePairDeleteOutcome::AlreadyAbsent
+        );
+    }
+
+    #[tokio::test]
+    async fn pair_administration_rejects_partial_control_state_and_stale_admission() {
+        let authority = DatabaseConnectionAuthority::isolated();
+        let managed_exists = Arc::new(AtomicBool::new(true));
+        let journal_exists = Arc::new(AtomicBool::new(false));
+        let deletes = Arc::new(AtomicUsize::new(0));
+        let managed = administration_database(
+            "managed",
+            authority.clone(),
+            Arc::clone(&managed_exists),
+            format!("entity {};", crate::TYPEBRIDGE_INTERNAL_PREFIX),
+            Arc::clone(&deletes),
+        );
+        let journal = administration_database(
+            derived_journal_database_name("managed"),
+            authority.clone(),
+            Arc::clone(&journal_exists),
+            "",
+            Arc::clone(&deletes),
+        );
+        let administrator = ManagedDatabasePairAdministrator::new(
+            managed,
+            journal,
+            ManagedScopeId::new("administration-scope").unwrap(),
+        )
+        .unwrap();
+        let error = match administrator.plan_delete().await {
+            Ok(_) => panic!("partial control state must not produce a deletion plan"),
+            Err(error) => error,
+        };
+        assert_eq!(
+            error.code().as_str(),
+            "migration_typedb_managed_pair_incomplete"
+        );
+        assert_eq!(deletes.load(Ordering::SeqCst), 0);
+
+        let clean_managed = administration_database(
+            "clean",
+            authority.clone(),
+            Arc::clone(&managed_exists),
+            "",
+            Arc::clone(&deletes),
+        );
+        let clean_journal = administration_database(
+            derived_journal_database_name("clean"),
+            authority,
+            Arc::new(AtomicBool::new(false)),
+            "",
+            Arc::clone(&deletes),
+        );
+        let clean = ManagedDatabasePairAdministrator::new(
+            clean_managed,
+            clean_journal,
+            ManagedScopeId::new("administration-scope").unwrap(),
+        )
+        .unwrap();
+        let stale = clean.plan_delete().await.unwrap();
+        managed_exists.store(false, Ordering::SeqCst);
+        assert_eq!(
+            stale.execute().await.unwrap_err().code().as_str(),
+            "migration_typedb_pair_changed_after_delete_preview"
+        );
+        assert_eq!(deletes.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
