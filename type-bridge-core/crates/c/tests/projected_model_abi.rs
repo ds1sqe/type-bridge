@@ -1049,7 +1049,7 @@ fn all_nine_domains_person_create_reference_and_membership_are_package_branded()
         TypeBridgeStatus::Cancelled,
         diagnostics,
         TypeBridgeExecutionDiagnosticCategory::Cancelled,
-        "provider_cancelled",
+        "projected_codec_cancelled",
     );
     diagnostics = ptr::null_mut();
     // SAFETY: the exact cancellation owner slot is live and uniquely owned.
@@ -1085,7 +1085,7 @@ fn all_nine_domains_person_create_reference_and_membership_are_package_branded()
         TypeBridgeStatus::ResourceLimit,
         diagnostics,
         TypeBridgeExecutionDiagnosticCategory::ResourceLimit,
-        "c_canonical_output_limit",
+        "projected_codec_output_limit",
     );
     diagnostics = ptr::null_mut();
 
@@ -1192,7 +1192,7 @@ fn all_nine_domains_person_create_reference_and_membership_are_package_branded()
         TypeBridgeStatus::Cancelled,
         diagnostics,
         TypeBridgeExecutionDiagnosticCategory::Cancelled,
-        "provider_cancelled",
+        "projected_codec_cancelled",
     );
     diagnostics = ptr::null_mut();
     // SAFETY: closing the caller owner does not invalidate the captured builder control.
@@ -1255,7 +1255,7 @@ fn all_nine_domains_person_create_reference_and_membership_are_package_branded()
         TypeBridgeStatus::ResourceLimit,
         diagnostics,
         TypeBridgeExecutionDiagnosticCategory::ResourceLimit,
-        "c_canonical_input_limit",
+        "projected_codec_member_limit",
     );
     diagnostics = ptr::null_mut();
     let mut one_record_bytes = ptr::null_mut();
@@ -1376,7 +1376,7 @@ fn all_nine_domains_person_create_reference_and_membership_are_package_branded()
         TypeBridgeStatus::Cancelled,
         diagnostics,
         TypeBridgeExecutionDiagnosticCategory::Cancelled,
-        "provider_cancelled",
+        "projected_codec_cancelled",
     );
     diagnostics = ptr::null_mut();
     // SAFETY: the cancelled reader remains independently closeable.
@@ -1453,10 +1453,49 @@ fn all_nine_domains_person_create_reference_and_membership_are_package_branded()
         TypeBridgeStatus::ResourceLimit,
         diagnostics,
         TypeBridgeExecutionDiagnosticCategory::ResourceLimit,
-        "c_canonical_input_limit",
+        "projected_codec_input_limit",
     );
     diagnostics = ptr::null_mut();
-    for (max_depth, max_members) in [(1_u64, 65_536_u64), (64_u64, 1_u64)] {
+    let foreign_source = SOURCE.replace(
+        "elapsed: { value: duration }",
+        "elapsed: { value: duration }\n  foreign-extra: { value: string }",
+    );
+    let mut foreign_fixture = open_fixture(
+        &foreign_source,
+        "canonical_foreign",
+        "canonical-record-foreign",
+    );
+    let foreign_person = model_token(&foreign_fixture.projection, TypeKind::Entity, "person");
+    let mut foreign_decoded = ptr::null_mut();
+    // SAFETY: the foreign package/token and canonical bytes remain live with distinct outputs.
+    let status = unsafe {
+        type_bridge_canonical_record_decode_create_v1(
+            foreign_fixture.package,
+            recovered_view,
+            &foreign_person,
+            ptr::null(),
+            &mut foreign_decoded,
+            &mut diagnostics,
+        )
+    };
+    assert!(foreign_decoded.is_null());
+    assert_execution_error(
+        status,
+        TypeBridgeStatus::InvalidArgument,
+        diagnostics,
+        TypeBridgeExecutionDiagnosticCategory::InvalidInput,
+        "projected_record_schema_mismatch",
+    );
+    diagnostics = ptr::null_mut();
+    // SAFETY: this fixture owns the exact foreign package slot.
+    assert_eq!(
+        unsafe { type_bridge_schema_package_close(&mut foreign_fixture.package) },
+        TypeBridgeStatus::Ok,
+    );
+    for (max_depth, max_members, expected_code) in [
+        (1_u64, 65_536_u64, "projected_codec_depth_limit"),
+        (64_u64, 1_u64, "projected_codec_member_limit"),
+    ] {
         let structural_options = TypeBridgeProjectedCodecOptionsV1 {
             struct_size: size_of::<TypeBridgeProjectedCodecOptionsV1>() as u64,
             version: 1,
@@ -1486,7 +1525,7 @@ fn all_nine_domains_person_create_reference_and_membership_are_package_branded()
             TypeBridgeStatus::ResourceLimit,
             diagnostics,
             TypeBridgeExecutionDiagnosticCategory::ResourceLimit,
-            "c_canonical_input_limit",
+            expected_code,
         );
         diagnostics = ptr::null_mut();
     }

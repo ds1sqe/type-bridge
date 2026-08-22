@@ -827,6 +827,70 @@ impl SdkExecutionDiagnostic {
         )
     }
 
+    /// Construct the fixed canonical projected-codec cancellation diagnostic.
+    #[must_use]
+    pub fn projected_codec_cancelled() -> Self {
+        Self::stable(
+            SdkDiagnosticCategory::Cancelled,
+            static_code("projected_codec_cancelled"),
+            static_message("Canonical projected codec work was cancelled before publication"),
+        )
+    }
+
+    /// Construct the fixed canonical projected-codec deadline diagnostic.
+    #[must_use]
+    pub fn projected_codec_deadline_exceeded() -> Self {
+        Self::resource_limit(
+            static_code("projected_codec_deadline_exceeded"),
+            static_message("Canonical projected codec work exceeded its absolute deadline"),
+        )
+    }
+
+    fn projected_codec_limit(code: &'static str) -> Self {
+        Self::resource_limit(
+            static_code(code),
+            static_message("Canonical projected codec work exceeded a tightened resource limit"),
+        )
+    }
+
+    /// Construct the fixed canonical projected-codec input-byte limit diagnostic.
+    #[must_use]
+    pub fn projected_codec_input_limit() -> Self {
+        Self::projected_codec_limit("projected_codec_input_limit")
+    }
+
+    /// Construct the fixed canonical projected-codec output-byte limit diagnostic.
+    #[must_use]
+    pub fn projected_codec_output_limit() -> Self {
+        Self::projected_codec_limit("projected_codec_output_limit")
+    }
+
+    /// Construct the fixed canonical projected-codec member limit diagnostic.
+    #[must_use]
+    pub fn projected_codec_member_limit() -> Self {
+        Self::projected_codec_limit("projected_codec_member_limit")
+    }
+
+    /// Construct the fixed canonical projected-codec depth limit diagnostic.
+    #[must_use]
+    pub fn projected_codec_depth_limit() -> Self {
+        Self::projected_codec_limit("projected_codec_depth_limit")
+    }
+
+    /// Construct the fixed declared-schema mismatch diagnostic without payload data.
+    #[must_use]
+    pub fn projected_record_schema_mismatch() -> Self {
+        Self::invalid_input(
+            static_code("projected_record_schema_mismatch"),
+            static_message("Canonical projected record schema identity does not match the package"),
+        )
+        .try_at(SdkDiagnosticPathSegment::ContractField(
+            SdkQueryDiagnosticIdentity::new("declared_schema_identity")
+                .expect("the fixed projected record schema path is canonical"),
+        ))
+        .expect("the fixed projected record schema path is bounded")
+    }
+
     /// Construct a redacted internal failure with no implementation details.
     #[must_use]
     pub fn internal_failure() -> Self {
@@ -1033,5 +1097,51 @@ mod tests {
             present,
             SdkExecutionDiagnostic::projection_evidence_mismatch()
         );
+    }
+
+    #[test]
+    fn projected_codec_diagnostics_match_the_closed_v5_algebra() {
+        for (diagnostic, category, code) in [
+            (
+                SdkExecutionDiagnostic::projected_codec_cancelled(),
+                SdkDiagnosticCategory::Cancelled,
+                "projected_codec_cancelled",
+            ),
+            (
+                SdkExecutionDiagnostic::projected_codec_input_limit(),
+                SdkDiagnosticCategory::ResourceLimit,
+                "projected_codec_input_limit",
+            ),
+            (
+                SdkExecutionDiagnostic::projected_codec_output_limit(),
+                SdkDiagnosticCategory::ResourceLimit,
+                "projected_codec_output_limit",
+            ),
+            (
+                SdkExecutionDiagnostic::projected_codec_member_limit(),
+                SdkDiagnosticCategory::ResourceLimit,
+                "projected_codec_member_limit",
+            ),
+            (
+                SdkExecutionDiagnostic::projected_codec_depth_limit(),
+                SdkDiagnosticCategory::ResourceLimit,
+                "projected_codec_depth_limit",
+            ),
+        ] {
+            assert_eq!(diagnostic.category(), category);
+            assert_eq!(diagnostic.code().as_str(), code);
+            assert!(diagnostic.path().is_empty());
+            assert!(diagnostic.details().is_empty());
+        }
+
+        let mismatch = SdkExecutionDiagnostic::projected_record_schema_mismatch();
+        assert_eq!(mismatch.category(), SdkDiagnosticCategory::InvalidInput);
+        assert_eq!(mismatch.code().as_str(), "projected_record_schema_mismatch");
+        assert!(matches!(
+            mismatch.path(),
+            [SdkDiagnosticPathSegment::ContractField(field)]
+                if field.as_str() == "declared_schema_identity"
+        ));
+        assert!(mismatch.details().is_empty());
     }
 }

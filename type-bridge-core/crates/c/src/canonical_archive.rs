@@ -93,12 +93,12 @@ pub struct CanonicalControl {
 impl CanonicalControl {
     pub fn check(&self) -> Result<(), SdkExecutionDiagnostic> {
         if self.cancellation.is_cancelled() {
-            Err(SdkExecutionDiagnostic::data_operation_cancelled())
+            Err(SdkExecutionDiagnostic::projected_codec_cancelled())
         } else if self
             .deadline
             .is_some_and(|deadline| Instant::now() >= deadline)
         {
-            Err(SdkExecutionDiagnostic::data_operation_deadline_exceeded())
+            Err(SdkExecutionDiagnostic::projected_codec_deadline_exceeded())
         } else {
             Ok(())
         }
@@ -338,27 +338,31 @@ fn invalid_archive() -> SdkExecutionDiagnostic {
 }
 
 fn canonical_input_limit() -> SdkExecutionDiagnostic {
-    SdkExecutionDiagnostic::resource_limit(
-        code("c_canonical_input_limit"),
-        message("Canonical input bytes exceed the supported bounded allocation"),
-    )
+    SdkExecutionDiagnostic::projected_codec_input_limit()
 }
 
 fn canonical_output_limit() -> SdkExecutionDiagnostic {
-    SdkExecutionDiagnostic::resource_limit(
-        code("c_canonical_output_limit"),
-        message("Canonical output bytes exceed the supported bounded allocation"),
-    )
+    SdkExecutionDiagnostic::projected_codec_output_limit()
+}
+
+fn canonical_member_limit() -> SdkExecutionDiagnostic {
+    SdkExecutionDiagnostic::projected_codec_member_limit()
+}
+
+fn canonical_depth_limit() -> SdkExecutionDiagnostic {
+    SdkExecutionDiagnostic::projected_codec_depth_limit()
 }
 
 fn canonical_decode_error(
     error: type_bridge_contract::diagnostic::Diagnostic,
     invalid: fn() -> SdkExecutionDiagnostic,
 ) -> SdkExecutionDiagnostic {
-    if error.category() == DiagnosticCategory::ResourceLimit {
-        canonical_input_limit()
-    } else {
-        invalid()
+    match error.code().as_str() {
+        "canonical_json_too_deep" => canonical_depth_limit(),
+        "canonical_collection_too_large" => canonical_member_limit(),
+        "canonical_json_too_large" | "canonical_string_too_large" => canonical_input_limit(),
+        _ if error.category() == DiagnosticCategory::ResourceLimit => canonical_input_limit(),
+        _ => invalid(),
     }
 }
 
@@ -423,7 +427,7 @@ unsafe fn decode_record(
     let record = ProjectedRecord::decode_with_limits(&bytes, control.input_limits())
         .map_err(|error| canonical_decode_error(error, invalid_record))?;
     if record.decoded_weight() > control.max_members {
-        return Err(canonical_input_limit());
+        return Err(canonical_member_limit());
     }
     control.check()?;
     Ok((Arc::clone(package.state()), record))
@@ -474,12 +478,12 @@ fn encode_bytes(
     invalid: fn() -> SdkExecutionDiagnostic,
 ) -> Result<Vec<u8>, SdkExecutionDiagnostic> {
     allocation_checkpoint(site).map_err(|_| allocation_exhausted())?;
-    encode().map_err(|error| {
-        if error.category() == DiagnosticCategory::ResourceLimit {
-            canonical_output_limit()
-        } else {
-            invalid()
-        }
+    encode().map_err(|error| match error.code().as_str() {
+        "canonical_json_too_deep" => canonical_depth_limit(),
+        "canonical_collection_too_large" => canonical_member_limit(),
+        "canonical_json_too_large" | "canonical_string_too_large" => canonical_output_limit(),
+        _ if error.category() == DiagnosticCategory::ResourceLimit => canonical_output_limit(),
+        _ => invalid(),
     })
 }
 
@@ -762,7 +766,21 @@ fn materialize(
     record: &ProjectedRecord,
 ) -> Result<type_bridge_orm::ProjectedCodecValue, SdkExecutionDiagnostic> {
     type_bridge_orm::materialize_record(&package.installed_projection, record)
-        .map_err(|_| invalid_record())
+        .map_err(lower_projected_codec_error)
+}
+
+fn lower_projected_codec_error(
+    error: type_bridge_orm::ProjectedCodecError,
+) -> SdkExecutionDiagnostic {
+    match error {
+        type_bridge_orm::ProjectedCodecError::Contract(error)
+            if error.code().as_str() == "projected_codec_declared_schema_mismatch" =>
+        {
+            SdkExecutionDiagnostic::projected_record_schema_mismatch()
+        }
+        type_bridge_orm::ProjectedCodecError::Contract(_) => invalid_record(),
+        type_bridge_orm::ProjectedCodecError::Materialization(diagnostic) => diagnostic,
+    }
 }
 
 /// Decode an exact generated attribute-field record without publishing on mismatch.
@@ -1392,8 +1410,7 @@ fn validate_record(
     bytes: &[u8],
 ) -> Result<ProjectedRecord, SdkExecutionDiagnostic> {
     let record = ProjectedRecord::decode(bytes).map_err(|_| invalid_record())?;
-    type_bridge_orm::materialize_record(&package.installed_projection, &record)
-        .map_err(|_| invalid_record())?;
+    materialize(package, &record)?;
     Ok(record)
 }
 
@@ -1529,7 +1546,7 @@ pub unsafe extern "C" fn type_bridge_canonical_archive_builder_append_record_v1(
             Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
         };
         if builder.records.len() >= control.max_records {
-            return return_execution_error(canonical_input_limit(), out_diagnostics);
+            return return_execution_error(canonical_member_limit(), out_diagnostics);
         }
         if let Err(diagnostic) = control.check() {
             return return_execution_error(diagnostic, out_diagnostics);
@@ -1589,7 +1606,7 @@ pub unsafe extern "C" fn type_bridge_canonical_archive_builder_finish_v1(
             return return_execution_error(diagnostic, out_diagnostics);
         }
         if value.records.len() > control.max_records {
-            return return_execution_error(canonical_input_limit(), out_diagnostics);
+            return return_execution_error(canonical_member_limit(), out_diagnostics);
         }
         let records = match clone_archive_records(&value.records, control) {
             Ok(records) => records,
@@ -1689,16 +1706,14 @@ pub unsafe extern "C" fn type_bridge_canonical_archive_open_v1(
         if archive.records().len() > control.max_records
             || archive.decoded_weight() > control.max_members
         {
-            return return_execution_error(canonical_input_limit(), out_diagnostics);
+            return return_execution_error(canonical_member_limit(), out_diagnostics);
         }
         for record in archive.records() {
             if let Err(diagnostic) = control.check() {
                 return return_execution_error(diagnostic, out_diagnostics);
             }
-            if type_bridge_orm::materialize_record(&package.state().installed_projection, record)
-                .is_err()
-            {
-                return return_execution_error(invalid_archive(), out_diagnostics);
+            if let Err(diagnostic) = materialize(package.state(), record) {
+                return return_execution_error(diagnostic, out_diagnostics);
             }
         }
         if let Err(diagnostic) = control.check() {
@@ -1939,7 +1954,7 @@ mod tests {
         let diagnostic =
             unsafe { snapshot_bytes(view, MAX_PROJECTED_RECORD_BYTES, invalid_record) }
                 .expect_err("an over-limit canonical input must fail before allocation");
-        assert_eq!(diagnostic.code().as_str(), "c_canonical_input_limit");
+        assert_eq!(diagnostic.code().as_str(), "projected_codec_input_limit");
     }
 
     #[test]
@@ -2023,7 +2038,7 @@ mod tests {
                 .expect_err("captured cancellation is sticky")
                 .code()
                 .as_str(),
-            "provider_cancelled",
+            "projected_codec_cancelled",
         );
     }
 
@@ -2062,7 +2077,7 @@ mod tests {
                 .expect_err("zero timeout expires immediately")
                 .code()
                 .as_str(),
-            "transaction_deadline_exceeded",
+            "projected_codec_deadline_exceeded",
         );
     }
 }
