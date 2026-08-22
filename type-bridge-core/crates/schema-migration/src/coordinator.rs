@@ -203,6 +203,17 @@ where
             "an executable migration plan requires at least one manifest",
         ));
     }
+    if plan
+        .migrations()
+        .iter()
+        .any(|migration| !migration.backfill_step_indices().is_empty())
+    {
+        return Err(failure(
+            DiagnosticCategory::InvalidContract,
+            "migration_execution_backfill_provider_required",
+            "backfill execution requires the closed provider backfill transaction seam",
+        ));
+    }
     let scope = crate::ExecutionScope::new(source.scope().id().clone());
     let lease = store.acquire(&scope, holder).await?;
     let result = execute_under_lease(store, provider, &lease, plan).await;
@@ -504,6 +515,17 @@ where
             DiagnosticCategory::InvalidContract,
             "migration_execution_empty_plan",
             "an executable rollback plan requires at least one manifest",
+        ));
+    }
+    if plan
+        .rollbacks()
+        .iter()
+        .any(|rollback| !rollback.backfills().is_empty())
+    {
+        return Err(failure(
+            DiagnosticCategory::InvalidContract,
+            "migration_execution_backfill_provider_required",
+            "backfill rollback requires the closed provider backfill transaction seam",
         ));
     }
     for rollback in plan.rollbacks() {

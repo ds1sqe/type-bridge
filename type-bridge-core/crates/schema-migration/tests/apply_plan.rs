@@ -7,7 +7,7 @@ use common::{CoordinatorProvider, CoordinatorStore, block_on};
 use type_bridge_contract::capability::{CapabilityId, CapabilitySet};
 use type_bridge_contract::codec::FormatVersion;
 use type_bridge_contract::fingerprint::SemanticProfileId;
-use type_bridge_contract::id::{TypeId, TypeKind};
+use type_bridge_contract::id::{AttributeId, TypeId, TypeKind};
 use type_bridge_contract::limits::StructuralLimits;
 use type_bridge_contract::managed_scope::{ManagedScopeId, SemanticProfileBinding};
 use type_bridge_contract::migration::{
@@ -15,6 +15,10 @@ use type_bridge_contract::migration::{
     MigrationStep, MigrationStepId, SchemaDeltaStep,
 };
 use type_bridge_contract::migration_assertion::AssertionExpectation;
+use type_bridge_contract::migration_backfill::{
+    AttributeBackfillPlan, BackfillPartition, BackfillReverseProgram,
+    COPY_ATTRIBUTE_BACKFILL_CAPABILITY,
+};
 use type_bridge_contract::schema::{
     AnnotationFact, AnnotationFactId, AnnotationKindId, AnnotationSubjectId, DeclaredSchema,
     DocumentId, SchemaAnnotationValue, SchemaFact, SourceSpan, SourcedSchemaFact, SubFact,
@@ -32,7 +36,8 @@ use type_bridge_schema_migration::{
     MigrationApplyTarget, MigrationExecutionOutcome, MigrationExecutionPosition,
     MigrationHistoryGraph, MigrationLease, MigrationSafetyPolicy, PlanRecord, SafetyPolicyDecision,
     SchemaLoweringBinding, SchemaMigrationDraft, StatementUnit, VerifiedMigrationApplyStep,
-    build_legacy_frontier_bridge, build_verified_manifest, build_verified_migration_apply_plan,
+    VerifiedMigrationRollbackOperation, build_legacy_frontier_bridge, build_verified_manifest,
+    build_verified_migration_apply_plan, build_verified_migration_rollback_plan,
     execute_verified_migration_apply_plan, schema_lowering_profile_binding, typedb_3_12_1_profile,
 };
 
@@ -189,6 +194,97 @@ fn additive_policy() -> MigrationSafetyPolicy {
     MigrationSafetyPolicy::default_policy()
         .with_decision(SafetyClass::Conditional, SafetyPolicyDecision::Reject)
         .expect("additive-only policy")
+}
+
+#[test]
+fn backfill_apply_evidence_retains_exact_manifest_position_and_requires_approval() {
+    let source = declared(&["person"]);
+    let mut capabilities = context().available_capabilities().clone();
+    capabilities.insert(CapabilityId::new(COPY_ATTRIBUTE_BACKFILL_CAPABILITY).unwrap());
+    let context = ManagedDeltaContext::new(
+        ManagedScopeId::new("example-schema").unwrap(),
+        SemanticProfileId::new("typedb-3.12.1/v1").unwrap(),
+        capabilities,
+    );
+    let semantics = managed_schema_state(&source, &context)
+        .unwrap()
+        .managed_semantic_schema()
+        .clone();
+    let backfill = AttributeBackfillPlan::new(
+        TypeId::new(TypeKind::Entity, "person").unwrap(),
+        AttributeId::new("legacy-name").unwrap(),
+        AttributeId::new("display-name").unwrap(),
+        BackfillPartition::new(128, AttributeId::new("person-id").unwrap()).unwrap(),
+        semantics,
+        Some(BackfillReverseProgram::RemoveEqualCopiedDestination),
+    )
+    .unwrap();
+    let manifest = build_verified_manifest(
+        SchemaMigrationDraft::new(
+            migration_id("0001_backfill"),
+            Vec::new(),
+            vec![
+                MigrationStep::backfill(MigrationStepId::new("copy-name").unwrap(), backfill)
+                    .unwrap(),
+            ],
+        )
+        .unwrap(),
+        (&source, &context),
+    )
+    .unwrap();
+    let graph = MigrationHistoryGraph::from_verified([manifest.clone()]).unwrap();
+    let lowering =
+        SchemaLoweringBinding::current(context.available_capabilities().clone()).unwrap();
+    let rejected = build_verified_migration_apply_plan(
+        &graph,
+        &BTreeSet::new(),
+        &MigrationApplyTarget::DefaultHead,
+        &context,
+        &lowering,
+        &MigrationSafetyPolicy::default_policy(),
+        &[],
+    )
+    .unwrap_err();
+    assert!(matches!(rejected, MigrationApplyPlanError::Contract(_)));
+
+    let approval = MigrationApplyApproval::for_manifest(&manifest).unwrap();
+    let plan = build_verified_migration_apply_plan(
+        &graph,
+        &BTreeSet::new(),
+        &MigrationApplyTarget::DefaultHead,
+        &context,
+        &lowering,
+        &MigrationSafetyPolicy::default_policy(),
+        &[approval],
+    )
+    .unwrap();
+    let migration = &plan.migrations()[0];
+    assert_eq!(migration.backfill_step_indices(), &[0]);
+    assert!(migration.transaction_groups().is_empty());
+    assert!(matches!(
+        migration.steps(),
+        [VerifiedMigrationApplyStep::Backfill { .. }]
+    ));
+
+    let rollback_approval =
+        MigrationApplyApproval::for_rollback(&manifest, SafetyClass::Destructive).unwrap();
+    let rollback = build_verified_migration_rollback_plan(
+        &graph,
+        &BTreeSet::from([manifest.id().clone()]),
+        &BTreeSet::from([manifest.id().clone()]),
+        &context,
+        &lowering,
+        &MigrationSafetyPolicy::default_policy(),
+        &[rollback_approval],
+    )
+    .unwrap();
+    let rollback_manifest = &rollback.rollbacks()[0];
+    assert!(rollback_manifest.steps().is_empty());
+    assert_eq!(rollback_manifest.backfills().len(), 1);
+    assert_eq!(
+        rollback_manifest.operations(),
+        &[VerifiedMigrationRollbackOperation::Backfill(0)]
+    );
 }
 
 #[test]
@@ -852,7 +948,8 @@ fn new_subtype_migration_lowers_without_assertion_coverage() {
             .iter()
             .flat_map(StatementUnit::statements)
             .any(|statement| statement.query().contains("sub person")),
-        VerifiedMigrationApplyStep::Assertion { .. } => false,
+        VerifiedMigrationApplyStep::Assertion { .. }
+        | VerifiedMigrationApplyStep::Backfill { .. } => false,
     });
     assert!(rendered_sub, "lowered statements must define the sub edge");
 }
@@ -919,7 +1016,8 @@ fn destructive_manifest_requires_an_identity_bound_approval() {
             .iter()
             .flat_map(StatementUnit::statements)
             .any(|statement| statement.query().contains("undefine")),
-        VerifiedMigrationApplyStep::Assertion { .. } => false,
+        VerifiedMigrationApplyStep::Assertion { .. }
+        | VerifiedMigrationApplyStep::Backfill { .. } => false,
     });
     assert!(rendered_undefine, "approved destructive work must lower");
 }

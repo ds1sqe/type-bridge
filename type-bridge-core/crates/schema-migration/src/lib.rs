@@ -73,7 +73,8 @@ pub use manifest::{
 };
 pub use policy::{MigrationApplyApproval, MigrationSafetyPolicy, SafetyPolicyDecision};
 pub use rollback_plan::{
-    VerifiedMigrationRollbackManifest, VerifiedMigrationRollbackPlan,
+    VerifiedMigrationRollbackBackfillStep, VerifiedMigrationRollbackManifest,
+    VerifiedMigrationRollbackOperation, VerifiedMigrationRollbackPlan,
     VerifiedMigrationRollbackStep, build_verified_migration_rollback_plan,
 };
 pub use verify::{MigrationDriftFinding, MigrationVerifyReport, verify_migration_state};
