@@ -192,6 +192,7 @@ pub fn lower_migration_assertion(
 }
 
 /// Execute one validated `NoRows` assertion through the existing transaction seam.
+#[allow(clippy::result_large_err)]
 pub async fn execute_migration_assertion(
     transaction: &mut Transaction,
     validated: &ValidatedMigrationAssertionPlan,
@@ -305,6 +306,7 @@ impl<T: TransactionOps + ?Sized> AssertionProviderCall for TransactionAssertionP
     }
 }
 
+#[allow(clippy::result_large_err)]
 async fn execute_with_provider<P: AssertionProviderCall + ?Sized>(
     provider: &mut P,
     validated: &ValidatedMigrationAssertionPlan,

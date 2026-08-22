@@ -3305,7 +3305,7 @@ fn generated_package_path(
         ));
     }
     let mut lowered = Vec::with_capacity(path.len());
-    for chunk in path.chunks_exact(3) {
+    for chunk in path.as_chunks::<3>().0 {
         let GeneratedPackagePathWire::Type { type_key } = &chunk[0] else {
             return Err(invalid_error(
                 "generated package mismatch path requires a projected type",

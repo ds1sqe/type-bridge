@@ -238,6 +238,7 @@ pub fn build_verified_migration_rollback_preview(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_verified_migration_rollback_plan_inner(
     graph: &MigrationHistoryGraph,
     applied: &BTreeSet<MigrationId>,

@@ -1198,6 +1198,7 @@ unsafe fn prepare_database_config_v2(
     })
 }
 
+#[allow(deprecated)]
 fn increment_child(counter: &AtomicUsize) -> Result<(), SdkExecutionDiagnostic> {
     counter
         .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {

@@ -8,12 +8,14 @@
 
 use std::sync::Arc;
 
-use type_bridge_contract::capability::{CapabilityId, CapabilitySet};
+#[cfg(test)]
+use type_bridge_contract::capability::CapabilityId;
+use type_bridge_contract::capability::CapabilitySet;
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use type_bridge_contract::limits::StructuralLimits;
-use type_bridge_contract::migration_backfill::{
-    AttributeBackfillPlan, COPY_ATTRIBUTE_BACKFILL_CAPABILITY,
-};
+use type_bridge_contract::migration_backfill::AttributeBackfillPlan;
+#[cfg(test)]
+use type_bridge_contract::migration_backfill::COPY_ATTRIBUTE_BACKFILL_CAPABILITY;
 use type_bridge_contract::schema::{DocumentId, ManagedSchemaState};
 use type_bridge_orm::migration_assertion::{
     MigrationAssertionExecutionContext, MigrationAssertionExecutionError,

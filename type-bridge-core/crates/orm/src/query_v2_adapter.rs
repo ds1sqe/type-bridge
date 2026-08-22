@@ -771,9 +771,7 @@ fn adapt_output(
         let declared = request_binding_type(request, slot.binding().get())?;
         Ok(match slot {
             FetchSlot::One { .. } => QueryModelOutputSlotV2::One { binding, declared },
-            FetchSlot::Collect {
-                distinct, order: _, ..
-            } => {
+            FetchSlot::Collect { distinct, .. } => {
                 let proof = validated.collection_order(slot.binding()).ok_or_else(|| {
                     integrity(
                         "query_v2_adapter_collection_order_proof",

@@ -464,6 +464,7 @@ pub(crate) enum MigrationPlanDirection {
 }
 
 #[derive(Clone, Debug)]
+#[allow(clippy::large_enum_variant)]
 enum MigrationPlanKind {
     Apply(VerifiedMigrationApplyPlan),
     Rollback(VerifiedMigrationRollbackPlan),

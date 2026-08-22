@@ -1676,6 +1676,7 @@ pub async fn execute_admitted_remote_request(
     }
 }
 
+#[allow(clippy::result_large_err)]
 async fn run_admitted_request(
     admitted: AdmittedRemoteRequest,
     transaction: &mut crate::session::transaction::Transaction,

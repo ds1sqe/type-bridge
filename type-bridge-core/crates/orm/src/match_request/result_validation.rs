@@ -3051,9 +3051,7 @@ fn parse_duration(value: &str) -> Option<DurationKey> {
                 )?
             }
             (true, 'S') => {
-                let (whole, fraction) = number
-                    .split_once('.')
-                    .map_or((number.as_str(), ""), |parts| parts);
+                let (whole, fraction) = number.split_once('.').unwrap_or((number.as_str(), ""));
                 if whole.is_empty()
                     || fraction.len() > 9
                     || !fraction.bytes().all(|byte| byte.is_ascii_digit())

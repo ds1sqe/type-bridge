@@ -21,6 +21,7 @@ mod support;
 
 const SOURCE: &str =
     include_str!("../../../../tests/contracts/sdk_conformance/workforce-v3/schema-v3.yaml");
+// This external catalog pins fingerprints that include each emitter's fixed code resources.
 const CATALOG: &str =
     include_str!("../../../../tests/contracts/sdk_conformance/workforce-v3/catalog-v3.json");
 const OUTPUT_ENV: &str = "TYPE_BRIDGE_WORKFORCE_V3_FINGERPRINTS_OUTPUT";

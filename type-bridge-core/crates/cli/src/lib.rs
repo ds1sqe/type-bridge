@@ -711,7 +711,10 @@ fn run_schema_generate_with(
     }
 
     let resolved = workspace.resolved_schema();
-    let migration_history = workspace.migration_history_bundle().map_err(display)?;
+    let migration_directory = workspace.ensure_migration_directory().map_err(display)?;
+    let migration_history = workspace
+        .migration_history_bundle_in(&migration_directory)
+        .map_err(display)?;
     let authority = build_schema_authority(
         workspace.declared_schema(),
         workspace.required_capabilities(),

@@ -47,6 +47,7 @@ static NEXT_LIVE_TOKEN: AtomicU64 = AtomicU64::new(1);
 const SESSION_TOKEN_DOMAIN: u64 = 0x7365_7373_696f_6e00;
 const BINDING_TOKEN_DOMAIN: u64 = 0x6269_6e64_696e_6700;
 
+#[allow(deprecated)]
 fn next_token(domain: u64) -> [u8; 16] {
     let ordinal = NEXT_LIVE_TOKEN
         .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {

@@ -118,7 +118,7 @@ fn bundle_round_trips_full_historical_authority_and_is_deterministic() {
         .expect("catalog authority builds its own forward preview");
     assert!(!apply_preview.execution_authorized());
     assert_eq!(apply_preview.migrations().len(), 2);
-    let applied = graph.topological_order().into_iter().cloned().collect();
+    let applied = graph.topological_order().iter().cloned().collect();
     let removals =
         BTreeSet::from([MigrationId::new("example", "0002_contract").expect("fixture removal")]);
     let rollback_preview = catalog

@@ -7816,9 +7816,7 @@ fn parse_python_day_time_duration(value: &str) -> Option<(i64, i64, i64)> {
                 'H' => hours = number.parse().ok()?,
                 'M' => minutes = number.parse().ok()?,
                 'S' => {
-                    let (whole, fraction) = number
-                        .split_once('.')
-                        .map_or((number.as_str(), ""), |parts| parts);
+                    let (whole, fraction) = number.split_once('.').unwrap_or((number.as_str(), ""));
                     if whole.is_empty()
                         || fraction.len() > 9
                         || !fraction.bytes().all(|byte| byte.is_ascii_digit())

@@ -250,6 +250,7 @@ impl NodeMigrationCatalog {
     }
 }
 
+#[allow(clippy::large_enum_variant)]
 enum NodeMigrationPreviewInner {
     Apply(VerifiedMigrationApplyPlan),
     Rollback(VerifiedMigrationRollbackPlan),

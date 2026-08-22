@@ -90,6 +90,7 @@ static LIVE_AUTHORITY_REBUILD_SLOTS: LazyLock<Arc<tokio::sync::Semaphore>> = Laz
 /// The owned permit is moved into the blocking task, so deadline cancellation
 /// cannot detach an unbounded number of CPU- and memory-heavy parses.
 #[doc(hidden)]
+#[allow(clippy::result_unit_err)]
 pub async fn acquire_live_authority_rebuild_permit() -> Result<tokio::sync::OwnedSemaphorePermit, ()>
 {
     Arc::clone(&LIVE_AUTHORITY_REBUILD_SLOTS)

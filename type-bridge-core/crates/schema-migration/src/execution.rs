@@ -2139,8 +2139,8 @@ fn failure(category: DiagnosticCategory, code: &'static str, message: &'static s
 mod tests {
     use std::collections::BTreeMap;
     use std::future::Future;
-    use std::sync::{Arc, Mutex};
-    use std::task::{Context, Poll, Wake, Waker};
+    use std::sync::Mutex;
+    use std::task::{Context, Poll, Waker};
 
     use type_bridge_contract::fingerprint::SemanticProfileId;
     use type_bridge_contract::managed_scope::{ManagedScopeId, SemanticProfileBinding};
@@ -3109,15 +3109,8 @@ mod tests {
         }
     }
 
-    struct NoopWake;
-
-    impl Wake for NoopWake {
-        fn wake(self: Arc<Self>) {}
-    }
-
     fn block_on<F: Future>(future: F) -> F::Output {
-        let waker = Waker::from(Arc::new(NoopWake));
-        let mut context = Context::from_waker(&waker);
+        let mut context = Context::from_waker(Waker::noop());
         let mut future = Box::pin(future);
         loop {
             match future.as_mut().poll(&mut context) {

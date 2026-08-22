@@ -416,7 +416,7 @@ mod tests {
 
     #[test]
     fn chunk_assembly_failure_after_partial_progress_is_deterministic_and_cleaned_up() {
-        let byte = [b'x'];
+        let byte = *b"x";
         let chunk = [TypeBridgeByteView {
             data: byte.as_ptr(),
             length: byte.len(),

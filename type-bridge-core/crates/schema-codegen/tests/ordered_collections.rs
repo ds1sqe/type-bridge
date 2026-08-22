@@ -722,7 +722,12 @@ fn unordered_schema_aware_evidence_and_fixed_resources_remain_exactly_legacy() {
     );
     let python_models = std::str::from_utf8(python_package.get("_models.py").unwrap()).unwrap();
     assert!(python_models.contains("_install_runtime_projection("));
-    assert!(!python_models.contains("_SCHEMA_AUTHORITY_BYTES"));
+    assert!(
+        python_models
+            .contains("from ._authority import SCHEMA_AUTHORITY_BYTES as _SCHEMA_AUTHORITY_BYTES")
+    );
+    let python_init = std::str::from_utf8(python_package.get("__init__.py").unwrap()).unwrap();
+    assert!(python_init.contains("_open_migration_catalog(_SCHEMA_AUTHORITY_BYTES, history)"));
 
     let typescript = TypeScriptEmitter::new();
     assert_eq!(

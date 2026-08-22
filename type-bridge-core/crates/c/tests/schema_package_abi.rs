@@ -2635,7 +2635,8 @@ int main(void) {
 
 #[test]
 fn shared_library_preserves_the_frozen_abi_1_4_exports() {
-    let Some(library) = native_library_or_skip("shared_library_preserves_the_frozen_abi_1_4_exports")
+    let Some(library) =
+        native_library_or_skip("shared_library_preserves_the_frozen_abi_1_4_exports")
     else {
         return;
     };
@@ -6000,7 +6001,7 @@ fn chunked_schema_package_open_enforces_chunk_bytes_and_flat_table_hosted_object
     let parts = fixture.bytes.chunked_parts(17);
     let descriptor = parts.descriptor();
 
-    let byte = [b'x'];
+    let byte = *b"x";
     let overflowing_chunks = [
         TypeBridgeByteView {
             data: byte.as_ptr(),

@@ -133,6 +133,7 @@ impl<S: Schema> MigrationCatalog<S> {
 }
 
 #[derive(Clone, Debug)]
+#[allow(clippy::large_enum_variant)]
 enum MigrationPreviewInner {
     Apply(type_bridge_schema_migration::VerifiedMigrationApplyPlan),
     Rollback(type_bridge_schema_migration::VerifiedMigrationRollbackPlan),

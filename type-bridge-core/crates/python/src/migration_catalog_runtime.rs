@@ -256,6 +256,7 @@ impl PyMigrationCatalog {
     }
 }
 
+#[allow(clippy::large_enum_variant)]
 enum PyMigrationPreviewInner {
     Apply(VerifiedMigrationApplyPlan),
     Rollback(VerifiedMigrationRollbackPlan),
