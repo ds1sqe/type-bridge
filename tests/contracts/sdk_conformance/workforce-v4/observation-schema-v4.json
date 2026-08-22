@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://type-bridge.dev/contracts/sdk-conformance/workforce-observation-v4.schema.json",
+  "title": "TypeBridge closed Workforce V4 observation algebra",
+  "oneOf": [
+    {"$ref": "#/$defs/administration"},
+    {"$ref": "#/$defs/rollback"},
+    {"$ref": "#/$defs/backfill"},
+    {"$ref": "#/$defs/runtimeFacade"},
+    {"$ref": "#/$defs/cancellation"},
+    {"$ref": "#/$defs/resourceLimits"},
+    {"$ref": "#/$defs/diagnostic"},
+    {"$ref": "#/$defs/lifecycle"}
+  ],
+  "$defs": {
+    "administration": {
+      "type": "object", "additionalProperties": false,
+      "required": ["create", "repeat_create", "pair_state", "delete", "repeat_delete"],
+      "properties": {
+        "create": {"const": "created"}, "repeat_create": {"const": "already_exists"},
+        "pair_state": {"enum": ["standalone_managed", "owned_pair"]},
+        "delete": {"enum": ["deleted_standalone_managed", "deleted_owned_pair"]},
+        "repeat_delete": {"const": "already_absent"}
+      }
+    },
+    "rollback": {
+      "type": "object", "additionalProperties": false,
+      "required": ["apply_status", "rollback_without_approval_code", "rollback_status", "unknown_target_code", "repeat_rollback_status", "reapply_status"],
+      "properties": {
+        "apply_status": {"const": "applied"},
+        "rollback_without_approval_code": {"const": "migration_rollback_approval_required"},
+        "rollback_status": {"const": "rolled_back"},
+        "unknown_target_code": {"const": "migration_history_unknown_rollback_target"},
+        "repeat_rollback_status": {"const": "up_to_date"},
+        "reapply_status": {"const": "applied"}
+      }
+    },
+    "backfill": {
+      "type": "object", "additionalProperties": false,
+      "required": ["conflict_certainty", "conflict_code", "conflict_visible_destination_count", "forward_changed", "forward_transaction_groups", "equal_copy_count", "retry_changed", "reverse_changed", "remaining_destination_count"],
+      "properties": {
+        "conflict_certainty": {"const": "definitely_aborted"},
+        "conflict_code": {"const": "migration_typedb_backfill_destination_conflict"},
+        "conflict_visible_destination_count": {"type": "integer", "minimum": 0},
+        "forward_changed": {"type": "integer", "minimum": 0},
+        "forward_transaction_groups": {"type": "integer", "minimum": 0},
+        "equal_copy_count": {"type": "integer", "minimum": 0},
+        "retry_changed": {"type": "integer", "minimum": 0},
+        "reverse_changed": {"type": "integer", "minimum": 0},
+        "remaining_destination_count": {"type": "integer", "minimum": 0}
+      }
+    },
+    "runtimeFacade": {
+      "type": "object", "additionalProperties": false,
+      "required": ["catalog_entries", "catalog_fingerprint", "apply_order", "rollback_order", "backfill_steps"],
+      "properties": {
+        "catalog_entries": {"type": "integer", "minimum": 0},
+        "catalog_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "apply_order": {"$ref": "#/$defs/migrationIdentities"},
+        "rollback_order": {"$ref": "#/$defs/migrationIdentities"},
+        "backfill_steps": {"type": "integer", "minimum": 0}
+      }
+    },
+    "migrationIdentities": {
+      "type": "array", "minItems": 1,
+      "items": {"type": "string", "pattern": "^workforcev4/[a-z0-9-]+$"}
+    },
+    "cancellation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["code", "before_effect"],
+      "properties": {"code": {"const": "migration_execution_cancelled"}, "before_effect": {"type": "boolean"}}
+    },
+    "resourceLimits": {
+      "type": "object", "additionalProperties": false,
+      "required": ["code", "bounded"],
+      "properties": {"code": {"const": "migration_execution_group_limit"}, "bounded": {"type": "boolean"}}
+    },
+    "diagnostic": {
+      "type": "object", "additionalProperties": false,
+      "required": ["code", "category", "provider_text_absent"],
+      "properties": {
+        "code": {"const": "migration_execution_cancelled"}, "category": {"const": "cancelled"},
+        "provider_text_absent": {"type": "boolean"}
+      }
+    },
+    "lifecycle": {
+      "type": "object", "additionalProperties": false,
+      "required": ["explicit_close", "repeat_close", "temporary_evidence_absent"],
+      "properties": {
+        "explicit_close": {"type": "boolean"}, "repeat_close": {"type": "boolean"},
+        "temporary_evidence_absent": {"type": "boolean"}
+      }
+    }
+  }
+}

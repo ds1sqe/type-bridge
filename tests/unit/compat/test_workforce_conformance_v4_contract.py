@@ -115,6 +115,7 @@ def test_v4_selected_proofs_and_journey_are_closed_and_ordered() -> None:
 def test_v4_producer_and_report_envelopes_are_exact() -> None:
     catalog = _load(CONTRACT_ROOT / "catalog-v4.json")
     schema = _load(CONTRACT_ROOT / "report-schema-v4.json")
+    observations = _load(CONTRACT_ROOT / "observation-schema-v4.json")
 
     assert list(catalog["report_producers"]) == ["python", "node", "rust", "c"]
     assert schema["properties"]["format"] == {"const": "typebridge.sdk-conformance-report/v4"}
@@ -122,3 +123,13 @@ def test_v4_producer_and_report_envelopes_are_exact() -> None:
     assert schema["properties"]["server_version"] == {"const": "3.12.3"}
     assert schema["properties"]["results"]["minItems"] == 8
     assert schema["properties"]["results"]["maxItems"] == 8
+    assert schema["$defs"]["result"]["properties"]["observation"] == {
+        "$ref": "observation-schema-v4.json"
+    }
+    assert catalog["observation_schema_path"].endswith("observation-schema-v4.json")
+    assert len(observations["oneOf"]) == 8
+    assert all(
+        definition.get("additionalProperties") is False
+        for name, definition in observations["$defs"].items()
+        if name != "migrationIdentities"
+    )

@@ -16,6 +16,9 @@ MANIFEST_RELATIVE = "tests/contracts/sdk_conformance/manifest-v1.json"
 CATALOG_RELATIVE = "tests/contracts/sdk_conformance/workforce-v4/catalog-v4.json"
 JOURNEY_RELATIVE = "tests/contracts/sdk_conformance/workforce-v4/journey-v4.json"
 REPORT_SCHEMA_RELATIVE = "tests/contracts/sdk_conformance/workforce-v4/report-schema-v4.json"
+OBSERVATION_SCHEMA_RELATIVE = (
+    "tests/contracts/sdk_conformance/workforce-v4/observation-schema-v4.json"
+)
 EXPECTED_BINDINGS = ("python", "node", "rust", "c")
 EXPECTED_TRANSITIONS = (
     "workforce.runtime.database-administration",
@@ -80,6 +83,7 @@ class Contracts:
     catalog: dict[str, Any]
     journey: dict[str, Any]
     report_schema: dict[str, Any]
+    observation_schema: dict[str, Any]
     selected_cases: tuple[str, ...]
     observation_refs: tuple[str, ...]
 
@@ -89,6 +93,15 @@ def load_contracts(root: Path = ROOT) -> Contracts:
     catalog = _load_json(root / CATALOG_RELATIVE)
     journey = _load_json(root / JOURNEY_RELATIVE)
     report_schema = _load_json(root / REPORT_SCHEMA_RELATIVE)
+    observation_schema = _load_json(root / OBSERVATION_SCHEMA_RELATIVE)
+    if catalog.get("observation_schema_path") != OBSERVATION_SCHEMA_RELATIVE:
+        _reject("observation_schema_drift", "V4 observation-schema path is not exact")
+    if report_schema.get("$defs", {}).get("result", {}).get("properties", {}).get(
+        "observation"
+    ) != {"$ref": "observation-schema-v4.json"}:
+        _reject("observation_schema_drift", "V4 report schema does not bind the closed algebra")
+    if len(observation_schema.get("oneOf", ())) != 8:
+        _reject("observation_schema_drift", "V4 observation algebra must contain eight lanes")
 
     transitions = tuple(catalog.get("manifest_transition_cases", ()))
     retained = tuple(catalog.get("evidence_only_gap_cases", ()))
@@ -133,6 +146,7 @@ def load_contracts(root: Path = ROOT) -> Contracts:
         catalog=catalog,
         journey=journey,
         report_schema=report_schema,
+        observation_schema=observation_schema,
         selected_cases=selected_cases,
         observation_refs=observation_refs,
     )
@@ -146,7 +160,7 @@ def _validate_source_identity(identity: Any, relative: str, root: Path, label: s
         _reject("stale_source_identity", f"{label} source identity is stale")
 
 
-def _validate_report(report: dict[str, Any]) -> None:
+def _validate_report(report: dict[str, Any], observation_refs: tuple[str, ...]) -> None:
     _exact_keys(
         report,
         {
@@ -173,7 +187,7 @@ def _validate_report(report: dict[str, Any]) -> None:
         "temporary_evidence_absent": True,
     }:
         _reject("invalid_report_schema", "report cleanup invariant is false")
-    for result in report["results"]:
+    for index, result in enumerate(report["results"]):
         if not isinstance(result, dict):
             _reject("invalid_report_schema", "report result must be an object")
         _exact_keys(
@@ -183,6 +197,173 @@ def _validate_report(report: dict[str, Any]) -> None:
         )
         if result["outcome"] != "passed" or not isinstance(result["observation"], dict):
             _reject("invalid_report_schema", "report result outcome is invalid")
+        _validate_observation(observation_refs[index], result["observation"])
+
+
+def _bool(value: Any, label: str) -> None:
+    if type(value) is not bool:
+        _reject("invalid_observation_shape", f"{label} must be boolean")
+
+
+def _uint(value: Any, label: str) -> None:
+    if type(value) is not int or value < 0:
+        _reject("invalid_observation_shape", f"{label} must be an unsigned integer")
+
+
+def _enum(value: Any, allowed: set[str], label: str) -> None:
+    if not isinstance(value, str) or value not in allowed:
+        _reject("invalid_observation_shape", f"{label} is outside its closed vocabulary")
+
+
+def _validate_observation(reference: str, observation: dict[str, Any]) -> None:
+    """Validate one independently observed lane against the closed V4 algebra."""
+    if reference == "bound_database_administration":
+        _exact_keys(
+            observation,
+            {"create", "repeat_create", "pair_state", "delete", "repeat_delete"},
+            reference,
+        )
+        _enum(observation["create"], {"created"}, f"{reference}.create")
+        _enum(
+            observation["repeat_create"],
+            {"already_exists"},
+            f"{reference}.repeat_create",
+        )
+        _enum(
+            observation["pair_state"],
+            {"standalone_managed", "owned_pair"},
+            f"{reference}.pair_state",
+        )
+        _enum(
+            observation["delete"],
+            {"deleted_standalone_managed", "deleted_owned_pair"},
+            f"{reference}.delete",
+        )
+        _enum(
+            observation["repeat_delete"],
+            {"already_absent"},
+            f"{reference}.repeat_delete",
+        )
+    elif reference == "rollback_reapply_recovery":
+        _exact_keys(
+            observation,
+            {
+                "apply_status",
+                "rollback_without_approval_code",
+                "rollback_status",
+                "unknown_target_code",
+                "repeat_rollback_status",
+                "reapply_status",
+            },
+            reference,
+        )
+        for field in ["apply_status", "reapply_status"]:
+            _enum(observation[field], {"applied"}, f"{reference}.{field}")
+        _enum(observation["rollback_status"], {"rolled_back"}, f"{reference}.rollback_status")
+        _enum(
+            observation["repeat_rollback_status"],
+            {"up_to_date"},
+            f"{reference}.repeat_rollback_status",
+        )
+        _enum(
+            observation["rollback_without_approval_code"],
+            {"migration_rollback_approval_required"},
+            f"{reference}.rollback_without_approval_code",
+        )
+        _enum(
+            observation["unknown_target_code"],
+            {"migration_history_unknown_rollback_target"},
+            f"{reference}.unknown_target_code",
+        )
+    elif reference == "binding_neutral_backfill":
+        _exact_keys(
+            observation,
+            {
+                "conflict_certainty",
+                "conflict_code",
+                "conflict_visible_destination_count",
+                "forward_changed",
+                "forward_transaction_groups",
+                "equal_copy_count",
+                "retry_changed",
+                "reverse_changed",
+                "remaining_destination_count",
+            },
+            reference,
+        )
+        _enum(
+            observation["conflict_certainty"],
+            {"definitely_aborted"},
+            f"{reference}.conflict_certainty",
+        )
+        _enum(
+            observation["conflict_code"],
+            {"migration_typedb_backfill_destination_conflict"},
+            f"{reference}.conflict_code",
+        )
+        for field in set(observation) - {"conflict_certainty", "conflict_code"}:
+            _uint(observation[field], f"{reference}.{field}")
+    elif reference == "migration_runtime_facade":
+        _exact_keys(
+            observation,
+            {
+                "catalog_entries",
+                "catalog_fingerprint",
+                "apply_order",
+                "rollback_order",
+                "backfill_steps",
+            },
+            reference,
+        )
+        _uint(observation["catalog_entries"], f"{reference}.catalog_entries")
+        _uint(observation["backfill_steps"], f"{reference}.backfill_steps")
+        if (
+            not isinstance(observation["catalog_fingerprint"], str)
+            or len(observation["catalog_fingerprint"]) != 64
+            or any(
+                character not in "0123456789abcdef"
+                for character in observation["catalog_fingerprint"]
+            )
+        ):
+            _reject(
+                "invalid_observation_shape",
+                f"{reference}.catalog_fingerprint must be lowercase SHA-256",
+            )
+        for field in ["apply_order", "rollback_order"]:
+            values = observation[field]
+            if (
+                not isinstance(values, list)
+                or not values
+                or not all(
+                    isinstance(value, str) and value.startswith("workforcev4/") for value in values
+                )
+            ):
+                _reject(
+                    "invalid_observation_shape",
+                    f"{reference}.{field} must be canonical migration identities",
+                )
+    elif reference == "administration_migration_cancellation":
+        _exact_keys(observation, {"code", "before_effect"}, reference)
+        _enum(observation["code"], {"migration_execution_cancelled"}, f"{reference}.code")
+        _bool(observation["before_effect"], f"{reference}.before_effect")
+    elif reference == "administration_migration_resource_limits":
+        _exact_keys(observation, {"code", "bounded"}, reference)
+        _enum(observation["code"], {"migration_execution_group_limit"}, f"{reference}.code")
+        _bool(observation["bounded"], f"{reference}.bounded")
+    elif reference == "administration_migration_structured_diagnostic":
+        _exact_keys(observation, {"code", "category", "provider_text_absent"}, reference)
+        _enum(observation["code"], {"migration_execution_cancelled"}, f"{reference}.code")
+        _enum(observation["category"], {"cancelled"}, f"{reference}.category")
+        _bool(observation["provider_text_absent"], f"{reference}.provider_text_absent")
+    elif reference == "administration_migration_resource_lifecycle":
+        _exact_keys(
+            observation, {"explicit_close", "repeat_close", "temporary_evidence_absent"}, reference
+        )
+        _bool(observation["explicit_close"], f"{reference}.explicit_close")
+        _bool(observation["repeat_close"], f"{reference}.repeat_close")
+        _bool(observation["temporary_evidence_absent"], f"{reference}.temporary_evidence_absent")
+    else:
+        _reject("unknown_observation_reference", f"unknown V4 observation {reference!r}")
 
 
 def compare_reports(paths: list[Path], root: Path = ROOT) -> dict[str, Any]:
@@ -199,7 +380,7 @@ def compare_reports(paths: list[Path], root: Path = ROOT) -> dict[str, Any]:
     expected_observations: tuple[Any, ...] | None = None
     for path in paths:
         report = _load_json(path)
-        _validate_report(report)
+        _validate_report(report, contracts.observation_refs)
         binding = report["binding"]
         if binding in reports:
             _reject("duplicate_binding_report", f"duplicate {binding!r} report")
@@ -212,6 +393,14 @@ def compare_reports(paths: list[Path], root: Path = ROOT) -> dict[str, Any]:
         observations = tuple(result["observation"] for result in results)
         if case_ids != contracts.selected_cases:
             _reject("report_row_order_drift", f"{binding} report row order is not exact")
+        for reference in ("rollback_reapply_recovery", "binding_neutral_backfill"):
+            index = contracts.observation_refs.index(reference)
+            expected = contracts.journey["shared_fixture_oracles"][reference]
+            if observations[index] != expected:
+                _reject(
+                    "exact_live_oracle_drift",
+                    f"{binding} independently observed {reference} differs from the frozen exact-live oracle",
+                )
         if expected_observations is None:
             expected_observations = observations
         elif observations != expected_observations:

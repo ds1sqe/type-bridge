@@ -9,6 +9,7 @@
     "journey_path": "tests/contracts/sdk_conformance/workforce-v4/journey-v4.json"
   },
   "report_schema_path": "tests/contracts/sdk_conformance/workforce-v4/report-schema-v4.json",
+  "observation_schema_path": "tests/contracts/sdk_conformance/workforce-v4/observation-schema-v4.json",
   "report_bindings": ["python", "node", "rust", "c"],
   "manifest_transition_cases": [
     "workforce.runtime.database-administration",

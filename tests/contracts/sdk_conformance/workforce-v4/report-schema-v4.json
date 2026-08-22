@@ -49,7 +49,7 @@
         "capability_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9.-]+$"},
         "proof_kind": {"enum": ["direct_runtime", "diagnostic", "lifecycle"]},
         "outcome": {"const": "passed"},
-        "observation": {"type": "object"}
+        "observation": {"$ref": "observation-schema-v4.json"}
       }
     }
   }
