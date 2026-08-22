@@ -236,6 +236,24 @@ impl PyMigrationCatalog {
         .map(verification_report)
         .map_err(py_catalog_diagnostic)
     }
+
+    fn applied_migrations(
+        &self,
+        py: Python<'_>,
+        database: &PyRustDatabase,
+    ) -> PyResult<Vec<PyMigrationIdentity>> {
+        let (database, runtime) = database.handles();
+        provider_block_on(
+            py,
+            runtime.as_ref(),
+            type_bridge_schema_migration_typedb::load_catalog_applied_migrations(
+                database,
+                &self.inner,
+            ),
+        )
+        .map(|identities| identities.iter().map(migration_identity).collect())
+        .map_err(py_catalog_diagnostic)
+    }
 }
 
 enum PyMigrationPreviewInner {
