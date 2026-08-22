@@ -28,6 +28,7 @@ export {
   QueryExecutionResourceLimits,
 } from "@type-bridge/node/runtime-projection";
 import type { QueryV2Authority } from "@type-bridge/node/query-v2";
+import type { RustDatabase } from "@type-bridge/node";
 
 const COMPLETE_BRAND: unique symbol = Symbol("typebridge.complete");
 const REFERENCE_BRAND: unique symbol = Symbol("typebridge.reference");
@@ -858,6 +859,7 @@ export function __installRuntimeProjectionPackage(
     semanticFingerprintJson,
   });
   const projection = installRuntimeProjection({
+    schemaAuthorityJson,
     projectionJson,
     semanticFingerprintJson,
     projectionFingerprintJson,
@@ -1742,6 +1744,86 @@ function requireProjection(): InstalledRuntimeProjection {
     throw new TypeError("generated runtime projection is not installed");
   }
   return installedProjection;
+}
+
+export type DirectTlsMode = "disabled" | "native_roots" | "custom_root";
+
+export interface DirectConnectionPolicyOptions {
+  readonly username?: string;
+  readonly password?: string;
+  readonly httpPort?: number;
+  readonly tls?: DirectTlsMode;
+  readonly tlsRootCa?: string;
+  readonly connectionLimits?: QueryExecutionResourceLimits;
+  readonly answerLimits?: QueryExecutionResourceLimits;
+}
+
+/** Immutable package-owned direct connection policy with redacted credentials. */
+export class DirectConnectionPolicy {
+  readonly endpoint: string;
+  readonly database: string;
+  readonly #username: string;
+  readonly #password: string;
+  readonly #httpPort: number;
+  readonly #tls: DirectTlsMode;
+  readonly #tlsRootCa: string | undefined;
+  readonly #connectionLimits: QueryExecutionResourceLimits | undefined;
+  readonly #answerLimits: QueryExecutionResourceLimits | undefined;
+
+  constructor(
+    endpoint: string,
+    database: string,
+    options: DirectConnectionPolicyOptions = {},
+  ) {
+    this.endpoint = endpoint;
+    this.database = database;
+    this.#username = options.username ?? "admin";
+    this.#password = options.password ?? "password";
+    this.#httpPort = options.httpPort ?? 8000;
+    this.#tls = options.tls ?? "disabled";
+    this.#tlsRootCa = options.tlsRootCa;
+    this.#connectionLimits = options.connectionLimits;
+    this.#answerLimits = options.answerLimits;
+    Object.freeze(this);
+  }
+
+  /** @internal Connect without exposing the credential-bearing native input. */
+  __connect(
+    projection: InstalledRuntimeProjection,
+    cancellation?: QueryCancellation,
+  ): RustDatabase {
+    return projection.connectDirect({
+      endpoint: this.endpoint,
+      database: this.database,
+      username: this.#username,
+      password: this.#password,
+      httpPort: this.#httpPort,
+      tlsMode: this.#tls,
+      ...(this.#tlsRootCa === undefined ? {} : { tlsRootCa: this.#tlsRootCa }),
+      ...(this.#connectionLimits === undefined
+        ? {}
+        : { connectionLimits: this.#connectionLimits }),
+      ...(this.#answerLimits === undefined
+        ? {}
+        : { answerLimits: this.#answerLimits }),
+      ...(cancellation === undefined ? {} : { cancellation }),
+    });
+  }
+
+  toString(): string {
+    return "DirectConnectionPolicy([REDACTED])";
+  }
+}
+
+/** Open a database owned and verified by this generated package. */
+export function connect(
+  policy: DirectConnectionPolicy,
+  cancellation?: QueryCancellation,
+): RustDatabase {
+  if (!(policy instanceof DirectConnectionPolicy)) {
+    throw new TypeError("connect requires this generated package's DirectConnectionPolicy");
+  }
+  return policy.__connect(requireProjection(), cancellation);
 }
 
 function requireQueryAuthority(): QueryV2Authority {

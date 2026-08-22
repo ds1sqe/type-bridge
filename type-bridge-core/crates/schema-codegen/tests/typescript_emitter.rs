@@ -78,6 +78,7 @@ fn emits_exact_deterministic_es_module_package() {
     assert!(index.contains("export function openMigrationCatalog(): MigrationCatalog"));
     assert!(index.contains("../${MIGRATION_HISTORY_RESOURCE}"));
     assert!(index.contains("RUNTIME_PROJECTION_JSON"));
+    assert!(runtime.contains("schemaAuthorityJson,"));
     assert!(!index.contains("export * from \"./authority.js\""));
     let authority_source =
         String::from_utf8(first.get("src/authority.ts").unwrap().to_vec()).unwrap();
