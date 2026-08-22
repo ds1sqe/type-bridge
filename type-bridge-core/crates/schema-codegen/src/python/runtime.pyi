@@ -249,6 +249,10 @@ class ReferenceBase:
 
 class StructValueBase:
     __struct_id__: str
+    __runtime_projection__: PyRuntimeProjection
+    def encode(self) -> bytes: ...
+    @classmethod
+    def decode[StructT: StructValueBase](cls: type[StructT], data: bytes) -> StructT: ...
 
 def encode_archive(records: Sequence[bytes]) -> bytes: ...
 def decode_archive(data: bytes) -> list[bytes]: ...
@@ -332,4 +336,5 @@ def install_runtime_projection(
     projection_fingerprint_json: str,
     models: Sequence[tuple[type[ModelBase], type[ReferenceBase] | None]],
     schema_authority: bytes,
+    structs: Sequence[type[StructValueBase]] = ...,
 ) -> None: ...

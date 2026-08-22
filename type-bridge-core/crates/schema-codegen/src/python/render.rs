@@ -390,7 +390,15 @@ fn render_models(
                 model.target_name().as_str()
             );
         }
-        body.push_str("    ],\n    _SCHEMA_AUTHORITY_BYTES,\n)\n");
+        body.push_str("    ],\n    _SCHEMA_AUTHORITY_BYTES,\n    [\n");
+        for id in projection.emission().structs() {
+            let _ = writeln!(
+                body,
+                "        {},",
+                projection.structs()[id].target_name().as_str()
+            );
+        }
+        body.push_str("    ],\n)\n");
         body.push('\n');
     }
     let mut function_body = String::new();

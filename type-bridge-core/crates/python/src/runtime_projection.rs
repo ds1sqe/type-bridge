@@ -82,6 +82,7 @@ struct InstalledPackage {
     projection: Arc<InstalledRuntimeProjection>,
     managed_scope_id: Option<ManagedScopeId>,
     models: BTreeMap<TypeId, RegisteredModel>,
+    structs: BTreeMap<TypeId, Py<PyType>>,
     types_by_label: BTreeMap<String, TypeId>,
     facade_origins: FacadeOriginRegistry,
     named_zone_marker: Option<Py<PyType>>,
@@ -873,6 +874,18 @@ impl InstalledPackage {
             })
     }
 
+    fn struct_id_for_class(&self, py: Python<'_>, class: &Py<PyType>) -> PyResult<TypeId> {
+        let pointer = class.bind(py).as_ptr();
+        self.structs
+            .iter()
+            .find_map(|(id, registered)| {
+                (registered.bind(py).as_ptr() == pointer).then(|| id.clone())
+            })
+            .ok_or_else(|| {
+                py_type_error("struct class is not registered in this runtime projection")
+            })
+    }
+
     fn identify_value(
         &self,
         py: Python<'_>,
@@ -999,6 +1012,7 @@ impl PyRuntimeProjection {
         projection_fingerprint_json,
         models,
         schema_authority = None,
+        structs = Vec::new(),
     ))]
     fn new(
         py: Python<'_>,
@@ -1007,13 +1021,15 @@ impl PyRuntimeProjection {
         projection_fingerprint_json: &str,
         models: Vec<(Py<PyType>, Option<Py<PyType>>)>,
         schema_authority: Option<&Bound<'_, PyBytes>>,
+        structs: Vec<Py<PyType>>,
     ) -> PyResult<Self> {
-        install_projection(
+        install_projection_with_structs(
             py,
             projection_json,
             semantic_fingerprint_json,
             projection_fingerprint_json,
             models,
+            structs,
             schema_authority.map(|authority| authority.as_bytes()),
         )
         .map(|package| Self { package })
@@ -1378,6 +1394,100 @@ impl PyRuntimeProjection {
             ));
         }
         hydrate_projected_thing_value(py, self.package.as_ref(), &value)
+    }
+
+    /// Encode one exact generated struct value as canonical record bytes.
+    fn encode_struct<'py>(
+        &self,
+        py: Python<'py>,
+        structure: Py<PyType>,
+        instance: Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyBytes>> {
+        let id = self.package.struct_id_for_class(py, &structure)?;
+        if !instance.get_type().is(structure.bind(py)) {
+            return Err(py_type_error(
+                "struct value is not an instance of the exact registered class",
+            ));
+        }
+        let projection = self
+            .package
+            .projection
+            .projection()
+            .structs()
+            .values()
+            .find(|projection| projection.id().label() == id.label())
+            .ok_or_else(|| py_runtime_error("struct is absent from installed projection"))?;
+        let members = projection
+            .fields()
+            .iter()
+            .map(|field| {
+                let value = instance.getattr(field.target_name().as_str())?;
+                if value.is_none() {
+                    return Ok(None);
+                }
+                canonical_attribute_value_from_py(
+                    py,
+                    &value,
+                    projected_value_type(field.value_type()),
+                    self.package.named_zone_marker.as_ref(),
+                )
+                .and_then(canonical_struct_scalar)
+                .map(Some)
+            })
+            .collect::<PyResult<Vec<_>>>()?;
+        let projected =
+            type_bridge_orm::ProjectedStructValue::try_new(&self.package.projection, id, members)
+                .map_err(|error| py_value_error(error.to_string()))?;
+        let record = type_bridge_orm::record_from_struct(&self.package.projection, &projected)
+            .map_err(|error| py_value_error(error.to_string()))?;
+        let bytes = record.encode().map_err(py_diagnostic)?;
+        Ok(PyBytes::new(py, &bytes))
+    }
+
+    /// Decode canonical struct bytes through exact installed package authority.
+    fn decode_struct(
+        &self,
+        py: Python<'_>,
+        structure: Py<PyType>,
+        bytes: &Bound<'_, PyBytes>,
+    ) -> PyResult<PyObject> {
+        let expected = self.package.struct_id_for_class(py, &structure)?;
+        let record =
+            type_bridge_contract::projected_record::ProjectedRecord::decode(bytes.as_bytes())
+                .map_err(py_diagnostic)?;
+        let value = type_bridge_orm::materialize_record(&self.package.projection, &record)
+            .map_err(|error| py_value_error(error.to_string()))?;
+        let ProjectedCodecValue::Struct(value) = value else {
+            return Err(py_value_error("canonical record is not a struct"));
+        };
+        if value.type_id() != &expected {
+            return Err(py_value_error(
+                "canonical struct has the wrong exact generated type",
+            ));
+        }
+        let projection = self
+            .package
+            .projection
+            .projection()
+            .structs()
+            .values()
+            .find(|projection| projection.id().label() == expected.label())
+            .ok_or_else(|| py_runtime_error("struct is absent from installed projection"))?;
+        let kwargs = PyDict::new(py);
+        for (field, member) in projection.fields().iter().zip(value.members()) {
+            let value = member
+                .as_ref()
+                .map(|value| {
+                    canonical_struct_value_to_py(py, value, self.package.named_zone_marker.as_ref())
+                })
+                .transpose()?
+                .unwrap_or_else(|| py.None());
+            kwargs.set_item(field.target_name().as_str(), value)?;
+        }
+        structure
+            .bind(py)
+            .call((), Some(&kwargs))
+            .map(Bound::unbind)
     }
 
     /// Compose canonical exact-package records into one deterministic archive.
@@ -4285,12 +4395,33 @@ fn validate_projected_generic_layout(
     Ok(())
 }
 
+#[cfg(test)]
 fn install_projection(
     py: Python<'_>,
     projection_json: &str,
     semantic_fingerprint_json: &str,
     projection_fingerprint_json: &str,
     models: Vec<(Py<PyType>, Option<Py<PyType>>)>,
+    schema_authority: Option<&[u8]>,
+) -> PyResult<Arc<InstalledPackage>> {
+    install_projection_with_structs(
+        py,
+        projection_json,
+        semantic_fingerprint_json,
+        projection_fingerprint_json,
+        models,
+        Vec::new(),
+        schema_authority,
+    )
+}
+
+fn install_projection_with_structs(
+    py: Python<'_>,
+    projection_json: &str,
+    semantic_fingerprint_json: &str,
+    projection_fingerprint_json: &str,
+    models: Vec<(Py<PyType>, Option<Py<PyType>>)>,
+    structs: Vec<Py<PyType>>,
     schema_authority: Option<&[u8]>,
 ) -> PyResult<Arc<InstalledPackage>> {
     let (runtime, managed_scope_id, declared_schema_identity) = match schema_authority {
@@ -4425,6 +4556,39 @@ fn install_projection(
             "projection model registration coverage is incomplete",
         ));
     }
+    let mut expected_structs = BTreeMap::new();
+    for structure in runtime.structs().values() {
+        let id = TypeId::new(TypeKind::Struct, structure.id().label().as_str())
+            .map_err(py_diagnostic)?;
+        expected_structs.insert(
+            canonical_id(&id)?,
+            (id, structure.target_name().as_str().to_owned()),
+        );
+    }
+    if structs.len() != expected_structs.len() {
+        return Err(py_value_error(format!(
+            "projection requires exactly {} struct registrations, received {}",
+            expected_structs.len(),
+            structs.len()
+        )));
+    }
+    let mut registered_structs = BTreeMap::new();
+    for class in structs {
+        let id_text: String = class.bind(py).getattr("__struct_id__")?.extract()?;
+        let (id, expected_name) = expected_structs.remove(&id_text).ok_or_else(|| {
+            py_value_error("registered struct has an unknown or duplicate __struct_id__")
+        })?;
+        let actual_name = class.bind(py).name()?;
+        if actual_name.to_str()? != expected_name {
+            return Err(py_value_error(
+                "registered struct has the wrong generated class name",
+            ));
+        }
+        if !pointers.insert(class.bind(py).as_ptr() as usize) {
+            return Err(py_value_error("generated class registration is duplicated"));
+        }
+        registered_structs.insert(id, class);
+    }
     let mut installed = InstalledRuntimeProjection::try_new(runtime).map_err(py_orm_error)?;
     if let Some(declared) = declared_schema_identity {
         installed = installed.with_declared_schema_identity(declared);
@@ -4452,6 +4616,7 @@ fn install_projection(
         projection: installed,
         managed_scope_id,
         models: registered,
+        structs: registered_structs,
         types_by_label,
         facade_origins: FacadeOriginRegistry::new(py)?,
         named_zone_marker,
@@ -8051,6 +8216,58 @@ fn attribute_value_to_py(
     }
 }
 
+fn canonical_struct_value_to_py(
+    py: Python<'_>,
+    value: &CanonicalValue,
+    named_zone_marker: Option<&Py<PyType>>,
+) -> PyResult<PyObject> {
+    let value = match value {
+        CanonicalValue::String(value) => AttributeValue::String(value.as_str().to_owned()),
+        CanonicalValue::Long(value) => AttributeValue::Long(*value),
+        CanonicalValue::Double(value) => AttributeValue::Double(value.get()),
+        CanonicalValue::Boolean(value) => AttributeValue::Boolean(*value),
+        CanonicalValue::Date(value) => AttributeValue::Date(value.to_string()),
+        CanonicalValue::DateTime(value) => AttributeValue::DateTime(value.to_string()),
+        CanonicalValue::DateTimeTz(value) => AttributeValue::DateTimeTZ(value.to_string()),
+        CanonicalValue::Decimal(value) => AttributeValue::Decimal(value.to_string()),
+        CanonicalValue::Duration(value) => AttributeValue::Duration(value.to_string()),
+    };
+    attribute_value_to_py(py, &value, named_zone_marker)
+}
+
+fn canonical_struct_scalar(value: AttributeValue) -> PyResult<CanonicalValue> {
+    match value {
+        AttributeValue::String(value) => CanonicalString::new(value)
+            .map(CanonicalValue::String)
+            .map_err(py_diagnostic),
+        AttributeValue::Long(value) => Ok(CanonicalValue::Long(value)),
+        AttributeValue::Double(value) => CanonicalDouble::new(value)
+            .map(CanonicalValue::Double)
+            .map_err(py_diagnostic),
+        AttributeValue::Boolean(value) => Ok(CanonicalValue::Boolean(value)),
+        AttributeValue::Date(value) => value
+            .parse::<CanonicalDate>()
+            .map(CanonicalValue::Date)
+            .map_err(py_diagnostic),
+        AttributeValue::DateTime(value) => value
+            .parse::<CanonicalDateTime>()
+            .map(CanonicalValue::DateTime)
+            .map_err(py_diagnostic),
+        AttributeValue::DateTimeTZ(value) => {
+            type_bridge_schema::parse_provider_datetime_tz_evidence(&value)
+                .map(CanonicalValue::DateTimeTz)
+                .map_err(py_diagnostic)
+        }
+        AttributeValue::Decimal(value) => DecimalValue::new(&value)
+            .map(CanonicalValue::Decimal)
+            .map_err(py_diagnostic),
+        AttributeValue::Duration(value) => value
+            .parse::<CanonicalDuration>()
+            .map(CanonicalValue::Duration)
+            .map_err(py_diagnostic),
+    }
+}
+
 fn datetime_tz_to_py(
     py: Python<'_>,
     value: &str,
@@ -8541,6 +8758,14 @@ plays:
     activity: [participant]
   gathering:
     container: [item]
+"#;
+
+    const STRUCT_SCHEMA: &str = r#"format: typebridge.schema/v2
+structs:
+  score:
+    fields:
+      - { name: points, type: integer }
+      - { name: note, type: string, optional: true }
 "#;
 
     const BATCH_SCHEMA: &str = r#"format: typebridge.schema/v2
@@ -9465,6 +9690,57 @@ class Reference:
                         .unbind()
                 });
                 (complete, reference)
+            })
+            .collect()
+    }
+
+    fn struct_classes(py: Python<'_>, projection: &RuntimeProjection) -> Vec<Py<PyType>> {
+        let module = PyModule::from_code(
+            py,
+            ffi::c_str!(
+                r#"
+class StructBase:
+    __slots__ = ()
+    def __init__(self, **values):
+        for name, value in values.items():
+            object.__setattr__(self, name, value)
+"#
+            ),
+            ffi::c_str!("projection_structs.py"),
+            ffi::c_str!("projection_structs"),
+        )
+        .unwrap();
+        let builtins = py.import("builtins").unwrap();
+        let type_fn = builtins.getattr("type").unwrap();
+        projection
+            .structs()
+            .values()
+            .map(|structure| {
+                let id = TypeId::new(TypeKind::Struct, structure.id().label().as_str()).unwrap();
+                let attrs = PyDict::new(py);
+                attrs
+                    .set_item("__struct_id__", canonical_id(&id).unwrap())
+                    .unwrap();
+                attrs
+                    .set_item(
+                        "__slots__",
+                        PyTuple::new(
+                            py,
+                            structure
+                                .fields()
+                                .iter()
+                                .map(|field| field.target_name().as_str()),
+                        )
+                        .unwrap(),
+                    )
+                    .unwrap();
+                let bases = PyTuple::new(py, [module.getattr("StructBase").unwrap()]).unwrap();
+                type_fn
+                    .call1((structure.target_name().as_str(), bases, attrs))
+                    .unwrap()
+                    .downcast_into::<PyType>()
+                    .unwrap()
+                    .unbind()
             })
             .collect()
     }
@@ -10878,6 +11154,67 @@ class Reference:
                 })
                 .collect::<Vec<_>>();
             assert_eq!(actual, expected);
+        });
+    }
+
+    #[test]
+    fn canonical_struct_codec_round_trips_the_exact_python_class() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            let authority = authority(STRUCT_SCHEMA, "python-struct-native.yaml");
+            let authority_bytes = encode_schema_authority(&authority);
+            let projection = python_projection(&authority);
+            let projection_json =
+                String::from_utf8(to_canonical_json(&projection).unwrap()).unwrap();
+            let semantic =
+                String::from_utf8(to_canonical_json(projection.semantic_fingerprint()).unwrap())
+                    .unwrap();
+            let fingerprint =
+                String::from_utf8(to_canonical_json(projection.projection_fingerprint()).unwrap())
+                    .unwrap();
+            let structures = struct_classes(py, &projection);
+            let structure = structures[0].clone_ref(py);
+            let package = install_projection_with_structs(
+                py,
+                &projection_json,
+                &semantic,
+                &fingerprint,
+                classes(py, &projection),
+                structures,
+                Some(&authority_bytes),
+            )
+            .unwrap();
+            let kwargs = PyDict::new(py);
+            kwargs.set_item("points", 42_i64).unwrap();
+            kwargs.set_item("note", "exact").unwrap();
+            let value = structure.bind(py).call((), Some(&kwargs)).unwrap();
+            let runtime = PyRuntimeProjection { package };
+            let bytes = runtime
+                .encode_struct(py, structure.clone_ref(py), value)
+                .unwrap();
+            let decoded = runtime
+                .decode_struct(py, structure.clone_ref(py), &bytes)
+                .unwrap();
+
+            assert!(decoded.bind(py).is_instance(structure.bind(py)).unwrap());
+            assert_eq!(
+                decoded
+                    .bind(py)
+                    .getattr("points")
+                    .unwrap()
+                    .extract::<i64>()
+                    .unwrap(),
+                42
+            );
+            assert_eq!(
+                decoded
+                    .bind(py)
+                    .getattr("note")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "exact"
+            );
         });
     }
 

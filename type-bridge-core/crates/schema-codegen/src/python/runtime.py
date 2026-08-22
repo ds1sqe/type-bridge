@@ -827,6 +827,14 @@ class ReferenceBase:
 class StructValueBase:
     __slots__ = ()
     __struct_id__: str
+    __runtime_projection__: PyRuntimeProjection
+
+    def encode(self) -> bytes:
+        return self.__runtime_projection__.encode_struct(type(self), self)
+
+    @classmethod
+    def decode(cls, data: bytes) -> Self:
+        return cls.__runtime_projection__.decode_struct(cls, data)
 
     def __setattr__(self, name: str, value: object) -> None:
         raise AttributeError("projected struct values are immutable")
@@ -1129,6 +1137,7 @@ def install_runtime_projection(
     projection_fingerprint_json: str,
     models: Sequence[tuple[type[ModelBase], type[ReferenceBase] | None]],
     schema_authority: bytes,
+    structs: Sequence[type[StructValueBase]] = (),
 ) -> None:
     global _package_models, _package_runtime_projection
     if _package_runtime_projection is not None:
@@ -1143,9 +1152,12 @@ def install_runtime_projection(
         projection_fingerprint_json,
         models,
         schema_authority,
+        structs=structs,
     )
     for model, _reference in models:
         model.__runtime_projection__ = installed
+    for structure in structs:
+        structure.__runtime_projection__ = installed
     _package_models = tuple(model for model, _reference in models)
     _package_runtime_projection = installed
     from ._query import install_projection
