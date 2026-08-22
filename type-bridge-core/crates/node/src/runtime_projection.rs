@@ -9,8 +9,8 @@ use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use napi::bindgen_prelude::{
-    Array, BigInt, Env, External, FromNapiRef, FromNapiValue, Function, FunctionRef, JsValue,
-    Unknown, type_tag_from_ident,
+    Array, BigInt, Buffer, Env, External, FromNapiRef, FromNapiValue, Function, FunctionRef,
+    JsValue, Unknown, type_tag_from_ident,
 };
 use napi::{Error, Status, sys};
 use napi_derive::napi;
@@ -27,7 +27,7 @@ use type_bridge_contract::projection::{
     ProjectedTokenIdentity, ProjectionConfig, RuntimeProjection,
 };
 use type_bridge_contract::projection_wire::decode_runtime_projection_verified;
-use type_bridge_contract::schema::OwnsFactId;
+use type_bridge_contract::schema::{DeclaredIdentityFingerprint, OwnsFactId};
 use type_bridge_contract::sdk_diagnostic::{
     MAX_SDK_DIAGNOSTIC_PATH_SEGMENTS, SdkDiagnosticCategory, SdkDiagnosticCode,
     SdkDiagnosticMessage, SdkDiagnosticName, SdkDiagnosticPathSegment, SdkExecutionDiagnostic,
@@ -50,11 +50,11 @@ use type_bridge_orm::{
     AnswerCancellation, AttributeValue, Database, HydratedAttribute, InstalledRuntimeProjection,
     ProjectedAttributeValue, ProjectedBatch, ProjectedBatchExecutor,
     ProjectedBatchInvocationControl, ProjectedBatchOperation, ProjectedBatchResult,
-    ProjectedBatchRow, ProjectedCreate, ProjectedCrudExecutor, ProjectedManagerComparison,
-    ProjectedManagerFilter, ProjectedManagerFilterExecutor, ProjectedReference,
-    ProjectedRolePlayer, ProjectedThing, ProviderRuntimeOwner, QueryExecutionResourceLimits,
-    ThingKind, TransactionContext, TransactionContextState, ValueType,
-    resolve_generated_manager_lookup,
+    ProjectedBatchRow, ProjectedCodecValue, ProjectedCreate, ProjectedCrudExecutor,
+    ProjectedManagerComparison, ProjectedManagerFilter, ProjectedManagerFilterExecutor,
+    ProjectedReference, ProjectedRolePlayer, ProjectedThing, ProviderRuntimeOwner,
+    QueryExecutionResourceLimits, ThingKind, TransactionContext, TransactionContextState,
+    ValueType, resolve_generated_manager_lookup,
 };
 use type_bridge_schema::{decode_schema_authority, schema_authority_capability_vocabulary};
 use type_bridge_schema_codegen::{TypeScriptEmitter, verify_projection_evidence};
@@ -1561,15 +1561,15 @@ impl NodeRuntimeProjection {
         projected_batch_materializer: Option<Function<'_, (), ()>>,
         require_projected_batch_materializer: bool,
     ) -> napi::Result<Self> {
-        let (runtime, managed_scope_id) = match schema_authority_json {
+        let (runtime, managed_scope_id, declared_schema_identity) = match schema_authority_json {
             Some(schema_authority_json) => {
-                let (runtime, scope) = install_authority_backed_projection(
+                let (runtime, scope, declared) = install_authority_backed_projection(
                     &projection_json,
                     &semantic_fingerprint_json,
                     &projection_fingerprint_json,
                     &schema_authority_json,
                 )?;
-                (runtime, Some(scope))
+                (runtime, Some(scope), Some(declared))
             }
             None => {
                 let runtime = decode_runtime_projection_verified(
@@ -1587,7 +1587,7 @@ impl NodeRuntimeProjection {
                     return Err(projection_evidence_mismatch());
                 }
                 verify_legacy_typescript_projection_evidence(&runtime)?;
-                (runtime, None)
+                (runtime, None, None)
             }
         };
         let ordered_successor = projection_uses_ordered_collections(&runtime);
@@ -1694,7 +1694,11 @@ impl NodeRuntimeProjection {
                 },
             );
         }
-        let projection = Arc::new(InstalledRuntimeProjection::try_new(runtime).map_err(orm_error)?);
+        let mut projection = InstalledRuntimeProjection::try_new(runtime).map_err(orm_error)?;
+        if let Some(declared) = declared_schema_identity {
+            projection = projection.with_declared_schema_identity(declared);
+        }
+        let projection = Arc::new(projection);
         Ok(Self {
             package: Arc::new(InstalledPackage {
                 projection,
@@ -1991,6 +1995,42 @@ impl NodeRuntimeProjection {
         project_create_wire(self.package.as_ref(), &id, &wire)
             .map(|_| ())
             .map_err(napi_sdk_diagnostic)
+    }
+
+    /// Encode one exact generated create wire through the shared canonical record contract.
+    #[napi(js_name = "encodeCreateJson")]
+    pub fn encode_create_json(&self, type_key: String, value_json: String) -> napi::Result<Buffer> {
+        let id = manageable_type(self.package.as_ref(), &type_key)?;
+        let wire = parse_wire(&value_json)?;
+        if wire.type_key != type_key || wire.form != WireForm::Complete {
+            return Err(invalid_error(
+                "create wire has the wrong exact generated type",
+            ));
+        }
+        let projected =
+            project_create_wire(self.package.as_ref(), &id, &wire).map_err(napi_sdk_diagnostic)?;
+        let record = type_bridge_orm::record_from_create(&self.package.projection, &projected)
+            .map_err(|error| invalid_error(error.to_string()))?;
+        record.encode().map(Buffer::from).map_err(diagnostic_error)
+    }
+
+    /// Decode canonical create bytes through exact installed package authority.
+    #[napi(js_name = "decodeCreateJson")]
+    pub fn decode_create_json(&self, type_key: String, bytes: Buffer) -> napi::Result<String> {
+        let expected = manageable_type(self.package.as_ref(), &type_key)?;
+        let record = type_bridge_contract::projected_record::ProjectedRecord::decode(&bytes)
+            .map_err(diagnostic_error)?;
+        let value = type_bridge_orm::materialize_record(&self.package.projection, &record)
+            .map_err(|error| invalid_error(error.to_string()))?;
+        let ProjectedCodecValue::Create(value) = value else {
+            return Err(invalid_error("canonical record is not a create payload"));
+        };
+        if value.type_id() != &expected {
+            return Err(invalid_error(
+                "canonical create has the wrong exact generated type",
+            ));
+        }
+        wire_json(&projected_create_wire(self.package.as_ref(), &value)?)
     }
 
     /// Validate one complete generated provider result through the common Rust contract.
@@ -3197,7 +3237,11 @@ fn install_authority_backed_projection(
     semantic_fingerprint_json: &str,
     projection_fingerprint_json: &str,
     schema_authority_json: &str,
-) -> napi::Result<(RuntimeProjection, ManagedScopeId)> {
+) -> napi::Result<(
+    RuntimeProjection,
+    ManagedScopeId,
+    DeclaredIdentityFingerprint,
+)> {
     let rejection = || projection_evidence_rejection(semantic_fingerprint_json);
     let runtime = decode_runtime_projection_verified(
         projection_json.as_bytes(),
@@ -3215,7 +3259,11 @@ fn install_authority_backed_projection(
     .map_err(|_| rejection())?;
     verify_projection_evidence(&authority, &runtime).map_err(|_| rejection())?;
     let managed_scope_id = authority.managed_scope().id().clone();
-    Ok((runtime, managed_scope_id))
+    let declared_schema_identity = authority
+        .resolved_schema()
+        .declared_identity_fingerprint()
+        .clone();
+    Ok((runtime, managed_scope_id, declared_schema_identity))
 }
 
 fn projection_evidence_mismatch() -> Error {
@@ -5087,6 +5135,87 @@ fn write_projected_thing_json(
     output.write_str("}}")
 }
 
+fn projected_create_wire(
+    package: &InstalledPackage,
+    create: &ProjectedCreate,
+) -> napi::Result<ProjectedWire> {
+    create
+        .validate_for(&package.projection)
+        .map_err(napi_sdk_diagnostic)?;
+    let id = create.type_id();
+    let model = package
+        .projection
+        .projection()
+        .models()
+        .get(id)
+        .ok_or_else(|| runtime_error("projected create model is absent"))?;
+    let mut values = BTreeMap::new();
+    for field in model.create().fields() {
+        if !create.field_is_present(field.token()) {
+            continue;
+        }
+        let token = model
+            .query_tokens()
+            .fields()
+            .get(field.token())
+            .ok_or_else(|| runtime_error("projected create field has no query token"))?;
+        let members = create
+            .fields()
+            .get(field.token())
+            .map_or_else(|| &[][..], Vec::as_slice);
+        let wires = members
+            .iter()
+            .map(|value| projected_attribute_value_wire(package, value))
+            .collect::<napi::Result<Vec<_>>>()?;
+        values.insert(
+            token.target_name().as_str().to_owned(),
+            projected_read_member_value(wires, field.multiplicity())?,
+        );
+    }
+    for (role_id, role) in model.create().roles() {
+        if !create.role_is_present(role_id) {
+            continue;
+        }
+        let token = model
+            .query_tokens()
+            .roles()
+            .get(role_id)
+            .ok_or_else(|| runtime_error("projected create role has no query token"))?;
+        let members = create
+            .roles()
+            .get(role_id)
+            .map_or_else(|| &[][..], Vec::as_slice);
+        let wires = members
+            .iter()
+            .map(|value| projected_detached_reference_wire(package, value))
+            .collect::<napi::Result<Vec<_>>>()?;
+        values.insert(
+            token.target_name().as_str().to_owned(),
+            projected_read_member_value(wires, role.multiplicity())?,
+        );
+    }
+    Ok(ProjectedWire {
+        type_key: canonical_type_key(id)?,
+        form: WireForm::Complete,
+        iid: None,
+        value: None,
+        values,
+    })
+}
+
+fn projected_detached_reference_wire(
+    package: &InstalledPackage,
+    reference: &ProjectedReference,
+) -> napi::Result<ProjectedWire> {
+    Ok(ProjectedWire {
+        type_key: canonical_type_key(reference.type_id())?,
+        form: WireForm::Reference,
+        iid: reference.iid().map(str::to_owned),
+        value: None,
+        values: projected_reference_fields_wire(package, reference)?,
+    })
+}
+
 fn projected_thing_wire(
     package: &InstalledPackage,
     thing: &ProjectedThing,
@@ -6704,7 +6833,7 @@ entities:
             .split_once("fn write_json_string(")
             .unwrap()
             .1
-            .split_once("fn projected_thing_wire(")
+            .split_once("fn projected_create_wire(")
             .unwrap()
             .0;
         for forbidden in [
@@ -7158,6 +7287,49 @@ entities:
                 .collect::<Vec<_>>(),
             ["type", "role", "index", "type"]
         );
+    }
+
+    #[test]
+    fn canonical_create_codec_round_trips_exact_node_wire() {
+        let runtime = ordered_runtime();
+        let person_key = type_key(TypeKind::Entity, "person");
+        let wire = ProjectedWire {
+            type_key: person_key.clone(),
+            form: WireForm::Complete,
+            iid: None,
+            value: None,
+            values: BTreeMap::from([
+                (
+                    "identifier".into(),
+                    serde_json::to_value(attribute_wire(
+                        "identifier",
+                        ValueTypeTag::String,
+                        Value::String("person-1".into()),
+                    ))
+                    .unwrap(),
+                ),
+                (
+                    "score".into(),
+                    serde_json::to_value(attribute_wire(
+                        "score",
+                        ValueTypeTag::Long,
+                        Value::String("3".into()),
+                    ))
+                    .unwrap(),
+                ),
+                ("tag".into(), Value::Array(Vec::new())),
+            ]),
+        };
+        let input = serde_json::to_string(&wire).unwrap();
+        let bytes = runtime
+            .encode_create_json(person_key.clone(), input)
+            .unwrap();
+        let decoded = runtime.decode_create_json(person_key, bytes).unwrap();
+        let decoded: ProjectedWire = serde_json::from_str(&decoded).unwrap();
+        assert_eq!(decoded.type_key, wire.type_key);
+        assert_eq!(decoded.form, WireForm::Complete);
+        assert_eq!(decoded.iid, None);
+        assert_eq!(decoded.values, wire.values);
     }
 
     #[test]

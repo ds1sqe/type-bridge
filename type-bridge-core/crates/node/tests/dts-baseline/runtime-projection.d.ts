@@ -189,6 +189,8 @@ interface NativeProjectionHandle {
     validateHydratedAttributeValueJson(typeKey: string, valueJson: string): void;
     validateFieldValueJson(typeKey: string, fieldName: string, valueJson: string): void;
     validateCreateJson(typeKey: string, valueJson: string): void;
+    encodeCreateJson(typeKey: string, valueJson: string): Uint8Array;
+    decodeCreateJson(typeKey: string, bytes: Uint8Array): string;
     validateThingJson(typeKey: string, valueJson: string): void;
     rejectGeneratedTokenPackageMismatch(pathJson: string): void;
     revalidateMatchDiagnostic(diagnostic: string): string;
@@ -226,6 +228,10 @@ export declare class InstalledRuntimeProjection {
     validateFieldValueJson(typeKey: string, fieldName: string, valueJson: string): void;
     /** @internal Validate one complete generated create payload. */
     validateCreateJson(typeKey: string, valueJson: string): void;
+    /** @internal Encode one exact generated create value to canonical bytes. */
+    encodeCreateJson(typeKey: string, valueJson: string): Uint8Array;
+    /** @internal Decode canonical bytes through this package's exact authority. */
+    decodeCreateJson(typeKey: string, bytes: Uint8Array): string;
     /** @internal Validate one complete generated provider result. */
     validateThingJson(typeKey: string, valueJson: string): void;
     /** @internal Surface one exact foreign generated-member package boundary. */

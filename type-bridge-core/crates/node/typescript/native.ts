@@ -477,6 +477,8 @@ interface NativeRuntimeProjectionHandle {
   validateHydratedAttributeValueJson(typeKey: string, valueJson: string): void;
   validateFieldValueJson(typeKey: string, fieldName: string, valueJson: string): void;
   validateCreateJson(typeKey: string, valueJson: string): void;
+  encodeCreateJson(typeKey: string, valueJson: string): Uint8Array;
+  decodeCreateJson(typeKey: string, bytes: Uint8Array): string;
   validateThingJson(typeKey: string, valueJson: string): void;
   rejectGeneratedTokenPackageMismatch(pathJson: string): void;
   revalidateMatchDiagnostic(diagnostic: string): string;

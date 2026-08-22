@@ -382,6 +382,8 @@ export type ModelToken<
     readonly valueType: ScalarValueType | null;
     readonly create: CreateFactory;
     readonly reference: ReferenceFactory;
+    readonly encodeCreate: (value: Complete) => Uint8Array;
+    readonly decodeCreate: (bytes: Uint8Array) => Complete;
     readonly manager: (
       connection: RuntimeProjectionConnection,
     ) => ProjectedModelManager<Complete>;
@@ -763,6 +765,48 @@ export function defineModel<
       roles: Object.freeze(definition.roles),
       create,
       reference,
+      encodeCreate: (value: Complete): Uint8Array => {
+        const wire = lowerProjectedValue(value);
+        if (wire.typeKey !== definition.typeKey || wire.iid !== null) {
+          throw new TypeError(
+            `${definition.name}.encodeCreate requires its exact create value`,
+          );
+        }
+        return requireProjection().encodeCreateJson(
+          definition.typeKey,
+          JSON.stringify(wire),
+        );
+      },
+      decodeCreate: (bytes: Uint8Array): Complete => {
+        const wire = parseProjectedWire(
+          JSON.parse(
+            requireProjection().decodeCreateJson(definition.typeKey, bytes),
+          ) as unknown,
+        );
+        if (
+          wire.typeKey !== definition.typeKey ||
+          wire.form !== "complete" ||
+          wire.iid !== null ||
+          wire.value !== null
+        ) {
+          throw new TypeError(
+            `${definition.name}.decodeCreate returned an invalid create wire`,
+          );
+        }
+        const values: Record<string, unknown> = {};
+        for (const member of definition.createMembers) {
+          values[member.name] =
+            member.name in wire.values
+              ? hydrateMemberValue(wire.values[member.name])
+              : undefined;
+        }
+        return materializeComplete(
+          values,
+          null,
+          definition.createMembers,
+          `${definition.name}.decodeCreate`,
+        );
+      },
       metadata: definition.metadata,
     },
     definition.fields,

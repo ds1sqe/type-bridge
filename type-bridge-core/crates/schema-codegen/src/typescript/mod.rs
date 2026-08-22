@@ -1301,15 +1301,15 @@ mod tests {
     #[test]
     fn legacy_runtime_source_remains_byte_exact() {
         assert_eq!(runtime_source(false).unwrap(), RUNTIME_SOURCE);
-        assert_eq!(RUNTIME_SOURCE.len(), 120_822);
+        assert_eq!(RUNTIME_SOURCE.len(), 122_371);
         assert_eq!(
             format!("{:x}", Sha256::digest(RUNTIME_SOURCE)),
-            "72e45524346c9db4dfbd33cc2efe16e5a0c9bc2f71a7ed8751d4c5d46711dad1"
+            "d8be3ec7c994fbe61b0f3320f5dc7af57923ccb99a19b1dec228d0b27312ef37"
         );
         let resource = CodeResourceDigest::from_bytes(RUNTIME_SOURCE_ID, RUNTIME_SOURCE).unwrap();
         assert_eq!(
             resource.content_fingerprint().digest().to_hex(),
-            "86d7187935517079c85d41e8d5678f6b15de4db44bb04f83347736913caeb4f2"
+            "afa93d32abc43d4b94fe91111e42e1a26fddd21f6667cd9801264abf2a897f43"
         );
     }
 
