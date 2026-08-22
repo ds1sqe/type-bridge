@@ -110,6 +110,10 @@ FOUR_LIVE_CAPABILITY_CODES = {
     "G01",
     "G02",
     "G03",
+    "G04",
+    "G09",
+    "G10",
+    "G11",
 }
 
 NON_NORMATIVE_WORKFLOWS = {

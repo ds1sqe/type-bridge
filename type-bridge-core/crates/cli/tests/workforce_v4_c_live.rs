@@ -238,4 +238,11 @@ async fn generated_c_emits_complete_v4_report_on_3_12_3() {
         report["results"][3]["observation"]["catalog_fingerprint"],
         "b59eb4988620a941a7531432eb622d04fc0aafe0238dabf047056138c78ea99c"
     );
+    if let Some(directory) = std::env::var_os("TYPE_BRIDGE_WORKFORCE_V4_REPORT_DIR") {
+        fs::copy(
+            &report_path,
+            PathBuf::from(directory).join("c-workforce-v4-report.json"),
+        )
+        .expect("validated C report publishes to the fan-in directory");
+    }
 }

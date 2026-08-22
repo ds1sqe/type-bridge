@@ -242,4 +242,11 @@ fn generated_rust_observes_v4_administration_controls_and_lifecycle_on_3_12_3() 
         "V4 report validation failed: {}",
         String::from_utf8_lossy(&validation.stderr)
     );
+    if let Some(directory) = std::env::var_os("TYPE_BRIDGE_WORKFORCE_V4_REPORT_DIR") {
+        fs::copy(
+            &report_path,
+            PathBuf::from(directory).join("rust-workforce-v4-report.json"),
+        )
+        .expect("validated Rust report publishes to the fan-in directory");
+    }
 }

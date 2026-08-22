@@ -126,10 +126,31 @@ def test_loads_exact_phase0_contract() -> None:
     assert len(contracts.observation_refs) == 8
 
 
-def test_report_fan_in_rejects_unfinalized_authority() -> None:
-    with pytest.raises(comparator.ContractError) as raised:
-        comparator.compare_reports([], ROOT)
-    assert raised.value.code == "unfinalized_v4_authority"
+def test_candidate_fan_in_retains_exact_pending_promotions(tmp_path: Path) -> None:
+    root = _stage_contracts(tmp_path)
+    catalog_path = root / comparator.CATALOG_RELATIVE
+    catalog = json.loads(catalog_path.read_text())
+    catalog["authority_state"] = "phase0_unfinalized"
+    catalog_path.write_text(json.dumps(catalog))
+    manifest_path = root / comparator.MANIFEST_RELATIVE
+    manifest = json.loads(manifest_path.read_text())
+    transition_cases = set(comparator.EXPECTED_TRANSITIONS)
+    for capability in manifest["capabilities"]:
+        if capability["case_ids"][0] in transition_cases:
+            capability["binding_profile"] = "current_gap_future_planned"
+            capability["gap_reason"] = "candidate evidence has not been promoted"
+    manifest_path.write_text(json.dumps(manifest))
+    paths = []
+    for binding in comparator.EXPECTED_BINDINGS:
+        path = root / f"{binding}.json"
+        path.write_text(json.dumps(_valid_report(root, binding)))
+        paths.append(path)
+
+    comparison = comparator.compare_reports(paths, root)
+    assert comparison["authority_state"] == "phase0_unfinalized"
+    assert [item["case_id"] for item in comparison["pending_promotions"]] == list(
+        comparator.EXPECTED_TRANSITIONS
+    )
 
 
 def test_observation_algebra_is_closed() -> None:
@@ -162,6 +183,14 @@ def test_finalized_fan_in_requires_exact_live_oracles(tmp_path: Path) -> None:
     catalog = json.loads(catalog_path.read_text())
     catalog["authority_state"] = "finalized"
     catalog_path.write_text(json.dumps(catalog))
+    manifest_path = root / comparator.MANIFEST_RELATIVE
+    manifest = json.loads(manifest_path.read_text())
+    transition_cases = set(comparator.EXPECTED_TRANSITIONS)
+    for capability in manifest["capabilities"]:
+        if capability["case_ids"][0] in transition_cases:
+            capability["binding_profile"] = "current_and_c_live_future_planned"
+            capability.pop("gap_reason", None)
+    manifest_path.write_text(json.dumps(manifest))
     paths = []
     for binding in comparator.EXPECTED_BINDINGS:
         path = root / f"{binding}.json"
@@ -169,6 +198,7 @@ def test_finalized_fan_in_requires_exact_live_oracles(tmp_path: Path) -> None:
         paths.append(path)
 
     comparison = comparator.compare_reports(paths, root)
+    assert comparison["authority_state"] == "finalized"
     assert comparison["pending_promotions"] == []
 
     rust = json.loads(paths[2].read_text())

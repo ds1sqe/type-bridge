@@ -1,6 +1,6 @@
 {
   "format": "typebridge.workforce-catalog/v4",
-  "authority_state": "phase0_unfinalized",
+  "authority_state": "finalized",
   "fixture": {
     "id": "workforce-v4",
     "version": 4,

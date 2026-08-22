@@ -386,10 +386,11 @@ def _validate_observation(reference: str, observation: dict[str, Any]) -> None:
 
 def compare_reports(paths: list[Path], root: Path = ROOT) -> dict[str, Any]:
     contracts = load_contracts(root)
-    if contracts.catalog.get("authority_state") != "finalized":
+    authority_state = contracts.catalog.get("authority_state")
+    if authority_state not in {"phase0_unfinalized", "finalized"}:
         _reject(
-            "unfinalized_v4_authority",
-            "Workforce V4 reports are disabled until real evidence authority is finalized",
+            "invalid_v4_authority",
+            "Workforce V4 authority state is outside the closed vocabulary",
         )
     if len(paths) != len(EXPECTED_BINDINGS):
         _reject("missing_binding_report", "exactly four V4 reports are required")
@@ -427,13 +428,47 @@ def compare_reports(paths: list[Path], root: Path = ROOT) -> dict[str, Any]:
 
     if tuple(reports) != EXPECTED_BINDINGS:
         _reject("binding_order_drift", "V4 reports are not supplied in canonical order")
+
+    capabilities = {
+        capability.get("case_ids", ())[0]: capability
+        for capability in contracts.manifest.get("capabilities", ())
+        if isinstance(capability, dict) and len(capability.get("case_ids", ())) == 1
+    }
+    profiles = contracts.manifest.get("binding_profiles", {})
+    pending_promotions = []
+    for case_id in EXPECTED_TRANSITIONS:
+        capability = capabilities[case_id]
+        profile = profiles.get(capability.get("binding_profile"), {})
+        accepted = tuple(profile.get("accepted_live", ()))
+        if accepted != EXPECTED_BINDINGS:
+            pending_promotions.append(
+                {
+                    "case_id": case_id,
+                    "capability_id": capability["id"],
+                    "binding_profile": capability["binding_profile"],
+                }
+            )
+    for case_id in EXPECTED_RETAINED_GAPS:
+        capability = capabilities[case_id]
+        profile = profiles.get(capability.get("binding_profile"), {})
+        if set(profile.get("accepted_live", ())) & set(EXPECTED_BINDINGS):
+            _reject(
+                "retained_gap_promoted",
+                f"retained V4 evidence case {case_id!r} became accepted",
+            )
+    if authority_state == "finalized" and pending_promotions:
+        _reject(
+            "finalized_authority_has_pending_promotions",
+            "finalized V4 authority still has exact manifest promotions pending",
+        )
     return {
         "format": "typebridge.workforce-v4-comparison/v1",
+        "authority_state": authority_state,
         "bindings": list(EXPECTED_BINDINGS),
         "selected_cases": list(contracts.selected_cases),
         "manifest_transition_cases": list(EXPECTED_TRANSITIONS),
         "retained_gap_cases": list(EXPECTED_RETAINED_GAPS),
-        "pending_promotions": [],
+        "pending_promotions": pending_promotions,
     }
 
 

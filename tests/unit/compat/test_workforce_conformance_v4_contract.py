@@ -41,7 +41,7 @@ def test_v4_freezes_exact_plan06_case_partition() -> None:
     catalog = _load(CONTRACT_ROOT / "catalog-v4.json")
 
     assert catalog["format"] == "typebridge.workforce-catalog/v4"
-    assert catalog["authority_state"] == "phase0_unfinalized"
+    assert catalog["authority_state"] == "finalized"
     assert catalog["report_bindings"] == ["python", "node", "rust", "c"]
     assert catalog["manifest_transition_cases"] == TRANSITION_CASES
     assert catalog["evidence_only_gap_cases"] == EVIDENCE_ONLY_CASES
