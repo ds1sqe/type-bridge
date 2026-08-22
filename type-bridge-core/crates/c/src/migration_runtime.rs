@@ -278,6 +278,53 @@ impl MigrationVerificationState {
         self.report.findings().len()
     }
 
+    pub(crate) fn finding(&self, index: usize) -> Option<MigrationVerificationFindingSnapshot> {
+        use type_bridge_schema_migration::MigrationDriftFinding;
+        self.report
+            .findings()
+            .get(index)
+            .map(|finding| match finding {
+                MigrationDriftFinding::AppliedLedger { diagnostic } => {
+                    MigrationVerificationFindingSnapshot {
+                        kind: MigrationVerificationFindingKind::AppliedLedger,
+                        pending: Vec::new(),
+                        diagnostic: Some(diagnostic.clone()),
+                    }
+                }
+                MigrationDriftFinding::LiveSemantics { .. } => {
+                    MigrationVerificationFindingSnapshot {
+                        kind: MigrationVerificationFindingKind::LiveSemantics,
+                        pending: Vec::new(),
+                        diagnostic: None,
+                    }
+                }
+                MigrationDriftFinding::DesiredDivergence { .. } => {
+                    MigrationVerificationFindingSnapshot {
+                        kind: MigrationVerificationFindingKind::DesiredDivergence,
+                        pending: Vec::new(),
+                        diagnostic: None,
+                    }
+                }
+                MigrationDriftFinding::PendingMigrations { pending } => {
+                    MigrationVerificationFindingSnapshot {
+                        kind: MigrationVerificationFindingKind::PendingMigrations,
+                        pending: pending
+                            .iter()
+                            .map(MigrationIdentitySnapshot::from_id)
+                            .collect(),
+                        diagnostic: None,
+                    }
+                }
+                MigrationDriftFinding::Capabilities { diagnostic } => {
+                    MigrationVerificationFindingSnapshot {
+                        kind: MigrationVerificationFindingKind::Capabilities,
+                        pending: Vec::new(),
+                        diagnostic: Some(diagnostic.clone()),
+                    }
+                }
+            })
+    }
+
     pub(crate) fn applied_frontier(&self) -> Vec<MigrationIdentitySnapshot> {
         self.report
             .applied_frontier()
@@ -285,6 +332,22 @@ impl MigrationVerificationState {
             .map(MigrationIdentitySnapshot::from_id)
             .collect()
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum MigrationVerificationFindingKind {
+    AppliedLedger,
+    LiveSemantics,
+    DesiredDivergence,
+    PendingMigrations,
+    Capabilities,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct MigrationVerificationFindingSnapshot {
+    pub(crate) kind: MigrationVerificationFindingKind,
+    pub(crate) pending: Vec<MigrationIdentitySnapshot>,
+    pub(crate) diagnostic: Option<Diagnostic>,
 }
 
 /// Copied compound migration identity with no delimiter-joined representation.
