@@ -6,6 +6,7 @@ use std::ptr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use type_bridge_contract::diagnostic::DiagnosticCategory;
 use type_bridge_contract::id::{TypeId, TypeKind};
 use type_bridge_contract::limits::{
     CodecLimits, MAX_CANONICAL_BYTES, MAX_CANONICAL_COLLECTION_LEN, MAX_CANONICAL_DEPTH,
@@ -350,6 +351,17 @@ fn canonical_output_limit() -> SdkExecutionDiagnostic {
     )
 }
 
+fn canonical_decode_error(
+    error: type_bridge_contract::diagnostic::Diagnostic,
+    invalid: fn() -> SdkExecutionDiagnostic,
+) -> SdkExecutionDiagnostic {
+    if error.category() == DiagnosticCategory::ResourceLimit {
+        canonical_input_limit()
+    } else {
+        invalid()
+    }
+}
+
 fn invalid_value() -> SdkExecutionDiagnostic {
     SdkExecutionDiagnostic::invalid_input(
         code("c_canonical_value_invalid"),
@@ -409,7 +421,7 @@ unsafe fn decode_record(
     let bytes = unsafe { snapshot_bytes(bytes, control.max_input_bytes, invalid_record) }?;
     control.check()?;
     let record = ProjectedRecord::decode_with_limits(&bytes, control.input_limits())
-        .map_err(|_| invalid_record())?;
+        .map_err(|error| canonical_decode_error(error, invalid_record))?;
     if record.decoded_weight() > control.max_members {
         return Err(canonical_input_limit());
     }
@@ -462,7 +474,13 @@ fn encode_bytes(
     invalid: fn() -> SdkExecutionDiagnostic,
 ) -> Result<Vec<u8>, SdkExecutionDiagnostic> {
     allocation_checkpoint(site).map_err(|_| allocation_exhausted())?;
-    encode().map_err(|_| invalid())
+    encode().map_err(|error| {
+        if error.category() == DiagnosticCategory::ResourceLimit {
+            canonical_output_limit()
+        } else {
+            invalid()
+        }
+    })
 }
 
 /// Encode one exact package-branded projected attribute value as canonical bytes.
@@ -1383,15 +1401,23 @@ fn reserve_archive_record(records: &mut Vec<ProjectedRecord>) -> Result<(), ()> 
     try_reserve(records, 1, AllocationSite::CanonicalArchiveBuilderRecords).map_err(|_| ())
 }
 
-fn clone_archive_records(records: &[ProjectedRecord]) -> Result<Vec<ProjectedRecord>, ()> {
+fn clone_archive_records(
+    records: &[ProjectedRecord],
+    control: &CanonicalControl,
+) -> Result<Vec<ProjectedRecord>, SdkExecutionDiagnostic> {
+    control.check()?;
     let mut cloned = Vec::new();
     try_reserve(
         &mut cloned,
         records.len(),
         AllocationSite::CanonicalArchiveFinishRecords,
     )
-    .map_err(|_| ())?;
-    cloned.extend(records.iter().cloned());
+    .map_err(|_| allocation_exhausted())?;
+    for record in records {
+        control.check()?;
+        cloned.push(record.clone());
+    }
+    control.check()?;
     Ok(cloned)
 }
 
@@ -1565,9 +1591,9 @@ pub unsafe extern "C" fn type_bridge_canonical_archive_builder_finish_v1(
         if value.records.len() > control.max_records {
             return return_execution_error(canonical_input_limit(), out_diagnostics);
         }
-        let records = match clone_archive_records(&value.records) {
+        let records = match clone_archive_records(&value.records, control) {
             Ok(records) => records,
-            Err(()) => return return_execution_error(allocation_exhausted(), out_diagnostics),
+            Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
         };
         let archive = match ProjectedArchive::try_new(records) {
             Ok(archive) => archive,
@@ -1653,7 +1679,12 @@ pub unsafe extern "C" fn type_bridge_canonical_archive_open_v1(
         };
         let archive = match ProjectedArchive::decode_with_limits(&bytes, control.input_limits()) {
             Ok(archive) => archive,
-            Err(_) => return return_execution_error(invalid_archive(), out_diagnostics),
+            Err(error) => {
+                return return_execution_error(
+                    canonical_decode_error(error, invalid_archive),
+                    out_diagnostics,
+                );
+            }
         };
         if archive.records().len() > control.max_records
             || archive.decoded_weight() > control.max_members
@@ -1661,11 +1692,17 @@ pub unsafe extern "C" fn type_bridge_canonical_archive_open_v1(
             return return_execution_error(canonical_input_limit(), out_diagnostics);
         }
         for record in archive.records() {
+            if let Err(diagnostic) = control.check() {
+                return return_execution_error(diagnostic, out_diagnostics);
+            }
             if type_bridge_orm::materialize_record(&package.state().installed_projection, record)
                 .is_err()
             {
                 return return_execution_error(invalid_archive(), out_diagnostics);
             }
+        }
+        if let Err(diagnostic) = control.check() {
+            return return_execution_error(diagnostic, out_diagnostics);
         }
         let archive = TypeBridgeCanonicalArchive {
             package: Arc::clone(package.state()),
@@ -1931,11 +1968,13 @@ mod tests {
         drop(append_failure);
 
         let finish_failure = inject_failure(AllocationSite::CanonicalArchiveFinishRecords, 0);
-        assert!(clone_archive_records(&builder_records).is_err());
+        // SAFETY: null selects the stable uncancelled archive control.
+        let control = unsafe { canonical_control(ptr::null(), true) }.unwrap();
+        assert!(clone_archive_records(&builder_records, &control).is_err());
         assert!(builder_records.is_empty());
         drop(finish_failure);
 
-        assert!(clone_archive_records(&builder_records).is_ok());
+        assert!(clone_archive_records(&builder_records, &control).is_ok());
     }
 
     #[test]

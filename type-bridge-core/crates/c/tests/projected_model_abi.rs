@@ -1057,6 +1057,37 @@ fn all_nine_domains_person_create_reference_and_membership_are_package_branded()
         unsafe { type_bridge_cancellation_close(&mut cancellation) },
         TypeBridgeStatus::Ok,
     );
+    let output_limited_options = TypeBridgeProjectedCodecOptionsV1 {
+        struct_size: size_of::<TypeBridgeProjectedCodecOptionsV1>() as u64,
+        version: 1,
+        flags: 0,
+        timeout_milliseconds: 0,
+        max_input_bytes: 16 * 1024 * 1024,
+        max_output_bytes: 1,
+        max_depth: 64,
+        max_records: 1,
+        max_members: 65_536,
+        cancellation: ptr::null(),
+    };
+    let mut output_limited_bytes = ptr::null_mut();
+    // SAFETY: complete inputs and distinct outputs remain live for bounded encoding.
+    let status = unsafe {
+        type_bridge_canonical_record_encode_create_v1(
+            person_create,
+            &output_limited_options,
+            &mut output_limited_bytes,
+            &mut diagnostics,
+        )
+    };
+    assert!(output_limited_bytes.is_null());
+    assert_execution_error(
+        status,
+        TypeBridgeStatus::ResourceLimit,
+        diagnostics,
+        TypeBridgeExecutionDiagnosticCategory::ResourceLimit,
+        "c_canonical_output_limit",
+    );
+    diagnostics = ptr::null_mut();
 
     // An output slot inside the live projected input is rejected before publication.
     // SAFETY: the deliberately hostile output aliases a live input object; preflight rejects it
@@ -1175,6 +1206,76 @@ fn all_nine_domains_person_create_reference_and_membership_are_package_branded()
         TypeBridgeStatus::Ok,
     );
 
+    let one_record_options = TypeBridgeProjectedCodecOptionsV1 {
+        struct_size: size_of::<TypeBridgeProjectedCodecOptionsV1>() as u64,
+        version: 1,
+        flags: 0,
+        timeout_milliseconds: 0,
+        max_input_bytes: 32 * 1024 * 1024,
+        max_output_bytes: 32 * 1024 * 1024,
+        max_depth: 64,
+        max_records: 1,
+        max_members: 65_536,
+        cancellation: ptr::null(),
+    };
+    let mut one_record_builder = ptr::null_mut();
+    // SAFETY: package, options, and distinct outputs remain live.
+    assert_eq!(
+        unsafe {
+            type_bridge_canonical_archive_builder_open_v1(
+                fixture.package,
+                &one_record_options,
+                &mut one_record_builder,
+                &mut diagnostics,
+            )
+        },
+        TypeBridgeStatus::Ok,
+    );
+    // SAFETY: builder and borrowed record bytes remain live.
+    assert_eq!(
+        unsafe {
+            type_bridge_canonical_archive_builder_append_record_v1(
+                one_record_builder,
+                record_view,
+                &mut diagnostics,
+            )
+        },
+        TypeBridgeStatus::Ok,
+    );
+    // SAFETY: the second append uses the same complete live inputs.
+    let status = unsafe {
+        type_bridge_canonical_archive_builder_append_record_v1(
+            one_record_builder,
+            record_view,
+            &mut diagnostics,
+        )
+    };
+    assert_execution_error(
+        status,
+        TypeBridgeStatus::ResourceLimit,
+        diagnostics,
+        TypeBridgeExecutionDiagnosticCategory::ResourceLimit,
+        "c_canonical_input_limit",
+    );
+    diagnostics = ptr::null_mut();
+    let mut one_record_bytes = ptr::null_mut();
+    // SAFETY: the failed second append retained the one-record builder unchanged.
+    assert_eq!(
+        unsafe {
+            type_bridge_canonical_archive_builder_finish_v1(
+                &mut one_record_builder,
+                &mut one_record_bytes,
+                &mut diagnostics,
+            )
+        },
+        TypeBridgeStatus::Ok,
+    );
+    // SAFETY: this slot owns the independently produced bounded archive bytes.
+    assert_eq!(
+        unsafe { type_bridge_canonical_bytes_close(&mut one_record_bytes) },
+        TypeBridgeStatus::Ok,
+    );
+
     let mut archive_builder = ptr::null_mut();
     // SAFETY: package and outputs are live.
     assert_eq!(
@@ -1218,6 +1319,72 @@ fn all_nine_domains_person_create_reference_and_membership_are_package_branded()
         unsafe { type_bridge_canonical_bytes_view(archive_bytes, &mut archive_view) },
         TypeBridgeStatus::Ok,
     );
+    let mut reader_cancellation = ptr::null_mut();
+    // SAFETY: the owner slot is writable and initially null.
+    assert_eq!(
+        unsafe { type_bridge_cancellation_open(&mut reader_cancellation) },
+        TypeBridgeStatus::Ok,
+    );
+    let reader_options = TypeBridgeProjectedCodecOptionsV1 {
+        struct_size: size_of::<TypeBridgeProjectedCodecOptionsV1>() as u64,
+        version: 1,
+        flags: 0,
+        timeout_milliseconds: 0,
+        max_input_bytes: 32 * 1024 * 1024,
+        max_output_bytes: 32 * 1024 * 1024,
+        max_depth: 64,
+        max_records: 4_096,
+        max_members: 65_536,
+        cancellation: reader_cancellation,
+    };
+    let mut cancelled_archive = ptr::null_mut();
+    // SAFETY: complete inputs and distinct outputs remain live during reader open.
+    assert_eq!(
+        unsafe {
+            type_bridge_canonical_archive_open_v1(
+                fixture.package,
+                archive_view,
+                &reader_options,
+                &mut cancelled_archive,
+                &mut diagnostics,
+            )
+        },
+        TypeBridgeStatus::Ok,
+    );
+    // SAFETY: the live cancellation handle accepts one sticky request.
+    assert_eq!(
+        unsafe { type_bridge_cancellation_request(reader_cancellation) },
+        TypeBridgeStatus::Ok,
+    );
+    // SAFETY: closing the caller owner leaves the captured reader signal valid.
+    assert_eq!(
+        unsafe { type_bridge_cancellation_close(&mut reader_cancellation) },
+        TypeBridgeStatus::Ok,
+    );
+    let mut cancelled_count = usize::MAX;
+    // SAFETY: reader and distinct output slots remain live.
+    let status = unsafe {
+        type_bridge_canonical_archive_count(
+            cancelled_archive,
+            &mut cancelled_count,
+            &mut diagnostics,
+        )
+    };
+    assert_eq!(cancelled_count, 0);
+    assert_execution_error(
+        status,
+        TypeBridgeStatus::Cancelled,
+        diagnostics,
+        TypeBridgeExecutionDiagnosticCategory::Cancelled,
+        "provider_cancelled",
+    );
+    diagnostics = ptr::null_mut();
+    // SAFETY: the cancelled reader remains independently closeable.
+    assert_eq!(
+        unsafe { type_bridge_canonical_archive_close(&mut cancelled_archive) },
+        TypeBridgeStatus::Ok,
+    );
+
     let mut archive = ptr::null_mut();
     // SAFETY: package, archive bytes, and outputs remain live.
     assert_eq!(
@@ -1289,6 +1456,40 @@ fn all_nine_domains_person_create_reference_and_membership_are_package_branded()
         "c_canonical_input_limit",
     );
     diagnostics = ptr::null_mut();
+    for (max_depth, max_members) in [(1_u64, 65_536_u64), (64_u64, 1_u64)] {
+        let structural_options = TypeBridgeProjectedCodecOptionsV1 {
+            struct_size: size_of::<TypeBridgeProjectedCodecOptionsV1>() as u64,
+            version: 1,
+            flags: 0,
+            timeout_milliseconds: 0,
+            max_input_bytes: 16 * 1024 * 1024,
+            max_output_bytes: 16 * 1024 * 1024,
+            max_depth,
+            max_records: 1,
+            max_members,
+            cancellation: ptr::null(),
+        };
+        // SAFETY: complete inputs and distinct outputs remain live for structural decoding.
+        let status = unsafe {
+            type_bridge_canonical_record_decode_create_v1(
+                fixture.package,
+                recovered_view,
+                &person_model,
+                &structural_options,
+                &mut limited_create,
+                &mut diagnostics,
+            )
+        };
+        assert!(limited_create.is_null());
+        assert_execution_error(
+            status,
+            TypeBridgeStatus::ResourceLimit,
+            diagnostics,
+            TypeBridgeExecutionDiagnosticCategory::ResourceLimit,
+            "c_canonical_input_limit",
+        );
+        diagnostics = ptr::null_mut();
+    }
     // A decoded-owner output placed inside its canonical input is rejected without mutation.
     // SAFETY: the deliberately hostile owner slot aliases borrowed canonical bytes; preflight
     // rejects it before initializing or publishing an owner.
