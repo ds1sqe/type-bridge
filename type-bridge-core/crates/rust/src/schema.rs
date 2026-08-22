@@ -13,10 +13,10 @@ use type_bridge_schema::{
 use type_bridge_schema_codegen::RustEmitter;
 
 use crate::__codegen::{
-    CompleteModel, EncodedCreate, HydratedRow, HydrationCapability, IntoEncodedCreate,
-    IntoEncodedReference, IntoEncodedStruct, IntoHydratedSnapshot, MaterializeCreate,
-    MaterializeModel, MaterializeReference, MaterializeStruct, Model, StructValue, ValidationError,
-    ValidationPath,
+    CompleteModel, EncodedCreate, GroupedQueryValue, HydratedRow, HydrationCapability,
+    IntoEncodedCreate, IntoEncodedReference, IntoEncodedScalar, IntoEncodedStruct,
+    IntoHydratedSnapshot, MaterializeCreate, MaterializeModel, MaterializeReference,
+    MaterializeStruct, Model, StructValue, ValidationError, ValidationPath,
 };
 use crate::error::{Error, ModelValidationPhase, Result};
 
@@ -117,6 +117,62 @@ pub struct SchemaPackage<S: Schema> {
 }
 
 impl<S: Schema> SchemaPackage<S> {
+    /// Encode one exact generated attribute value as canonical projected-record bytes.
+    pub fn encode_attribute<T>(&self, value: T) -> Result<Vec<u8>>
+    where
+        T: Model<Schema = S> + IntoEncodedScalar,
+    {
+        let installed = self.verify_and_install()?;
+        let projected = crate::projected_codec::project_attribute_inferred(&value, &installed)?;
+        let record = type_bridge_orm::record_from_attribute(&installed, &projected)
+            .map_err(canonical_codec_error)?;
+        record.encode().map_err(canonical_contract_error)
+    }
+
+    /// Decode canonical projected-record bytes as one exact generated attribute value.
+    pub fn decode_attribute<T>(&self, bytes: &[u8]) -> Result<T>
+    where
+        T: Model<Schema = S> + GroupedQueryValue,
+    {
+        let installed = self.verify_and_install()?;
+        let record = type_bridge_contract::projected_record::ProjectedRecord::decode(bytes)
+            .map_err(canonical_contract_error)?;
+        let value = type_bridge_orm::materialize_record(&installed, &record)
+            .map_err(canonical_codec_error)?;
+        let type_bridge_orm::ProjectedCodecValue::Attribute(value) = value else {
+            return Err(Error::model_validation(
+                ModelValidationPhase::Input,
+                "canonical_record_kind_mismatch",
+                Vec::new(),
+                "canonical record is not a generated attribute value",
+                None,
+            ));
+        };
+        let expected = type_bridge_contract::codec::from_canonical_json::<
+            type_bridge_contract::id::TypeId,
+        >(T::TYPE_ID_JSON.as_bytes())
+        .map_err(canonical_contract_error)?;
+        if value.attribute_type() != &expected {
+            return Err(Error::model_validation(
+                ModelValidationPhase::Input,
+                "canonical_attribute_type_mismatch",
+                Vec::new(),
+                "canonical attribute record does not match the requested generated type",
+                None,
+            ));
+        }
+        let scalar = crate::projected_codec::projected_to_decoded_attribute(&value)?;
+        T::from_group_scalar(scalar).map_err(|error| {
+            Error::model_validation(
+                ModelValidationPhase::Input,
+                "canonical_attribute_materialization_failed",
+                Vec::new(),
+                "canonical attribute could not materialize as the requested generated type",
+                Some(Box::new(error)),
+            )
+        })
+    }
+
     /// Construct a type-branded schema package marker from verified JSON evidence (generated-code SPI).
     #[doc(hidden)]
     #[must_use]

@@ -16,12 +16,48 @@ use type_bridge_orm::{
 use crate::__codegen::{
     CanonicalDouble, CompleteModel, Date, DateTime, DateTimeTz, Decimal, DecodedCreate,
     DecodedStruct, Duration, EncodedCreate, EncodedReference, EncodedScalar, FieldToken,
-    HydratedPlayer, HydratedRow, HydrationCapability, IntoEncodedCreate, IntoEncodedStruct, Model,
-    QueryValued, ReferenceOrigin, ValidationPath,
+    HydratedPlayer, HydratedRow, HydrationCapability, IntoEncodedCreate, IntoEncodedScalar,
+    IntoEncodedStruct, Model, QueryValued, ReferenceOrigin, ValidationPath,
 };
 use crate::Result;
 use crate::entity_codec::map_validation_error;
 use crate::error::{Error, ModelValidationPhase};
+
+pub(crate) fn project_attribute_inferred<T>(
+    value: &T,
+    installed: &InstalledRuntimeProjection,
+) -> Result<ProjectedAttributeValue>
+where
+    T: Model + IntoEncodedScalar,
+{
+    let attribute_type = decode_type_identity(
+        T::TYPE_ID_JSON,
+        ModelValidationPhase::Input,
+        "generated_token_package_mismatch",
+        vec!["value".into(), "type".into()],
+        "generated attribute type is not canonical",
+    )?;
+    if attribute_type.kind() != TypeKind::Attribute {
+        return Err(model_error(
+            ModelValidationPhase::Input,
+            "canonical_attribute_type_mismatch",
+            vec!["value".into(), "type".into()],
+            "generated canonical attribute value must name an attribute type",
+        ));
+    }
+    let canonical = value
+        .into_encoded_scalar()
+        .to_canonical_value(&ValidationPath::root().join("value"))
+        .map_err(|error| map_validation_error(error, ModelValidationPhase::Input))?;
+    ProjectedAttributeValue::try_new(installed, attribute_type, canonical)
+        .map_err(|error| Error::from_sdk_execution(error, ModelValidationPhase::Input))
+}
+
+pub(crate) fn projected_to_decoded_attribute(
+    value: &ProjectedAttributeValue,
+) -> Result<EncodedScalar> {
+    encoded_scalar(value.value())
+}
 
 /// Resolve one generated field token and exact generated scalar into the
 /// binding-neutral manager-filter inputs. The public filter API statically

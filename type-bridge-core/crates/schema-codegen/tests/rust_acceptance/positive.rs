@@ -305,6 +305,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let nickname = Nickname::new("Ada")?;
     let alias = Aliases::new("engineer")?;
     let score = Score::new(42i64)?;
+    let score_bytes = SCHEMA.encode_attribute(score.clone())?;
+    let decoded_score: Score = SCHEMA.decode_attribute(&score_bytes)?;
+    assert_eq!(decoded_score.value(), &42);
+    assert!(SCHEMA.decode_attribute::<CounterValue>(&score_bytes).is_err());
     let v_double = ValDouble::new(CanonicalDouble::try_new(3.14)?)?;
     let v_decimal = ValDecimal::new(Decimal::try_new("123.45")?)?;
     let v_bool = ValBool::new(true)?;
@@ -480,6 +484,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .decode_struct::<PlayerStats>(&person_snapshot_bytes)
         .is_err());
     let archive_bytes = SCHEMA.encode_archive([
+        score_bytes.as_slice(),
         person_create_bytes.as_slice(),
         key_ref_bytes.as_slice(),
         person_snapshot_bytes.as_slice(),
@@ -489,16 +494,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(
         archive_records,
         vec![
+            score_bytes,
             person_create_bytes,
             key_ref_bytes,
             person_snapshot_bytes,
             stats_bytes,
         ]
     );
-    let _: PersonCreate = SCHEMA.decode_create(&archive_records[0])?;
-    let _: PersonRef = SCHEMA.decode_reference(&archive_records[1])?;
-    let _: Person = SCHEMA.decode_snapshot(&archive_records[2])?;
-    let _: PlayerStats = SCHEMA.decode_struct(&archive_records[3])?;
+    let _: Score = SCHEMA.decode_attribute(&archive_records[0])?;
+    let _: PersonCreate = SCHEMA.decode_create(&archive_records[1])?;
+    let _: PersonRef = SCHEMA.decode_reference(&archive_records[2])?;
+    let _: Person = SCHEMA.decode_snapshot(&archive_records[3])?;
+    let _: PlayerStats = SCHEMA.decode_struct(&archive_records[4])?;
     assert_eq!(PLAYING_FACTS.len(), 12);
     assert!(RUNTIME_PROJECTION_JSON.contains("validated-create-input"));
     assert!(
