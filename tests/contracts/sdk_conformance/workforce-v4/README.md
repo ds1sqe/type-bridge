@@ -34,3 +34,8 @@ fixture. Its four manifests were produced in order through the source-tree CLI:
 The final Split-YAML source is the contracted head. The backfill intent remains
 beside the manifests for review and deterministic regeneration; canonical
 manifest JSON is the executable history authority.
+
+`schema generate` projects the fixture into Python, TypeScript/Node, Rust, and
+internal C packages. Every package embeds byte-identical canonical history at
+`typebridge/migration-history.json`; the frozen resource is 48,902 bytes with
+SHA-256 `091cad62b2db770c886898101b281f327206da3285ad64239b53c9c6c2f0cfff`.

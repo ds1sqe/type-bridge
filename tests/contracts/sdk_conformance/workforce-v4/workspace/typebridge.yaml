@@ -8,6 +8,15 @@ compatibility:
 migrations:
   directory: migrations/v2
   app-label: workforcev4
+bindings:
+  python:
+    output: generated/python
+  typescript:
+    output: generated/typescript
+  rust:
+    output: generated/rust
+  c:
+    output: generated/c
 environments:
   live:
     database: workforce_v4
