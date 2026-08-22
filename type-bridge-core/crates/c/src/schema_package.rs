@@ -360,14 +360,20 @@ fn open_owned(
         )));
     }
 
+    let declared_schema_identity = authority
+        .resolved_schema()
+        .declared_identity_fingerprint()
+        .clone();
     let installed_projection =
-        type_bridge_orm::InstalledRuntimeProjection::try_new(projection.clone()).map_err(|_| {
-            rejected(stable(
-                DiagnosticCategory::Integrity,
-                "c_schema_package_runtime_projection_invalid",
-                "generated C runtime projection could not be installed",
-            ))
-        })?;
+        type_bridge_orm::InstalledRuntimeProjection::try_new(projection.clone())
+            .map_err(|_| {
+                rejected(stable(
+                    DiagnosticCategory::Integrity,
+                    "c_schema_package_runtime_projection_invalid",
+                    "generated C runtime projection could not be installed",
+                ))
+            })?
+            .with_declared_schema_identity(declared_schema_identity);
 
     Ok(TypeBridgeSchemaPackage {
         state: Arc::new(SchemaPackageState {

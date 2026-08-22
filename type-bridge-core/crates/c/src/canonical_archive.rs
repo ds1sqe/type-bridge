@@ -17,6 +17,10 @@ use crate::allocation::{AllocationSite, allocation_exhausted, try_box};
 use crate::execution_diagnostic::{
     TypeBridgeExecutionDiagnostics, initialize_execution_outputs, return_execution_error,
 };
+use crate::projected_model::{
+    TypeBridgeProjectedCreate, TypeBridgeProjectedReference, TypeBridgeProjectedThing,
+};
+use crate::projected_value::TypeBridgeProjectedValue;
 
 /// Opaque owned immutable canonical byte buffer.
 pub struct TypeBridgeCanonicalBytes {
@@ -55,6 +59,147 @@ fn invalid_archive() -> SdkExecutionDiagnostic {
         code("c_canonical_archive_invalid"),
         message("Canonical archive bytes are invalid for the installed schema package"),
     )
+}
+
+fn invalid_value() -> SdkExecutionDiagnostic {
+    SdkExecutionDiagnostic::invalid_input(
+        code("c_canonical_value_invalid"),
+        message("Projected value cannot be encoded by this installed schema package"),
+    )
+}
+
+fn publish_record(
+    record: Result<ProjectedRecord, type_bridge_orm::ProjectedCodecError>,
+    out_bytes: *mut *mut TypeBridgeCanonicalBytes,
+    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+) -> TypeBridgeStatus {
+    let record = match record {
+        Ok(record) => record,
+        Err(_) => return return_execution_error(invalid_value(), out_diagnostics),
+    };
+    let bytes = match record.encode() {
+        Ok(bytes) => bytes,
+        Err(_) => return return_execution_error(invalid_value(), out_diagnostics),
+    };
+    let bytes = match try_box(
+        AllocationSite::CanonicalBytesHandle,
+        TypeBridgeCanonicalBytes { bytes },
+    ) {
+        Ok(bytes) => bytes,
+        Err(_) => return return_execution_error(allocation_exhausted(), out_diagnostics),
+    };
+    // SAFETY: the shared output initializer proved this slot writable.
+    unsafe { out_bytes.write_unaligned(Box::into_raw(bytes)) };
+    TypeBridgeStatus::Ok
+}
+
+/// Encode one exact package-branded projected attribute value as canonical bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_canonical_record_encode_attribute_v1(
+    value: *const TypeBridgeProjectedValue,
+    out_bytes: *mut *mut TypeBridgeCanonicalBytes,
+    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+) -> TypeBridgeStatus {
+    // SAFETY: shared initializer validates and clears distinct writable outputs.
+    if let Err(status) = unsafe { initialize_execution_outputs(out_bytes, out_diagnostics) } {
+        return status;
+    }
+    guarded(|| {
+        if value.is_null() {
+            return TypeBridgeStatus::InvalidArgument;
+        }
+        // SAFETY: caller retains one immutable projected value for this call.
+        let value = unsafe { &*value };
+        publish_record(
+            type_bridge_orm::record_from_attribute(
+                &value.package.installed_projection,
+                &value.value,
+            ),
+            out_bytes,
+            out_diagnostics,
+        )
+    })
+}
+
+/// Encode one exact package-branded projected create as canonical bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_canonical_record_encode_create_v1(
+    value: *const TypeBridgeProjectedCreate,
+    out_bytes: *mut *mut TypeBridgeCanonicalBytes,
+    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+) -> TypeBridgeStatus {
+    // SAFETY: shared initializer validates and clears distinct writable outputs.
+    if let Err(status) = unsafe { initialize_execution_outputs(out_bytes, out_diagnostics) } {
+        return status;
+    }
+    guarded(|| {
+        if value.is_null() {
+            return TypeBridgeStatus::InvalidArgument;
+        }
+        // SAFETY: caller retains one immutable projected create for this call.
+        let value = unsafe { &*value };
+        publish_record(
+            type_bridge_orm::record_from_create(&value.package.installed_projection, &value.value),
+            out_bytes,
+            out_diagnostics,
+        )
+    })
+}
+
+/// Encode one exact package-branded detached reference as canonical bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_canonical_record_encode_reference_v1(
+    value: *const TypeBridgeProjectedReference,
+    out_bytes: *mut *mut TypeBridgeCanonicalBytes,
+    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+) -> TypeBridgeStatus {
+    // SAFETY: shared initializer validates and clears distinct writable outputs.
+    if let Err(status) = unsafe { initialize_execution_outputs(out_bytes, out_diagnostics) } {
+        return status;
+    }
+    guarded(|| {
+        if value.is_null() {
+            return TypeBridgeStatus::InvalidArgument;
+        }
+        // SAFETY: caller retains one immutable projected reference for this call.
+        let value = unsafe { &*value };
+        publish_record(
+            type_bridge_orm::record_from_reference(
+                &value.package.installed_projection,
+                &value.value,
+            ),
+            out_bytes,
+            out_diagnostics,
+        )
+    })
+}
+
+/// Encode one exact package-branded hydrated thing as a detached canonical snapshot.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_canonical_record_encode_snapshot_v1(
+    value: *const TypeBridgeProjectedThing,
+    out_bytes: *mut *mut TypeBridgeCanonicalBytes,
+    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+) -> TypeBridgeStatus {
+    // SAFETY: shared initializer validates and clears distinct writable outputs.
+    if let Err(status) = unsafe { initialize_execution_outputs(out_bytes, out_diagnostics) } {
+        return status;
+    }
+    guarded(|| {
+        if value.is_null() {
+            return TypeBridgeStatus::InvalidArgument;
+        }
+        // SAFETY: caller retains one immutable projected thing for this call.
+        let value = unsafe { &*value };
+        publish_record(
+            type_bridge_orm::record_from_snapshot(
+                &value.package.installed_projection,
+                &value.value,
+            ),
+            out_bytes,
+            out_diagnostics,
+        )
+    })
 }
 
 unsafe fn snapshot_bytes(view: TypeBridgeByteView) -> Result<Vec<u8>, TypeBridgeStatus> {

@@ -6,13 +6,14 @@ use type_bridge_c::{
     GENERATED_CREATE_GRAPH_VERSION, GENERATED_CREATE_HOSTED_OBJECT_BYTES_MAX,
     GENERATED_CREATE_MEMBER_REFERENCE_SEQUENCE, GENERATED_CREATE_MEMBER_VALUE_SEQUENCE,
     GENERATED_INPUT_CREATE_ARGS_GRAPH, GENERATED_INPUT_PROJECTED_VALUE_POINTER_ARRAY,
-    GENERATED_INPUT_SCHEMA_PACKAGE, TypeBridgeByteView, TypeBridgeExecutionDiagnosticCategory,
-    TypeBridgeExecutionDiagnosticDetailKind, TypeBridgeExecutionDiagnosticDetailViewV1,
-    TypeBridgeExecutionDiagnosticPathKind, TypeBridgeExecutionDiagnosticPathViewV1,
-    TypeBridgeExecutionDiagnosticViewV1, TypeBridgeExecutionDiagnostics,
-    TypeBridgeGeneratedCreateArgsGraphV1, TypeBridgeGeneratedCreateHandleChunkV1,
-    TypeBridgeGeneratedCreateMemberV1, TypeBridgeGeneratedOpaqueInputV1,
-    TypeBridgeGeneratedOutputRangeV1, TypeBridgeProjectedCreate,
+    GENERATED_INPUT_SCHEMA_PACKAGE, TypeBridgeByteView, TypeBridgeCanonicalArchive,
+    TypeBridgeCanonicalArchiveBuilder, TypeBridgeCanonicalBytes,
+    TypeBridgeExecutionDiagnosticCategory, TypeBridgeExecutionDiagnosticDetailKind,
+    TypeBridgeExecutionDiagnosticDetailViewV1, TypeBridgeExecutionDiagnosticPathKind,
+    TypeBridgeExecutionDiagnosticPathViewV1, TypeBridgeExecutionDiagnosticViewV1,
+    TypeBridgeExecutionDiagnostics, TypeBridgeGeneratedCreateArgsGraphV1,
+    TypeBridgeGeneratedCreateHandleChunkV1, TypeBridgeGeneratedCreateMemberV1,
+    TypeBridgeGeneratedOpaqueInputV1, TypeBridgeGeneratedOutputRangeV1, TypeBridgeProjectedCreate,
     TypeBridgeProjectedCreateDescriptorV1, TypeBridgeProjectedFieldInputV1,
     TypeBridgeProjectedReference, TypeBridgeProjectedReferenceDescriptorV1,
     TypeBridgeProjectedRoleInputV1, TypeBridgeProjectedThing, TypeBridgeProjectedThingDescriptorV1,
@@ -294,6 +295,52 @@ unsafe extern "C" {
         descriptor: *const TypeBridgeProjectedThingDescriptorV1,
         out_thing: *mut *mut TypeBridgeProjectedThing,
         out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+    ) -> TypeBridgeStatus;
+    fn type_bridge_canonical_record_encode_create_v1(
+        value: *const TypeBridgeProjectedCreate,
+        out_bytes: *mut *mut TypeBridgeCanonicalBytes,
+        out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+    ) -> TypeBridgeStatus;
+    fn type_bridge_canonical_bytes_view(
+        bytes: *const TypeBridgeCanonicalBytes,
+        out_view: *mut TypeBridgeByteView,
+    ) -> TypeBridgeStatus;
+    fn type_bridge_canonical_bytes_close(
+        bytes: *mut *mut TypeBridgeCanonicalBytes,
+    ) -> TypeBridgeStatus;
+    fn type_bridge_canonical_archive_builder_open_v1(
+        package: *const TypeBridgeSchemaPackage,
+        out_builder: *mut *mut TypeBridgeCanonicalArchiveBuilder,
+        out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+    ) -> TypeBridgeStatus;
+    fn type_bridge_canonical_archive_builder_append_record_v1(
+        builder: *mut TypeBridgeCanonicalArchiveBuilder,
+        record: TypeBridgeByteView,
+        out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+    ) -> TypeBridgeStatus;
+    fn type_bridge_canonical_archive_builder_finish_v1(
+        builder: *mut *mut TypeBridgeCanonicalArchiveBuilder,
+        out_bytes: *mut *mut TypeBridgeCanonicalBytes,
+        out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+    ) -> TypeBridgeStatus;
+    fn type_bridge_canonical_archive_open_v1(
+        package: *const TypeBridgeSchemaPackage,
+        bytes: TypeBridgeByteView,
+        out_archive: *mut *mut TypeBridgeCanonicalArchive,
+        out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+    ) -> TypeBridgeStatus;
+    fn type_bridge_canonical_archive_count(
+        archive: *const TypeBridgeCanonicalArchive,
+        out_count: *mut usize,
+    ) -> TypeBridgeStatus;
+    fn type_bridge_canonical_archive_record_at(
+        archive: *const TypeBridgeCanonicalArchive,
+        index: usize,
+        out_bytes: *mut *mut TypeBridgeCanonicalBytes,
+        out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+    ) -> TypeBridgeStatus;
+    fn type_bridge_canonical_archive_close(
+        archive: *mut *mut TypeBridgeCanonicalArchive,
     ) -> TypeBridgeStatus;
     fn type_bridge_projected_thing_iid(
         thing: *const TypeBridgeProjectedThing,
@@ -882,6 +929,120 @@ fn all_nine_domains_person_create_reference_and_membership_are_package_branded()
         TypeBridgeStatus::Ok,
     );
     assert!(diagnostics.is_null());
+
+    let mut record_bytes = ptr::null_mut();
+    // SAFETY: the projected create is live and both outputs are writable.
+    assert_eq!(
+        unsafe {
+            type_bridge_canonical_record_encode_create_v1(
+                person_create,
+                &mut record_bytes,
+                &mut diagnostics,
+            )
+        },
+        TypeBridgeStatus::Ok,
+    );
+    let mut record_view = text("");
+    // SAFETY: owned bytes and the borrowed-view output remain live.
+    assert_eq!(
+        unsafe { type_bridge_canonical_bytes_view(record_bytes, &mut record_view) },
+        TypeBridgeStatus::Ok,
+    );
+    let expected_record = copied(record_view);
+    let mut archive_builder = ptr::null_mut();
+    // SAFETY: package and outputs are live.
+    assert_eq!(
+        unsafe {
+            type_bridge_canonical_archive_builder_open_v1(
+                fixture.package,
+                &mut archive_builder,
+                &mut diagnostics,
+            )
+        },
+        TypeBridgeStatus::Ok,
+    );
+    // SAFETY: builder and borrowed record bytes remain live.
+    assert_eq!(
+        unsafe {
+            type_bridge_canonical_archive_builder_append_record_v1(
+                archive_builder,
+                record_view,
+                &mut diagnostics,
+            )
+        },
+        TypeBridgeStatus::Ok,
+    );
+    let mut archive_bytes = ptr::null_mut();
+    // SAFETY: builder ownership slot and outputs are live and distinct.
+    assert_eq!(
+        unsafe {
+            type_bridge_canonical_archive_builder_finish_v1(
+                &mut archive_builder,
+                &mut archive_bytes,
+                &mut diagnostics,
+            )
+        },
+        TypeBridgeStatus::Ok,
+    );
+    assert!(archive_builder.is_null());
+    let mut archive_view = text("");
+    // SAFETY: owned archive bytes and view output remain live.
+    assert_eq!(
+        unsafe { type_bridge_canonical_bytes_view(archive_bytes, &mut archive_view) },
+        TypeBridgeStatus::Ok,
+    );
+    let mut archive = ptr::null_mut();
+    // SAFETY: package, archive bytes, and outputs remain live.
+    assert_eq!(
+        unsafe {
+            type_bridge_canonical_archive_open_v1(
+                fixture.package,
+                archive_view,
+                &mut archive,
+                &mut diagnostics,
+            )
+        },
+        TypeBridgeStatus::Ok,
+    );
+    let mut archive_count = 0;
+    // SAFETY: archive and count output remain live.
+    assert_eq!(
+        unsafe { type_bridge_canonical_archive_count(archive, &mut archive_count) },
+        TypeBridgeStatus::Ok,
+    );
+    assert_eq!(archive_count, 1);
+    let mut recovered = ptr::null_mut();
+    // SAFETY: archive and outputs remain live.
+    assert_eq!(
+        unsafe {
+            type_bridge_canonical_archive_record_at(archive, 0, &mut recovered, &mut diagnostics)
+        },
+        TypeBridgeStatus::Ok,
+    );
+    let mut recovered_view = text("");
+    // SAFETY: recovered bytes and output remain live.
+    assert_eq!(
+        unsafe { type_bridge_canonical_bytes_view(recovered, &mut recovered_view) },
+        TypeBridgeStatus::Ok,
+    );
+    assert_eq!(copied(recovered_view), expected_record);
+    // SAFETY: each slot owns one exact ABI 1.6 handle.
+    assert_eq!(
+        unsafe { type_bridge_canonical_bytes_close(&mut recovered) },
+        TypeBridgeStatus::Ok,
+    );
+    assert_eq!(
+        unsafe { type_bridge_canonical_archive_close(&mut archive) },
+        TypeBridgeStatus::Ok,
+    );
+    assert_eq!(
+        unsafe { type_bridge_canonical_bytes_close(&mut archive_bytes) },
+        TypeBridgeStatus::Ok,
+    );
+    assert_eq!(
+        unsafe { type_bridge_canonical_bytes_close(&mut record_bytes) },
+        TypeBridgeStatus::Ok,
+    );
 
     // Projected handles retain immutable package state after the public package closes.
     // SAFETY: fixture owns this exact package slot.

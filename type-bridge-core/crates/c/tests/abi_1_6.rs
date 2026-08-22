@@ -1,7 +1,11 @@
 use std::fs;
 use std::process::Command;
 
-const ABI_1_6_EXPORTS: [&str; 10] = [
+const ABI_1_6_EXPORTS: [&str; 14] = [
+    "type_bridge_canonical_record_encode_attribute_v1",
+    "type_bridge_canonical_record_encode_create_v1",
+    "type_bridge_canonical_record_encode_reference_v1",
+    "type_bridge_canonical_record_encode_snapshot_v1",
     "type_bridge_canonical_archive_builder_open_v1",
     "type_bridge_canonical_archive_builder_append_record_v1",
     "type_bridge_canonical_archive_builder_finish_v1",
