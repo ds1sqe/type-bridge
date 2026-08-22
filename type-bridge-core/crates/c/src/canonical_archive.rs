@@ -967,6 +967,7 @@ decode_model_record!(
     |package, value| TypeBridgeProjectedThing {
         package,
         value: Arc::new(value),
+        detached_snapshot: true,
     }
 );
 

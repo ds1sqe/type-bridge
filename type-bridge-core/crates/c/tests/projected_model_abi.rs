@@ -321,6 +321,20 @@ unsafe extern "C" {
         out_bytes: *mut *mut TypeBridgeCanonicalBytes,
         out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
     ) -> TypeBridgeStatus;
+    fn type_bridge_canonical_record_encode_snapshot_v1(
+        value: *const TypeBridgeProjectedThing,
+        options: *const TypeBridgeProjectedCodecOptionsV1,
+        out_bytes: *mut *mut TypeBridgeCanonicalBytes,
+        out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+    ) -> TypeBridgeStatus;
+    fn type_bridge_canonical_record_decode_snapshot_v1(
+        package: *const TypeBridgeSchemaPackage,
+        bytes: TypeBridgeByteView,
+        expected_model: *const TypeBridgeProjectedTokenV1,
+        options: *const TypeBridgeProjectedCodecOptionsV1,
+        out_value: *mut *mut TypeBridgeProjectedThing,
+        out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+    ) -> TypeBridgeStatus;
     fn type_bridge_canonical_record_decode_create_v1(
         package: *const TypeBridgeSchemaPackage,
         bytes: TypeBridgeByteView,
@@ -893,6 +907,98 @@ fn all_nine_domains_person_create_reference_and_membership_are_package_branded()
                 &mut diagnostics,
             )
         },
+        TypeBridgeStatus::Ok,
+    );
+
+    let mut snapshot_bytes = ptr::null_mut();
+    // SAFETY: the hydrated thing and independent output slots remain live.
+    assert_eq!(
+        unsafe {
+            type_bridge_canonical_record_encode_snapshot_v1(
+                person_thing,
+                ptr::null(),
+                &mut snapshot_bytes,
+                &mut diagnostics,
+            )
+        },
+        TypeBridgeStatus::Ok,
+    );
+    let mut snapshot_view = TypeBridgeByteView {
+        data: ptr::null(),
+        length: 0,
+    };
+    // SAFETY: the owned canonical bytes and view output remain live.
+    assert_eq!(
+        unsafe { type_bridge_canonical_bytes_view(snapshot_bytes, &mut snapshot_view) },
+        TypeBridgeStatus::Ok,
+    );
+    let mut detached_person = ptr::null_mut();
+    // SAFETY: package, canonical bytes, token, and independent outputs remain live.
+    assert_eq!(
+        unsafe {
+            type_bridge_canonical_record_decode_snapshot_v1(
+                fixture.package,
+                snapshot_view,
+                &person_model,
+                ptr::null(),
+                &mut detached_person,
+                &mut diagnostics,
+            )
+        },
+        TypeBridgeStatus::Ok,
+    );
+    let mut reencoded_snapshot = ptr::null_mut();
+    // SAFETY: detached snapshots remain valid canonical re-encoding inputs.
+    assert_eq!(
+        unsafe {
+            type_bridge_canonical_record_encode_snapshot_v1(
+                detached_person,
+                ptr::null(),
+                &mut reencoded_snapshot,
+                &mut diagnostics,
+            )
+        },
+        TypeBridgeStatus::Ok,
+    );
+    let mut reencoded_view = TypeBridgeByteView {
+        data: ptr::null(),
+        length: 0,
+    };
+    // SAFETY: the owned canonical bytes and view output remain live.
+    assert_eq!(
+        unsafe { type_bridge_canonical_bytes_view(reencoded_snapshot, &mut reencoded_view) },
+        TypeBridgeStatus::Ok,
+    );
+    assert_eq!(copied(reencoded_view), copied(snapshot_view));
+    let mut detached_reference = ptr::null_mut();
+    // SAFETY: the decoded snapshot and independent outputs remain live.
+    let status = unsafe {
+        type_bridge_projected_thing_reference(
+            detached_person,
+            &mut detached_reference,
+            &mut diagnostics,
+        )
+    };
+    assert!(detached_reference.is_null());
+    assert_execution_error(
+        status,
+        TypeBridgeStatus::InvalidArgument,
+        diagnostics,
+        TypeBridgeExecutionDiagnosticCategory::InvalidInput,
+        "projected_snapshot_detached",
+    );
+    diagnostics = ptr::null_mut();
+    // SAFETY: each slot owns one exact handle.
+    assert_eq!(
+        unsafe { type_bridge_projected_thing_close(&mut detached_person) },
+        TypeBridgeStatus::Ok,
+    );
+    assert_eq!(
+        unsafe { type_bridge_canonical_bytes_close(&mut snapshot_bytes) },
+        TypeBridgeStatus::Ok,
+    );
+    assert_eq!(
+        unsafe { type_bridge_canonical_bytes_close(&mut reencoded_snapshot) },
         TypeBridgeStatus::Ok,
     );
 

@@ -1460,6 +1460,7 @@ impl ThingReservation {
         handle.initialize(TypeBridgeProjectedThing {
             package: Arc::clone(package),
             value,
+            detached_snapshot: false,
         })
     }
 }

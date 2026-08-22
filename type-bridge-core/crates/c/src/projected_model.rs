@@ -153,6 +153,7 @@ pub struct TypeBridgeProjectedCreate {
 pub struct TypeBridgeProjectedThing {
     pub(crate) package: Arc<SchemaPackageState>,
     pub(crate) value: Arc<ProjectedThing>,
+    pub(crate) detached_snapshot: bool,
 }
 
 trait ProjectedHandleBorrowedRanges {
@@ -366,7 +367,11 @@ impl ProjectedHandleBorrowedRanges for TypeBridgeProjectedThing {
 
 impl TypeBridgeProjectedThing {
     pub(crate) fn from_arc(package: Arc<SchemaPackageState>, value: Arc<ProjectedThing>) -> Self {
-        Self { package, value }
+        Self {
+            package,
+            value,
+            detached_snapshot: false,
+        }
     }
 
     pub(crate) fn check_borrowed_ranges(
@@ -1331,6 +1336,7 @@ pub unsafe extern "C" fn type_bridge_projected_thing_open_v1(
             Ok(value) => TypeBridgeProjectedThing {
                 package: Arc::clone(package.state()),
                 value: Arc::new(value),
+                detached_snapshot: false,
             },
             Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
         };
@@ -1755,6 +1761,12 @@ pub unsafe extern "C" fn type_bridge_projected_thing_scalar_role_reference(
         }
         // SAFETY: caller retains the immutable hydrated thing during this call.
         let thing = unsafe { &*thing };
+        if thing.detached_snapshot {
+            return return_execution_error(
+                type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic::projected_snapshot_detached(),
+                out_diagnostics,
+            );
+        }
         // SAFETY: generated token storage remains caller-readable for this call.
         let role =
             match unsafe { resolve_role_for_handle(&thing.package, thing.value.type_id(), role) } {
@@ -2243,6 +2255,12 @@ pub unsafe extern "C" fn type_bridge_projected_thing_reference(
         }
         // SAFETY: caller retains a live immutable thing handle during this call.
         let thing = unsafe { &*thing };
+        if thing.detached_snapshot {
+            return return_execution_error(
+                type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic::projected_snapshot_detached(),
+                out_diagnostics,
+            );
+        }
         let reference = match thing
             .value
             .try_to_reference(&thing.package.installed_projection)
@@ -2477,6 +2495,12 @@ pub unsafe extern "C" fn type_bridge_projected_thing_role_reference_at(
         }
         // SAFETY: caller retains a live immutable handle during this call.
         let thing = unsafe { &*thing };
+        if thing.detached_snapshot {
+            return return_execution_error(
+                type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic::projected_snapshot_detached(),
+                out_diagnostics,
+            );
+        }
         // SAFETY: generated token storage is readable for this call.
         let role =
             match unsafe { resolve_role_for_handle(&thing.package, thing.value.type_id(), role) } {
