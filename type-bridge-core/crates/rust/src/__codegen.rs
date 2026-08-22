@@ -902,19 +902,38 @@ impl ConstraintDescriptor {
 /// default; only runtime hydration can construct a bound origin.
 #[doc(hidden)]
 #[derive(Clone, Default)]
-pub struct ReferenceOrigin(Option<type_bridge_orm::ProjectedReferenceOrigin>);
+pub struct ReferenceOrigin {
+    projected: Option<type_bridge_orm::ProjectedReferenceOrigin>,
+    detached_snapshot: bool,
+}
 
 impl ReferenceOrigin {
     #[must_use]
     pub(crate) const fn from_projected(
         origin: Option<type_bridge_orm::ProjectedReferenceOrigin>,
     ) -> Self {
-        Self(origin)
+        Self {
+            projected: origin,
+            detached_snapshot: false,
+        }
     }
 
     #[must_use]
     pub(crate) fn projected(&self) -> Option<type_bridge_orm::ProjectedReferenceOrigin> {
-        self.0.clone()
+        self.projected.clone()
+    }
+
+    #[must_use]
+    pub(crate) const fn detached_snapshot() -> Self {
+        Self {
+            projected: None,
+            detached_snapshot: true,
+        }
+    }
+
+    #[must_use]
+    pub(crate) const fn is_detached_snapshot(&self) -> bool {
+        self.detached_snapshot
     }
 }
 
@@ -1260,6 +1279,10 @@ impl HydratedRow {
             roles,
             origin,
         }
+    }
+
+    pub(crate) fn mark_detached_snapshot(&mut self) {
+        self.origin = ReferenceOrigin::detached_snapshot();
     }
 
     #[must_use]

@@ -526,7 +526,8 @@ impl<S: Schema> SchemaPackage<S> {
                 None,
             ));
         };
-        let row = crate::projected_codec::projected_to_hydrated_row(&value, &installed)?;
+        let mut row = crate::projected_codec::projected_to_hydrated_row(&value, &installed)?;
+        row.mark_detached_snapshot();
         let decoded = T::materialize(&row, &HydrationCapability::new()).map_err(|error| {
             crate::entity_codec::map_validation_error(error, ModelValidationPhase::Hydration)
         })?;

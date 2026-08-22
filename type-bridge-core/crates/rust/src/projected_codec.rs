@@ -188,6 +188,17 @@ pub(crate) fn project_create<T: IntoEncodedCreate>(
     let encoded = input
         .into_encoded_create()
         .map_err(|error| map_validation_error(error, ModelValidationPhase::Input))?;
+    if encoded
+        .roles()
+        .iter()
+        .flat_map(|(_, players)| players)
+        .any(|player| player.origin().is_detached_snapshot())
+    {
+        return Err(Error::from_sdk_execution(
+            SdkExecutionDiagnostic::projected_snapshot_detached(),
+            ModelValidationPhase::Input,
+        ));
+    }
     project_encoded_create(&encoded, expected_type, installed)
 }
 

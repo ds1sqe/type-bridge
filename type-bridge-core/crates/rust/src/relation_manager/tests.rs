@@ -732,6 +732,28 @@ async fn hydrated_generated_reference_preserves_database_origin_before_relation_
 }
 
 #[tokio::test]
+async fn detached_snapshot_reference_rejects_mutation_before_provider_io() {
+    let (db, state) = test_db(Vec::new());
+    let detached = Person {
+        origin: ReferenceOrigin::detached_snapshot(),
+        iid: "0x9".into(),
+        name: "alice".into(),
+    };
+
+    let error = db
+        .relations::<Assignment>()
+        .insert(create_from_person("captain", &detached))
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.code(), Some("projected_snapshot_detached"));
+    assert!(
+        state.lock().unwrap().events.is_empty(),
+        "detached snapshot rejection must occur before provider I/O"
+    );
+}
+
+#[tokio::test]
 async fn public_relation_insert_provider_error_rolls_back() {
     let (db, state) = test_db(vec![Response::Error("insert failed".into())]);
     let error = db
