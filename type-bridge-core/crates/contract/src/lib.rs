@@ -31,6 +31,8 @@ pub mod migration_backfill;
 pub use migration_assertion::migration_assertion_capability_vocabulary;
 pub use query_plan::{query_given_rows_capability, query_plan_capability_vocabulary};
 mod migration_assertion_wire;
+/// Target-independent canonical generated-model records and ordered archives.
+pub mod projected_record;
 /// Binding-target configuration and reproducible projection fingerprints.
 pub mod projection;
 /// Fail-closed canonical wire decoding for runtime projections.
