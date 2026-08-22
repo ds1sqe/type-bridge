@@ -7,15 +7,17 @@ use std::pin::Pin;
 use type_bridge_contract::capability::CapabilitySet;
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use type_bridge_contract::migration::MigrationId;
+use type_bridge_contract::migration_backfill::AttributeBackfillPlan;
 use type_bridge_contract::schema::ManagedSchemaState;
 use type_bridge_query::ValidatedMigrationAssertionPlan;
 
 use crate::execution::{
-    AppliedRecord, ExecutionFence, ExecutionFuture, GroupCommitCertainty, GroupEventRecord,
-    GroupJournalEventKind, GroupRecoveryDecision, GroupRecoveryObservation, LeaseHolderId,
-    MigrationExecutionJournal, MigrationLease, MigrationLeaseStore, OpenPlanRecord,
-    OpenRollbackPlanRecord, PlanRecord, RollbackPlanRecord, RollbackStepEventRecord,
-    RolledBackRecord, decide_group_recovery,
+    AppliedRecord, BackfillCompletionEvidence, BackfillEventRecord, BackfillExecutionDirection,
+    BackfillRecoveryObservation, ExecutionFence, ExecutionFuture, GroupCommitCertainty,
+    GroupEventRecord, GroupJournalEventKind, GroupRecoveryDecision, GroupRecoveryObservation,
+    JournalEntry, LeaseHolderId, MigrationExecutionJournal, MigrationLease, MigrationLeaseStore,
+    OpenPlanRecord, OpenRollbackPlanRecord, PlanRecord, RollbackPlanRecord,
+    RollbackStepEventRecord, RolledBackRecord, decide_backfill_recovery, decide_group_recovery,
 };
 use crate::{
     StatementUnit, VerifiedMigrationApplyManifest, VerifiedMigrationApplyPlan,
@@ -26,6 +28,11 @@ use crate::{
 /// Future returned by a consuming provider commit operation.
 pub type GroupCommitFuture<'a> =
     Pin<Box<dyn Future<Output = Result<(), GroupCommitFailure>> + Send + 'a>>;
+
+/// Future returned by one complete provider-owned deterministic backfill run.
+pub type BackfillExecutionFuture<'a> = Pin<
+    Box<dyn Future<Output = Result<BackfillCompletionEvidence, GroupCommitFailure>> + Send + 'a>,
+>;
 
 /// A provider commit failure with explicit asymmetric certainty.
 #[derive(Debug)]
@@ -110,6 +117,53 @@ pub trait MigrationExecutionProvider: Send + Sync {
         source: &'a ManagedSchemaState,
         target: &'a ManagedSchemaState,
     ) -> ExecutionFuture<'a, Box<dyn PreparedMigrationGroup + 'a>>;
+
+    /// Return whether the provider implements the closed backfill transaction seam.
+    fn supports_backfill_execution(&self) -> bool {
+        false
+    }
+
+    /// Observe the exact postcondition for one closed backfill program.
+    fn observe_backfill<'a>(
+        &'a self,
+        lease: &'a MigrationLease,
+        plan: &'a AttributeBackfillPlan,
+        direction: BackfillExecutionDirection,
+    ) -> ExecutionFuture<'a, BackfillRecoveryObservation> {
+        let _ = (lease, plan, direction);
+        Box::pin(async {
+            Err(failure(
+                DiagnosticCategory::InvalidContract,
+                "migration_execution_backfill_provider_required",
+                "backfill execution requires the closed provider backfill transaction seam",
+            ))
+        })
+    }
+
+    /// Execute deterministic internal transaction groups under the active fence.
+    ///
+    /// Every provider commit must atomically recheck the supplied lease. The
+    /// returned evidence is terminal only after the exact postcondition has
+    /// been re-observed; partial progress is represented by commit certainty,
+    /// never by a successful prefix.
+    fn execute_backfill<'a>(
+        &'a self,
+        lease: &'a MigrationLease,
+        plan: &'a AttributeBackfillPlan,
+        direction: BackfillExecutionDirection,
+    ) -> BackfillExecutionFuture<'a> {
+        let _ = (lease, plan, direction);
+        Box::pin(async {
+            Err(GroupCommitFailure::new(
+                GroupCommitCertainty::DefinitelyAborted,
+                failure(
+                    DiagnosticCategory::InvalidContract,
+                    "migration_execution_backfill_provider_required",
+                    "backfill execution requires the closed provider backfill transaction seam",
+                ),
+            ))
+        })
+    }
 }
 
 /// Exact execution position associated with a non-success apply outcome.
@@ -117,6 +171,8 @@ pub trait MigrationExecutionProvider: Send + Sync {
 pub enum MigrationExecutionPosition {
     /// One zero-based verifier-owned transaction group.
     TransactionGroup(usize),
+    /// One zero-based canonical manifest backfill step.
+    BackfillStep(usize),
     /// The manifest-level applied-ledger checkpoint after all groups complete.
     ManifestCheckpoint,
 }
@@ -203,10 +259,11 @@ where
             "an executable migration plan requires at least one manifest",
         ));
     }
-    if plan
-        .migrations()
-        .iter()
-        .any(|migration| !migration.backfill_step_indices().is_empty())
+    if !provider.supports_backfill_execution()
+        && plan
+            .migrations()
+            .iter()
+            .any(|migration| !migration.backfill_step_indices().is_empty())
     {
         return Err(failure(
             DiagnosticCategory::InvalidContract,
@@ -258,7 +315,20 @@ where
             continue;
         }
         let snapshot = open.as_ref();
+        let mut backfills = migration.backfill_step_indices().iter().copied().peekable();
         for group in migration.transaction_groups() {
+            while backfills
+                .peek()
+                .is_some_and(|step_index| *step_index < group.first_step_index())
+            {
+                let step_index = backfills.next().expect("peeked backfill position");
+                if let Some(outcome) =
+                    execute_apply_backfill(store, provider, lease, migration, step_index, snapshot)
+                        .await?
+                {
+                    return Ok(outcome);
+                }
+            }
             let last_event = snapshot.and_then(|open| last_group_event(open, migration, group));
             if last_event.is_some_and(is_completion_event) {
                 continue;
@@ -462,6 +532,14 @@ where
                 }
             }
         }
+        for step_index in backfills {
+            if let Some(outcome) =
+                execute_apply_backfill(store, provider, lease, migration, step_index, snapshot)
+                    .await?
+            {
+                return Ok(outcome);
+            }
+        }
 
         if observed.is_none() {
             let target = migration.manifest().target_state();
@@ -494,6 +572,197 @@ where
     Ok(MigrationExecutionOutcome::Applied)
 }
 
+async fn execute_apply_backfill<S, P>(
+    store: &S,
+    provider: &P,
+    lease: &MigrationLease,
+    migration: &VerifiedMigrationApplyManifest,
+    step_index: usize,
+    snapshot: Option<&OpenPlanRecord>,
+) -> Result<Option<MigrationExecutionOutcome>, Diagnostic>
+where
+    S: MigrationExecutionJournal,
+    P: MigrationExecutionProvider,
+{
+    let (contract, plan) = migration
+        .steps()
+        .get(step_index)
+        .and_then(|step| step.step().as_backfill())
+        .ok_or_else(|| {
+            failure(
+                DiagnosticCategory::Integrity,
+                "migration_execution_backfill_step_position",
+                "verified backfill position does not contain a backfill step",
+            )
+        })?;
+    let events: Vec<&BackfillEventRecord> = snapshot
+        .map(|open| {
+            open.backfill_events()
+                .iter()
+                .map(JournalEntry::record)
+                .filter(|event| {
+                    event.migration_id() == migration.manifest().id()
+                        && event.manifest_digest() == migration.digest()
+                        && event.operation_ordinal()
+                            == u32::try_from(step_index).unwrap_or(u32::MAX)
+                        && event.manifest_step_index()
+                            == u32::try_from(step_index).unwrap_or(u32::MAX)
+                        && event.direction() == BackfillExecutionDirection::Forward
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let last_event = events.last().map(|event| event.kind());
+    if last_event.is_some_and(is_completion_event) {
+        return Ok(None);
+    }
+
+    let observation = provider
+        .observe_backfill(lease, plan, BackfillExecutionDirection::Forward)
+        .await?;
+    match decide_backfill_recovery(
+        last_event,
+        &observation,
+        contract.plan_fingerprint(),
+        BackfillExecutionDirection::Forward,
+    ) {
+        GroupRecoveryDecision::RequiresExplicitRecovery => {
+            return Ok(Some(backfill_explicit_recovery(
+                migration,
+                step_index,
+                failure(
+                    DiagnosticCategory::Integrity,
+                    "migration_execution_ambiguous_backfill_state",
+                    "data state cannot prove whether the backfill may replay",
+                ),
+            )));
+        }
+        GroupRecoveryDecision::RepairCheckpoint => {
+            let BackfillRecoveryObservation::Complete(completion) = observation else {
+                return Err(failure(
+                    DiagnosticCategory::Integrity,
+                    "migration_execution_backfill_observation_mismatch",
+                    "checkpoint repair requires exact terminal backfill evidence",
+                ));
+            };
+            let committed = BackfillEventRecord::new_apply(
+                lease,
+                migration,
+                step_index,
+                GroupJournalEventKind::Committed,
+                Some(completion),
+            )?;
+            if let Err(error) = store.record_backfill_event(lease, committed).await {
+                return Ok(Some(backfill_retry_safe(migration, step_index, error)));
+            }
+            return Ok(None);
+        }
+        GroupRecoveryDecision::ExecuteNormally => {}
+    }
+
+    let before = BackfillEventRecord::new_apply(
+        lease,
+        migration,
+        step_index,
+        GroupJournalEventKind::BeforeCommit,
+        None,
+    )?;
+    store.record_backfill_event(lease, before).await?;
+    match provider
+        .execute_backfill(lease, plan, BackfillExecutionDirection::Forward)
+        .await
+    {
+        Ok(completion) => {
+            let committed = BackfillEventRecord::new_apply(
+                lease,
+                migration,
+                step_index,
+                GroupJournalEventKind::Committed,
+                Some(completion),
+            )?;
+            if let Err(error) = store.record_backfill_event(lease, committed).await {
+                return Ok(Some(backfill_retry_safe(migration, step_index, error)));
+            }
+            Ok(None)
+        }
+        Err(commit_failure) => {
+            let (certainty, diagnostic) = commit_failure.into_parts();
+            let event = BackfillEventRecord::new_apply(
+                lease,
+                migration,
+                step_index,
+                certainty.journal_event(),
+                None,
+            )?;
+            if let Err(error) = store.record_backfill_event(lease, event).await {
+                return Ok(Some(match certainty {
+                    GroupCommitCertainty::DefinitelyAborted => {
+                        backfill_retry_safe(migration, step_index, error)
+                    }
+                    GroupCommitCertainty::Unknown => {
+                        backfill_explicit_recovery(migration, step_index, error)
+                    }
+                }));
+            }
+            if certainty == GroupCommitCertainty::DefinitelyAborted {
+                return Ok(Some(backfill_retry_safe(migration, step_index, diagnostic)));
+            }
+            let after = provider
+                .observe_backfill(lease, plan, BackfillExecutionDirection::Forward)
+                .await?;
+            if decide_backfill_recovery(
+                Some(GroupJournalEventKind::CommitOutcomeUnknown),
+                &after,
+                contract.plan_fingerprint(),
+                BackfillExecutionDirection::Forward,
+            ) != GroupRecoveryDecision::RepairCheckpoint
+            {
+                return Ok(Some(backfill_explicit_recovery(
+                    migration, step_index, diagnostic,
+                )));
+            }
+            let BackfillRecoveryObservation::Complete(completion) = after else {
+                unreachable!("repair decision requires complete evidence")
+            };
+            let committed = BackfillEventRecord::new_apply(
+                lease,
+                migration,
+                step_index,
+                GroupJournalEventKind::Committed,
+                Some(completion),
+            )?;
+            if let Err(error) = store.record_backfill_event(lease, committed).await {
+                return Ok(Some(backfill_retry_safe(migration, step_index, error)));
+            }
+            Ok(None)
+        }
+    }
+}
+
+fn backfill_retry_safe(
+    migration: &VerifiedMigrationApplyManifest,
+    step_index: usize,
+    diagnostic: Diagnostic,
+) -> MigrationExecutionOutcome {
+    MigrationExecutionOutcome::RetrySafe {
+        migration_id: migration.manifest().id().clone(),
+        position: MigrationExecutionPosition::BackfillStep(step_index),
+        diagnostic,
+    }
+}
+
+fn backfill_explicit_recovery(
+    migration: &VerifiedMigrationApplyManifest,
+    step_index: usize,
+    diagnostic: Diagnostic,
+) -> MigrationExecutionOutcome {
+    MigrationExecutionOutcome::RequiresExplicitRecovery {
+        migration_id: migration.manifest().id().clone(),
+        position: MigrationExecutionPosition::BackfillStep(step_index),
+        diagnostic,
+    }
+}
+
 /// Execute one complete verified rollback plan under a store-backed lease.
 ///
 /// Every reverse step runs in its own provider transaction with the same
@@ -524,10 +793,11 @@ where
             "an executable rollback plan requires at least one manifest",
         ));
     }
-    if plan
-        .rollbacks()
-        .iter()
-        .any(|rollback| !rollback.backfills().is_empty())
+    if !provider.supports_backfill_execution()
+        && plan
+            .rollbacks()
+            .iter()
+            .any(|rollback| !rollback.backfills().is_empty())
     {
         return Err(failure(
             DiagnosticCategory::InvalidContract,
@@ -539,6 +809,18 @@ where
         for step in rollback.steps() {
             rollback
                 .reverse_delta(step)?
+                .required_capabilities()
+                .ensure_supported_by(provider.available_capabilities())?;
+        }
+        for backfill in rollback.backfills() {
+            let (_, data_plan) = backfill.forward_step().as_backfill().ok_or_else(|| {
+                failure(
+                    DiagnosticCategory::Integrity,
+                    "migration_execution_backfill_step_position",
+                    "verified rollback backfill does not contain a backfill step",
+                )
+            })?;
+            data_plan
                 .required_capabilities()
                 .ensure_supported_by(provider.available_capabilities())?;
         }
@@ -590,7 +872,32 @@ where
             continue;
         }
         let snapshot = open.as_ref();
-        for (step_index, step) in rollback.steps().iter().enumerate() {
+        for (operation_index, operation) in rollback.operations().iter().enumerate() {
+            let step_index = match operation {
+                crate::VerifiedMigrationRollbackOperation::Backfill(_) => {
+                    if let Some(outcome) = execute_rollback_backfill(
+                        store,
+                        provider,
+                        lease,
+                        rollback,
+                        operation_index,
+                        snapshot,
+                    )
+                    .await?
+                    {
+                        return Ok(outcome);
+                    }
+                    continue;
+                }
+                crate::VerifiedMigrationRollbackOperation::SchemaDelta(step_index) => *step_index,
+            };
+            let step = rollback.steps().get(step_index).ok_or_else(|| {
+                failure(
+                    DiagnosticCategory::Integrity,
+                    "migration_execution_rollback_step_position",
+                    "rollback operation references a missing schema step",
+                )
+            })?;
             let last_event =
                 snapshot.and_then(|open| last_rollback_step_event(open, rollback, step_index));
             if last_event.is_some_and(is_completion_event) {
@@ -788,7 +1095,7 @@ where
                     .await?,
             );
         }
-        let last_step = rollback.steps().len().saturating_sub(1);
+        let last_step = rollback.operations().len().saturating_sub(1);
         if observed.as_ref() != Some(restored) {
             return Ok(MigrationRollbackOutcome::RequiresExplicitRecovery {
                 migration_id: rollback.manifest().id().clone(),
@@ -810,6 +1117,223 @@ where
         }
     }
     Ok(MigrationRollbackOutcome::RolledBack)
+}
+
+async fn execute_rollback_backfill<S, P>(
+    store: &S,
+    provider: &P,
+    lease: &MigrationLease,
+    rollback: &VerifiedMigrationRollbackManifest,
+    operation_index: usize,
+    snapshot: Option<&OpenRollbackPlanRecord>,
+) -> Result<Option<MigrationRollbackOutcome>, Diagnostic>
+where
+    S: MigrationExecutionJournal,
+    P: MigrationExecutionProvider,
+{
+    let backfill_index = match rollback.operations().get(operation_index) {
+        Some(crate::VerifiedMigrationRollbackOperation::Backfill(index)) => *index,
+        _ => {
+            return Err(failure(
+                DiagnosticCategory::Integrity,
+                "migration_execution_backfill_step_position",
+                "rollback operation does not contain a backfill step",
+            ));
+        }
+    };
+    let (contract, plan) = rollback
+        .backfills()
+        .get(backfill_index)
+        .and_then(|backfill| backfill.forward_step().as_backfill())
+        .ok_or_else(|| {
+            failure(
+                DiagnosticCategory::Integrity,
+                "migration_execution_backfill_step_position",
+                "verified rollback backfill does not contain a backfill step",
+            )
+        })?;
+    let events: Vec<&BackfillEventRecord> = snapshot
+        .map(|open| {
+            open.backfill_events()
+                .iter()
+                .map(JournalEntry::record)
+                .filter(|event| {
+                    event.migration_id() == rollback.manifest().id()
+                        && event.manifest_digest() == *rollback.digest()
+                        && event.operation_ordinal()
+                            == u32::try_from(operation_index).unwrap_or(u32::MAX)
+                        && event.direction() == BackfillExecutionDirection::Reverse
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let last_event = events.last().map(|event| event.kind());
+    if last_event.is_some_and(is_completion_event) {
+        return Ok(None);
+    }
+
+    let observation = provider
+        .observe_backfill(lease, plan, BackfillExecutionDirection::Reverse)
+        .await?;
+    match decide_backfill_recovery(
+        last_event,
+        &observation,
+        contract.plan_fingerprint(),
+        BackfillExecutionDirection::Reverse,
+    ) {
+        GroupRecoveryDecision::RequiresExplicitRecovery => {
+            return Ok(Some(rollback_backfill_explicit_recovery(
+                rollback,
+                operation_index,
+                failure(
+                    DiagnosticCategory::Integrity,
+                    "migration_execution_ambiguous_backfill_state",
+                    "data state cannot prove whether the reverse backfill may replay",
+                ),
+            )));
+        }
+        GroupRecoveryDecision::RepairCheckpoint => {
+            let BackfillRecoveryObservation::Complete(completion) = observation else {
+                return Err(failure(
+                    DiagnosticCategory::Integrity,
+                    "migration_execution_backfill_observation_mismatch",
+                    "checkpoint repair requires exact terminal backfill evidence",
+                ));
+            };
+            let committed = BackfillEventRecord::new_rollback(
+                lease,
+                rollback,
+                operation_index,
+                GroupJournalEventKind::Committed,
+                Some(completion),
+            )?;
+            if let Err(error) = store.record_backfill_event(lease, committed).await {
+                return Ok(Some(rollback_backfill_retry_safe(
+                    rollback,
+                    operation_index,
+                    error,
+                )));
+            }
+            return Ok(None);
+        }
+        GroupRecoveryDecision::ExecuteNormally => {}
+    }
+
+    let before = BackfillEventRecord::new_rollback(
+        lease,
+        rollback,
+        operation_index,
+        GroupJournalEventKind::BeforeCommit,
+        None,
+    )?;
+    store.record_backfill_event(lease, before).await?;
+    match provider
+        .execute_backfill(lease, plan, BackfillExecutionDirection::Reverse)
+        .await
+    {
+        Ok(completion) => {
+            let committed = BackfillEventRecord::new_rollback(
+                lease,
+                rollback,
+                operation_index,
+                GroupJournalEventKind::Committed,
+                Some(completion),
+            )?;
+            if let Err(error) = store.record_backfill_event(lease, committed).await {
+                return Ok(Some(rollback_backfill_retry_safe(
+                    rollback,
+                    operation_index,
+                    error,
+                )));
+            }
+            Ok(None)
+        }
+        Err(commit_failure) => {
+            let (certainty, diagnostic) = commit_failure.into_parts();
+            let event = BackfillEventRecord::new_rollback(
+                lease,
+                rollback,
+                operation_index,
+                certainty.journal_event(),
+                None,
+            )?;
+            if let Err(error) = store.record_backfill_event(lease, event).await {
+                return Ok(Some(match certainty {
+                    GroupCommitCertainty::DefinitelyAborted => {
+                        rollback_backfill_retry_safe(rollback, operation_index, error)
+                    }
+                    GroupCommitCertainty::Unknown => {
+                        rollback_backfill_explicit_recovery(rollback, operation_index, error)
+                    }
+                }));
+            }
+            if certainty == GroupCommitCertainty::DefinitelyAborted {
+                return Ok(Some(rollback_backfill_retry_safe(
+                    rollback,
+                    operation_index,
+                    diagnostic,
+                )));
+            }
+            let after = provider
+                .observe_backfill(lease, plan, BackfillExecutionDirection::Reverse)
+                .await?;
+            if decide_backfill_recovery(
+                Some(GroupJournalEventKind::CommitOutcomeUnknown),
+                &after,
+                contract.plan_fingerprint(),
+                BackfillExecutionDirection::Reverse,
+            ) != GroupRecoveryDecision::RepairCheckpoint
+            {
+                return Ok(Some(rollback_backfill_explicit_recovery(
+                    rollback,
+                    operation_index,
+                    diagnostic,
+                )));
+            }
+            let BackfillRecoveryObservation::Complete(completion) = after else {
+                unreachable!("repair decision requires complete evidence")
+            };
+            let committed = BackfillEventRecord::new_rollback(
+                lease,
+                rollback,
+                operation_index,
+                GroupJournalEventKind::Committed,
+                Some(completion),
+            )?;
+            if let Err(error) = store.record_backfill_event(lease, committed).await {
+                return Ok(Some(rollback_backfill_retry_safe(
+                    rollback,
+                    operation_index,
+                    error,
+                )));
+            }
+            Ok(None)
+        }
+    }
+}
+
+fn rollback_backfill_retry_safe(
+    rollback: &VerifiedMigrationRollbackManifest,
+    operation_index: usize,
+    diagnostic: Diagnostic,
+) -> MigrationRollbackOutcome {
+    MigrationRollbackOutcome::RetrySafe {
+        migration_id: rollback.manifest().id().clone(),
+        step_ordinal: operation_index,
+        diagnostic,
+    }
+}
+
+fn rollback_backfill_explicit_recovery(
+    rollback: &VerifiedMigrationRollbackManifest,
+    operation_index: usize,
+    diagnostic: Diagnostic,
+) -> MigrationRollbackOutcome {
+    MigrationRollbackOutcome::RequiresExplicitRecovery {
+        migration_id: rollback.manifest().id().clone(),
+        step_ordinal: operation_index,
+        diagnostic,
+    }
 }
 
 fn validate_open_rollback_plan(
@@ -942,14 +1466,71 @@ fn validate_open_rollback_plan(
             ));
         }
     }
+    for event in open.backfill_events() {
+        let record = event.record();
+        let manifest_index = plan
+            .rollbacks()
+            .iter()
+            .position(|rollback| {
+                *rollback.digest() == record.manifest_digest()
+                    && rollback.manifest().id() == record.migration_id()
+            })
+            .ok_or_else(|| {
+                failure(
+                    DiagnosticCategory::Integrity,
+                    "migration_execution_foreign_group_event",
+                    "open-rollback backfill event has no exact verified manifest",
+                )
+            })?;
+        let rollback = &plan.rollbacks()[manifest_index];
+        let operation_index = usize::try_from(record.operation_ordinal()).map_err(|_| {
+            failure(
+                DiagnosticCategory::ResourceLimit,
+                "migration_execution_group_position_limit",
+                "journal backfill position exceeds this platform",
+            )
+        })?;
+        let historical_lease = MigrationLease::new(
+            lease.scope().clone(),
+            lease.holder().clone(),
+            record.fence(),
+        );
+        let expected = BackfillEventRecord::new_rollback(
+            &historical_lease,
+            rollback,
+            operation_index,
+            record.kind(),
+            record.completion().cloned(),
+        )?;
+        if &expected != record {
+            return Err(failure(
+                DiagnosticCategory::Integrity,
+                "migration_execution_group_event_mismatch",
+                "journal event differs from exact verified rollback backfill evidence",
+            ));
+        }
+    }
 
     for (manifest_index, rollback) in plan.rollbacks().iter().enumerate() {
         let mut progress_closed = false;
         let mut all_complete = true;
-        for step_index in 0..rollback.steps().len() {
-            let events = rollback_step_events(open, rollback, step_index);
-            validate_commit_transitions(events.iter().map(|event| (event.kind(), event.fence())))?;
-            if events.is_empty() {
+        for (operation_index, operation) in rollback.operations().iter().enumerate() {
+            let transitions: Vec<(GroupJournalEventKind, ExecutionFence)> = match operation {
+                crate::VerifiedMigrationRollbackOperation::SchemaDelta(step_index) => {
+                    rollback_step_events(open, rollback, *step_index)
+                        .iter()
+                        .map(|event| (event.kind(), event.fence()))
+                        .collect()
+                }
+                crate::VerifiedMigrationRollbackOperation::Backfill(_) => {
+                    rollback_backfill_events(open, rollback, operation_index)
+                        .iter()
+                        .map(|event| (event.kind(), event.fence()))
+                        .collect()
+                }
+            };
+            validate_commit_transitions(transitions.iter().copied())?;
+            if transitions.is_empty() {
                 progress_closed = true;
                 all_complete = false;
                 continue;
@@ -961,9 +1542,9 @@ fn validate_open_rollback_plan(
                     "rollback-step journal progress is not a prefix",
                 ));
             }
-            let complete = events
+            let complete = transitions
                 .last()
-                .is_some_and(|event| is_completion_event(event.kind()));
+                .is_some_and(|(kind, _)| is_completion_event(*kind));
             if !complete {
                 progress_closed = true;
                 all_complete = false;
@@ -977,8 +1558,18 @@ fn validate_open_rollback_plan(
             ));
         }
         if manifest_index > completed
-            && (0..rollback.steps().len())
-                .any(|step_index| !rollback_step_events(open, rollback, step_index).is_empty())
+            && rollback
+                .operations()
+                .iter()
+                .enumerate()
+                .any(|(operation_index, operation)| match operation {
+                    crate::VerifiedMigrationRollbackOperation::SchemaDelta(step_index) => {
+                        !rollback_step_events(open, rollback, *step_index).is_empty()
+                    }
+                    crate::VerifiedMigrationRollbackOperation::Backfill(_) => {
+                        !rollback_backfill_events(open, rollback, operation_index).is_empty()
+                    }
+                })
         {
             return Err(failure(
                 DiagnosticCategory::Integrity,
@@ -988,6 +1579,22 @@ fn validate_open_rollback_plan(
         }
     }
     Ok(completed)
+}
+
+fn rollback_backfill_events<'a>(
+    open: &'a OpenRollbackPlanRecord,
+    rollback: &VerifiedMigrationRollbackManifest,
+    operation_index: usize,
+) -> Vec<&'a BackfillEventRecord> {
+    open.backfill_events()
+        .iter()
+        .map(crate::JournalEntry::record)
+        .filter(|event| {
+            event.manifest_digest() == *rollback.digest()
+                && event.operation_ordinal() as usize == operation_index
+                && event.direction() == BackfillExecutionDirection::Reverse
+        })
+        .collect()
 }
 
 fn rollback_step_events<'a>(
@@ -1155,14 +1762,80 @@ fn validate_open_plan(
             ));
         }
     }
+    for event in open.backfill_events() {
+        let record = event.record();
+        let migration_index = plan
+            .migrations()
+            .iter()
+            .position(|migration| {
+                migration.digest() == record.manifest_digest()
+                    && migration.manifest().id() == record.migration_id()
+            })
+            .ok_or_else(|| {
+                failure(
+                    DiagnosticCategory::Integrity,
+                    "migration_execution_foreign_group_event",
+                    "open-plan backfill event has no exact verified manifest",
+                )
+            })?;
+        let migration = &plan.migrations()[migration_index];
+        let step_index = usize::try_from(record.operation_ordinal()).map_err(|_| {
+            failure(
+                DiagnosticCategory::ResourceLimit,
+                "migration_execution_group_position_limit",
+                "journal backfill position exceeds this platform",
+            )
+        })?;
+        let historical_lease = MigrationLease::new(
+            lease.scope().clone(),
+            lease.holder().clone(),
+            record.fence(),
+        );
+        let expected = BackfillEventRecord::new_apply(
+            &historical_lease,
+            migration,
+            step_index,
+            record.kind(),
+            record.completion().cloned(),
+        )?;
+        if &expected != record {
+            return Err(failure(
+                DiagnosticCategory::Integrity,
+                "migration_execution_group_event_mismatch",
+                "journal event differs from exact verified backfill evidence",
+            ));
+        }
+    }
 
     for (migration_index, migration) in plan.migrations().iter().enumerate() {
         let mut progress_closed = false;
         let mut all_complete = true;
-        for group in migration.transaction_groups() {
-            let events = group_events(open, migration, group);
-            validate_commit_transitions(events.iter().map(|event| (event.kind(), event.fence())))?;
-            if events.is_empty() {
+        let mut operations: Vec<(usize, Vec<(GroupJournalEventKind, ExecutionFence)>)> = migration
+            .transaction_groups()
+            .iter()
+            .map(|group| {
+                (
+                    group.first_step_index(),
+                    group_events(open, migration, group)
+                        .iter()
+                        .map(|event| (event.kind(), event.fence()))
+                        .collect(),
+                )
+            })
+            .chain(migration.backfill_step_indices().iter().map(|step_index| {
+                (
+                    *step_index,
+                    apply_backfill_events(open, migration, *step_index)
+                        .iter()
+                        .map(|event| (event.kind(), event.fence()))
+                        .collect(),
+                )
+            }))
+            .collect();
+        operations.sort_by_key(|(position, _)| *position);
+        for (_, transitions) in operations {
+            validate_commit_transitions(transitions.iter().copied())?;
+            if transitions.is_empty() {
                 progress_closed = true;
                 all_complete = false;
                 continue;
@@ -1174,9 +1847,9 @@ fn validate_open_plan(
                     "transaction-group journal progress is not a prefix",
                 ));
             }
-            let complete = events
+            let complete = transitions
                 .last()
-                .is_some_and(|event| is_completion_event(event.kind()));
+                .is_some_and(|(kind, _)| is_completion_event(*kind));
             if !complete {
                 progress_closed = true;
                 all_complete = false;
@@ -1192,10 +1865,13 @@ fn validate_open_plan(
             ));
         }
         if migration_index > completed
-            && migration
+            && (migration
                 .transaction_groups()
                 .iter()
                 .any(|group| !group_events(open, migration, group).is_empty())
+                || migration.backfill_step_indices().iter().any(|step_index| {
+                    !apply_backfill_events(open, migration, *step_index).is_empty()
+                }))
         {
             return Err(failure(
                 DiagnosticCategory::Integrity,
@@ -1205,6 +1881,23 @@ fn validate_open_plan(
         }
     }
     Ok(completed)
+}
+
+fn apply_backfill_events<'a>(
+    open: &'a OpenPlanRecord,
+    migration: &VerifiedMigrationApplyManifest,
+    step_index: usize,
+) -> Vec<&'a BackfillEventRecord> {
+    open.backfill_events()
+        .iter()
+        .map(crate::JournalEntry::record)
+        .filter(|event| {
+            event.manifest_digest() == migration.digest()
+                && event.operation_ordinal() as usize == step_index
+                && event.manifest_step_index() as usize == step_index
+                && event.direction() == BackfillExecutionDirection::Forward
+        })
+        .collect()
 }
 
 fn validate_plan_identity(

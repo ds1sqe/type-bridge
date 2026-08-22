@@ -23,9 +23,10 @@ pub use apply_plan::{
     build_verified_migration_apply_plan, partition_transaction_groups,
 };
 pub use coordinator::{
-    GroupCommitFailure, GroupCommitFuture, MigrationExecutionOutcome, MigrationExecutionPosition,
-    MigrationExecutionProvider, MigrationRollbackOutcome, PreparedMigrationGroup,
-    execute_verified_migration_apply_plan, execute_verified_migration_rollback_plan,
+    BackfillExecutionFuture, GroupCommitFailure, GroupCommitFuture, MigrationExecutionOutcome,
+    MigrationExecutionPosition, MigrationExecutionProvider, MigrationRollbackOutcome,
+    PreparedMigrationGroup, execute_verified_migration_apply_plan,
+    execute_verified_migration_rollback_plan,
 };
 pub use directory::{
     MigrationAuthoringLock, MigrationDirectory, MigrationDirectoryEntry,

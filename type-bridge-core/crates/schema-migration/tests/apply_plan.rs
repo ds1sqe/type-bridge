@@ -40,7 +40,8 @@ use type_bridge_schema_migration::{
     VerifiedMigrationApplyStep, VerifiedMigrationRollbackOperation, build_legacy_frontier_bridge,
     build_verified_manifest, build_verified_migration_apply_plan,
     build_verified_migration_rollback_plan, execute_verified_migration_apply_plan,
-    schema_lowering_profile_binding, typedb_3_12_1_profile,
+    execute_verified_migration_rollback_plan, schema_lowering_profile_binding,
+    typedb_3_12_1_profile,
 };
 
 fn type_fact(label: &str) -> SchemaFact {
@@ -353,6 +354,64 @@ fn backfill_apply_evidence_retains_exact_manifest_position_and_requires_approval
         .as_str(),
         "migration_execution_backfill_formal_advance"
     );
+
+    let store = CoordinatorStore::default();
+    let provider = CoordinatorProvider {
+        available: context.available_capabilities().clone(),
+        calls: Mutex::new(Vec::new()),
+        observed: Mutex::new(plan.source_state().unwrap().clone()),
+    };
+    let outcome = block_on(execute_verified_migration_apply_plan(
+        &store,
+        &provider,
+        &LeaseHolderId::new("backfill-executor").unwrap(),
+        &plan,
+    ))
+    .unwrap();
+    assert!(matches!(outcome, MigrationExecutionOutcome::Applied));
+    assert_eq!(
+        *provider.calls.lock().unwrap(),
+        [
+            "observe",
+            "observe-backfill-forward",
+            "execute-backfill-forward"
+        ]
+    );
+    let state = store.state.lock().unwrap();
+    assert_eq!(
+        state.backfill_event_audit,
+        [
+            GroupJournalEventKind::BeforeCommit,
+            GroupJournalEventKind::Committed
+        ]
+    );
+    assert_eq!(state.applied.len(), 1);
+    assert!(state.backfill_events.is_empty());
+    drop(state);
+
+    let rollback_outcome = block_on(execute_verified_migration_rollback_plan(
+        &store,
+        &provider,
+        &LeaseHolderId::new("backfill-rollback").unwrap(),
+        &rollback,
+    ))
+    .unwrap();
+    assert!(matches!(
+        rollback_outcome,
+        type_bridge_schema_migration::MigrationRollbackOutcome::RolledBack
+    ));
+    let state = store.state.lock().unwrap();
+    assert_eq!(state.rolled_back.len(), 1);
+    assert_eq!(
+        state.backfill_event_audit,
+        [
+            GroupJournalEventKind::BeforeCommit,
+            GroupJournalEventKind::Committed,
+            GroupJournalEventKind::BeforeCommit,
+            GroupJournalEventKind::Committed
+        ]
+    );
+    assert!(state.backfill_events.is_empty());
 }
 
 #[test]
