@@ -7,6 +7,7 @@
 use std::mem::size_of;
 use std::ptr;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory};
 
@@ -73,6 +74,33 @@ pub struct TypeBridgeMigrationApprovalSet {
 pub struct TypeBridgeMigrationExecutionOutcome {
     state: MigrationPlanExecutionState,
 }
+
+/// Opaque wakeable cancellation owner for migration execution.
+pub struct TypeBridgeMigrationCancellation {
+    state: type_bridge_schema_migration::MigrationCancellation,
+}
+
+/// Versioned candidate ABI 1.5 options for one migration execution.
+#[repr(C)]
+pub struct TypeBridgeMigrationExecutionOptionsV1 {
+    /// Must equal `sizeof(TypeBridgeMigrationExecutionOptionsV1)`.
+    pub struct_size: u64,
+    /// Must be `1`.
+    pub version: u32,
+    /// Bit 0 declares `timeout_milliseconds` present; all other bits are zero.
+    pub flags: u32,
+    /// Relative timeout converted once to an absolute monotonic deadline.
+    pub timeout_milliseconds: u64,
+    /// Caller ceiling, clamped to the shared maximum.
+    pub max_transaction_groups: u64,
+    /// Caller ceiling, clamped to the shared maximum.
+    pub max_backfill_observations: u64,
+    /// Optional separately owned cancellation handle.
+    pub cancellation: *const TypeBridgeMigrationCancellation,
+}
+
+const MIGRATION_EXECUTION_OPTIONS_V1: u32 = 1;
+const MIGRATION_EXECUTION_HAS_TIMEOUT: u32 = 1;
 
 /// Opaque independently owned terminal backfill observation.
 pub struct TypeBridgeMigrationBackfillObservation {
@@ -994,6 +1022,84 @@ pub unsafe extern "C" fn type_bridge_migration_plan_execute(
     out_outcome: *mut *mut TypeBridgeMigrationExecutionOutcome,
     out_diagnostics: *mut *mut TypeBridgeDiagnostics,
 ) -> TypeBridgeStatus {
+    unsafe {
+        type_bridge_migration_plan_execute_with_options(
+            plan,
+            database,
+            holder,
+            ptr::null(),
+            out_outcome,
+            out_diagnostics,
+        )
+    }
+}
+
+/// Create one separately owned wakeable migration cancellation handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_migration_cancellation_new(
+    out_cancellation: *mut *mut TypeBridgeMigrationCancellation,
+) -> TypeBridgeStatus {
+    guarded(|| {
+        if out_cancellation.is_null() {
+            return TypeBridgeStatus::InvalidArgument;
+        }
+        unsafe { out_cancellation.write_unaligned(ptr::null_mut()) };
+        unsafe {
+            out_cancellation.write_unaligned(Box::into_raw(Box::new(
+                TypeBridgeMigrationCancellation {
+                    state: type_bridge_schema_migration::MigrationCancellation::default(),
+                },
+            )))
+        };
+        TypeBridgeStatus::Ok
+    })
+}
+
+/// Request cancellation idempotently and wake registered migration waits.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_migration_cancellation_cancel(
+    cancellation: *const TypeBridgeMigrationCancellation,
+) -> TypeBridgeStatus {
+    guarded(|| {
+        let Some(cancellation) = (unsafe { cancellation.as_ref() }) else {
+            return TypeBridgeStatus::InvalidArgument;
+        };
+        cancellation.state.cancel();
+        TypeBridgeStatus::Ok
+    })
+}
+
+/// Return exact zero or one for the cancellation state.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_migration_cancellation_is_cancelled(
+    cancellation: *const TypeBridgeMigrationCancellation,
+    out_cancelled: *mut u8,
+) -> TypeBridgeStatus {
+    unsafe {
+        scalar(cancellation, out_cancelled, |value| {
+            u8::from(value.state.is_cancelled())
+        })
+    }
+}
+
+/// Close a migration cancellation owner idempotently.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_migration_cancellation_close(
+    cancellation: *mut *mut TypeBridgeMigrationCancellation,
+) -> TypeBridgeStatus {
+    unsafe { close_box(cancellation) }
+}
+
+/// Execute one authorized plan under versioned cancellation/deadline/limits.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_migration_plan_execute_with_options(
+    plan: *const TypeBridgeMigrationPlan,
+    database: *const TypeBridgeDatabase,
+    holder: TypeBridgeByteView,
+    options: *const TypeBridgeMigrationExecutionOptionsV1,
+    out_outcome: *mut *mut TypeBridgeMigrationExecutionOutcome,
+    out_diagnostics: *mut *mut TypeBridgeDiagnostics,
+) -> TypeBridgeStatus {
     if let Err(status) = unsafe { preflight_one_output(plan, out_outcome, out_diagnostics) } {
         return status;
     }
@@ -1010,7 +1116,11 @@ pub unsafe extern "C" fn type_bridge_migration_plan_execute(
         let Ok(holder) = std::str::from_utf8(bytes) else {
             return TypeBridgeStatus::InvalidArgument;
         };
-        match plan.state.execute(database, holder) {
+        let control = match unsafe { migration_execution_control(options) } {
+            Ok(value) => value,
+            Err(status) => return status,
+        };
+        match plan.state.execute_controlled(database, holder, &control) {
             Ok(state) => {
                 unsafe {
                     out_outcome.write_unaligned(Box::into_raw(Box::new(
@@ -1022,6 +1132,50 @@ pub unsafe extern "C" fn type_bridge_migration_plan_execute(
             Err(error) => return_failure(error, out_diagnostics),
         }
     })
+}
+
+unsafe fn migration_execution_control(
+    options: *const TypeBridgeMigrationExecutionOptionsV1,
+) -> Result<type_bridge_schema_migration::MigrationExecutionControl, TypeBridgeStatus> {
+    let Some(options) = (unsafe { options.as_ref() }) else {
+        return Ok(type_bridge_schema_migration::MigrationExecutionControl::default());
+    };
+    if options.struct_size
+        != u64::try_from(size_of::<TypeBridgeMigrationExecutionOptionsV1>())
+            .expect("options structure size fits u64")
+        || options.version != MIGRATION_EXECUTION_OPTIONS_V1
+        || options.flags & !MIGRATION_EXECUTION_HAS_TIMEOUT != 0
+    {
+        return Err(TypeBridgeStatus::InvalidArgument);
+    }
+    let transaction_groups = usize::try_from(options.max_transaction_groups)
+        .map_err(|_| TypeBridgeStatus::ResourceLimit)?;
+    let backfill_observations = usize::try_from(options.max_backfill_observations)
+        .map_err(|_| TypeBridgeStatus::ResourceLimit)?;
+    let deadline = if options.flags & MIGRATION_EXECUTION_HAS_TIMEOUT != 0 {
+        Some(
+            Instant::now()
+                .checked_add(Duration::from_millis(options.timeout_milliseconds))
+                .ok_or(TypeBridgeStatus::InvalidArgument)?,
+        )
+    } else {
+        None
+    };
+    let cancellation = if options.cancellation.is_null() {
+        type_bridge_schema_migration::MigrationCancellation::default()
+    } else {
+        unsafe { &*options.cancellation }.state.clone()
+    };
+    Ok(
+        type_bridge_schema_migration::MigrationExecutionControl::new(
+            cancellation,
+            deadline,
+            type_bridge_schema_migration::MigrationExecutionResourceLimits::tightened(
+                transaction_groups,
+                backfill_observations,
+            ),
+        ),
+    )
 }
 
 /// Close a plan only after every entry, builder, approval, or authorized child closes.
@@ -1739,4 +1893,75 @@ pub unsafe extern "C" fn type_bridge_migration_verification_finding_close(
     finding: *mut *mut TypeBridgeMigrationVerificationFinding,
 ) -> TypeBridgeStatus {
     unsafe { close_box(finding) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn candidate_c_migration_cancellation_is_owned_and_idempotently_closed() {
+        let mut cancellation = ptr::null_mut();
+        assert_eq!(
+            unsafe { type_bridge_migration_cancellation_new(&mut cancellation) },
+            TypeBridgeStatus::Ok
+        );
+        let mut cancelled = 9;
+        assert_eq!(
+            unsafe {
+                type_bridge_migration_cancellation_is_cancelled(cancellation, &mut cancelled)
+            },
+            TypeBridgeStatus::Ok
+        );
+        assert_eq!(cancelled, 0);
+        assert_eq!(
+            unsafe { type_bridge_migration_cancellation_cancel(cancellation) },
+            TypeBridgeStatus::Ok
+        );
+        assert_eq!(
+            unsafe {
+                type_bridge_migration_cancellation_is_cancelled(cancellation, &mut cancelled)
+            },
+            TypeBridgeStatus::Ok
+        );
+        assert_eq!(cancelled, 1);
+        assert_eq!(
+            unsafe { type_bridge_migration_cancellation_close(&mut cancellation) },
+            TypeBridgeStatus::Ok
+        );
+        assert!(cancellation.is_null());
+        assert_eq!(
+            unsafe { type_bridge_migration_cancellation_close(&mut cancellation) },
+            TypeBridgeStatus::Ok
+        );
+    }
+
+    #[test]
+    fn candidate_c_migration_options_are_versioned_and_tighten_only() {
+        let options = TypeBridgeMigrationExecutionOptionsV1 {
+            struct_size: size_of::<TypeBridgeMigrationExecutionOptionsV1>() as u64,
+            version: MIGRATION_EXECUTION_OPTIONS_V1,
+            flags: MIGRATION_EXECUTION_HAS_TIMEOUT,
+            timeout_milliseconds: 30_000,
+            max_transaction_groups: 3,
+            max_backfill_observations: u64::MAX,
+            cancellation: ptr::null(),
+        };
+        let control = unsafe { migration_execution_control(&options) }.expect("valid options");
+        assert_eq!(control.resources().transaction_groups(), 3);
+        assert_eq!(
+            control.resources().backfill_observations(),
+            type_bridge_schema_migration::MAX_MIGRATION_BACKFILL_OBSERVATIONS
+        );
+        assert!(control.deadline().is_some());
+
+        let invalid = TypeBridgeMigrationExecutionOptionsV1 {
+            version: 2,
+            ..options
+        };
+        assert_eq!(
+            unsafe { migration_execution_control(&invalid) }.unwrap_err(),
+            TypeBridgeStatus::InvalidArgument
+        );
+    }
 }

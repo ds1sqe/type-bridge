@@ -487,28 +487,43 @@ impl MigrationPlanState {
         database: &TypeBridgeDatabase,
         holder: &str,
     ) -> Result<MigrationPlanExecutionState, Diagnostic> {
+        self.execute_controlled(
+            database,
+            holder,
+            &type_bridge_schema_migration::MigrationExecutionControl::default(),
+        )
+    }
+
+    pub(crate) fn execute_controlled(
+        &self,
+        database: &TypeBridgeDatabase,
+        holder: &str,
+        control: &type_bridge_schema_migration::MigrationExecutionControl,
+    ) -> Result<MigrationPlanExecutionState, Diagnostic> {
         self.require_execution_authorized()?;
         let holder = LeaseHolderId::new(holder)?;
         let managed_database = database.orm_database_arc();
         match &self.plan {
             MigrationPlanKind::Apply(plan) => database
                 .block_on(
-                    type_bridge_schema_migration_typedb::execute_catalog_apply_plan(
+                    type_bridge_schema_migration_typedb::execute_catalog_apply_plan_controlled(
                         managed_database,
                         &self.catalog.catalog,
                         &holder,
                         plan,
+                        control,
                     ),
                 )
                 .map(MigrationExecutionReport::from_apply)
                 .map(|report| MigrationPlanExecutionState { report }),
             MigrationPlanKind::Rollback(plan) => database
                 .block_on(
-                    type_bridge_schema_migration_typedb::execute_catalog_rollback_plan(
+                    type_bridge_schema_migration_typedb::execute_catalog_rollback_plan_controlled(
                         managed_database,
                         &self.catalog.catalog,
                         &holder,
                         plan,
+                        control,
                     ),
                 )
                 .map(MigrationExecutionReport::from_rollback)
