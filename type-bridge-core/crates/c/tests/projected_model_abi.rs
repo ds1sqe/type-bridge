@@ -325,6 +325,7 @@ unsafe extern "C" {
         package: *const TypeBridgeSchemaPackage,
         bytes: TypeBridgeByteView,
         expected_model: *const TypeBridgeProjectedTokenV1,
+        options: *const TypeBridgeProjectedCodecOptionsV1,
         out_value: *mut *mut TypeBridgeProjectedCreate,
         out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
     ) -> TypeBridgeStatus;
@@ -332,6 +333,7 @@ unsafe extern "C" {
         package: *const TypeBridgeSchemaPackage,
         bytes: TypeBridgeByteView,
         expected_struct: *const TypeBridgeProjectedTokenV1,
+        options: *const TypeBridgeProjectedCodecOptionsV1,
         out_value: *mut *mut TypeBridgeProjectedStruct,
         out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
     ) -> TypeBridgeStatus;
@@ -361,6 +363,7 @@ unsafe extern "C" {
     ) -> TypeBridgeStatus;
     fn type_bridge_canonical_archive_builder_open_v1(
         package: *const TypeBridgeSchemaPackage,
+        options: *const TypeBridgeProjectedCodecOptionsV1,
         out_builder: *mut *mut TypeBridgeCanonicalArchiveBuilder,
         out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
     ) -> TypeBridgeStatus;
@@ -374,15 +377,20 @@ unsafe extern "C" {
         out_bytes: *mut *mut TypeBridgeCanonicalBytes,
         out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
     ) -> TypeBridgeStatus;
+    fn type_bridge_canonical_archive_builder_close(
+        builder: *mut *mut TypeBridgeCanonicalArchiveBuilder,
+    ) -> TypeBridgeStatus;
     fn type_bridge_canonical_archive_open_v1(
         package: *const TypeBridgeSchemaPackage,
         bytes: TypeBridgeByteView,
+        options: *const TypeBridgeProjectedCodecOptionsV1,
         out_archive: *mut *mut TypeBridgeCanonicalArchive,
         out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
     ) -> TypeBridgeStatus;
     fn type_bridge_canonical_archive_count(
         archive: *const TypeBridgeCanonicalArchive,
         out_count: *mut usize,
+        out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
     ) -> TypeBridgeStatus;
     fn type_bridge_canonical_archive_record_at(
         archive: *const TypeBridgeCanonicalArchive,
@@ -1096,12 +1104,84 @@ fn all_nine_domains_person_create_reference_and_membership_are_package_branded()
         TypeBridgeStatus::InvalidArgument,
     );
     assert_eq!(copied(record_view), expected_record);
+    let mut archive_cancellation = ptr::null_mut();
+    // SAFETY: the owner slot is writable and initially null.
+    assert_eq!(
+        unsafe { type_bridge_cancellation_open(&mut archive_cancellation) },
+        TypeBridgeStatus::Ok,
+    );
+    let archive_options = TypeBridgeProjectedCodecOptionsV1 {
+        cancellation: archive_cancellation,
+        max_output_bytes: 32 * 1024 * 1024,
+        max_records: 4_096,
+        ..options
+    };
+    let mut cancelled_builder = ptr::null_mut();
+    // SAFETY: package, options, and distinct outputs remain live for control capture.
+    assert_eq!(
+        unsafe {
+            type_bridge_canonical_archive_builder_open_v1(
+                fixture.package,
+                &archive_options,
+                &mut cancelled_builder,
+                &mut diagnostics,
+            )
+        },
+        TypeBridgeStatus::Ok,
+    );
+    // SAFETY: builder and borrowed record bytes remain live.
+    assert_eq!(
+        unsafe {
+            type_bridge_canonical_archive_builder_append_record_v1(
+                cancelled_builder,
+                record_view,
+                &mut diagnostics,
+            )
+        },
+        TypeBridgeStatus::Ok,
+    );
+    // SAFETY: the live cancellation handle accepts one sticky request.
+    assert_eq!(
+        unsafe { type_bridge_cancellation_request(archive_cancellation) },
+        TypeBridgeStatus::Ok,
+    );
+    let mut cancelled_archive_bytes = ptr::null_mut();
+    // SAFETY: builder ownership and result slots remain live and distinct.
+    let status = unsafe {
+        type_bridge_canonical_archive_builder_finish_v1(
+            &mut cancelled_builder,
+            &mut cancelled_archive_bytes,
+            &mut diagnostics,
+        )
+    };
+    assert!(!cancelled_builder.is_null());
+    assert!(cancelled_archive_bytes.is_null());
+    assert_execution_error(
+        status,
+        TypeBridgeStatus::Cancelled,
+        diagnostics,
+        TypeBridgeExecutionDiagnosticCategory::Cancelled,
+        "provider_cancelled",
+    );
+    diagnostics = ptr::null_mut();
+    // SAFETY: closing the caller owner does not invalidate the captured builder control.
+    assert_eq!(
+        unsafe { type_bridge_cancellation_close(&mut archive_cancellation) },
+        TypeBridgeStatus::Ok,
+    );
+    // SAFETY: the retained failed builder remains independently owned and closeable.
+    assert_eq!(
+        unsafe { type_bridge_canonical_archive_builder_close(&mut cancelled_builder) },
+        TypeBridgeStatus::Ok,
+    );
+
     let mut archive_builder = ptr::null_mut();
     // SAFETY: package and outputs are live.
     assert_eq!(
         unsafe {
             type_bridge_canonical_archive_builder_open_v1(
                 fixture.package,
+                ptr::null(),
                 &mut archive_builder,
                 &mut diagnostics,
             )
@@ -1145,6 +1225,7 @@ fn all_nine_domains_person_create_reference_and_membership_are_package_branded()
             type_bridge_canonical_archive_open_v1(
                 fixture.package,
                 archive_view,
+                ptr::null(),
                 &mut archive,
                 &mut diagnostics,
             )
@@ -1154,7 +1235,9 @@ fn all_nine_domains_person_create_reference_and_membership_are_package_branded()
     let mut archive_count = 0;
     // SAFETY: archive and count output remain live.
     assert_eq!(
-        unsafe { type_bridge_canonical_archive_count(archive, &mut archive_count) },
+        unsafe {
+            type_bridge_canonical_archive_count(archive, &mut archive_count, &mut diagnostics)
+        },
         TypeBridgeStatus::Ok,
     );
     assert_eq!(archive_count, 1);
@@ -1173,6 +1256,39 @@ fn all_nine_domains_person_create_reference_and_membership_are_package_branded()
         TypeBridgeStatus::Ok,
     );
     assert_eq!(copied(recovered_view), expected_record);
+    let limited_options = TypeBridgeProjectedCodecOptionsV1 {
+        struct_size: size_of::<TypeBridgeProjectedCodecOptionsV1>() as u64,
+        version: 1,
+        flags: 0,
+        timeout_milliseconds: 0,
+        max_input_bytes: (recovered_view.length - 1) as u64,
+        max_output_bytes: 16 * 1024 * 1024,
+        max_depth: 64,
+        max_records: 1,
+        max_members: 65_536,
+        cancellation: ptr::null(),
+    };
+    let mut limited_create = ptr::null_mut();
+    // SAFETY: complete inputs and distinct outputs remain live for the limited decode.
+    let status = unsafe {
+        type_bridge_canonical_record_decode_create_v1(
+            fixture.package,
+            recovered_view,
+            &person_model,
+            &limited_options,
+            &mut limited_create,
+            &mut diagnostics,
+        )
+    };
+    assert!(limited_create.is_null());
+    assert_execution_error(
+        status,
+        TypeBridgeStatus::ResourceLimit,
+        diagnostics,
+        TypeBridgeExecutionDiagnosticCategory::ResourceLimit,
+        "c_canonical_input_limit",
+    );
+    diagnostics = ptr::null_mut();
     // A decoded-owner output placed inside its canonical input is rejected without mutation.
     // SAFETY: the deliberately hostile owner slot aliases borrowed canonical bytes; preflight
     // rejects it before initializing or publishing an owner.
@@ -1182,6 +1298,7 @@ fn all_nine_domains_person_create_reference_and_membership_are_package_branded()
                 fixture.package,
                 recovered_view,
                 &person_model,
+                ptr::null(),
                 recovered_view.data.cast_mut().cast(),
                 &mut diagnostics,
             )
@@ -1198,6 +1315,7 @@ fn all_nine_domains_person_create_reference_and_membership_are_package_branded()
                 fixture.package,
                 recovered_view,
                 &person_model,
+                ptr::null(),
                 &mut decoded_create,
                 &mut diagnostics,
             )
@@ -1216,6 +1334,7 @@ fn all_nine_domains_person_create_reference_and_membership_are_package_branded()
             fixture.package,
             recovered_view,
             &membership_model,
+            ptr::null(),
             &mut decoded_create,
             &mut diagnostics,
         )
@@ -1257,6 +1376,7 @@ fn all_nine_domains_person_create_reference_and_membership_are_package_branded()
                 fixture.package,
                 bytes(&score_card_bytes),
                 &score_card_token,
+                ptr::null(),
                 &mut decoded_struct,
                 &mut diagnostics,
             )

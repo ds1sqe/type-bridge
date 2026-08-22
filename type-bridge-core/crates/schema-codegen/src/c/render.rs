@@ -2764,7 +2764,7 @@ fn render_codec_definition_pair(
            {generic} *generic_value = NULL;\n\
            type_bridge_status_t status;\n\
            if (out_value != NULL) {{ *out_value = NULL; }}\n\
-           status = {decode_runtime}(package, bytes, &{token},\n\
+           status = {decode_runtime}(package, bytes, &{token}, NULL,\n\
                &generic_value, out_diagnostics);\n\
            if (status == TYPE_BRIDGE_STATUS_OK) {{ *out_value = ({target} *)generic_value; }}\n\
            return status;\n\

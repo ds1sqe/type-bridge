@@ -196,12 +196,14 @@ pub struct TypeBridgeCanonicalBytes {
 /// Opaque bounded deterministic archive builder.
 pub struct TypeBridgeCanonicalArchiveBuilder {
     package: Arc<SchemaPackageState>,
+    control: CanonicalControl,
     records: Vec<ProjectedRecord>,
 }
 
 /// Opaque verified immutable canonical archive.
 pub struct TypeBridgeCanonicalArchive {
     package: Arc<SchemaPackageState>,
+    control: CanonicalControl,
     archive: ProjectedArchive,
 }
 
@@ -395,13 +397,11 @@ unsafe fn preflight(
 unsafe fn decode_record(
     package: *const TypeBridgeSchemaPackage,
     bytes: TypeBridgeByteView,
+    control: &CanonicalControl,
 ) -> Result<(Arc<SchemaPackageState>, ProjectedRecord), SdkExecutionDiagnostic> {
     if package.is_null() {
         return Err(invalid_record());
     }
-    // SAFETY: null selects the frozen record ceilings and an uncancelled control.
-    let control = unsafe { canonical_control(ptr::null(), false) }
-        .expect("default canonical record controls are valid");
     control.check()?;
     // SAFETY: caller retains one live immutable package for this call.
     let package = unsafe { &*package };
@@ -753,6 +753,7 @@ pub unsafe extern "C" fn type_bridge_canonical_record_decode_attribute_v1(
     package: *const TypeBridgeSchemaPackage,
     bytes: TypeBridgeByteView,
     expected_attribute: *const TypeBridgeProjectedTokenV1,
+    options: *const TypeBridgeProjectedCodecOptionsV1,
     out_value: *mut *mut TypeBridgeProjectedValue,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
@@ -769,6 +770,7 @@ pub unsafe extern "C" fn type_bridge_canonical_record_decode_attribute_v1(
             &[
                 (GENERATED_INPUT_SCHEMA_PACKAGE, package.cast()),
                 (GENERATED_INPUT_PROJECTED_TOKEN, expected_attribute.cast()),
+                (GENERATED_INPUT_PROJECTED_CODEC_OPTIONS, options.cast()),
             ],
             &[bytes],
         )
@@ -780,8 +782,12 @@ pub unsafe extern "C" fn type_bridge_canonical_record_decode_attribute_v1(
         return status;
     }
     guarded(|| {
+        let control = match unsafe { canonical_control(options, false) } {
+            Ok(control) => control,
+            Err(status) => return status,
+        };
         // SAFETY: package and byte ranges remain caller-owned for this call.
-        let (package, record) = match unsafe { decode_record(package, bytes) } {
+        let (package, record) = match unsafe { decode_record(package, bytes, &control) } {
             Ok(value) => value,
             Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
         };
@@ -826,6 +832,7 @@ macro_rules! decode_model_record {
             package: *const TypeBridgeSchemaPackage,
             bytes: TypeBridgeByteView,
             expected_model: *const TypeBridgeProjectedTokenV1,
+            options: *const TypeBridgeProjectedCodecOptionsV1,
             out_value: *mut *mut $output,
             out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
         ) -> TypeBridgeStatus {
@@ -842,6 +849,7 @@ macro_rules! decode_model_record {
                     &[
                         (GENERATED_INPUT_SCHEMA_PACKAGE, package.cast()),
                         (GENERATED_INPUT_PROJECTED_TOKEN, expected_model.cast()),
+                        (GENERATED_INPUT_PROJECTED_CODEC_OPTIONS, options.cast()),
                     ],
                     &[bytes],
                 )
@@ -854,8 +862,12 @@ macro_rules! decode_model_record {
                 return status;
             }
             guarded(|| {
+                let control = match unsafe { canonical_control(options, false) } {
+                    Ok(control) => control,
+                    Err(status) => return status,
+                };
                 // SAFETY: package and byte ranges remain caller-owned for this call.
-                let (package, record) = match unsafe { decode_record(package, bytes) } {
+                let (package, record) = match unsafe { decode_record(package, bytes, &control) } {
                     Ok(value) => value,
                     Err(diagnostic) => {
                         return return_execution_error(diagnostic, out_diagnostics);
@@ -928,6 +940,7 @@ pub unsafe extern "C" fn type_bridge_canonical_record_decode_reference_v1(
     package: *const TypeBridgeSchemaPackage,
     bytes: TypeBridgeByteView,
     expected_model: *const TypeBridgeProjectedTokenV1,
+    options: *const TypeBridgeProjectedCodecOptionsV1,
     out_value: *mut *mut TypeBridgeProjectedReference,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
@@ -947,6 +960,7 @@ pub unsafe extern "C" fn type_bridge_canonical_record_decode_reference_v1(
             &[
                 (GENERATED_INPUT_SCHEMA_PACKAGE, package.cast()),
                 (GENERATED_INPUT_PROJECTED_TOKEN, expected_model.cast()),
+                (GENERATED_INPUT_PROJECTED_CODEC_OPTIONS, options.cast()),
             ],
             &[bytes],
         )
@@ -958,8 +972,12 @@ pub unsafe extern "C" fn type_bridge_canonical_record_decode_reference_v1(
         return status;
     }
     guarded(|| {
+        let control = match unsafe { canonical_control(options, false) } {
+            Ok(control) => control,
+            Err(status) => return status,
+        };
         // SAFETY: package and byte ranges remain caller-owned for this call.
-        let (package, record) = match unsafe { decode_record(package, bytes) } {
+        let (package, record) = match unsafe { decode_record(package, bytes, &control) } {
             Ok(value) => value,
             Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
         };
@@ -996,6 +1014,7 @@ pub unsafe extern "C" fn type_bridge_canonical_record_decode_struct_v1(
     package: *const TypeBridgeSchemaPackage,
     bytes: TypeBridgeByteView,
     expected_struct: *const TypeBridgeProjectedTokenV1,
+    options: *const TypeBridgeProjectedCodecOptionsV1,
     out_value: *mut *mut TypeBridgeProjectedStruct,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
@@ -1015,6 +1034,7 @@ pub unsafe extern "C" fn type_bridge_canonical_record_decode_struct_v1(
             &[
                 (GENERATED_INPUT_SCHEMA_PACKAGE, package.cast()),
                 (GENERATED_INPUT_PROJECTED_TOKEN, expected_struct.cast()),
+                (GENERATED_INPUT_PROJECTED_CODEC_OPTIONS, options.cast()),
             ],
             &[bytes],
         )
@@ -1026,8 +1046,12 @@ pub unsafe extern "C" fn type_bridge_canonical_record_decode_struct_v1(
         return status;
     }
     guarded(|| {
+        let control = match unsafe { canonical_control(options, false) } {
+            Ok(control) => control,
+            Err(status) => return status,
+        };
         // SAFETY: package and byte ranges remain caller-owned for this call.
-        let (package, record) = match unsafe { decode_record(package, bytes) } {
+        let (package, record) = match unsafe { decode_record(package, bytes, &control) } {
             Ok(value) => value,
             Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
         };
@@ -1375,6 +1399,7 @@ fn clone_archive_records(records: &[ProjectedRecord]) -> Result<Vec<ProjectedRec
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn type_bridge_canonical_archive_builder_open_v1(
     package: *const TypeBridgeSchemaPackage,
+    options: *const TypeBridgeProjectedCodecOptionsV1,
     out_builder: *mut *mut TypeBridgeCanonicalArchiveBuilder,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
@@ -1391,7 +1416,10 @@ pub unsafe extern "C" fn type_bridge_canonical_archive_builder_open_v1(
                     size_of::<*mut TypeBridgeExecutionDiagnostics>(),
                 ),
             ],
-            &[(GENERATED_INPUT_SCHEMA_PACKAGE, package.cast())],
+            &[
+                (GENERATED_INPUT_SCHEMA_PACKAGE, package.cast()),
+                (GENERATED_INPUT_PROJECTED_CODEC_OPTIONS, options.cast()),
+            ],
             &[],
         )
     } {
@@ -1402,6 +1430,13 @@ pub unsafe extern "C" fn type_bridge_canonical_archive_builder_open_v1(
         return status;
     }
     guarded(|| {
+        let control = match unsafe { canonical_control(options, true) } {
+            Ok(control) => control,
+            Err(status) => return status,
+        };
+        if let Err(diagnostic) = control.check() {
+            return return_execution_error(diagnostic, out_diagnostics);
+        }
         if package.is_null() {
             return TypeBridgeStatus::InvalidArgument;
         }
@@ -1409,6 +1444,7 @@ pub unsafe extern "C" fn type_bridge_canonical_archive_builder_open_v1(
         let package = unsafe { &*package };
         let builder = TypeBridgeCanonicalArchiveBuilder {
             package: Arc::clone(package.state()),
+            control,
             records: Vec::new(),
         };
         let builder = match try_box(AllocationSite::CanonicalArchiveBuilderHandle, builder) {
@@ -1453,9 +1489,7 @@ pub unsafe extern "C" fn type_bridge_canonical_archive_builder_append_record_v1(
         // SAFETY: the builder is uniquely borrowed for this mutating call.
         let builder = unsafe { &mut *builder };
         // SAFETY: the caller retains the byte range for this call.
-        // SAFETY: null selects the frozen archive ceilings and an uncancelled control.
-        let control = unsafe { canonical_control(ptr::null(), true) }
-            .expect("default canonical archive controls are valid");
+        let control = &builder.control;
         if let Err(diagnostic) = control.check() {
             return return_execution_error(diagnostic, out_diagnostics);
         }
@@ -1524,9 +1558,7 @@ pub unsafe extern "C" fn type_bridge_canonical_archive_builder_finish_v1(
         }
         // SAFETY: the retained builder remains owned by the caller until success.
         let value = unsafe { &*retained };
-        // SAFETY: null selects the frozen archive ceilings and an uncancelled control.
-        let control = unsafe { canonical_control(ptr::null(), true) }
-            .expect("default canonical archive controls are valid");
+        let control = &value.control;
         if let Err(diagnostic) = control.check() {
             return return_execution_error(diagnostic, out_diagnostics);
         }
@@ -1571,6 +1603,7 @@ pub unsafe extern "C" fn type_bridge_canonical_archive_builder_finish_v1(
 pub unsafe extern "C" fn type_bridge_canonical_archive_open_v1(
     package: *const TypeBridgeSchemaPackage,
     bytes: TypeBridgeByteView,
+    options: *const TypeBridgeProjectedCodecOptionsV1,
     out_archive: *mut *mut TypeBridgeCanonicalArchive,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
@@ -1587,7 +1620,10 @@ pub unsafe extern "C" fn type_bridge_canonical_archive_open_v1(
                     size_of::<*mut TypeBridgeExecutionDiagnostics>(),
                 ),
             ],
-            &[(GENERATED_INPUT_SCHEMA_PACKAGE, package.cast())],
+            &[
+                (GENERATED_INPUT_SCHEMA_PACKAGE, package.cast()),
+                (GENERATED_INPUT_PROJECTED_CODEC_OPTIONS, options.cast()),
+            ],
             &[bytes],
         )
     } {
@@ -1598,14 +1634,15 @@ pub unsafe extern "C" fn type_bridge_canonical_archive_open_v1(
         return status;
     }
     guarded(|| {
+        let control = match unsafe { canonical_control(options, true) } {
+            Ok(control) => control,
+            Err(status) => return status,
+        };
         if package.is_null() {
             return TypeBridgeStatus::InvalidArgument;
         }
         // SAFETY: caller retains both input objects for this call.
         let package = unsafe { &*package };
-        // SAFETY: null selects the frozen archive ceilings and an uncancelled control.
-        let control = unsafe { canonical_control(ptr::null(), true) }
-            .expect("default canonical archive controls are valid");
         if let Err(diagnostic) = control.check() {
             return return_execution_error(diagnostic, out_diagnostics);
         }
@@ -1632,6 +1669,7 @@ pub unsafe extern "C" fn type_bridge_canonical_archive_open_v1(
         }
         let archive = TypeBridgeCanonicalArchive {
             package: Arc::clone(package.state()),
+            control,
             archive,
         };
         let archive = match try_box(AllocationSite::CanonicalArchiveHandle, archive) {
@@ -1692,28 +1730,41 @@ pub unsafe extern "C" fn type_bridge_canonical_bytes_view(
 pub unsafe extern "C" fn type_bridge_canonical_archive_count(
     archive: *const TypeBridgeCanonicalArchive,
     out_count: *mut usize,
+    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
     // SAFETY: archive remains live during complete read-only preflight.
     if let Err(status) = unsafe {
         preflight(
-            &[(out_count.cast(), size_of::<usize>())],
+            &[
+                (out_count.cast(), size_of::<usize>()),
+                (
+                    out_diagnostics.cast(),
+                    size_of::<*mut TypeBridgeExecutionDiagnostics>(),
+                ),
+            ],
             &[(GENERATED_INPUT_CANONICAL_ARCHIVE, archive.cast())],
             &[],
         )
     } {
         return status;
     }
-    if out_count.is_null() {
+    if out_count.is_null() || out_diagnostics.is_null() {
         return TypeBridgeStatus::InvalidArgument;
     }
-    // SAFETY: caller supplies one writable count slot.
-    unsafe { out_count.write_unaligned(0) };
+    // SAFETY: preflight proved both caller outputs writable and distinct.
+    unsafe {
+        out_count.write_unaligned(0);
+        out_diagnostics.write_unaligned(ptr::null_mut());
+    }
     guarded(|| {
         if archive.is_null() {
             return TypeBridgeStatus::InvalidArgument;
         }
         // SAFETY: caller retains a live immutable archive.
         let archive = unsafe { &*archive };
+        if let Err(diagnostic) = archive.control.check() {
+            return return_execution_error(diagnostic, out_diagnostics);
+        }
         // Retain the authority carrier as part of every archive read.
         let _ = &archive.package;
         // SAFETY: output was validated above.
@@ -1756,12 +1807,13 @@ pub unsafe extern "C" fn type_bridge_canonical_archive_record_at(
         }
         // SAFETY: caller retains a live immutable archive.
         let archive = unsafe { &*archive };
+        if let Err(diagnostic) = archive.control.check() {
+            return return_execution_error(diagnostic, out_diagnostics);
+        }
         let Some(record) = archive.archive.records().get(index) else {
             return return_execution_error(invalid_archive(), out_diagnostics);
         };
-        // SAFETY: null selects the frozen record ceilings and an uncancelled control.
-        let control = unsafe { canonical_control(ptr::null(), false) }
-            .expect("default canonical record controls are valid");
+        let control = &archive.control;
         if let Err(diagnostic) = control.check() {
             return return_execution_error(diagnostic, out_diagnostics);
         }
