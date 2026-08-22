@@ -213,19 +213,27 @@ class ModelBase:
     def runtime_values(self) -> dict[str, object]:
         return self._values
 
-    def encode_create(self) -> bytes:
-        return self.__runtime_projection__.encode_create(type(self), self)
+    def encode_create(self, **options: object) -> bytes:
+        return self.__runtime_projection__.encode_record_controlled(
+            "create", type(self), self, **options
+        )
 
     @classmethod
-    def decode_create(cls, data: bytes) -> Self:
-        return cls.__runtime_projection__.decode_create(cls, data)
+    def decode_create(cls, data: bytes, **options: object) -> Self:
+        return cls.__runtime_projection__.decode_record_controlled(
+            "create", cls, data, **options
+        )
 
-    def encode_snapshot(self) -> bytes:
-        return self.__runtime_projection__.encode_snapshot(type(self), self)
+    def encode_snapshot(self, **options: object) -> bytes:
+        return self.__runtime_projection__.encode_record_controlled(
+            "snapshot", type(self), self, **options
+        )
 
     @classmethod
-    def decode_snapshot(cls, data: bytes) -> Self:
-        return cls.__runtime_projection__.decode_snapshot(cls, data)
+    def decode_snapshot(cls, data: bytes, **options: object) -> Self:
+        return cls.__runtime_projection__.decode_record_controlled(
+            "snapshot", cls, data, **options
+        )
 
     def initialize_runtime_values(
         self,
@@ -576,12 +584,16 @@ class AttributeBase(ModelBase):
     def runtime_attribute_value(self) -> object:
         return self._attribute_value
 
-    def encode_attribute(self) -> bytes:
-        return self.__runtime_projection__.encode_attribute(type(self), self)
+    def encode_attribute(self, **options: object) -> bytes:
+        return self.__runtime_projection__.encode_record_controlled(
+            "attribute", type(self), self, **options
+        )
 
     @classmethod
-    def decode_attribute(cls, data: bytes) -> Self:
-        return cls.__runtime_projection__.decode_attribute(cls, data)
+    def decode_attribute(cls, data: bytes, **options: object) -> Self:
+        return cls.__runtime_projection__.decode_record_controlled(
+            "attribute", cls, data, **options
+        )
 
     def initialize_runtime_attribute(self, value: object, scalar: str) -> None:
         if not _matches_scalar(value, scalar):
@@ -814,12 +826,16 @@ class ReferenceBase:
     def runtime_values(self) -> dict[str, object]:
         return self._values
 
-    def encode_reference(self) -> bytes:
-        return _require_package_runtime_projection().encode_reference(type(self), self)
+    def encode_reference(self, **options: object) -> bytes:
+        return _require_package_runtime_projection().encode_record_controlled(
+            "reference", type(self), self, **options
+        )
 
     @classmethod
-    def decode_reference(cls, data: bytes) -> Self:
-        return _require_package_runtime_projection().decode_reference(cls, data)
+    def decode_reference(cls, data: bytes, **options: object) -> Self:
+        return _require_package_runtime_projection().decode_record_controlled(
+            "reference", cls, data, **options
+        )
 
     def initialize_runtime_reference(
         self,
@@ -837,12 +853,16 @@ class StructValueBase:
     __struct_id__: str
     __runtime_projection__: PyRuntimeProjection
 
-    def encode(self) -> bytes:
-        return self.__runtime_projection__.encode_struct(type(self), self)
+    def encode(self, **options: object) -> bytes:
+        return self.__runtime_projection__.encode_record_controlled(
+            "struct", type(self), self, **options
+        )
 
     @classmethod
-    def decode(cls, data: bytes) -> Self:
-        return cls.__runtime_projection__.decode_struct(cls, data)
+    def decode(cls, data: bytes, **options: object) -> Self:
+        return cls.__runtime_projection__.decode_record_controlled(
+            "struct", cls, data, **options
+        )
 
     def __setattr__(self, name: str, value: object) -> None:
         raise AttributeError("projected struct values are immutable")

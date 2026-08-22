@@ -1663,6 +1663,111 @@ impl PyRuntimeProjection {
             .map(Bound::unbind)
     }
 
+    /// Encode one nominal record with cancellation, deadline, and resource limits.
+    #[pyo3(signature = (record_kind, target, instance, *, cancellation=None, timeout_milliseconds=None, max_input_bytes=None, max_output_bytes=None, max_depth=None, max_members=None))]
+    #[allow(clippy::too_many_arguments)]
+    fn encode_record_controlled<'py>(
+        &self,
+        py: Python<'py>,
+        record_kind: &str,
+        target: Py<PyType>,
+        instance: Bound<'py, PyAny>,
+        cancellation: Option<&PyQueryCancellation>,
+        timeout_milliseconds: Option<u64>,
+        max_input_bytes: Option<usize>,
+        max_output_bytes: Option<usize>,
+        max_depth: Option<usize>,
+        max_members: Option<usize>,
+    ) -> PyResult<Bound<'py, PyBytes>> {
+        let control = PythonCanonicalControl::capture(
+            cancellation,
+            timeout_milliseconds,
+            max_input_bytes,
+            max_output_bytes,
+            max_depth,
+            None,
+            max_members,
+        )?;
+        control.check()?;
+        let bytes = match record_kind {
+            "attribute" => self.encode_attribute(py, target, instance),
+            "create" => self.encode_create(py, target, instance),
+            "reference" => self.encode_reference(py, target, instance),
+            "snapshot" => self.encode_snapshot(py, target, instance),
+            "struct" => self.encode_struct(py, target, instance),
+            _ => Err(py_value_error("unsupported canonical record kind")),
+        }?;
+        control.check()?;
+        let record = type_bridge_contract::projected_record::ProjectedRecord::decode_with_limits(
+            bytes.as_bytes(),
+            control.output_limits(),
+        )
+        .map_err(|error| python_canonical_limit_error(error, false))?;
+        if record.decoded_weight() > control.max_members {
+            return Err(py_sdk_diagnostic(
+                SdkExecutionDiagnostic::projected_codec_member_limit(),
+            ));
+        }
+        let bytes = record
+            .encode_with_limits(control.output_limits())
+            .map_err(|error| python_canonical_limit_error(error, false))?;
+        control.check()?;
+        Ok(PyBytes::new(py, &bytes))
+    }
+
+    /// Decode one nominal record with cancellation, deadline, and resource limits.
+    #[pyo3(signature = (record_kind, target, data, *, cancellation=None, timeout_milliseconds=None, max_input_bytes=None, max_output_bytes=None, max_depth=None, max_members=None))]
+    #[allow(clippy::too_many_arguments)]
+    fn decode_record_controlled(
+        &self,
+        py: Python<'_>,
+        record_kind: &str,
+        target: Py<PyType>,
+        data: &Bound<'_, PyBytes>,
+        cancellation: Option<&PyQueryCancellation>,
+        timeout_milliseconds: Option<u64>,
+        max_input_bytes: Option<usize>,
+        max_output_bytes: Option<usize>,
+        max_depth: Option<usize>,
+        max_members: Option<usize>,
+    ) -> PyResult<PyObject> {
+        let control = PythonCanonicalControl::capture(
+            cancellation,
+            timeout_milliseconds,
+            max_input_bytes,
+            max_output_bytes,
+            max_depth,
+            None,
+            max_members,
+        )?;
+        control.check()?;
+        let record = type_bridge_contract::projected_record::ProjectedRecord::decode_with_limits(
+            data.as_bytes(),
+            control.input_limits(),
+        )
+        .map_err(|error| python_canonical_limit_error(error, true))?;
+        if record.decoded_weight() > control.max_members {
+            return Err(py_sdk_diagnostic(
+                SdkExecutionDiagnostic::projected_codec_member_limit(),
+            ));
+        }
+        let canonical = record
+            .encode_with_limits(control.output_limits())
+            .map_err(|error| python_canonical_limit_error(error, false))?;
+        control.check()?;
+        let canonical = PyBytes::new(py, &canonical);
+        let value = match record_kind {
+            "attribute" => self.decode_attribute(py, target, &canonical),
+            "create" => self.decode_create(py, target, &canonical),
+            "reference" => self.decode_reference(py, target, &canonical),
+            "snapshot" => self.decode_snapshot(py, target, &canonical),
+            "struct" => self.decode_struct(py, target, &canonical),
+            _ => Err(py_value_error("unsupported canonical record kind")),
+        }?;
+        control.check()?;
+        Ok(value)
+    }
+
     /// Compose canonical exact-package records into one deterministic archive.
     fn encode_archive<'py>(
         &self,
@@ -11367,6 +11472,71 @@ class StructBase:
             let bytes = runtime
                 .encode_attribute(py, identifier_class.clone_ref(py), identifier)
                 .unwrap();
+            let controlled_identifier = identifier_class.bind(py).call1(("person-1",)).unwrap();
+            let controlled_bytes = runtime
+                .encode_record_controlled(
+                    py,
+                    "attribute",
+                    identifier_class.clone_ref(py),
+                    controlled_identifier,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap();
+            assert_eq!(controlled_bytes.as_bytes(), bytes.as_bytes());
+            let controlled = runtime
+                .decode_record_controlled(
+                    py,
+                    "attribute",
+                    identifier_class.clone_ref(py),
+                    &bytes,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap();
+            assert_eq!(
+                controlled
+                    .bind(py)
+                    .call_method0("runtime_attribute_value")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "person-1"
+            );
+            let cancellation = PyQueryCancellation::new();
+            cancellation.cancel();
+            let cancelled_identifier = identifier_class.bind(py).call1(("person-1",)).unwrap();
+            let error = runtime
+                .encode_record_controlled(
+                    py,
+                    "attribute",
+                    identifier_class.clone_ref(py),
+                    cancelled_identifier,
+                    Some(&cancellation),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap_err();
+            assert_eq!(
+                error
+                    .value(py)
+                    .getattr("code")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "projected_codec_cancelled"
+            );
             let decoded = runtime
                 .decode_attribute(py, identifier_class.clone_ref(py), &bytes)
                 .unwrap();
