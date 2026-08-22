@@ -1,15 +1,18 @@
 //! Immutable generated migration-catalog inspection for Python.
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use type_bridge_schema::{ManagedDeltaContext, decode_schema_authority};
 use type_bridge_schema_migration::{
-    MigrationApplyPlanError, MigrationApplyTarget, VerifiedMigrationApplyPlan,
-    VerifiedMigrationRollbackPlan,
+    MigrationApplyApproval, MigrationApplyPlanError, MigrationApplyTarget, MigrationSafetyPolicy,
+    SafetyPolicyDecision, VerifiedMigrationApplyPlan, VerifiedMigrationRollbackPlan,
 };
 use type_bridge_schema_migration::{MigrationCatalog, migration_runtime_capability_vocabulary};
+
+use crate::orm_runtime::{PyRustDatabase, provider_block_on};
 
 /// One canonical compound migration identity.
 #[pyclass(name = "MigrationIdentity", frozen)]
@@ -21,6 +24,11 @@ pub struct PyMigrationIdentity {
 
 #[pymethods]
 impl PyMigrationIdentity {
+    #[new]
+    fn new(app_label: String, name: String) -> Self {
+        Self { app_label, name }
+    }
+
     #[getter]
     fn app_label(&self) -> &str {
         &self.app_label
@@ -129,7 +137,10 @@ impl PyMigrationCatalog {
         self.inner
             .preview_apply(&applied, &target)
             .map(|plan| PyMigrationPreview {
-                inner: PyMigrationPreviewInner::Apply(plan),
+                inner: Arc::new(PyMigrationPreviewState {
+                    catalog: self.inner.clone(),
+                    plan: PyMigrationPreviewInner::Apply(plan),
+                }),
             })
             .map_err(py_plan_error)
     }
@@ -142,7 +153,10 @@ impl PyMigrationCatalog {
         self.inner
             .preview_rollback(&migration_set(applied)?, &migration_set(removals)?)
             .map(|plan| PyMigrationPreview {
-                inner: PyMigrationPreviewInner::Rollback(plan),
+                inner: Arc::new(PyMigrationPreviewState {
+                    catalog: self.inner.clone(),
+                    plan: PyMigrationPreviewInner::Rollback(plan),
+                }),
             })
             .map_err(py_plan_error)
     }
@@ -153,17 +167,22 @@ enum PyMigrationPreviewInner {
     Rollback(VerifiedMigrationRollbackPlan),
 }
 
+struct PyMigrationPreviewState {
+    catalog: MigrationCatalog,
+    plan: PyMigrationPreviewInner,
+}
+
 /// Immutable provider-free forward or rollback preview.
 #[pyclass(name = "MigrationPreview", frozen)]
 pub struct PyMigrationPreview {
-    inner: PyMigrationPreviewInner,
+    inner: Arc<PyMigrationPreviewState>,
 }
 
 #[pymethods]
 impl PyMigrationPreview {
     #[getter]
     fn direction(&self) -> &'static str {
-        match self.inner {
+        match self.inner.plan {
             PyMigrationPreviewInner::Apply(_) => "apply",
             PyMigrationPreviewInner::Rollback(_) => "rollback",
         }
@@ -171,21 +190,21 @@ impl PyMigrationPreview {
 
     #[getter]
     fn execution_authorized(&self) -> bool {
-        match &self.inner {
+        match &self.inner.plan {
             PyMigrationPreviewInner::Apply(plan) => plan.execution_authorized(),
             PyMigrationPreviewInner::Rollback(plan) => plan.execution_authorized(),
         }
     }
 
     fn migration_count(&self) -> usize {
-        match &self.inner {
+        match &self.inner.plan {
             PyMigrationPreviewInner::Apply(plan) => plan.migrations().len(),
             PyMigrationPreviewInner::Rollback(plan) => plan.rollbacks().len(),
         }
     }
 
     fn migration(&self, index: usize) -> Option<PyMigrationPreviewEntry> {
-        match &self.inner {
+        match &self.inner.plan {
             PyMigrationPreviewInner::Apply(plan) => {
                 plan.migrations()
                     .get(index)
@@ -210,6 +229,129 @@ impl PyMigrationPreview {
                         reversible: true,
                     })
             }
+        }
+    }
+
+    fn approval_builder(&self) -> PyMigrationApprovalBuilder {
+        PyMigrationApprovalBuilder {
+            preview: Arc::clone(&self.inner),
+            selected: BTreeSet::new(),
+        }
+    }
+
+    fn authorize(&self, approvals: &PyMigrationApprovalSet) -> PyResult<PyMigrationPlan> {
+        if !Arc::ptr_eq(&self.inner, &approvals.preview) {
+            return Err(py_catalog_code(
+                "migration_approval_plan_mismatch",
+                String::new(),
+            ));
+        }
+        Ok(PyMigrationPlan {
+            catalog: self.inner.catalog.clone(),
+            plan: authorize_plan(&self.inner, &approvals.approvals)?,
+        })
+    }
+}
+
+#[pyclass(name = "MigrationApprovalBuilder")]
+pub struct PyMigrationApprovalBuilder {
+    preview: Arc<PyMigrationPreviewState>,
+    selected: BTreeSet<usize>,
+}
+
+#[pymethods]
+impl PyMigrationApprovalBuilder {
+    fn approve(&mut self, index: usize) -> PyResult<()> {
+        let safety = preview_safety(&self.preview.plan, index)
+            .ok_or_else(|| py_catalog_code("migration_approval_index_invalid", String::new()))?;
+        match MigrationSafetyPolicy::default_policy().decision(safety) {
+            SafetyPolicyDecision::RequireApproval => {
+                self.selected.insert(index);
+                Ok(())
+            }
+            SafetyPolicyDecision::Allow => Err(py_catalog_code(
+                "migration_approval_not_required",
+                String::new(),
+            )),
+            SafetyPolicyDecision::Reject => Err(py_catalog_code(
+                "migration_approval_policy_rejected",
+                String::new(),
+            )),
+        }
+    }
+
+    fn finish(&self) -> PyResult<PyMigrationApprovalSet> {
+        Ok(PyMigrationApprovalSet {
+            preview: Arc::clone(&self.preview),
+            approvals: exact_approvals(&self.preview.plan, &self.selected)?,
+        })
+    }
+}
+
+#[pyclass(name = "MigrationApprovalSet", frozen)]
+pub struct PyMigrationApprovalSet {
+    preview: Arc<PyMigrationPreviewState>,
+    approvals: Vec<MigrationApplyApproval>,
+}
+
+#[pymethods]
+impl PyMigrationApprovalSet {
+    fn __len__(&self) -> usize {
+        self.approvals.len()
+    }
+}
+
+#[pyclass(name = "MigrationPlan", frozen)]
+pub struct PyMigrationPlan {
+    #[allow(dead_code)]
+    catalog: MigrationCatalog,
+    plan: PyMigrationPreviewInner,
+}
+
+#[pymethods]
+impl PyMigrationPlan {
+    #[getter]
+    fn execution_authorized(&self) -> bool {
+        match &self.plan {
+            PyMigrationPreviewInner::Apply(plan) => plan.execution_authorized(),
+            PyMigrationPreviewInner::Rollback(plan) => plan.execution_authorized(),
+        }
+    }
+
+    fn execute(
+        &self,
+        py: Python<'_>,
+        database: &PyRustDatabase,
+        holder: String,
+    ) -> PyResult<&'static str> {
+        let holder = type_bridge_schema_migration::LeaseHolderId::new(holder)
+            .map_err(py_catalog_diagnostic)?;
+        let (database, runtime) = database.handles();
+        match &self.plan {
+            PyMigrationPreviewInner::Apply(plan) => provider_block_on(
+                py,
+                runtime.as_ref(),
+                type_bridge_schema_migration_typedb::execute_catalog_apply_plan(
+                    database,
+                    &self.catalog,
+                    &holder,
+                    plan,
+                ),
+            )
+            .map(python_apply_outcome)
+            .map_err(py_catalog_diagnostic),
+            PyMigrationPreviewInner::Rollback(plan) => provider_block_on(
+                py,
+                runtime.as_ref(),
+                type_bridge_schema_migration_typedb::execute_catalog_rollback_plan(
+                    database,
+                    &self.catalog,
+                    &holder,
+                    plan,
+                ),
+            )
+            .map(python_rollback_outcome)
+            .map_err(py_catalog_diagnostic),
         }
     }
 }
@@ -303,6 +445,73 @@ fn py_plan_error(error: MigrationApplyPlanError) -> PyErr {
     }
 }
 
+fn preview_safety(
+    plan: &PyMigrationPreviewInner,
+    index: usize,
+) -> Option<type_bridge_schema::SafetyClass> {
+    match plan {
+        PyMigrationPreviewInner::Apply(plan) => plan
+            .migrations()
+            .get(index)
+            .map(|entry| entry.manifest().safety()),
+        PyMigrationPreviewInner::Rollback(plan) => plan
+            .rollbacks()
+            .get(index)
+            .map(|entry| entry.rollback_safety()),
+    }
+}
+
+fn exact_approvals(
+    plan: &PyMigrationPreviewInner,
+    selected: &BTreeSet<usize>,
+) -> PyResult<Vec<MigrationApplyApproval>> {
+    selected
+        .iter()
+        .map(|index| match plan {
+            PyMigrationPreviewInner::Apply(plan) => {
+                MigrationApplyApproval::for_manifest(plan.migrations()[*index].manifest())
+            }
+            PyMigrationPreviewInner::Rollback(plan) => MigrationApplyApproval::for_rollback(
+                plan.rollbacks()[*index].manifest(),
+                plan.rollbacks()[*index].rollback_safety(),
+            ),
+        })
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(py_catalog_diagnostic)
+}
+
+fn authorize_plan(
+    state: &PyMigrationPreviewState,
+    approvals: &[MigrationApplyApproval],
+) -> PyResult<PyMigrationPreviewInner> {
+    let policy = MigrationSafetyPolicy::default_policy();
+    match &state.plan {
+        PyMigrationPreviewInner::Apply(plan) => state
+            .catalog
+            .authorize_apply(
+                &plan.applied_migrations().iter().cloned().collect(),
+                &MigrationApplyTarget::Explicit(plan.target_frontier().iter().cloned().collect()),
+                &policy,
+                approvals,
+            )
+            .map(PyMigrationPreviewInner::Apply),
+        PyMigrationPreviewInner::Rollback(plan) => state
+            .catalog
+            .authorize_rollback(
+                &plan.applied_basis(),
+                &plan
+                    .rollbacks()
+                    .iter()
+                    .map(|entry| entry.manifest().id().clone())
+                    .collect(),
+                &policy,
+                approvals,
+            )
+            .map(PyMigrationPreviewInner::Rollback),
+    }
+    .map_err(py_plan_error)
+}
+
 fn safety_name(safety: type_bridge_schema::SafetyClass) -> &'static str {
     use type_bridge_schema::SafetyClass::*;
     match safety {
@@ -329,6 +538,30 @@ fn py_catalog_code(code: &str, _detail: String) -> PyErr {
     pyo3::exceptions::PyValueError::new_err(format!("migration catalog rejected [{code}]"))
 }
 
+fn python_apply_outcome(
+    outcome: type_bridge_schema_migration::MigrationExecutionOutcome,
+) -> &'static str {
+    match outcome {
+        type_bridge_schema_migration::MigrationExecutionOutcome::Applied => "applied",
+        type_bridge_schema_migration::MigrationExecutionOutcome::RetrySafe { .. } => "retry_safe",
+        type_bridge_schema_migration::MigrationExecutionOutcome::RequiresExplicitRecovery {
+            ..
+        } => "requires_explicit_recovery",
+    }
+}
+
+fn python_rollback_outcome(
+    outcome: type_bridge_schema_migration::MigrationRollbackOutcome,
+) -> &'static str {
+    match outcome {
+        type_bridge_schema_migration::MigrationRollbackOutcome::RolledBack => "rolled_back",
+        type_bridge_schema_migration::MigrationRollbackOutcome::RetrySafe { .. } => "retry_safe",
+        type_bridge_schema_migration::MigrationRollbackOutcome::RequiresExplicitRecovery {
+            ..
+        } => "requires_explicit_recovery",
+    }
+}
+
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(open_migration_catalog, m)?)?;
     m.add_class::<PyMigrationIdentity>()?;
@@ -336,12 +569,21 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyMigrationCatalog>()?;
     m.add_class::<PyMigrationPreview>()?;
     m.add_class::<PyMigrationPreviewEntry>()?;
+    m.add_class::<PyMigrationApprovalBuilder>()?;
+    m.add_class::<PyMigrationApprovalSet>()?;
+    m.add_class::<PyMigrationPlan>()?;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use type_bridge_schema_migration::{MigrationHistoryGraph, VerifiedMigrationHistoryBundle};
+    use type_bridge_contract::fingerprint::SemanticProfileId;
+    use type_bridge_contract::managed_scope::ManagedScopeId;
+    use type_bridge_schema::ManagedDeltaContext;
+    use type_bridge_schema_migration::{
+        MigrationHistoryGraph, VerifiedMigrationHistoryBundle,
+        encode_verified_migration_history_bundle, migration_runtime_capability_vocabulary,
+    };
 
     use super::PyMigrationCatalog;
 
@@ -359,5 +601,26 @@ mod tests {
         assert!(catalog.heads().is_empty());
         assert!(catalog.entry(0).is_none());
         assert!(catalog.fingerprint_json().unwrap().contains("sha256"));
+    }
+
+    #[test]
+    fn python_preview_owns_exact_approval_and_authorization_chain() {
+        let graph = MigrationHistoryGraph::from_verified(std::iter::empty()).unwrap();
+        let bundle = VerifiedMigrationHistoryBundle::from_graph(&graph).unwrap();
+        let bytes = encode_verified_migration_history_bundle(&bundle).unwrap();
+        let context = ManagedDeltaContext::new(
+            ManagedScopeId::new("python-migration-approval").unwrap(),
+            SemanticProfileId::new("typedb-3.12.1/v1").unwrap(),
+            migration_runtime_capability_vocabulary().unwrap(),
+        );
+        let catalog = PyMigrationCatalog {
+            inner: type_bridge_schema_migration::MigrationCatalog::open(&bytes, &context).unwrap(),
+        };
+        let preview = catalog.preview_apply(Vec::new(), None).unwrap();
+        let approvals = preview.approval_builder().finish().unwrap();
+        assert_eq!(approvals.__len__(), 0);
+        assert!(preview.authorize(&approvals).unwrap().execution_authorized());
+        let foreign = catalog.preview_apply(Vec::new(), None).unwrap();
+        assert!(foreign.authorize(&approvals).is_err());
     }
 }

@@ -1,14 +1,18 @@
 //! Immutable generated migration-catalog inspection for Node.
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use napi::bindgen_prelude::{Buffer, Error, Result};
 use napi_derive::napi;
 use type_bridge_schema::{ManagedDeltaContext, SafetyClass, decode_schema_authority};
 use type_bridge_schema_migration::{
-    MigrationApplyPlanError, MigrationApplyTarget, MigrationCatalog, VerifiedMigrationApplyPlan,
+    MigrationApplyApproval, MigrationApplyPlanError, MigrationApplyTarget, MigrationCatalog,
+    MigrationSafetyPolicy, SafetyPolicyDecision, VerifiedMigrationApplyPlan,
     VerifiedMigrationRollbackPlan, migration_runtime_capability_vocabulary,
 };
+
+use crate::NodeRustDatabase;
 
 #[napi(object)]
 pub struct NodeMigrationIdentity {
@@ -84,7 +88,10 @@ impl NodeMigrationCatalog {
         self.inner
             .preview_apply(&migration_set(applied)?, &target)
             .map(|plan| NodeMigrationPreview {
-                inner: NodeMigrationPreviewInner::Apply(plan),
+                inner: Arc::new(NodeMigrationPreviewState {
+                    catalog: self.inner.clone(),
+                    plan: NodeMigrationPreviewInner::Apply(plan),
+                }),
             })
             .map_err(plan_error)
     }
@@ -98,7 +105,10 @@ impl NodeMigrationCatalog {
         self.inner
             .preview_rollback(&migration_set(applied)?, &migration_set(removals)?)
             .map(|plan| NodeMigrationPreview {
-                inner: NodeMigrationPreviewInner::Rollback(plan),
+                inner: Arc::new(NodeMigrationPreviewState {
+                    catalog: self.inner.clone(),
+                    plan: NodeMigrationPreviewInner::Rollback(plan),
+                }),
             })
             .map_err(plan_error)
     }
@@ -109,17 +119,22 @@ enum NodeMigrationPreviewInner {
     Rollback(VerifiedMigrationRollbackPlan),
 }
 
+struct NodeMigrationPreviewState {
+    catalog: MigrationCatalog,
+    plan: NodeMigrationPreviewInner,
+}
+
 /// Immutable provider-free forward or rollback preview.
 #[napi]
 pub struct NodeMigrationPreview {
-    inner: NodeMigrationPreviewInner,
+    inner: Arc<NodeMigrationPreviewState>,
 }
 
 #[napi]
 impl NodeMigrationPreview {
     #[napi(getter)]
     pub fn direction(&self) -> &'static str {
-        match self.inner {
+        match self.inner.plan {
             NodeMigrationPreviewInner::Apply(_) => "apply",
             NodeMigrationPreviewInner::Rollback(_) => "rollback",
         }
@@ -127,7 +142,7 @@ impl NodeMigrationPreview {
 
     #[napi(getter)]
     pub fn execution_authorized(&self) -> bool {
-        match &self.inner {
+        match &self.inner.plan {
             NodeMigrationPreviewInner::Apply(plan) => plan.execution_authorized(),
             NodeMigrationPreviewInner::Rollback(plan) => plan.execution_authorized(),
         }
@@ -135,7 +150,7 @@ impl NodeMigrationPreview {
 
     #[napi]
     pub fn migration_count(&self) -> u32 {
-        bounded_u32(match &self.inner {
+        bounded_u32(match &self.inner.plan {
             NodeMigrationPreviewInner::Apply(plan) => plan.migrations().len(),
             NodeMigrationPreviewInner::Rollback(plan) => plan.rollbacks().len(),
         })
@@ -143,7 +158,7 @@ impl NodeMigrationPreview {
 
     #[napi]
     pub fn migration(&self, index: u32) -> Option<NodeMigrationPreviewEntry> {
-        match &self.inner {
+        match &self.inner.plan {
             NodeMigrationPreviewInner::Apply(plan) => {
                 plan.migrations()
                     .get(index as usize)
@@ -168,6 +183,125 @@ impl NodeMigrationPreview {
                         reversible: true,
                     })
             }
+        }
+    }
+
+    #[napi]
+    pub fn approval_builder(&self) -> NodeMigrationApprovalBuilder {
+        NodeMigrationApprovalBuilder {
+            preview: Arc::clone(&self.inner),
+            selected: BTreeSet::new(),
+        }
+    }
+
+    #[napi]
+    pub fn authorize(&self, approvals: &NodeMigrationApprovalSet) -> Result<NodeMigrationPlan> {
+        if !Arc::ptr_eq(&self.inner, &approvals.preview) {
+            return Err(catalog_error("migration_approval_plan_mismatch"));
+        }
+        let plan = authorize_plan(&self.inner, &approvals.approvals)?;
+        Ok(NodeMigrationPlan {
+            catalog: self.inner.catalog.clone(),
+            plan,
+        })
+    }
+}
+
+#[napi]
+pub struct NodeMigrationApprovalBuilder {
+    preview: Arc<NodeMigrationPreviewState>,
+    selected: BTreeSet<usize>,
+}
+
+#[napi]
+impl NodeMigrationApprovalBuilder {
+    #[napi]
+    pub fn approve(&mut self, index: u32) -> Result<()> {
+        let index = index as usize;
+        let safety = preview_safety(&self.preview.plan, index)
+            .ok_or_else(|| catalog_error("migration_approval_index_invalid"))?;
+        match MigrationSafetyPolicy::default_policy().decision(safety) {
+            SafetyPolicyDecision::RequireApproval => {
+                self.selected.insert(index);
+                Ok(())
+            }
+            SafetyPolicyDecision::Allow => Err(catalog_error("migration_approval_not_required")),
+            SafetyPolicyDecision::Reject => {
+                Err(catalog_error("migration_approval_policy_rejected"))
+            }
+        }
+    }
+
+    #[napi]
+    pub fn finish(&self) -> Result<NodeMigrationApprovalSet> {
+        Ok(NodeMigrationApprovalSet {
+            preview: Arc::clone(&self.preview),
+            approvals: exact_approvals(&self.preview.plan, &self.selected)?,
+        })
+    }
+}
+
+#[napi]
+pub struct NodeMigrationApprovalSet {
+    preview: Arc<NodeMigrationPreviewState>,
+    approvals: Vec<MigrationApplyApproval>,
+}
+
+#[napi]
+impl NodeMigrationApprovalSet {
+    #[napi(getter)]
+    pub fn length(&self) -> u32 {
+        bounded_u32(self.approvals.len())
+    }
+}
+
+#[napi]
+pub struct NodeMigrationPlan {
+    #[allow(dead_code)]
+    catalog: MigrationCatalog,
+    plan: NodeMigrationPreviewInner,
+}
+
+#[napi]
+impl NodeMigrationPlan {
+    #[napi(getter)]
+    pub fn execution_authorized(&self) -> bool {
+        match &self.plan {
+            NodeMigrationPreviewInner::Apply(plan) => plan.execution_authorized(),
+            NodeMigrationPreviewInner::Rollback(plan) => plan.execution_authorized(),
+        }
+    }
+
+    #[napi]
+    pub fn execute(&self, database: &NodeRustDatabase, holder: String) -> Result<String> {
+        let holder = type_bridge_schema_migration::LeaseHolderId::new(holder)
+            .map_err(|error| catalog_error(error.code().as_str()))?;
+        let (database, runtime) = database.handles();
+        match &self.plan {
+            NodeMigrationPreviewInner::Apply(plan) => runtime
+                .block_on(
+                    type_bridge_schema_migration_typedb::execute_catalog_apply_plan(
+                        database,
+                        &self.catalog,
+                        &holder,
+                        plan,
+                    ),
+                )
+                .map(node_apply_outcome)
+                .map(str::to_owned)
+                .map_err(|error| catalog_error(error.code().as_str())),
+            NodeMigrationPreviewInner::Rollback(plan) => runtime
+                .block_on(
+                    type_bridge_schema_migration_typedb::execute_catalog_rollback_plan(
+                        database,
+                        &self.catalog,
+                        &holder,
+                        plan,
+                    ),
+                )
+                .map(node_rollback_outcome)
+                .map(str::to_owned)
+                .map_err(|error| catalog_error(error.code().as_str())),
         }
     }
 }
@@ -231,6 +365,70 @@ fn plan_error(error: MigrationApplyPlanError) -> Error {
     }
 }
 
+fn preview_safety(plan: &NodeMigrationPreviewInner, index: usize) -> Option<SafetyClass> {
+    match plan {
+        NodeMigrationPreviewInner::Apply(plan) => plan
+            .migrations()
+            .get(index)
+            .map(|entry| entry.manifest().safety()),
+        NodeMigrationPreviewInner::Rollback(plan) => plan
+            .rollbacks()
+            .get(index)
+            .map(|entry| entry.rollback_safety()),
+    }
+}
+
+fn exact_approvals(
+    plan: &NodeMigrationPreviewInner,
+    selected: &BTreeSet<usize>,
+) -> Result<Vec<MigrationApplyApproval>> {
+    selected
+        .iter()
+        .map(|index| match plan {
+            NodeMigrationPreviewInner::Apply(plan) => {
+                MigrationApplyApproval::for_manifest(plan.migrations()[*index].manifest())
+            }
+            NodeMigrationPreviewInner::Rollback(plan) => MigrationApplyApproval::for_rollback(
+                plan.rollbacks()[*index].manifest(),
+                plan.rollbacks()[*index].rollback_safety(),
+            ),
+        })
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|error| catalog_error(error.code().as_str()))
+}
+
+fn authorize_plan(
+    state: &NodeMigrationPreviewState,
+    approvals: &[MigrationApplyApproval],
+) -> Result<NodeMigrationPreviewInner> {
+    let policy = MigrationSafetyPolicy::default_policy();
+    match &state.plan {
+        NodeMigrationPreviewInner::Apply(plan) => state
+            .catalog
+            .authorize_apply(
+                &plan.applied_migrations().iter().cloned().collect(),
+                &MigrationApplyTarget::Explicit(plan.target_frontier().iter().cloned().collect()),
+                &policy,
+                approvals,
+            )
+            .map(NodeMigrationPreviewInner::Apply),
+        NodeMigrationPreviewInner::Rollback(plan) => state
+            .catalog
+            .authorize_rollback(
+                &plan.applied_basis(),
+                &plan
+                    .rollbacks()
+                    .iter()
+                    .map(|entry| entry.manifest().id().clone())
+                    .collect(),
+                &policy,
+                approvals,
+            )
+            .map(NodeMigrationPreviewInner::Rollback),
+    }
+    .map_err(plan_error)
+}
+
 fn bounded_u32(value: usize) -> u32 {
     u32::try_from(value).expect("canonical migration limit fits u32")
 }
@@ -252,9 +450,39 @@ fn catalog_error(code: &str) -> Error {
     Error::from_reason(format!("migration catalog rejected [{code}]"))
 }
 
+fn node_apply_outcome(
+    outcome: type_bridge_schema_migration::MigrationExecutionOutcome,
+) -> &'static str {
+    match outcome {
+        type_bridge_schema_migration::MigrationExecutionOutcome::Applied => "applied",
+        type_bridge_schema_migration::MigrationExecutionOutcome::RetrySafe { .. } => "retry_safe",
+        type_bridge_schema_migration::MigrationExecutionOutcome::RequiresExplicitRecovery {
+            ..
+        } => "requires_explicit_recovery",
+    }
+}
+
+fn node_rollback_outcome(
+    outcome: type_bridge_schema_migration::MigrationRollbackOutcome,
+) -> &'static str {
+    match outcome {
+        type_bridge_schema_migration::MigrationRollbackOutcome::RolledBack => "rolled_back",
+        type_bridge_schema_migration::MigrationRollbackOutcome::RetrySafe { .. } => "retry_safe",
+        type_bridge_schema_migration::MigrationRollbackOutcome::RequiresExplicitRecovery {
+            ..
+        } => "requires_explicit_recovery",
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use type_bridge_schema_migration::{MigrationHistoryGraph, VerifiedMigrationHistoryBundle};
+    use type_bridge_contract::fingerprint::SemanticProfileId;
+    use type_bridge_contract::managed_scope::ManagedScopeId;
+    use type_bridge_schema::ManagedDeltaContext;
+    use type_bridge_schema_migration::{
+        MigrationHistoryGraph, VerifiedMigrationHistoryBundle,
+        encode_verified_migration_history_bundle, migration_runtime_capability_vocabulary,
+    };
 
     use super::NodeMigrationCatalog;
 
@@ -272,5 +500,26 @@ mod tests {
         assert!(catalog.heads().is_empty());
         assert!(catalog.entry(0).is_none());
         assert!(catalog.fingerprint_json().unwrap().contains("sha256"));
+    }
+
+    #[test]
+    fn node_preview_owns_exact_approval_and_authorization_chain() {
+        let graph = MigrationHistoryGraph::from_verified(std::iter::empty()).unwrap();
+        let bundle = VerifiedMigrationHistoryBundle::from_graph(&graph).unwrap();
+        let bytes = encode_verified_migration_history_bundle(&bundle).unwrap();
+        let context = ManagedDeltaContext::new(
+            ManagedScopeId::new("node-migration-approval").unwrap(),
+            SemanticProfileId::new("typedb-3.12.1/v1").unwrap(),
+            migration_runtime_capability_vocabulary().unwrap(),
+        );
+        let catalog = NodeMigrationCatalog {
+            inner: type_bridge_schema_migration::MigrationCatalog::open(&bytes, &context).unwrap(),
+        };
+        let preview = catalog.preview_apply(Vec::new(), None).unwrap();
+        let approvals = preview.approval_builder().finish().unwrap();
+        assert_eq!(approvals.length(), 0);
+        assert!(preview.authorize(&approvals).unwrap().execution_authorized());
+        let foreign = catalog.preview_apply(Vec::new(), None).unwrap();
+        assert!(foreign.authorize(&approvals).is_err());
     }
 }
