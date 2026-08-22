@@ -1,7 +1,7 @@
 //! Typed adapters between generated Rust values and binding-neutral projected DTOs.
 
 use type_bridge_contract::codec::{from_canonical_json, to_canonical_json};
-use type_bridge_contract::id::{RoleId, TypeId, TypeKind};
+use type_bridge_contract::id::{RoleId, StructId, TypeId, TypeKind};
 use type_bridge_contract::projection::{FieldTokenProjection, ProjectedTokenIdentity};
 use type_bridge_contract::schema::OwnsFactId;
 use type_bridge_contract::sdk_diagnostic::{
@@ -10,13 +10,14 @@ use type_bridge_contract::sdk_diagnostic::{
 use type_bridge_contract::value::CanonicalValue;
 use type_bridge_orm::{
     AttributeValue, InstalledRuntimeProjection, ProjectedAttributeValue, ProjectedCreate,
-    ProjectedReference, ProjectedRolePlayer, ProjectedThing,
+    ProjectedReference, ProjectedRolePlayer, ProjectedStructValue, ProjectedThing,
 };
 
 use crate::__codegen::{
-    CanonicalDouble, CompleteModel, Date, DateTime, DateTimeTz, Decimal, DecodedCreate, Duration,
-    EncodedCreate, EncodedReference, EncodedScalar, FieldToken, HydratedPlayer, HydratedRow,
-    HydrationCapability, IntoEncodedCreate, Model, QueryValued, ReferenceOrigin, ValidationPath,
+    CanonicalDouble, CompleteModel, Date, DateTime, DateTimeTz, Decimal, DecodedCreate,
+    DecodedStruct, Duration, EncodedCreate, EncodedReference, EncodedScalar, FieldToken,
+    HydratedPlayer, HydratedRow, HydrationCapability, IntoEncodedCreate, IntoEncodedStruct, Model,
+    QueryValued, ReferenceOrigin, ValidationPath,
 };
 use crate::Result;
 use crate::entity_codec::map_validation_error;
@@ -190,6 +191,98 @@ pub(crate) fn validate_hydrated_row(
     installed: &InstalledRuntimeProjection,
 ) -> Result<()> {
     project_hydrated_row(row, installed).map(|_| ())
+}
+
+pub(crate) fn project_snapshot_inferred(
+    input: impl crate::__codegen::IntoHydratedSnapshot,
+    installed: &InstalledRuntimeProjection,
+) -> Result<ProjectedThing> {
+    let row = input
+        .into_hydrated_snapshot()
+        .map_err(|error| map_validation_error(error, ModelValidationPhase::Input))?;
+    project_hydrated_row(&row, installed)
+}
+
+pub(crate) fn project_struct_inferred(
+    input: impl IntoEncodedStruct,
+    installed: &InstalledRuntimeProjection,
+) -> Result<ProjectedStructValue> {
+    let encoded = input.into_encoded_struct();
+    let struct_id: StructId =
+        from_canonical_json(encoded.type_id_json().as_bytes()).map_err(|source| {
+            Error::model_validation(
+                ModelValidationPhase::Input,
+                "invalid_struct_identity",
+                vec!["type".into()],
+                "generated struct identity is not canonical",
+                Some(Box::new(source)),
+            )
+        })?;
+    let type_id = TypeId::new(TypeKind::Struct, struct_id.label().as_str()).map_err(|source| {
+        Error::model_validation(
+            ModelValidationPhase::Input,
+            "invalid_struct_identity",
+            vec!["type".into()],
+            "generated struct identity has an invalid label",
+            Some(Box::new(source)),
+        )
+    })?;
+    let members = encoded
+        .members()
+        .iter()
+        .map(|member| {
+            member
+                .as_ref()
+                .map(|scalar| scalar.to_canonical_value(&ValidationPath::root()))
+                .transpose()
+        })
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|error| map_validation_error(error, ModelValidationPhase::Input))?;
+    ProjectedStructValue::try_new(installed, type_id, members).map_err(projected_codec_input_error)
+}
+
+pub(crate) fn projected_to_decoded_struct(
+    value: &ProjectedStructValue,
+    installed: &InstalledRuntimeProjection,
+) -> Result<DecodedStruct> {
+    value
+        .validate_for(installed)
+        .map_err(projected_codec_input_error)?;
+    let struct_id = StructId::new(value.type_id().label().as_str()).map_err(|source| {
+        Error::model_validation(
+            ModelValidationPhase::Input,
+            "invalid_struct_identity",
+            vec!["type".into()],
+            "canonical struct identity has an invalid label",
+            Some(Box::new(source)),
+        )
+    })?;
+    let type_id_json = String::from_utf8(to_canonical_json(&struct_id).map_err(|source| {
+        Error::model_validation(
+            ModelValidationPhase::Input,
+            "invalid_struct_identity",
+            vec!["type".into()],
+            "canonical struct identity could not be encoded",
+            Some(Box::new(source)),
+        )
+    })?)
+    .expect("canonical JSON is UTF-8");
+    let members = value
+        .members()
+        .iter()
+        .map(|member| member.as_ref().map(encoded_scalar).transpose())
+        .collect::<Result<Vec<_>>>()?;
+    Ok(DecodedStruct::new(type_id_json, members))
+}
+
+fn projected_codec_input_error(error: type_bridge_orm::ProjectedCodecError) -> Error {
+    Error::model_validation(
+        ModelValidationPhase::Input,
+        "canonical_projected_codec_failure",
+        Vec::new(),
+        "installed projection rejected generated canonical evidence",
+        Some(Box::new(error)),
+    )
 }
 
 pub(crate) fn project_encoded_create(

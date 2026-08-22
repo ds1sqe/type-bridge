@@ -13,8 +13,10 @@ use type_bridge_schema::{
 use type_bridge_schema_codegen::RustEmitter;
 
 use crate::__codegen::{
-    EncodedCreate, HydratedRow, IntoEncodedCreate, IntoEncodedReference, MaterializeCreate,
-    MaterializeReference, ValidationError, ValidationPath,
+    CompleteModel, EncodedCreate, HydratedRow, HydrationCapability, IntoEncodedCreate,
+    IntoEncodedReference, IntoEncodedStruct, IntoHydratedSnapshot, MaterializeCreate,
+    MaterializeModel, MaterializeReference, MaterializeStruct, Model, StructValue, ValidationError,
+    ValidationPath,
 };
 use crate::error::{Error, ModelValidationPhase, Result};
 
@@ -268,6 +270,43 @@ impl<S: Schema> SchemaPackage<S> {
         })
     }
 
+    /// Encode one exact generated hydrated model as a provider-free canonical snapshot.
+    pub fn encode_snapshot<T>(&self, value: T) -> Result<Vec<u8>>
+    where
+        T: IntoHydratedSnapshot + Model<Schema = S>,
+    {
+        let installed = self.verify_and_install()?;
+        let projected = crate::projected_codec::project_snapshot_inferred(value, &installed)?;
+        let record = type_bridge_orm::record_from_snapshot(&installed, &projected)
+            .map_err(canonical_codec_error)?;
+        record.encode().map_err(canonical_contract_error)
+    }
+
+    /// Decode canonical snapshot bytes as one exact detached generated model.
+    pub fn decode_snapshot<T>(&self, bytes: &[u8]) -> Result<T>
+    where
+        T: CompleteModel<Schema = S> + MaterializeModel,
+    {
+        let installed = self.verify_and_install()?;
+        let record = type_bridge_contract::projected_record::ProjectedRecord::decode(bytes)
+            .map_err(canonical_contract_error)?;
+        let value = type_bridge_orm::materialize_record(&installed, &record)
+            .map_err(canonical_codec_error)?;
+        let type_bridge_orm::ProjectedCodecValue::Snapshot(value) = value else {
+            return Err(Error::model_validation(
+                ModelValidationPhase::Hydration,
+                "canonical_record_kind_mismatch",
+                Vec::new(),
+                "canonical record is not a generated hydrated snapshot",
+                None,
+            ));
+        };
+        let row = crate::projected_codec::projected_to_hydrated_row(&value, &installed)?;
+        T::materialize(&row, &HydrationCapability::new()).map_err(|error| {
+            crate::entity_codec::map_validation_error(error, ModelValidationPhase::Hydration)
+        })
+    }
+
     /// Perform offline fingerprint, authority, and exact emitter-evidence verification
     /// without connecting to a live server.
     pub fn verify(&self) -> Result<()> {
@@ -323,6 +362,49 @@ impl<S: Schema> SchemaPackage<S> {
             .map_err(|_| {
                 ValidationError::new("projection_evidence", "projection_evidence_mismatch")
             })
+    }
+
+    /// Encode one exact generated struct as canonical projected-record bytes.
+    pub fn encode_struct<T>(&self, value: T) -> Result<Vec<u8>>
+    where
+        T: IntoEncodedStruct + StructValue<Schema = S>,
+    {
+        let installed = self.verify_and_install()?;
+        let projected = crate::projected_codec::project_struct_inferred(value, &installed)?;
+        let record = type_bridge_orm::record_from_struct(&installed, &projected)
+            .map_err(canonical_codec_error)?;
+        record.encode().map_err(canonical_contract_error)
+    }
+
+    /// Decode canonical projected-record bytes as one exact generated struct.
+    pub fn decode_struct<T>(&self, bytes: &[u8]) -> Result<T>
+    where
+        T: MaterializeStruct + StructValue<Schema = S>,
+    {
+        let installed = self.verify_and_install()?;
+        let record = type_bridge_contract::projected_record::ProjectedRecord::decode(bytes)
+            .map_err(canonical_contract_error)?;
+        let value = type_bridge_orm::materialize_record(&installed, &record)
+            .map_err(canonical_codec_error)?;
+        let type_bridge_orm::ProjectedCodecValue::Struct(value) = value else {
+            return Err(Error::model_validation(
+                ModelValidationPhase::Input,
+                "canonical_record_kind_mismatch",
+                Vec::new(),
+                "canonical record is not a generated struct",
+                None,
+            ));
+        };
+        let decoded = crate::projected_codec::projected_to_decoded_struct(&value, &installed)?;
+        T::materialize_struct(&decoded, &ValidationPath::root()).map_err(|error| {
+            Error::model_validation(
+                ModelValidationPhase::Input,
+                "canonical_struct_materialization_failed",
+                Vec::new(),
+                "canonical struct could not materialize as the requested generated type",
+                Some(Box::new(error)),
+            )
+        })
     }
 
     /// Return the semantic schema fingerprint JSON string (generated-code SPI).

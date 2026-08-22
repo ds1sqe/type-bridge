@@ -883,6 +883,50 @@ fn render_read(projection: &RuntimeProjection, ordered: bool) -> Result<String, 
                 "    })\n  }\n}\n\n"
             });
 
+            let mut snapshot_fields = String::new();
+            let mut snapshot_roles = String::new();
+            for member in &members {
+                if member.name == "iid" {
+                    continue;
+                }
+                let mname = &member.name;
+                let token = member.token.as_deref().unwrap_or(mname);
+                let target = if member.is_role {
+                    &mut snapshot_roles
+                } else {
+                    &mut snapshot_fields
+                };
+                let encode = if member.is_role {
+                    "hydrated_player_from_encoded_reference(__tb_value.clone().into_encoded_reference()?)"
+                } else {
+                    "__tb_value.into_encoded_scalar()"
+                };
+                match (member.container, member.required) {
+                    (ProjectedContainer::Scalar, true) => {
+                        let _ = writeln!(
+                            target,
+                            "    __tb_values.push(({token:?}, vec![{{ let __tb_value = self.{mname}(); {encode} }}]));"
+                        );
+                    }
+                    (ProjectedContainer::Scalar, false) => {
+                        let _ = writeln!(
+                            target,
+                            "    if let Some(__tb_value) = self.{mname}() {{ __tb_values.push(({token:?}, vec![{encode}])); }}"
+                        );
+                    }
+                    (ProjectedContainer::Sequence, _) => {
+                        let _ = writeln!(
+                            target,
+                            "    let mut __tb_members = Vec::new(); for __tb_value in self.{mname}() {{ __tb_members.push({encode}); }} __tb_values.push(({token:?}, __tb_members));"
+                        );
+                    }
+                }
+            }
+            let _ = writeln!(
+                output,
+                "impl IntoHydratedSnapshot for {name} {{\n  fn into_hydrated_snapshot(self) -> Result<HydratedRow, ValidationError> {{\n    let mut __tb_values = Vec::new();\n{snapshot_fields}    let __tb_fields = __tb_values;\n    let mut __tb_values = Vec::new();\n{snapshot_roles}    Ok(HydratedRow::new(Self::TYPE_ID_JSON, self.iid().to_owned(), __tb_fields, __tb_values))\n  }}\n}}\n"
+            );
+
             if let Some(reference_name) = model.reference_read().target_name() {
                 let ref_name = reference_name.as_str();
                 let mut ref_args = vec![
@@ -1401,6 +1445,19 @@ fn render_tokens(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
                 output,
                 "      _ => Err(ValidationError::new(__tb_path.path(), \"wrong_concrete_model_type\")),\n    }}\n  }}\n}}\n\n"
             );
+            let _ = writeln!(output, "impl sealed::Sealed for {union} {{}}");
+            let _ = writeln!(
+                output,
+                "impl IntoEncodedReference for {union} {{\n  fn into_encoded_reference(self) -> Result<EncodedReference, ValidationError> {{\n    match self {{"
+            );
+            for player in token.accepted_players() {
+                let player_name = model(projection, player)?.target_name().as_str();
+                let _ = writeln!(
+                    output,
+                    "      Self::{player_name}(__tb_inner) => __tb_inner.into_encoded_reference(),"
+                );
+            }
+            output.push_str("    }\n  }\n}\n\n");
             for player in token.accepted_players() {
                 let player_name = model(projection, player)?.target_name().as_str();
                 let _ = writeln!(output, "impl RolePlayer<{player_name}> for {union} {{}}");
@@ -1499,7 +1556,7 @@ fn render_tokens(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
 
 fn render_structs(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
     let mut output = String::from(header());
-    output.push_str("use crate::runtime::{self, StructValue};\nuse crate::schema::AppSchema;\n\n");
+    output.push_str("use crate::runtime::*;\nuse crate::schema::AppSchema;\n\n");
     for id in projection.emission().structs() {
         let structure = projection
             .structs()
@@ -1561,8 +1618,49 @@ fn render_structs(projection: &RuntimeProjection) -> Result<String, Diagnostic> 
         }
         let _ = writeln!(
             output,
-            "}}\n\nimpl runtime::sealed::Sealed for {name} {{}}\nimpl StructValue for {name} {{ type Schema = AppSchema; const STRUCT_ID_JSON: &'static str = {}; }}\n",
+            "}}\n\nimpl sealed::Sealed for {name} {{}}\nimpl StructValue for {name} {{ type Schema = AppSchema; const STRUCT_ID_JSON: &'static str = {}; }}",
             rust_literal(&canonical_text!(id))
+        );
+        let mut encoded_members = Vec::new();
+        let mut decoded_members = String::new();
+        let mut arguments = Vec::new();
+        for (index, field) in structure.fields().iter().enumerate() {
+            let field_name = field.target_name().as_str();
+            arguments.push(field_name.to_owned());
+            if field.optional() {
+                encoded_members.push(format!(
+                    "self.{field_name}.as_ref().map(IntoEncodedScalar::into_encoded_scalar)"
+                ));
+                let decoded = decode_field_expr(
+                    projection,
+                    scalar_type(field.value_type()),
+                    "__tb_scalar",
+                    &format!("__tb_path.join({field_name:?})"),
+                )?;
+                let _ = writeln!(
+                    decoded_members,
+                    "    let {field_name} = match &__tb_value.members()[{index}] {{ Some(__tb_scalar) => Some({decoded}), None => None }};"
+                );
+            } else {
+                encoded_members.push(format!("Some(self.{field_name}.into_encoded_scalar())"));
+                let decoded = decode_field_expr(
+                    projection,
+                    scalar_type(field.value_type()),
+                    "__tb_scalar",
+                    &format!("__tb_path.join({field_name:?})"),
+                )?;
+                let _ = writeln!(
+                    decoded_members,
+                    "    let Some(__tb_scalar) = &__tb_value.members()[{index}] else {{ return Err(ValidationError::new(__tb_path.join({field_name:?}).path(), \"missing_required_struct_member\")); }};\n    let {field_name} = {decoded};"
+                );
+            }
+        }
+        let expected_count = structure.fields().len();
+        let _ = writeln!(
+            output,
+            "impl IntoEncodedStruct for {name} {{\n  fn into_encoded_struct(self) -> EncodedStruct {{\n    EncodedStruct::new(Self::STRUCT_ID_JSON, vec![{}])\n  }}\n}}\n\nimpl MaterializeStruct for {name} {{\n  fn materialize_struct(__tb_value: &DecodedStruct, __tb_path: &ValidationPath) -> Result<Self, ValidationError> {{\n    if __tb_value.type_id_json() != Self::STRUCT_ID_JSON {{ return Err(ValidationError::new(__tb_path.path(), \"wrong_concrete_struct_type\")); }}\n    if __tb_value.members().len() != {expected_count} {{ return Err(ValidationError::new(__tb_path.path(), \"wrong_struct_member_count\")); }}\n{decoded_members}    Ok(Self::try_new({}))\n  }}\n}}\n",
+            encoded_members.join(", "),
+            arguments.join(", ")
         );
     }
     Ok(output)

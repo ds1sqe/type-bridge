@@ -1360,6 +1360,26 @@ pub trait MaterializeModel: Model + Sized {
     fn materialize(row: &HydratedRow, cap: &HydrationCapability) -> Result<Self, ValidationError>;
 }
 
+/// Lowering trait from one exact generated hydrated model into detached snapshot evidence.
+#[doc(hidden)]
+pub trait IntoHydratedSnapshot: Model + Sized {
+    fn into_hydrated_snapshot(self) -> Result<HydratedRow, ValidationError>;
+}
+
+/// Convert generated encoded reference evidence into a detached hydrated role player.
+#[doc(hidden)]
+pub fn hydrated_player_from_encoded_reference(value: EncodedReference) -> HydratedPlayer {
+    HydratedPlayer::from_owned(
+        value.type_id_json().to_owned(),
+        value.iid().map(str::to_owned),
+        value
+            .keys()
+            .iter()
+            .map(|(identity, scalar)| ((*identity).to_owned(), scalar.clone()))
+            .collect(),
+    )
+}
+
 /// A closed subtype family enum representing a concrete descendant closure for a root `Root`.
 pub trait ModelFamily: sealed::Sealed {
     /// The generated root model whose concrete descendants form this family.
@@ -1376,6 +1396,77 @@ pub trait StructValue: sealed::Sealed {
     type Schema: Schema;
     /// Canonical JSON identity for the projected schema struct.
     const STRUCT_ID_JSON: &'static str;
+}
+
+/// Lowering trait from one exact generated struct into ordered scalar evidence.
+#[doc(hidden)]
+pub trait IntoEncodedStruct: StructValue + Sized {
+    fn into_encoded_struct(self) -> EncodedStruct;
+}
+
+/// Materializing trait for one exact generated struct from canonical evidence.
+#[doc(hidden)]
+pub trait MaterializeStruct: IntoEncodedStruct + Sized {
+    fn materialize_struct(
+        value: &DecodedStruct,
+        path: &ValidationPath,
+    ) -> Result<Self, ValidationError>;
+}
+
+/// Ordered generated struct evidence before installed-projection validation.
+#[doc(hidden)]
+#[derive(Clone, Debug, PartialEq)]
+pub struct EncodedStruct {
+    type_id_json: &'static str,
+    members: Vec<Option<EncodedScalar>>,
+}
+
+impl EncodedStruct {
+    #[must_use]
+    pub fn new(type_id_json: &'static str, members: Vec<Option<EncodedScalar>>) -> Self {
+        Self {
+            type_id_json,
+            members,
+        }
+    }
+
+    #[must_use]
+    pub const fn type_id_json(&self) -> &'static str {
+        self.type_id_json
+    }
+
+    #[must_use]
+    pub fn members(&self) -> &[Option<EncodedScalar>] {
+        &self.members
+    }
+}
+
+/// Owned canonical struct evidence used only at generated nominal decode.
+#[doc(hidden)]
+#[derive(Clone, Debug, PartialEq)]
+pub struct DecodedStruct {
+    type_id_json: String,
+    members: Vec<Option<EncodedScalar>>,
+}
+
+impl DecodedStruct {
+    #[must_use]
+    pub fn new(type_id_json: String, members: Vec<Option<EncodedScalar>>) -> Self {
+        Self {
+            type_id_json,
+            members,
+        }
+    }
+
+    #[must_use]
+    pub fn type_id_json(&self) -> &str {
+        &self.type_id_json
+    }
+
+    #[must_use]
+    pub fn members(&self) -> &[Option<EncodedScalar>] {
+        &self.members
+    }
 }
 
 /// A resolver-proven nominal upcast relation.

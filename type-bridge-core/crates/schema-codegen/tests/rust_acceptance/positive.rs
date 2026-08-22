@@ -354,7 +354,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let person_row = HydratedRow::new(
         Person::TYPE_ID_JSON,
-        "person-iid-1".to_owned(),
+        "0x1".to_owned(),
         vec![
             (
                 PersonType::identifier.owns_id_json(),
@@ -385,14 +385,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         vec![],
     );
     let person: Person = materialize_model_for_test(&person_row)?;
-    assert_eq!(person.iid(), "person-iid-1");
+    assert_eq!(person.iid(), "0x1");
     let person_debug = format!("{person:?}");
     assert!(person_debug.starts_with("Person { iid:"));
     assert!(!person_debug.contains("__tb_origin"));
     assert!(!person_debug.contains("ReferenceOrigin"));
+    let person_snapshot_bytes = SCHEMA.encode_snapshot(person.clone())?;
+    let decoded_person: Person = SCHEMA.decode_snapshot(&person_snapshot_bytes)?;
+    assert_eq!(decoded_person.iid(), "0x1");
+    assert_eq!(decoded_person.identifier().value(), "person-1");
+    assert!(SCHEMA
+        .decode_snapshot::<Event>(&person_snapshot_bytes)
+        .is_err());
 
     let person_ref = person.reference();
-    assert_eq!(person_ref.iid(), Some("person-iid-1"));
+    assert_eq!(person_ref.iid(), Some("0x1"));
     let person_ref_debug = format!("{person_ref:?}");
     assert!(person_ref_debug.starts_with("PersonRef { iid:"));
     assert!(!person_ref_debug.contains("__tb_origin"));
@@ -409,7 +416,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let person_player_evidence = HydratedPlayer::new(
         Person::TYPE_ID_JSON,
-        Some("person-iid-1".to_owned()),
+        Some("0x1".to_owned()),
         vec![(PersonType::identifier.owns_id_json(), id_scalar)],
     );
 
@@ -465,6 +472,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let stats = PlayerStats::try_new(Some("stable".to_owned()), 3);
     assert_eq!(*stats.wins(), 3);
+    let stats_bytes = SCHEMA.encode_struct(stats)?;
+    let decoded_stats: PlayerStats = SCHEMA.decode_struct(&stats_bytes)?;
+    assert_eq!(decoded_stats.nickname().map(String::as_str), Some("stable"));
+    assert_eq!(*decoded_stats.wins(), 3);
+    assert!(SCHEMA
+        .decode_struct::<PlayerStats>(&person_snapshot_bytes)
+        .is_err());
     assert_eq!(PLAYING_FACTS.len(), 12);
     assert!(RUNTIME_PROJECTION_JSON.contains("validated-create-input"));
     assert!(
