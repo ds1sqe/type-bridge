@@ -84,6 +84,27 @@ def test_v4_selected_proofs_and_journey_are_closed_and_ordered() -> None:
     assert journey["expected_observation_refs"] == EXPECTED_OBSERVATIONS
     assert journey["semantic_profile"] == "typedb-3.12.1/v1"
     assert journey["live_server_version"] == "3.12.3"
+    assert journey["shared_fixture_oracles"] == {
+        "binding_neutral_backfill": {
+            "conflict_certainty": "definitely_aborted",
+            "conflict_code": "migration_typedb_backfill_destination_conflict",
+            "conflict_visible_destination_count": 1,
+            "forward_changed": 2,
+            "forward_transaction_groups": 2,
+            "equal_copy_count": 2,
+            "retry_changed": 0,
+            "reverse_changed": 2,
+            "remaining_destination_count": 0,
+        },
+        "rollback_reapply_recovery": {
+            "apply_status": "applied",
+            "rollback_without_approval_code": "migration_rollback_approval_required",
+            "rollback_status": "rolled_back",
+            "unknown_target_code": "migration_history_unknown_rollback_target",
+            "repeat_rollback_status": "up_to_date",
+            "reapply_status": "applied",
+        },
+    }
     assert journey["cleanup_invariant"] == {
         "managed_database_absent": True,
         "journal_database_absent": True,

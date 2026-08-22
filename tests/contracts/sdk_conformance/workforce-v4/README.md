@@ -8,6 +8,10 @@ The Phase-0 catalog is deliberately `phase0_unfinalized`. Finalization requires
 real source-bound producers, exact TypeDB 3.12.3 observations, frozen catalog
 and journey digests, and a passing fail-closed comparator. Expected journey
 data may be compared only after observation and may never seed a report.
+The journey's `shared_fixture_oracles` are independently reproduced by the
+exact-live TypeDB runner/provider tests. Binding producers must compute their
+own public-facade observations before comparing them with these values; the
+oracle objects are never copied into producer output.
 
 The eight selected rows have two disjoint dispositions:
 
