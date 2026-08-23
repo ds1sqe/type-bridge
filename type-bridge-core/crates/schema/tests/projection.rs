@@ -452,13 +452,17 @@ functions:
     assert_eq!(ProjectedTokenKind::Field.as_u32(), 2);
     assert_eq!(ProjectedTokenKind::Role.as_u32(), 3);
     assert_eq!(ProjectedTokenKind::Function.as_u32(), 4);
+    assert_eq!(ProjectedTokenKind::Struct.as_u32(), 5);
+    assert_eq!(ProjectedTokenKind::Attribute.as_u32(), 6);
     for (value, expected) in [
         (0, None),
         (1, Some(ProjectedTokenKind::Model)),
         (2, Some(ProjectedTokenKind::Field)),
         (3, Some(ProjectedTokenKind::Role)),
         (4, Some(ProjectedTokenKind::Function)),
-        (5, None),
+        (5, Some(ProjectedTokenKind::Struct)),
+        (6, Some(ProjectedTokenKind::Attribute)),
+        (7, None),
     ] {
         assert_eq!(ProjectedTokenKind::from_u32(value), expected);
     }

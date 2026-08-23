@@ -303,10 +303,10 @@ def test_workforce_v3_catalog_freezes_final_fingerprint_authority() -> None:
                 "digest": digest,
             }
             for binding, digest in {
-                "python": "543d894f452785ac9c4632db0648426fa251b9138967c4c1e6d488151349ab5e",
-                "node": "d8688f7a17e45dcc54a5869f3f6ae2e5d31d3894e3074e837aab11bc5b6d1cfa",
+                "python": "61713e741c3db3179d1bcb0a6d4880d1a7cd4cc37a19cdeb19bccd81c009bcc2",
+                "node": "8e7e267546da6dcee85ba335293b8eb9a82c2612d9260810f63a043b7ff4c7ed",
                 "rust": "e4a801726b98d2248c245ff9f6fe9a332dc7982a04fcae355ef76ebcbe8ef54e",
-                "c": "698985d097ce6e23b62bd6f65032de67230356d89bef4653fff6a06d418e7195",
+                "c": "2ba2a74aa11e3df1923999bf451ea5431bef00d4f9c2654eab1bf2ee498a182c",
             }.items()
         },
     }

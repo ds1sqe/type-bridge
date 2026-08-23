@@ -422,12 +422,12 @@ fn robot_key(reference: &RobotRef, context: &'static str) -> ProducerResult<i64>
         .ok_or_else(|| ProducerError::new("missing_role_key", context))
 }
 
-fn require_person_key(
-    reference: &PersonRef,
+fn require_hydrated_person_key(
+    person: &Person,
     expected: &str,
     context: &'static str,
 ) -> ProducerResult<()> {
-    if person_key(reference, context)? != expected {
+    if person.identifier().value() != expected {
         return Err(ProducerError::new("unexpected_live_value", context));
     }
     Ok(())
@@ -795,9 +795,8 @@ async fn observe_live_records(
     let plain =
         get_relation::<PlainActivity>(database, &created.plain_activity, "read plain activity")
             .await?;
-    let PlainActivityParticipantPlayer::Person(participant) = plain.participant();
-    require_person_key(
-        participant,
+    require_hydrated_person_key(
+        plain.participant(),
         "data-ada",
         "plain activity participant identity",
     )?;
@@ -813,8 +812,11 @@ async fn observe_live_records(
     });
 
     let event = get_relation::<Event>(database, &created.event, "read event").await?;
-    let EventSubjectPlayer::Person(subject) = event.subject();
-    require_person_key(subject, "data-ada", "event subject identity")?;
+    require_hydrated_person_key(
+        event.subject(),
+        "data-ada",
+        "event subject identity",
+    )?;
     let container =
         get_relation::<Container>(database, &created.container, "read container").await?;
     let [ContainerItemPlayer::Event(item)] = container.item() else {
