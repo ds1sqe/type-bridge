@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -77,23 +78,18 @@ def test_limits_and_strict_decode_are_exact() -> None:
     assert decode["best_effort_decode"] is False
 
 
-def test_abi_1_6_candidate_is_exactly_additive_over_frozen_1_5() -> None:
-    contract = _load("tests/contracts/c-abi-1-6-candidate.json")
+def test_abi_1_6_is_exactly_additive_over_frozen_1_5() -> None:
+    contract = _load("tests/contracts/c-abi-1-6.json")
     parent = ROOT / contract["parent_header"]
+    header = ROOT / contract["header"]
 
     assert hashlib.sha256(parent.read_bytes()).hexdigest() == contract["parent_header_sha256"]
+    assert hashlib.sha256(header.read_bytes()).hexdigest() == contract["header_sha256"]
     assert contract["version"] == "1.6.0"
     assert contract["parent_version"] == "1.5.0"
-    assert len(contract["exports"]) == len(set(contract["exports"])) == 23
-    assert contract["record_kind_values"] == {
-        "attribute_value": 1,
-        "struct_value": 2,
-        "entity_create": 3,
-        "relation_create": 4,
-        "entity_snapshot": 5,
-        "relation_snapshot": 6,
-        "reference": 7,
-    }
+    header_exports = re.findall(r"\n(type_bridge_[a-z0-9_]+)\s*\(", header.read_text())
+    assert contract["exports"] == header_exports
+    assert len(contract["exports"]) == len(set(contract["exports"])) == 28
     assert contract["options"]["size_64_bit"] == 72
     assert contract["options"]["alignment_64_bit"] == 8
     assert contract["ownership"]["partial_archive_result"] is False
@@ -103,7 +99,7 @@ def test_workforce_v5_transitions_only_g07_and_retains_broad_gaps() -> None:
     catalog = _load("tests/contracts/sdk_conformance/workforce-v5/catalog-v5.json")
     manifest = _load("tests/contracts/sdk_conformance/manifest-v1.json")
 
-    assert catalog["authority_state"] == "phase0_unfinalized"
+    assert catalog["authority_state"] == "finalized"
     assert catalog["report_bindings"] == ["python", "node", "rust", "c"]
     assert catalog["manifest_transition_cases"] == ["workforce.model.serialization"]
     assert catalog["evidence_only_gap_cases"] == [
@@ -117,5 +113,6 @@ def test_workforce_v5_transitions_only_g07_and_retains_broad_gaps() -> None:
     ]
     capabilities = {item["code"]: item for item in manifest["capabilities"]}
     assert capabilities["G07"]["case_ids"] == ["workforce.model.serialization"]
+    assert capabilities["G07"]["binding_profile"] == "current_and_c_live_future_planned"
     for code in ("G05", "G06", "G08", "G13"):
         assert capabilities[code]["binding_profile"] == "current_gap_future_planned"

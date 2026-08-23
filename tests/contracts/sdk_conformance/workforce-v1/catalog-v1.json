@@ -132,7 +132,7 @@
     {"id": "workforce.runtime.database-administration", "capability_id": "runtime.database-administration", "disposition": "retained_evidence"},
     {"id": "workforce.runtime.cancellation", "capability_id": "runtime.cancellation", "disposition": "known_gap"},
     {"id": "workforce.runtime.timeout-resource-limits", "capability_id": "runtime.timeout-and-resource-limits", "disposition": "known_gap"},
-    {"id": "workforce.model.serialization", "capability_id": "model.canonical-serialization", "disposition": "known_gap"},
+    {"id": "workforce.model.serialization", "capability_id": "model.canonical-serialization", "disposition": "retained_evidence"},
     {"id": "workforce.diagnostic.all-workflows", "capability_id": "diagnostic.all-workflows-structured", "disposition": "known_gap"},
     {"id": "workforce.migration.rollback", "capability_id": "migration.reverse-cli", "disposition": "retained_evidence"},
     {"id": "workforce.migration.backfill", "capability_id": "migration.binding-neutral-backfill", "disposition": "retained_evidence"},

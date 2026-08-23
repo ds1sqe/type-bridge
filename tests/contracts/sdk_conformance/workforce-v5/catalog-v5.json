@@ -1,6 +1,6 @@
 {
   "format": "typebridge.workforce-catalog/v5",
-  "authority_state": "phase0_unfinalized",
+  "authority_state": "finalized",
   "fixture": {
     "id": "workforce-v5",
     "version": 5,
@@ -9,11 +9,14 @@
     "schema_path": "tests/contracts/sdk_conformance/workforce-v3/schema-v3.yaml",
     "journey_path": "tests/contracts/sdk_conformance/workforce-v5/journey-v5.json",
     "record_contract_path": "tests/contracts/projected-record-v1.json",
-    "abi_contract_path": "tests/contracts/c-abi-1-6-candidate.json"
+    "abi_contract_path": "tests/contracts/c-abi-1-6.json"
   },
   "report_schema_path": "tests/contracts/sdk_conformance/workforce-v5/report-schema-v5.json",
   "observation_schema_path": "tests/contracts/sdk_conformance/workforce-v5/observation-schema-v5.json",
   "operational_evidence_schema_path": "tests/contracts/sdk_conformance/workforce-v5/operational-evidence-schema-v5.json",
+  "live_evidence_schema_path": "tests/contracts/sdk_conformance/workforce-v5/live-evidence-schema-v5.json",
+  "cleanup_evidence_schema_path": "tests/contracts/sdk_conformance/workforce-v5/cleanup-evidence-schema-v5.json",
+  "producer_evidence_schema_path": "tests/contracts/sdk_conformance/workforce-v5/producer-evidence-schema-v5.json",
   "report_bindings": ["python", "node", "rust", "c"],
   "manifest_transition_cases": ["workforce.model.serialization"],
   "evidence_only_gap_cases": [

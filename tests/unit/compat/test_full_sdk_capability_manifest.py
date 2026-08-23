@@ -111,6 +111,7 @@ FOUR_LIVE_CAPABILITY_CODES = {
     "G02",
     "G03",
     "G04",
+    "G07",
     "G09",
     "G10",
     "G11",

@@ -18,6 +18,13 @@ JOURNEY = "tests/contracts/sdk_conformance/workforce-v5/journey-v5.json"
 RECORD_CONTRACT = "tests/contracts/projected-record-v1.json"
 REPORT_SCHEMA = "tests/contracts/sdk_conformance/workforce-v5/report-schema-v5.json"
 OBSERVATION_SCHEMA = "tests/contracts/sdk_conformance/workforce-v5/observation-schema-v5.json"
+OPERATIONAL_SCHEMA = (
+    "tests/contracts/sdk_conformance/workforce-v5/operational-evidence-schema-v5.json"
+)
+LIVE_SCHEMA = "tests/contracts/sdk_conformance/workforce-v5/live-evidence-schema-v5.json"
+CLEANUP_SCHEMA = "tests/contracts/sdk_conformance/workforce-v5/cleanup-evidence-schema-v5.json"
+PRODUCER_SCHEMA = "tests/contracts/sdk_conformance/workforce-v5/producer-evidence-schema-v5.json"
+ABI_CONTRACT = "tests/contracts/c-abi-1-6.json"
 BINDINGS = ("python", "node", "rust", "c")
 TRANSITIONS = ("workforce.model.serialization",)
 RETAINED_GAPS = (
@@ -204,6 +211,29 @@ def load_contracts(root: Path = ROOT) -> Contracts:
     journey = load_json(root / JOURNEY)
     report_schema = load_json(root / REPORT_SCHEMA)
     observation_schema = load_json(root / OBSERVATION_SCHEMA)
+    load_json(root / OPERATIONAL_SCHEMA)
+    load_json(root / LIVE_SCHEMA)
+    load_json(root / CLEANUP_SCHEMA)
+    load_json(root / PRODUCER_SCHEMA)
+    load_json(root / ABI_CONTRACT)
+    if {
+        "report_schema_path": catalog.get("report_schema_path"),
+        "observation_schema_path": catalog.get("observation_schema_path"),
+        "operational_evidence_schema_path": catalog.get("operational_evidence_schema_path"),
+        "live_evidence_schema_path": catalog.get("live_evidence_schema_path"),
+        "cleanup_evidence_schema_path": catalog.get("cleanup_evidence_schema_path"),
+        "producer_evidence_schema_path": catalog.get("producer_evidence_schema_path"),
+    } != {
+        "report_schema_path": REPORT_SCHEMA,
+        "observation_schema_path": OBSERVATION_SCHEMA,
+        "operational_evidence_schema_path": OPERATIONAL_SCHEMA,
+        "live_evidence_schema_path": LIVE_SCHEMA,
+        "cleanup_evidence_schema_path": CLEANUP_SCHEMA,
+        "producer_evidence_schema_path": PRODUCER_SCHEMA,
+    }:
+        reject("evidence_schema_inventory_drift", "V5 evidence schema paths are not exact")
+    if catalog.get("fixture", {}).get("abi_contract_path") != ABI_CONTRACT:
+        reject("abi_contract_drift", "V5 ABI 1.6 authority path is not exact")
     if catalog.get("report_bindings") != list(BINDINGS):
         reject("binding_scope_drift", "V5 binding order is not exact")
     if tuple(catalog.get("manifest_transition_cases", ())) != TRANSITIONS:

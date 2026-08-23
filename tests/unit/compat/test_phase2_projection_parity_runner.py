@@ -60,6 +60,7 @@ def test_command_plan_runs_four_real_producers_then_one_comparator(tmp_path: Pat
     assert plan[10].environment == {"TYPE_BRIDGE_PHASE2_RUST_REPORT": reports[2]}
     assert plan[12].environment == {
         "TYPE_BRIDGE_C_REQUIRE_SHARED_CONSUMER": "1",
+        "TYPE_BRIDGE_C_SHARED_LIBRARY": str(runner._c_shared_library()),
         "TYPE_BRIDGE_PHASE2_PARITY_REPORT_C": reports[3],
     }
     assert plan[-1].arguments[1] == str(runner.COMPARATOR)

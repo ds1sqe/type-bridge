@@ -62,7 +62,8 @@ def load_small(path: Path, label: str) -> dict[str, Any]:
         reject(error.code, str(error))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         reject("invalid_composition_json", f"cannot parse {label}: {error}")
-    if not isinstance(value, dict) or raw != conformance.canonical_json_bytes(value):
+    canonical = conformance.canonical_json_bytes(value)
+    if not isinstance(value, dict) or raw not in {canonical, canonical + b"\n"}:
         reject("noncanonical_composition_json", f"{label} is not canonical JSON")
     return value
 

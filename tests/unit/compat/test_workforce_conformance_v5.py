@@ -28,10 +28,17 @@ def _stage_contracts(destination: Path) -> Path:
     for name in (
         "catalog-v5.json",
         "journey-v5.json",
+        "cleanup-evidence-schema-v5.json",
+        "live-evidence-schema-v5.json",
         "observation-schema-v5.json",
+        "operational-evidence-schema-v5.json",
+        "producer-evidence-schema-v5.json",
         "report-schema-v5.json",
     ):
         shutil.copy2(sdk_source / "workforce-v5" / name, sdk_target / "workforce-v5" / name)
+    abi_target = destination / comparator.ABI_CONTRACT
+    abi_target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(ROOT / comparator.ABI_CONTRACT, abi_target)
     record_target = destination / comparator.RECORD_CONTRACT
     record_target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(ROOT / comparator.RECORD_CONTRACT, record_target)
@@ -121,16 +128,14 @@ def _write_reports(root: Path) -> list[Path]:
     return paths
 
 
-def test_accepts_exact_four_binding_candidate_fan_in(tmp_path: Path) -> None:
+def test_accepts_exact_four_binding_final_fan_in(tmp_path: Path) -> None:
     root = _stage_contracts(tmp_path)
 
     comparison = comparator.compare_reports(_write_reports(root), root)
 
-    assert comparison["authority_state"] == "phase0_unfinalized"
+    assert comparison["authority_state"] == "finalized"
     assert comparison["bindings"] == list(comparator.BINDINGS)
-    assert [item["case_id"] for item in comparison["pending_promotions"]] == [
-        "workforce.model.serialization"
-    ]
+    assert comparison["pending_promotions"] == []
 
 
 def test_journey_corpus_uses_types_owned_by_its_frozen_schema() -> None:
@@ -206,10 +211,13 @@ def test_rejects_retained_gap_promotion(tmp_path: Path) -> None:
 
 def test_finalized_authority_rejects_pending_g07(tmp_path: Path) -> None:
     root = _stage_contracts(tmp_path)
-    catalog_path = root / comparator.CATALOG
-    catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
-    catalog["authority_state"] = "finalized"
-    catalog_path.write_text(json.dumps(catalog), encoding="utf-8")
+    manifest_path = root / comparator.MANIFEST
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    serialization = next(
+        item for item in manifest["capabilities"] if item["id"] == "model.canonical-serialization"
+    )
+    serialization["binding_profile"] = "current_gap_future_planned"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
     with pytest.raises(comparator.ContractError) as raised:
         comparator.compare_reports(_write_reports(root), root)

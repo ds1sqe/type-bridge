@@ -137,8 +137,8 @@ def test_catalog_covers_manifest_and_freezes_fixture_authority() -> None:
     assert catalog_cases == manifest_cases
     assert len(catalog_cases) == len(set(catalog_cases)) == 44
     assert dispositions.count("shared_smoke") == 6
-    assert dispositions.count("retained_evidence") == 32
-    assert dispositions.count("known_gap") == 6
+    assert dispositions.count("retained_evidence") == 33
+    assert dispositions.count("known_gap") == 5
     assert [tuple(proof.values()) for proof in catalog["selected_proofs"]] == (
         EXPECTED_SELECTED_PROOFS
     )
@@ -256,7 +256,7 @@ def test_valid_three_report_set_is_order_independent_and_derives_only_unresolved
     assert "workforce.crud.relation-batch-update-delete" not in gaps
     assert "workforce.query.reducers-remote" not in gaps
     assert "workforce.query.schema-function" not in gaps
-    assert len(gaps) == 6
+    assert len(gaps) == 5
     assert forward["uncovered_required_proofs"]
     summary_text = comparator.canonical_json_bytes(forward).decode()
     assert '"accepted"' not in summary_text
