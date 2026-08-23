@@ -1,6 +1,6 @@
 from collections.abc import Callable, Mapping, Sequence
 from enum import Enum, StrEnum
-from typing import Literal, Never, TypedDict, Unpack, overload
+from typing import Any, Literal, Never, TypedDict, Unpack, overload
 
 from type_bridge_core import PyRuntimeProjection, QueryCancellation
 
@@ -32,6 +32,8 @@ class _CanonicalCodecOptions(TypedDict, total=False):
     max_output_bytes: int | None
     max_depth: int | None
     max_members: int | None
+
+CREATE_ABSENT: Any
 
 class FieldToken[OwnerT: ModelBase, AttributeT: AttributeBase]:
     owner: type[OwnerT]

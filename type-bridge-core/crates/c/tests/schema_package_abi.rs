@@ -3031,7 +3031,7 @@ find_package(TypeBridge 1.2.0 EXACT CONFIG REQUIRED)
         r#"cmake_minimum_required(VERSION 3.20)
 project(type_bridge_clean_consumer LANGUAGES C CXX)
 
-find_package(TypeBridge 1.5.0 EXACT CONFIG REQUIRED)
+find_package(TypeBridge 1.6.0 EXACT CONFIG REQUIRED)
 find_package(fixture 1.0.0 EXACT CONFIG REQUIRED)
 
 add_executable(type_bridge_clean_consumer main.c)
@@ -3464,7 +3464,7 @@ fn clean_staged_pkg_config_consumer_supports_nested_library_directories() {
         );
     }
 
-    for (package, expected_version) in [("type-bridge", "1.5.0"), ("fixture", "1.0.0")] {
+    for (package, expected_version) in [("type-bridge", "1.6.0"), ("fixture", "1.0.0")] {
         let output = Command::new("pkg-config")
             .args(["--modversion", package])
             .env("PKG_CONFIG_LIBDIR", &pkg_config_directory)

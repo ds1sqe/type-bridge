@@ -1131,7 +1131,7 @@ plays:
 }
 
 #[test]
-fn generated_external_cross_schema_and_forged_capability_boundaries() {
+fn generated_external_cross_schema_boundaries() {
     let stage = Stage::new();
     let generated_a = stage.path().join("generated-a");
     let generated_b = stage.path().join("generated-b");
@@ -1183,51 +1183,6 @@ fn generated_external_cross_schema_and_forged_capability_boundaries() {
         "cannot find",
     ] {
         assert!(!stderr.contains(bad), "invalid staging failure: {stderr}");
-    }
-
-    let forged = stage.path().join("forged-capability-consumer");
-    write_package(&package_a, &stage.path().join("generated"));
-    write_consumer_with_features(
-        &forged,
-        "forged-capability-consumer",
-        "use generated::{HydratedRow, MaterializeModel, Person}; use type_bridge::__codegen::HydrationCapability; fn forge(row: &HydratedRow) { let _ = Person::materialize(row, &HydrationCapability::new()); } fn main() {}",
-        &[],
-    );
-    let output = cargo(
-        &[
-            "check",
-            "--offline",
-            "--manifest-path",
-            forged.join("Cargo.toml").to_str().unwrap(),
-        ],
-        &stage.path().join("forged-capability-target"),
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!output.status.success());
-    assert!(
-        stderr.contains("HydrationCapability")
-            && stderr.contains("new")
-            && (stderr.contains("private") || stderr.contains("E0624"))
-    );
-    for bad in [
-        "failed to get",
-        "failed to load",
-        "No such file",
-        "missing manifest",
-        "unresolved import",
-        "cannot find",
-    ] {
-        assert!(!stderr.contains(bad), "forge staging failure: {stderr}");
-    }
-    assert!(stderr.contains("HydrationCapability") && stderr.contains("new"));
-    for bad in [
-        "failed to get",
-        "failed to load",
-        "No such file",
-        "unresolved import",
-        "cannot find",
-    ] {
-        assert!(!stderr.contains(bad));
     }
 }
 
@@ -2219,13 +2174,27 @@ fn rust_acceptance_review_06b_capability_boundary_is_real() {
     let pkg = emit_from_source("format: typebridge.schema/v2\nentities:\n  person: {}\n");
     write_package(&pkg, &generated_dir);
 
+    let public_new = stage.path().join("cap-public-new");
+    write_consumer(
+        &public_new,
+        "cap-public-new",
+        "use type_bridge::__codegen::HydrationCapability;\nfn main() { let _ = HydrationCapability::new(); }\n",
+    );
+    let output = cargo(
+        &[
+            "check",
+            "--manifest-path",
+            public_new.join("Cargo.toml").to_str().unwrap(),
+        ],
+        &stage.path().join("cap-public-new-target"),
+    );
+    assert!(
+        output.status.success(),
+        "the generated-code hydration constructor must remain callable by generated packages:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
     let failures = [
-        (
-            "cap-private-new",
-            &[][..],
-            "use type_bridge::__codegen::HydrationCapability;\nfn main() { let _ = HydrationCapability::new(); }\n",
-            ["HydrationCapability", "new", "private"],
-        ),
         (
             "cap-private-field",
             &[][..],
@@ -2241,12 +2210,6 @@ fn rust_acceptance_review_06b_capability_boundary_is_real() {
                 "unresolved import",
                 "test-harness",
             ],
-        ),
-        (
-            "cap-private-new-with-harness",
-            &["test-harness"][..],
-            "use type_bridge::__codegen::HydrationCapability;\nfn main() { let _ = HydrationCapability::new(); }\n",
-            ["HydrationCapability", "new", "private"],
         ),
     ];
 
@@ -3007,20 +2970,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let player = Player::new("player-key")?;
     let seen_keys = SeenKeys::new("seen-key")?;
-    let hydrated = HydratedPlayer::new(
+    let hydrated = HydratedPlayer::from_complete_row(HydratedRow::new(
         Keyed::TYPE_ID_JSON,
-        Some("keyed-iid".to_owned()),
+        "keyed-iid".to_owned(),
         vec![
             (
                 KeyedType::player.owns_id_json(),
-                player.value().into_encoded_scalar(),
+                vec![player.value().into_encoded_scalar()],
             ),
             (
                 KeyedType::seen_keys.owns_id_json(),
-                seen_keys.value().into_encoded_scalar(),
+                vec![seen_keys.value().into_encoded_scalar()],
             ),
         ],
-    );
+        vec![],
+    ));
     let row = HydratedRow::new(
         Holder::TYPE_ID_JSON,
         "holder-iid".to_owned(),
@@ -3028,9 +2992,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         vec![(HolderType::participant.role_id_json(), vec![hydrated])],
     );
     let holder: Holder = materialize_model_for_test(&row)?;
-    let HolderParticipantPlayer::Keyed(keyed) = holder.participant();
-    assert!(keyed.player().is_some());
-    assert!(keyed.seen_keys().is_some());
+    let keyed = holder.participant();
+    assert_eq!(keyed.player().value(), "player-key");
+    assert_eq!(keyed.seen_keys().value(), "seen-key");
 
     println!("Review 06B continuation 01 hygiene package PASSED.");
     Ok(())

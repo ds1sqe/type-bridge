@@ -250,14 +250,27 @@ impl MaterializeModel for Assignment {
         let Some(worker_iid) = worker.iid() else {
             return Err(ValidationError::new("worker", "missing_worker_iid"));
         };
-        let worker_name_key = worker
-            .keys()
-            .iter()
-            .find(|(identity, _)| identity == NAME_OWNS)
-            .and_then(|(_, value)| match value {
-                EncodedScalar::String(value) => Some(value.clone()),
-                _ => None,
-            });
+        let worker_name_key = worker.fields().map_or_else(
+            || {
+                worker
+                    .keys()
+                    .iter()
+                    .find(|(identity, _)| identity == NAME_OWNS)
+                    .and_then(|(_, value)| match value {
+                        EncodedScalar::String(value) => Some(value.clone()),
+                        _ => None,
+                    })
+            },
+            |fields| {
+                fields
+                    .iter()
+                    .find(|(identity, _)| identity == NAME_OWNS)
+                    .and_then(|(_, values)| match values.as_slice() {
+                        [EncodedScalar::String(value)] => Some(value.clone()),
+                        _ => None,
+                    })
+            },
+        );
         Ok(Self {
             iid: row.iid().to_owned(),
             position,

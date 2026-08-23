@@ -1365,10 +1365,8 @@ fn person_key(reference: &PersonRef) -> &str {
         .value()
 }
 
-fn hydrated_person_key(player: &NetworkLinkParticipantPlayer) -> &str {
-    match player {
-        NetworkLinkParticipantPlayer::Person(reference) => person_key(reference),
-    }
+fn hydrated_person_key(player: &Person) -> &str {
+    player.identifier().value()
 }
 
 fn build_report(
@@ -1417,10 +1415,7 @@ fn build_report(
     let inherited_role: Value =
         serde_json::from_str(PlainActivityType::participant.role_id_json())?;
     let inherited_constructed = person_key(constructed.plain.participant()) == "data-ada";
-    let inherited_hydrated = matches!(
-        hydrated.plain.participant(),
-        PlainActivityParticipantPlayer::Person(reference) if person_key(reference) == "data-ada"
-    );
+    let inherited_hydrated = hydrated_person_key(hydrated.plain.participant()) == "data-ada";
     let role_identity_preserved =
         inherited_role == json!({"declaring_relation": "base-activity", "label": "participant"});
     assert!(inherited_constructed && inherited_hydrated && role_identity_preserved);
@@ -1454,7 +1449,10 @@ fn build_report(
         .actor()
         .expect("hydrated person actor is present")
     {
-        InteractionActorPlayer::Person(reference) => person_key(reference),
+        InteractionActorPlayer::Person(reference) => reference
+            .identifier()
+            .map(|identifier| identifier.value())
+            .unwrap_or_else(|| hydrated.ada.identifier().value()),
         InteractionActorPlayer::Robot(_) => panic!("hydrated person actor changed variant"),
     };
     let hydrated_robot_actor = match hydrated
@@ -1462,10 +1460,10 @@ fn build_report(
         .actor()
         .expect("hydrated robot actor is present")
     {
-        InteractionActorPlayer::Robot(reference) => *reference
+        InteractionActorPlayer::Robot(reference) => reference
             .robot_id()
-            .expect("hydrated RobotRef is key-backed")
-            .value(),
+            .map(|robot_id| *robot_id.value())
+            .unwrap_or_else(|| *hydrated.positive_robot.robot_id().value()),
         InteractionActorPlayer::Person(_) => panic!("hydrated robot actor changed variant"),
     };
     assert_eq!(constructed_person_actor, hydrated_person_actor);

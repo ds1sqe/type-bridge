@@ -8,11 +8,14 @@ from decimal import Decimal
 from enum import Enum, StrEnum
 from typing import (
     TYPE_CHECKING,
+    Any,
     Literal,
     Never,
     Protocol,
     Self,
+    TypedDict,
     TypeGuard,
+    Unpack,
     cast,
     overload,
     runtime_checkable,
@@ -35,6 +38,15 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+
+class _CanonicalCodecOptions(TypedDict, total=False):
+    cancellation: QueryCancellation | None
+    timeout_milliseconds: int | None
+    max_input_bytes: int | None
+    max_output_bytes: int | None
+    max_depth: int | None
+    max_members: int | None
 
 
 def _is_object_dict(value: object) -> TypeGuard[dict[object, object]]:
@@ -161,7 +173,7 @@ class FunctionRef:
 
 
 _function_refs = {}
-CREATE_ABSENT = object()
+CREATE_ABSENT: Any = object()
 
 
 def function_ref_for_projection(
@@ -213,26 +225,28 @@ class ModelBase:
     def runtime_values(self) -> dict[str, object]:
         return self._values
 
-    def encode_create(self, **options: object) -> bytes:
+    def encode_create(self, **options: Unpack[_CanonicalCodecOptions]) -> bytes:
         return self.__runtime_projection__.encode_record_controlled(
             "create", type(self), self, **options
         )
 
     @classmethod
-    def decode_create(cls, data: bytes, **options: object) -> Self:
-        return cls.__runtime_projection__.decode_record_controlled(
-            "create", cls, data, **options
+    def decode_create(cls, data: bytes, **options: Unpack[_CanonicalCodecOptions]) -> Self:
+        return cast(
+            Self,
+            cls.__runtime_projection__.decode_record_controlled("create", cls, data, **options),
         )
 
-    def encode_snapshot(self, **options: object) -> bytes:
+    def encode_snapshot(self, **options: Unpack[_CanonicalCodecOptions]) -> bytes:
         return self.__runtime_projection__.encode_record_controlled(
             "snapshot", type(self), self, **options
         )
 
     @classmethod
-    def decode_snapshot(cls, data: bytes, **options: object) -> Self:
-        return cls.__runtime_projection__.decode_record_controlled(
-            "snapshot", cls, data, **options
+    def decode_snapshot(cls, data: bytes, **options: Unpack[_CanonicalCodecOptions]) -> Self:
+        return cast(
+            Self,
+            cls.__runtime_projection__.decode_record_controlled("snapshot", cls, data, **options),
         )
 
     def initialize_runtime_values(
@@ -584,15 +598,16 @@ class AttributeBase(ModelBase):
     def runtime_attribute_value(self) -> object:
         return self._attribute_value
 
-    def encode_attribute(self, **options: object) -> bytes:
+    def encode_attribute(self, **options: Unpack[_CanonicalCodecOptions]) -> bytes:
         return self.__runtime_projection__.encode_record_controlled(
             "attribute", type(self), self, **options
         )
 
     @classmethod
-    def decode_attribute(cls, data: bytes, **options: object) -> Self:
-        return cls.__runtime_projection__.decode_record_controlled(
-            "attribute", cls, data, **options
+    def decode_attribute(cls, data: bytes, **options: Unpack[_CanonicalCodecOptions]) -> Self:
+        return cast(
+            Self,
+            cls.__runtime_projection__.decode_record_controlled("attribute", cls, data, **options),
         )
 
     def initialize_runtime_attribute(self, value: object, scalar: str) -> None:
@@ -826,15 +841,18 @@ class ReferenceBase:
     def runtime_values(self) -> dict[str, object]:
         return self._values
 
-    def encode_reference(self, **options: object) -> bytes:
+    def encode_reference(self, **options: Unpack[_CanonicalCodecOptions]) -> bytes:
         return _require_package_runtime_projection().encode_record_controlled(
             "reference", type(self), self, **options
         )
 
     @classmethod
-    def decode_reference(cls, data: bytes, **options: object) -> Self:
-        return _require_package_runtime_projection().decode_record_controlled(
-            "reference", cls, data, **options
+    def decode_reference(cls, data: bytes, **options: Unpack[_CanonicalCodecOptions]) -> Self:
+        return cast(
+            Self,
+            _require_package_runtime_projection().decode_record_controlled(
+                "reference", cls, data, **options
+            ),
         )
 
     def initialize_runtime_reference(
@@ -853,15 +871,16 @@ class StructValueBase:
     __struct_id__: str
     __runtime_projection__: PyRuntimeProjection
 
-    def encode(self, **options: object) -> bytes:
+    def encode(self, **options: Unpack[_CanonicalCodecOptions]) -> bytes:
         return self.__runtime_projection__.encode_record_controlled(
             "struct", type(self), self, **options
         )
 
     @classmethod
-    def decode(cls, data: bytes, **options: object) -> Self:
-        return cls.__runtime_projection__.decode_record_controlled(
-            "struct", cls, data, **options
+    def decode(cls, data: bytes, **options: Unpack[_CanonicalCodecOptions]) -> Self:
+        return cast(
+            Self,
+            cls.__runtime_projection__.decode_record_controlled("struct", cls, data, **options),
         )
 
     def __setattr__(self, name: str, value: object) -> None:
