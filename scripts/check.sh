@@ -139,6 +139,9 @@ run_node() {
 run_c() {
     printf "${BOLD}━━━ C foundation (internal) ━━━${RESET}\n\n"
 
+    run_step "frozen Plan 08 C distribution contract" \
+        python scripts/ci/validate_c_distribution_contract.py
+
     local c_shared_target c_shared_library
     c_shared_target="$(mktemp -d)"
     if [[ "$(uname -s)" == "Darwin" ]]; then

@@ -1,0 +1,159 @@
+{
+  "format": "typebridge.c-distribution/v1",
+  "authority_state": "frozen",
+  "publication_disposition": "candidate-only-unpublished-unsupported",
+  "release_gate": {
+    "issue": 189,
+    "state": "awaiting-release-authorization",
+    "landing_authorized": false,
+    "publication_authorized": false,
+    "public_support_authorized": false
+  },
+  "abi": {
+    "decision": "no-change",
+    "version": "1.6.0",
+    "contract_path": "tests/contracts/c-abi-1-6.json",
+    "contract_sha256": "e07daea88be44ea4f37acc363b1406285a96d53ad8f475c3fcaefd82cfb52495",
+    "static_linkage": "unsupported",
+    "shared_linkage": "candidate"
+  },
+  "identities": {
+    "cli": {
+      "name": "type-bridge",
+      "archive_stem": "type-bridge-cli-candidate-{target}",
+      "version_authority": "type-bridge-core/crates/cli/Cargo.toml",
+      "version_authority_sha256": "075b321b7349418161831d12938a12336aedff8bc0b1c79340da7d13236ca6c2",
+      "compiler_free_installation": true
+    },
+    "runtime": {
+      "name": "type-bridge-c-runtime",
+      "archive_stem": "type-bridge-c-runtime-abi-1.6-{target}",
+      "cmake_package": "TypeBridge",
+      "cmake_target": "TypeBridge::C",
+      "pkg_config": "type-bridge",
+      "cargo_consumer_dependency": false,
+      "python_consumer_dependency": false
+    },
+    "generated_package": {
+      "archive_stem": "{schema-package}-c-{projection-digest}",
+      "independently_installable": true,
+      "bundles_runtime": false,
+      "publisher": "application-schema-owner"
+    }
+  },
+  "compatibility": {
+    "runtime_abi": {"minimum_inclusive": "1.6.0", "maximum_exclusive": "2.0.0"},
+    "required_pre_io_checks": [
+      "product-version",
+      "abi-major-minor",
+      "semantic-profile",
+      "declared-schema-identity",
+      "projection-fingerprint",
+      "resource-handler-digests",
+      "required-capabilities"
+    ],
+    "failure_publication": "none",
+    "provider_io_on_failure": false
+  },
+  "archive_layouts": {
+    "cli": ["bin/type-bridge", "LICENSE", "THIRD_PARTY_NOTICES.md", "artifact-manifest.json"],
+    "runtime": [
+      "include/typebridge/type_bridge.h",
+      "include/typebridge/type_bridge_abi_1_4.h",
+      "include/typebridge/type_bridge_abi_1_5.h",
+      "include/typebridge/type_bridge_abi_1_6.h",
+      "lib/{shared-library}",
+      "lib/cmake/TypeBridge/TypeBridgeConfig.cmake",
+      "lib/cmake/TypeBridge/TypeBridgeConfigVersion.cmake",
+      "lib/pkgconfig/type-bridge.pc",
+      "LICENSE",
+      "THIRD_PARTY_NOTICES.md",
+      "artifact-manifest.json"
+    ],
+    "generated_package": [
+      "include/{schema-package}/{schema-package}.h",
+      "src/{schema-package}.c",
+      "lib/cmake/{schema-package}/{schema-package}Config.cmake",
+      "lib/cmake/{schema-package}/{schema-package}ConfigVersion.cmake",
+      "lib/pkgconfig/{schema-package}.pc",
+      "share/{schema-package}/package-manifest.json",
+      "LICENSE.template"
+    ]
+  },
+  "matrix": {
+    "candidate_supported": [
+      {
+        "target": "x86_64-unknown-linux-gnu",
+        "runner": "ubuntu-latest",
+        "architecture": "x86_64",
+        "runtime_family": "glibc",
+        "c_standard": "C17",
+        "cpp_standard": "C++17",
+        "c_compilers": ["gcc", "clang"],
+        "cmake_minimum": "3.20",
+        "pkg_config": true,
+        "linkage": ["shared"]
+      }
+    ],
+    "configured_unverified": [
+      "aarch64-apple-darwin",
+      "x86_64-apple-darwin",
+      "x86_64-pc-windows-msvc"
+    ],
+    "public_supported": []
+  },
+  "candidate": {
+    "identity": "source-commit-and-tree-plus-target-and-artifact-digest",
+    "mutable_aliases": false,
+    "registry_mutation": false,
+    "exact_manifest_fields": [
+      "source-commit",
+      "source-tree",
+      "candidate-id",
+      "abi",
+      "target",
+      "filename",
+      "size",
+      "sha256",
+      "dependencies",
+      "toolchain",
+      "publication-disposition"
+    ]
+  },
+  "full_c_audit_contract": "tests/contracts/c-full-sdk-audit-v1.json",
+  "artifact_policy": {
+    "regular_files_only": true,
+    "absolute_paths": false,
+    "parent_traversal": false,
+    "symlinks": false,
+    "case_collisions": false,
+    "post_build_mutation": false,
+    "source_checkout_at_consumer_time": false,
+    "cargo_at_consumer_time": false,
+    "python_at_consumer_time": false,
+    "undeclared_downloads": false,
+    "required_evidence": [
+      "exact-members",
+      "reproducibility",
+      "binary-dependencies",
+      "loader-policy",
+      "licenses-notices",
+      "sbom",
+      "vulnerability-scan",
+      "secret-source-path-scan",
+      "provenance",
+      "signature-attestation-release-path"
+    ]
+  },
+  "source_authorities": [
+    {"path": "type-bridge-core/crates/c/Cargo.toml", "sha256": "99ac503cbc1408bed8098fd20f53879776b75f02657ceec6530a6d104c874c06"},
+    {"path": "type-bridge-core/crates/c/CMakeLists.txt", "sha256": "d67604d4509460adf1ba5d9ade344d81f08097113f0e251df11e7f8c08ea8f96"},
+    {"path": "type-bridge-core/crates/c/cmake/TypeBridgeConfig.cmake.in", "sha256": "4e8e9f5740b0892625f58f86cb16f849bd31453d16ff500c1fb8b40ed07ee897"},
+    {"path": "type-bridge-core/crates/c/cmake/type-bridge.pc.in", "sha256": "46ff15b1455eaa70bcec61510e3b3ea2c598f906a2ffac09b35e87375b2e12d4"},
+    {"path": "type-bridge-core/crates/c/include/typebridge/type_bridge.h", "sha256": "f4805c6c202a0c0550f11d00152325f0d7d35137147947559ddcdde41e2528d7"},
+    {"path": "type-bridge-core/crates/c/include/typebridge/type_bridge_abi_1_6.h", "sha256": "1d52bb7d3aa0b65fc0c8d9fde631725433abb8307e735e2545201f9944b52cd1"},
+    {"path": "type-bridge-core/crates/schema-codegen/src/c/CMakeLists.abi-1-4.txt.in", "sha256": "3e7d1bcd6b0f15a9f4dbe2d5f3dd98bd650c2f65d0d73bb3b8ab7f9eccafaecd"},
+    {"path": "type-bridge-core/crates/schema-codegen/src/c/SchemaConfig.abi-1-4.cmake.in", "sha256": "d5a86870b0a8460ccad060233ce1ccb104865231b3fd50338c34831550ca9b7c"},
+    {"path": "type-bridge-core/crates/schema-codegen/src/c/schema.abi-1-4.pc.in", "sha256": "924ffe293eb96fca547e5d25692b2f362402042e8267ce8827e0afd5fdcc409f"}
+  ]
+}

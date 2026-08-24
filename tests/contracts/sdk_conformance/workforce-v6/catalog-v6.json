@@ -1,0 +1,44 @@
+{
+  "format": "typebridge.workforce-catalog/v6",
+  "authority_state": "frozen",
+  "fixture": {
+    "id": "workforce-v6",
+    "version": 6,
+    "semantic_profile": "typedb-3.12.1/v1",
+    "live_server_version": "3.12.3",
+    "distribution_contract_path": "tests/contracts/c-distribution-v1.json",
+    "predecessor_catalog_path": "tests/contracts/sdk_conformance/workforce-v5/catalog-v5.json"
+  },
+  "report_bindings": ["python", "node", "rust", "c"],
+  "manifest_transition_cases": [
+    "workforce.runtime.cancellation",
+    "workforce.runtime.timeout-resource-limits",
+    "workforce.diagnostic.all-workflows",
+    "workforce.distribution.standalone-cli",
+    "workforce.runtime.explicit-close"
+  ],
+  "required_cross_slice_ledgers": [
+    "cancellation",
+    "timeout-resource-limits",
+    "structured-diagnostics",
+    "explicit-close"
+  ],
+  "required_candidate_artifacts": [
+    "standalone-cli",
+    "native-c-runtime",
+    "generated-c-schema-package"
+  ],
+  "candidate_report_producers": {
+    "python": "python.generated-clean-candidate-v6",
+    "node": "node.generated-clean-candidate-v6",
+    "rust": "type-bridge-rust.generated-clean-candidate-v6",
+    "c": "type-bridge-c.generated-clean-candidate-v6"
+  },
+  "full_c": {
+    "capability_count": 44,
+    "required_predecessor_reports": [1, 2, 3, 4, 5, 6],
+    "manual_badge": false,
+    "fails_on_gap_or_planned_c_cell": true,
+    "publication_authority": false
+  }
+}

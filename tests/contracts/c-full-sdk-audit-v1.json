@@ -1,0 +1,47 @@
+{
+  "format": "typebridge.c-full-sdk-audit/v1",
+  "authority_state": "frozen",
+  "capability_codes": [
+    "C01", "C02", "C03", "C04", "C05", "C06", "C07", "C08", "C09", "C10",
+    "C11", "C12", "C13", "C14", "C15", "C16", "C17", "C18", "C19", "C20",
+    "C21", "C22", "C23", "C24", "C25", "C26", "C27", "C28", "C29", "C30",
+    "C31", "G01", "G02", "G03", "G04", "G05", "G06", "G07", "G08", "G09",
+    "G10", "G11", "G12", "G13"
+  ],
+  "report_versions": [1, 2, 3, 4, 5, 6],
+  "required_inputs": [
+    "final-capability-manifest",
+    "final-workforce-v1-v6-reports",
+    "non-selected-proof-ledgers",
+    "candidate-artifact-manifest",
+    "native-platform-matrix",
+    "clean-consumer-reports",
+    "cross-slice-broad-case-ledgers",
+    "security-and-provenance-reports",
+    "cleanup-evidence",
+    "current-python-node-rust-regressions"
+  ],
+  "broad_case_slices": {
+    "G05": ["plan04-query-remote", "plan05-data-transactions", "plan06-admin-migration", "plan07-codec-archive", "plan08-artifact-cleanup"],
+    "G06": ["plan04-answer-budgets", "plan05-data-limits", "plan06-migration-limits", "plan07-codec-limits", "plan08-artifact-limits"],
+    "G08": ["schema-generation", "connection-provider", "data-query-remote", "admin-migration-recovery", "serialization-archive", "artifact-security"],
+    "G13": ["connection-transaction", "query-result-remote", "model-batch", "admin-migration", "codec-archive", "process-package-teardown"]
+  },
+  "fail_closed_on": [
+    "gap-or-planned-c-cell",
+    "missing-proof-kind",
+    "stale-report",
+    "skipped-required-matrix-cell",
+    "unsupported-documentation-claim",
+    "unaccepted-vulnerability",
+    "artifact-identity-drift",
+    "cleanup-failure",
+    "current-binding-regression"
+  ],
+  "output": {
+    "canonical_format": "typebridge.c-full-sdk-report/v1",
+    "human_summary_required": true,
+    "manual_override": false,
+    "publication_authority": false
+  }
+}
