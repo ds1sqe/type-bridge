@@ -200,6 +200,10 @@ def validate(contract_path: Path = DEFAULT_CONTRACT, root: Path = ROOT) -> dict[
     _require(
         catalog.get("manifest_transition_cases") == TRANSITION_CASES, "V6 transition set drifted"
     )
+    _require(
+        catalog.get("required_non_selected_proof_count_per_binding") == 25,
+        "V6 non-selected proof count drifted",
+    )
     _require(catalog.get("full_c", {}).get("capability_count") == 44, "FULL-C count drifted")
     _require(
         catalog.get("full_c", {}).get("publication_authority") is False,

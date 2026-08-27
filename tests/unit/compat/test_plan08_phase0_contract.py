@@ -72,6 +72,7 @@ def test_v6_freezes_only_the_five_terminal_transition_cases() -> None:
     assert catalog["authority_state"] == "frozen"
     assert catalog["broad_case_ledger_path"] == "tests/contracts/c-broad-case-ledger-v1.json"
     assert catalog["manifest_transition_cases"] == VALIDATOR.TRANSITION_CASES
+    assert catalog["required_non_selected_proof_count_per_binding"] == 25
     assert catalog["full_c"] == {
         "capability_count": 44,
         "required_predecessor_reports": [1, 2, 3, 4, 5, 6],
