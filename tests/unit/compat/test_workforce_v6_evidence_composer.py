@@ -60,7 +60,12 @@ def _predecessors(binding: str = "rust") -> list[tuple[dict[str, Any], bytes]]:
             "format": f"typebridge.sdk-conformance-report/v{version}",
             "binding": binding,
         }
-        values.append((report, COMPOSER.conformance.historical_report_bytes(report, version)))
+        body = COMPOSER.conformance.canonical_json_bytes(report)
+        if version in (1, 2, 3):
+            body += b"\n"
+        elif version == 4:
+            body = json.dumps(report, indent=2).encode() + b"\n"
+        values.append((report, body))
     return values
 
 
@@ -162,8 +167,13 @@ def test_loader_preserves_phase4_and_historical_canonical_spelling(tmp_path: Pat
 
     v3 = _predecessors()[2][0]
     v3_path = tmp_path / "v3.json"
-    v3_path.write_bytes(COMPOSER.conformance.historical_report_bytes(v3, 3))
+    v3_path.write_bytes(COMPOSER.conformance.canonical_json_bytes(v3) + b"\n")
     assert COMPOSER.load_canonical(v3_path, "V3", trailing_newline=True)[0] == v3
     with pytest.raises(COMPOSER.CompositionError) as raised:
         COMPOSER.load_canonical(v3_path, "V3")
     assert raised.value.code == "noncanonical_composition_json"
+
+    v4 = _predecessors()[3]
+    v4_path = tmp_path / "v4.json"
+    v4_path.write_bytes(v4[1])
+    assert COMPOSER.load_canonical(v4_path, "V4", require_canonical=False)[0] == v4[0]

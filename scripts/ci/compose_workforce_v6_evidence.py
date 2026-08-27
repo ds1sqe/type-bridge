@@ -50,7 +50,11 @@ def read_regular(path: Path, label: str) -> bytes:
 
 
 def load_canonical(
-    path: Path, label: str, *, trailing_newline: bool = False
+    path: Path,
+    label: str,
+    *,
+    trailing_newline: bool = False,
+    require_canonical: bool = True,
 ) -> tuple[dict[str, Any], bytes]:
     body = read_regular(path, label)
     try:
@@ -60,7 +64,7 @@ def load_canonical(
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         reject("invalid_composition_json", f"cannot parse {label}: {error}")
     expected = conformance.canonical_json_bytes(value) + (b"\n" if trailing_newline else b"")
-    if not isinstance(value, dict) or body != expected:
+    if not isinstance(value, dict) or (require_canonical and body != expected):
         reject("noncanonical_composition_json", f"{label} is not exact canonical JSON")
     return value, body
 
@@ -302,7 +306,12 @@ def main() -> int:
                 "predecessor arguments do not match the binding's history",
             )
         predecessors = [
-            load_canonical(path, f"V{version} report", trailing_newline=version in (1, 2, 3))
+            load_canonical(
+                path,
+                f"V{version} report",
+                trailing_newline=version in (1, 2, 3),
+                require_canonical=version != 4,
+            )
             for version, path in predecessor_arguments
         ]
         value = compose(

@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import importlib.util
+import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -117,16 +118,19 @@ def _phase4() -> dict[str, Any]:
 
 
 def _predecessors(binding: str = "rust") -> list[bytes]:
-    return [
-        ASSEMBLER.conformance.historical_report_bytes(
-            {
-                "format": f"typebridge.sdk-conformance-report/v{version}",
-                "binding": binding,
-            },
-            version,
-        )
-        for version in range(1, 6)
-    ]
+    values = []
+    for version in range(1, 6):
+        report = {
+            "format": f"typebridge.sdk-conformance-report/v{version}",
+            "binding": binding,
+        }
+        body = ASSEMBLER.conformance.canonical_json_bytes(report)
+        if version in (1, 2, 3):
+            body += b"\n"
+        elif version == 4:
+            body = json.dumps(report, indent=2).encode() + b"\n"
+        values.append(body)
+    return values
 
 
 def _assemble(evidence: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -188,8 +192,11 @@ def test_rejects_duplicate_proof_fragment() -> None:
 
 def test_rejects_wrong_predecessor_binding() -> None:
     hostile = _predecessors()
-    hostile[2] = ASSEMBLER.conformance.historical_report_bytes(
-        {"format": "typebridge.sdk-conformance-report/v3", "binding": "node"}, 3
+    hostile[2] = (
+        ASSEMBLER.conformance.canonical_json_bytes(
+            {"format": "typebridge.sdk-conformance-report/v3", "binding": "node"}
+        )
+        + b"\n"
     )
     with pytest.raises(ASSEMBLER.AssemblyError) as raised:
         ASSEMBLER.assemble_report(

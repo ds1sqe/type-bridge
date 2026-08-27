@@ -78,10 +78,14 @@ def canonical_json_bytes(value: Any) -> bytes:
     ).encode()
 
 
-def historical_report_bytes(value: Any, version: int) -> bytes:
-    """Reproduce each predecessor contract's frozen canonical byte spelling."""
+def historical_report_is_exact(raw: bytes, value: Any, version: int) -> bool:
+    """Apply only the byte-canonicality requirement owned by each predecessor."""
+    if version == 4:
+        # V4 deliberately validates structure but does not define a canonical JSON spelling.
+        return True
     body = canonical_json_bytes(value)
-    return body + b"\n" if version in (1, 2, 3) else body
+    expected = body + b"\n" if version in (1, 2, 3) else body
+    return raw == expected
 
 
 def load_json(path: Path) -> dict[str, Any]:
