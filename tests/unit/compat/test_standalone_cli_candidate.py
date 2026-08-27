@@ -140,6 +140,20 @@ def test_manifest_parser_rejects_duplicate_keys() -> None:
         CANDIDATE.load_manifest(b'{"format":"one","format":"two"}\n')
 
 
+def test_connected_commands_bind_every_exact_workforce_approval() -> None:
+    apply = CANDIDATE.migration_apply_arguments()
+    rollback = CANDIDATE.migration_rollback_arguments()
+
+    assert apply[:4] == ["migration", "apply", "--environment", "live"]
+    assert rollback[:5] == ["migration", "rollback", "--environment", "live", "--execute"]
+    for migration_id in CANDIDATE.WORKFORCE_MIGRATIONS:
+        assert apply.count(migration_id) == 1
+        assert rollback.count(migration_id) == 2
+    assert apply.count("--approve") == len(CANDIDATE.WORKFORCE_MIGRATIONS)
+    assert rollback.count("--remove") == len(CANDIDATE.WORKFORCE_MIGRATIONS)
+    assert rollback.count("--approve") == len(CANDIDATE.WORKFORCE_MIGRATIONS)
+
+
 def test_frozen_contract_matches_the_candidate_implementation() -> None:
     contract: dict[str, Any] = json.loads(CANDIDATE.CONTRACT_PATH.read_text(encoding="utf-8"))
     assert contract["archive_layouts"]["cli"] == [

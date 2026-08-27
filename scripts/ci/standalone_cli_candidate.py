@@ -34,6 +34,12 @@ FORMAT = "typebridge.standalone-cli-artifact/v1"
 TARGET = "x86_64-unknown-linux-gnu"
 PUBLICATION_DISPOSITION = "candidate-only-unpublished-unsupported"
 SEMANTIC_PROFILES = ["typedb-3.11.5/v1", "typedb-3.12.1/v1"]
+WORKFORCE_MIGRATIONS = (
+    "workforcev4/0001_initial",
+    "workforcev4/0002_expand-display-name",
+    "workforcev4/0003_backfill-display-name",
+    "workforcev4/0004_contract-legacy-name",
+)
 ARCHIVE_MEMBERS = (
     PurePosixPath("bin/type-bridge"),
     PurePosixPath("LICENSE"),
@@ -520,6 +526,20 @@ def clean_environment(home: Path, shims: Path) -> dict[str, str]:
     }
 
 
+def migration_apply_arguments() -> list[str]:
+    arguments = ["migration", "apply", "--environment", "live"]
+    for migration_id in WORKFORCE_MIGRATIONS:
+        arguments.extend(("--approve", migration_id))
+    return arguments
+
+
+def migration_rollback_arguments() -> list[str]:
+    arguments = ["migration", "rollback", "--environment", "live", "--execute"]
+    for migration_id in WORKFORCE_MIGRATIONS:
+        arguments.extend(("--remove", migration_id, "--approve", migration_id))
+    return arguments
+
+
 def smoke(archive_path: Path) -> dict[str, Any]:
     manifest = validate(archive_path)
     files = safe_archive_files(archive_path)
@@ -627,23 +647,14 @@ def connected_smoke(
             }
         )
         binary = installed / "bin/type-bridge"
-        destructive = "workforcev4/0004_contract-legacy-name"
-        migration_ids = [
-            "workforcev4/0001_initial",
-            "workforcev4/0002_expand-display-name",
-            "workforcev4/0003_backfill-display-name",
-            destructive,
-        ]
-        apply = ["migration", "apply", "--environment", "live", "--approve", destructive]
+        apply = migration_apply_arguments()
         run([str(binary), *apply], cwd=workspace, env=environment)
         run(
             [str(binary), "migration", "verify", "--environment", "live"],
             cwd=workspace,
             env=environment,
         )
-        rollback = ["migration", "rollback", "--environment", "live", "--execute"]
-        for migration_id in migration_ids:
-            rollback.extend(("--remove", migration_id, "--approve", migration_id))
+        rollback = migration_rollback_arguments()
         run([str(binary), *rollback], cwd=workspace, env=environment)
         run([str(binary), *apply], cwd=workspace, env=environment)
         run(
@@ -662,7 +673,7 @@ def connected_smoke(
         "candidate-id": manifest["candidate-id"],
         "database": database,
         "explicit-credentials": True,
-        "history-length": len(migration_ids),
+        "history-length": len(WORKFORCE_MIGRATIONS),
         "operations": ["apply", "verify", "rollback", "reapply", "verify"],
         "uninstall": "clean",
     }
