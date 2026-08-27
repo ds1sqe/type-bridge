@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import importlib.util
 import sys
 from pathlib import Path
@@ -32,8 +33,12 @@ def _report() -> dict[str, Any]:
         "format": JOURNEY.FORMAT,
         "platform": JOURNEY.packages.TARGET,
         "provider-free": {
-            "archive-package-smoke": {},
+            "archive-package-smoke": {
+                "generated-candidate-id": "generated-id",
+                "relocation": True,
+            },
             "canonical-live-sources-compile": {"c17": True, "cpp17": True},
+            "cli-smoke": {"commands": 5, "four-binding-generation": True, "relocation": True},
             "compile-negative": [
                 "gcc-c17",
                 "clang-c17",
@@ -122,7 +127,9 @@ def _stub_artifacts(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> tuple[Pa
     monkeypatch.setattr(
         JOURNEY.packages,
         "sha256",
-        lambda body: {b"runtime": "runtime-sha", b"generated": "generated-sha"}[body],
+        lambda body: {b"runtime": "runtime-sha", b"generated": "generated-sha"}.get(
+            body, hashlib.sha256(body).hexdigest()
+        ),
     )
     return archives[0], archives[1], archives[2]
 
@@ -171,6 +178,23 @@ def test_live_report_revalidates_artifacts_journeys_and_cleanup(
 ) -> None:
     archives = _stub_artifacts(monkeypatch, tmp_path)
     JOURNEY.validate_live_report(_live_report(), *archives)
+
+
+def test_phase4_assembler_resolves_exactly_fourteen_steps(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    archives = _stub_artifacts(monkeypatch, tmp_path)
+    provider = tmp_path / "provider.json"
+    live = tmp_path / "live.json"
+    provider.write_bytes(JOURNEY.packages.canonical_json(_report()))
+    live.write_bytes(JOURNEY.packages.canonical_json(_live_report()))
+    report = JOURNEY.assemble_phase4(provider, live, *archives)
+    assert len(report["steps"]) == 14
+    assert all(step["status"] == "passed" for step in report["steps"])
+    JOURNEY.validate_phase4_report(report, provider, live, *archives)
+    report["steps"][12]["status"] = "skipped"
+    with pytest.raises(JOURNEY.JourneyError, match="does not reconstruct"):
+        JOURNEY.validate_phase4_report(report, provider, live, *archives)
 
 
 @pytest.mark.parametrize(

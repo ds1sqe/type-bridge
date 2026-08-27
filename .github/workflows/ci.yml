@@ -320,6 +320,12 @@ jobs:
           name: c-package-candidates-linux-x86_64-gnu
           path: tmp/c-artifact-live-input/c
 
+      - name: Download provider-free clean-consumer evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: c-artifact-clean-consumer-linux-x86_64-gnu
+          path: tmp/c-artifact-live-input/provider-free
+
       - name: Start isolated plaintext and TLS TypeDB fixture
         env:
           TYPEDB_IMAGE: typedb/typedb:3.12.3
@@ -369,11 +375,30 @@ jobs:
           tmp/c-artifact-live-input/c/type-bridge-c-runtime-abi-1.6-x86_64-unknown-linux-gnu.tar.gz
           tmp/c-artifact-live-input/c/tb_workforcev3-c-5c1c8cabf97c28913fc45d3e724e251501a57e2ca87eed9372474b5c7a51405e.tar.gz
 
+      - name: Assemble and independently validate all 14 canonical steps
+        run: |
+          python scripts/ci/c_artifact_journey.py assemble-phase4 \
+            tmp/c-artifact-live-input/provider-free/c-artifact-clean-consumer.json \
+            tmp/c-artifact-live-journey.json \
+            tmp/c-artifact-live-input/cli/type-bridge-cli-candidate-x86_64-unknown-linux-gnu.tar.gz \
+            tmp/c-artifact-live-input/c/type-bridge-c-runtime-abi-1.6-x86_64-unknown-linux-gnu.tar.gz \
+            tmp/c-artifact-live-input/c/tb_workforcev3-c-5c1c8cabf97c28913fc45d3e724e251501a57e2ca87eed9372474b5c7a51405e.tar.gz \
+            > tmp/c-artifact-phase4-report.json
+          python scripts/ci/c_artifact_journey.py validate-phase4 \
+            tmp/c-artifact-phase4-report.json \
+            tmp/c-artifact-live-input/provider-free/c-artifact-clean-consumer.json \
+            tmp/c-artifact-live-journey.json \
+            tmp/c-artifact-live-input/cli/type-bridge-cli-candidate-x86_64-unknown-linux-gnu.tar.gz \
+            tmp/c-artifact-live-input/c/type-bridge-c-runtime-abi-1.6-x86_64-unknown-linux-gnu.tar.gz \
+            tmp/c-artifact-live-input/c/tb_workforcev3-c-5c1c8cabf97c28913fc45d3e724e251501a57e2ca87eed9372474b5c7a51405e.tar.gz
+
       - name: Upload immutable non-publishing live artifact evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: c-artifact-live-consumer-linux-x86_64-gnu
-          path: tmp/c-artifact-live-journey.json
+          path: |
+            tmp/c-artifact-live-journey.json
+            tmp/c-artifact-phase4-report.json
           if-no-files-found: error
           retention-days: 7
 

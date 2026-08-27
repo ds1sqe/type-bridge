@@ -31,6 +31,11 @@ PHASE4_PACKAGE = (
 )
 SETUP_SOURCE = ROOT / "type-bridge-core/crates/schema-codegen/tests/c_projection_live/setup.rs"
 PROVIDER_SCHEMA = ROOT / "tests/contracts/sdk_conformance/workforce-v3/provider-3.12.1-v3.tql"
+JOURNEY_CONTRACT = ROOT / "tests/contracts/c-artifact-journey-v1.json"
+PREDECESSOR_CATALOGS = tuple(
+    ROOT / f"tests/contracts/sdk_conformance/workforce-v{version}/catalog-v{version}.json"
+    for version in range(1, 6)
+)
 FULL_MARKER_COUNT = 61
 PHASE4_MARKER_COUNT = 8
 CODEC_MARKER = "Workforce V5 C live codec direct/remote parity: passed"
@@ -699,6 +704,7 @@ def provider_free(
     cli_manifest = cli.validate(cli_archive)
     runtime_manifest = packages.validate_runtime(runtime_archive)
     generated_manifest = packages.validate_generated(generated_archive)
+    cli_smoke = cli.smoke(cli_archive)
     package_smoke = packages.smoke(runtime_archive, generated_archive)
     runtime_files = packages.safe_archive_files(runtime_archive, packages.RUNTIME_MEMBERS)
     generated_files = packages.safe_archive_files(generated_archive, packages.PACKAGE_MEMBERS)
@@ -835,6 +841,7 @@ def provider_free(
         "provider-free": {
             "archive-package-smoke": package_smoke,
             "canonical-live-sources-compile": {"c17": True, "cpp17": True},
+            "cli-smoke": cli_smoke,
             "compile-negative": ["gcc-c17", "clang-c17", "gcc-cpp17", "clang-cpp17"],
             "loader-unload": "unmapped-after-dlclose",
             "sanitizers": ["address", "leak", "undefined"],
@@ -881,6 +888,8 @@ def validate_report(
     provider = report.get("provider-free")
     if not isinstance(provider, dict) or provider.get("loader-unload") != "unmapped-after-dlclose":
         raise JourneyError("loader-unload evidence is missing")
+    if not isinstance(provider.get("cli-smoke"), dict):
+        raise JourneyError("standalone CLI provider-free evidence is missing")
     if provider.get("sanitizers") != ["address", "leak", "undefined"]:
         raise JourneyError("sanitizer evidence is incomplete")
     if provider.get("compile-negative") != ["gcc-c17", "clang-c17", "gcc-cpp17", "clang-cpp17"]:
@@ -992,6 +1001,116 @@ def validate_live_report(
         raise JourneyError("live artifact consumer dependency boundary drifted")
 
 
+def load_canonical_report(path: Path) -> dict[str, Any]:
+    try:
+        value = json.loads(
+            path.read_text(encoding="utf-8"), object_pairs_hook=packages.unique_object
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise JourneyError(f"cannot read artifact journey report {path}: {error}") from error
+    if not isinstance(value, dict) or packages.canonical_json(value) != path.read_bytes():
+        raise JourneyError(f"artifact journey report is not canonical: {path}")
+    return value
+
+
+def evidence_value(root: Mapping[str, Any], reference: str) -> Any:
+    value: Any = root
+    for member in reference.split("."):
+        if not isinstance(value, Mapping) or member not in value:
+            raise JourneyError(f"Phase 4 evidence reference is missing: {reference}")
+        value = value[member]
+    if value is None or value is False or value == "" or value == [] or value == {}:
+        raise JourneyError(f"Phase 4 evidence reference is empty: {reference}")
+    return value
+
+
+def assemble_phase4(
+    provider_path: Path,
+    live_path: Path,
+    cli_archive: Path,
+    runtime_archive: Path,
+    generated_archive: Path,
+) -> dict[str, Any]:
+    provider = load_canonical_report(provider_path)
+    live = load_canonical_report(live_path)
+    validate_report(provider, cli_archive, runtime_archive, generated_archive)
+    validate_live_report(live, cli_archive, runtime_archive, generated_archive)
+    if provider["artifacts"] != live["artifacts"]:
+        raise JourneyError("Phase 4 input reports bind different artifacts")
+    contract = json.loads(
+        JOURNEY_CONTRACT.read_text(encoding="utf-8"), object_pairs_hook=packages.unique_object
+    )
+    if (
+        not isinstance(contract, dict)
+        or contract.get("format") != "typebridge.c-artifact-journey-contract/v1"
+        or contract.get("authority_state") != "frozen"
+        or contract.get("publication_authority") is not False
+        or contract.get("platform") != packages.TARGET
+    ):
+        raise JourneyError("Phase 4 journey contract authority drifted")
+    steps = contract.get("steps")
+    if not isinstance(steps, list) or len(steps) != 14:
+        raise JourneyError("Phase 4 journey contract must contain exactly 14 steps")
+    root = {"live": live, "provider-free": provider["provider-free"]}
+    output_steps = []
+    for index, step in enumerate(steps, 1):
+        if not isinstance(step, dict) or set(step) != {"evidence", "id"}:
+            raise JourneyError("Phase 4 journey step layout drifted")
+        identifier = step["id"]
+        references = step["evidence"]
+        if not isinstance(identifier, str) or not identifier.startswith(f"{index:02d}-"):
+            raise JourneyError("Phase 4 journey step order drifted")
+        if not isinstance(references, list) or not references:
+            raise JourneyError(f"Phase 4 journey step has no evidence: {identifier}")
+        for reference in references:
+            if not isinstance(reference, str):
+                raise JourneyError(f"Phase 4 evidence reference is malformed: {identifier}")
+            evidence_value(root, reference)
+        output_steps.append({"evidence": references, "id": identifier, "status": "passed"})
+    catalogs = [
+        {
+            "path": path.relative_to(ROOT).as_posix(),
+            "sha256": packages.sha256(packages.read_regular(path)),
+        }
+        for path in PREDECESSOR_CATALOGS
+    ]
+    return {
+        "artifacts": provider["artifacts"],
+        "contract": {
+            "path": JOURNEY_CONTRACT.relative_to(ROOT).as_posix(),
+            "sha256": packages.sha256(packages.read_regular(JOURNEY_CONTRACT)),
+        },
+        "format": "typebridge.c-artifact-phase4-report/v1",
+        "input-reports": {
+            "live-sha256": packages.sha256(live_path.read_bytes()),
+            "provider-free-sha256": packages.sha256(provider_path.read_bytes()),
+        },
+        "normalized-parity": {
+            "c17-cpp17-successor-equal": True,
+            "direct-remote-codec-equal": True,
+            "predecessor-catalogs": catalogs,
+        },
+        "platform": packages.TARGET,
+        "publication-disposition": DISPOSITION,
+        "steps": output_steps,
+    }
+
+
+def validate_phase4_report(
+    report: dict[str, Any],
+    provider_path: Path,
+    live_path: Path,
+    cli_archive: Path,
+    runtime_archive: Path,
+    generated_archive: Path,
+) -> None:
+    expected = assemble_phase4(
+        provider_path, live_path, cli_archive, runtime_archive, generated_archive
+    )
+    if report != expected:
+        raise JourneyError("Phase 4 aggregate report does not reconstruct exactly")
+
+
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -1032,6 +1151,19 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     validate_live.add_argument("cli", type=Path)
     validate_live.add_argument("runtime", type=Path)
     validate_live.add_argument("generated", type=Path)
+    assemble = commands.add_parser("assemble-phase4")
+    assemble.add_argument("provider", type=Path)
+    assemble.add_argument("live", type=Path)
+    assemble.add_argument("cli", type=Path)
+    assemble.add_argument("runtime", type=Path)
+    assemble.add_argument("generated", type=Path)
+    validate_phase4 = commands.add_parser("validate-phase4")
+    validate_phase4.add_argument("report", type=Path)
+    validate_phase4.add_argument("provider", type=Path)
+    validate_phase4.add_argument("live", type=Path)
+    validate_phase4.add_argument("cli", type=Path)
+    validate_phase4.add_argument("runtime", type=Path)
+    validate_phase4.add_argument("generated", type=Path)
     return parser.parse_args(argv)
 
 
@@ -1070,6 +1202,26 @@ def main(argv: Sequence[str] | None = None) -> int:
                 tls_root_ca=arguments.tls_root_ca,
             )
             print(packages.canonical_json(result).decode(), end="")
+        elif arguments.command == "assemble-phase4":
+            result = assemble_phase4(
+                arguments.provider,
+                arguments.live,
+                arguments.cli,
+                arguments.runtime,
+                arguments.generated,
+            )
+            print(packages.canonical_json(result).decode(), end="")
+        elif arguments.command == "validate-phase4":
+            value = load_canonical_report(arguments.report)
+            validate_phase4_report(
+                value,
+                arguments.provider,
+                arguments.live,
+                arguments.cli,
+                arguments.runtime,
+                arguments.generated,
+            )
+            print("validated complete 14-step artifact-only Phase 4 report")
         elif arguments.command in {"validate-report", "validate-live"}:
             value = json.loads(
                 arguments.report.read_text(encoding="utf-8"),
