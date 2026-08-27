@@ -16,6 +16,12 @@ jobs:
     name: Standalone CLI candidate (Linux x86_64 GNU)
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    services:
+      typedb:
+        image: typedb/typedb:3.12.3
+        ports:
+          - 1729:1729
+          - 8000:8000
     steps:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -55,6 +61,22 @@ jobs:
           python scripts/ci/standalone_cli_candidate.py smoke
           tmp/standalone-cli-candidate/type-bridge-cli-candidate-x86_64-unknown-linux-gnu.tar.gz
 
+      - name: Generate reproducible Python, Node, and Rust V6 surfaces
+        run: |
+          set -euo pipefail
+          candidate=tmp/standalone-cli-candidate/type-bridge-cli-candidate-x86_64-unknown-linux-gnu.tar.gz
+          python scripts/ci/workforce_v6_surfaces.py build "$candidate" \
+            --output tmp/workforce-v6-surfaces
+          python scripts/ci/workforce_v6_surfaces.py build "$candidate" \
+            --output tmp/workforce-v6-surfaces-repeat
+          for binding in python node rust; do
+            archive="type-bridge-$binding-generated-workforce-v6.tar.gz"
+            cmp "tmp/workforce-v6-surfaces/$archive" \
+              "tmp/workforce-v6-surfaces-repeat/$archive"
+            python scripts/ci/workforce_v6_surfaces.py validate \
+              "tmp/workforce-v6-surfaces/$archive" --binding "$binding"
+          done
+
       - name: Wait for exact TypeDB fixture
         run: |
           for i in {1..30}; do
@@ -82,6 +104,14 @@ jobs:
         with:
           name: standalone-cli-candidate-linux-x86_64-gnu
           path: tmp/standalone-cli-candidate/type-bridge-cli-candidate-x86_64-unknown-linux-gnu.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload candidate-generated V6 language surfaces
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: workforce-v6-generated-surfaces
+          path: tmp/workforce-v6-surfaces/*.tar.gz
           if-no-files-found: error
           retention-days: 7
 

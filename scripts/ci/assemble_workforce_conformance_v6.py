@@ -17,6 +17,7 @@ from typing import Any, NoReturn
 
 import c_artifact_journey as artifact_journey
 import compare_workforce_conformance_v6 as conformance
+import workforce_v6_surfaces as surfaces
 
 ROOT = Path(__file__).resolve().parents[2]
 FORMAT = "typebridge.workforce-v6-producer-evidence/v1"
@@ -312,6 +313,18 @@ def main() -> int:
                 "candidate_source_identity_drift",
                 "producer and all three candidate archives must bind one source commit",
             )
+        if arguments.binding != "c":
+            surface_manifest = surfaces.validate_surface(
+                arguments.generated_surface, arguments.binding
+            )
+            if (
+                surface_manifest["source-commit"] != evidence["source_commit"]
+                or surface_manifest["cli-candidate-id"] != candidate_manifests[0]["candidate-id"]
+            ):
+                reject(
+                    "generated_surface_source_drift",
+                    "generated surface does not bind the exact CLI and source commit",
+                )
         predecessors = sorted(arguments.predecessor)
         if [version for version, _ in predecessors] != [1, 2, 3, 4, 5]:
             reject("predecessor_report_scope_drift", "predecessor arguments must be exact V1-V5")
