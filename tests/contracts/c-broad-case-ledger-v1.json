@@ -7,7 +7,7 @@
     "plan04-query-remote": {
       "source_commit": "8097bab115258a66d94fa4897f00c9abafd5f5f7",
       "authorities": [
-        {"path": "tests/contracts/sdk_conformance/workforce-v2/catalog-v2.json", "sha256": "0abcc3ee5727a49e9e16a047a5c7590ec8be73a900435f84bd47a6405bb1e528"},
+        {"path": "tests/contracts/sdk_conformance/workforce-v2/catalog-v2.json", "sha256": "357c962d4e3ee15b07a6fc28896c63d1ff1bca771113729daa491535e2db401c"},
         {"path": "tests/contracts/sdk_conformance/workforce-v2/journey-v2.json", "sha256": "5c2b4cdbe6985fe3262a4cdb925871bd81773ecf2939fe48e4b9a226dd4d237e"}
       ]
     },
