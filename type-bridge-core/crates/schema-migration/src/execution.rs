@@ -563,6 +563,9 @@ pub enum BackfillRecoveryObservation {
 /// Unlike schema groups, an incomplete data observation after a before-commit
 /// or unknown-commit event cannot prove that no partition committed. Automatic
 /// replay therefore remains forbidden until partition checkpoints are present.
+/// With no prior event, both incomplete and already-complete postconditions are
+/// safe to execute: the journal proves that execution has never begun, and an
+/// already-complete closed backfill is a deterministic no-op.
 pub fn decide_backfill_recovery(
     last_event: Option<GroupJournalEventKind>,
     observation: &BackfillRecoveryObservation,
@@ -576,7 +579,14 @@ pub fn decide_backfill_recovery(
                 && evidence.direction() == expected_direction
     );
     match last_event {
-        None | Some(GroupJournalEventKind::DefinitelyAborted)
+        None if matches!(
+            observation,
+            BackfillRecoveryObservation::Incomplete | BackfillRecoveryObservation::Complete(_)
+        ) =>
+        {
+            GroupRecoveryDecision::ExecuteNormally
+        }
+        Some(GroupJournalEventKind::DefinitelyAborted)
             if matches!(observation, BackfillRecoveryObservation::Incomplete) =>
         {
             GroupRecoveryDecision::ExecuteNormally
@@ -3025,6 +3035,10 @@ mod tests {
                 &plan,
                 BackfillExecutionDirection::Forward,
             ),
+            GroupRecoveryDecision::ExecuteNormally
+        );
+        assert_eq!(
+            decide_backfill_recovery(None, &complete, &plan, BackfillExecutionDirection::Forward,),
             GroupRecoveryDecision::ExecuteNormally
         );
         assert_eq!(
