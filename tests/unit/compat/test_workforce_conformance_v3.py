@@ -270,7 +270,7 @@ def test_journey_observation_shape_drift_fails_closed(
     assert rejected.value.code == code
 
 
-def test_finalized_fixture_derives_only_exact17_pending_and_retains_four_gaps(
+def test_finalized_fixture_derives_only_exact17_pending_after_successor_transition(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -286,7 +286,9 @@ def test_finalized_fixture_derives_only_exact17_pending_and_retains_four_gaps(
     assert [item["case_id"] for item in summary["pending_manifest_promotions"]] == list(
         comparator.EXPECTED_MANIFEST_TRANSITION_CASES
     )
-    assert {item["case_id"] for item in summary["current_gaps"]} >= comparator.EVIDENCE_ONLY_CASES
+    assert {item["case_id"] for item in summary["current_gaps"]}.isdisjoint(
+        comparator.EVIDENCE_ONLY_CASES
+    )
     assert comparator.EVIDENCE_ONLY_CASES.isdisjoint(
         item["case_id"] for item in summary["pending_manifest_promotions"]
     )

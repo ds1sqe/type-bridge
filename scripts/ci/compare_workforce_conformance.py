@@ -28,6 +28,15 @@ SUMMARY_FORMAT = "typebridge.sdk-conformance-summary/v1"
 CATALOG_FORMAT = "typebridge.workforce-catalog/v1"
 JOURNEY_FORMAT = "typebridge.workforce-journey/v1"
 REPORT_BINDINGS = ("python", "node", "rust")
+FINAL_BROAD_SUCCESSOR_CASES = frozenset(
+    {
+        "workforce.runtime.cancellation",
+        "workforce.runtime.timeout-resource-limits",
+        "workforce.diagnostic.all-workflows",
+        "workforce.runtime.explicit-close",
+    }
+)
+FINAL_DISTRIBUTION_SUCCESSOR_CASE = "workforce.distribution.standalone-cli"
 CURRENT_BINDINGS = frozenset(REPORT_BINDINGS)
 PROJECTION_TARGETS = {"python": "python", "node": "typescript", "rust": "rust"}
 MAX_JSON_BYTES = 1024 * 1024
@@ -556,6 +565,8 @@ def _validate_catalog(
         statuses = _expand_binding_profile(manifest, capability["binding_profile"])
         if case_id in selected_case_ids:
             expected_disposition = "shared_smoke"
+        elif case_id in FINAL_BROAD_SUCCESSOR_CASES or case_id == FINAL_DISTRIBUTION_SUCCESSOR_CASE:
+            expected_disposition = "known_gap"
         elif all(statuses.get(binding) == "gap" for binding in REPORT_BINDINGS):
             expected_disposition = "known_gap"
         else:
@@ -566,6 +577,23 @@ def _validate_catalog(
                 f"{case_id!r} must be {expected_disposition!r}",
             )
         cases[case_id] = {"catalog": case, "capability": capability}
+
+    for case_id in FINAL_BROAD_SUCCESSOR_CASES:
+        if cases[case_id]["capability"]["binding_profile"] not in {
+            "current_gap_future_planned",
+            "terminal_broad_live_future_planned",
+        }:
+            raise ContractError(
+                "invalid_successor_profile", f"{case_id!r} successor profile drifted"
+            )
+    if cases[FINAL_DISTRIBUTION_SUCCESSOR_CASE]["capability"]["binding_profile"] not in {
+        "current_gap_future_planned",
+        "standalone_distribution_offline_future_planned",
+    }:
+        raise ContractError(
+            "invalid_successor_profile",
+            f"{FINAL_DISTRIBUTION_SUCCESSOR_CASE!r} successor profile drifted",
+        )
 
     selected_list = _exact_list(catalog["selected_proofs"], "selected proofs")
     selected: list[tuple[str, str, str]] = []

@@ -194,6 +194,7 @@ EVIDENCE_ONLY_CASES = frozenset(
         "workforce.runtime.timeout-resource-limits",
     }
 )
+FINAL_DISTRIBUTION_SUCCESSOR_CASE = "workforce.distribution.standalone-cli"
 EXPECTED_CREATE_ORDER = (
     "data-ada",
     "data-dana",
@@ -1046,14 +1047,22 @@ def _validate_catalog(
             "selected non-transition cases are not the frozen broad-gap set",
         )
     for case_id in EVIDENCE_ONLY_CASES:
-        statuses = _expand_binding_profile(
-            manifest, cases[case_id]["capability"]["binding_profile"]
-        )
-        if all(statuses[binding] == "accepted_live" for binding in REPORT_BINDINGS):
+        if cases[case_id]["capability"]["binding_profile"] not in {
+            "current_gap_future_planned",
+            "terminal_broad_live_future_planned",
+        }:
             raise ContractError(
-                "evidence_only_case_promoted",
-                f"{case_id!r} must remain a manifest gap in workforce-v3",
+                "invalid_successor_profile",
+                f"{case_id!r} successor profile drifted",
             )
+    if cases[FINAL_DISTRIBUTION_SUCCESSOR_CASE]["capability"]["binding_profile"] not in {
+        "current_gap_future_planned",
+        "standalone_distribution_offline_future_planned",
+    }:
+        raise ContractError(
+            "invalid_successor_profile",
+            f"{FINAL_DISTRIBUTION_SUCCESSOR_CASE!r} successor profile drifted",
+        )
     return (
         cases,
         tuple(selected),

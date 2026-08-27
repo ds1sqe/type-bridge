@@ -28,6 +28,15 @@ SUMMARY_FORMAT = "typebridge.sdk-conformance-summary/v2"
 CATALOG_FORMAT = "typebridge.workforce-catalog/v2"
 JOURNEY_FORMAT = "typebridge.workforce-journey/v2"
 REPORT_BINDINGS = ("python", "node", "rust", "c")
+FINAL_BROAD_SUCCESSOR_CASES = frozenset(
+    {
+        "workforce.runtime.cancellation",
+        "workforce.runtime.timeout-resource-limits",
+        "workforce.diagnostic.all-workflows",
+        "workforce.runtime.explicit-close",
+    }
+)
+FINAL_DISTRIBUTION_SUCCESSOR_CASE = "workforce.distribution.standalone-cli"
 CURRENT_BINDINGS = frozenset(REPORT_BINDINGS)
 PROJECTION_TARGETS = {
     "python": "python",
@@ -708,6 +717,23 @@ def _validate_catalog(
                 f"{case_id!r} must be {expected_disposition!r}",
             )
         cases[case_id] = {"catalog": case, "capability": capability}
+
+    for case_id in FINAL_BROAD_SUCCESSOR_CASES:
+        if cases[case_id]["capability"]["binding_profile"] not in {
+            "current_gap_future_planned",
+            "terminal_broad_live_future_planned",
+        }:
+            raise ContractError(
+                "invalid_successor_profile", f"{case_id!r} successor profile drifted"
+            )
+    if cases[FINAL_DISTRIBUTION_SUCCESSOR_CASE]["capability"]["binding_profile"] not in {
+        "current_gap_future_planned",
+        "standalone_distribution_offline_future_planned",
+    }:
+        raise ContractError(
+            "invalid_successor_profile",
+            f"{FINAL_DISTRIBUTION_SUCCESSOR_CASE!r} successor profile drifted",
+        )
 
     selected_values = _exact_list(catalog["selected_proofs"], "selected proofs")
     selected: list[tuple[str, str, str]] = []

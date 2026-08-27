@@ -18,6 +18,8 @@ IMPLEMENTATION_ORDER = ["c", "kotlin-jvm", "haskell", "go", "dotnet"]
 FUTURE_BINDINGS = ["kotlin-jvm", "haskell", "go", "dotnet"]
 FOUR_LIVE_BINDINGS = {"python", "node", "rust", "c"}
 FOUR_LIVE_PROFILE = "current_and_c_live_future_planned"
+FINAL_BROAD_PROFILE = "terminal_broad_live_future_planned"
+FINAL_DISTRIBUTION_PROFILE = "standalone_distribution_offline_future_planned"
 STATUSES = ["accepted_offline", "accepted_live", "gap", "planned"]
 PROOF_KINDS = [
     "compile_positive",
@@ -115,7 +117,12 @@ FOUR_LIVE_CAPABILITY_CODES = {
     "G09",
     "G10",
     "G11",
+    "G05",
+    "G06",
+    "G08",
+    "G13",
 }
+FINAL_DISTRIBUTION_CAPABILITY_CODES = {"G12"}
 
 NON_NORMATIVE_WORKFLOWS = {
     "lifecycle_hook_ordering_cancellation_and_post_failure",
@@ -167,6 +174,16 @@ def test_full_sdk_manifest_has_closed_profiles_and_real_rust_owners() -> None:
         "gap": [],
         "planned": FUTURE_BINDINGS,
     }
+    assert (
+        manifest["binding_profiles"][FINAL_BROAD_PROFILE]
+        == manifest["binding_profiles"][FOUR_LIVE_PROFILE]
+    )
+    assert manifest["binding_profiles"][FINAL_DISTRIBUTION_PROFILE] == {
+        "accepted_offline": ["python", "node", "rust", "c"],
+        "accepted_live": [],
+        "gap": [],
+        "planned": FUTURE_BINDINGS,
+    }
 
     for name, profile in manifest["proof_profiles"].items():
         assert set(profile) == set(PROOF_KINDS), name
@@ -185,7 +202,9 @@ def test_full_sdk_manifest_has_closed_profiles_and_real_rust_owners() -> None:
         assert len(assigned) == len(set(assigned)), name
         assert set(assigned) == set(BINDINGS), name
         expected_planned = (
-            set(FUTURE_BINDINGS) if name == FOUR_LIVE_PROFILE else set(IMPLEMENTATION_ORDER)
+            set(FUTURE_BINDINGS)
+            if name in {FOUR_LIVE_PROFILE, FINAL_BROAD_PROFILE, FINAL_DISTRIBUTION_PROFILE}
+            else set(IMPLEMENTATION_ORDER)
         )
         assert set(profile["planned"]) == expected_planned, name
 
@@ -215,7 +234,9 @@ def test_full_sdk_capability_catalog_is_granular_and_fail_closed() -> None:
     assert all(item["proof_profile"] in manifest["proof_profiles"] for item in capabilities)
     assert all(item["binding_profile"] in manifest["binding_profiles"] for item in capabilities)
     assert {
-        item["code"] for item in capabilities if item["binding_profile"] == FOUR_LIVE_PROFILE
+        item["code"]
+        for item in capabilities
+        if item["binding_profile"] in {FOUR_LIVE_PROFILE, FINAL_BROAD_PROFILE}
     } == FOUR_LIVE_CAPABILITY_CODES
 
     case_ids = [case for item in capabilities for case in item["case_ids"]]
@@ -228,6 +249,8 @@ def test_full_sdk_capability_catalog_is_granular_and_fail_closed() -> None:
         assert all(expanded[target] == "planned" for target in FUTURE_BINDINGS)
         if capability["code"] in FOUR_LIVE_CAPABILITY_CODES:
             assert all(expanded[binding] == "accepted_live" for binding in FOUR_LIVE_BINDINGS)
+        elif capability["code"] in FINAL_DISTRIBUTION_CAPABILITY_CODES:
+            assert all(expanded[binding] == "accepted_offline" for binding in FOUR_LIVE_BINDINGS)
         else:
             assert expanded["c"] == "planned"
 
@@ -238,7 +261,9 @@ def test_full_sdk_capability_catalog_is_granular_and_fail_closed() -> None:
             assert capability["code"].startswith("G")
             assert capability["origin"] == "phase0_gap_audit"
             assert capability["seed_operations"] == []
-            if capability["code"] not in FOUR_LIVE_CAPABILITY_CODES:
+            if capability["code"] not in (
+                FOUR_LIVE_CAPABILITY_CODES | FINAL_DISTRIBUTION_CAPABILITY_CODES
+            ):
                 assert capability["gap_reason"].strip()
                 assert all(expanded[binding] == "gap" for binding in CURRENT_BINDINGS)
 

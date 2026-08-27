@@ -299,7 +299,7 @@ def test_candidate_reports_pass_only_as_explicit_pending_manifest_promotions(
         for item in promotion["bindings"]
     } == {"accepted_offline", "gap", "planned"}
     gap_cases = {gap["case_id"] for gap in summary["current_gaps"]}
-    assert EVIDENCE_ONLY_SELECTED_CASES <= gap_cases
+    assert EVIDENCE_ONLY_SELECTED_CASES.isdisjoint(gap_cases)
     assert EVIDENCE_ONLY_SELECTED_CASES.isdisjoint(
         promotion["case_id"] for promotion in summary["pending_manifest_promotions"]
     )
@@ -324,15 +324,14 @@ def test_final_promoted_reports_have_no_pending_manifest_transition(
 
     assert summary["pending_manifest_promotions"] == []
     gap_cases = {gap["case_id"] for gap in summary["current_gaps"]}
-    assert EVIDENCE_ONLY_SELECTED_CASES <= gap_cases
+    assert EVIDENCE_ONLY_SELECTED_CASES.isdisjoint(gap_cases)
     for case_id in EVIDENCE_ONLY_SELECTED_CASES:
         capability = contracts.cases[case_id]["capability"]
         statuses = comparator._expand_binding_profile(
             contracts.manifest.value,
             capability["binding_profile"],
         )
-        assert {statuses[binding] for binding in ("python", "node", "rust")} == {"gap"}
-        assert statuses["c"] == "planned"
+        assert {statuses[binding] for binding in comparator.REPORT_BINDINGS} == {"accepted_live"}
     later_plan05 = contracts.cases["workforce.schema.ordered-distinct"]["capability"]
     later_plan05_statuses = comparator._expand_binding_profile(
         contracts.manifest.value,

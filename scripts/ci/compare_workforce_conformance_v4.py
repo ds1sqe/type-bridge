@@ -450,11 +450,13 @@ def compare_reports(paths: list[Path], root: Path = ROOT) -> dict[str, Any]:
             )
     for case_id in EXPECTED_RETAINED_GAPS:
         capability = capabilities[case_id]
-        profile = profiles.get(capability.get("binding_profile"), {})
-        if set(profile.get("accepted_live", ())) & set(EXPECTED_BINDINGS):
+        if capability.get("binding_profile") not in {
+            "current_gap_future_planned",
+            "terminal_broad_live_future_planned",
+        }:
             _reject(
-                "retained_gap_promoted",
-                f"retained V4 evidence case {case_id!r} became accepted",
+                "invalid_successor_profile",
+                f"retained V4 evidence case {case_id!r} successor profile drifted",
             )
     if authority_state == "finalized" and pending_promotions:
         _reject(

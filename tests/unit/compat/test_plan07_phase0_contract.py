@@ -95,7 +95,7 @@ def test_abi_1_6_is_exactly_additive_over_frozen_1_5() -> None:
     assert contract["ownership"]["partial_archive_result"] is False
 
 
-def test_workforce_v5_transitions_only_g07_and_retains_broad_gaps() -> None:
+def test_workforce_v5_history_is_preserved_after_final_broad_transition() -> None:
     catalog = _load("tests/contracts/sdk_conformance/workforce-v5/catalog-v5.json")
     manifest = _load("tests/contracts/sdk_conformance/manifest-v1.json")
 
@@ -115,4 +115,4 @@ def test_workforce_v5_transitions_only_g07_and_retains_broad_gaps() -> None:
     assert capabilities["G07"]["case_ids"] == ["workforce.model.serialization"]
     assert capabilities["G07"]["binding_profile"] == "current_and_c_live_future_planned"
     for code in ("G05", "G06", "G08", "G13"):
-        assert capabilities[code]["binding_profile"] == "current_gap_future_planned"
+        assert capabilities[code]["binding_profile"] == "terminal_broad_live_future_planned"

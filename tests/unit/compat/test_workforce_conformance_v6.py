@@ -160,8 +160,19 @@ def _reports(root: Path) -> list[Path]:
     return paths
 
 
+def _set_pending(root: Path) -> None:
+    manifest_path = root / COMPARATOR.MANIFEST
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    for capability in manifest["capabilities"]:
+        if capability["case_ids"][0] in COMPARATOR.CASES:
+            capability["binding_profile"] = COMPARATOR.GAP_PROFILE
+            capability["gap_reason"] = "terminal V6 promotion is pending"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+
 def test_accepts_exact_five_pending_candidate_promotions(tmp_path: Path) -> None:
     root = _stage(tmp_path)
+    _set_pending(root)
     comparison = COMPARATOR.compare_reports(_reports(root), root)
     assert comparison["authority_state"] == "candidate"
     assert comparison["pending_promotions"] == list(COMPARATOR.CASES)
@@ -201,6 +212,7 @@ def test_accepts_only_complete_dedicated_profile_transition(tmp_path: Path) -> N
 
 def test_rejects_partial_manifest_transition(tmp_path: Path) -> None:
     root = _stage(tmp_path)
+    _set_pending(root)
     manifest_path = root / COMPARATOR.MANIFEST
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["capabilities"][-9]["binding_profile"] = COMPARATOR.BROAD_PROFILE

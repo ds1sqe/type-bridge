@@ -206,7 +206,7 @@ def test_rejects_retained_gap_promotion(tmp_path: Path) -> None:
 
     with pytest.raises(comparator.ContractError) as raised:
         comparator.compare_reports(_write_reports(root), root)
-    assert raised.value.code == "retained_gap_promoted"
+    assert raised.value.code == "invalid_successor_profile"
 
 
 def test_finalized_authority_rejects_pending_g07(tmp_path: Path) -> None:

@@ -256,7 +256,7 @@ def test_valid_three_report_set_is_order_independent_and_derives_only_unresolved
     assert "workforce.crud.relation-batch-update-delete" not in gaps
     assert "workforce.query.reducers-remote" not in gaps
     assert "workforce.query.schema-function" not in gaps
-    assert len(gaps) == 5
+    assert gaps == {}
     assert forward["uncovered_required_proofs"]
     summary_text = comparator.canonical_json_bytes(forward).decode()
     assert '"accepted"' not in summary_text
@@ -401,7 +401,7 @@ def test_runtime_identity_leak_is_rejected_before_comparison(tmp_path: Path) -> 
     _assert_rejected(list(paths.values()), "runtime_identity_leak")
 
 
-def test_manifest_gap_cannot_be_reported_as_passing_evidence(tmp_path: Path) -> None:
+def test_unselected_successor_cannot_replace_an_ordered_proof(tmp_path: Path) -> None:
     contracts = comparator.load_contracts()
     reports = _valid_reports(contracts)
     gap_case = "workforce.runtime.cancellation"
@@ -415,7 +415,7 @@ def test_manifest_gap_cannot_be_reported_as_passing_evidence(tmp_path: Path) -> 
     }
     paths = _write_reports(tmp_path, reports)
 
-    _assert_rejected(list(paths.values()), "manifest_gap_pass")
+    _assert_rejected(list(paths.values()), "result_order_mismatch")
 
 
 def test_reports_require_canonical_json_and_unique_keys(tmp_path: Path) -> None:

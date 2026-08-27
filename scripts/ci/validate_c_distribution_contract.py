@@ -232,11 +232,16 @@ def validate(contract_path: Path = DEFAULT_CONTRACT, root: Path = ROOT) -> dict[
         for case in capabilities[code]["case_ids"]
     ]
     _require(selected == TRANSITION_CASES, "V6 cases disagree with the manifest")
-    for code in ("G05", "G06", "G08", "G12", "G13"):
+    for code in ("G05", "G06", "G08", "G13"):
         _require(
-            capabilities[code]["binding_profile"] == "current_gap_future_planned",
-            f"{code} was promoted early",
+            capabilities[code]["binding_profile"] == "terminal_broad_live_future_planned",
+            f"{code} final broad profile drifted",
         )
+    _require(
+        capabilities["G12"]["binding_profile"]
+        == "standalone_distribution_offline_future_planned",
+        "G12 final distribution profile drifted",
+    )
     return contract
 
 

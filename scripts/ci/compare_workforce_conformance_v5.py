@@ -473,9 +473,14 @@ def compare_reports(paths: list[Path], root: Path = ROOT) -> dict[str, Any]:
             )
     for case_id in RETAINED_GAPS:
         capability = capabilities[case_id]
-        accepted = profiles[capability["binding_profile"]].get("accepted_live", ())
-        if set(accepted) & set(BINDINGS):
-            reject("retained_gap_promoted", f"retained V5 gap {case_id!r} became accepted")
+        if capability["binding_profile"] not in {
+            "current_gap_future_planned",
+            "terminal_broad_live_future_planned",
+        }:
+            reject(
+                "invalid_successor_profile",
+                f"retained V5 gap {case_id!r} successor profile drifted",
+            )
     if state == "finalized" and pending:
         reject("finalized_authority_has_pending_promotions", "finalized V5 has pending promotion")
     return {

@@ -138,6 +138,18 @@
       "gap": [],
       "planned": ["kotlin-jvm", "haskell", "go", "dotnet"]
     },
+    "terminal_broad_live_future_planned": {
+      "accepted_offline": [],
+      "accepted_live": ["python", "node", "rust", "c"],
+      "gap": [],
+      "planned": ["kotlin-jvm", "haskell", "go", "dotnet"]
+    },
+    "standalone_distribution_offline_future_planned": {
+      "accepted_offline": ["python", "node", "rust", "c"],
+      "accepted_live": [],
+      "gap": [],
+      "planned": ["kotlin-jvm", "haskell", "go", "dotnet"]
+    },
     "python_rust_live_node_gap_future_planned": {
       "accepted_offline": [],
       "accepted_live": ["python", "rust"],
@@ -312,15 +324,15 @@
     {"code": "G02", "id": "query.schema-function-invocation", "classification": "canonical", "origin": "phase0_gap_audit", "owner": "query_pattern", "proof_profile": "direct_remote_query", "binding_profile": "current_and_c_live_future_planned", "case_ids": ["workforce.query.schema-function"], "seed_operations": [], "gap_reason": "the phase-0 audit found generated function tokens without generated immutable query-facade invocation"},
     {"code": "G03", "id": "runtime.complete-connection-policy", "classification": "canonical", "origin": "phase0_gap_audit", "owner": "secure_connect_options", "proof_profile": "connection_lifecycle", "binding_profile": "current_and_c_live_future_planned", "case_ids": ["workforce.runtime.connection-policy"], "seed_operations": []},
     {"code": "G04", "id": "runtime.database-administration", "classification": "canonical", "origin": "phase0_gap_audit", "owner": "typedb_runtime", "proof_profile": "direct_data", "binding_profile": "current_and_c_live_future_planned", "case_ids": ["workforce.runtime.database-administration"], "seed_operations": []},
-    {"code": "G05", "id": "runtime.cancellation", "classification": "canonical", "origin": "phase0_gap_audit", "owner": "answer_cancellation", "proof_profile": "direct_remote_query", "binding_profile": "current_gap_future_planned", "case_ids": ["workforce.runtime.cancellation"], "seed_operations": [], "gap_reason": "caller cancellation and its stable outcome are not exposed and proven uniformly across SDK lifecycles"},
-    {"code": "G06", "id": "runtime.timeout-and-resource-limits", "classification": "canonical", "origin": "phase0_gap_audit", "owner": "bounded_answer_limits", "proof_profile": "direct_remote_query", "binding_profile": "current_gap_future_planned", "case_ids": ["workforce.runtime.timeout-resource-limits"], "seed_operations": [], "gap_reason": "timeout and resource-limit configuration is not a complete common public SDK contract"},
+    {"code": "G05", "id": "runtime.cancellation", "classification": "canonical", "origin": "phase0_gap_audit", "owner": "answer_cancellation", "proof_profile": "direct_remote_query", "binding_profile": "terminal_broad_live_future_planned", "case_ids": ["workforce.runtime.cancellation"], "seed_operations": []},
+    {"code": "G06", "id": "runtime.timeout-and-resource-limits", "classification": "canonical", "origin": "phase0_gap_audit", "owner": "bounded_answer_limits", "proof_profile": "direct_remote_query", "binding_profile": "terminal_broad_live_future_planned", "case_ids": ["workforce.runtime.timeout-resource-limits"], "seed_operations": []},
     {"code": "G07", "id": "model.canonical-serialization", "classification": "canonical", "origin": "phase0_gap_audit", "owner": "canonical_codec", "proof_profile": "generated_package", "binding_profile": "current_and_c_live_future_planned", "case_ids": ["workforce.model.serialization"], "seed_operations": []},
-    {"code": "G08", "id": "diagnostic.all-workflows-structured", "classification": "canonical", "origin": "phase0_gap_audit", "owner": "diagnostic", "proof_profile": "generated_package", "binding_profile": "current_gap_future_planned", "case_ids": ["workforce.diagnostic.all-workflows"], "seed_operations": [], "gap_reason": "query and remote diagnostics do not prove one stable category, code, path, and details contract across every workflow"},
+    {"code": "G08", "id": "diagnostic.all-workflows-structured", "classification": "canonical", "origin": "phase0_gap_audit", "owner": "diagnostic", "proof_profile": "generated_package", "binding_profile": "terminal_broad_live_future_planned", "case_ids": ["workforce.diagnostic.all-workflows"], "seed_operations": []},
     {"code": "G09", "id": "migration.reverse-cli", "classification": "canonical", "origin": "phase0_gap_audit", "owner": "migration_rollback", "proof_profile": "sdk_operator", "binding_profile": "current_and_c_live_future_planned", "case_ids": ["workforce.migration.rollback"], "seed_operations": []},
     {"code": "G10", "id": "migration.binding-neutral-backfill", "classification": "canonical", "origin": "phase0_gap_audit", "owner": "migration_step", "proof_profile": "sdk_operator", "binding_profile": "current_and_c_live_future_planned", "case_ids": ["workforce.migration.backfill"], "seed_operations": []},
     {"code": "G11", "id": "migration.sdk-runtime-facade", "classification": "canonical", "origin": "phase0_gap_audit", "owner": "migration_runner", "proof_profile": "sdk_operator", "binding_profile": "current_and_c_live_future_planned", "case_ids": ["workforce.migration.runtime-facade"], "seed_operations": []},
-    {"code": "G12", "id": "distribution.standalone-cli", "classification": "canonical", "origin": "phase0_gap_audit", "owner": "cli_binary", "proof_profile": "distribution", "binding_profile": "current_gap_future_planned", "case_ids": ["workforce.distribution.standalone-cli"], "seed_operations": [], "gap_reason": "the CLI is currently distributed through the Python package rather than as a standalone install"},
-    {"code": "G13", "id": "runtime.explicit-close", "classification": "canonical", "origin": "phase0_gap_audit", "owner": "database", "proof_profile": "connection_lifecycle", "binding_profile": "current_gap_future_planned", "case_ids": ["workforce.runtime.explicit-close"], "seed_operations": [], "gap_reason": "connection, transaction, query, and native-resource close behavior is not exposed and proven uniformly across current SDKs"}
+    {"code": "G12", "id": "distribution.standalone-cli", "classification": "canonical", "origin": "phase0_gap_audit", "owner": "cli_binary", "proof_profile": "distribution", "binding_profile": "standalone_distribution_offline_future_planned", "case_ids": ["workforce.distribution.standalone-cli"], "seed_operations": []},
+    {"code": "G13", "id": "runtime.explicit-close", "classification": "canonical", "origin": "phase0_gap_audit", "owner": "database", "proof_profile": "connection_lifecycle", "binding_profile": "terminal_broad_live_future_planned", "case_ids": ["workforce.runtime.explicit-close"], "seed_operations": []}
   ],
   "seed_workflows": [
     {"id": "split_yaml_clean_generation_and_package_isolation", "classification": "canonical", "capabilities": ["schema.generate.atomic-multibinding"]},
