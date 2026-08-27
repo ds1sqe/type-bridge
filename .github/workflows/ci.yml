@@ -278,6 +278,98 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  c-artifact-live-consumer:
+    name: C artifact-only live journey (Linux x86_64 GNU)
+    needs: [standalone-cli-candidate, c-package-candidates, c-artifact-clean-consumer]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    services:
+      typedb:
+        image: typedb/typedb:3.12.3
+        ports:
+          - 1729:1729
+          - 8000:8000
+    steps:
+      - name: Checkout exact candidate source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13.5"
+
+      - name: Install exact fixture Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
+
+      - name: Cache isolated fixture processes
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
+            ${{ runner.temp }}/typebridge-c-artifact-infra
+          key: linux-c-artifact-live-v1-${{ hashFiles('type-bridge-core/Cargo.lock') }}
+
+      - name: Download immutable standalone CLI candidate
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: standalone-cli-candidate-linux-x86_64-gnu
+          path: tmp/c-artifact-live-input/cli
+
+      - name: Download immutable C package candidates
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: c-package-candidates-linux-x86_64-gnu
+          path: tmp/c-artifact-live-input/c
+
+      - name: Wait for exact TypeDB fixture
+        run: |
+          for attempt in {1..45}; do
+            version="$(curl --fail --silent --max-time 3 http://localhost:8000/v1/version || true)"
+            if python3 -c \
+              'import json,sys; value=json.loads(sys.argv[1]); raise SystemExit(0 if value.get("version")=="3.12.3" else 1)' \
+              "$version"; then
+              exit 0
+            fi
+            sleep 2
+          done
+          exit 1
+
+      - name: Run artifact-only direct, remote, migration, and cleanup journey
+        run: >-
+          python scripts/ci/c_artifact_journey.py live
+          tmp/c-artifact-live-input/cli/type-bridge-cli-candidate-x86_64-unknown-linux-gnu.tar.gz
+          tmp/c-artifact-live-input/c/type-bridge-c-runtime-abi-1.6-x86_64-unknown-linux-gnu.tar.gz
+          tmp/c-artifact-live-input/c/tb_workforcev3-c-5c1c8cabf97c28913fc45d3e724e251501a57e2ca87eed9372474b5c7a51405e.tar.gz
+          --database c_artifact_data_${{ github.run_id }}_${{ github.run_attempt }}
+          --migration-database c_artifact_migration_${{ github.run_id }}_${{ github.run_attempt }}
+          --infra-target ${{ runner.temp }}/typebridge-c-artifact-infra
+          > tmp/c-artifact-live-journey.json
+
+      - name: Independently revalidate exact live artifact evidence
+        run: >-
+          python scripts/ci/c_artifact_journey.py validate-live
+          tmp/c-artifact-live-journey.json
+          tmp/c-artifact-live-input/cli/type-bridge-cli-candidate-x86_64-unknown-linux-gnu.tar.gz
+          tmp/c-artifact-live-input/c/type-bridge-c-runtime-abi-1.6-x86_64-unknown-linux-gnu.tar.gz
+          tmp/c-artifact-live-input/c/tb_workforcev3-c-5c1c8cabf97c28913fc45d3e724e251501a57e2ca87eed9372474b5c7a51405e.tar.gz
+
+      - name: Upload immutable non-publishing live artifact evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: c-artifact-live-consumer-linux-x86_64-gnu
+          path: tmp/c-artifact-live-journey.json
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Show TypeDB logs after failure
+        if: failure()
+        run: docker logs ${{ job.services.typedb.id }} 2>&1 || true
+
   # Rust crate: compile, test, lint (parallel with Python jobs)
   rust-check:
     name: Rust ${{ matrix.os }}
