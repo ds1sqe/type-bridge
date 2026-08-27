@@ -60,7 +60,7 @@ def _predecessors(binding: str = "rust") -> list[tuple[dict[str, Any], bytes]]:
             "format": f"typebridge.sdk-conformance-report/v{version}",
             "binding": binding,
         }
-        values.append((report, COMPOSER.conformance.canonical_json_bytes(report)))
+        values.append((report, COMPOSER.conformance.historical_report_bytes(report, version)))
     return values
 
 
@@ -152,3 +152,18 @@ def test_publication_is_create_new(tmp_path: Path) -> None:
     with pytest.raises(COMPOSER.CompositionError) as raised:
         COMPOSER.publish(path, _compose())
     assert raised.value.code == "invalid_output_path"
+
+
+def test_loader_preserves_phase4_and_historical_canonical_spelling(tmp_path: Path) -> None:
+    phase4 = _phase4()
+    phase4_path = tmp_path / "phase4.json"
+    phase4_path.write_bytes(COMPOSER.conformance.canonical_json_bytes(phase4) + b"\n")
+    assert COMPOSER.load_canonical(phase4_path, "Phase 4", trailing_newline=True)[0] == phase4
+
+    v3 = _predecessors()[2][0]
+    v3_path = tmp_path / "v3.json"
+    v3_path.write_bytes(COMPOSER.conformance.historical_report_bytes(v3, 3))
+    assert COMPOSER.load_canonical(v3_path, "V3", trailing_newline=True)[0] == v3
+    with pytest.raises(COMPOSER.CompositionError) as raised:
+        COMPOSER.load_canonical(v3_path, "V3")
+    assert raised.value.code == "noncanonical_composition_json"

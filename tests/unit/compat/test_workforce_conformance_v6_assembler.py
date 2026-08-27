@@ -118,11 +118,12 @@ def _phase4() -> dict[str, Any]:
 
 def _predecessors(binding: str = "rust") -> list[bytes]:
     return [
-        ASSEMBLER.conformance.canonical_json_bytes(
+        ASSEMBLER.conformance.historical_report_bytes(
             {
                 "format": f"typebridge.sdk-conformance-report/v{version}",
                 "binding": binding,
-            }
+            },
+            version,
         )
         for version in range(1, 6)
     ]
@@ -187,8 +188,8 @@ def test_rejects_duplicate_proof_fragment() -> None:
 
 def test_rejects_wrong_predecessor_binding() -> None:
     hostile = _predecessors()
-    hostile[2] = ASSEMBLER.conformance.canonical_json_bytes(
-        {"format": "typebridge.sdk-conformance-report/v3", "binding": "node"}
+    hostile[2] = ASSEMBLER.conformance.historical_report_bytes(
+        {"format": "typebridge.sdk-conformance-report/v3", "binding": "node"}, 3
     )
     with pytest.raises(ASSEMBLER.AssemblyError) as raised:
         ASSEMBLER.assemble_report(

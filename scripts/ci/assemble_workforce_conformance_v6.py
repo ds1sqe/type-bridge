@@ -98,7 +98,9 @@ def _predecessors(values: list[bytes], binding: str) -> list[dict[str, Any]]:
             report = json.loads(raw, object_pairs_hook=conformance.unique_object)
         except (UnicodeDecodeError, json.JSONDecodeError) as error:
             reject("invalid_predecessor_report", f"cannot parse V{version} report: {error}")
-        if not isinstance(report, dict) or raw != conformance.canonical_json_bytes(report):
+        if not isinstance(report, dict) or raw != conformance.historical_report_bytes(
+            report, version
+        ):
             reject("noncanonical_predecessor_report", f"V{version} report is not canonical")
         if report.get("format") != f"typebridge.sdk-conformance-report/v{version}":
             reject("predecessor_report_identity_drift", f"V{version} format drifted")

@@ -78,6 +78,12 @@ def canonical_json_bytes(value: Any) -> bytes:
     ).encode()
 
 
+def historical_report_bytes(value: Any, version: int) -> bytes:
+    """Reproduce each predecessor contract's frozen canonical byte spelling."""
+    body = canonical_json_bytes(value)
+    return body + b"\n" if version in (1, 2, 3) else body
+
+
 def load_json(path: Path) -> dict[str, Any]:
     try:
         value = json.loads(path.read_bytes(), object_pairs_hook=unique_object)

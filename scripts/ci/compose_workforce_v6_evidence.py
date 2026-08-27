@@ -49,7 +49,9 @@ def read_regular(path: Path, label: str) -> bytes:
     return body
 
 
-def load_canonical(path: Path, label: str) -> tuple[dict[str, Any], bytes]:
+def load_canonical(
+    path: Path, label: str, *, trailing_newline: bool = False
+) -> tuple[dict[str, Any], bytes]:
     body = read_regular(path, label)
     try:
         value = json.loads(body, object_pairs_hook=conformance.unique_object)
@@ -57,7 +59,8 @@ def load_canonical(path: Path, label: str) -> tuple[dict[str, Any], bytes]:
         reject(error.code, str(error))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         reject("invalid_composition_json", f"cannot parse {label}: {error}")
-    if not isinstance(value, dict) or body != conformance.canonical_json_bytes(value):
+    expected = conformance.canonical_json_bytes(value) + (b"\n" if trailing_newline else b"")
+    if not isinstance(value, dict) or body != expected:
         reject("noncanonical_composition_json", f"{label} is not exact canonical JSON")
     return value, body
 
@@ -287,7 +290,9 @@ def main() -> int:
     arguments = parser.parse_args()
     try:
         surface, surface_bytes = load_canonical(arguments.surface_consumer, "surface consumer")
-        phase4, phase4_bytes = load_canonical(arguments.phase4, "Phase 4 report")
+        phase4, phase4_bytes = load_canonical(
+            arguments.phase4, "Phase 4 report", trailing_newline=True
+        )
         predecessor_arguments = sorted(arguments.predecessor)
         if tuple(
             version for version, _ in predecessor_arguments
@@ -297,7 +302,8 @@ def main() -> int:
                 "predecessor arguments do not match the binding's history",
             )
         predecessors = [
-            load_canonical(path, f"V{version} report") for version, path in predecessor_arguments
+            load_canonical(path, f"V{version} report", trailing_newline=version in (1, 2, 3))
+            for version, path in predecessor_arguments
         ]
         value = compose(
             binding=arguments.binding,
