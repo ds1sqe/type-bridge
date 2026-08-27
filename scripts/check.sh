@@ -159,6 +159,9 @@ run_c() {
         tests/unit/compat/test_workforce_v6_surfaces.py \
         tests/unit/compat/test_workforce_v6_surface_consumer.py -q
 
+    run_step "independent FULL-C candidate auditor" \
+        uv run pytest tests/unit/compat/test_full_c_candidate_auditor.py -q
+
     run_step "standalone CLI candidate and hostile archive contracts" \
         uv run pytest tests/unit/compat/test_standalone_cli_candidate.py -q
 
