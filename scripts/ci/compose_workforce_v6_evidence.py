@@ -99,10 +99,11 @@ def compose(
     if len(source_commit) != 40 or any(c not in "0123456789abcdef" for c in source_commit):
         reject("invalid_source_commit", "source commit must be 40 lowercase hexadecimal digits")
     catalog = conformance.load_json(root / conformance.CATALOG)
-    if len(predecessors) != 5:
-        reject("predecessor_report_scope_drift", "exactly V1-V5 predecessor reports are required")
+    versions = conformance.predecessor_versions(binding)
+    if len(predecessors) != len(versions):
+        reject("predecessor_report_scope_drift", "historical report inventory is not exact")
     predecessor_digests = []
-    for version, (report, body) in enumerate(predecessors, 1):
+    for version, (report, body) in zip(versions, predecessors, strict=True):
         if (
             report.get("format") != f"typebridge.sdk-conformance-report/v{version}"
             or report.get("binding") != binding
@@ -288,8 +289,13 @@ def main() -> int:
         surface, surface_bytes = load_canonical(arguments.surface_consumer, "surface consumer")
         phase4, phase4_bytes = load_canonical(arguments.phase4, "Phase 4 report")
         predecessor_arguments = sorted(arguments.predecessor)
-        if [version for version, _ in predecessor_arguments] != [1, 2, 3, 4, 5]:
-            reject("predecessor_report_scope_drift", "predecessor arguments must be exact V1-V5")
+        if tuple(
+            version for version, _ in predecessor_arguments
+        ) != conformance.predecessor_versions(arguments.binding):
+            reject(
+                "predecessor_report_scope_drift",
+                "predecessor arguments do not match the binding's history",
+            )
         predecessors = [
             load_canonical(path, f"V{version} report") for version, path in predecessor_arguments
         ]

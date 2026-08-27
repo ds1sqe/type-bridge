@@ -44,6 +44,13 @@ SURFACE_FORMATS = {
 }
 
 
+def predecessor_versions(binding: str) -> tuple[int, ...]:
+    """Return the real historical report inventory for one binding."""
+    if binding not in BINDINGS:
+        reject("predecessor_report_identity_drift", f"unknown predecessor binding {binding!r}")
+    return (2, 3, 4, 5) if binding == "c" else (1, 2, 3, 4, 5)
+
+
 class ContractError(ValueError):
     """Stable fail-closed V6 rejection."""
 
@@ -230,10 +237,16 @@ def validate_report(report: dict[str, Any], root: Path = ROOT) -> None:
     }:
         reject("c_generated_surface_drift", "C generated surface differs from Phase 4 artifact")
     predecessors = report["predecessor_reports"]
-    if not isinstance(predecessors, list) or [
-        item.get("version") for item in predecessors if isinstance(item, dict)
-    ] != [1, 2, 3, 4, 5]:
-        reject("predecessor_report_scope_drift", "V1-V5 predecessor inventory is not exact")
+    expected_predecessors = predecessor_versions(report["binding"])
+    if (
+        not isinstance(predecessors, list)
+        or tuple(item.get("version") for item in predecessors if isinstance(item, dict))
+        != expected_predecessors
+    ):
+        reject(
+            "predecessor_report_scope_drift",
+            f"predecessor inventory is not exact for {report['binding']}",
+        )
     for item in predecessors:
         exact_keys(item, {"version", "sha256"}, "predecessor report")
         exact_sha(item["sha256"], "predecessor report")

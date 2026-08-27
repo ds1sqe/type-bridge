@@ -8,8 +8,9 @@ promotion: final reports and evidence schemas are added only after the final
 candidate artifacts and four clean-consumer reports exist.
 
 Each V6 report binds one generated language surface, the same standalone CLI,
-native runtime, generated C package and Phase 4 aggregate, its real V1–V5
-predecessor reports, and the five terminal observations. The comparator rejects
+native runtime, generated C package and Phase 4 aggregate, its real predecessor
+reports (V1–V5 for Python/Node/Rust and V2–V5 for C, which entered at V2), and
+the five terminal observations. The comparator rejects
 cross-binding artifact/outcome drift and permits either all five pending gaps
 or the complete dedicated-profile transition; partial promotion is invalid.
 The assembler accepts canonical same-run producer evidence, hashes every proof

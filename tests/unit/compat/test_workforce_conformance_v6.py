@@ -101,7 +101,8 @@ def _report(root: Path, binding: str) -> dict[str, object]:
             ),
         },
         "predecessor_reports": [
-            {"version": version, "sha256": f"{version:x}" * 64} for version in range(1, 6)
+            {"version": version, "sha256": f"{version:x}" * 64}
+            for version in COMPARATOR.predecessor_versions(binding)
         ],
         "non_selected_proofs": [
             {

@@ -17,7 +17,7 @@
     "phase4_report_sha256": {"$ref": "#/$defs/sha256"},
     "artifacts": {"type": "object"},
     "generated_surface": {"type": "object"},
-    "predecessor_reports": {"type": "array", "minItems": 5, "maxItems": 5},
+    "predecessor_reports": {"type": "array", "minItems": 4, "maxItems": 5},
     "non_selected_proofs": {"type": "array", "minItems": 25, "maxItems": 25},
     "results": {"type": "array", "minItems": 5, "maxItems": 5},
     "cleanup": {"type": "object"},

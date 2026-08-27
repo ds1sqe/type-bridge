@@ -55,7 +55,7 @@ def _surface(binding: str = "rust") -> dict[str, Any]:
 
 def _predecessors(binding: str = "rust") -> list[tuple[dict[str, Any], bytes]]:
     values = []
-    for version in range(1, 6):
+    for version in COMPOSER.conformance.predecessor_versions(binding):
         report = {
             "format": f"typebridge.sdk-conformance-report/v{version}",
             "binding": binding,
@@ -116,6 +116,34 @@ def test_rejects_wrong_predecessor_binding() -> None:
     with pytest.raises(COMPOSER.CompositionError) as raised:
         _compose(predecessors=predecessors)
     assert raised.value.code == "predecessor_report_identity_drift"
+
+
+def test_c_predecessor_history_starts_at_v2() -> None:
+    phase4 = _phase4()
+    surface = {
+        "format": COMPOSER.SURFACE_CONSUMER_FORMAT,
+        "binding": "c",
+        "source-commit": "a" * 40,
+        "surface-sha256": phase4["artifacts"]["generated-package"]["sha256"],
+        "cli-candidate-id": phase4["artifacts"]["cli"]["candidate-id"],
+        "runtime-provenance": "candidate-c-runtime",
+        "checks": ["phase4-c17-cpp17", "sanitizers", "loader-unload"],
+        "cleanup": {"temporary-consumer-absent": True},
+        "publication-authority": False,
+    }
+    value = COMPOSER.compose(
+        binding="c",
+        run_nonce="b" * 64,
+        source_commit="a" * 40,
+        surface_consumer=surface,
+        surface_consumer_bytes=COMPOSER.conformance.canonical_json_bytes(surface),
+        phase4=phase4,
+        phase4_bytes=COMPOSER.conformance.canonical_json_bytes(phase4),
+        predecessors=_predecessors("c"),
+        root=ROOT,
+    )
+    fragment = json.loads(base64.b64decode(value["non_selected_proofs"][0]["evidence_b64"]))
+    assert [item["version"] for item in fragment["predecessor_reports"]] == [2, 3, 4, 5]
 
 
 def test_publication_is_create_new(tmp_path: Path) -> None:

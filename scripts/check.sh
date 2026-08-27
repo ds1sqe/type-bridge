@@ -154,6 +154,7 @@ run_c() {
         tests/unit/compat/test_workforce_v3_candidate_runner.py \
         tests/unit/compat/test_workforce_v4_live_runner.py \
         tests/unit/compat/test_workforce_v5_candidate_runner.py \
+        tests/unit/compat/test_workforce_v6_candidate_runner.py \
         tests/unit/compat/test_workforce_v6_evidence_composer.py \
         tests/unit/compat/test_workforce_v6_surfaces.py \
         tests/unit/compat/test_workforce_v6_surface_consumer.py -q

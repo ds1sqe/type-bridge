@@ -89,10 +89,11 @@ def _identity(relative: str, root: Path) -> dict[str, str]:
 
 
 def _predecessors(values: list[bytes], binding: str) -> list[dict[str, Any]]:
-    if len(values) != 5:
-        reject("predecessor_report_scope_drift", "exactly V1-V5 reports are required")
+    versions = conformance.predecessor_versions(binding)
+    if len(values) != len(versions):
+        reject("predecessor_report_scope_drift", "historical report inventory is not exact")
     output = []
-    for version, raw in enumerate(values, 1):
+    for version, raw in zip(versions, values, strict=True):
         try:
             report = json.loads(raw, object_pairs_hook=conformance.unique_object)
         except (UnicodeDecodeError, json.JSONDecodeError) as error:
@@ -326,8 +327,13 @@ def main() -> int:
                     "generated surface does not bind the exact CLI and source commit",
                 )
         predecessors = sorted(arguments.predecessor)
-        if [version for version, _ in predecessors] != [1, 2, 3, 4, 5]:
-            reject("predecessor_report_scope_drift", "predecessor arguments must be exact V1-V5")
+        if tuple(version for version, _ in predecessors) != conformance.predecessor_versions(
+            arguments.binding
+        ):
+            reject(
+                "predecessor_report_scope_drift",
+                "predecessor arguments do not match the binding's history",
+            )
         report = assemble_report(
             evidence,
             binding=arguments.binding,

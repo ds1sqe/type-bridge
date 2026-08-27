@@ -204,6 +204,25 @@ def test_rejects_wrong_predecessor_binding() -> None:
     assert raised.value.code == "predecessor_report_identity_drift"
 
 
+def test_c_predecessor_history_starts_at_v2() -> None:
+    evidence = _evidence("c")
+    predecessors = _predecessors("c")[1:]
+    generated = b"c-generated-surface"
+    phase4 = _phase4()
+    phase4["artifacts"]["generated-package"]["sha256"] = hashlib.sha256(generated).hexdigest()
+    report = ASSEMBLER.assemble_report(
+        evidence,
+        binding="c",
+        run_nonce="a" * 64,
+        phase4=phase4,
+        phase4_sha256="7" * 64,
+        generated_surface=generated,
+        predecessor_reports=predecessors,
+        root=ROOT,
+    )
+    assert [item["version"] for item in report["predecessor_reports"]] == [2, 3, 4, 5]
+
+
 def test_publication_is_canonical_and_create_new(tmp_path: Path) -> None:
     path = tmp_path / "rust.json"
     report = _assemble()
