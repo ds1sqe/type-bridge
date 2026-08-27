@@ -50,8 +50,8 @@ def payload(
     }
 
 
-def both_roots(value: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    return {"Python": value, "Node": value, "CLI": value}
+def all_roots(value: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return {"Python": value, "Node": value, "CLI": value, "C": value}
 
 
 def policy(*accepted: str) -> Any:
@@ -59,7 +59,7 @@ def policy(*accepted: str) -> Any:
 
 
 def merge(value: dict[str, Any], accepted: tuple[str, ...], tmp_path: Path) -> Any:
-    return generator.merge_payloads(both_roots(value), policy=policy(*accepted), workspace=tmp_path)
+    return generator.merge_payloads(all_roots(value), policy=policy(*accepted), workspace=tmp_path)
 
 
 def test_compound_and_expression_rejects_a_missing_license_body(tmp_path: Path) -> None:
@@ -127,7 +127,7 @@ def test_distinct_copyright_texts_survive_deterministic_union(tmp_path: Path) ->
     assert first_render.count("#### `MIT` — `sha256:") == 2
 
 
-def test_python_node_and_cli_are_scanned_as_independent_union_roots(tmp_path: Path) -> None:
+def test_native_distributions_are_scanned_as_independent_union_roots(tmp_path: Path) -> None:
     python = payload(
         [package("python-only", "MIT")],
         [("MIT", "MIT terms\n", ["python-only"])],
@@ -140,9 +140,13 @@ def test_python_node_and_cli_are_scanned_as_independent_union_roots(tmp_path: Pa
         [package("cli-only", "MIT")],
         [("MIT", "MIT terms\n", ["cli-only"])],
     )
+    c = payload(
+        [package("c-only", "MIT")],
+        [("MIT", "MIT terms\n", ["c-only"])],
+    )
 
     packages, texts = generator.merge_payloads(
-        {"Python": python, "Node": node, "CLI": cli},
+        {"Python": python, "Node": node, "CLI": cli, "C": c},
         policy=policy("MIT"),
         workspace=tmp_path,
     )
@@ -151,6 +155,7 @@ def test_python_node_and_cli_are_scanned_as_independent_union_roots(tmp_path: Pa
     assert "`python-only` | `1.0.0` | Python |" in rendered
     assert "`node-only` | `1.0.0` | Node |" in rendered
     assert "`cli-only` | `1.0.0` | CLI |" in rendered
+    assert "`c-only` | `1.0.0` | C |" in rendered
 
 
 def test_actual_policy_is_exact_and_checksum_clarified() -> None:
@@ -164,9 +169,11 @@ def test_write_repairs_generated_only_copy_divergence(tmp_path: Path) -> None:
     python_notice = tmp_path / generator.PYTHON_NOTICE
     node_notice = tmp_path / generator.NODE_NOTICE
     cli_notice = tmp_path / generator.CLI_NOTICE
+    c_notice = tmp_path / generator.C_NOTICE
     python_notice.parent.mkdir(parents=True)
     node_notice.parent.mkdir(parents=True)
     cli_notice.parent.mkdir(parents=True)
+    c_notice.parent.mkdir(parents=True)
     old_python = (
         f"custom provenance\n\n{generator.BEGIN_MARKER}\nold Python block\n{generator.END_MARKER}\n"
     )
@@ -185,4 +192,5 @@ def test_write_repairs_generated_only_copy_divergence(tmp_path: Path) -> None:
 
     assert python_notice.read_bytes() == node_notice.read_bytes()
     assert python_notice.read_bytes() == cli_notice.read_bytes()
+    assert python_notice.read_bytes() == c_notice.read_bytes()
     assert "replacement block" in python_notice.read_text()

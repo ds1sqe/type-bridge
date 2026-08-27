@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[3]
 PYTHON_NOTICE = ROOT / "type-bridge-core/python/type_bridge_core/THIRD_PARTY_NOTICES.md"
 NODE_NOTICE = ROOT / "type-bridge-core/crates/node/THIRD_PARTY_NOTICES.md"
 CLI_NOTICE = ROOT / "type-bridge-core/crates/cli/THIRD_PARTY_NOTICES.md"
+C_NOTICE = ROOT / "type-bridge-core/crates/c/THIRD_PARTY_NOTICES.md"
 ABOUT_POLICY = ROOT / "type-bridge-core/about.toml"
 
 
@@ -19,6 +20,7 @@ def test_native_distributions_ship_one_byte_identical_consolidated_notice() -> N
 
     assert notice == NODE_NOTICE.read_bytes()
     assert notice == CLI_NOTICE.read_bytes()
+    assert notice == C_NOTICE.read_bytes()
 
     core = tomllib.loads((ROOT / "type-bridge-core/pyproject.toml").read_text(encoding="utf-8"))
     assert core["project"]["license"] == {"text": "MIT"}
