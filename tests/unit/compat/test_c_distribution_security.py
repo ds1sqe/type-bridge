@@ -99,3 +99,27 @@ def test_signature_policy_is_candidate_only_and_identity_bound() -> None:
     assert policy["publication-disposition"] == SECURITY.DISPOSITION
     assert policy["protected-release"]["issuer"] == ("https://token.actions.githubusercontent.com")
     assert "release\\.yml@refs/tags/v2\\.1\\.0" in policy["protected-release"]["identity-regexp"]
+
+    hostile = copy.deepcopy(policy)
+    hostile["protected-release"]["issuer"] = "https://hostile.example"
+    with pytest.raises(SECURITY.SecurityError, match="signature identity"):
+        SECURITY.validate_signature_document(hostile)
+
+
+def test_individually_tampered_evidence_and_provenance_fail_closed(tmp_path: Path) -> None:
+    for name in SECURITY.EVIDENCE_NAMES:
+        if name != "candidate-manifest.json":
+            (tmp_path / name).write_bytes(SECURITY.canonical_json({"name": name}))
+    records = SECURITY.evidence_records(tmp_path)
+    SECURITY.validate_evidence_records(records, tmp_path)
+
+    (tmp_path / "runtime.spdx.json").write_bytes(b'{"tampered":true}\n')
+    with pytest.raises(SECURITY.SecurityError, match="evidence digest"):
+        SECURITY.validate_evidence_records(records, tmp_path)
+
+    artifacts = [{"filename": "runtime.tar.gz", "sha256": "2" * 64}]
+    accepted = SECURITY.provenance(artifacts, "3" * 40, "4" * 40)
+    hostile_provenance = copy.deepcopy(accepted)
+    hostile_provenance["source"]["commit"] = "5" * 40
+    with pytest.raises(SECURITY.SecurityError, match="provenance"):
+        SECURITY.validate_provenance_document(hostile_provenance, artifacts, "3" * 40, "4" * 40)

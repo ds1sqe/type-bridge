@@ -11,6 +11,7 @@ import re
 import stat
 import subprocess
 import sys
+import tempfile
 import tomllib
 from collections.abc import Mapping, Sequence
 from pathlib import Path, PurePosixPath
@@ -285,6 +286,9 @@ def cargo_sbom(
             "checksums": [{"algorithm": "SHA256", "checksumValue": artifact["sha256"]}],
         }
     )
+    spdx_ids = [item["SPDXID"] for item in entries]
+    if len(spdx_ids) != len(set(spdx_ids)):
+        raise SecurityError("Cargo package identities collide after SPDX normalization")
     return {
         "SPDXID": "SPDXRef-DOCUMENT",
         "spdxVersion": "SPDX-2.3",
@@ -402,6 +406,20 @@ def binary_security(binary: Path) -> None:
         raise SecurityError(f"candidate binary retains forbidden debug/symbol sections: {binary}")
 
 
+def validate_binary_payloads(
+    cli_files: Mapping[PurePosixPath, bytes],
+    runtime_files: Mapping[PurePosixPath, bytes],
+) -> None:
+    with tempfile.TemporaryDirectory(prefix="typebridge-security-") as temporary:
+        root = Path(temporary)
+        cli_binary = root / "type-bridge"
+        runtime_binary = root / packages.RUNTIME_LIBRARY
+        cli_binary.write_bytes(cli_files[PurePosixPath("bin/type-bridge")])
+        runtime_binary.write_bytes(runtime_files[PurePosixPath(f"lib/{packages.RUNTIME_LIBRARY}")])
+        binary_security(cli_binary)
+        binary_security(runtime_binary)
+
+
 def scan_payloads(
     payloads: Mapping[str, bytes], forbidden_paths: Sequence[bytes]
 ) -> dict[str, Any]:
@@ -500,6 +518,35 @@ def write_evidence(output: Path, values: Mapping[str, object]) -> None:
         os.chmod(destination, 0o644)
 
 
+def evidence_records(output: Path) -> list[dict[str, object]]:
+    return [
+        {
+            "filename": name,
+            "sha256": sha256(read_regular(output / name)),
+            "size": len(read_regular(output / name)),
+        }
+        for name in sorted(EVIDENCE_NAMES)
+        if name != "candidate-manifest.json"
+    ]
+
+
+def validate_evidence_records(declared: object, output: Path) -> None:
+    if declared != evidence_records(output):
+        raise SecurityError("candidate evidence digest drifted")
+
+
+def validate_signature_document(value: object) -> None:
+    if value != signature_policy():
+        raise SecurityError("signature identity or protected-release policy drifted")
+
+
+def validate_provenance_document(
+    value: object, artifacts: Sequence[Mapping[str, Any]], commit: str, tree: str
+) -> None:
+    if value != provenance(artifacts, commit, tree):
+        raise SecurityError("candidate provenance source, materials, builder, or subjects drifted")
+
+
 def assemble(
     cli_path: Path, runtime_path: Path, generated_path: Path, audit_path: Path, output: Path
 ) -> None:
@@ -540,16 +587,7 @@ def assemble(
     payloads.update({f"runtime:{path}": body for path, body in runtime_files.items()})
     payloads.update({f"generated:{path}": body for path, body in generated_files.items()})
     security = scan_payloads(payloads, forbidden)
-    import tempfile
-
-    with tempfile.TemporaryDirectory(prefix="typebridge-security-") as temporary:
-        root = Path(temporary)
-        cli_binary = root / "type-bridge"
-        runtime_binary = root / packages.RUNTIME_LIBRARY
-        cli_binary.write_bytes(cli_files[PurePosixPath("bin/type-bridge")])
-        runtime_binary.write_bytes(runtime_files[PurePosixPath(f"lib/{packages.RUNTIME_LIBRARY}")])
-        binary_security(cli_binary)
-        binary_security(runtime_binary)
+    validate_binary_payloads(cli_files, runtime_files)
     values: dict[str, object] = {
         "cli.spdx.json": cargo_sbom(artifacts[0], metadata, cli_closure, "type-bridge-cli"),
         "runtime.spdx.json": cargo_sbom(artifacts[1], metadata, c_closure, "type-bridge-c"),
@@ -591,11 +629,24 @@ def validate_evidence(
         raise SecurityError("candidate evidence member set drifted")
     values = {name: load_json(output / name, canonical=True) for name in EVIDENCE_NAMES}
     manifest = values["candidate-manifest.json"]
+    required_manifest = {
+        "artifacts",
+        "candidate-set-id",
+        "evidence",
+        "format",
+        "publication-disposition",
+        "source-commit",
+        "source-tree",
+    }
+    if set(manifest) != required_manifest:
+        raise SecurityError("candidate manifest fields drifted")
     candidate_id = manifest.pop("candidate-set-id", None)
     expected_id = "sha256:" + sha256(canonical_json(manifest))
     manifest["candidate-set-id"] = candidate_id
     if candidate_id != expected_id or manifest.get("format") != FORMAT:
         raise SecurityError("candidate-set identity drifted")
+    if manifest.get("publication-disposition") != DISPOSITION:
+        raise SecurityError("candidate publication disposition widened")
     expected_artifacts = [
         (cli_path, cli.validate(cli_path), "cli"),
         (runtime_path, packages.validate_runtime(runtime_path), "runtime"),
@@ -603,34 +654,58 @@ def validate_evidence(
     ]
     if manifest.get("artifacts") != [artifact_record(*item) for item in expected_artifacts]:
         raise SecurityError("candidate artifact identity drifted")
-    evidence = [
-        {
-            "filename": name,
-            "sha256": sha256(read_regular(output / name)),
-            "size": len(read_regular(output / name)),
-        }
-        for name in sorted(EVIDENCE_NAMES)
-        if name != "candidate-manifest.json"
-    ]
-    if manifest.get("evidence") != evidence:
-        raise SecurityError("candidate evidence digest drifted")
+    source_identities = {
+        (item[1]["source-commit"], item[1]["source-tree"]) for item in expected_artifacts
+    }
+    if source_identities != {(manifest["source-commit"], manifest["source-tree"])}:
+        raise SecurityError("candidate source identity drifted")
+    validate_evidence_records(manifest.get("evidence"), output)
     validate_audit(values["rustsec-report.json"])
-    if values["security-scan.json"].get("findings") != []:
-        raise SecurityError("candidate security scan contains findings")
-    if values["signature-policy.json"] != signature_policy():
-        raise SecurityError("signature identity or protected-release policy drifted")
-    provenance_value = values["provenance.json"]
-    if provenance_value.get("source", {}).get("commit") != manifest.get("source-commit"):
-        raise SecurityError("provenance source commit drifted")
-    subjects = provenance_value.get("subjects")
-    if subjects != [
-        {"filename": item["filename"], "sha256": item["sha256"]} for item in manifest["artifacts"]
-    ]:
-        raise SecurityError("provenance subjects drifted")
-    for name in ("cli.spdx.json", "runtime.spdx.json", "generated.spdx.json"):
-        sbom = values[name]
-        if sbom.get("spdxVersion") != "SPDX-2.3" or not sbom.get("packages"):
-            raise SecurityError(f"SBOM is incomplete: {name}")
+    validate_signature_document(values["signature-policy.json"])
+    validate_provenance_document(
+        values["provenance.json"],
+        manifest["artifacts"],
+        manifest["source-commit"],
+        manifest["source-tree"],
+    )
+
+    metadata = cargo_metadata()
+    expected_sboms = {
+        "cli.spdx.json": cargo_sbom(
+            manifest["artifacts"][0],
+            metadata,
+            runtime_closure(metadata, ("type-bridge-cli",)),
+            "type-bridge-cli",
+        ),
+        "runtime.spdx.json": cargo_sbom(
+            manifest["artifacts"][1],
+            metadata,
+            runtime_closure(metadata, ("type-bridge-c",)),
+            "type-bridge-c",
+        ),
+        "generated.spdx.json": generated_sbom(manifest["artifacts"][2], manifest["artifacts"][1]),
+    }
+    for name, expected in expected_sboms.items():
+        if values[name] != expected:
+            raise SecurityError(f"SBOM package graph or artifact identity drifted: {name}")
+
+    cli_files = cli.safe_archive_files(cli_path)
+    runtime_files = packages.safe_archive_files(runtime_path, packages.RUNTIME_MEMBERS)
+    generated_files = packages.safe_archive_files(generated_path, packages.PACKAGE_MEMBERS)
+    forbidden = tuple(
+        {
+            str(ROOT).encode(),
+            str(CORE).encode(),
+            str(Path.home()).encode(),
+            os.environ.get("CARGO_HOME", "").encode(),
+        }
+    )
+    payloads = {f"cli:{path}": body for path, body in cli_files.items()}
+    payloads.update({f"runtime:{path}": body for path, body in runtime_files.items()})
+    payloads.update({f"generated:{path}": body for path, body in generated_files.items()})
+    if values["security-scan.json"] != scan_payloads(payloads, forbidden):
+        raise SecurityError("candidate security scan policy or result drifted")
+    validate_binary_payloads(cli_files, runtime_files)
 
 
 def parse_args() -> argparse.Namespace:
