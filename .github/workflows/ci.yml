@@ -16,12 +16,6 @@ jobs:
     name: Standalone CLI candidate (Linux x86_64 GNU)
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    services:
-      typedb:
-        image: typedb/typedb:3.12.3
-        ports:
-          - 1729:1729
-          - 8000:8000
     steps:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -326,13 +320,27 @@ jobs:
           name: c-package-candidates-linux-x86_64-gnu
           path: tmp/c-artifact-live-input/c
 
+      - name: Start isolated plaintext and TLS TypeDB fixture
+        env:
+          TYPEDB_IMAGE: typedb/typedb:3.12.3
+          TYPEDB_PORT: "1729"
+          TYPEDB_HTTP_PORT: "8000"
+          TYPEDB_TLS_PORT: "1730"
+          TYPEDB_TLS_HTTP_PORT: "8001"
+        run: >-
+          docker compose -f docker-compose.yml -p type-bridge-c-artifact-live
+          up -d typedb typedb-tls
+
       - name: Wait for exact TypeDB fixture
         run: |
           for attempt in {1..45}; do
             version="$(curl --fail --silent --max-time 3 http://localhost:8000/v1/version || true)"
+            tls_version="$(curl --fail --silent --max-time 3 \
+              --cacert tests/fixtures/tls/root-ca.pem \
+              https://localhost:8001/v1/version || true)"
             if python3 -c \
-              'import json,sys; value=json.loads(sys.argv[1]); raise SystemExit(0 if value.get("version")=="3.12.3" else 1)' \
-              "$version"; then
+              'import json,sys; values=[json.loads(value) for value in sys.argv[1:]]; raise SystemExit(0 if all(value.get("version")=="3.12.3" for value in values) else 1)' \
+              "$version" "$tls_version"; then
               exit 0
             fi
             sleep 2
@@ -348,6 +356,9 @@ jobs:
           --database c_artifact_data_${{ github.run_id }}_${{ github.run_attempt }}
           --migration-database c_artifact_migration_${{ github.run_id }}_${{ github.run_attempt }}
           --infra-target ${{ runner.temp }}/typebridge-c-artifact-infra
+          --tls-address localhost:1730
+          --tls-http-port 8001
+          --tls-root-ca tests/fixtures/tls/root-ca.pem
           > tmp/c-artifact-live-journey.json
 
       - name: Independently revalidate exact live artifact evidence
@@ -366,9 +377,15 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-      - name: Show TypeDB logs after failure
+      - name: Show fixture logs after failure
         if: failure()
-        run: docker logs ${{ job.services.typedb.id }} 2>&1 || true
+        run: docker compose -f docker-compose.yml -p type-bridge-c-artifact-live logs
+
+      - name: Remove isolated plaintext and TLS fixture
+        if: always()
+        run: >-
+          docker compose -f docker-compose.yml -p type-bridge-c-artifact-live
+          down --volumes --remove-orphans
 
   # Rust crate: compile, test, lint (parallel with Python jobs)
   rust-check:

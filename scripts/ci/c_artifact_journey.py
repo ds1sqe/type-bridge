@@ -33,6 +33,7 @@ SETUP_SOURCE = ROOT / "type-bridge-core/crates/schema-codegen/tests/c_projection
 PROVIDER_SCHEMA = ROOT / "tests/contracts/sdk_conformance/workforce-v3/provider-3.12.1-v3.tql"
 FULL_MARKER_COUNT = 61
 PHASE4_MARKER_COUNT = 8
+CODEC_MARKER = "Workforce V5 C live codec direct/remote parity: passed"
 
 
 class JourneyError(RuntimeError):
@@ -213,6 +214,14 @@ def loader_source() -> bytes:
     return b"""#define _GNU_SOURCE\n#include <dlfcn.h>\n#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\ntypedef struct { const unsigned char *data; size_t length; } byte_view;\ntypedef unsigned int (*version_fn)(byte_view *);\nint main(int argc, char **argv) {\n  void *library; version_fn version; byte_view value = {0}; char maps[4096]; FILE *stream;\n  if (argc != 2) return 10;\n  library = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL); if (library == NULL) return 11;\n  *(void **)(&version) = dlsym(library, "type_bridge_runtime_version");\n  if (version == NULL || version(&value) != 0u || value.length != 5u || memcmp(value.data, "2.1.0", 5u) != 0) return 12;\n  if (dlclose(library) != 0) return 13;\n  stream = fopen("/proc/self/maps", "r"); if (stream == NULL) return 14;\n  while (fgets(maps, sizeof(maps), stream) != NULL) {\n    if (strstr(maps, "libtype_bridge_c.so") != NULL) { fclose(stream); return 15; }\n  }\n  return fclose(stream) == 0 ? 0 : 16;\n}\n"""
 
 
+def _tls_source_template() -> bytes:
+    return b"""#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n#include <tb_workforcev3/tb_workforcev3.h>\n+static type_bridge_byte_view_t view(const char *text) { type_bridge_byte_view_t value = {(const uint8_t *)text, strlen(text)}; return value; }\n+int main(int argc, char **argv) {\n+  FILE *stream; long length; uint8_t *pem = NULL; type_bridge_schema_package_t *package = NULL;\n+  type_bridge_execution_diagnostics_t *diagnostics = NULL; type_bridge_runtime_t *runtime = NULL; type_bridge_database_t *database = NULL;\n+  type_bridge_byte_view_t version = {0}; type_bridge_runtime_config_v1_t runtime_config = {0}; type_bridge_database_config_v2_t config = {0};\n+  type_bridge_query_execution_limits_v1_t limits = TYPE_BRIDGE_QUERY_EXECUTION_LIMITS_V1_DEFAULT;\n+  if (argc != 7) return 10; stream = fopen(argv[6], \"rb\"); if (stream == NULL) return 11;\n+  if (fseek(stream, 0, SEEK_END) != 0 || (length = ftell(stream)) <= 0 || length > TYPE_BRIDGE_DATABASE_CUSTOM_ROOT_CA_BYTES_MAX || fseek(stream, 0, SEEK_SET) != 0) return 12;\n+  pem = (uint8_t *)malloc((size_t)length); if (pem == NULL || fread(pem, 1u, (size_t)length, stream) != (size_t)length || fclose(stream) != 0) return 13;\n+  if (tb_workforcev3_schema_package_open_v2(&package, &diagnostics) != TYPE_BRIDGE_STATUS_OK || diagnostics != NULL) return 14;\n+  runtime_config.struct_size = sizeof(runtime_config); runtime_config.version = TYPE_BRIDGE_RUNTIME_CONFIG_VERSION; runtime_config.worker_threads = TYPE_BRIDGE_RUNTIME_WORKER_THREADS_MIN;\n+  if (type_bridge_runtime_open_v1(&runtime_config, &runtime, &diagnostics) != TYPE_BRIDGE_STATUS_OK) return 15;\n+  config.struct_size = sizeof(config); config.version = TYPE_BRIDGE_DATABASE_CONFIG_V2_VERSION; config.address = view(argv[1]); config.http_port = (uint32_t)strtoul(argv[2], NULL, 10);\n+  config.database = view(argv[3]); config.username = view(argv[4]); config.password = view(argv[5]); config.tls_mode = TYPE_BRIDGE_TLS_CUSTOM_ROOT_CA;\n+  config.custom_root_ca_pem.data = pem; config.custom_root_ca_pem.length = (size_t)length; config.connection_limits = limits; config.answer_limits = limits;\n+  if (type_bridge_database_open_v2(runtime, package, &config, NULL, &database, &diagnostics) != TYPE_BRIDGE_STATUS_OK || diagnostics != NULL) return 16;\n+  memset(pem, 0xa5, (size_t)length); free(pem); pem = NULL;\n+  if (type_bridge_database_server_version(database, &version) != TYPE_BRIDGE_STATUS_OK || version.length != 6u || memcmp(version.data, \"3.12.3\", 6u) != 0) return 17;\n+  if (type_bridge_database_close(&database, &diagnostics) != TYPE_BRIDGE_STATUS_OK || database != NULL) return 18;\n+  if (type_bridge_runtime_close(&runtime, &diagnostics) != TYPE_BRIDGE_STATUS_OK || runtime != NULL) return 19;\n+  if (type_bridge_schema_package_close(&package) != TYPE_BRIDGE_STATUS_OK || package != NULL || diagnostics != NULL) return 20;\n+  puts(\"custom-root TLS direct artifact connection: passed\"); return 0;\n+}\n"""
+
+
+def tls_source() -> bytes:
+    return _tls_source_template().replace(b"\n+", b"\n")
+
+
 def passed_markers(path: Path, *, exclude_codec: bool = False) -> list[str]:
     markers = [
         match.group(1)
@@ -235,6 +244,58 @@ def require_markers(stdout: str, markers: Sequence[str], label: str) -> None:
         raise JourneyError(f"{label} omitted connected markers: {missing}")
 
 
+def tls_probe(
+    runtime: Path,
+    generated: Path,
+    *,
+    address: str,
+    http_port: str,
+    database: str,
+    username: str,
+    password: str,
+    root_ca: Path,
+    root: Path,
+) -> dict[str, Any]:
+    if not root_ca.is_file() or root_ca.is_symlink():
+        raise JourneyError("TLS root CA must be a regular non-symlink file")
+    source = root / "tls-consumer.c"
+    body = tls_source()
+    body = body.replace(
+        b'if (argc != 7) return 10; stream = fopen(argv[6], "rb");',
+        b'if (argc != 7) return 10;\n  stream = fopen(argv[6], "rb");',
+    )
+    source.write_bytes(body)
+    executable = root / "tls-consumer"
+    _compile(
+        "cc",
+        "-std=c17",
+        [generated / "src/tb_workforcev3.c", source],
+        executable,
+        runtime,
+        generated,
+    )
+    marker = "custom-root TLS direct artifact connection: passed"
+    stdout = run(
+        [
+            str(executable),
+            address,
+            http_port,
+            database,
+            username,
+            password,
+            str(root_ca),
+        ],
+        env={**os.environ, "LD_LIBRARY_PATH": str(runtime / "lib")},
+    )
+    require_markers(stdout, [marker], "custom-root TLS consumer")
+    return {
+        "captured-root-buffer-overwritten-after-open": True,
+        "direct": True,
+        "marker": marker,
+        "mode": "custom-root",
+    }
+
+
 def connected(
     runtime_archive: Path,
     generated_archive: Path,
@@ -245,6 +306,9 @@ def connected(
     username: str,
     password: str,
     remote_port: str,
+    tls_address: str | None = None,
+    tls_http_port: str | None = None,
+    tls_root_ca: Path | None = None,
 ) -> dict[str, Any]:
     runtime_manifest = packages.validate_runtime(runtime_archive)
     generated_manifest = packages.validate_generated(generated_archive)
@@ -273,6 +337,26 @@ def connected(
         _write(generated_files, generated)
         environment["LD_LIBRARY_PATH"] = str(runtime / "lib")
         generated_source = generated / "src/tb_workforcev3.c"
+        tls_values = (tls_address, tls_http_port, tls_root_ca)
+        if any(value is not None for value in tls_values) and not all(
+            value is not None for value in tls_values
+        ):
+            raise JourneyError("TLS connected lane requires address, HTTP port, and root CA")
+        tls = (
+            tls_probe(
+                runtime,
+                generated,
+                address=tls_address,
+                http_port=tls_http_port,
+                database=database,
+                username=username,
+                password=password,
+                root_ca=tls_root_ca,
+                root=root,
+            )
+            if tls_address is not None and tls_http_port is not None and tls_root_ca is not None
+            else None
+        )
 
         full_source = root / "full-consumer.c"
         full_source.write_bytes(adapted_fixture(FULL_CONSUMER))
@@ -287,6 +371,33 @@ def connected(
         )
         full_stdout = run([str(full_executable)], env=environment)
         require_markers(full_stdout, full_markers, "full C17 consumer")
+
+        codec_executable = root / "codec-consumer"
+        _compile(
+            "cc",
+            "-std=c17",
+            [generated_source, full_source],
+            codec_executable,
+            runtime,
+            generated,
+            extra=("-DTYPE_BRIDGE_WORKFORCE_V5_C_CODEC",),
+        )
+        codec_evidence = root / "codec-evidence"
+        codec_evidence.mkdir()
+        codec_stdout = run(
+            [str(codec_executable)],
+            env={
+                **environment,
+                "TYPE_BRIDGE_WORKFORCE_V5_C_EVIDENCE_DIR": str(codec_evidence),
+            },
+        )
+        require_markers(codec_stdout, [CODEC_MARKER], "Workforce V5 codec consumer")
+        codec_files = {}
+        for name in ("entity.bin", "relation.bin"):
+            body = packages.read_regular(codec_evidence / name)
+            if not body:
+                raise JourneyError(f"Workforce V5 codec evidence is empty: {name}")
+            codec_files[name] = {"sha256": packages.sha256(body), "size": len(body)}
 
         package_source = root / "phase4-package.c"
         package_source.write_bytes(adapted_flat_package())
@@ -338,6 +449,11 @@ def connected(
         },
         "format": "typebridge.c-artifact-connected-observation/v1",
         "full-c17-marker-count": len(full_markers),
+        "model-codec": {
+            "direct-remote-equal": True,
+            "files": codec_files,
+            "marker": CODEC_MARKER,
+        },
         "phase4": {
             "c17-marker-count": len(phase4_markers),
             "cpp17-marker-count": len(phase4_markers),
@@ -345,6 +461,7 @@ def connected(
         },
         "plaintext-direct": True,
         "remote": {"caller-transport": True},
+        "tls": tls,
     }
 
 
@@ -434,6 +551,9 @@ def live_journey(
     username: str,
     password: str,
     infra_target: Path,
+    tls_address: str | None = None,
+    tls_http_port: str | None = None,
+    tls_root_ca: Path | None = None,
 ) -> dict[str, Any]:
     for value in (database, migration_database):
         if re.fullmatch(r"[a-z][a-z0-9_]{2,62}", value) is None:
@@ -514,6 +634,9 @@ def live_journey(
                 username=username,
                 password=password,
                 remote_port=str(port),
+                tls_address=tls_address,
+                tls_http_port=tls_http_port,
+                tls_root_ca=tls_root_ca,
             )
             migration_touched = True
             migration = cli.connected_smoke(
@@ -809,10 +932,33 @@ def validate_live_report(
         raise JourneyError("live artifact connected identity drifted")
     if connected_value.get("full-c17-marker-count") != FULL_MARKER_COUNT:
         raise JourneyError("live artifact full-consumer markers are incomplete")
+    codec = connected_value.get("model-codec")
+    if not isinstance(codec, dict) or codec.get("marker") != CODEC_MARKER:
+        raise JourneyError("live artifact model-codec marker is missing")
+    if codec.get("direct-remote-equal") is not True:
+        raise JourneyError("live artifact model-codec lanes disagree")
+    codec_files = codec.get("files")
+    if not isinstance(codec_files, dict) or set(codec_files) != {"entity.bin", "relation.bin"}:
+        raise JourneyError("live artifact model-codec evidence inventory drifted")
+    for value in codec_files.values():
+        if (
+            not isinstance(value, dict)
+            or not isinstance(value.get("size"), int)
+            or value["size"] <= 0
+            or re.fullmatch(r"[0-9a-f]{64}", value.get("sha256", "")) is None
+        ):
+            raise JourneyError("live artifact model-codec evidence identity drifted")
     if connected_value.get("plaintext-direct") is not True or connected_value.get("remote") != {
         "caller-transport": True
     }:
         raise JourneyError("live artifact direct/remote lanes are incomplete")
+    if connected_value.get("tls") != {
+        "captured-root-buffer-overwritten-after-open": True,
+        "direct": True,
+        "marker": "custom-root TLS direct artifact connection: passed",
+        "mode": "custom-root",
+    }:
+        raise JourneyError("live artifact TLS lane is incomplete")
     phase4 = connected_value.get("phase4")
     if not isinstance(phase4, dict) or phase4.get("c17-marker-count") != PHASE4_MARKER_COUNT:
         raise JourneyError("live artifact C17 successor markers are incomplete")
@@ -873,6 +1019,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     live.add_argument("--username", default="admin")
     live.add_argument("--password", default="password")
     live.add_argument("--infra-target", type=Path, required=True)
+    live.add_argument("--tls-address", required=True)
+    live.add_argument("--tls-http-port", required=True)
+    live.add_argument("--tls-root-ca", type=Path, required=True)
     validate = commands.add_parser("validate-report")
     validate.add_argument("report", type=Path)
     validate.add_argument("cli", type=Path)
@@ -916,6 +1065,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 username=arguments.username,
                 password=arguments.password,
                 infra_target=arguments.infra_target,
+                tls_address=arguments.tls_address,
+                tls_http_port=arguments.tls_http_port,
+                tls_root_ca=arguments.tls_root_ca,
             )
             print(packages.canonical_json(result).decode(), end="")
         elif arguments.command in {"validate-report", "validate-live"}:

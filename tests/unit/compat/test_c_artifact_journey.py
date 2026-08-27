@@ -62,6 +62,14 @@ def _live_report() -> dict[str, Any]:
             },
             "format": "typebridge.c-artifact-connected-observation/v1",
             "full-c17-marker-count": 61,
+            "model-codec": {
+                "direct-remote-equal": True,
+                "files": {
+                    "entity.bin": {"sha256": "b" * 64, "size": 123},
+                    "relation.bin": {"sha256": "c" * 64, "size": 456},
+                },
+                "marker": JOURNEY.CODEC_MARKER,
+            },
             "phase4": {
                 "c17-marker-count": 8,
                 "cpp17-marker-count": 8,
@@ -69,6 +77,12 @@ def _live_report() -> dict[str, Any]:
             },
             "plaintext-direct": True,
             "remote": {"caller-transport": True},
+            "tls": {
+                "captured-root-buffer-overwritten-after-open": True,
+                "direct": True,
+                "marker": "custom-root TLS direct artifact connection: passed",
+                "mode": "custom-root",
+            },
         },
         "format": "typebridge.c-artifact-live-journey/v1",
         "migration": {
@@ -120,9 +134,19 @@ def test_canonical_consumers_adapt_only_package_identity() -> None:
         assert "FIXTURE_" not in source
         assert "#include <tb_workforcev3/tb_workforcev3.h>" in source
         assert "tb_workforcev3_schema_package_open" in source
+        if fixture == JOURNEY.FULL_CONSUMER:
+            assert "ordered-omitted" in source
+            assert "args.field_aliases_chunks = NULL;" in source
     flat = JOURNEY.adapted_flat_package().decode()
     assert '#include "src/tb_workforcev3.c"' in flat
     assert "tb_workforcev3_schema_package_chunks_v1" in flat
+
+
+def test_tls_consumer_captures_custom_root_without_template_markers() -> None:
+    source = JOURNEY.tls_source()
+    assert b"\n+" not in source
+    assert b"TYPE_BRIDGE_TLS_CUSTOM_ROOT_CA" in source
+    assert b"memset(pem, 0xa5" in source
 
 
 def test_connected_marker_authority_is_exact_and_duplicate_free() -> None:
@@ -154,6 +178,12 @@ def test_live_report_revalidates_artifacts_journeys_and_cleanup(
     [
         (("cleanup", "data-database"), "present", "cleanup"),
         (("data-query-remote", "full-c17-marker-count"), 60, "markers"),
+        (("data-query-remote", "tls", "mode"), "disabled", "TLS lane"),
+        (
+            ("data-query-remote", "model-codec", "direct-remote-equal"),
+            False,
+            "codec lanes disagree",
+        ),
         (
             ("data-query-remote", "phase4", "stdout-sha256", "cpp17"),
             "b" * 64,
