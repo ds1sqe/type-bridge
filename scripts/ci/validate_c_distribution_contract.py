@@ -121,6 +121,35 @@ def validate(contract_path: Path = DEFAULT_CONTRACT, root: Path = ROOT) -> dict[
         "debug-symbol disposition drifted",
     )
 
+    security = contract.get("security_policy")
+    _require(isinstance(security, dict), "security policy is missing")
+    _require(security.get("cargo_audit_version") == "0.22.2", "cargo-audit pin drifted")
+    _require(security.get("vulnerabilities") == "deny-all", "vulnerability policy widened")
+    _require(
+        security.get("warnings") == "deny-unless-exactly-adjudicated",
+        "RustSec warning policy widened",
+    )
+    adjudications = security.get("adjudications")
+    _require(
+        isinstance(adjudications, list)
+        and len(adjudications) == 1
+        and adjudications[0].get("advisory") == "RUSTSEC-2025-0134"
+        and adjudications[0].get("package") == "rustls-pemfile"
+        and adjudications[0].get("version") == "2.2.0",
+        "RustSec adjudication set drifted",
+    )
+    signature = security.get("protected_signature")
+    _require(isinstance(signature, dict), "protected signature policy is missing")
+    _require(signature.get("cosign_version") == "3.0.6", "Cosign pin drifted")
+    _require(
+        signature.get("issuer") == "https://token.actions.githubusercontent.com",
+        "signature issuer drifted",
+    )
+    _require(
+        signature.get("candidate_signatures") == "forbidden-before-authorization",
+        "candidate signing boundary widened",
+    )
+
     authorities = contract.get("source_authorities")
     _require(isinstance(authorities, list) and authorities, "source authorities are missing")
     seen: set[str] = set()

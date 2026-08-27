@@ -775,7 +775,7 @@ and fails the byte-for-byte CI freshness check.
 - C root: `crates/c/Cargo.toml` with default features
 - Release targets: `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `x86_64-apple-darwin`, `aarch64-apple-darwin`, `x86_64-pc-windows-msvc`, `aarch64-pc-windows-msvc`
 - Excluded from this package inventory: build-only and development-only dependencies, plus private TypeBridge-authored crates covered by the MIT section
-- Closure fingerprint: `sha256:ee81bce8269e2052d84a3541325a39f92c0bc057ede8475d5c2995226e74a9d0`
+- Closure fingerprint: `sha256:0405f9e76bbf2553fe7d6617dbbd833cc9e71063793fb09138976e0c616afc56`
 
 Every evaluated package's complete cargo-about-resolved SPDX expression is retained
 below. The
@@ -799,7 +799,7 @@ bytes actually reproduced in this notice.
 | `anstyle-parse` | `1.0.0` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:6efb0476a1cc085077ed49357026d8c173bf33017278ef440f222fb9cbcb66e6` |
 | `anstyle-query` | `1.1.5` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:6efb0476a1cc085077ed49357026d8c173bf33017278ef440f222fb9cbcb66e6` |
 | `anstyle-wincon` | `3.0.11` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:6efb0476a1cc085077ed49357026d8c173bf33017278ef440f222fb9cbcb66e6` |
-| `anyhow` | `1.0.102` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3` |
+| `anyhow` | `1.0.103` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3` |
 | `arraydeque` | `0.5.1` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:0aab2eeeaa27c8e946c235e5e605c6d52cb0a56d254c660bdcf618d6f7faf4af` |
 | `async-stream` | `0.3.6` | Python, Node, CLI, C | `crates.io` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
 | `async-stream-impl` | `0.3.6` | Python, Node, CLI, C | `crates.io` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
@@ -832,7 +832,7 @@ bytes actually reproduced in this notice.
 | `crossbeam` | `0.8.4` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:5734ed989dfca1f625b40281ee9f4530f91b2411ec01cb748223e7eb87e201ab` |
 | `crossbeam-channel` | `0.5.15` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:5734ed989dfca1f625b40281ee9f4530f91b2411ec01cb748223e7eb87e201ab` |
 | `crossbeam-deque` | `0.8.6` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:5734ed989dfca1f625b40281ee9f4530f91b2411ec01cb748223e7eb87e201ab` |
-| `crossbeam-epoch` | `0.9.18` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:5734ed989dfca1f625b40281ee9f4530f91b2411ec01cb748223e7eb87e201ab` |
+| `crossbeam-epoch` | `0.9.20` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:5734ed989dfca1f625b40281ee9f4530f91b2411ec01cb748223e7eb87e201ab` |
 | `crossbeam-queue` | `0.3.12` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:5734ed989dfca1f625b40281ee9f4530f91b2411ec01cb748223e7eb87e201ab` |
 | `crossbeam-utils` | `0.8.21` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:5734ed989dfca1f625b40281ee9f4530f91b2411ec01cb748223e7eb87e201ab` |
 | `crypto-common` | `0.1.7` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:3521672491a3479422d5fe1aca6645dd2984090f85da6e5205abfb18fb7a6897` |
@@ -866,7 +866,7 @@ bytes actually reproduced in this notice.
 | `getrandom` | `0.2.17` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:42fa16951ce7f24b5a467a40e5b449a1d41e662f97ca779864f053f39e097737` |
 | `getrandom` | `0.4.2` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:523a42c25d245dde9c015f882cec7f4555aad883382a6cf19b4b7d9b2cd5419b` |
 | `granit-parser` | `0.0.7` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
-| `h2` | `0.4.13` | Python, Node, CLI, C | `crates.io` | `MIT` | `MIT@sha256:b21623012e6c453d944b0342c515b631cfcbf30704c2621b291526b69c10724d` |
+| `h2` | `0.4.16` | Python, Node, CLI, C | `crates.io` | `MIT` | `MIT@sha256:b21623012e6c453d944b0342c515b631cfcbf30704c2621b291526b69c10724d` |
 | `hashbrown` | `0.12.3` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:ff8f68cb076caf8cefe7a6430d4ac086ce6af2ca8ce2c4e5a2004d4552ef52a2` |
 | `hashbrown` | `0.16.1` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:ff8f68cb076caf8cefe7a6430d4ac086ce6af2ca8ce2c4e5a2004d4552ef52a2` |
 | `heck` | `0.5.0` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:7b63ecd5f1902af1b63729947373683c32745c16a10e8e6292e2e2dcd7e90ae0` |
@@ -951,7 +951,7 @@ bytes actually reproduced in this notice.
 | `pythonize` | `0.23.0` | Python | `crates.io` | `MIT` | `MIT@sha256:49a358eef117e2e5ffadd0df4e8243447adbcd9894f9dd8b4180775c5f88c7ce` |
 | `quote` | `1.0.45` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3` |
 | `rand` | `0.10.2` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:209fbbe0ad52d9235e37badf9cadfe4dbdc87203179c0899e738b39ade42177b` |
-| `rand` | `0.8.5` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:209fbbe0ad52d9235e37badf9cadfe4dbdc87203179c0899e738b39ade42177b` |
+| `rand` | `0.8.6` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:209fbbe0ad52d9235e37badf9cadfe4dbdc87203179c0899e738b39ade42177b` |
 | `rand_chacha` | `0.3.1` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:209fbbe0ad52d9235e37badf9cadfe4dbdc87203179c0899e738b39ade42177b` |
 | `rand_core` | `0.10.0` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:8b6e9feec03e7c9a5facb26855cecd31662bf989b636bcfe79521bdf8ac863f0` |
 | `rand_core` | `0.6.4` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:209fbbe0ad52d9235e37badf9cadfe4dbdc87203179c0899e738b39ade42177b` |
@@ -966,7 +966,7 @@ bytes actually reproduced in this notice.
 | `rustls-native-certs` | `0.8.3` | Python, Node, CLI, C | `crates.io` | `Apache-2.0 OR ISC OR MIT` | `MIT@sha256:709e3175b4212f7b13aa93971c9f62ff8c69ec45ad8c6532a7e0c41d7a7d6f8c` |
 | `rustls-pemfile` | `2.2.0` | Python, Node, CLI, C | `crates.io` | `Apache-2.0 OR ISC OR MIT` | `MIT@sha256:709e3175b4212f7b13aa93971c9f62ff8c69ec45ad8c6532a7e0c41d7a7d6f8c` |
 | `rustls-pki-types` | `1.14.0` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:9117d922e667125508dde62b02c1f57ed22f5ad21eb536aa2e2d99e1c796e639` |
-| `rustls-webpki` | `0.103.10` | Python, Node, CLI, C | `crates.io` | `ISC` | `ISC@sha256:5b698ca13897be3afdb7174256fa1574f8c6892b8bea1a66dd6469d3fe27885a` |
+| `rustls-webpki` | `0.103.13` | Python, Node, CLI, C | `crates.io` | `ISC` | `ISC@sha256:5b698ca13897be3afdb7174256fa1574f8c6892b8bea1a66dd6469d3fe27885a` |
 | `rustversion` | `1.0.22` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3` |
 | `schannel` | `0.1.29` | Python, Node, CLI, C | `crates.io` | `MIT` | `MIT@sha256:aa72991ac35b4de0034da0afe943e62b48c4092fc2ba13ae47806d8e9a4ad551` |
 | `scopeguard` | `1.2.0` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:fb77f0a9c53e473abe5103c8632ef9f0f2874d4fb3f17cb2d8c661aab9cee9d7` |

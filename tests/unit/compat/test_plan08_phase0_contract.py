@@ -45,6 +45,7 @@ def test_distribution_contract_matches_every_live_source_authority() -> None:
         (("compatibility", "provider_io_on_failure"), True),
         (("artifact_policy", "symlinks"), True),
         (("artifact_policy", "debug_symbols"), "retained"),
+        (("security_policy", "vulnerabilities"), "allow-high"),
         (("matrix", "public_supported"), ["x86_64-unknown-linux-gnu"]),
     ],
 )

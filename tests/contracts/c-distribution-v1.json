@@ -146,6 +146,26 @@
       "signature-attestation-release-path"
     ]
   },
+  "security_policy": {
+    "cargo_audit_version": "0.22.2",
+    "vulnerabilities": "deny-all",
+    "warnings": "deny-unless-exactly-adjudicated",
+    "adjudications": [
+      {
+        "advisory": "RUSTSEC-2025-0134",
+        "classification": "unmaintained",
+        "package": "rustls-pemfile",
+        "version": "2.2.0",
+        "rationale": "non-vulnerability thin compatibility wrapper required by the frozen Tonic 0.12/TypeDB driver graph; remove with its upstream compatibility upgrade"
+      }
+    ],
+    "protected_signature": {
+      "cosign_version": "3.0.6",
+      "issuer": "https://token.actions.githubusercontent.com",
+      "identity_regexp": "^https://github\\.com/ds1sqe/type-bridge/\\.github/workflows/release\\.yml@refs/tags/v2\\.1\\.0$",
+      "candidate_signatures": "forbidden-before-authorization"
+    }
+  },
   "source_authorities": [
     {"path": "type-bridge-core/crates/c/Cargo.toml", "sha256": "99ac503cbc1408bed8098fd20f53879776b75f02657ceec6530a6d104c874c06"},
     {"path": "type-bridge-core/crates/c/CMakeLists.txt", "sha256": "d67604d4509460adf1ba5d9ade344d81f08097113f0e251df11e7f8c08ea8f96"},
