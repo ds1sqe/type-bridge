@@ -58,6 +58,7 @@ def test_c_consumer_is_bound_only_to_phase4_artifacts() -> None:
 
 def test_runner_uses_one_surface_build_four_compositions_and_one_comparator() -> None:
     source = (CI / "run_workforce_v6_candidate.py").read_text(encoding="utf-8")
+    assert '["uv", "run", "python"] if binding == "python"' in source
     assert source.count('"scripts/ci/workforce_v6_surfaces.py"') == 1
     assert source.count('"scripts/ci/compose_workforce_v6_evidence.py"') == 1
     assert source.count('"scripts/ci/assemble_workforce_conformance_v6.py"') == 1

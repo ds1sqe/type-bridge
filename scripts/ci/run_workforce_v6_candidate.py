@@ -108,9 +108,10 @@ def assemble(
     )
     for binding in BINDINGS[:-1]:
         surface = surfaces / f"type-bridge-{binding}-generated-workforce-v6.tar.gz"
+        interpreter = ["uv", "run", "python"] if binding == "python" else [sys.executable]
         run(
             [
-                sys.executable,
+                *interpreter,
                 "scripts/ci/validate_workforce_v6_surface_consumer.py",
                 str(surface),
                 "--binding",
