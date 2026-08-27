@@ -2,7 +2,4 @@ undefine
 owns legacy-name from person;
 
 undefine
-value string from legacy-name;
-
-undefine
 legacy-name;

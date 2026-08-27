@@ -401,12 +401,27 @@ pub(crate) fn lower_schema_delta_with_verified_assertions(
             "verified discharged operation indices are not canonical for this delta",
         ));
     }
+    // TypeDB deletes an attribute's value declaration together with the
+    // attribute type. Sending a separate `undefine value ...` first is not a
+    // valid intermediate schema because a concrete attribute must retain its
+    // value type. Preserve the formal delta unit, but let the later exact type
+    // deletion own that provider-side cascade.
+    let deleted_attributes = delta
+        .operations()
+        .iter()
+        .filter_map(|operation| match operation.undefined_fact() {
+            Some(SchemaFact::Type(fact)) if fact.id().kind() == TypeKind::Attribute => {
+                Some(fact.id().label().as_str().to_owned())
+            }
+            _ => None,
+        })
+        .collect::<BTreeSet<_>>();
     let units = delta
         .operations()
         .iter()
         .enumerate()
         .map(|(index, operation)| {
-            lower_operation(
+            let mut unit = lower_operation(
                 index,
                 operation,
                 source_facts,
@@ -414,7 +429,15 @@ pub(crate) fn lower_schema_delta_with_verified_assertions(
                 binding,
                 discharged_operation_indices.binary_search(&index).is_ok(),
                 destructive_approved,
-            )
+            )?;
+            if matches!(
+                operation.undefined_fact(),
+                Some(SchemaFact::Value(fact))
+                    if deleted_attributes.contains(fact.id().attribute().label().as_str())
+            ) {
+                unit.statements.clear();
+            }
+            Ok(unit)
         })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(SchemaLoweringPlan {

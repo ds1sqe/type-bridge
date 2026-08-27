@@ -185,6 +185,42 @@ fn migration_id(name: &str) -> MigrationId {
     )
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires an isolated TypeDB 3.12.3 server"]
+async fn raw_attribute_type_undefinition_removes_its_dependencies_on_3_12_3() {
+    let (managed, journal) = databases().await;
+    let mut define = managed
+        .schema_transaction()
+        .await
+        .expect("open fixture schema transaction");
+    define
+        .query("define\nattribute legacy-name, value string;\nentity person, owns legacy-name;")
+        .await
+        .expect("define owned attribute");
+    define.commit().await.expect("commit fixture schema");
+
+    let mut remove = managed
+        .schema_transaction()
+        .await
+        .expect("open removal schema transaction");
+    remove
+        .query("undefine\nlegacy-name;")
+        .await
+        .expect("remove attribute type and its dependencies");
+    remove.commit().await.expect("commit attribute removal");
+
+    let export = managed.schema_text().await.expect("export final schema");
+    assert!(!export.contains("legacy-name"), "{export}");
+    managed
+        .delete_database()
+        .await
+        .expect("delete isolated managed database");
+    journal
+        .delete_database()
+        .await
+        .expect("delete isolated journal database");
+}
+
 fn derived_assertion_step(
     source: &DeclaredSchema,
     target: &DeclaredSchema,

@@ -825,6 +825,49 @@ fn destructive_generation_is_honest_and_previews_without_approval() {
 }
 
 #[test]
+fn attribute_type_removal_uses_the_provider_cascade_for_its_value_declaration() {
+    let genesis = declared_facts(Vec::new());
+    let person = entity_id("person");
+    let legacy_name = AttributeId::new("legacy-name").expect("fixture attribute");
+    let source = declared_facts(vec![
+        SchemaFact::Type(TypeFact::new(person.clone()).expect("person type")),
+        SchemaFact::Type(
+            TypeFact::new(
+                TypeId::new(TypeKind::Attribute, legacy_name.label().as_str())
+                    .expect("attribute type"),
+            )
+            .expect("attribute type fact"),
+        ),
+        SchemaFact::Value(ValueFact::new(
+            ValueFactId::new(legacy_name.clone()),
+            ValueTypeTag::String,
+        )),
+        SchemaFact::Owns(OwnsFact::new(
+            OwnsFactId::new(person, legacy_name).expect("ownership"),
+        )),
+    ]);
+    let desired = declared(&["person"]);
+    let context = context();
+    let committed = committed_manifest("0001_source", Vec::new(), &genesis, &source, &context);
+    let graph = MigrationHistoryGraph::from_verified(vec![committed]).expect("graph");
+    let next = generated(
+        &graph,
+        &request("drop_legacy_name", &genesis, &desired, &context),
+    );
+
+    let preview = render_migration_preview(next.manifest(), &context).expect("preview renders");
+    assert!(
+        preview.contains("owns legacy-name from person;"),
+        "{preview}"
+    );
+    assert!(preview.contains("undefine\nlegacy-name;"), "{preview}");
+    assert!(
+        !preview.contains("value string from legacy-name;"),
+        "{preview}"
+    );
+}
+
+#[test]
 fn writes_publish_atomically_and_recover_orphaned_previews() {
     let genesis = declared_facts(Vec::new());
     let desired = declared(&["person"]);
