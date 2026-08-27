@@ -180,7 +180,7 @@ def test_candidate_build_environment_remaps_machine_specific_source_paths(
     assert environment["SOURCE_DATE_EPOCH"] == "0"
     assert "RUSTFLAGS" not in environment
     assert "-C" in flags
-    assert "strip=debuginfo" in flags
+    assert "strip=symbols" in flags
     assert f"--remap-path-prefix={cargo_home.resolve()}=/cargo" in flags
     assert any(flag.endswith("=/type-bridge") for flag in flags)
     assert any(flag.endswith("=/type-bridge-core") for flag in flags)

@@ -128,6 +128,7 @@
     "symlinks": false,
     "case_collisions": false,
     "post_build_mutation": false,
+    "debug_symbols": "stripped-no-separate-package",
     "source_checkout_at_consumer_time": false,
     "cargo_at_consumer_time": false,
     "python_at_consumer_time": false,

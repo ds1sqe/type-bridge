@@ -158,7 +158,7 @@ def candidate_build_environment(target_directory: Path) -> dict[str, str]:
         (cargo_home, Path("/cargo")),
         (Path.home().resolve(), Path("/build-home")),
     )
-    flags = ["-C", "strip=debuginfo"]
+    flags = ["-C", "strip=symbols"]
     flags.extend(f"--remap-path-prefix={source}={destination}" for source, destination in mappings)
     environment.pop("RUSTFLAGS", None)
     environment.update(

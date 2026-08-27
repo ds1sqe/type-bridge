@@ -116,6 +116,10 @@ def validate(contract_path: Path = DEFAULT_CONTRACT, root: Path = ROOT) -> dict[
     ):
         _require(policy.get(field) is False, f"unsafe artifact policy enabled: {field}")
     _require(policy.get("regular_files_only") is True, "regular-file policy is missing")
+    _require(
+        policy.get("debug_symbols") == "stripped-no-separate-package",
+        "debug-symbol disposition drifted",
+    )
 
     authorities = contract.get("source_authorities")
     _require(isinstance(authorities, list) and authorities, "source authorities are missing")
