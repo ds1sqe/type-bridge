@@ -145,6 +145,9 @@ run_c() {
     run_step "standalone CLI candidate and hostile archive contracts" \
         uv run pytest tests/unit/compat/test_standalone_cli_candidate.py -q
 
+    run_step "C runtime/generated-package candidate and hostile archive contracts" \
+        uv run pytest tests/unit/compat/test_c_package_candidates.py -q
+
     local c_shared_target c_shared_library
     c_shared_target="$(mktemp -d)"
     if [[ "$(uname -s)" == "Darwin" ]]; then

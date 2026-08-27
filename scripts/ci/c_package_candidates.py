@@ -13,6 +13,7 @@ import re
 import shlex
 import shutil
 import stat
+import subprocess
 import tarfile
 import tempfile
 from collections.abc import Mapping, Sequence
@@ -79,6 +80,27 @@ def run(
         return shared.run(command, cwd=cwd, env=env)
     except shared.CandidateError as error:
         raise CandidateError(str(error)) from error
+
+
+def require_command_failure(
+    command: Sequence[str], *, cwd: Path = ROOT, env: Mapping[str, str] | None = None
+) -> None:
+    try:
+        result = subprocess.run(
+            command,
+            cwd=cwd,
+            env=None if env is None else dict(env),
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise CandidateError(
+            f"rejection command could not run: {' '.join(command)}: {error}"
+        ) from error
+    if result.returncode == 0:
+        raise CandidateError(f"incompatible candidate was accepted: {' '.join(command)}")
 
 
 def canonical_json(value: object) -> bytes:
@@ -724,6 +746,40 @@ def smoke(runtime_archive: Path, generated_archive: Path) -> dict[str, object]:
         run(["cmake", "--build", str(build), "--parallel", "2"], env=environment)
         run([str(build / "consumer")], env=environment)
 
+        rejection_source = root / "rejection source"
+        rejection_source.mkdir()
+        (rejection_source / "CMakeLists.txt").write_text(
+            "cmake_minimum_required(VERSION 3.20)\n"
+            "project(type_bridge_runtime_rejection LANGUAGES C)\n"
+            f"find_package({PACKAGE_NAME} 1.0.0 EXACT CONFIG REQUIRED)\n",
+            encoding="utf-8",
+        )
+        for incompatible in ("1.5.0", "2.0.0"):
+            fake_runtime = root / f"fake runtime {incompatible}"
+            fake_runtime.mkdir()
+            sentinel = fake_runtime / "provider-io-sentinel"
+            (fake_runtime / "TypeBridgeConfig.cmake").write_text(
+                f'file(WRITE "{sentinel}" "loaded")\n', encoding="utf-8"
+            )
+            (fake_runtime / "TypeBridgeConfigVersion.cmake").write_text(
+                f'set(PACKAGE_VERSION "{incompatible}")\nset(PACKAGE_VERSION_COMPATIBLE FALSE)\n',
+                encoding="utf-8",
+            )
+            require_command_failure(
+                [
+                    "cmake",
+                    "-S",
+                    str(rejection_source),
+                    "-B",
+                    str(root / f"rejection build {incompatible}"),
+                    f"-DTypeBridge_DIR={fake_runtime}",
+                    f"-D{PACKAGE_NAME}_DIR={relocated_generated / f'lib/cmake/{PACKAGE_NAME}'}",
+                ],
+                env=environment,
+            )
+            if sentinel.exists():
+                raise CandidateError("incompatible runtime reached package/provider loading")
+
         pkg_source_output = run(
             ["pkg-config", "--variable=generated_source", PACKAGE_NAME],
             env={
@@ -769,6 +825,7 @@ def smoke(runtime_archive: Path, generated_archive: Path) -> dict[str, object]:
         "generated-candidate-id": generated_manifest_value["candidate-id"],
         "pkg-config-c17": True,
         "relocation": True,
+        "runtime-range-rejection": ["1.5.0", "2.0.0"],
         "runtime-candidate-id": runtime_manifest_value["candidate-id"],
         "uninstall": "clean",
     }
