@@ -18,6 +18,7 @@ import workforce_v6_surfaces as surfaces
 ROOT = Path(__file__).resolve().parents[2]
 NODE = ROOT / "type-bridge-core/crates/node"
 RUST = ROOT / "type-bridge-core/crates/rust"
+PYTHON_CORE = ROOT / "type-bridge-core/python"
 FORMAT = "typebridge.workforce-v6-surface-consumer/v1"
 
 
@@ -67,7 +68,7 @@ def python_consumer(surface: Path, root: Path) -> list[str]:
     package = root / "python"
     extract_surface(surface, package)
     environment = os.environ.copy()
-    environment["PYTHONPATH"] = str(root)
+    environment["PYTHONPATH"] = os.pathsep.join((str(root), str(ROOT), str(PYTHON_CORE)))
     run(
         [
             sys.executable,

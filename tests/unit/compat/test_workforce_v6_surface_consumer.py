@@ -63,3 +63,25 @@ def test_failed_compiler_is_rejected(tmp_path: Path, monkeypatch: pytest.MonkeyP
 def test_cross_binding_archive_is_rejected(tmp_path: Path) -> None:
     with pytest.raises(CONSUMER.surfaces.SurfaceError):
         CONSUMER.consume(_surface(tmp_path), "node")
+
+
+def test_python_consumer_binds_generated_surface_and_current_sdk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    environments: list[dict[str, str]] = []
+    monkeypatch.setattr(CONSUMER, "extract_surface", lambda *_args: {})
+    monkeypatch.setattr(
+        CONSUMER,
+        "run",
+        lambda _command, **kwargs: environments.append(kwargs["env"]),
+    )
+    assert CONSUMER.python_consumer(tmp_path / "surface.tar.gz", tmp_path) == [
+        "public-package-import",
+        "bytecode-compile",
+    ]
+    assert environments
+    assert environments[0]["PYTHONPATH"].split(CONSUMER.os.pathsep) == [
+        str(tmp_path),
+        str(ROOT),
+        str(CONSUMER.PYTHON_CORE),
+    ]
