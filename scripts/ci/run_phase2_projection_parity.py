@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import os
 import shutil
 import subprocess
@@ -11,6 +12,9 @@ import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from persist_binding_reports import PublishError, publish  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 CORE = ROOT / "type-bridge-core"
@@ -307,7 +311,7 @@ def _run(command: CommandSpec) -> subprocess.CompletedProcess[str]:
     return completed
 
 
-def run() -> str:
+def run(output: Path | None = None) -> str:
     _require_tools()
     with tempfile.TemporaryDirectory(prefix="typebridge-phase2-parity-") as temporary:
         layout = Layout.under(Path(temporary).resolve())
@@ -332,12 +336,20 @@ def run() -> str:
                 comparison = completed.stdout
         if not comparison.endswith("\n"):
             raise RunnerError("the four-binding comparator did not emit a canonical summary line")
+        if output is not None:
+            try:
+                publish(layout.report_paths(), output, checkout=ROOT)
+            except PublishError as error:
+                raise RunnerError(f"validated report publication failed: {error}") from error
         return comparison
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--output", type=Path)
+    arguments = parser.parse_args(argv)
     try:
-        summary = run()
+        summary = run(arguments.output)
     except RunnerError as error:
         print(f"Phase-2 provider-free parity fan-in failed: {error}", file=sys.stderr)
         return 1

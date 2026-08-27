@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import importlib.util
 import json
 import os
@@ -18,6 +19,9 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from persist_binding_reports import PublishError, publish  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 CORE = ROOT / "type-bridge-core"
@@ -700,7 +704,7 @@ def _cleanup_after_failure(layout: Layout, fixture: Fixture) -> str:
     return "\nrunner cleanup confirmed all four generated database names are absent"
 
 
-def run(environment: Mapping[str, str] = os.environ) -> str:
+def run(environment: Mapping[str, str] = os.environ, output: Path | None = None) -> str:
     fixture = _required_fixture(environment)
     contract = _load_live_contract()
     _validate_producer_sources(contract)
@@ -745,12 +749,20 @@ def run(environment: Mapping[str, str] = os.environ) -> str:
             raise RunnerError("the four-binding comparator emitted malformed JSON") from error
         if comparison.encode() != contract.canonical_json_bytes(summary):
             raise RunnerError("the four-binding comparator did not emit one canonical summary")
+        if output is not None:
+            try:
+                publish(layout.report_paths(), output, checkout=ROOT)
+            except PublishError as error:
+                raise RunnerError(f"validated report publication failed: {error}") from error
         return comparison
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--output", type=Path)
+    arguments = parser.parse_args(argv)
     try:
-        summary = run()
+        summary = run(output=arguments.output)
     except RunnerError as error:
         print(f"Phase-2 exact-live fan-in failed: {error}", file=sys.stderr)
         return 1
