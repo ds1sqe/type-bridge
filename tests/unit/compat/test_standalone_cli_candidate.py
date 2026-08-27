@@ -80,6 +80,23 @@ def test_candidate_archive_is_byte_deterministic_and_self_validating(
     assert manifest["candidate-id"].startswith("sha256:")
 
 
+def test_version_probe_accepts_a_repository_relative_executable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    executable = tmp_path / "relative-version"
+    executable.write_text("#!/bin/sh\nprintf 'expected-version\\n'\n")
+    executable.chmod(0o755)
+    monkeypatch.chdir(tmp_path.parent)
+    relative = executable.relative_to(tmp_path.parent)
+    monkeypatch.setattr(
+        CANDIDATE,
+        "expected_version_report",
+        lambda **kwargs: "expected-version",
+    )
+
+    CANDIDATE.verify_version(relative, version="test", commit="1" * 40, tree="2" * 40)
+
+
 def test_validator_rejects_payload_mutation(
     accepted_archive: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

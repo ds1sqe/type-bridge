@@ -178,7 +178,8 @@ def expected_version_report(*, version: str, commit: str, tree: str) -> str:
 
 
 def verify_version(binary: Path, *, version: str, commit: str, tree: str) -> None:
-    observed = run([str(binary), "--version"], cwd=binary.parent)
+    executable = binary.resolve()
+    observed = run([str(executable), "--version"], cwd=executable.parent)
     expected = expected_version_report(version=version, commit=commit, tree=tree)
     if observed != expected:
         raise CandidateError(
