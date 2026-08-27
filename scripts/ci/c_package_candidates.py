@@ -483,7 +483,9 @@ def build_generated(output: Path, build_root: Path, *, commit: str, tree: str) -
         ],
         env=environment,
     )
-    workspace = build_generation_workspace(build_root / "generation")
+    build_root.mkdir(parents=True, exist_ok=True)
+    generation_root = Path(tempfile.mkdtemp(prefix="generation-", dir=build_root))
+    workspace = build_generation_workspace(generation_root)
     binary = (target_dir / TARGET / "release/type-bridge").resolve()
     run([str(binary), "schema", "generate"], cwd=workspace)
     generated = workspace / "generated/c"
@@ -548,7 +550,9 @@ def build_generated(output: Path, build_root: Path, *, commit: str, tree: str) -
     }
     files[PACKAGE_MEMBERS[5]] = canonical_json(manifest)
     archive = encode_archive(files, PACKAGE_MEMBERS)
-    return publish_archive(output, filename, archive)
+    destination = publish_archive(output, filename, archive)
+    shutil.rmtree(generation_root)
+    return destination
 
 
 def build(output: Path) -> dict[str, str]:
