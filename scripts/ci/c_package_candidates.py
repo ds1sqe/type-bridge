@@ -422,7 +422,7 @@ endif()
 
 
 def generated_pc() -> bytes:
-    return f"""prefix=${{pcfiledir}}/../../..
+    return f"""prefix=${{pcfiledir}}/../..
 includedir=${{prefix}}/include
 generated_source=${{prefix}}/src/{PACKAGE_NAME}.c
 
@@ -720,13 +720,17 @@ def smoke(runtime_archive: Path, generated_archive: Path) -> dict[str, object]:
         run(["cmake", "--build", str(build), "--parallel", "2"], env=environment)
         run([str(build / "consumer")], env=environment)
 
-        pkg_source = run(
+        pkg_source_output = run(
             ["pkg-config", "--variable=generated_source", PACKAGE_NAME],
             env={
                 **environment,
                 "PKG_CONFIG_PATH": f"{relocated_generated / 'lib/pkgconfig'}:{relocated_runtime / 'lib/pkgconfig'}",
             },
         )
+        pkg_sources = shlex.split(pkg_source_output)
+        if len(pkg_sources) != 1:
+            raise CandidateError("pkg-config generated source path is ambiguous")
+        pkg_source = pkg_sources[0]
         pkg_environment = {
             **environment,
             "PKG_CONFIG_PATH": f"{relocated_generated / 'lib/pkgconfig'}:{relocated_runtime / 'lib/pkgconfig'}",
