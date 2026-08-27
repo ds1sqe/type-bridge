@@ -3,11 +3,13 @@
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import os
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -60,7 +62,32 @@ def published_port(project: str, container_port: str) -> str:
     return value.rsplit(":", 1)[1]
 
 
-def main() -> int:
+def persist_reports(paths: list[Path], output: Path) -> None:
+    output = output.resolve()
+    if output.exists() or output == ROOT or ROOT in output.parents:
+        raise RunnerError("V4 output must be a new directory outside the checkout")
+    try:
+        parent = output.parent.lstat()
+    except OSError as error:
+        raise RunnerError("V4 output parent cannot be inspected") from error
+    if stat.S_ISLNK(parent.st_mode) or not stat.S_ISDIR(parent.st_mode):
+        raise RunnerError("V4 output parent must be a real directory")
+    stage = Path(tempfile.mkdtemp(prefix=f".{output.name}.", dir=output.parent))
+    try:
+        for binding, source in zip(("python", "node", "rust", "c"), paths, strict=True):
+            shutil.copyfile(source, stage / f"{binding}.json")
+        stage.rename(output)
+    except OSError as error:
+        raise RunnerError("validated V4 reports could not be persisted") from error
+    finally:
+        if stage.exists():
+            shutil.rmtree(stage)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--output", type=Path)
+    arguments = parser.parse_args(argv)
     project = f"tb-plan06-v4-fanin-{os.getpid()}"
     temporary = Path(tempfile.mkdtemp(prefix="typebridge-workforce-v4-"))
     compose = [
@@ -129,6 +156,8 @@ def main() -> int:
             binding: hashlib.sha256(path.read_bytes()).hexdigest()
             for binding, path in zip(("python", "node", "rust", "c"), paths, strict=True)
         }
+        if arguments.output is not None:
+            persist_reports(paths, arguments.output)
         print(json.dumps(comparison, indent=2, sort_keys=True))
         return 0
     except (KeyboardInterrupt, RunnerError) as error:

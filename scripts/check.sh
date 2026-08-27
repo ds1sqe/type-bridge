@@ -149,6 +149,7 @@ run_c() {
         uv run pytest \
         tests/unit/compat/test_workforce_conformance_v6.py \
         tests/unit/compat/test_workforce_conformance_v6_assembler.py \
+        tests/unit/compat/test_workforce_v4_live_runner.py \
         tests/unit/compat/test_workforce_v5_candidate_runner.py \
         tests/unit/compat/test_workforce_v6_evidence_composer.py \
         tests/unit/compat/test_workforce_v6_surfaces.py \
