@@ -12,6 +12,7 @@
   "broad_case_ledger_path": "tests/contracts/c-broad-case-ledger-v1.json",
   "journey_path": "tests/contracts/sdk_conformance/workforce-v6/journey-v6.json",
   "report_schema_path": "tests/contracts/sdk_conformance/workforce-v6/report-schema-v6.json",
+  "producer_evidence_schema_path": "tests/contracts/sdk_conformance/workforce-v6/producer-evidence-schema-v6.json",
   "report_bindings": ["python", "node", "rust", "c"],
   "manifest_transition_cases": [
     "workforce.runtime.cancellation",

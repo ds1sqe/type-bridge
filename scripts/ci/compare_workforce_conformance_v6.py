@@ -16,6 +16,7 @@ CATALOG = "tests/contracts/sdk_conformance/workforce-v6/catalog-v6.json"
 JOURNEY = "tests/contracts/sdk_conformance/workforce-v6/journey-v6.json"
 LEDGER = "tests/contracts/c-broad-case-ledger-v1.json"
 REPORT_SCHEMA = "tests/contracts/sdk_conformance/workforce-v6/report-schema-v6.json"
+PRODUCER_SCHEMA = "tests/contracts/sdk_conformance/workforce-v6/producer-evidence-schema-v6.json"
 BINDINGS = ("python", "node", "rust", "c")
 CASES = (
     "workforce.runtime.cancellation",
@@ -290,7 +291,13 @@ def validate_report(report: dict[str, Any], root: Path = ROOT) -> None:
 
 def compare_reports(paths: list[Path], root: Path = ROOT) -> dict[str, Any]:
     load_json(root / REPORT_SCHEMA)
+    load_json(root / PRODUCER_SCHEMA)
     catalog = load_json(root / CATALOG)
+    if (
+        catalog.get("report_schema_path") != REPORT_SCHEMA
+        or catalog.get("producer_evidence_schema_path") != PRODUCER_SCHEMA
+    ):
+        reject("evidence_schema_inventory_drift", "V6 evidence schema paths drifted")
     if catalog.get("manifest_transition_cases") != list(CASES):
         reject("transition_scope_drift", "V6 transition cases drifted")
     if len(paths) != 4:

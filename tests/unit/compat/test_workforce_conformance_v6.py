@@ -26,6 +26,7 @@ def _stage(tmp_path: Path) -> Path:
         COMPARATOR.JOURNEY,
         COMPARATOR.LEDGER,
         COMPARATOR.REPORT_SCHEMA,
+        COMPARATOR.PRODUCER_SCHEMA,
     ):
         target = tmp_path / relative
         target.parent.mkdir(parents=True, exist_ok=True)

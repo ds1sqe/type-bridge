@@ -146,7 +146,9 @@ run_c() {
         uv run pytest tests/unit/compat/test_c_broad_case_ledger.py -q
 
     run_step "artifact-bound Workforce V6 fan-in contract" \
-        uv run pytest tests/unit/compat/test_workforce_conformance_v6.py -q
+        uv run pytest \
+        tests/unit/compat/test_workforce_conformance_v6.py \
+        tests/unit/compat/test_workforce_conformance_v6_assembler.py -q
 
     run_step "standalone CLI candidate and hostile archive contracts" \
         uv run pytest tests/unit/compat/test_standalone_cli_candidate.py -q
