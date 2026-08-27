@@ -151,6 +151,9 @@ run_c() {
     run_step "C candidate supply-chain and hostile evidence contracts" \
         uv run pytest tests/unit/compat/test_c_distribution_security.py -q
 
+    run_step "C artifact-only clean-consumer and hostile report contracts" \
+        uv run pytest tests/unit/compat/test_c_artifact_journey.py -q
+
     local c_shared_target c_shared_library
     c_shared_target="$(mktemp -d)"
     if [[ "$(uname -s)" == "Darwin" ]]; then
