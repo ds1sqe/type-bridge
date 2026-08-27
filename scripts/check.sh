@@ -142,6 +142,9 @@ run_c() {
     run_step "frozen Plan 08 C distribution contract" \
         python scripts/ci/validate_c_distribution_contract.py
 
+    run_step "Plan 08 cross-slice broad-case ledger" \
+        uv run pytest tests/unit/compat/test_c_broad_case_ledger.py -q
+
     run_step "standalone CLI candidate and hostile archive contracts" \
         uv run pytest tests/unit/compat/test_standalone_cli_candidate.py -q
 

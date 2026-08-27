@@ -1,0 +1,73 @@
+{
+  "format": "typebridge.c-broad-case-ledger/v1",
+  "authority_state": "frozen",
+  "publication_authority": false,
+  "transition_capabilities": ["G05", "G06", "G08", "G13"],
+  "source_slices": {
+    "plan04-query-remote": {
+      "source_commit": "8097bab115258a66d94fa4897f00c9abafd5f5f7",
+      "authorities": [
+        {"path": "tests/contracts/sdk_conformance/workforce-v2/catalog-v2.json", "sha256": "0abcc3ee5727a49e9e16a047a5c7590ec8be73a900435f84bd47a6405bb1e528"},
+        {"path": "tests/contracts/sdk_conformance/workforce-v2/journey-v2.json", "sha256": "5c2b4cdbe6985fe3262a4cdb925871bd81773ecf2939fe48e4b9a226dd4d237e"}
+      ]
+    },
+    "plan05-data-model": {
+      "source_commit": "4d74f2759612fe07fd7c6134d0e1976f951011c1",
+      "authorities": [
+        {"path": "tests/contracts/sdk_conformance/workforce-v3/catalog-v3.json", "sha256": "5b9042a42366d93df4f696e2033e5b20d9e64917a2afb5eb1b7a8d6e0d7a17b0"},
+        {"path": "tests/contracts/sdk_conformance/workforce-v3/journey-v3.json", "sha256": "912130753fe7938a38c054cff16e202b312551a6aa65265148628bfbd2abbbef"}
+      ]
+    },
+    "plan06-admin-migration": {
+      "source_commit": "bf07384911bf893dae965e8805a58ce0d67aa5e4",
+      "authorities": [
+        {"path": "tests/contracts/sdk_conformance/workforce-v4/catalog-v4.json", "sha256": "75374764ff0cbe9c6a3101435405f3ca8c1b2f0876b61892b5ec13fff4007dea"},
+        {"path": "tests/contracts/sdk_conformance/workforce-v4/journey-v4.json", "sha256": "7c6f2a6689b70b6ab84f291b691537379c0e3f02422f36df4648aa9bff2c29c4"}
+      ]
+    },
+    "plan07-codec-archive": {
+      "source_commit": "6b12bbb43b76fa28d21a8c1eea533e9d3aa390af",
+      "authorities": [
+        {"path": "tests/contracts/sdk_conformance/workforce-v5/catalog-v5.json", "sha256": "562af0c3256a0400314a5a975b3fae9b2f1f39a7a3601dd08c04ec9c22e21720"},
+        {"path": "tests/contracts/sdk_conformance/workforce-v5/journey-v5.json", "sha256": "8dc8d111d4c590d5b377b41db5a8aa720b21a108653548db8697627cf6df09d6"}
+      ]
+    },
+    "plan08-artifact-cleanup": {
+      "source_commit": "177ce24ac182b94269561c8622e5533d29891a44",
+      "authorities": [
+        {"path": "tests/contracts/c-artifact-journey-v1.json", "sha256": "3da1077d7cc9a126722a20eebced007cbe491861c2649d41d11ff510c9057f5a"},
+        {"path": "tests/contracts/c-distribution-v1.json", "sha256": "ae33b9c0928ab008c35834e71415cc700c20c6ff52d207dad5e7c0f92672020e"}
+      ]
+    }
+  },
+  "ledgers": {
+    "G05": [
+      {"slice": "plan04-query-remote", "evidence_refs": ["cancellation_direct", "cancellation_remote"]},
+      {"slice": "plan05-data-model", "evidence_refs": ["data_operation_cancellation", "transaction_cancellation_recovery"]},
+      {"slice": "plan06-admin-migration", "evidence_refs": ["administration_migration_cancellation", "backfill_recovery_after_cancellation"]},
+      {"slice": "plan07-codec-archive", "evidence_refs": ["serialization_cancellation", "atomic_archive_no_partial_output"]},
+      {"slice": "plan08-artifact-cleanup", "evidence_refs": ["artifact_consumer_cancellation", "task_owned_cleanup"]}
+    ],
+    "G06": [
+      {"slice": "plan04-query-remote", "evidence_refs": ["resource_limits_direct", "resource_limits_remote"]},
+      {"slice": "plan05-data-model", "evidence_refs": ["data_operation_resource_limits", "bounded_batch_and_hydration"]},
+      {"slice": "plan06-admin-migration", "evidence_refs": ["administration_migration_resource_limits", "bounded_history_plan_backfill_journal"]},
+      {"slice": "plan07-codec-archive", "evidence_refs": ["serialization_resource_limits", "bounded_record_archive"]},
+      {"slice": "plan08-artifact-cleanup", "evidence_refs": ["artifact_input_limits", "tighten_only_end_to_end_policy"]}
+    ],
+    "G08": [
+      {"slice": "plan04-query-remote", "evidence_refs": ["structured_query_diagnostic", "remote_structured_diagnostic"]},
+      {"slice": "plan05-data-model", "evidence_refs": ["data_operation_structured_diagnostic", "connection_provider_redaction"]},
+      {"slice": "plan06-admin-migration", "evidence_refs": ["administration_migration_structured_diagnostic", "recovery_structured_diagnostic"]},
+      {"slice": "plan07-codec-archive", "evidence_refs": ["serialization_structured_diagnostic", "schema_fence_diagnostic"]},
+      {"slice": "plan08-artifact-cleanup", "evidence_refs": ["artifact_compatibility_diagnostic", "security_redaction"]}
+    ],
+    "G13": [
+      {"slice": "plan04-query-remote", "evidence_refs": ["query_resources_close", "remote_claim_close"]},
+      {"slice": "plan05-data-model", "evidence_refs": ["data_resource_lifecycle", "transaction_parent_child_close"]},
+      {"slice": "plan06-admin-migration", "evidence_refs": ["administration_migration_resource_lifecycle", "plan_report_close"]},
+      {"slice": "plan07-codec-archive", "evidence_refs": ["serialization_resource_lifecycle", "codec_archive_close"]},
+      {"slice": "plan08-artifact-cleanup", "evidence_refs": ["generated_package_teardown", "process_library_unload_no_leak"]}
+    ]
+  }
+}

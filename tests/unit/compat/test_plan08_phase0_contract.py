@@ -70,6 +70,7 @@ def test_v6_freezes_only_the_five_terminal_transition_cases() -> None:
         (ROOT / "tests/contracts/sdk_conformance/workforce-v6/catalog-v6.json").read_text()
     )
     assert catalog["authority_state"] == "frozen"
+    assert catalog["broad_case_ledger_path"] == "tests/contracts/c-broad-case-ledger-v1.json"
     assert catalog["manifest_transition_cases"] == VALIDATOR.TRANSITION_CASES
     assert catalog["full_c"] == {
         "capability_count": 44,
