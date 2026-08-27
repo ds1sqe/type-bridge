@@ -687,13 +687,23 @@ endif()
 #include <{PACKAGE_NAME}/{PACKAGE_NAME}.h>
 int main(void) {{
   type_bridge_byte_view_t version = {{0}};
+  type_bridge_byte_view_t identifier_input = {{(const uint8_t *)"person-1", 8u}};
+  type_bridge_byte_view_t identifier_output = {{0}};
   type_bridge_schema_package_t *package = NULL;
+  {PACKAGE_NAME}_identifier *identifier = NULL;
   type_bridge_execution_diagnostics_t *diagnostics = NULL;
   if (type_bridge_runtime_version(&version) != TYPE_BRIDGE_STATUS_OK ||
       version.length != 5u || memcmp(version.data, "2.1.0", 5u) != 0) return 10;
   if ({PACKAGE_NAME}_schema_package_open_v2(&package, &diagnostics) != TYPE_BRIDGE_STATUS_OK ||
       package == NULL || diagnostics != NULL) return 11;
-  if (type_bridge_schema_package_close(&package) != TYPE_BRIDGE_STATUS_OK || package != NULL) return 12;
+  if ({PACKAGE_NAME}_identifier_open(package, identifier_input, &identifier, &diagnostics) !=
+          TYPE_BRIDGE_STATUS_OK || identifier == NULL || diagnostics != NULL) return 12;
+  if ({PACKAGE_NAME}_identifier_value(identifier, &identifier_output, &diagnostics) !=
+          TYPE_BRIDGE_STATUS_OK || diagnostics != NULL || identifier_output.length != 8u ||
+      memcmp(identifier_output.data, "person-1", 8u) != 0) return 13;
+  if ({PACKAGE_NAME}_identifier_close(&identifier) != TYPE_BRIDGE_STATUS_OK || identifier != NULL) return 14;
+  if ({PACKAGE_NAME}_identifier_close(&identifier) != TYPE_BRIDGE_STATUS_OK) return 15;
+  if (type_bridge_schema_package_close(&package) != TYPE_BRIDGE_STATUS_OK || package != NULL) return 16;
   return 0;
 }}
 """.encode()
