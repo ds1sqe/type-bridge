@@ -164,3 +164,23 @@ def test_frozen_contract_matches_the_candidate_implementation() -> None:
         == f"type-bridge-cli-candidate-{CANDIDATE.TARGET}"
     )
     assert contract["publication_disposition"] == CANDIDATE.PUBLICATION_DISPOSITION
+
+
+def test_candidate_build_environment_remaps_machine_specific_source_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cargo_home = tmp_path / "private-cargo-home"
+    monkeypatch.setenv("CARGO_HOME", str(cargo_home))
+    monkeypatch.setenv("RUSTFLAGS", "hostile caller flags")
+
+    environment = CANDIDATE.candidate_build_environment(tmp_path / "target")
+    flags = environment["CARGO_ENCODED_RUSTFLAGS"].split("\x1f")
+
+    assert environment["CARGO_INCREMENTAL"] == "0"
+    assert environment["SOURCE_DATE_EPOCH"] == "0"
+    assert "RUSTFLAGS" not in environment
+    assert "-C" in flags
+    assert "strip=debuginfo" in flags
+    assert f"--remap-path-prefix={cargo_home.resolve()}=/cargo" in flags
+    assert any(flag.endswith("=/type-bridge") for flag in flags)
+    assert any(flag.endswith("=/type-bridge-core") for flag in flags)

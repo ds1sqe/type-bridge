@@ -370,8 +370,7 @@ def runtime_manifest(
 def build_runtime(output: Path, build_root: Path, *, commit: str, tree: str) -> Path:
     toolchain = shared.candidate_toolchain()
     target_dir = build_root / "cargo"
-    environment = os.environ.copy()
-    environment["CARGO_TARGET_DIR"] = str(target_dir)
+    environment = shared.candidate_build_environment(target_dir)
     run(
         [
             "cargo",
@@ -479,10 +478,9 @@ def build_generation_workspace(root: Path) -> Path:
 def build_generated(output: Path, build_root: Path, *, commit: str, tree: str) -> Path:
     toolchain = shared.candidate_toolchain()
     target_dir = build_root / "cargo"
-    environment = os.environ.copy()
+    environment = shared.candidate_build_environment(target_dir)
     environment.update(
         {
-            "CARGO_TARGET_DIR": str(target_dir),
             "TYPE_BRIDGE_BUILD_SOURCE_COMMIT": commit,
             "TYPE_BRIDGE_BUILD_SOURCE_TREE": tree,
         }

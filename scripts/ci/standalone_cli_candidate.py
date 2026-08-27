@@ -142,6 +142,36 @@ def candidate_toolchain() -> str:
     return toolchain
 
 
+def candidate_build_environment(target_directory: Path) -> dict[str, str]:
+    """Return the fixed native-candidate build environment.
+
+    Rust retains source locations used by panic diagnostics even without debug
+    information. Remap every machine-specific source prefix before compilation
+    so accepted binaries do not disclose checkout, Cargo-home, or user-home
+    paths and remain reproducible across runners.
+    """
+    environment = os.environ.copy()
+    cargo_home = Path(environment.get("CARGO_HOME", Path.home() / ".cargo")).resolve()
+    mappings = (
+        (CORE.resolve(), Path("/type-bridge-core")),
+        (ROOT.resolve(), Path("/type-bridge")),
+        (cargo_home, Path("/cargo")),
+        (Path.home().resolve(), Path("/build-home")),
+    )
+    flags = ["-C", "strip=debuginfo"]
+    flags.extend(f"--remap-path-prefix={source}={destination}" for source, destination in mappings)
+    environment.pop("RUSTFLAGS", None)
+    environment.update(
+        {
+            "CARGO_ENCODED_RUSTFLAGS": "\x1f".join(flags),
+            "CARGO_INCREMENTAL": "0",
+            "CARGO_TARGET_DIR": str(target_directory),
+            "SOURCE_DATE_EPOCH": "0",
+        }
+    )
+    return environment
+
+
 def git_identity() -> tuple[str, str]:
     status = run(["git", "status", "--porcelain=v1", "--untracked-files=no"])
     if status:
@@ -478,10 +508,9 @@ def build(output_directory: Path) -> Path:
     commit, tree = git_identity()
     toolchain = candidate_toolchain()
     target_directory = output_directory / "build"
-    environment = os.environ.copy()
+    environment = candidate_build_environment(target_directory)
     environment.update(
         {
-            "CARGO_TARGET_DIR": str(target_directory),
             "TYPE_BRIDGE_BUILD_SOURCE_COMMIT": commit,
             "TYPE_BRIDGE_BUILD_SOURCE_TREE": tree,
         }
