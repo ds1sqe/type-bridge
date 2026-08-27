@@ -945,7 +945,7 @@ pub(crate) fn projected_to_hydrated_row(
                         .collect::<Result<Vec<_>>>()?;
                     player_fields.push((identity, values));
                 }
-                hydrated_players.push(HydratedPlayer::from_complete_row(
+                hydrated_players.push(HydratedPlayer::from_complete_row_with_keys(
                     HydratedRow::from_owned_with_origin(
                         player_type,
                         player.iid().to_owned(),
@@ -953,6 +953,7 @@ pub(crate) fn projected_to_hydrated_row(
                         vec![],
                         origin,
                     ),
+                    keys,
                 ));
             } else {
                 hydrated_players.push(HydratedPlayer::from_owned_with_origin(

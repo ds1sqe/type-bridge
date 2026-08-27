@@ -838,7 +838,8 @@ impl ProjectedRolePlayer {
         ProjectedResourceMeasure(self.size)
     }
 
-    pub(crate) fn form_for_read_role(
+    #[doc(hidden)]
+    pub fn form_for_read_role(
         installed: &InstalledRuntimeProjection,
         read_role: &ReadRoleProjection,
         concrete_type: &TypeId,

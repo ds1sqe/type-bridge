@@ -1140,11 +1140,19 @@ impl HydratedPlayer {
     /// Convert one complete nonrecursive hydrated entity row into exact role-player evidence.
     #[must_use]
     pub fn from_complete_row(row: HydratedRow) -> Self {
+        Self::from_complete_row_with_keys(row, Vec::new())
+    }
+
+    #[must_use]
+    pub(crate) fn from_complete_row_with_keys(
+        row: HydratedRow,
+        keys: Vec<(String, EncodedScalar)>,
+    ) -> Self {
         debug_assert!(row.roles.is_empty());
         Self {
             type_id_json: row.type_id_json,
             iid: Some(row.iid),
-            keys: Vec::new(),
+            keys,
             fields: Some(row.fields),
             exact_reference: false,
             origin: row.origin,

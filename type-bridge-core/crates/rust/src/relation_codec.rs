@@ -14,12 +14,15 @@ use type_bridge_contract::value::Cardinality;
 use type_bridge_contract::{
     codec::{from_canonical_json, to_canonical_json},
     id::{TypeId, TypeKind, is_canonical_thing_iid},
-    projection::{CreateRoleProjection, ModelProjection, RoleTokenProjection},
+    projection::{
+        CreateRoleProjection, ModelProjection, ProjectedModelForm, ReadRoleProjection,
+        RoleTokenProjection,
+    },
 };
 use type_bridge_orm::_descriptor::{RelationDescriptor, RoleDescriptor};
 use type_bridge_orm::{
     DynamicAttributeMap, DynamicRelationRow, DynamicRolePlayer, DynamicRolePlayerInput,
-    InstalledRuntimeProjection,
+    InstalledRuntimeProjection, ProjectedRolePlayer,
 };
 
 pub(crate) fn resolve_relation_authority(
@@ -756,6 +759,7 @@ pub(crate) fn hydrate_relation(
                 player,
                 player_index,
                 token,
+                read_role,
                 matches[0],
                 installed,
             )?);
@@ -795,6 +799,7 @@ fn hydrate_role_player(
     player: &DynamicRolePlayer,
     player_index: usize,
     token: &RoleTokenProjection,
+    read_role: &ReadRoleProjection,
     descriptor_role: &RoleDescriptor,
     installed: &InstalledRuntimeProjection,
 ) -> Result<HydratedPlayer> {
@@ -862,6 +867,9 @@ fn hydrate_role_player(
                 Some(Box::new(source)),
             )
         })?;
+    let form = ProjectedRolePlayer::form_for_read_role(installed, read_role, id)
+        .map_err(|error| Error::from_sdk_execution(error, ModelValidationPhase::Hydration))?;
+    let identity = canonical_type_identity(id, phase, vec![segment.clone(), "type".to_owned()])?;
     let mut keys = Vec::new();
     for key_id in player_model.reference_read().key_fields() {
         let key_token = player_model
@@ -916,7 +924,19 @@ fn hydrate_role_player(
             scalar,
         ));
     }
-    let identity = canonical_type_identity(id, phase, vec![segment.clone(), "type".to_owned()])?;
+    if form == ProjectedModelForm::Complete {
+        let fields =
+            hydrate_projected_read_fields(&attributes, player_model, installed.projection())?;
+        return Ok(HydratedPlayer::from_complete_row_with_keys(
+            HydratedRow::from_owned(
+                String::from_utf8(identity).expect("canonical JSON is UTF-8"),
+                iid.to_owned(),
+                fields,
+                Vec::new(),
+            ),
+            keys,
+        ));
+    }
     Ok(HydratedPlayer::from_owned(
         String::from_utf8(identity).expect("canonical JSON is UTF-8"),
         Some(iid.to_owned()),

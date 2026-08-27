@@ -1165,22 +1165,35 @@ fn relation_row_hydration_settles_exact_coalesced_evidence() {
         &[
             (
                 member.to_owned(),
-                vec![crate::__codegen::HydratedPlayer::from_owned(
-                    r#"{"kind":"entity","label":"person"}"#.to_owned(),
-                    Some("0x1".into()),
-                    vec![],
+                vec![crate::__codegen::HydratedPlayer::from_complete_row(
+                    crate::__codegen::HydratedRow::from_owned(
+                        r#"{"kind":"entity","label":"person"}"#.to_owned(),
+                        "0x1".into(),
+                        vec![],
+                        vec![],
+                    )
                 )]
             ),
             (
                 watcher.to_owned(),
                 vec![
-                    crate::__codegen::HydratedPlayer::from_owned(
-                        DEVICE.to_owned(),
-                        Some("0xb".into()),
+                    crate::__codegen::HydratedPlayer::from_complete_row_with_keys(
+                        crate::__codegen::HydratedRow::from_owned(
+                            DEVICE.to_owned(),
+                            "0xb".into(),
+                            vec![
+                                (
+                                    DEVICE_HANDLE_OWNS.to_owned(),
+                                    vec![EncodedScalar::String("d1".into())]
+                                ),
+                                (DEVICE_SERIAL_OWNS.to_owned(), vec![EncodedScalar::Long(7)]),
+                            ],
+                            vec![],
+                        ),
                         vec![
                             (
                                 DEVICE_HANDLE_OWNS.to_owned(),
-                                EncodedScalar::String("d1".into())
+                                EncodedScalar::String("d1".into()),
                             ),
                             (DEVICE_SERIAL_OWNS.to_owned(), EncodedScalar::Long(7)),
                         ],
@@ -1218,10 +1231,13 @@ fn relation_row_hydration_settles_exact_coalesced_evidence() {
         out.roles(),
         &[(
             employee.to_owned(),
-            vec![crate::__codegen::HydratedPlayer::from_owned(
-                r#"{"kind":"entity","label":"admin"}"#.to_owned(),
-                Some("0xa".into()),
-                vec![],
+            vec![crate::__codegen::HydratedPlayer::from_complete_row(
+                crate::__codegen::HydratedRow::from_owned(
+                    r#"{"kind":"entity","label":"admin"}"#.to_owned(),
+                    "0xa".into(),
+                    vec![],
+                    vec![],
+                )
             )]
         )]
     );
