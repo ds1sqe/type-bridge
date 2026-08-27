@@ -16,6 +16,7 @@ PRODUCER_PATH = (
     / "phase2_live_check.mjs"
 )
 COMPARATOR_PATH = ROOT / "scripts/ci/compare_phase2_projection_live.py"
+CATALOG_PATH = ROOT / "tests/contracts/sdk_conformance/workforce-v3/catalog-v3.json"
 
 
 def _node(source: str, *arguments: str, expected: int = 0) -> subprocess.CompletedProcess[str]:
@@ -47,6 +48,17 @@ def _comparator_module():
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def test_projection_fingerprint_matches_finalized_catalog() -> None:
+    completed = _node(
+        """
+const producer = await import(process.argv[1]);
+process.stdout.write(JSON.stringify(producer.PROJECTION_FINGERPRINT));
+"""
+    )
+    catalog = json.loads(CATALOG_PATH.read_bytes())
+    assert json.loads(completed.stdout) == catalog["expected_fingerprints"]["projections"]["node"]
 
 
 def test_report_is_canonical_bounded_atomic_and_create_new(tmp_path: Path) -> None:

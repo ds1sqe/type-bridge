@@ -704,6 +704,54 @@ class Database:
         logger.debug(f"Database exists check for '{self.database_name}': {exists}")
         return exists
 
+    def inspect_database_pair(
+        self,
+    ) -> Literal["absent", "standalone_managed", "owned_pair", "owned_journal_orphan"]:
+        """Inspect the managed database and its package-owned journal as one pair."""
+        from type_bridge._rust_runtime import rust_database_for
+
+        return cast(
+            Literal["absent", "standalone_managed", "owned_pair", "owned_journal_orphan"],
+            rust_database_for(self).inspect_database_pair(),
+        )
+
+    def inspect_database_pair_controlled(
+        self,
+        *,
+        timeout_milliseconds: int | None = None,
+        cancellation: Any | None = None,
+    ) -> Literal["absent", "standalone_managed", "owned_pair", "owned_journal_orphan"]:
+        """Inspect the managed database pair under explicit execution controls."""
+        from type_bridge._rust_runtime import rust_database_for
+
+        return cast(
+            Literal["absent", "standalone_managed", "owned_pair", "owned_journal_orphan"],
+            rust_database_for(self).inspect_database_pair_controlled(
+                timeout_milliseconds=timeout_milliseconds,
+                cancellation=cancellation,
+            ),
+        )
+
+    def plan_database_delete(self) -> Any:
+        """Create a single-use, pair-aware managed database deletion plan."""
+        from type_bridge._rust_runtime import rust_database_for
+
+        return rust_database_for(self).plan_database_delete()
+
+    def plan_database_delete_controlled(
+        self,
+        *,
+        timeout_milliseconds: int | None = None,
+        cancellation: Any | None = None,
+    ) -> Any:
+        """Create a managed deletion plan under explicit execution controls."""
+        from type_bridge._rust_runtime import rust_database_for
+
+        return rust_database_for(self).plan_database_delete_controlled(
+            timeout_milliseconds=timeout_milliseconds,
+            cancellation=cancellation,
+        )
+
     @overload
     def transaction(self, transaction_type: Enum) -> TransactionContext: ...
 

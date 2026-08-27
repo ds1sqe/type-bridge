@@ -653,7 +653,13 @@ def _run_owned_database(
     if owns_database:
         try:
             owner = database if database is not None else bootstrap
-            owner.delete_database()
+            deletion = owner.plan_database_delete()
+            outcome = deletion.execute()
+            if outcome not in {"deleted_standalone_managed", "deleted_owned_pair"}:
+                raise ProducerError(
+                    "database_teardown_failed",
+                    f"unexpected managed deletion outcome: {outcome}",
+                )
             if owner.database_exists():
                 raise ProducerError("database_teardown_failed", "isolated database remained")
         except BaseException as error:

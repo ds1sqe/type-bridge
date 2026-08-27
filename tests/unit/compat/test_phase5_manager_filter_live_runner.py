@@ -53,6 +53,14 @@ def test_command_plan_is_one_four_binding_fan_in(tmp_path: Path) -> None:
     assert plan[1].arguments[-4:] == layout.database_names()
     assert "rust_phase5_manager_live" in plan[13].arguments
     assert "c_phase5_manager_live" in plan[16].arguments
+    c_build = next(command for command in plan if command.label == "build the C shared library")
+    c_producer = next(command for command in plan if command.label == "produce the C report")
+    assert c_build.environment is not None and c_producer.environment is not None
+    assert (
+        c_build.environment[runner.ACCEPTANCE_TARGET_ENV]
+        == c_producer.environment[runner.ACCEPTANCE_TARGET_ENV]
+    )
+    assert c_build.environment["CARGO_TARGET_DIR"] == c_producer.environment["CARGO_TARGET_DIR"]
 
 
 def test_each_producer_has_one_unique_report_and_database(tmp_path: Path) -> None:

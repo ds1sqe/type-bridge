@@ -364,6 +364,7 @@ def command_plan(layout: Layout, fixture: Fixture) -> tuple[CommandSpec, ...]:
         layout.c_database,
     )
     c_environment[ACCEPTANCE_TARGET_ENV] = str(layout.scratch / "c-target")
+    c_environment["CARGO_TARGET_DIR"] = str(layout.scratch / "c-target")
     tsc = NODE_PACKAGE / "node_modules/.bin/tsc"
     return (
         CommandSpec(
@@ -484,7 +485,11 @@ def command_plan(layout: Layout, fixture: Fixture) -> tuple[CommandSpec, ...]:
             ),
             ROOT,
             600,
-            {"TMPDIR": str(layout.scratch)},
+            {
+                "TMPDIR": str(layout.scratch),
+                ACCEPTANCE_TARGET_ENV: str(layout.scratch / "c-target"),
+                "CARGO_TARGET_DIR": str(layout.scratch / "c-target"),
+            },
         ),
         CommandSpec(
             "produce the C report",

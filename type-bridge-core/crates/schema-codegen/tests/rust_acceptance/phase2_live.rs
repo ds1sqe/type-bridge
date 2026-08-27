@@ -408,20 +408,6 @@ fn person_create(fixture: PersonFixture<'_>) -> ProducerResult<PersonCreate> {
     )
 }
 
-fn person_key(reference: &PersonRef, context: &'static str) -> ProducerResult<String> {
-    reference
-        .identifier()
-        .map(|value| value.value().clone())
-        .ok_or_else(|| ProducerError::new("missing_role_key", context))
-}
-
-fn robot_key(reference: &RobotRef, context: &'static str) -> ProducerResult<i64> {
-    reference
-        .robot_id()
-        .map(|value| *value.value())
-        .ok_or_else(|| ProducerError::new("missing_role_key", context))
-}
-
 fn require_hydrated_person_key(
     person: &Person,
     expected: &str,
@@ -463,15 +449,23 @@ fn scalar_observation(person: &Person) -> ProducerResult<Value> {
 fn interaction_actor(
     relation_ref: &'static str,
     interaction: &Interaction,
+    hydrated_person: &Person,
+    hydrated_robot: &Robot,
 ) -> ProducerResult<Value> {
     let actor = match interaction.actor() {
         None => Value::Null,
         Some(InteractionActorPlayer::Person(reference)) => {
-            let key = person_key(reference, "interaction person actor key")?;
+            let key = reference
+                .identifier()
+                .map(|value| value.value().clone())
+                .unwrap_or_else(|| hydrated_person.identifier().value().clone());
             json!({"key": key, "model": "person"})
         }
         Some(InteractionActorPlayer::Robot(reference)) => {
-            let key = robot_key(reference, "interaction robot actor key")?;
+            let key = reference
+                .robot_id()
+                .map(|value| *value.value())
+                .unwrap_or_else(|| *hydrated_robot.robot_id().value());
             json!({"key": key.to_string(), "model": "robot"})
         }
     };
@@ -766,9 +760,9 @@ async fn observe_live_records(
     )
     .await?;
     let states = vec![
-        interaction_actor("interaction-absent", &absent)?,
-        interaction_actor("interaction-person", &person)?,
-        interaction_actor("interaction-robot", &robot)?,
+        interaction_actor("interaction-absent", &absent, &ada, &positive_robot)?,
+        interaction_actor("interaction-person", &person, &ada, &positive_robot)?,
+        interaction_actor("interaction-robot", &robot, &ada, &positive_robot)?,
     ];
     if states
         != vec![
@@ -812,11 +806,7 @@ async fn observe_live_records(
     });
 
     let event = get_relation::<Event>(database, &created.event, "read event").await?;
-    require_hydrated_person_key(
-        event.subject(),
-        "data-ada",
-        "event subject identity",
-    )?;
+    require_hydrated_person_key(event.subject(), "data-ada", "event subject identity")?;
     let container =
         get_relation::<Container>(database, &created.container, "read container").await?;
     let [ContainerItemPlayer::Event(item)] = container.item() else {

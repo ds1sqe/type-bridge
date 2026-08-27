@@ -62,6 +62,46 @@ class TestDatabaseConfiguration:
         assert not hasattr(database, "_rust_backend_database")
         assert database._transport_committed is False
 
+    def test_package_owned_rust_database_exposes_pair_administration(self):
+        """The generated facade preserves native pair-safe administration."""
+        native = MagicMock()
+        native.inspect_database_pair.return_value = "owned_pair"
+        native.inspect_database_pair_controlled.return_value = "standalone_managed"
+        deletion = object()
+        controlled_deletion = object()
+        native.plan_database_delete.return_value = deletion
+        native.plan_database_delete_controlled.return_value = controlled_deletion
+        cancellation = object()
+        database = database_from_rust("localhost:1729", "generated", native)
+
+        assert database.inspect_database_pair() == "owned_pair"
+        assert (
+            database.inspect_database_pair_controlled(
+                timeout_milliseconds=25,
+                cancellation=cancellation,
+            )
+            == "standalone_managed"
+        )
+        assert database.plan_database_delete() is deletion
+        assert (
+            database.plan_database_delete_controlled(
+                timeout_milliseconds=50,
+                cancellation=cancellation,
+            )
+            is controlled_deletion
+        )
+
+        native.inspect_database_pair.assert_called_once_with()
+        native.inspect_database_pair_controlled.assert_called_once_with(
+            timeout_milliseconds=25,
+            cancellation=cancellation,
+        )
+        native.plan_database_delete.assert_called_once_with()
+        native.plan_database_delete_controlled.assert_called_once_with(
+            timeout_milliseconds=50,
+            cancellation=cancellation,
+        )
+
     def test_close_without_connect(self):
         """Close should be safe to call without prior connection."""
         db = Database()

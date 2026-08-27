@@ -1157,7 +1157,13 @@ async function runOwnedDatabase({
   if (ownsDatabase) {
     try {
       const owner = database ?? bootstrap;
-      owner.deleteDatabase();
+      const outcome = owner.planDatabaseDelete().execute();
+      requireCondition(
+        outcome === "deleted_standalone_managed" ||
+          outcome === "deleted_owned_pair",
+        "database_teardown_failed",
+        `unexpected managed deletion outcome: ${outcome}`,
+      );
       requireCondition(
         !owner.databaseExists(),
         "database_teardown_failed",

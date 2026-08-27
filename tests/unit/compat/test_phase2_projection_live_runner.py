@@ -59,6 +59,14 @@ def test_command_plan_runs_four_live_producers_then_exactly_one_comparator(
         len(database) <= 64 and database.isascii() and database.replace("_", "").isalnum()
         for database in databases
     )
+    c_build = next(command for command in plan if command.label == "build the C shared library")
+    c_producer = next(command for command in plan if command.label == "produce the C report")
+    assert c_build.environment is not None and c_producer.environment is not None
+    assert (
+        c_build.environment[runner.ACCEPTANCE_TARGET_ENV]
+        == c_producer.environment[runner.ACCEPTANCE_TARGET_ENV]
+    )
+    assert c_build.environment["CARGO_TARGET_DIR"] == c_producer.environment["CARGO_TARGET_DIR"]
 
     producers = {
         command.label: command for command in plan if command.label.startswith("produce the ")

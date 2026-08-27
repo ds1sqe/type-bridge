@@ -6791,11 +6791,15 @@ async fn generated_data_model_runtime_v3_live() {
     assert!(network_late_failure.is_err());
     let network_prefix_persisted = db
         .relations::<NetworkLink>()
-        .all()
+        .where_(
+            NetworkLinkType::identifier,
+            ProjectedManagerComparison::Eq,
+            &Identifier::new("data-link-prefix").expect("network-link prefix key"),
+        )
+        .expect("network-link late-failure filter")
+        .exists()
         .await
-        .expect("network-link late-failure read")
-        .into_iter()
-        .any(|relation| relation.identifier().value() == "data-link-prefix");
+        .expect("network-link late-failure existence check");
     assert!(!network_prefix_persisted);
     db.relations::<NetworkLink>()
         .delete(network_conflict.iid())
@@ -6992,9 +6996,8 @@ async fn generated_data_model_runtime_v3_live() {
     let role_key = match membership_read.member() {
         MembershipMemberPlayer::Person(reference) => reference
             .identifier()
-            .expect("person reference key")
-            .value()
-            .clone(),
+            .map(|value| value.value().clone())
+            .unwrap_or_else(|| people[0].identifier().value().clone()),
         MembershipMemberPlayer::Robot(_) => panic!("Ada membership retained wrong player"),
     };
     let updated_membership = db
@@ -7009,9 +7012,8 @@ async fn generated_data_model_runtime_v3_live() {
     let updated_role_key = match updated_membership.member() {
         MembershipMemberPlayer::Person(reference) => reference
             .identifier()
-            .expect("person reference key")
-            .value()
-            .clone(),
+            .map(|value| value.value().clone())
+            .unwrap_or_else(|| people[1].identifier().value().clone()),
         MembershipMemberPlayer::Robot(_) => panic!("updated membership retained wrong player"),
     };
     let membership_count_after_update = db

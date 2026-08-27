@@ -211,18 +211,20 @@ fn runtime_include() -> PathBuf {
 
 fn native_library() -> PathBuf {
     let executable = env::current_exe().expect("current test executable is available");
-    let dependencies = executable.parent().expect("test executable has a parent");
-    let profile = dependencies
-        .parent()
-        .expect("dependency directory has a parent");
     let filename = format!(
         "{}type_bridge_c{}",
         env::consts::DLL_PREFIX,
         env::consts::DLL_SUFFIX,
     );
-    [dependencies.join(&filename), profile.join(filename)]
-        .into_iter()
-        .find(|path| path.is_file())
+    executable
+        .ancestors()
+        .flat_map(|directory| {
+            [
+                directory.join(&filename),
+                directory.join("deps").join(&filename),
+            ]
+        })
+        .find(|candidate| candidate.is_file())
         .expect("build type-bridge-c's shared library before the C live producer")
 }
 
