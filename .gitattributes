@@ -7,6 +7,7 @@
 # Generated notices preserve third-party license text byte-for-byte, including
 # upstream line endings and trailing whitespace.
 type-bridge-core/crates/node/THIRD_PARTY_NOTICES.md -text -whitespace
+type-bridge-core/crates/cli/THIRD_PARTY_NOTICES.md -text -whitespace
 type-bridge-core/python/type_bridge_core/THIRD_PARTY_NOTICES.md -text -whitespace
 
 # Test fixtures are byte-exact inputs: canonical-byte goldens and the

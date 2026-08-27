@@ -32,6 +32,7 @@ BEGIN_MARKER = "<!-- BEGIN GENERATED RUST DEPENDENCY NOTICE -->"
 END_MARKER = "<!-- END GENERATED RUST DEPENDENCY NOTICE -->"
 PYTHON_NOTICE = Path("python/type_bridge_core/THIRD_PARTY_NOTICES.md")
 NODE_NOTICE = Path("crates/node/THIRD_PARTY_NOTICES.md")
+CLI_NOTICE = Path("crates/cli/THIRD_PARTY_NOTICES.md")
 ABOUT_CONFIG = Path("about.toml")
 EXPECTED_TARGETS = (
     "x86_64-unknown-linux-gnu",
@@ -66,6 +67,7 @@ class RootSpec:
 ROOT_SPECS = (
     RootSpec("Python", Path("crates/python/Cargo.toml"), ("pyo3/extension-module",)),
     RootSpec("Node", Path("crates/node/Cargo.toml")),
+    RootSpec("CLI", Path("crates/cli/Cargo.toml")),
 )
 
 
@@ -566,6 +568,7 @@ def render_generated_block(
         f"- Python root: `{ROOT_SPECS[0].manifest.as_posix()}` with feature "
         f"`{ROOT_SPECS[0].features[0]}`",
         f"- Node root: `{ROOT_SPECS[1].manifest.as_posix()}` with default features",
+        f"- CLI root: `{ROOT_SPECS[2].manifest.as_posix()}` with default features",
         f"- Release targets: {target_list}",
         "- Excluded from this package inventory: build-only and development-only "
         "dependencies, plus private TypeBridge-authored crates covered by the MIT section",
@@ -756,32 +759,35 @@ def check_or_write_notices(
     block: str,
     write: bool,
 ) -> None:
-    python_path = workspace / PYTHON_NOTICE
-    node_path = workspace / NODE_NOTICE
-    for path in (python_path, node_path):
-        if not path.is_file() or path.is_symlink():
+    paths = [workspace / relative for relative in (PYTHON_NOTICE, NODE_NOTICE, CLI_NOTICE)]
+    for path in paths:
+        if (not path.is_file() or path.is_symlink()) and not (write and path == paths[2]):
             raise ValidationError(f"Native distribution notice is missing or non-regular: {path}")
     try:
-        python_bytes = python_path.read_bytes()
-        node_bytes = node_path.read_bytes()
+        payloads = [path.read_bytes() for path in paths if path.is_file()]
     except OSError as error:
         raise ValidationError(f"Cannot read native distribution notices: {error}") from error
-    python_notice = decode_notice(python_bytes, label="Python third-party notice")
-    node_notice = decode_notice(node_bytes, label="Node third-party notice")
-    if python_bytes != node_bytes:
+    python_bytes = payloads[0]
+    notices = [decode_notice(payload, label="native third-party notice") for payload in payloads]
+    if any(payload != python_bytes for payload in payloads[1:]):
         if not write:
-            raise ValidationError("Python and Node third-party notices must be byte-identical")
-        python_skeleton = hand_maintained_notice_skeleton(python_notice)
-        node_skeleton = hand_maintained_notice_skeleton(node_notice)
-        if python_skeleton is None or python_skeleton != node_skeleton:
             raise ValidationError(
-                "Python and Node hand-maintained third-party notice sections disagree"
+                "Python, Node, and CLI third-party notices must be byte-identical"
             )
-    current = python_notice
+        skeletons = [hand_maintained_notice_skeleton(notice) for notice in notices]
+        if skeletons[0] is None or any(skeleton != skeletons[0] for skeleton in skeletons[1:]):
+            raise ValidationError(
+                "Python, Node, and CLI hand-maintained third-party notice sections disagree"
+            )
+    current = notices[0]
     expected = replace_generated_block(current, block, allow_missing=write).encode("utf-8")
     if write:
-        atomic_write(python_path, expected)
-        atomic_write(node_path, expected)
+        for path in paths:
+            if path.exists():
+                atomic_write(path, expected)
+            else:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(expected)
         return
     if python_bytes != expected:
         raise ValidationError(
@@ -807,6 +813,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--python-json", type=Path, help="pre-generated Python JSON for tests")
     parser.add_argument("--node-json", type=Path, help="pre-generated Node JSON for tests")
+    parser.add_argument("--cli-json", type=Path, help="pre-generated CLI JSON for tests")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--check", action="store_true", help="verify committed notices (default)")
     mode.add_argument("--write", action="store_true", help="regenerate both committed notices")
@@ -818,13 +825,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     workspace = args.workspace.resolve()
     try:
         policy = load_policy(workspace)
-        supplied_json = (args.python_json, args.node_json)
+        supplied_json = (args.python_json, args.node_json, args.cli_json)
         if any(supplied_json) and not all(supplied_json):
-            raise ValidationError("--python-json and --node-json must be supplied together")
+            raise ValidationError(
+                "--python-json, --node-json, and --cli-json must be supplied together"
+            )
         if all(supplied_json):
             payloads = {
                 "Python": load_json(args.python_json, label="Python"),
                 "Node": load_json(args.node_json, label="Node"),
+                "CLI": load_json(args.cli_json, label="CLI"),
             }
         else:
             verify_cargo_about_version(args.cargo_about, workspace=workspace)

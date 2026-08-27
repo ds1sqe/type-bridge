@@ -31,10 +31,14 @@ use type_bridge_workspace::{
     WorkspaceTransportPolicy, c_symbol_prefix_for_app_label,
 };
 
+mod build_identity {
+    include!(concat!(env!("OUT_DIR"), "/cli_build_identity.rs"));
+}
+
 #[derive(Parser)]
 #[command(
     name = "type-bridge",
-    version,
+    version = build_identity::CLI_VERSION,
     about = "TypeBridge V2 workspace commands"
 )]
 struct Cli {

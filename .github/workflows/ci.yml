@@ -12,6 +12,89 @@ env:
   RUST_STABLE_TOOLCHAIN: "1.94.1"
 
 jobs:
+  standalone-cli-candidate:
+    name: Standalone CLI candidate (Linux x86_64 GNU)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    services:
+      typedb:
+        image: typedb/typedb:3.12.3
+        ports:
+          - 1729:1729
+          - 8000:8000
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13.5"
+
+      - name: Install exact candidate Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
+
+      - name: Cache Cargo inputs
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
+            tmp/standalone-cli-candidate/build
+          key: linux-cli-candidate-v1-${{ hashFiles('type-bridge-core/Cargo.lock') }}
+
+      - name: Require native archive and binary inspectors
+        run: |
+          test "$(uname -m)" = x86_64
+          readelf --version
+          sha256sum --version
+
+      - name: Build and validate the deterministic standalone CLI candidate
+        run: >-
+          python scripts/ci/standalone_cli_candidate.py build
+          --output tmp/standalone-cli-candidate
+
+      - name: Consume the relocated candidate without language toolchains
+        run: >-
+          python scripts/ci/standalone_cli_candidate.py smoke
+          tmp/standalone-cli-candidate/type-bridge-cli-candidate-x86_64-unknown-linux-gnu.tar.gz
+
+      - name: Wait for exact TypeDB fixture
+        run: |
+          for i in {1..30}; do
+            version="$(curl --fail --silent --max-time 3 \
+              http://localhost:8000/v1/version 2>/dev/null || true)"
+            if nc -z localhost 1729 2>/dev/null \
+              && python3 -c \
+                'import json,sys; value=json.loads(sys.argv[1]); raise SystemExit(0 if isinstance(value,dict) and value.get("version")=="3.12.3" else 1)' \
+                "$version"; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs ${{ job.services.typedb.id }} 2>&1 || true
+          exit 1
+
+      - name: Apply, verify, roll back, and reapply exact workforce history
+        run: >-
+          python scripts/ci/standalone_cli_candidate.py connected-smoke
+          tmp/standalone-cli-candidate/type-bridge-cli-candidate-x86_64-unknown-linux-gnu.tar.gz
+          --database workforce_cli_${{ github.run_id }}_${{ github.run_attempt }}
+
+      - name: Upload immutable non-publishing candidate evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: standalone-cli-candidate-linux-x86_64-gnu
+          path: tmp/standalone-cli-candidate/type-bridge-cli-candidate-x86_64-unknown-linux-gnu.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Show TypeDB logs after failure
+        if: failure()
+        run: docker logs ${{ job.services.typedb.id }} 2>&1 || true
+
   # Rust crate: compile, test, lint (parallel with Python jobs)
   rust-check:
     name: Rust ${{ matrix.os }}

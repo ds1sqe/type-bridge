@@ -142,6 +142,9 @@ run_c() {
     run_step "frozen Plan 08 C distribution contract" \
         python scripts/ci/validate_c_distribution_contract.py
 
+    run_step "standalone CLI candidate and hostile archive contracts" \
+        uv run pytest tests/unit/compat/test_standalone_cli_candidate.py -q
+
     local c_shared_target c_shared_library
     c_shared_target="$(mktemp -d)"
     if [[ "$(uname -s)" == "Darwin" ]]; then
