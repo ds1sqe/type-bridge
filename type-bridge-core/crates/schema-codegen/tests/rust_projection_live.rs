@@ -24,6 +24,8 @@ const PROVIDER_SCHEMA: &str = include_str!("acceptance/provider-3.12.1.tql");
 const PROVIDER_SCHEMA_3_11: &str = include_str!("acceptance/provider-3.11.5.tql");
 const INTERNAL_FIXTURE: &str = include_str!("rust_projection_live/internal_fixture.rs");
 const CONSUMER: &str = include_str!("rust_projection_live/consumer.rs");
+const CONSUMER_LOCK: &[u8] = include_bytes!("rust_projection_live/consumer-Cargo.lock");
+const FIXTURE_LOCK: &[u8] = include_bytes!("rust_projection_live/fixture-Cargo.lock");
 const WORKFORCE_MANIFEST: &[u8] =
     include_bytes!("../../../../tests/contracts/sdk_conformance/manifest-v1.json");
 const WORKFORCE_CATALOG: &[u8] =
@@ -564,6 +566,7 @@ fn generated_rust_projection_round_trips_exact_live_models() {
     );
     let consumer_manifest_path = consumer.join("Cargo.toml");
     fs::write(&consumer_manifest_path, preflight_manifest).expect("consumer manifest is staged");
+    fs::write(consumer.join("Cargo.lock"), CONSUMER_LOCK).expect("consumer lockfile is staged");
     let generated_manifest =
         fs::read_to_string(generated.join("Cargo.toml")).expect("generated manifest is readable");
     let generated_deps = generated_manifest
@@ -644,7 +647,13 @@ fn generated_rust_projection_round_trips_exact_live_models() {
         );
     }
     let consumer_check = Command::new(&cargo)
-        .args(["check", "--tests", "--offline", "--manifest-path"])
+        .args([
+            "check",
+            "--tests",
+            "--locked",
+            "--offline",
+            "--manifest-path",
+        ])
         .arg(&consumer_manifest_path)
         .env("CARGO_TARGET_DIR", &target_dir)
         .output()
@@ -684,9 +693,11 @@ tokio = {{ version = "1", features = ["macros", "rt-multi-thread"] }}
     );
     let fixture_manifest_path = fixture.join("Cargo.toml");
     fs::write(&fixture_manifest_path, fixture_manifest).expect("fixture manifest is written");
+    fs::write(fixture.join("Cargo.lock"), FIXTURE_LOCK).expect("fixture lockfile is staged");
 
     let fixture_output = Command::new(&cargo)
         .arg("run")
+        .arg("--locked")
         .arg("--quiet")
         .arg("--manifest-path")
         .arg(&fixture_manifest_path)
@@ -843,6 +854,7 @@ tokio = {{ version = "1", features = ["macros", "rt-multi-thread"] }}
     let mut consumer_command = Command::new(&cargo);
     consumer_command
         .arg("test")
+        .arg("--locked")
         .arg("--quiet")
         .arg("--manifest-path")
         .arg(&consumer_manifest_path)
@@ -1116,4 +1128,27 @@ tokio = {{ version = "1", features = ["macros", "rt-multi-thread"] }}
     println!("generated integer keys and polymorphic role parity: passed");
     println!("generated plain-inherited abstract role parity: passed");
     println!("generated unkeyed entity IID lifecycle and singular query: passed");
+}
+
+#[test]
+fn generated_rust_projection_dependency_graphs_are_frozen() {
+    let consumer = std::str::from_utf8(CONSUMER_LOCK).expect("consumer lockfile is UTF-8");
+    assert_eq!(
+        consumer
+            .matches("name = \"type-bridge-rust-projection-live-consumer\"")
+            .count(),
+        1
+    );
+    assert!(consumer.contains("name = \"tinyvec\"\nversion = \"1.12.0\""));
+    assert!(!consumer.contains("name = \"tinyvec\"\nversion = \"1.13.0\""));
+
+    let fixture = std::str::from_utf8(FIXTURE_LOCK).expect("fixture lockfile is UTF-8");
+    assert_eq!(
+        fixture
+            .matches("name = \"type-bridge-rust-projection-live-fixture\"")
+            .count(),
+        1
+    );
+    assert!(fixture.contains("name = \"tinyvec\"\nversion = \"1.12.0\""));
+    assert!(!fixture.contains("name = \"tinyvec\"\nversion = \"1.13.0\""));
 }

@@ -7,6 +7,7 @@ use std::process::Command;
 use sha2::{Digest, Sha256};
 
 const CONSUMER: &str = include_str!("workforce_v4_rust_live/consumer.rs");
+const CONSUMER_LOCK: &[u8] = include_bytes!("workforce_v4_rust_live/Cargo.lock");
 
 fn fixture() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -102,6 +103,7 @@ fn generated_rust_observes_v4_administration_controls_and_lifecycle_on_3_12_3() 
         ),
     )
     .expect("consumer manifest writes");
+    fs::write(consumer.join("Cargo.lock"), CONSUMER_LOCK).expect("consumer lockfile writes");
     let database = format!("workforce_v4_rust_{}", std::process::id());
     let output = Command::new("cargo")
         .current_dir(&consumer)
@@ -111,7 +113,7 @@ fn generated_rust_observes_v4_administration_controls_and_lifecycle_on_3_12_3() 
         )
         .env("TYPE_BRIDGE_WORKFORCE_V4_DATABASE", database)
         .envs(std::env::vars().filter(|(name, _)| name.starts_with("TYPEDB_")))
-        .args(["run", "--quiet"])
+        .args(["run", "--locked", "--quiet"])
         .output()
         .expect("generated Rust live producer runs");
     assert!(
@@ -249,4 +251,12 @@ fn generated_rust_observes_v4_administration_controls_and_lifecycle_on_3_12_3() 
         )
         .expect("validated Rust report publishes to the fan-in directory");
     }
+}
+
+#[test]
+fn generated_rust_live_dependency_graph_is_frozen() {
+    let lock = std::str::from_utf8(CONSUMER_LOCK).expect("consumer lockfile is UTF-8");
+    assert_eq!(lock.matches("name = \"workforce-v4-rust-live\"").count(), 1);
+    assert!(lock.contains("name = \"tinyvec\"\nversion = \"1.12.0\""));
+    assert!(!lock.contains("name = \"tinyvec\"\nversion = \"1.13.0\""));
 }
