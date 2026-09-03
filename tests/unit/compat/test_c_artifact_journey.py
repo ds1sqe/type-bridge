@@ -170,7 +170,9 @@ def test_live_setup_uses_the_authoritative_locked_dependency_graph(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     manifest = JOURNEY.setup_workspace(tmp_path)
-    assert (tmp_path / "Cargo.lock").read_bytes() == JOURNEY.SETUP_LOCK.read_bytes()
+    lock = (tmp_path / "Cargo.lock").read_bytes()
+    assert lock == JOURNEY.SETUP_LOCK.read_bytes()
+    assert lock.count(b'name = "type-bridge-c-artifact-live-setup"') == 1
 
     commands: list[list[str]] = []
     monkeypatch.setattr(

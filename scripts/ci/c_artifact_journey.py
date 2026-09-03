@@ -30,7 +30,7 @@ PHASE4_PACKAGE = (
     ROOT / "type-bridge-core/crates/schema-codegen/tests/c_projection_live/phase4_package.c"
 )
 SETUP_SOURCE = ROOT / "type-bridge-core/crates/schema-codegen/tests/c_projection_live/setup.rs"
-SETUP_LOCK = ROOT / "type-bridge-core/Cargo.lock"
+SETUP_LOCK = ROOT / "tests/contracts/c-artifact-live-helper-Cargo.lock"
 PROVIDER_SCHEMA = ROOT / "tests/contracts/sdk_conformance/workforce-v3/provider-3.12.1-v3.tql"
 JOURNEY_CONTRACT = ROOT / "tests/contracts/c-artifact-journey-v1.json"
 PREDECESSOR_CATALOGS = tuple(
