@@ -30,6 +30,7 @@ PHASE4_PACKAGE = (
     ROOT / "type-bridge-core/crates/schema-codegen/tests/c_projection_live/phase4_package.c"
 )
 SETUP_SOURCE = ROOT / "type-bridge-core/crates/schema-codegen/tests/c_projection_live/setup.rs"
+SETUP_LOCK = ROOT / "type-bridge-core/Cargo.lock"
 PROVIDER_SCHEMA = ROOT / "tests/contracts/sdk_conformance/workforce-v3/provider-3.12.1-v3.tql"
 JOURNEY_CONTRACT = ROOT / "tests/contracts/c-artifact-journey-v1.json"
 PREDECESSOR_CATALOGS = tuple(
@@ -507,6 +508,7 @@ def setup_workspace(root: Path) -> Path:
         "[workspace]\n",
         encoding="utf-8",
     )
+    (root / "Cargo.lock").write_bytes(SETUP_LOCK.read_bytes())
     return manifest
 
 
@@ -526,7 +528,16 @@ def fixture_environment(
 
 def run_setup(manifest: Path, target: Path, environment: Mapping[str, str], mode: str) -> str:
     return run(
-        ["cargo", "run", "--quiet", "--manifest-path", str(manifest), "--", mode],
+        [
+            "cargo",
+            "run",
+            "--locked",
+            "--quiet",
+            "--manifest-path",
+            str(manifest),
+            "--",
+            mode,
+        ],
         env={**environment, "CARGO_TARGET_DIR": str(target)},
     )
 

@@ -166,6 +166,33 @@ def test_connected_marker_authority_is_exact_and_duplicate_free() -> None:
         JOURNEY.require_markers("", full, "test")
 
 
+def test_live_setup_uses_the_authoritative_locked_dependency_graph(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    manifest = JOURNEY.setup_workspace(tmp_path)
+    assert (tmp_path / "Cargo.lock").read_bytes() == JOURNEY.SETUP_LOCK.read_bytes()
+
+    commands: list[list[str]] = []
+    monkeypatch.setattr(
+        JOURNEY,
+        "run",
+        lambda command, **_kwargs: commands.append(list(command)) or "",
+    )
+    JOURNEY.run_setup(manifest, tmp_path / "target", {}, "setup")
+    assert commands == [
+        [
+            "cargo",
+            "run",
+            "--locked",
+            "--quiet",
+            "--manifest-path",
+            str(manifest),
+            "--",
+            "setup",
+        ]
+    ]
+
+
 def test_report_revalidates_exact_archive_bindings(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
