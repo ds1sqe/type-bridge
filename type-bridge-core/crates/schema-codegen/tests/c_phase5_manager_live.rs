@@ -33,6 +33,7 @@ const WRONG_OWNER_COMPILE_FAIL: &str =
 const WRONG_SCALAR_COMPILE_FAIL: &str =
     include_str!("c_phase5_manager_live/wrong_scalar_compile_fail.c");
 const SETUP: &str = include_str!("c_phase5_manager_live/setup.rs");
+const SETUP_LOCK: &[u8] = include_bytes!("c_phase5_manager_live/setup-Cargo.lock");
 
 const REPORT_FORMAT: &str = "typebridge.phase5-manager-filter-live-report/v1";
 const SEMANTIC_PROFILE: &str = "typedb-3.12.1/v1";
@@ -436,7 +437,7 @@ impl IsolatedDatabase {
     fn run(&self, mode: &str) -> Output {
         let mut command = Command::new(&self.cargo);
         command
-            .args(["run", "--quiet", "--manifest-path"])
+            .args(["run", "--locked", "--quiet", "--manifest-path"])
             .arg(&self.manifest)
             .arg("--")
             .arg(mode)
@@ -509,6 +510,7 @@ fn stage_setup(stage: &Path, environment: Vec<(String, String)>) -> IsolatedData
         ),
     )
     .expect("setup manifest writes");
+    fs::write(root.join("Cargo.lock"), SETUP_LOCK).expect("setup lockfile is staged");
     IsolatedDatabase {
         cargo: env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo")),
         manifest,
@@ -518,6 +520,18 @@ fn stage_setup(stage: &Path, environment: Vec<(String, String)>) -> IsolatedData
         environment,
         active: false,
     }
+}
+
+#[test]
+fn c_phase5_manager_live_setup_dependency_graph_is_frozen() {
+    let lock = std::str::from_utf8(SETUP_LOCK).expect("setup lockfile is UTF-8");
+    assert_eq!(
+        lock.matches("name = \"type-bridge-c-phase5-manager-live-setup\"")
+            .count(),
+        1
+    );
+    assert!(lock.contains("name = \"tinyvec\"\nversion = \"1.12.0\""));
+    assert!(!lock.contains("name = \"tinyvec\"\nversion = \"1.13.0\""));
 }
 
 #[test]

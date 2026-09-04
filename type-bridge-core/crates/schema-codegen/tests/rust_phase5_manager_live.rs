@@ -14,6 +14,7 @@ use type_bridge_schema_codegen::{GeneratedPackage, RustEmitter};
 mod support;
 
 const PRODUCER: &str = include_str!("rust_acceptance/phase5_manager_live.rs");
+const CONSUMER_LOCK: &[u8] = include_bytes!("rust_acceptance/phase5-manager-live-Cargo.lock");
 const OUTPUT_ENV: &str = "TYPE_BRIDGE_PHASE5_MANAGER_LIVE_REPORT";
 const ADDRESS_ENV: &str = "TYPE_BRIDGE_PHASE5_MANAGER_LIVE_ADDRESS";
 const DATABASE_ENV: &str = "TYPE_BRIDGE_PHASE5_MANAGER_LIVE_DATABASE";
@@ -177,6 +178,7 @@ type-bridge-orm = {{ path = "{orm_path}" }}
     )
     .expect("consumer manifest writes");
     fs::write(root.join("src/main.rs"), PRODUCER).expect("consumer source writes");
+    fs::write(root.join("Cargo.lock"), CONSUMER_LOCK).expect("consumer lockfile is staged");
 }
 
 fn cargo_target() -> PathBuf {
@@ -254,6 +256,7 @@ fn generated_rust_phase5_manager_live_producer_compiles() {
     let checked = cargo(
         &[
             "clippy",
+            "--locked",
             "--offline",
             "--quiet",
             "--manifest-path",
@@ -293,6 +296,7 @@ fn generated_rust_phase5_manager_live_runs_when_explicitly_configured() {
     let output = cargo(
         &[
             "run",
+            "--locked",
             "--offline",
             "--quiet",
             "--manifest-path",
@@ -310,4 +314,15 @@ fn generated_rust_phase5_manager_live_runs_when_explicitly_configured() {
     assert!(metadata.is_file() && !metadata.file_type().is_symlink());
     assert!(metadata.len() <= 256 * 1024);
     assert_eq!(fs::read(report).expect("report reads").last(), Some(&b'\n'));
+}
+
+#[test]
+fn rust_phase5_manager_live_dependency_graph_is_frozen() {
+    let lock = std::str::from_utf8(CONSUMER_LOCK).expect("consumer lockfile is UTF-8");
+    assert_eq!(
+        lock.matches("name = \"rust-phase5-manager-live\"").count(),
+        1
+    );
+    assert!(lock.contains("name = \"tinyvec\"\nversion = \"1.12.0\""));
+    assert!(!lock.contains("name = \"tinyvec\"\nversion = \"1.13.0\""));
 }

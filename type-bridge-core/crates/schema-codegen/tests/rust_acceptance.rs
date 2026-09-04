@@ -23,6 +23,9 @@ const NEGATIVE: &str = include_str!("rust_acceptance/negative.rs");
 const PHASE2_PARITY: &str = include_str!("rust_acceptance/phase2_parity.rs");
 const PHASE2_FOREIGN_NEGATIVE: &str = include_str!("rust_acceptance/phase2_foreign_negative.rs");
 const WORKFORCE_V5_CODEC: &str = include_str!("rust_acceptance/workforce_v5_codec.rs");
+const PHASE2_CONSUMER_LOCK: &[u8] = include_bytes!("rust_acceptance/phase2-Cargo.lock");
+const WORKFORCE_V5_CODEC_LOCK: &[u8] =
+    include_bytes!("rust_acceptance/workforce-v5-codec-Cargo.lock");
 static STAGE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 const WORKFORCE_V3_PROOF_FRAGMENT_ENV: &str = "TYPE_BRIDGE_WORKFORCE_V3_PROOF_FRAGMENT";
@@ -3523,6 +3526,7 @@ type-bridge-schema = {{ path = "{schema_path}" }}
     )
     .unwrap();
     fs::write(root.join("src/main.rs"), source).unwrap();
+    fs::write(root.join("Cargo.lock"), PHASE2_CONSUMER_LOCK).unwrap();
 }
 
 #[test]
@@ -3553,6 +3557,7 @@ fn main() {}"#,
     let output = cargo(
         &[
             "check",
+            "--locked",
             "--offline",
             "--quiet",
             "--manifest-path",
@@ -3715,6 +3720,8 @@ fn generated_rust_workforce_v5_canonical_codec() {
         &["test-harness"],
         "generated_foreign = { package = \"type-bridge-generated-schema-foreign\", path = \"../generated-foreign\" }\n",
     );
+    fs::write(consumer.join("Cargo.lock"), WORKFORCE_V5_CODEC_LOCK)
+        .expect("Workforce V5 codec lockfile is staged");
 
     let corpus = env::var_os("TYPE_BRIDGE_WORKFORCE_V5_RUST_CORPUS")
         .map(PathBuf::from)
@@ -3729,6 +3736,7 @@ fn generated_rust_workforce_v5_canonical_codec() {
     let output = cargo_with_env(
         &[
             "run",
+            "--locked",
             "--offline",
             "--quiet",
             "--manifest-path",
@@ -3787,6 +3795,7 @@ fn generated_rust_workforce_v5_canonical_codec() {
     let repeated = cargo_with_env(
         &[
             "run",
+            "--locked",
             "--offline",
             "--quiet",
             "--manifest-path",
@@ -3822,6 +3831,19 @@ fn generated_rust_workforce_v5_canonical_codec() {
     );
 }
 
+#[test]
+fn provider_free_rust_dependency_graphs_are_frozen() {
+    for (lock, package) in [
+        (PHASE2_CONSUMER_LOCK, "rust-phase2-projection-parity"),
+        (WORKFORCE_V5_CODEC_LOCK, "rust-workforce-v5-codec"),
+    ] {
+        let lock = std::str::from_utf8(lock).expect("consumer lockfile is UTF-8");
+        assert_eq!(lock.matches(&format!("name = \"{package}\"")).count(), 1);
+        assert!(lock.contains("name = \"tinyvec\"\nversion = \"1.12.0\""));
+        assert!(!lock.contains("name = \"tinyvec\"\nversion = \"1.13.0\""));
+    }
+}
+
 fn run_phase2_consumer(
     manifest: &Path,
     target_dir: &std::ffi::OsStr,
@@ -3832,6 +3854,7 @@ fn run_phase2_consumer(
     Command::new(executable)
         .args([
             "run",
+            "--locked",
             "--offline",
             "--quiet",
             "--manifest-path",
@@ -3882,6 +3905,7 @@ fn generated_rust_phase2_projection_parity_producer() {
     let negative_output = cargo(
         &[
             "check",
+            "--locked",
             "--offline",
             "--quiet",
             "--manifest-path",
