@@ -14,6 +14,7 @@ use type_bridge_schema_codegen::{GeneratedPackage, RustEmitter};
 mod support;
 
 const PRODUCER: &str = include_str!("rust_acceptance/phase2_live.rs");
+const CONSUMER_LOCK: &[u8] = include_bytes!("rust_acceptance/phase2-live-Cargo.lock");
 const OUTPUT_ENV: &str = "TYPE_BRIDGE_PHASE2_LIVE_REPORT";
 const ADDRESS_ENV: &str = "TYPE_BRIDGE_PHASE2_LIVE_ADDRESS";
 const DATABASE_ENV: &str = "TYPE_BRIDGE_PHASE2_LIVE_DATABASE";
@@ -145,6 +146,7 @@ type-bridge-orm = {{ path = "{orm_path}" }}
     )
     .expect("consumer manifest is written");
     fs::write(root.join("src/main.rs"), PRODUCER).expect("consumer source is written");
+    fs::write(root.join("Cargo.lock"), CONSUMER_LOCK).expect("consumer lockfile is staged");
 }
 
 fn cargo_target() -> PathBuf {
@@ -174,6 +176,7 @@ fn run_live_consumer(manifest: &Path, report: &Path) -> Output {
     Command::new(env::var_os("CARGO").unwrap_or_else(|| "cargo".into()))
         .args([
             "run",
+            "--locked",
             "--offline",
             "--quiet",
             "--manifest-path",
@@ -243,6 +246,7 @@ fn generated_rust_phase2_live_producer_compiles_and_rejects_foreign_shape_before
     let manifest = consumer.join("Cargo.toml");
     let checked = cargo(&[
         "clippy",
+        "--locked",
         "--offline",
         "--quiet",
         "--manifest-path",
@@ -262,6 +266,7 @@ fn generated_rust_phase2_live_producer_compiles_and_rejects_foreign_shape_before
     write_package(&emit_from_source(&foreign_workforce_source()), &generated);
     let rejected = cargo(&[
         "run",
+        "--locked",
         "--offline",
         "--quiet",
         "--manifest-path",
@@ -277,6 +282,18 @@ fn generated_rust_phase2_live_producer_compiles_and_rejects_foreign_shape_before
             && stderr.contains("exact Workforce V3 semantic projection"),
         "foreign rejection was not the semantic package fence:\n{stderr}"
     );
+}
+
+#[test]
+fn rust_phase2_live_dependency_graph_is_frozen() {
+    let lock = std::str::from_utf8(CONSUMER_LOCK).expect("consumer lockfile is UTF-8");
+    assert_eq!(
+        lock.matches("name = \"rust-phase2-projection-live\"")
+            .count(),
+        1
+    );
+    assert!(lock.contains("name = \"tinyvec\"\nversion = \"1.12.0\""));
+    assert!(!lock.contains("name = \"tinyvec\"\nversion = \"1.13.0\""));
 }
 
 #[test]
