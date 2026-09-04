@@ -26,6 +26,8 @@ mod support;
 const SCHEMA: &str = include_str!("acceptance/schema.yaml");
 const PROVIDER_SCHEMA: &str = include_str!("acceptance/provider-3.12.1.tql");
 const SETUP: &str = include_str!("c_projection_live/setup.rs");
+const SETUP_LOCK: &[u8] = include_bytes!("c_projection_live/setup-Cargo.lock");
+const PHASE4_SETUP_LOCK: &[u8] = include_bytes!("c_projection_live/phase4-setup-Cargo.lock");
 const CONSUMER: &str = include_str!("c_projection_live/consumer.c");
 const PHASE4_SCHEMA: &str =
     include_str!("../../../../tests/contracts/sdk_conformance/workforce-v3/schema-v3.yaml");
@@ -1424,7 +1426,7 @@ impl IsolatedDatabase {
         for retry in 0..=EXECUTABLE_BUSY_RETRIES {
             let mut command = Command::new(&self.cargo);
             command
-                .args(["run", "--quiet", "--manifest-path"])
+                .args(["run", "--locked", "--quiet", "--manifest-path"])
                 .arg(&self.manifest)
                 .arg("--")
                 .arg(mode)
@@ -1686,6 +1688,8 @@ fn live_c17_generated_person_and_membership_crud_round_trips_exact_3_12_3() {
         ),
     )
     .expect("Rust-only setup manifest is staged");
+    fs::write(setup_root.join("Cargo.lock"), SETUP_LOCK)
+        .expect("Rust-only setup lockfile is staged");
     let target = env::var_os("ACCEPTANCE_TARGET_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| stage.path().join("target"));
@@ -2036,6 +2040,8 @@ fn generated_data_model_runtime_v3_live() {
         ),
     )
     .expect("Phase4 database setup manifest is staged");
+    fs::write(setup_root.join("Cargo.lock"), PHASE4_SETUP_LOCK)
+        .expect("Phase4 database setup lockfile is staged");
     let environment = vec![
         ("TYPEDB_ADDRESS".to_owned(), address),
         ("TYPEDB_HTTP_PORT".to_owned(), http_port),
@@ -2112,4 +2118,27 @@ fn generated_data_model_runtime_v3_live() {
         }
     }
     publish_workforce_v3_c_live_supplement();
+}
+
+#[test]
+fn generated_c_live_setup_dependency_graphs_are_frozen() {
+    let setup = std::str::from_utf8(SETUP_LOCK).expect("setup lockfile is UTF-8");
+    assert_eq!(
+        setup
+            .matches("name = \"type-bridge-c-projection-live-setup\"")
+            .count(),
+        1
+    );
+    assert!(setup.contains("name = \"tinyvec\"\nversion = \"1.12.0\""));
+    assert!(!setup.contains("name = \"tinyvec\"\nversion = \"1.13.0\""));
+
+    let phase4 = std::str::from_utf8(PHASE4_SETUP_LOCK).expect("Phase4 lockfile is UTF-8");
+    assert_eq!(
+        phase4
+            .matches("name = \"type-bridge-c-phase4-live-setup\"")
+            .count(),
+        1
+    );
+    assert!(phase4.contains("name = \"tinyvec\"\nversion = \"1.12.0\""));
+    assert!(!phase4.contains("name = \"tinyvec\"\nversion = \"1.13.0\""));
 }
