@@ -85,3 +85,41 @@ def test_python_consumer_binds_generated_surface_and_current_sdk(
         str(ROOT),
         str(CONSUMER.PYTHON_CORE),
     ]
+
+
+def test_rust_consumer_stages_frozen_dependency_graph(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    commands: list[list[str]] = []
+
+    def extract(_surface: Path, package: Path) -> dict[str, object]:
+        package.mkdir()
+        return {}
+
+    monkeypatch.setattr(CONSUMER, "extract_surface", extract)
+    monkeypatch.setattr(
+        CONSUMER,
+        "run",
+        lambda command, **_kwargs: commands.append(command),
+    )
+
+    assert CONSUMER.rust_consumer(tmp_path / "surface.tar.gz", tmp_path) == [
+        "offline-cargo-check",
+        "all-targets",
+    ]
+    lock = (tmp_path / "rust/Cargo.lock").read_text(encoding="utf-8")
+    assert lock == CONSUMER.RUST_CONSUMER_LOCK.read_text(encoding="utf-8")
+    assert lock.count('name = "type-bridge-generated-schema"') == 1
+    assert 'name = "tinyvec"\nversion = "1.12.0"' in lock
+    assert 'name = "tinyvec"\nversion = "1.13.0"' not in lock
+    assert commands == [
+        [
+            "cargo",
+            "check",
+            "--locked",
+            "--offline",
+            "--manifest-path",
+            str(tmp_path / "rust/Cargo.toml"),
+            "--all-targets",
+        ]
+    ]

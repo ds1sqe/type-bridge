@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[2]
 NODE = ROOT / "type-bridge-core/crates/node"
 RUST = ROOT / "type-bridge-core/crates/rust"
 PYTHON_CORE = ROOT / "type-bridge-core/python"
+RUST_CONSUMER_LOCK = ROOT / "tests/contracts/workforce-v6-rust-surface-Cargo.lock"
 FORMAT = "typebridge.workforce-v6-surface-consumer/v1"
 
 
@@ -113,6 +114,7 @@ def node_consumer(surface: Path, root: Path) -> list[str]:
 def rust_consumer(surface: Path, root: Path) -> list[str]:
     package = root / "rust"
     extract_surface(surface, package)
+    (package / "Cargo.lock").write_bytes(RUST_CONSUMER_LOCK.read_bytes())
     config = package / ".cargo/config.toml"
     config.parent.mkdir()
     config.write_text(
@@ -127,6 +129,7 @@ def rust_consumer(surface: Path, root: Path) -> list[str]:
         [
             "cargo",
             "check",
+            "--locked",
             "--offline",
             "--manifest-path",
             str(package / "Cargo.toml"),
