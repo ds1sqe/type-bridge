@@ -114,7 +114,7 @@ fn emits_exact_deterministic_single_dependency_crate() {
     assert!(tokens.contains("pub const plays_event_container_item"));
     let manifest = String::from_utf8(first.get("Cargo.toml").unwrap().to_vec()).unwrap();
     assert!(manifest.contains("[dependencies]"));
-    assert!(manifest.contains("type-bridge = { version = \"=2.0.1\", default-features = false }"));
+    assert!(manifest.contains("type-bridge = { version = \"=2.0.2\", default-features = false }"));
     assert!(manifest.contains("doctest = false"));
     assert!(manifest.contains("rust-version = \"1.88\""));
 }

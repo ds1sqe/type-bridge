@@ -28,55 +28,55 @@ pyo3::create_exception!(
     "Structured canonical match-request validation or lineage failure."
 );
 
-#[pyclass(name = "MatchSessionHandle", frozen)]
+#[pyclass(name = "MatchSessionHandle", frozen, from_py_object)]
 #[derive(Clone)]
 struct PyMatchSessionHandle {
     inner: SessionHandle,
 }
 
-#[pyclass(name = "MatchBindingHandle", frozen)]
+#[pyclass(name = "MatchBindingHandle", frozen, from_py_object)]
 #[derive(Clone)]
 pub(crate) struct PyMatchBindingHandle {
     inner: BindingHandle,
 }
 
-#[pyclass(name = "MatchFieldHandle", frozen)]
+#[pyclass(name = "MatchFieldHandle", frozen, from_py_object)]
 #[derive(Clone)]
 struct PyMatchFieldHandle {
     inner: FieldHandle,
 }
 
-#[pyclass(name = "MatchRoleHandle", frozen)]
+#[pyclass(name = "MatchRoleHandle", frozen, from_py_object)]
 #[derive(Clone)]
 struct PyMatchRoleHandle {
     inner: RoleHandle,
 }
 
-#[pyclass(name = "MatchPredicateHandle", frozen)]
+#[pyclass(name = "MatchPredicateHandle", frozen, from_py_object)]
 #[derive(Clone)]
 struct PyMatchPredicateHandle {
     inner: PredicateHandle,
 }
 
-#[pyclass(name = "MatchOrderHandle", frozen)]
+#[pyclass(name = "MatchOrderHandle", frozen, from_py_object)]
 #[derive(Clone)]
 pub(crate) struct PyMatchOrderHandle {
     inner: OrderHandle,
 }
 
-#[pyclass(name = "MatchSelectionHandle", frozen)]
+#[pyclass(name = "MatchSelectionHandle", frozen, from_py_object)]
 #[derive(Clone)]
 struct PyMatchSelectionHandle {
     inner: SelectionHandle,
 }
 
-#[pyclass(name = "MatchShapeHandle", frozen)]
+#[pyclass(name = "MatchShapeHandle", frozen, from_py_object)]
 #[derive(Clone)]
 struct PyMatchShapeHandle {
     inner: ShapeHandle,
 }
 
-#[pyclass(name = "MatchQueryHandle", frozen)]
+#[pyclass(name = "MatchQueryHandle", frozen, from_py_object)]
 #[derive(Clone)]
 pub(crate) struct PyMatchQueryHandle {
     inner: QueryHandle,
@@ -212,7 +212,7 @@ impl PyMatchSessionHandle {
 
 fn python_reachability_depth(value: &Bound<'_, PyAny>, name: &str) -> PyResult<u8> {
     let value = value
-        .downcast_exact::<PyInt>()
+        .cast_exact::<PyInt>()
         .map_err(|_| PyTypeError::new_err(format!("{name} must be an exact Python int")))?
         .extract::<i128>()
         .map_err(|_| {
@@ -824,7 +824,7 @@ pub(crate) fn py_match_orm_error(error: OrmError) -> PyErr {
 }
 
 pub(crate) fn py_match_error(error: MatchError) -> PyErr {
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         let py_error = MatchRequestError::new_err(error.message().to_owned());
         let attach = || -> PyResult<()> {
             let value = py_error.value(py);
@@ -1076,9 +1076,9 @@ mod tests {
         use pythonize::depythonize;
 
         let error = UnvalidatedMatchRequest::from_canonical_bytes(b"{}").unwrap_err();
-        pyo3::prepare_freethreaded_python();
+        Python::initialize();
         let error = py_match_error(error);
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let value = error.value(py);
             assert!(value.is_instance_of::<MatchRequestError>());
             assert_eq!(
@@ -1140,14 +1140,14 @@ mod tests {
             .block_on(database.execute_match(&registry, &validated))
             .unwrap_err();
 
-        pyo3::prepare_freethreaded_python();
+        Python::initialize();
         for (error, category, code) in [
             (cancelled, "resource_limit", "provider_cancelled"),
             (timed_out, "resource_limit", "transaction_deadline_exceeded"),
             (provider, "provider", "provider_transaction_open_failed"),
         ] {
             let error = py_match_orm_error(error);
-            Python::with_gil(|py| {
+            Python::attach(|py| {
                 let value = error.value(py);
                 assert!(value.is_instance_of::<MatchRequestError>());
                 assert_eq!(
@@ -1178,8 +1178,8 @@ mod tests {
 
     #[test]
     fn registered_python_handles_expose_no_state_attributes() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let module = PyModule::new(py, "type_bridge_core").unwrap();
             register(&module).unwrap();
             for name in [

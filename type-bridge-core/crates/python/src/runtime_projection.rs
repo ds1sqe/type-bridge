@@ -174,7 +174,7 @@ pub struct PyProjectedModelManager {
 #[pymethods]
 impl PyProjectedModelManager {
     /// Insert one exact generated model and attach the returned TypeDB IID.
-    fn insert(&self, py: Python<'_>, instance: Bound<'_, PyAny>) -> PyResult<PyObject> {
+    fn insert(&self, py: Python<'_>, instance: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         self.ensure_instance(py, &instance)?;
         let iid = match self.descriptor()? {
             TypeDescriptor::Entity(descriptor) => {
@@ -216,7 +216,7 @@ impl PyProjectedModelManager {
     }
 
     /// Fetch all exact instances of this projected type using `isa!`.
-    fn all(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn all(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         match self.descriptor()? {
             TypeDescriptor::Entity(descriptor) => {
                 let manager = self.entity_manager(Arc::new(descriptor))?;
@@ -252,7 +252,7 @@ impl PyProjectedModelManager {
     }
 
     /// Fetch one exact instance by TypeDB IID using `isa!`.
-    fn get_by_iid(&self, py: Python<'_>, iid: &str) -> PyResult<PyObject> {
+    fn get_by_iid(&self, py: Python<'_>, iid: &str) -> PyResult<Py<PyAny>> {
         let iid = iid.to_owned();
         match self.descriptor()? {
             TypeDescriptor::Entity(descriptor) => {
@@ -462,7 +462,7 @@ fn lower_attributes(
     instance: &Bound<'_, PyAny>,
 ) -> PyResult<DynamicAttributeMap> {
     let values = instance.call_method0("runtime_values")?;
-    let values = values.downcast::<PyDict>()?;
+    let values = values.cast::<PyDict>()?;
     let mut attributes = Vec::new();
     for descriptor in descriptors {
         let value = values.get_item(&descriptor.field_name)?;
@@ -496,7 +496,7 @@ fn lower_roles(
     let projection = package.projection.projection();
     let model = &projection.models()[relation_id];
     let values = instance.call_method0("runtime_values")?;
-    let values = values.downcast::<PyDict>()?;
+    let values = values.cast::<PyDict>()?;
     let mut inputs = Vec::new();
     for create in model.create().roles().values() {
         let token = &model.query_tokens().roles()[create.role()];
@@ -554,7 +554,7 @@ fn projected_key(
         return Ok(None);
     };
     let values = value.call_method0("runtime_values")?;
-    let values = values.downcast::<PyDict>()?;
+    let values = values.cast::<PyDict>()?;
     let Some(wrapper) = values.get_item(&key.field_name)? else {
         return Ok(None);
     };
@@ -595,13 +595,13 @@ fn normalized_items<'py>(
         Some(value) if value.is_none() => {}
         Some(value) if maximum == Some(1) => items.push(value.clone()),
         Some(value) => {
-            if value.downcast::<PyString>().is_ok() {
+            if value.cast::<PyString>().is_ok() {
                 return Err(py_type_error(
                     "projected multi-value input requires a sequence",
                 ));
             }
             let tuple = value
-                .downcast::<PyTuple>()
+                .cast::<PyTuple>()
                 .map_err(|_| py_type_error("projected multi-value input requires a tuple"))?;
             items.extend(tuple.iter());
         }
@@ -631,7 +631,7 @@ fn hydrate_entity(
     package: &InstalledPackage,
     id: &TypeId,
     row: &DynamicEntityRow,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     ensure_row_type(id, row.type_name.as_deref())?;
     let descriptor = package
         .projection
@@ -646,7 +646,7 @@ fn hydrate_relation(
     package: &InstalledPackage,
     id: &TypeId,
     row: &DynamicRelationRow,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     ensure_row_type(id, row.type_name.as_deref())?;
     let descriptor = package
         .projection
@@ -685,7 +685,7 @@ fn hydrate_player(
     package: &InstalledPackage,
     allowed: &BTreeSet<type_bridge_contract::projection::ProjectedModelUse>,
     player: &DynamicRolePlayer,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let label = player
         .player_type_name
         .as_deref()
@@ -769,7 +769,7 @@ fn hydrate_attribute(
     package: &InstalledPackage,
     descriptor: &OwnedAttributeDescriptor,
     value: &AttributeValue,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     ensure_attribute_type(value, descriptor.value_type)?;
     let id = package.type_by_label(&descriptor.attr_name, TypeKind::Attribute)?;
     let class = package.class(id, ProjectedModelForm::Complete)?;
@@ -781,7 +781,7 @@ fn set_hydrated_values(
     py: Python<'_>,
     values: &Bound<'_, PyDict>,
     name: &str,
-    items: Vec<PyObject>,
+    items: Vec<Py<PyAny>>,
     cardinality: (u32, Option<u32>),
 ) -> PyResult<()> {
     let (minimum, maximum) = cardinality;
@@ -809,7 +809,7 @@ fn hydrate_complete(
     id: &TypeId,
     values: &Bound<'_, PyDict>,
     iid: Option<&str>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let instance = allocate(py, package.class(id, ProjectedModelForm::Complete)?)?;
     instance.call_method1("initialize_runtime_values", (values,))?;
     if let Some(iid) = iid {
@@ -824,7 +824,7 @@ fn hydrate_reference(
     id: &TypeId,
     values: &Bound<'_, PyDict>,
     iid: &str,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let instance = allocate(py, package.class(id, ProjectedModelForm::Reference)?)?;
     instance.call_method1("initialize_runtime_reference", (iid, values))?;
     Ok(instance.unbind())
@@ -851,22 +851,22 @@ fn attribute_value_from_py(
 ) -> PyResult<AttributeValue> {
     match value_type {
         ValueType::String => value
-            .downcast_exact::<PyString>()
+            .cast_exact::<PyString>()
             .map_err(|_| py_type_error("attribute value requires an exact str"))?
             .extract()
             .map(AttributeValue::String),
         ValueType::Long => value
-            .downcast_exact::<PyInt>()
+            .cast_exact::<PyInt>()
             .map_err(|_| py_type_error("attribute value requires an exact int"))?
             .extract()
             .map(AttributeValue::Long),
         ValueType::Double => value
-            .downcast_exact::<PyFloat>()
+            .cast_exact::<PyFloat>()
             .map_err(|_| py_type_error("attribute value requires an exact float"))?
             .extract()
             .map(AttributeValue::Double),
         ValueType::Boolean => value
-            .downcast_exact::<PyBool>()
+            .cast_exact::<PyBool>()
             .map_err(|_| py_type_error("attribute value requires an exact bool"))?
             .extract()
             .map(AttributeValue::Boolean),
@@ -972,7 +972,7 @@ fn ensure_attribute_type(value: &AttributeValue, expected: ValueType) -> PyResul
     }
 }
 
-fn attribute_value_to_py(py: Python<'_>, value: &AttributeValue) -> PyResult<PyObject> {
+fn attribute_value_to_py(py: Python<'_>, value: &AttributeValue) -> PyResult<Py<PyAny>> {
     match value {
         AttributeValue::String(value) => pythonize(py, value)
             .map(Bound::unbind)
@@ -1007,7 +1007,7 @@ fn attribute_value_to_py(py: Python<'_>, value: &AttributeValue) -> PyResult<PyO
     }
 }
 
-fn duration_to_py(py: Python<'_>, value: &str) -> PyResult<PyObject> {
+fn duration_to_py(py: Python<'_>, value: &str) -> PyResult<Py<PyAny>> {
     let (days, seconds, micros) = parse_python_day_time_duration(value).ok_or_else(|| {
         py_value_error(
             "duration hydration requires a nonnegative day-time value at microsecond precision",
@@ -1200,8 +1200,8 @@ plays:
         assert!(parse_python_day_time_duration("P1M").is_none());
         assert!(parse_python_day_time_duration("PT0.000000001S").is_none());
 
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let decimal =
                 attribute_value_to_py(py, &AttributeValue::Decimal("3.50dec".into())).unwrap();
             assert_eq!(decimal.bind(py).str().unwrap().to_str().unwrap(), "3.50");
@@ -1288,7 +1288,7 @@ class Reference:
                 let complete = type_fn
                     .call1((model.target_name().as_str(), bases, attrs))
                     .unwrap()
-                    .downcast_into::<PyType>()
+                    .cast_into::<PyType>()
                     .unwrap()
                     .unbind();
                 let reference = model.reference_read().target_name().map(|name| {
@@ -1301,7 +1301,7 @@ class Reference:
                     type_fn
                         .call1((name.as_str(), bases, attrs))
                         .unwrap()
-                        .downcast_into::<PyType>()
+                        .cast_into::<PyType>()
                         .unwrap()
                         .unbind()
                 });
@@ -1332,8 +1332,8 @@ class Reference:
 
     #[test]
     fn install_is_canonical_tamper_evident_and_requires_exact_coverage() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let projection = projection();
             let projection_json =
                 String::from_utf8(to_canonical_json(&projection).unwrap()).unwrap();
@@ -1376,8 +1376,8 @@ class Reference:
 
     #[test]
     fn native_lowering_and_hydration_preserve_wrappers_iids_and_relation_references() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let (_, package) = install(py);
             let person_id = package
                 .type_by_label("person", TypeKind::Entity)
@@ -1443,7 +1443,7 @@ class Reference:
             let wrapped = hydrated
                 .call_method0("runtime_values")
                 .unwrap()
-                .downcast::<PyDict>()
+                .cast::<PyDict>()
                 .unwrap()
                 .get_item("identifier")
                 .unwrap()
@@ -1484,7 +1484,7 @@ class Reference:
             .unwrap();
             let membership_values = membership.bind(py).call_method0("runtime_values").unwrap();
             let member = membership_values
-                .downcast::<PyDict>()
+                .cast::<PyDict>()
                 .unwrap()
                 .get_item("member")
                 .unwrap()
@@ -1495,7 +1495,7 @@ class Reference:
                 "0x-person"
             );
             let member_values = member.call_method0("runtime_values").unwrap();
-            let member_values = member_values.downcast::<PyDict>().unwrap();
+            let member_values = member_values.cast::<PyDict>().unwrap();
             let member_identifier = member_values.get_item("identifier").unwrap().unwrap();
             assert_eq!(
                 member_identifier.get_type().as_ptr(),
@@ -1510,7 +1510,7 @@ class Reference:
                 "person-1"
             );
             let member_aliases = member_values.get_item("aliases").unwrap().unwrap();
-            let member_aliases = member_aliases.downcast::<PyTuple>().unwrap();
+            let member_aliases = member_aliases.cast::<PyTuple>().unwrap();
             assert_eq!(member_aliases.len(), 2);
             for alias in member_aliases.iter() {
                 assert_eq!(alias.get_type().as_ptr(), aliases_class.as_ptr());
@@ -1539,12 +1539,12 @@ class Reference:
             .unwrap();
             let values = relation.bind(py).call_method0("runtime_values").unwrap();
             let item = values
-                .downcast::<PyDict>()
+                .cast::<PyDict>()
                 .unwrap()
                 .get_item("item")
                 .unwrap()
                 .unwrap();
-            let item = item.downcast::<PyTuple>().unwrap().get_item(0).unwrap();
+            let item = item.cast::<PyTuple>().unwrap().get_item(0).unwrap();
             assert_eq!(
                 item.getattr("__model_form__")
                     .unwrap()

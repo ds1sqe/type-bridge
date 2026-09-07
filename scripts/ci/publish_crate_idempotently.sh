@@ -67,10 +67,10 @@ if [[ -z "$version" || "$version" == "$pkgid" || ! "$version" =~ ^[0-9A-Za-z.+-]
   exit 1
 fi
 
-# This is intentionally a closed map. Historical b7 packages are consumed as
+# This is intentionally a closed map. Historical b7/b8 packages are consumed as
 # immutable registry inputs, so their committed registry checksums are the
 # identity authority and the ordinary release workflow can never replace their
-# keys. The newly authorized b8 packages follow the ordinary candidate path.
+# keys. All four were published before the 2.0.2 notice release.
 pinned_registry_checksum() {
   case "$1@$2" in
     type-bridge-typedb-protocol-b7@3.7.0)
@@ -78,6 +78,12 @@ pinned_registry_checksum() {
       ;;
     type-bridge-typedb-driver-b7@3.8.1)
       printf '%s\n' '68c5770db7d2bc36c13a24a9fe37e5841e26b2adbeca4d06489a6689685e651d'
+      ;;
+    type-bridge-typedb-protocol-b8@3.11.0)
+      printf '%s\n' 'e181af88e3742a13e35225c439f8a98968f014417b1814b18736743f6d799b16'
+      ;;
+    type-bridge-typedb-driver-b8@3.11.5)
+      printf '%s\n' 'a2c4fe7da8c6c8d6a075bb667c916f8fceda416bbb844d0396f987cd48204d2e'
       ;;
     *)
       return 4

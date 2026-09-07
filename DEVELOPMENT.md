@@ -28,11 +28,12 @@ contracts.
 ## Set up the source tree
 
 ```bash
-PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 uv sync --extra dev --extra docs
+uv sync --extra dev --extra docs
 ```
 
-The PyO3 compatibility variable is required for current CPython 3.14 source
-builds and harmless on 3.12–3.13. Published abi3 wheels do not need it.
+The patched PyO3 0.29 binding supports the declared CPython 3.12–3.14 source
+matrix directly and preserves the abi3-py312 wheel baseline. No forward-
+compatibility override is required. The module retains its GIL requirement.
 
 ## Repository map
 
@@ -73,6 +74,15 @@ changing a shared boundary.
 
 Use the smallest focused check while iterating, then the scope-level check
 before handoff.
+
+The Rust scope checks require cargo-audit 0.22.2. The shared CI/release gate
+`bash scripts/ci/check_dependency_security.sh` audits both maintained lockfiles
+against a freshly fetched advisory database, with no target or severity filters.
+Vulnerabilities, unsoundness, yanked packages, and audit failures block acceptance.
+Informational maintenance notices remain visible. In the 2.0.2 graph,
+rustls-pemfile 2.2.0 (RUSTSEC-2025-0134) is unmaintained, not reported vulnerable;
+the immutable band-7/8 and official TypeDB drivers still require it through
+tonic 0.12.3. Replacing that transport stack is not a 2.0.x dependency patch.
 
 ```bash
 # Default offline Python tests

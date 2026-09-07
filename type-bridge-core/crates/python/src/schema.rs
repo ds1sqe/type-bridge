@@ -25,7 +25,7 @@ fn compute_schema_diff(
     py: Python<'_>,
     current: Bound<'_, PyAny>,
     target: Bound<'_, PyAny>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let current: SchemaInfo = depythonize(&current)
         .map_err(|error| py_value_error(format!("Invalid current SchemaInfo: {error}")))?;
     let target: SchemaInfo = depythonize(&target)
@@ -38,7 +38,7 @@ fn compute_schema_diff(
 
 /// Classify a serialized `SchemaDiff` dict.
 #[pyfunction]
-fn classify_schema_diff(py: Python<'_>, diff: Bound<'_, PyAny>) -> PyResult<PyObject> {
+fn classify_schema_diff(py: Python<'_>, diff: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
     let diff: SchemaDiff = depythonize(&diff)
         .map_err(|error| py_value_error(format!("Invalid SchemaDiff: {error}")))?;
     let classified: Vec<ClassifiedChange> = diff.classify();

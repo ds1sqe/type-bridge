@@ -2,6 +2,10 @@
 
 TypeScript and Node SDK for the TypeBridge shared Rust semantic engine.
 
+2.0.2 publishes the [exact expanded 2.1 notice](https://github.com/ds1sqe/type-bridge/releases/tag/v2.0.2).
+It removes no API and adds no new warning. Keep `"@type-bridge/node": ">=2 <2.1"`
+until the application's migration to generated projections is ready.
+
 This package is a boundary layer only. Descriptor validation, query
 construction, CRUD execution, hydration, and transaction behavior live in
 `type-bridge-orm`; the Node package loads the native module, marshals

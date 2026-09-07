@@ -32,7 +32,7 @@ def load_module(name: str, path: Path) -> ModuleType:
 
 
 validator = load_module("validate_python_release_artifacts", VALIDATOR_PATH)
-VERSION = "2.0.1"
+VERSION = "2.0.2"
 SPECS = validator.load_package_specs(ROOT, VERSION)
 CORE_PLATFORMS = {
     "linux-x86_64": "manylinux_2_17_x86_64",
@@ -634,9 +634,9 @@ def test_core_wheel_rejects_elf_newer_than_manylinux_policy(tmp_path: Path) -> N
     "extra_member",
     [
         "hostile/__init__.py",
-        "type_bridge-2.0.1.data/purelib/hostile.py",
-        "type_bridge-2.0.1.data/platlib/hostile.py",
-        "type_bridge-2.0.1.data/scripts/hostile",
+        "type_bridge-2.0.2.data/purelib/hostile.py",
+        "type_bridge-2.0.2.data/platlib/hostile.py",
+        "type_bridge-2.0.2.data/scripts/hostile",
     ],
 )
 def test_root_wheel_rejects_unexpected_install_payload(
@@ -1050,10 +1050,10 @@ def test_repository_version_must_match_release_tag() -> None:
 @pytest.mark.parametrize(
     "replacement",
     (
-        "type-bridge-core>=2.0.1",
-        "type-bridge-core==2.0.1; python_version >= '3.12'",
-        "TYPE-BRIDGE-CORE==2.0.1",
-        "type_bridge_core==2.0.1",
+        "type-bridge-core>=2.0.2",
+        "type-bridge-core==2.0.2; python_version >= '3.12'",
+        "TYPE-BRIDGE-CORE==2.0.2",
+        "type_bridge_core==2.0.2",
     ),
 )
 def test_artifact_gate_rejects_noncanonical_root_core_requirements(
@@ -1063,7 +1063,7 @@ def test_artifact_gate_rejects_noncanonical_root_core_requirements(
     manifest, _ = copy_root_python_contract(tmp_path)
     manifest.write_text(
         manifest.read_text(encoding="utf-8").replace(
-            "type-bridge-core==2.0.1",
+            "type-bridge-core==2.0.2",
             replacement,
             1,
         ),
@@ -1080,8 +1080,8 @@ def test_artifact_gate_rejects_duplicate_normalized_root_core_requirements(
     manifest, _ = copy_root_python_contract(tmp_path)
     manifest.write_text(
         manifest.read_text(encoding="utf-8").replace(
-            '"type-bridge-core==2.0.1",',
-            '"type-bridge-core==2.0.1",\n    "type.bridge.core==2.0.1",',
+            '"type-bridge-core==2.0.2",',
+            '"type-bridge-core==2.0.2",\n    "type.bridge.core==2.0.2",',
             1,
         ),
         encoding="utf-8",
@@ -1095,8 +1095,8 @@ def test_artifact_gate_binds_import_visible_python_version(tmp_path: Path) -> No
     _, package_init = copy_root_python_contract(tmp_path)
     package_init.write_text(
         package_init.read_text(encoding="utf-8").replace(
-            '__version__ = "2.0.1"',
-            '__version__ = "2.0.1rc1"',
+            '__version__ = "2.0.2"',
+            '__version__ = "2.0.2rc1"',
             1,
         ),
         encoding="utf-8",

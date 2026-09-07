@@ -31,6 +31,8 @@ helper="$script_dir/publish_crate_idempotently.sh"
 historical_crates=(
   type-bridge-typedb-protocol-b7
   type-bridge-typedb-driver-b7
+  type-bridge-typedb-protocol-b8
+  type-bridge-typedb-driver-b8
 )
 release_crates=(
   type-bridge-contract
@@ -42,8 +44,6 @@ release_crates=(
   type-bridge-schema-compat
   type-bridge-schema-codegen
   type-bridge-orm-derive
-  type-bridge-typedb-protocol-b8
-  type-bridge-typedb-driver-b8
   type-bridge-typedb-runtime
   type-bridge-orm
   type-bridge-migration

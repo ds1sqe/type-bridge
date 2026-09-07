@@ -134,4 +134,7 @@ def test_release_builds_accepts_and_publishes_only_exact_oci_bytes() -> None:
     )
     assert "packages: write" in workflow
     assert workflow.count("packages: write") == 1
-    assert "body_path: dist/server-oci-release.md" in workflow
+    assert (
+        "body_path: ${{ github.event_name == 'push' && 'docs/guide/v2.0.2-notice.md' "
+        "|| 'dist/server-oci-release.md' }}"
+    ) in workflow

@@ -49,7 +49,7 @@ where
     F: Future + Send,
     F::Output: Send,
 {
-    py.allow_threads(move || {
+    py.detach(move || {
         if tokio::runtime::Handle::try_current().is_ok() {
             return std::thread::scope(|scope| {
                 match scope
@@ -89,7 +89,7 @@ impl PyDescriptorRegistry {
     }
 
     /// Register an entity descriptor dict and return the canonical descriptor dict.
-    fn register_entity(&self, py: Python<'_>, descriptor: Bound<'_, PyAny>) -> PyResult<PyObject> {
+    fn register_entity(&self, py: Python<'_>, descriptor: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         let descriptor: EntityDescriptor = depythonize(&descriptor)
             .map_err(|error| py_value_error(format!("Invalid entity descriptor: {error}")))?;
         let registered = self
@@ -106,7 +106,7 @@ impl PyDescriptorRegistry {
         &self,
         py: Python<'_>,
         descriptor: Bound<'_, PyAny>,
-    ) -> PyResult<PyObject> {
+    ) -> PyResult<Py<PyAny>> {
         let descriptor: RelationDescriptor = depythonize(&descriptor)
             .map_err(|error| py_value_error(format!("Invalid relation descriptor: {error}")))?;
         let registered = self
@@ -119,7 +119,7 @@ impl PyDescriptorRegistry {
     }
 
     /// Return an entity descriptor dict by type name.
-    fn entity(&self, py: Python<'_>, type_name: &str) -> PyResult<PyObject> {
+    fn entity(&self, py: Python<'_>, type_name: &str) -> PyResult<Py<PyAny>> {
         let descriptor = self.inner.entity(type_name).map_err(py_orm_error)?;
         pythonize(py, descriptor.as_ref())
             .map(|obj| obj.unbind())
@@ -127,7 +127,7 @@ impl PyDescriptorRegistry {
     }
 
     /// Return a relation descriptor dict by type name.
-    fn relation(&self, py: Python<'_>, type_name: &str) -> PyResult<PyObject> {
+    fn relation(&self, py: Python<'_>, type_name: &str) -> PyResult<Py<PyAny>> {
         let descriptor = self.inner.relation(type_name).map_err(py_orm_error)?;
         pythonize(py, descriptor.as_ref())
             .map(|obj| obj.unbind())
@@ -135,7 +135,7 @@ impl PyDescriptorRegistry {
     }
 
     /// Return a sorted snapshot of all registered descriptors.
-    fn snapshot(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn snapshot(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         pythonize(py, &self.inner.snapshot())
             .map(|obj| obj.unbind())
             .map_err(|error| py_value_error(error.to_string()))
@@ -143,7 +143,7 @@ impl PyDescriptorRegistry {
 
     /// Expose the registered models as migration-facing `SchemaInfo` for the
     /// Python diff / breaking-change path, mirroring `snapshot`'s descriptor view.
-    fn schema_info(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn schema_info(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         pythonize(py, &SchemaInfo::from_descriptors(&self.inner.snapshot()))
             .map(|obj| obj.unbind())
             .map_err(|error| py_value_error(error.to_string()))
@@ -151,7 +151,7 @@ impl PyDescriptorRegistry {
 }
 
 /// Python-facing typed dynamic attribute value.
-#[pyclass(name = "DynamicValue")]
+#[pyclass(name = "DynamicValue", from_py_object)]
 #[derive(Clone)]
 pub struct PyDynamicValue {
     value: AttributeValue,
@@ -240,7 +240,7 @@ impl PyDynamicValue {
 }
 
 /// Python-facing typed dynamic sort direction.
-#[pyclass(name = "DynamicSortDir")]
+#[pyclass(name = "DynamicSortDir", from_py_object)]
 #[derive(Clone, Copy)]
 pub struct PyDynamicSortDir {
     direction: SortDir,
@@ -266,7 +266,7 @@ impl PyDynamicSortDir {
 }
 
 /// Python-facing typed dynamic expression.
-#[pyclass(name = "DynamicExpr")]
+#[pyclass(name = "DynamicExpr", from_py_object)]
 #[derive(Clone)]
 pub struct PyDynamicExpr {
     expr: DynamicExpr,
@@ -409,7 +409,7 @@ impl PyDynamicExpr {
 }
 
 /// Python-facing typed dynamic sort.
-#[pyclass(name = "DynamicSort")]
+#[pyclass(name = "DynamicSort", from_py_object)]
 #[derive(Clone)]
 pub struct PyDynamicSort {
     sort: DynamicSort,
@@ -517,7 +517,7 @@ fn exact_optional_tls(value: Option<Bound<'_, PyAny>>) -> PyResult<Option<bool>>
     value
         .map(|value| {
             value
-                .downcast_exact::<PyBool>()
+                .cast_exact::<PyBool>()
                 .map_err(|_| py_type_error("tls must be True, False, or None"))?
                 .extract::<bool>()
         })
@@ -557,7 +557,7 @@ impl PyRustDatabase {
             server_version,
         };
         let prepared = py
-            .allow_threads(move || options.prepare_transport())
+            .detach(move || options.prepare_transport())
             .map_err(py_secure_connect_error)?;
         let runtime = ProviderRuntimeOwner::new().map(Arc::new).map_err(|error| {
             py_runtime_error(format!("Failed to create Tokio runtime: {error}"))
@@ -594,7 +594,7 @@ impl PyRustDatabase {
     /// call; final worker release remains tied to the last native driver lease.
     fn close(&self, py: Python<'_>) -> PyResult<()> {
         let db = Arc::clone(&self.db);
-        py.allow_threads(move || db.close()).map_err(py_orm_error)
+        py.detach(move || db.close()).map_err(py_orm_error)
     }
 
     /// The server version detected at connect time, when known.
@@ -644,7 +644,7 @@ impl PyRustDatabase {
         variables: Vec<String>,
         column_types: Vec<String>,
         rows: Bound<'_, PyAny>,
-    ) -> PyResult<PyObject> {
+    ) -> PyResult<Py<PyAny>> {
         let tx_type = parse_tx_type(transaction_type)?;
         let spec = given_rows_from_py(variables, &column_types, &rows)?;
         let query = query.to_owned();
@@ -681,7 +681,7 @@ impl PyRustDatabase {
     }
 
     /// Introspect the live TypeDB schema through the Rust schema manager.
-    fn introspect_schema(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn introspect_schema(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let manager = type_bridge_orm::SchemaManager::new(self.db.as_ref());
         let info = provider_block_on(py, self.runtime.as_ref(), manager.introspect())
             .map_err(py_orm_error)?;
@@ -738,7 +738,7 @@ impl PyRustTransactionContext {
     }
 
     /// Execute a raw TypeQL query in this Rust transaction.
-    fn execute(&self, py: Python<'_>, query: &str) -> PyResult<PyObject> {
+    fn execute(&self, py: Python<'_>, query: &str) -> PyResult<Py<PyAny>> {
         let query = query.to_owned();
         let result = provider_block_on(py, self.runtime.as_ref(), self.context.query(&query))
             .map_err(py_orm_error)?;
@@ -756,7 +756,7 @@ impl PyRustTransactionContext {
         variables: Vec<String>,
         column_types: Vec<String>,
         rows: Bound<'_, PyAny>,
-    ) -> PyResult<PyObject> {
+    ) -> PyResult<Py<PyAny>> {
         let spec = given_rows_from_py(variables, &column_types, &rows)?;
         let query = query.to_owned();
         let result = provider_block_on(
@@ -881,7 +881,7 @@ impl PyDynamicEntityManager {
 
     /// Fetch entities matching equality filters.
     #[pyo3(signature = (filters=None))]
-    fn get(&self, py: Python<'_>, filters: Option<Bound<'_, PyAny>>) -> PyResult<PyObject> {
+    fn get(&self, py: Python<'_>, filters: Option<Bound<'_, PyAny>>) -> PyResult<Py<PyAny>> {
         let filters = entity_filters_from_py(&self.descriptor, filters)?;
         let manager = self.manager()?;
         let rows = provider_block_on(py, self.runtime.as_ref(), manager.get(&filters))
@@ -898,7 +898,7 @@ impl PyDynamicEntityManager {
         sorts: Option<Bound<'_, PyList>>,
         limit: Option<u64>,
         offset: Option<u64>,
-    ) -> PyResult<PyObject> {
+    ) -> PyResult<Py<PyAny>> {
         let expressions = dynamic_exprs_from_py_list(expressions)?;
         let sorts = dynamic_sorts_from_py_list(sorts)?;
         let manager = self.manager()?;
@@ -912,7 +912,7 @@ impl PyDynamicEntityManager {
     }
 
     /// Fetch one entity by TypeDB IID.
-    fn get_by_iid(&self, py: Python<'_>, iid: &str) -> PyResult<PyObject> {
+    fn get_by_iid(&self, py: Python<'_>, iid: &str) -> PyResult<Py<PyAny>> {
         let iid = iid.to_owned();
         let manager = self.manager()?;
         let row = provider_block_on(py, self.runtime.as_ref(), manager.get_by_iid(&iid))
@@ -921,7 +921,7 @@ impl PyDynamicEntityManager {
     }
 
     /// Fetch all entities for this descriptor.
-    fn all(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn all(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         self.get(py, None)
     }
 
@@ -962,7 +962,7 @@ impl PyDynamicEntityManager {
         py: Python<'_>,
         aggregates: Bound<'_, PyAny>,
         filters: Option<Bound<'_, PyAny>>,
-    ) -> PyResult<PyObject> {
+    ) -> PyResult<Py<PyAny>> {
         let filters = entity_filters_from_py(&self.descriptor, filters)?;
         let aggregates = aggregates_from_py(&self.descriptor.owned_attributes, aggregates)?;
         let manager = self.manager()?;
@@ -985,7 +985,7 @@ impl PyDynamicEntityManager {
         group_fields: Bound<'_, PyAny>,
         aggregates: Bound<'_, PyAny>,
         filters: Option<Bound<'_, PyAny>>,
-    ) -> PyResult<PyObject> {
+    ) -> PyResult<Py<PyAny>> {
         let filters = entity_filters_from_py(&self.descriptor, filters)?;
         let group_fields = group_fields_from_py(&self.descriptor.owned_attributes, group_fields)?;
         let aggregates = aggregates_from_py(&self.descriptor.owned_attributes, aggregates)?;
@@ -1140,7 +1140,7 @@ impl PyDynamicRelationManager {
 
     /// Fetch relations matching equality filters.
     #[pyo3(signature = (filters=None))]
-    fn get(&self, py: Python<'_>, filters: Option<Bound<'_, PyAny>>) -> PyResult<PyObject> {
+    fn get(&self, py: Python<'_>, filters: Option<Bound<'_, PyAny>>) -> PyResult<Py<PyAny>> {
         let filters = relation_filters_from_py(&self.descriptor, filters)?;
         let manager = self.manager()?;
         let rows = provider_block_on(py, self.runtime.as_ref(), manager.get(&filters))
@@ -1157,7 +1157,7 @@ impl PyDynamicRelationManager {
         sorts: Option<Bound<'_, PyList>>,
         limit: Option<u64>,
         offset: Option<u64>,
-    ) -> PyResult<PyObject> {
+    ) -> PyResult<Py<PyAny>> {
         let expressions = dynamic_exprs_from_py_list(expressions)?;
         let sorts = dynamic_sorts_from_py_list(sorts)?;
         let manager = self.manager()?;
@@ -1177,7 +1177,7 @@ impl PyDynamicRelationManager {
         py: Python<'_>,
         filters: Option<Bound<'_, PyAny>>,
         role_players: Option<Bound<'_, PyAny>>,
-    ) -> PyResult<PyObject> {
+    ) -> PyResult<Py<PyAny>> {
         let filters = relation_filters_from_py(&self.descriptor, filters)?;
         let role_players = match role_players {
             Some(role_players) if !role_players.is_none() => {
@@ -1196,7 +1196,7 @@ impl PyDynamicRelationManager {
     }
 
     /// Fetch one relation by TypeDB IID.
-    fn get_by_iid(&self, py: Python<'_>, iid: &str) -> PyResult<PyObject> {
+    fn get_by_iid(&self, py: Python<'_>, iid: &str) -> PyResult<Py<PyAny>> {
         let iid = iid.to_owned();
         let manager = self.manager()?;
         let rows = provider_block_on(py, self.runtime.as_ref(), manager.get_by_iid(&iid))
@@ -1205,7 +1205,7 @@ impl PyDynamicRelationManager {
     }
 
     /// Fetch all relations for this descriptor.
-    fn all(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn all(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         self.get(py, None)
     }
 
@@ -1246,7 +1246,7 @@ impl PyDynamicRelationManager {
         py: Python<'_>,
         aggregates: Bound<'_, PyAny>,
         filters: Option<Bound<'_, PyAny>>,
-    ) -> PyResult<PyObject> {
+    ) -> PyResult<Py<PyAny>> {
         let filters = relation_filters_from_py(&self.descriptor, filters)?;
         let aggregates = aggregates_from_py(&self.descriptor.owned_attributes, aggregates)?;
         let manager = self.manager()?;
@@ -1269,7 +1269,7 @@ impl PyDynamicRelationManager {
         group_fields: Bound<'_, PyAny>,
         aggregates: Bound<'_, PyAny>,
         filters: Option<Bound<'_, PyAny>>,
-    ) -> PyResult<PyObject> {
+    ) -> PyResult<Py<PyAny>> {
         let filters = relation_filters_from_py(&self.descriptor, filters)?;
         let group_fields = group_fields_from_py(&self.descriptor.owned_attributes, group_fields)?;
         let aggregates = aggregates_from_py(&self.descriptor.owned_attributes, aggregates)?;
@@ -1687,21 +1687,24 @@ fn relation_write_batch_from_py(
     Ok(batch)
 }
 
-fn entity_rows_to_py(py: Python<'_>, rows: &[DynamicEntityRow]) -> PyResult<PyObject> {
+fn entity_rows_to_py(py: Python<'_>, rows: &[DynamicEntityRow]) -> PyResult<Py<PyAny>> {
     let values: Vec<_> = rows.iter().map(entity_row_to_json).collect();
     pythonize(py, &values)
         .map(|obj| obj.unbind())
         .map_err(|error| py_value_error(error.to_string()))
 }
 
-fn relation_rows_to_py(py: Python<'_>, rows: &[DynamicRelationRow]) -> PyResult<PyObject> {
+fn relation_rows_to_py(py: Python<'_>, rows: &[DynamicRelationRow]) -> PyResult<Py<PyAny>> {
     let values: Vec<_> = rows.iter().map(relation_row_to_json).collect();
     pythonize(py, &values)
         .map(|obj| obj.unbind())
         .map_err(|error| py_value_error(error.to_string()))
 }
 
-fn optional_entity_row_to_py(py: Python<'_>, row: Option<&DynamicEntityRow>) -> PyResult<PyObject> {
+fn optional_entity_row_to_py(
+    py: Python<'_>,
+    row: Option<&DynamicEntityRow>,
+) -> PyResult<Py<PyAny>> {
     match row {
         Some(row) => pythonize(py, &entity_row_to_json(row))
             .map(|obj| obj.unbind())
@@ -1784,7 +1787,7 @@ fn attribute_value_to_json(value: &AttributeValue) -> Value {
     }
 }
 
-fn query_result_to_py(py: Python<'_>, result: QueryResult) -> PyResult<PyObject> {
+fn query_result_to_py(py: Python<'_>, result: QueryResult) -> PyResult<Py<PyAny>> {
     let values = match result {
         QueryResult::Ok => Vec::new(),
         QueryResult::Documents(values) | QueryResult::Rows(values) => values,
@@ -1861,18 +1864,18 @@ fn given_rows_from_py(
 fn given_value_from_py(cell: &Bound<'_, PyAny>, column_type: &str) -> PyResult<GivenValue> {
     Ok(match column_type {
         "boolean" => GivenValue::Boolean(
-            cell.downcast_exact::<PyBool>()
+            cell.cast_exact::<PyBool>()
                 .map_err(|_| py_type_error("given boolean cells require an exact Python bool"))?
                 .extract()?,
         ),
         // "long" is the ORM-internal name for the TypeQL "integer" type.
         "integer" | "long" => GivenValue::Integer(
-            cell.downcast_exact::<PyInt>()
+            cell.cast_exact::<PyInt>()
                 .map_err(|_| py_type_error("given integer cells require an exact Python int"))?
                 .extract()?,
         ),
         "double" => GivenValue::Double(
-            cell.downcast_exact::<PyFloat>()
+            cell.cast_exact::<PyFloat>()
                 .map_err(|_| py_type_error("given double cells require an exact Python float"))?
                 .extract()?,
         ),
@@ -1890,7 +1893,7 @@ fn given_value_from_py(cell: &Bound<'_, PyAny>, column_type: &str) -> PyResult<G
 }
 
 fn exact_given_string(cell: &Bound<'_, PyAny>, column_type: &str) -> PyResult<String> {
-    cell.downcast_exact::<PyString>()
+    cell.cast_exact::<PyString>()
         .map_err(|_| {
             py_type_error(format!(
                 "given {column_type} cells require an exact Python str"
@@ -1982,12 +1985,12 @@ mod provider_wait_tests {
 
     #[test]
     fn provider_block_on_releases_the_gil() {
-        pyo3::prepare_freethreaded_python();
-        let worker = Python::with_gil(|py| {
+        Python::initialize();
+        let worker = Python::attach(|py| {
             let runtime = ProviderRuntimeOwner::new().expect("provider runtime should start");
             let (sender, receiver) = mpsc::channel();
             let worker = thread::spawn(move || {
-                Python::with_gil(|_| {
+                Python::attach(|_| {
                     sender
                         .send(())
                         .expect("provider wait receiver should remain alive");
@@ -2004,10 +2007,10 @@ mod provider_wait_tests {
     }
 
     fn assert_provider_wait_survives_nested_runtime(outer: Runtime) {
-        pyo3::prepare_freethreaded_python();
+        Python::initialize();
         let output = outer.block_on(async {
             let provider = ProviderRuntimeOwner::new().expect("provider runtime should start");
-            Python::with_gil(|py| provider_block_on(py, &provider, async { 42_u8 }))
+            Python::attach(|py| provider_block_on(py, &provider, async { 42_u8 }))
         });
         assert_eq!(output, 42);
     }
@@ -2129,8 +2132,8 @@ mod tls_mode_tests {
 
     #[test]
     fn python_tls_switch_rejects_truthy_non_boole() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             assert_eq!(
                 exact_optional_tls(Some(py.eval(ffi::c_str!("True"), None, None).unwrap()))
                     .unwrap(),
@@ -2155,8 +2158,8 @@ mod given_rows_tests {
 
     #[test]
     fn given_cell_marshalling_requires_exact_python_primitive_types() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let valid = [
                 ("True", "boolean", GivenValue::Boolean(true)),
                 ("42", "integer", GivenValue::Integer(42)),
@@ -2212,8 +2215,8 @@ mod given_rows_tests {
 
     #[test]
     fn given_rows_marshalling_validates_headers_width_and_row_types() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let rows = py
                 .eval(ffi::c_str!("[['Alice', 30], ['Bob', 25]]"), None, None)
                 .unwrap();

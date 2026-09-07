@@ -114,9 +114,9 @@ dependencies = [
 
 [[package]]
 name = "anyhow"
-version = "1.0.102"
+version = "1.0.103"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
+checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
 
 [[package]]
 name = "arc-swap"
@@ -410,9 +410,9 @@ checksum = "f079e83a288787bcd14a6aea84cee5c87a67c5a3e660c30f557a3d24761b3527"
 
 [[package]]
 name = "chacha20"
-version = "0.10.0"
+version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6f8d983286843e49675a4b7a2d174efe136dc93a18d69130dd18198a6c167601"
+checksum = "65c35e4b699c7e15ccbe7ee35c005e4fc0a278d22238a2857e6ce2dadeda1b06"
 dependencies = [
  "cfg-if",
  "cpufeatures 0.3.0",
@@ -658,9 +658,9 @@ dependencies = [
 
 [[package]]
 name = "crossbeam-epoch"
-version = "0.9.18"
+version = "0.9.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b82ac4a3c2ca9c3460964f020e1402edd5753411d7737aa39c3714ad1b5420e"
+checksum = "2d6914041f254d6e9176c01941b21115dcfb7089e55135a35411081bd106ef3f"
 dependencies = [
  "crossbeam-utils",
 ]
@@ -1036,9 +1036,9 @@ dependencies = [
 
 [[package]]
 name = "h2"
-version = "0.4.13"
+version = "0.4.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2f44da3a8150a6703ed5d34e164b875fd14c2cdab9af1252a9a1020bde2bdc54"
+checksum = "a9f37a958b41b3b19ee2707c06439c0e9e547e847223eb791ecb0cb821c65e27"
 dependencies = [
  "atomic-waker",
  "bytes",
@@ -1210,7 +1210,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.6.3",
+ "socket2 0.5.10",
  "tokio",
  "tower-service",
  "tracing",
@@ -1369,15 +1369,6 @@ dependencies = [
  "hashbrown 0.16.1",
  "serde",
  "serde_core",
-]
-
-[[package]]
-name = "indoc"
-version = "2.0.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "79cf5c93f93228cf8efb3ba362535fb11199ac548a09ce117c9b1adc3030d706"
-dependencies = [
- "rustversion",
 ]
 
 [[package]]
@@ -1575,15 +1566,6 @@ name = "memchr"
 version = "2.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79"
-
-[[package]]
-name = "memoffset"
-version = "0.9.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "488016bfae457b036d996092f6cb448677611ce4449e970ceaf42695203f218a"
-dependencies = [
- "autocfg",
-]
 
 [[package]]
 name = "mime"
@@ -1846,7 +1828,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3c80231409c20246a13fddb31776fb942c38553c51e871f8cbd687a4cfb5843d"
 dependencies = [
  "phf_shared",
- "rand 0.8.5",
+ "rand 0.8.6",
 ]
 
 [[package]]
@@ -2006,37 +1988,32 @@ dependencies = [
 
 [[package]]
 name = "pyo3"
-version = "0.23.5"
+version = "0.29.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7778bffd85cf38175ac1f545509665d0b9b92a198ca7941f131f85f7a4f9a872"
+checksum = "4688ddedf473e32662b9b067670129a8afb8c18e351482c70d62ba4a88171e8b"
 dependencies = [
- "cfg-if",
- "indoc",
  "libc",
- "memoffset",
  "once_cell",
  "portable-atomic",
  "pyo3-build-config",
  "pyo3-ffi",
  "pyo3-macros",
- "unindent",
 ]
 
 [[package]]
 name = "pyo3-build-config"
-version = "0.23.5"
+version = "0.29.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "94f6cbe86ef3bf18998d9df6e0f3fc1050a8c5efa409bf712e661a4366e010fb"
+checksum = "f41027e41b4bd03f6e60f9f417fe24a6341a6bb744edd62b6f709f2a52ea30e9"
 dependencies = [
- "once_cell",
  "target-lexicon",
 ]
 
 [[package]]
 name = "pyo3-ffi"
-version = "0.23.5"
+version = "0.29.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e9f1b4c431c0bb1c8fb0a338709859eed0d030ff6daa34368d3b152a63dfdd8d"
+checksum = "e591a95526fead067432c3b3a33fc74770b87b1e04e73671090d9c2055a2b327"
 dependencies = [
  "libc",
  "pyo3-build-config",
@@ -2044,9 +2021,9 @@ dependencies = [
 
 [[package]]
 name = "pyo3-macros"
-version = "0.23.5"
+version = "0.29.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fbc2201328f63c4710f68abdf653c89d8dbc2858b88c5d88b0ff38a75288a9da"
+checksum = "73225868fc1cd84eef2c3c230ddb91273bf1de46aeb8a4248da76d32a0924a1c"
 dependencies = [
  "proc-macro2",
  "pyo3-macros-backend",
@@ -2056,22 +2033,21 @@ dependencies = [
 
 [[package]]
 name = "pyo3-macros-backend"
-version = "0.23.5"
+version = "0.29.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fca6726ad0f3da9c9de093d6f116a93c1a38e417ed73bf138472cf4064f72028"
+checksum = "571575aa3749fa6216757dd47d2a3e7ef360f329a40f0666a9fbd14889024952"
 dependencies = [
  "heck",
  "proc-macro2",
- "pyo3-build-config",
  "quote",
  "syn",
 ]
 
 [[package]]
 name = "pythonize"
-version = "0.23.0"
+version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "91a6ee7a084f913f98d70cdc3ebec07e852b735ae3059a1500db2661265da9ff"
+checksum = "6ec376e1216e0c929a74964ce2020012a1a39f32d80e78aa688721219ea7fb89"
 dependencies = [
  "pyo3",
  "serde",
@@ -2090,7 +2066,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash",
  "rustls",
- "socket2 0.6.3",
+ "socket2 0.5.10",
  "thiserror",
  "tokio",
  "tracing",
@@ -2128,7 +2104,7 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.6.3",
+ "socket2 0.5.10",
  "tracing",
  "windows-sys 0.61.2",
 ]
@@ -2150,9 +2126,9 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
 name = "rand"
-version = "0.8.5"
+version = "0.8.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "34af8d1a0e25924bc5b7c43c079c942339d8f0a8b57c39049bef581b46327404"
+checksum = "5ca0ecfa931c29007047d1bc58e623ab12e5590e8c7cc53200d5202b69266d8a"
 dependencies = [
  "libc",
  "rand_chacha",
@@ -2413,9 +2389,9 @@ dependencies = [
 
 [[package]]
 name = "rustls-webpki"
-version = "0.103.10"
+version = "0.103.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "df33b2b81ac578cabaf06b89b0631153a3f416b0a886e8a7a1707fb51abbd1ef"
+checksum = "61c429a8649f110dddef65e2a5ad240f747e85f7758a6bccc7e5777bd33f756e"
 dependencies = [
  "ring",
  "rustls-pki-types",
@@ -2713,9 +2689,9 @@ dependencies = [
 
 [[package]]
 name = "target-lexicon"
-version = "0.12.16"
+version = "0.13.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "61c41af27dd6d1e27b1b16b489db798443478cef1f06a660c96db617ba5de3b1"
+checksum = "adb6935a6f5c20170eeceb1a3835a49e12e19d792f6dd344ccc76a985ca5a6ca"
 
 [[package]]
 name = "tempfile"
@@ -2971,7 +2947,7 @@ dependencies = [
  "indexmap 1.9.3",
  "pin-project",
  "pin-project-lite",
- "rand 0.8.5",
+ "rand 0.8.6",
  "slab",
  "tokio",
  "tokio-util",
@@ -3110,7 +3086,7 @@ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
 name = "type-bridge"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "regex",
  "serde_json",
@@ -3125,7 +3101,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-cli"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "clap",
  "serde_json",
@@ -3146,7 +3122,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-contract"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -3156,7 +3132,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-core"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "pyo3",
  "pythonize",
@@ -3175,7 +3151,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-core-lib"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "cap-fs-ext",
  "cap-std",
@@ -3201,7 +3177,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-migration"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "anstream 0.6.21",
  "anstyle",
@@ -3227,7 +3203,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-node"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "napi",
  "napi-build",
@@ -3243,7 +3219,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-orm"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "base64",
  "criterion",
@@ -3270,7 +3246,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-orm-derive"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3280,7 +3256,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-query"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "type-bridge-contract",
  "type-bridge-schema",
@@ -3288,7 +3264,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-schema"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "chrono",
  "chrono-tz",
@@ -3302,7 +3278,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-schema-codegen"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "type-bridge-contract",
  "type-bridge-schema",
@@ -3310,7 +3286,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-schema-compat"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -3323,7 +3299,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-schema-migration"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "cap-fs-ext",
  "cap-std",
@@ -3339,7 +3315,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-schema-migration-typedb"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -3356,7 +3332,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-server"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "axum 0.8.8",
  "axum-server",
@@ -3392,7 +3368,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-toml-transpiler"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "indexmap 2.13.1",
  "serde",
@@ -3412,7 +3388,7 @@ dependencies = [
  "itertools 0.10.5",
  "maybe-async",
  "prost",
- "rand 0.8.5",
+ "rand 0.8.6",
  "serde",
  "serde_json",
  "tokio",
@@ -3437,7 +3413,7 @@ dependencies = [
  "itertools 0.14.0",
  "maybe-async",
  "prost",
- "rand 0.8.5",
+ "rand 0.8.6",
  "serde",
  "serde_json",
  "tokio",
@@ -3468,7 +3444,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-typedb-runtime"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "chrono",
  "chrono-tz",
@@ -3487,7 +3463,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-workspace"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "cap-fs-ext",
  "cap-std",
@@ -3606,12 +3582,6 @@ name = "unicode-xid"
 version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ebc1c04c71510c7f702b52b7c350734c9ff1295c464a03335b00bb84fc54f853"
-
-[[package]]
-name = "unindent"
-version = "0.2.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7264e107f553ccae879d21fbea1d6724ac785e8c3bfc762137959b5802826ef3"
 
 [[package]]
 name = "untrusted"

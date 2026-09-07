@@ -41,7 +41,7 @@ pyo3::create_exception!(
 );
 
 pub(crate) fn value_error(diagnostic: &Diagnostic) -> PyErr {
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         let py_error = QueryV2Error::new_err(format!(
             "{}: {}",
             diagnostic.code().as_str(),
@@ -126,9 +126,9 @@ pub(crate) enum PythonBytes<'py> {
 
 impl<'py> PythonBytes<'py> {
     pub(crate) fn extract(value: &Bound<'py, PyAny>, argument: &'static str) -> PyResult<Self> {
-        if let Ok(bytes) = value.downcast::<PyBytes>() {
+        if let Ok(bytes) = value.cast::<PyBytes>() {
             Ok(Self::Bytes(bytes.to_owned()))
-        } else if let Ok(bytes) = value.downcast::<PyByteArray>() {
+        } else if let Ok(bytes) = value.cast::<PyByteArray>() {
             Ok(Self::ByteArray(bytes.to_owned()))
         } else {
             Err(PyTypeError::new_err(format!(
@@ -159,7 +159,7 @@ pub(crate) struct PythonString<'py>(Bound<'py, PyString>);
 impl<'py> PythonString<'py> {
     pub(crate) fn extract(value: &Bound<'py, PyAny>, argument: &'static str) -> PyResult<Self> {
         value
-            .downcast::<PyString>()
+            .cast::<PyString>()
             .map(|value| Self(value.to_owned()))
             .map_err(|_| PyTypeError::new_err(format!("argument '{argument}' must be str")))
     }
@@ -224,7 +224,7 @@ impl PyPendingQueryV2Remote {
             .map_err(|diagnostic| value_error(&diagnostic))?;
         let response = PythonBytes::extract(response, "response")?;
         let response = response.bounded_snapshot(claimed.response_snapshot_limit());
-        py.allow_threads(move || claimed.decode(&response))
+        py.detach(move || claimed.decode(&response))
             .map_err(|diagnostic| value_error(&diagnostic))
     }
 }
@@ -242,9 +242,7 @@ fn build_query_v2_authority(
     let scope = scope.bounded_snapshot(MAX_CANONICAL_STRING_BYTES)?;
     let profile = profile.bounded_snapshot(MAX_SEMANTIC_PROFILE_ID_BYTES)?;
     let authority = py
-        .allow_threads(move || {
-            QueryAuthority::from_declared_bytes(&declared_schema, &scope, &profile)
-        })
+        .detach(move || QueryAuthority::from_declared_bytes(&declared_schema, &scope, &profile))
         .map_err(|diagnostic| value_error(&diagnostic))?;
     Ok(PyQueryV2Authority {
         authority: Arc::new(authority),
@@ -266,7 +264,7 @@ fn build_query_v2_query_only_authority(
     let profile = profile.bounded_snapshot(MAX_SEMANTIC_PROFILE_ID_BYTES)?;
     let (database, _) = database.handles();
     let authority = py
-        .allow_threads(move || {
+        .detach(move || {
             QueryAuthority::from_declared_bytes_query_only(
                 &declared_schema,
                 &scope,
@@ -306,7 +304,7 @@ pub fn query_v2_query_only_authority(
 /// Build the local execution budget from a checked optional deadline.
 pub(crate) fn python_limit(value: &Bound<'_, PyAny>) -> Result<i128, Diagnostic> {
     let integer = value
-        .downcast_exact::<PyInt>()
+        .cast_exact::<PyInt>()
         .map_err(|_| remote_limit_invalid())?;
     integer
         .extract::<u64>()
@@ -403,7 +401,7 @@ pub fn query_v2_remote_capabilities(
 ) -> PyResult<Vec<String>> {
     let advertisement = PythonBytes::extract(advertisement, "advertisement")?
         .bounded_snapshot(MAX_REMOTE_ENVELOPE_BYTES.saturating_add(1));
-    py.allow_threads(move || decode_remote_capabilities(&advertisement))
+    py.detach(move || decode_remote_capabilities(&advertisement))
         .map_err(|diagnostic| value_error(&diagnostic))
 }
 
@@ -437,7 +435,7 @@ pub fn query_v2_prepare_remote(
     let advertisement = advertisement.bounded_snapshot(MAX_REMOTE_ENVELOPE_BYTES.saturating_add(1));
     let authority = Arc::clone(&authority.authority);
     let pending = py
-        .allow_threads(move || {
+        .detach(move || {
             prepare_remote_query(&authority, &plan, &invocation_json, &advertisement, limits)
         })
         .map_err(|diagnostic| value_error(&diagnostic))?;
@@ -499,9 +497,9 @@ mod tests {
         .with_detail("text", "context")
         .with_detail("text_list", vec!["a".to_owned(), "b".to_owned()]);
 
-        pyo3::prepare_freethreaded_python();
+        Python::initialize();
         let error = value_error(&diagnostic);
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             assert!(error.is_instance_of::<QueryV2Error>(py));
             let value = error.value(py);
             assert_eq!(
@@ -572,8 +570,8 @@ mod tests {
             .expect("declared schema");
         let bytes = encode_declared_schema(&declared).expect("declared bytes");
 
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let authority = PyQueryV2Authority::new(
                 py,
                 PyBytes::new(py, &bytes).as_any(),
@@ -589,8 +587,8 @@ mod tests {
 
     #[test]
     fn python_limits_require_exact_integers_like_the_node_bigint_surface() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let integer = py.eval(ffi::c_str!("1"), None, None).expect("integer");
             assert_eq!(python_limit(&integer), Ok(1));
 
@@ -602,8 +600,8 @@ mod tests {
 
     #[test]
     fn reply_snapshots_are_bounded_for_bytes_and_bytearrays() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let payload = vec![0x5a; 4_096];
             let bytes = PyBytes::new(py, &payload);
             assert_eq!(
@@ -625,8 +623,8 @@ mod tests {
 
     #[test]
     fn reply_snapshot_copies_only_the_hard_ceiling_oversize_marker() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let payload = vec![0x5a; MAX_REMOTE_ENVELOPE_BYTES + 4_096];
             let bytes = PyBytes::new(py, &payload);
             let snapshot = PythonBytes::extract(bytes.as_any(), "response")
@@ -639,8 +637,8 @@ mod tests {
 
     #[test]
     fn invocation_snapshot_owns_only_the_ceiling_oversize_marker() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let oversized = "x".repeat(MAX_QUERY_INVOCATION_BYTES + 4_096);
             let value = PyString::new(py, &oversized);
             let snapshot = PythonString::extract(value.as_any(), "invocation_json")
@@ -662,8 +660,8 @@ mod tests {
 
     #[test]
     fn authority_strings_are_bounded_before_downstream_identity_validation() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let exact = "x".repeat(MAX_CANONICAL_STRING_BYTES);
             let value = PyString::new(py, &exact);
             let snapshot = PythonString::extract(value.as_any(), "scope")
@@ -716,12 +714,12 @@ mod tests {
 
     #[test]
     fn local_worker_panics_become_stable_python_runtime_errors() {
-        pyo3::prepare_freethreaded_python();
+        Python::initialize();
         let error = contain_local_worker_panic(|| -> () {
             panic!("provider panic detail must not cross FFI");
         })
         .expect_err("panic is contained");
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             assert!(error.is_instance_of::<pyo3::exceptions::PyRuntimeError>(py));
             assert_eq!(
                 error

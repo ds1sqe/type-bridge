@@ -88,12 +88,11 @@ verification.
 ```bash
 git clone https://github.com/ds1sqe/type-bridge.git
 cd type-bridge
-PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 uv sync
+uv sync
 ```
 
-`PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1` enables the current PyO3 release's
-forward-compatible abi3 mode for CPython 3.14 source builds. Published wheels
-do not require it.
+PyO3 0.29 supports the CPython 3.12–3.14 source matrix without a forward-
+compatibility override. Published wheels retain the abi3-py312 baseline.
 
 For contributor dependencies and all-language checks, continue with
 [Development setup](../development/setup.md).

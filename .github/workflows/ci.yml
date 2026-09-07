@@ -44,6 +44,16 @@ jobs:
         if: runner.os == 'Linux'
         run: python scripts/ci/generate_native_dependency_notice.py --check
 
+      - name: Install pinned cargo-audit
+        if: runner.os == 'Linux'
+        uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf # v2.85.2
+        with:
+          tool: cargo-audit@0.22.2
+
+      - name: Audit all maintained Rust lockfiles
+        if: runner.os == 'Linux'
+        run: bash scripts/ci/check_dependency_security.sh
+
       - name: Cache cargo registry and build
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
@@ -487,8 +497,6 @@ jobs:
       # whose missing shared libpython breaks the typedb native driver.
       UV_PYTHON: ${{ matrix.python-version }}
       UV_PYTHON_PREFERENCE: only-system
-      # PyO3 0.23 predates CPython 3.14, but this extension uses abi3-py312.
-      PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
     steps:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4

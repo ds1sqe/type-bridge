@@ -22,21 +22,19 @@ uv sync --extra dev
 uv pip install -e ".[dev]"
 ```
 
-When developing from this source tree on CPython 3.14, opt the current PyO3
-release into its forward-compatible abi3 mode during synchronization or any
-manual native build:
+The patched PyO3 0.29 binding supports CPython 3.12–3.14 source builds directly:
 
 ```bash
-PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 uv sync --extra dev
+uv sync --extra dev
 ```
 
-The repository check and test scripts set this automatically. Published
-abi3 wheels do not require the variable.
+Neither source builds nor published abi3-py312 wheels require a PyO3 forward-
+compatibility override. This does not add free-threaded Python support.
 
 ### Project Dependencies
 
 The project requires:
-- `type-bridge-core==2.0.1`: same-version Rust runtime for ORM connectivity and query execution;
+- `type-bridge-core==2.0.2`: same-version Rust runtime for ORM connectivity and query execution;
   the facade and native semantic engine release in exact lockstep
 - `pydantic>=2.12.4`: For validation and type coercion
 - `isodate==0.7.2`: For Duration type support (ISO 8601)

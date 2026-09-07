@@ -9,14 +9,14 @@ use pyo3::prelude::*;
 
 #[pyclass(get_all, set_all)]
 pub struct LiteralValue {
-    pub value: PyObject,
+    pub value: Py<PyAny>,
     pub value_type: String,
 }
 
 #[pymethods]
 impl LiteralValue {
     #[new]
-    fn new(value: PyObject, value_type: String) -> Self {
+    fn new(value: Py<PyAny>, value_type: String) -> Self {
         LiteralValue { value, value_type }
     }
 }
@@ -24,28 +24,28 @@ impl LiteralValue {
 #[pyclass(get_all, set_all)]
 pub struct FunctionCallValue {
     pub function: String,
-    pub args: Vec<PyObject>,
+    pub args: Vec<Py<PyAny>>,
 }
 
 #[pymethods]
 impl FunctionCallValue {
     #[new]
-    fn new(function: String, args: Vec<PyObject>) -> Self {
+    fn new(function: String, args: Vec<Py<PyAny>>) -> Self {
         FunctionCallValue { function, args }
     }
 }
 
 #[pyclass(get_all, set_all)]
 pub struct ArithmeticValue {
-    pub left: PyObject,
+    pub left: Py<PyAny>,
     pub operator: String,
-    pub right: PyObject,
+    pub right: Py<PyAny>,
 }
 
 #[pymethods]
 impl ArithmeticValue {
     #[new]
-    fn new(left: PyObject, operator: String, right: PyObject) -> Self {
+    fn new(left: Py<PyAny>, operator: String, right: Py<PyAny>) -> Self {
         ArithmeticValue {
             left,
             operator,
@@ -85,13 +85,13 @@ impl IidConstraint {
 #[pyclass(get_all, set_all)]
 pub struct HasConstraint {
     pub attr_name: String,
-    pub value: PyObject,
+    pub value: Py<PyAny>,
 }
 
 #[pymethods]
 impl HasConstraint {
     #[new]
-    fn new(attr_name: String, value: PyObject) -> Self {
+    fn new(attr_name: String, value: Py<PyAny>) -> Self {
         HasConstraint { attr_name, value }
     }
 }
@@ -116,7 +116,7 @@ impl IsaConstraint {
 pub struct EntityPattern {
     pub variable: String,
     pub type_name: String,
-    pub constraints: Vec<PyObject>,
+    pub constraints: Vec<Py<PyAny>>,
     pub is_strict: bool,
 }
 
@@ -127,7 +127,7 @@ impl EntityPattern {
     fn new(
         variable: String,
         type_name: String,
-        constraints: Vec<PyObject>,
+        constraints: Vec<Py<PyAny>>,
         is_strict: bool,
     ) -> Self {
         EntityPattern {
@@ -143,8 +143,8 @@ impl EntityPattern {
 pub struct RelationPattern {
     pub variable: String,
     pub type_name: String,
-    pub role_players: Vec<PyObject>,
-    pub constraints: Vec<PyObject>,
+    pub role_players: Vec<Py<PyAny>>,
+    pub constraints: Vec<Py<PyAny>>,
 }
 
 #[pymethods]
@@ -154,8 +154,8 @@ impl RelationPattern {
     fn new(
         variable: String,
         type_name: String,
-        role_players: Vec<PyObject>,
-        constraints: Vec<PyObject>,
+        role_players: Vec<Py<PyAny>>,
+        constraints: Vec<Py<PyAny>>,
     ) -> Self {
         RelationPattern {
             variable,
@@ -187,14 +187,14 @@ impl SubTypePattern {
 pub struct AttributePattern {
     pub variable: String,
     pub type_name: String,
-    pub value: Option<PyObject>,
+    pub value: Option<Py<PyAny>>,
 }
 
 #[pymethods]
 impl AttributePattern {
     #[new]
     #[pyo3(signature = (variable, type_name, value=None))]
-    fn new(variable: String, type_name: String, value: Option<PyObject>) -> Self {
+    fn new(variable: String, type_name: String, value: Option<Py<PyAny>>) -> Self {
         AttributePattern {
             variable,
             type_name,
@@ -226,13 +226,13 @@ impl HasPattern {
 pub struct ValueComparisonPattern {
     pub var: String,
     pub operator: String,
-    pub value: PyObject,
+    pub value: Py<PyAny>,
 }
 
 #[pymethods]
 impl ValueComparisonPattern {
     #[new]
-    fn new(var: String, operator: String, value: PyObject) -> Self {
+    fn new(var: String, operator: String, value: Py<PyAny>) -> Self {
         ValueComparisonPattern {
             var,
             operator,
@@ -243,26 +243,26 @@ impl ValueComparisonPattern {
 
 #[pyclass(get_all, set_all)]
 pub struct NotPattern {
-    pub patterns: Vec<PyObject>,
+    pub patterns: Vec<Py<PyAny>>,
 }
 
 #[pymethods]
 impl NotPattern {
     #[new]
-    fn new(patterns: Vec<PyObject>) -> Self {
+    fn new(patterns: Vec<Py<PyAny>>) -> Self {
         NotPattern { patterns }
     }
 }
 
 #[pyclass(get_all, set_all)]
 pub struct OrPattern {
-    pub alternatives: Vec<Vec<PyObject>>,
+    pub alternatives: Vec<Vec<Py<PyAny>>>,
 }
 
 #[pymethods]
 impl OrPattern {
     #[new]
-    fn new(alternatives: Vec<Vec<PyObject>>) -> Self {
+    fn new(alternatives: Vec<Vec<Py<PyAny>>>) -> Self {
         OrPattern { alternatives }
     }
 }
@@ -299,13 +299,13 @@ impl RawPattern {
 pub struct HasStatement {
     pub subject_var: String,
     pub attr_name: String,
-    pub value: PyObject,
+    pub value: Py<PyAny>,
 }
 
 #[pymethods]
 impl HasStatement {
     #[new]
-    fn new(subject_var: String, attr_name: String, value: PyObject) -> Self {
+    fn new(subject_var: String, attr_name: String, value: Py<PyAny>) -> Self {
         HasStatement {
             subject_var,
             attr_name,
@@ -335,9 +335,9 @@ impl IsaStatement {
 pub struct RelationStatement {
     pub variable: String,
     pub type_name: String,
-    pub role_players: Vec<PyObject>,
+    pub role_players: Vec<Py<PyAny>>,
     pub include_variable: bool,
-    pub attributes: Vec<PyObject>,
+    pub attributes: Vec<Py<PyAny>>,
 }
 
 #[pymethods]
@@ -347,9 +347,9 @@ impl RelationStatement {
     fn new(
         variable: String,
         type_name: String,
-        role_players: Vec<PyObject>,
+        role_players: Vec<Py<PyAny>>,
         include_variable: bool,
-        attributes: Vec<PyObject>,
+        attributes: Vec<Py<PyAny>>,
     ) -> Self {
         RelationStatement {
             variable,
@@ -390,26 +390,26 @@ impl RawStatement {
 // Clauses
 #[pyclass(get_all, set_all)]
 pub struct MatchClause {
-    pub patterns: Vec<PyObject>,
+    pub patterns: Vec<Py<PyAny>>,
 }
 
 #[pymethods]
 impl MatchClause {
     #[new]
-    fn new(patterns: Vec<PyObject>) -> Self {
+    fn new(patterns: Vec<Py<PyAny>>) -> Self {
         MatchClause { patterns }
     }
 }
 
 #[pyclass(get_all, set_all)]
 pub struct MatchLetClause {
-    pub assignments: Vec<PyObject>,
+    pub assignments: Vec<Py<PyAny>>,
 }
 
 #[pymethods]
 impl MatchLetClause {
     #[new]
-    fn new(assignments: Vec<PyObject>) -> Self {
+    fn new(assignments: Vec<Py<PyAny>>) -> Self {
         MatchLetClause { assignments }
     }
 }
@@ -417,7 +417,7 @@ impl MatchLetClause {
 #[pyclass(get_all, set_all)]
 pub struct LetAssignment {
     pub variables: Vec<String>,
-    pub expression: PyObject,
+    pub expression: Py<PyAny>,
     pub is_stream: bool,
 }
 
@@ -425,7 +425,7 @@ pub struct LetAssignment {
 impl LetAssignment {
     #[new]
     #[pyo3(signature = (variables, expression, is_stream=false))]
-    fn new(variables: Vec<String>, expression: PyObject, is_stream: bool) -> Self {
+    fn new(variables: Vec<String>, expression: Py<PyAny>, is_stream: bool) -> Self {
         LetAssignment {
             variables,
             expression,
@@ -436,39 +436,39 @@ impl LetAssignment {
 
 #[pyclass(get_all, set_all)]
 pub struct InsertClause {
-    pub statements: Vec<PyObject>,
+    pub statements: Vec<Py<PyAny>>,
 }
 
 #[pymethods]
 impl InsertClause {
     #[new]
-    fn new(statements: Vec<PyObject>) -> Self {
+    fn new(statements: Vec<Py<PyAny>>) -> Self {
         InsertClause { statements }
     }
 }
 
 #[pyclass(get_all, set_all)]
 pub struct DeleteClause {
-    pub statements: Vec<PyObject>,
+    pub statements: Vec<Py<PyAny>>,
 }
 
 #[pymethods]
 impl DeleteClause {
     #[new]
-    fn new(statements: Vec<PyObject>) -> Self {
+    fn new(statements: Vec<Py<PyAny>>) -> Self {
         DeleteClause { statements }
     }
 }
 
 #[pyclass(get_all, set_all)]
 pub struct UpdateClause {
-    pub statements: Vec<PyObject>,
+    pub statements: Vec<Py<PyAny>>,
 }
 
 #[pymethods]
 impl UpdateClause {
     #[new]
-    fn new(statements: Vec<PyObject>) -> Self {
+    fn new(statements: Vec<Py<PyAny>>) -> Self {
         UpdateClause { statements }
     }
 }
@@ -575,13 +575,13 @@ impl FetchNestedWildcard {
 
 #[pyclass(get_all, set_all)]
 pub struct FetchClause {
-    pub items: Vec<PyObject>,
+    pub items: Vec<Py<PyAny>>,
 }
 
 #[pymethods]
 impl FetchClause {
     #[new]
-    fn new(items: Vec<PyObject>) -> Self {
+    fn new(items: Vec<Py<PyAny>>) -> Self {
         FetchClause { items }
     }
 }
@@ -610,13 +610,13 @@ impl AggregateExpr {
 #[pyclass(get_all, set_all)]
 pub struct ReduceAssignment {
     pub variable: String,
-    pub expression: PyObject,
+    pub expression: Py<PyAny>,
 }
 
 #[pymethods]
 impl ReduceAssignment {
     #[new]
-    fn new(variable: String, expression: PyObject) -> Self {
+    fn new(variable: String, expression: Py<PyAny>) -> Self {
         ReduceAssignment {
             variable,
             expression,
@@ -626,7 +626,7 @@ impl ReduceAssignment {
 
 #[pyclass(get_all, set_all)]
 pub struct ReduceClause {
-    pub assignments: Vec<PyObject>,
+    pub assignments: Vec<Py<PyAny>>,
     pub group_by: Option<String>,
 }
 
@@ -634,7 +634,7 @@ pub struct ReduceClause {
 impl ReduceClause {
     #[new]
     #[pyo3(signature = (assignments, group_by=None))]
-    fn new(assignments: Vec<PyObject>, group_by: Option<String>) -> Self {
+    fn new(assignments: Vec<Py<PyAny>>, group_by: Option<String>) -> Self {
         ReduceClause {
             assignments,
             group_by,

@@ -45,7 +45,7 @@ impl PyAuthoredMigration {
 
     /// The canonical `MigrationSpec` as a normalized dict.
     #[getter]
-    fn spec(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn spec(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         pythonize(py, &self.inner.spec)
             .map(|obj| obj.unbind())
             .map_err(|error| py_value_error(error.to_string()))

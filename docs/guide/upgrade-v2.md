@@ -9,6 +9,12 @@ is a separate, later step.
 
 ## Compatibility schedule
 
+The [2.0.2 expanded notice](v2.0.2-notice.md) is a new maintainer decision
+scheduling the exact handwritten-authoring and generator APIs for removal in
+2.1.0. It was not part of the original 2.0.0 inventory. No API is removed and
+no new warning is introduced in 2.0.2. Follow that inventory's generated
+replacements and safe pins before upgrading beyond 2.0.x.
+
 The named removals in [V2 Deprecations](v2-deprecations.md) all land in the
 `v2.1.0` minor release as a deliberate, exactly-enumerated exception to
 ordinary major-version scheduling: active TypeDB 3.8/3.10 provider support

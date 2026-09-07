@@ -2,6 +2,32 @@
 
 All notable changes to TypeBridge will be documented in this file.
 
+## [2.0.2] - 2026-09-07
+
+### Security
+
+- Update PyO3 to 0.29.2 with pythonize 0.29.0, crossbeam-epoch to 0.9.20,
+  h2 to 0.4.16, and rustls-webpki to 0.103.13 to resolve the dependency audit's
+  vulnerability findings. Preserve the Python API, GIL requirement, and
+  abi3-py312 baseline while migrating the native binding APIs.
+- Update anyhow to 1.0.103 and rand 0.8 to 0.8.6 to resolve unsoundness
+  advisories, and replace yanked chacha20 0.10.0 with 0.10.2.
+- Gate CI and releases on fresh audits of both maintained Rust lockfiles,
+  rejecting vulnerabilities, unsoundness, and yanked inputs. The pinned TypeDB
+  transport graph still requires rustls-pemfile 2.2.0; its informational
+  unmaintained advisory remains visible and is not a vulnerability finding.
+
+### Compatibility notice
+
+- Publish the exact expanded 2.1.0 removal inventory approved in #189, naming
+  handwritten Python/Node/Rust authoring, native-binding escape hatches and
+  programmatic generators, their generated replacements, and safe 2.0.x pins.
+  The complete inventory is in `docs/guide/v2.0.2-notice.md` and this release's
+  notes. This is a new maintainer decision, not retroactive 2.0.0/2.0.1 notice.
+- Preserve all 2.0.x APIs, provider support, retained V1 queries, archive
+  recovery, and existing warning behavior. Add no new handwritten-authoring
+  warning. Keep the published band-7/8 compatibility crates immutable.
+
 ## [2.0.1] - 2026-08-03
 
 ### New Features

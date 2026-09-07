@@ -1,5 +1,17 @@
 # V2 Deprecation Inventory
 
+## Expanded notice in 2.0.2
+
+The [2.0.2 notice](v2.0.2-notice.md) adds the exact handwritten-authoring,
+native-binding, and programmatic-generator identities scheduled for 2.1.0,
+with generated replacements and safe downstream pins. This is a new maintainer
+decision, not a claim that 2.0.0 or 2.0.1 already noticed those removals.
+Nothing is removed in 2.0.2 and no new warning behavior is introduced.
+The original schedule below remains in force together with that exact
+expanded inventory; the expanded retention section controls mixed-purpose APIs.
+
+## Original 2.0.0 schedule
+
 `type-bridge 2.0.0` ships the V2 schema, query, and migration stack
 with Rust as the only semantic engine on every V2 path; each deprecated V1
 facade keeps its released behavior and public contract until it is removed.
@@ -120,11 +132,12 @@ support may pin
   `type_bridge.models.Role` when used as `Role[T]` (replaced by split YAML
   with generated `relates()`/`plays()` projections).
 
-This list deliberately does **not** schedule `TypeDBType`, `Entity`,
-`Relation`, attribute/flag declarations, model registry or scanner symbols,
-CRUD managers/queries/hooks/exceptions, generated model projections, or the
-V2 `RoleRef`. Removing any of those would require a later inventory that names
-the fully qualified public symbols and gives them a new notice period.
+The original 2.0.0 list deliberately did **not** schedule `TypeDBType`, `Entity`,
+`Relation`, attribute/flag declarations, registry/scanner symbols, CRUD APIs,
+generated projections, or V2 `RoleRef`. The [new 2.0.2 inventory](v2.0.2-notice.md)
+now names the exact additional authoring routes and their replacements.
+Generated projections, separately unscheduled V1 queries, and archival
+recovery remain protected by its explicit retention contract.
 Deployments that retain these facades past 2.0.x pin `type-bridge>=2,<2.1`.
 
 ### Legacy migration authoring

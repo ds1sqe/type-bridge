@@ -53,7 +53,7 @@ impl PyCustomRootCaSnapshot {
     #[new]
     fn capture(py: Python<'_>, configured_path: PathBuf) -> PyResult<Self> {
         let material = py
-            .allow_threads(move || {
+            .detach(move || {
                 core_version::RetainedCustomRootCa::load_configured_alias(&configured_path)
             })
             .map_err(|error| PyValueError::new_err(error.to_string()))?;
@@ -269,7 +269,7 @@ pub fn server_version(
         if root_ca.as_os_str().is_empty() {
             return Err(PyValueError::new_err("tls_root_ca must not be empty"));
         }
-        let result = py.allow_threads(move || {
+        let result = py.detach(move || {
             let material = core_version::RetainedCustomRootCa::load_configured_alias(&root_ca)?;
             core_version::server_version_retained_custom_root_ca(&address, http_port, &material)
         });
@@ -281,7 +281,7 @@ pub fn server_version(
         });
     }
     // Release the GIL across the blocking HTTP call.
-    let result = py.allow_threads(move || core_version::server_version(&address, http_port, tls));
+    let result = py.detach(move || core_version::server_version(&address, http_port, tls));
     result.map(|v| v.to_string()).map_err(to_py_err)
 }
 

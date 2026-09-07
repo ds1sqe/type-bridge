@@ -87,13 +87,15 @@ IMMUTABLE_BASELINE_CRATES = (
     "type-bridge-typedb-protocol-b7",
     "type-bridge-typedb-driver-b7",
 )
-NEW_COMPATIBILITY_CRATES = (
+# Band 8 has its own immutable manifest/license layout, but its registry keys
+# are already published too. Do not infer the layout from publication status.
+PREEXISTING_CRATES = IMMUTABLE_BASELINE_CRATES + (
     "type-bridge-typedb-protocol-b8",
     "type-bridge-typedb-driver-b8",
 )
-PREEXISTING_CRATES = IMMUTABLE_BASELINE_CRATES
+NEW_COMPATIBILITY_CRATES: tuple[str, ...] = ()
 PACKAGED_RELEASE_CRATES = tuple(
-    crate for crate in PUBLISHED_CRATES if crate not in IMMUTABLE_BASELINE_CRATES
+    crate for crate in PUBLISHED_CRATES if crate not in PREEXISTING_CRATES
 )
 PACKAGING_PATCH_CRATES = PUBLISHED_CRATES
 EXPECTED_NEW_CRATES = tuple(crate for crate in PUBLISHED_CRATES if crate not in PREEXISTING_CRATES)
@@ -102,7 +104,7 @@ TYPEDB_RUNTIME_PACKAGE = "type-bridge-typedb-runtime"
 TYPEDB_BAND7_DEPENDENCY = "type-bridge-typedb-driver-b7"
 TYPEDB_BAND8_DEPENDENCY = "type-bridge-typedb-driver-b8"
 TYPEDB_BAND9_DEPENDENCY = "typedb-driver"
-TARGET_RELEASE_VERSION = "2.0.1"
+TARGET_RELEASE_VERSION = "2.0.2"
 ARTIFACT_CONTRACT_CARGO_INCLUSIVE = "cargo-inclusive"
 ARTIFACT_CONTRACT_PYTHON_NPM_ONLY = "python-npm-only"
 ARTIFACT_CONTRACT_SOURCE_GIT_SERVER_OCI = "source-git-server-oci"

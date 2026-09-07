@@ -19,6 +19,10 @@ and the standalone query server.
 
 ## One system, several ways in
 
+2.0.2 is a compatibility-notice and dependency-security maintenance release. Read the
+[exact expanded 2.1 inventory and safe pins](https://github.com/ds1sqe/type-bridge/releases/tag/v2.0.2)
+before upgrading beyond 2.0.x. No API is removed or new warning added here.
+
 | Surface | Use it for | Distribution |
 | --- | --- | --- |
 | Python | Declarative Pydantic models, CRUD, queries, schema management | [`type-bridge`](https://pypi.org/project/type-bridge/) |

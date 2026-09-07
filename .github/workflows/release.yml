@@ -3,11 +3,11 @@ name: Release
 on:
   push:
     tags:
-      - 'v2.0.1'
+      - 'v2.0.2'
   workflow_dispatch:
     inputs:
       release_channel:
-        description: Validate the 2.0.1 release identity or recover the accepted v2.0.0 tag run
+        description: Validate the 2.0.2 release identity or recover the accepted v2.0.0 tag run
         required: true
         type: choice
         default: candidate
@@ -35,9 +35,9 @@ on:
 # before any publisher executed.
 env:
   # Candidate acceptance verifies the exact stable bytes before the stable tag exists.
-  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_channel == 'recovery' && 'v2.0.0' || 'v2.0.1' }}
-  RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.release_channel == 'recovery' && '2.0.0' || '2.0.1' }}
-  PYTHON_RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.release_channel == 'recovery' && '2.0.0' || '2.0.1' }}
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_channel == 'recovery' && 'v2.0.0' || 'v2.0.2' }}
+  RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.release_channel == 'recovery' && '2.0.0' || '2.0.2' }}
+  PYTHON_RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.release_channel == 'recovery' && '2.0.0' || '2.0.2' }}
   RELEASE_CHANNEL: ${{ github.event_name == 'workflow_dispatch' && inputs.release_channel || 'stable' }}
   RELEASE_REVISION: ${{ github.event_name == 'workflow_dispatch' && inputs.release_channel == 'recovery' && 'aacf4d16486a3a3bae47c3b10c1d526c587dd7a7' || github.sha }}
   RELEASE_ARTIFACT_RUN_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.release_channel == 'recovery' && inputs.recovery_run_id || github.run_id }}
@@ -75,6 +75,14 @@ jobs:
 
       - name: Install dependencies
         run: uv sync --extra dev
+
+      - name: Install pinned cargo-audit
+        uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf # v2.85.2
+        with:
+          tool: cargo-audit@0.22.2
+
+      - name: Audit all maintained Rust lockfiles
+        run: bash scripts/ci/check_dependency_security.sh
 
       - name: Run linting
         run: uv run ruff check .
@@ -189,7 +197,7 @@ jobs:
       # granular token can publish. Authenticate here, then make npm's exact
       # package PUT the first registry mutation so it is authoritative.
       - name: Authenticate npm publication credential
-        if: github.event_name == 'push' && github.ref == 'refs/tags/v2.0.1'
+        if: github.event_name == 'push' && github.ref == 'refs/tags/v2.0.2'
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
@@ -210,7 +218,7 @@ jobs:
   # before an existing immutable version can be treated as success.
   publish-crates:
     name: Publish Rust crates to crates.io
-    if: github.event_name == 'push' && github.ref == 'refs/tags/v2.0.1'
+    if: github.event_name == 'push' && github.ref == 'refs/tags/v2.0.2'
     needs: channel-preflight
     runs-on: ubuntu-latest
     environment: release
@@ -1694,7 +1702,7 @@ jobs:
       (
         (
           github.event_name == 'push' &&
-          github.ref == 'refs/tags/v2.0.1' &&
+          github.ref == 'refs/tags/v2.0.2' &&
           needs.channel-preflight.result == 'success' &&
           needs.accept-server-oci.result == 'success' &&
           needs.publish-node-npm.result == 'success'
@@ -1950,7 +1958,7 @@ jobs:
 
       - name: Sign exact platform and multi-platform digests
         env:
-          COSIGN_CERTIFICATE_IDENTITY_REGEXP: ${{ github.event_name == 'workflow_dispatch' && '^https://github.com/ds1sqe/type-bridge/.github/workflows/release.yml@refs/heads/master$' || '^https://github.com/ds1sqe/type-bridge/.github/workflows/release.yml@refs/tags/v2[.]0[.]0$' }}
+          COSIGN_CERTIFICATE_IDENTITY_REGEXP: ${{ github.event_name == 'workflow_dispatch' && '^https://github.com/ds1sqe/type-bridge/.github/workflows/release.yml@refs/heads/master$' || '^https://github.com/ds1sqe/type-bridge/.github/workflows/release.yml@refs/tags/v2[.]0[.]2$' }}
         run: |
           cosign sign --yes \
             "${SERVER_OCI_IMAGE}@${SERVER_OCI_AMD64_DIGEST}" \
@@ -2189,7 +2197,7 @@ jobs:
       (
         (
           github.event_name == 'push' &&
-          github.ref == 'refs/tags/v2.0.1' &&
+          github.ref == 'refs/tags/v2.0.2' &&
           needs.channel-preflight.result == 'success'
         ) ||
         (
@@ -2328,7 +2336,7 @@ jobs:
       (
         (
           github.event_name == 'push' &&
-          github.ref == 'refs/tags/v2.0.1' &&
+          github.ref == 'refs/tags/v2.0.2' &&
           needs.build-core-wheels.result == 'success' &&
           needs.build-core-sdist.result == 'success' &&
           needs.publish-server-oci.result == 'success'
@@ -2460,7 +2468,7 @@ jobs:
       (
         (
           github.event_name == 'push' &&
-          github.ref == 'refs/tags/v2.0.1' &&
+          github.ref == 'refs/tags/v2.0.2' &&
           needs.build-python.result == 'success' &&
           needs.publish-core-pypi.result == 'success'
         ) ||
@@ -2574,7 +2582,7 @@ jobs:
       (
         (
           github.event_name == 'push' &&
-          github.ref == 'refs/tags/v2.0.1' &&
+          github.ref == 'refs/tags/v2.0.2' &&
           needs.publish-server-oci.result == 'success' &&
           needs.publish-node-npm.result == 'success' &&
           needs.publish-core-pypi.result == 'success' &&
@@ -2700,5 +2708,5 @@ jobs:
           name: TypeBridge ${{ env.RELEASE_VERSION }}
           draft: true
           generate_release_notes: true
-          body_path: dist/server-oci-release.md
+          body_path: ${{ github.event_name == 'push' && 'docs/guide/v2.0.2-notice.md' || 'dist/server-oci-release.md' }}
           files: dist/*

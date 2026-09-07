@@ -19,8 +19,8 @@ CANDIDATE_BYTES = b"candidate crate bytes\n"
 CANDIDATE_CHECKSUM = hashlib.sha256(CANDIDATE_BYTES).hexdigest()
 PINNED_PROTOCOL_B7_CHECKSUM = "030327872cad70433b3c8bde72529d0df6291af08ab3aad82550f8871e409364"
 PINNED_DRIVER_B7_CHECKSUM = "68c5770db7d2bc36c13a24a9fe37e5841e26b2adbeca4d06489a6689685e651d"
-PINNED_PROTOCOL_B8_CHECKSUM = "a66de9d36b68e726e5a8ebbe1e81edb4e752ff3fbf140a84c3c306386e7169c5"
-PINNED_DRIVER_B8_CHECKSUM = "440fa58f99b80028c658f66784c822450c98d30900276d34c8afbcc7b52b4ed4"
+PINNED_PROTOCOL_B8_CHECKSUM = "e181af88e3742a13e35225c439f8a98968f014417b1814b18736743f6d799b16"
+PINNED_DRIVER_B8_CHECKSUM = "a2c4fe7da8c6c8d6a075bb667c916f8fceda416bbb844d0396f987cd48204d2e"
 
 
 def executable(path: Path, source: str) -> Path:
@@ -449,6 +449,8 @@ def test_preflight_rejects_inconsistent_api_and_index_visibility(tmp_path: Path)
     [
         ("type-bridge-typedb-protocol-b7", "3.7.0", PINNED_PROTOCOL_B7_CHECKSUM),
         ("type-bridge-typedb-driver-b7", "3.8.1", PINNED_DRIVER_B7_CHECKSUM),
+        ("type-bridge-typedb-protocol-b8", "3.11.0", PINNED_PROTOCOL_B8_CHECKSUM),
+        ("type-bridge-typedb-driver-b8", "3.11.5", PINNED_DRIVER_B8_CHECKSUM),
     ],
 )
 def test_pinned_preexisting_crate_uses_committed_checksum_without_packaging(
@@ -472,7 +474,7 @@ def test_pinned_preexisting_crate_uses_committed_checksum_without_packaging(
     assert "no package or publish attempted" in result.stdout
 
 
-def test_authorized_band8_absence_uses_the_ordinary_publish_path(tmp_path: Path) -> None:
+def test_historical_band8_absence_never_republishes(tmp_path: Path) -> None:
     result, commands, _ = run_helper(
         tmp_path,
         api_sequence="missing,matching",
@@ -483,12 +485,8 @@ def test_authorized_band8_absence_uses_the_ordinary_publish_path(tmp_path: Path)
         registry_checksum=CANDIDATE_CHECKSUM,
     )
 
-    assert result.returncode == 0, result.stderr
-    assert commands == [
-        "pkgid -p type-bridge-typedb-protocol-b8",
-        "package --locked -p type-bridge-typedb-protocol-b8",
-        "publish --locked --registry crates-io -p type-bridge-typedb-protocol-b8",
-    ]
+    assert result.returncode != 0
+    assert commands == ["pkgid -p type-bridge-typedb-protocol-b8"]
 
 
 def test_verify_preexisting_rejects_unmapped_crate(tmp_path: Path) -> None:

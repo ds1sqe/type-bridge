@@ -70,9 +70,11 @@ macro_rules! define_python_host_string {
             }
         }
 
-        impl<'py> FromPyObject<'py> for $name {
-            fn extract_bound(value: &Bound<'py, PyAny>) -> PyResult<Self> {
-                python_host_string(value, $limit).map(Self)
+        impl<'py> FromPyObject<'_, 'py> for $name {
+            type Error = PyErr;
+
+            fn extract(value: Borrowed<'_, 'py, PyAny>) -> PyResult<Self> {
+                python_host_string(&value, $limit).map(Self)
             }
         }
     };
@@ -100,7 +102,7 @@ fn python_scalar(value_type: ValueTypeTag, value: &Bound<'_, PyAny>) -> PyResult
         }
         ValueTypeTag::Long => {
             let integer = value
-                .downcast_exact::<PyInt>()
+                .cast_exact::<PyInt>()
                 .map_err(|_| value_error(&query_builder_scalar_host_type_error()))?;
             let integer = integer
                 .extract::<i64>()
@@ -109,13 +111,13 @@ fn python_scalar(value_type: ValueTypeTag, value: &Bound<'_, PyAny>) -> PyResult
         }
         ValueTypeTag::Double => {
             let number = value
-                .downcast_exact::<PyFloat>()
+                .cast_exact::<PyFloat>()
                 .map_err(|_| value_error(&query_builder_scalar_host_type_error()))?;
             QueryBuilderScalarInput::Double(number.extract::<f64>()?)
         }
         ValueTypeTag::Boolean => {
             let boolean = value
-                .downcast_exact::<PyBool>()
+                .cast_exact::<PyBool>()
                 .map_err(|_| value_error(&query_builder_scalar_host_type_error()))?;
             QueryBuilderScalarInput::Boolean(boolean.extract::<bool>()?)
         }
@@ -125,7 +127,7 @@ fn python_scalar(value_type: ValueTypeTag, value: &Bound<'_, PyAny>) -> PyResult
 
 fn python_boolean(value: &Bound<'_, PyAny>) -> PyResult<bool> {
     value
-        .downcast_exact::<PyBool>()
+        .cast_exact::<PyBool>()
         .map_err(|_| value_error(&query_builder_boolean_host_type_error()))?
         .extract::<bool>()
         .map_err(|_| value_error(&query_builder_boolean_host_type_error()))
@@ -133,7 +135,7 @@ fn python_boolean(value: &Bound<'_, PyAny>) -> PyResult<bool> {
 
 fn python_integer(value: &Bound<'_, PyAny>, error: fn() -> Diagnostic) -> PyResult<i128> {
     value
-        .downcast_exact::<PyInt>()
+        .cast_exact::<PyInt>()
         .map_err(|_| value_error(&error()))?
         .extract::<i128>()
         .map_err(|_| value_error(&error()))
@@ -211,6 +213,7 @@ fn binding_handles(
         .map(|handle| {
             handle
                 .extract::<Py<PyQueryV2BindingHandle>>()
+                .map_err(PyErr::from)
                 .map(|handle| handle.borrow(py).inner.clone())
         })
         .collect()
@@ -227,6 +230,7 @@ fn operand_handles(
         .map(|handle| {
             handle
                 .extract::<Py<PyQueryV2OperandHandle>>()
+                .map_err(PyErr::from)
                 .map(|handle| handle.borrow(py).inner.clone())
         })
         .collect()
@@ -243,6 +247,7 @@ fn pattern_handles(
         .map(|handle| {
             handle
                 .extract::<Py<PyQueryV2PatternHandle>>()
+                .map_err(PyErr::from)
                 .map(|handle| handle.borrow(py).inner.clone())
         })
         .collect()
@@ -918,6 +923,7 @@ impl PyQueryPlanBuilder {
         .map(|assignment| {
             assignment
                 .extract::<Py<PyQueryV2ReduceAssignmentHandle>>()
+                .map_err(PyErr::from)
                 .map(|assignment| assignment.borrow(py).inner.clone())
         })
         .collect::<PyResult<Vec<_>>>()?;
@@ -933,6 +939,7 @@ impl PyQueryPlanBuilder {
             .into_iter()
             .map(|term| {
                 term.extract::<Py<PyQueryV2OrderHandle>>()
+                    .map_err(PyErr::from)
                     .map(|term| term.borrow(py).inner.clone())
             })
             .collect::<PyResult<Vec<_>>>()?;
@@ -1007,6 +1014,7 @@ impl PyQueryPlanBuilder {
         .map(|field| {
             field
                 .extract::<Py<PyQueryV2DocumentFieldHandle>>()
+                .map_err(PyErr::from)
                 .map(|field| field.borrow(py).inner.clone())
         })
         .collect::<PyResult<Vec<_>>>()?;
@@ -1184,8 +1192,8 @@ mod tests {
 
     #[test]
     fn python_integer_boundaries_reject_bool_non_integer_negative_and_huge() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             for value in [
                 true.into_py_any(py).expect("bool"),
                 1.0_f64.into_py_any(py).expect("float"),
@@ -1227,8 +1235,8 @@ mod tests {
 
     #[test]
     fn python_semantic_flags_and_text_scalars_require_exact_host_types() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             assert!(python_boolean(true.into_py_any(py).expect("bool").bind(py)).expect("true"));
             assert!(!python_boolean(false.into_py_any(py).expect("bool").bind(py)).expect("false"));
             for value in [
@@ -1264,9 +1272,9 @@ mod tests {
 
     #[test]
     fn zero_input_rows_preserve_direct_unexpected_input_precedence() {
-        pyo3::prepare_freethreaded_python();
+        Python::initialize();
         let plan = no_input_plan();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let empty = Vec::<Vec<Option<i64>>>::new()
                 .into_py_any(py)
                 .expect("empty rows");
@@ -1292,8 +1300,8 @@ mod tests {
 
     #[test]
     fn python_sequences_reject_hostile_lengths_before_element_access() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             py.run(
                 ffi::c_str!(
                     r#"
@@ -1332,9 +1340,9 @@ class HostileSequence:
 
     #[test]
     fn python_invocation_rows_are_count_and_byte_bounded_before_materialization() {
-        pyo3::prepare_freethreaded_python();
+        Python::initialize();
         let plan = string_input_plan();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             py.run(
                 ffi::c_str!(
                     r#"

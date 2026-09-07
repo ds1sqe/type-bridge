@@ -1,6 +1,6 @@
 [package]
 name = "type-bridge-schema-migration-typedb"
-version = "2.0.1"
+version = "2.0.2"
 edition = "2024"
 description = "TypeDB-backed fenced execution store for type-bridge schema migrations"
 license.workspace = true
@@ -13,13 +13,13 @@ publish = ["crates-io"]
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"
-type-bridge-contract = { path = "../contract", version = "2.0.1" }
-type-bridge-migration = { path = "../migration", version = "2.0.1" }
-type-bridge-orm = { path = "../orm", version = "2.0.1" }
-type-bridge-query = { path = "../query", version = "2.0.1" }
-type-bridge-schema = { path = "../schema", version = "2.0.1" }
-type-bridge-schema-compat = { path = "../schema-compat", version = "2.0.1" }
-type-bridge-schema-migration = { path = "../schema-migration", version = "2.0.1" }
+type-bridge-contract = { path = "../contract", version = "2.0.2" }
+type-bridge-migration = { path = "../migration", version = "2.0.2" }
+type-bridge-orm = { path = "../orm", version = "2.0.2" }
+type-bridge-query = { path = "../query", version = "2.0.2" }
+type-bridge-schema = { path = "../schema", version = "2.0.2" }
+type-bridge-schema-compat = { path = "../schema-compat", version = "2.0.2" }
+type-bridge-schema-migration = { path = "../schema-migration", version = "2.0.2" }
 
 [dev-dependencies]
 tokio = { version = "1.48", features = ["macros", "rt-multi-thread", "time"] }

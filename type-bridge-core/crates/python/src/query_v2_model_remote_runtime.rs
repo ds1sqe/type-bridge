@@ -61,7 +61,7 @@ impl PyPendingRemoteModelQuery {
         let response = PythonBytes::extract(response, "response")?
             .bounded_snapshot(claimed.response_snapshot_limit());
         let (request, result, registry) = py
-            .allow_threads(move || claimed.decode(&response))
+            .detach(move || claimed.decode(&response))
             .map_err(remote_model_error)?;
         Ok(PyValidatedMatchResultHandle::new(request, result, registry))
     }
@@ -105,7 +105,7 @@ pub(crate) fn query_v2_remote_model_context(
         max_role_players,
         deadline_ms,
     )?;
-    py.allow_threads({
+    py.detach({
         let advertisement = &advertisement;
         move || RemoteCapabilities::decode(advertisement)
     })
@@ -136,9 +136,7 @@ pub(crate) fn query_v2_prepare_remote_model_rows(
     let order = bounded_order_handles(py, order)?;
     let cardinality = parse_cardinality(cardinality)?;
     let request = py
-        .allow_threads(move || {
-            query.validate_fetch_rows(&order, Window { offset, limit }, cardinality)
-        })
+        .detach(move || query.validate_fetch_rows(&order, Window { offset, limit }, cardinality))
         .map_err(py_match_orm_error)?;
     prepare_pending(py, context, registry, request)
 }
@@ -168,7 +166,7 @@ pub(crate) fn query_v2_prepare_remote_model_page(
     let root = root.inner().clone();
     let order = bounded_order_handles(py, order)?;
     let request = py
-        .allow_threads(move || {
+        .detach(move || {
             query.validate_page_by(&root, &order, Window { offset, limit }, include_total)
         })
         .map_err(py_match_orm_error)?;
@@ -187,7 +185,7 @@ pub(crate) fn query_v2_prepare_remote_model_count(
     let registry = query.registry_arc();
     let root = root.inner().clone();
     let request = py
-        .allow_threads(move || query.validate_count_by(&root))
+        .detach(move || query.validate_count_by(&root))
         .map_err(py_match_orm_error)?;
     prepare_pending(py, context, registry, request)
 }
@@ -204,7 +202,7 @@ pub(crate) fn query_v2_prepare_remote_model_exists(
     let registry = query.registry_arc();
     let root = root.inner().clone();
     let request = py
-        .allow_threads(move || query.validate_exists_by(&root))
+        .detach(move || query.validate_exists_by(&root))
         .map_err(py_match_orm_error)?;
     prepare_pending(py, context, registry, request)
 }
@@ -219,7 +217,7 @@ fn prepare_pending(
     let advertisement = context.advertisement.clone();
     let limits = context.limits;
     let pending = py
-        .allow_threads(move || {
+        .detach(move || {
             prepare_remote_model_query_v2(&authority, &registry, request, &advertisement, limits)
         })
         .map_err(remote_model_error)?;
@@ -263,17 +261,21 @@ fn python_unsigned(value: &Bound<'_, PyAny>) -> PyResult<u64> {
 
 fn python_bool(value: &Bound<'_, PyAny>, argument: &'static str) -> PyResult<bool> {
     value
-        .downcast_exact::<PyBool>()
+        .cast_exact::<PyBool>()
         .map(|value| value.is_true())
         .map_err(|_| PyTypeError::new_err(format!("argument '{argument}' must be bool")))
 }
 
 fn bounded_order_handles(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyResult<Vec<OrderHandle>> {
-    let values = values.downcast::<PyList>()?;
+    let values = values.cast::<PyList>()?;
     validate_public_order_term_count(values.len()).map_err(py_match_error)?;
     let handles = values
         .iter()
-        .map(|value| value.extract::<Py<PyMatchOrderHandle>>())
+        .map(|value| {
+            value
+                .extract::<Py<PyMatchOrderHandle>>()
+                .map_err(PyErr::from)
+        })
         .collect::<PyResult<Vec<_>>>()?;
     Ok(order_handles(py, &handles))
 }
@@ -311,8 +313,8 @@ mod tests {
 
     #[test]
     fn hostile_native_windows_require_exact_non_boolean_u64_values() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let one = py.eval(ffi::c_str!("1"), None, None).expect("integer");
             assert_eq!(python_unsigned(&one).expect("exact integer"), 1);
 
@@ -337,8 +339,8 @@ mod tests {
 
     #[test]
     fn hostile_native_include_total_requires_exact_bool() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let true_value = py.eval(ffi::c_str!("True"), None, None).expect("bool");
             assert!(python_bool(&true_value, "include_total").expect("exact bool"));
 

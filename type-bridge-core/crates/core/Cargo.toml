@@ -1,6 +1,6 @@
 [package]
 name = "type-bridge-core-lib"
-version = "2.0.1"
+version = "2.0.2"
 edition = "2024"
 description = "TypeQL AST, schema parser, query compiler, and validation engine for type-bridge"
 license.workspace = true
@@ -14,7 +14,7 @@ default = []
 pyo3 = ["dep:pyo3", "dep:pythonize"]
 
 [dependencies]
-type-bridge-contract = { path = "../contract", version = "2.0.1" }
+type-bridge-contract = { path = "../contract", version = "2.0.2" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"
@@ -32,8 +32,8 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 rustls-native-certs = "0.8"
 rustls-pemfile = "2"
 tempfile = "3"
-pyo3 = { version = "0.23", optional = true }
-pythonize = { version = "0.23", optional = true }
+pyo3 = { version = "0.29.2", optional = true }
+pythonize = { version = "0.29", optional = true }
 
 [target.'cfg(windows)'.dependencies]
 # Resolve the current filesystem path from the retained CA file handle.  The
