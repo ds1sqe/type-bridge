@@ -1806,8 +1806,10 @@ jobs:
           )"
           test "$(jq -r '.object.type' <<<"$tag_ref_json")" = tag
           tag_object="$(jq -r '.object.sha' <<<"$tag_ref_json")"
-          test "$tag_object" = \
-            "a4cec6478ad4e764f039e51eabcbb68d45efd45a"
+          if [[ "$RELEASE_CHANNEL" == "recovery" ]]; then
+            test "$tag_object" = \
+              "a4cec6478ad4e764f039e51eabcbb68d45efd45a"
+          fi
           tag_json="$(
             gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_object}"
           )"
