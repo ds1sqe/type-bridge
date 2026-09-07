@@ -113,6 +113,9 @@ def test_generated_notice_covers_locked_compound_and_platform_licenses() -> None
         "`Unicode-3.0`",
         "`curve25519-dalek` | `4.1.3`",
         "BSD-3-Clause@sha256:cca0bd3c4fcdba74145ef9d49c62337e2c9fbf9368288f11d0547f1b0273219f",
+        "`miniz_oxide` | `0.8.9`",
+        "`MIT OR Zlib OR Apache-2.0`",
+        "MIT@sha256:799e9ca9d179295ef372f25d3769cdda7d25bb2668add6a6a1e22d1e4c678b8d",
     ):
         assert contract in generated
 

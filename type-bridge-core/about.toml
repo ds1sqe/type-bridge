@@ -53,3 +53,14 @@ license = "BSD-3-Clause"
 [[curve25519-dalek.clarify.files]]
 path = "LICENSE"
 checksum = "cca0bd3c4fcdba74145ef9d49c62337e2c9fbf9368288f11d0547f1b0273219f"
+
+# This crate ships both LICENSE and LICENSE-MIT.md with identical terms but
+# different whitespace. Filesystem enumeration can select either, so name the
+# exact MIT body while retaining the crate's complete SPDX expression.
+[miniz_oxide.clarify]
+license = "MIT OR Zlib OR Apache-2.0"
+
+[[miniz_oxide.clarify.files]]
+path = "LICENSE-MIT.md"
+license = "MIT"
+checksum = "799e9ca9d179295ef372f25d3769cdda7d25bb2668add6a6a1e22d1e4c678b8d"

@@ -782,7 +782,7 @@ and fails the byte-for-byte CI freshness check.
 - Node root: `crates/node/Cargo.toml` with default features
 - Release targets: `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `x86_64-apple-darwin`, `aarch64-apple-darwin`, `x86_64-pc-windows-msvc`, `aarch64-pc-windows-msvc`
 - Excluded from this package inventory: build-only and development-only dependencies, plus private TypeBridge-authored crates covered by the MIT section
-- Closure fingerprint: `sha256:cd85424ee82d815e4f105a6dd0ab774a08e99a0f2fb78803ff0be6efe9d705b3`
+- Closure fingerprint: `sha256:527bce788212a7d7fd664c6360410e28e9f9ee64599ae6783b26c528a2a047c6`
 
 Every evaluated package's complete cargo-about-resolved SPDX expression is retained
 below. The
@@ -917,7 +917,7 @@ bytes actually reproduced in this notice.
 | `maybe-owned` | `0.3.4` | Python, Node | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:ef2b3bbd7b718a7881253226313f103e89b379e1279681a3c1ebcb65a27d209d` |
 | `memchr` | `2.8.0` | Python, Node | `crates.io` | `Unlicense OR MIT` | `MIT@sha256:0f96a83840e146e43c0ec96a22ec1f392e0680e6c1226e6f3ba87e0740af850f` |
 | `mime` | `0.3.17` | Python, Node | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:df9cfd06d8a44d9a671eadd39ffd97f166481da015a30f45dfd27886209c5922` |
-| `miniz_oxide` | `0.8.9` | Python, Node | `crates.io` | `MIT OR Zlib OR Apache-2.0` | `MIT@sha256:4108245a1f2df9d4e94df8abed5b4ba0759bb2f9b40a6b939f1be141077ae50b` |
+| `miniz_oxide` | `0.8.9` | Python, Node | `crates.io` | `MIT OR Zlib OR Apache-2.0` | `MIT@sha256:799e9ca9d179295ef372f25d3769cdda7d25bb2668add6a6a1e22d1e4c678b8d` |
 | `mio` | `1.2.0` | Python, Node | `crates.io` | `MIT` | `MIT@sha256:07919255c7e04793d8ea760d6c2ce32d19f9ff02bdbdde3ce90b1e1880929a9b` |
 | `napi` | `2.16.17` | Node | `crates.io` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
 | `napi-derive` | `2.16.13` | Node | `crates.io` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
@@ -2705,36 +2705,6 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-#### `MIT` — `sha256:4108245a1f2df9d4e94df8abed5b4ba0759bb2f9b40a6b939f1be141077ae50b`
-
-~~~~text
-MIT License
-
-Copyright 2013-2014 RAD Game Tools and Valve Software
-Copyright 2010-2014 Rich Geldreich and Tenacious Software LLC
-Copyright (c) 2017 Frommi
-Copyright (c) 2017-2024 oyvindln
-
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-~~~~
-
 #### `MIT` — `sha256:4249c8e6c5ebb85f97c77e6457c6fafc1066406eb8f1ef61e796fbdc5ff18482`
 
 ~~~~text
@@ -3358,6 +3328,35 @@ DEALINGS IN THE SOFTWARE.
 MIT License
 
 Copyright (c) 2020 David Purdum
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+~~~~
+
+#### `MIT` — `sha256:799e9ca9d179295ef372f25d3769cdda7d25bb2668add6a6a1e22d1e4c678b8d`
+
+~~~~text
+MIT License
+
+Copyright 2013-2014 RAD Game Tools and Valve Software
+Copyright 2010-2014 Rich Geldreich and Tenacious Software LLC
+Copyright (c) 2017 Frommi
+Copyright (c) 2017-2024 oyvindln
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
