@@ -16,8 +16,23 @@ on:
           - stable
           - recovery
           - notice-recovery
+          - notice-finalize
       notice_verify_run_id:
         description: Exact same-control successful notice-recovery verify run; required to publish
+        required: false
+        type: string
+        default: ''
+      notice_finalize_mode:
+        description: Rehearse, create a draft, or publish the independently verified notice
+        required: false
+        type: choice
+        default: verify
+        options:
+          - verify
+          - draft
+          - publish
+      notice_finalize_verify_run_id:
+        description: Same-control successful notice-finalize verification run
         required: false
         type: string
         default: ''
@@ -58,7 +73,7 @@ jobs:
   # Run tests before releasing
   test:
     name: Test
-    if: github.event_name != 'workflow_dispatch' || (inputs.release_channel != 'recovery' && inputs.release_channel != 'notice-recovery')
+    if: github.event_name != 'workflow_dispatch' || (inputs.release_channel != 'recovery' && inputs.release_channel != 'notice-recovery' && inputs.release_channel != 'notice-finalize')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -2838,5 +2853,106 @@ jobs:
         with:
           name: notice-recovery-publication
           path: tmp/notice-recovery/evidence/
+          if-no-files-found: error
+          retention-days: 90
+
+  # GitHub-only finalization uses the existing release-writing permission.
+  # No registry publisher is reachable from this channel.
+  notice-finalize-verify:
+    name: Verify 2.0.2 GitHub notice finalization
+    if: >-
+      github.repository == 'ds1sqe/type-bridge' &&
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/release/2.0.2-notice' &&
+      inputs.release_channel == 'notice-finalize'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Checkout exact notice controls
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify original artifacts, publication and exact notice packet
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NOTICE_MODE: ${{ inputs.notice_finalize_mode }}
+          VERIFY_RUN_ID: ${{ inputs.notice_finalize_verify_run_id }}
+        run: |
+          python scripts/ci/finalize_notice_release.py --output tmp/notice-finalize \
+            --mode "${NOTICE_MODE:-verify}" --verify-run "$VERIFY_RUN_ID"
+
+      - name: Validate metadata in the exact publisher image
+        run: bash scripts/ci/check_pypi_publisher_metadata.sh tmp/notice-finalize/original/dist
+
+      - name: Upload immutable notice verification evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: notice-finalization-verification
+          path: tmp/notice-finalize/evidence/
+          if-no-files-found: error
+          retention-days: 90
+
+  notice-finalize-write:
+    name: Finalize 2.0.2 GitHub notice
+    needs: notice-finalize-verify
+    if: >-
+      github.repository == 'ds1sqe/type-bridge' &&
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/release/2.0.2-notice' &&
+      inputs.release_channel == 'notice-finalize' &&
+      (inputs.notice_finalize_mode == 'draft' || inputs.notice_finalize_mode == 'publish') &&
+      inputs.notice_finalize_verify_run_id != '' &&
+      needs.notice-finalize-verify.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Checkout exact notice controls
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Revalidate original artifacts, publication and exact notice packet
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NOTICE_MODE: ${{ inputs.notice_finalize_mode }}
+          VERIFY_RUN_ID: ${{ inputs.notice_finalize_verify_run_id }}
+        run: |
+          python scripts/ci/finalize_notice_release.py --output tmp/notice-finalize \
+            --mode "$NOTICE_MODE" --verify-run "$VERIFY_RUN_ID"
+
+      - name: Create exact notice draft
+        if: inputs.notice_finalize_mode == 'draft'
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          tag_name: v2.0.2
+          target_commitish: f94703f4c9b44a965a089f85b47c17933f4d9be6
+          name: TypeBridge 2.0.2
+          draft: true
+          body_path: tmp/notice-finalize/body.md
+          files: tmp/notice-finalize/assets/*
+          fail_on_unmatched_files: true
+
+      - name: Verify downloaded draft assets and publish the notice
+        if: inputs.notice_finalize_mode == 'publish'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python scripts/ci/finalize_notice_release.py --output tmp/notice-finalize --verify-draft
+          gh release edit v2.0.2 --repo "$GITHUB_REPOSITORY" --draft=false --latest
+
+      - name: Upload immutable notice finalization evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: notice-finalization-result
+          path: tmp/notice-finalize/evidence/
           if-no-files-found: error
           retention-days: 90

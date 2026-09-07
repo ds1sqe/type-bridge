@@ -207,6 +207,19 @@ def assert_stable_only_release_mutations(workflow: str) -> None:
         assert term in notice
     assert needs_line(notice) == "    needs: notice-recovery-verify"
 
+    finalize = job_block(workflow, "notice-finalize-write")
+    for term in (
+        "github.repository == 'ds1sqe/type-bridge'",
+        "github.event_name == 'workflow_dispatch'",
+        "github.ref == 'refs/heads/release/2.0.2-notice'",
+        "inputs.release_channel == 'notice-finalize'",
+        "inputs.notice_finalize_mode == 'draft' || inputs.notice_finalize_mode == 'publish'",
+        "inputs.notice_finalize_verify_run_id != ''",
+        "needs.notice-finalize-verify.result == 'success'",
+    ):
+        assert term in finalize
+    assert needs_line(finalize) == "    needs: notice-finalize-verify"
+
     publication_markers = {
         "npm publish": "publish-node-npm",
         "pypa/gh-action-pypi-publish": (
@@ -214,13 +227,14 @@ def assert_stable_only_release_mutations(workflow: str) -> None:
             "publish-python-pypi",
             "notice-recovery-publish",
         ),
-        "softprops/action-gh-release": "github-release",
+        "softprops/action-gh-release": ("github-release", "notice-finalize-write"),
+        "gh release edit": "notice-finalize-write",
     }
     for marker, owners in publication_markers.items():
         expected_owners = (owners,) if isinstance(owners, str) else owners
         containing_jobs = tuple(
             name
-            for name in (*MUTATING_RELEASE_JOBS, "notice-recovery-publish")
+            for name in (*MUTATING_RELEASE_JOBS, "notice-recovery-publish", "notice-finalize-write")
             if marker in job_block(workflow, name)
         )
         assert containing_jobs == expected_owners
@@ -612,8 +626,23 @@ def test_release_channels_have_fixed_non_attacker_controlled_identities() -> Non
         "          - stable\n"
         "          - recovery\n"
         "          - notice-recovery\n"
+        "          - notice-finalize\n"
         "      notice_verify_run_id:\n"
         "        description: Exact same-control successful notice-recovery verify run; required to publish\n"
+        "        required: false\n"
+        "        type: string\n"
+        "        default: ''\n"
+        "      notice_finalize_mode:\n"
+        "        description: Rehearse, create a draft, or publish the independently verified notice\n"
+        "        required: false\n"
+        "        type: choice\n"
+        "        default: verify\n"
+        "        options:\n"
+        "          - verify\n"
+        "          - draft\n"
+        "          - publish\n"
+        "      notice_finalize_verify_run_id:\n"
+        "        description: Same-control successful notice-finalize verification run\n"
         "        required: false\n"
         "        type: string\n"
         "        default: ''\n"
@@ -682,7 +711,8 @@ def test_recovery_preflight_is_pinned_to_the_failed_exact_tag_run() -> None:
 
     assert (
         "if: github.event_name != 'workflow_dispatch' || "
-        "(inputs.release_channel != 'recovery' && inputs.release_channel != 'notice-recovery')"
+        "(inputs.release_channel != 'recovery' && inputs.release_channel != 'notice-recovery' "
+        "&& inputs.release_channel != 'notice-finalize')"
     ) in test_job
     assert "github.event_name == 'workflow_dispatch'" in recovery
     assert "github.ref == 'refs/heads/master'" in recovery

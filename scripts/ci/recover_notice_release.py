@@ -125,7 +125,14 @@ def validate_source(
         require(origin.get("head_repository_id") == 1085407082, "Fork artifact rejected")
 
 
-def validate_rehearsal(run: dict[str, Any], jobs: dict[str, Any], control_sha: str) -> None:
+def validate_rehearsal(
+    run: dict[str, Any],
+    jobs: dict[str, Any],
+    control_sha: str,
+    *,
+    verify_job: str = VERIFY_JOB,
+    publish_job: str = PUBLISH_JOB,
+) -> None:
     """Require same-control, attempt-one verification with no executed publisher."""
     require(run.get("repository", {}).get("full_name") == REPOSITORY, "Wrong rehearsal repository")
     require(run.get("head_repository", {}).get("full_name") == REPOSITORY, "Fork rehearsal")
@@ -146,7 +153,7 @@ def validate_rehearsal(run: dict[str, Any], jobs: dict[str, Any], control_sha: s
     require(jobs.get("total_count") == len(items) and len(items) > 2, "Incomplete rehearsal jobs")
     require(len({job["id"] for job in items}) == len(items), "Duplicate rehearsal job ID")
     require(len({job["name"] for job in items}) == len(items), "Duplicate rehearsal job name")
-    require({VERIFY_JOB, PUBLISH_JOB} <= {job["name"] for job in items}, "Missing recovery jobs")
+    require({verify_job, publish_job} <= {job["name"] for job in items}, "Missing recovery jobs")
     for job in items:
         for key, value in {
             "run_id": run["id"],
@@ -160,7 +167,7 @@ def validate_rehearsal(run: dict[str, Any], jobs: dict[str, Any], control_sha: s
                 type(job.get(key)) is type(value) and job[key] == value,
                 f"Wrong rehearsal job {key}",
             )
-        if job["name"] == VERIFY_JOB:
+        if job["name"] == verify_job:
             require(job["conclusion"] == "success" and bool(job["steps"]), "Rehearsal not accepted")
             require(
                 all(

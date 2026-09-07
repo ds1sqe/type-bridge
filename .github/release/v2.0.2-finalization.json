@@ -1,0 +1,435 @@
+{
+  "schema_version": 1,
+  "publication": {
+    "run": {
+      "id": 34086312651,
+      "event": "workflow_dispatch",
+      "head_branch": "release/2.0.2-notice",
+      "head_sha": "d578cdf93bf5d2efc8d55c9b010f507975e7d149",
+      "run_attempt": 1,
+      "status": "completed",
+      "conclusion": "success",
+      "workflow": {
+        "id": 229807619,
+        "name": "Release",
+        "path": ".github/workflows/release.yml"
+      }
+    },
+    "jobs": {
+      "Verify 2.0.2 publisher recovery": {
+        "conclusion": "success",
+        "steps": [
+          {
+            "name": "Set up job",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 1
+          },
+          {
+            "name": "Checkout exact recovery controls",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 2
+          },
+          {
+            "name": "Capture and verify original stable evidence",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 3
+          },
+          {
+            "name": "Validate metadata in the exact publisher image",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 4
+          },
+          {
+            "name": "Upload immutable recovery verification evidence",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 5
+          },
+          {
+            "name": "Post Checkout exact recovery controls",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 10
+          },
+          {
+            "name": "Complete job",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 11
+          }
+        ]
+      },
+      "Test": {
+        "conclusion": "skipped",
+        "steps": []
+      },
+      "Validate v2.0.0 recovery": {
+        "conclusion": "skipped",
+        "steps": []
+      },
+      "Build type-bridge": {
+        "conclusion": "skipped",
+        "steps": []
+      },
+      "Build V2 smoke server": {
+        "conclusion": "skipped",
+        "steps": []
+      },
+      "Validate release identity": {
+        "conclusion": "skipped",
+        "steps": []
+      },
+      "Build core wheel (${{ matrix.target }})": {
+        "conclusion": "skipped",
+        "steps": []
+      },
+      "Build core sdist": {
+        "conclusion": "skipped",
+        "steps": []
+      },
+      "Build Node native module (${{ matrix.target }})": {
+        "conclusion": "skipped",
+        "steps": []
+      },
+      "Build server OCI (${{ matrix.platform }})": {
+        "conclusion": "skipped",
+        "steps": []
+      },
+      "Accept server OCI (${{ matrix.platform }})": {
+        "conclusion": "skipped",
+        "steps": []
+      },
+      "Pack Node release candidate": {
+        "conclusion": "skipped",
+        "steps": []
+      },
+      "Accept Node package (${{ matrix.target }}, Node ${{ matrix.node-version }})": {
+        "conclusion": "skipped",
+        "steps": []
+      },
+      "Accept Python release artifacts (${{ matrix.python-version }})": {
+        "conclusion": "skipped",
+        "steps": []
+      },
+      "Accept live artifact parity (Python ${{ matrix.python-version }}, ${{ matrix.typedb-server }})": {
+        "conclusion": "skipped",
+        "steps": []
+      },
+      "Publish Node package to npm": {
+        "conclusion": "skipped",
+        "steps": []
+      },
+      "Preflight selected release channel": {
+        "conclusion": "skipped",
+        "steps": []
+      },
+      "Publish Rust crates to crates.io": {
+        "conclusion": "skipped",
+        "steps": []
+      },
+      "Publish accepted TypeBridge server OCI": {
+        "conclusion": "skipped",
+        "steps": []
+      },
+      "Publish type-bridge-core to PyPI": {
+        "conclusion": "skipped",
+        "steps": []
+      },
+      "Publish type-bridge to PyPI": {
+        "conclusion": "skipped",
+        "steps": []
+      },
+      "Create GitHub Release": {
+        "conclusion": "skipped",
+        "steps": []
+      },
+      "Recover 2.0.2 Python facade": {
+        "conclusion": "success",
+        "steps": [
+          {
+            "name": "Set up job",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 1
+          },
+          {
+            "name": "Checkout exact recovery controls",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 2
+          },
+          {
+            "name": "Revalidate source, rehearsal and destinations before mutation",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 3
+          },
+          {
+            "name": "Validate metadata in the exact publisher image",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 4
+          },
+          {
+            "name": "Attest unchanged artifact origin and new publisher controls",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 5
+          },
+          {
+            "name": "Recheck immutable tag, bytes and public destination",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 6
+          },
+          {
+            "name": "Publish unchanged facade with Trusted Publishing",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 7
+          },
+          {
+            "name": "Verify published facade hashes",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 8
+          },
+          {
+            "name": "Upload immutable publisher recovery evidence",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 9
+          },
+          {
+            "name": "Post Publish unchanged facade with Trusted Publishing",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 17
+          },
+          {
+            "name": "Post Checkout exact recovery controls",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 18
+          },
+          {
+            "name": "Complete job",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 19
+          }
+        ]
+      }
+    },
+    "artifacts": [
+      {
+        "id": 10005341280,
+        "name": "notice-recovery-publication",
+        "size_in_bytes": 29180,
+        "digest": "sha256:b2f117d486cfc0f9941ccaa2dbe0ac85c036d1778fe8fe0140e6100581a27bcb",
+        "files": [
+          {
+            "path": "prepublish-tag-object.json",
+            "size_in_bytes": 946,
+            "sha256": "8ee88daf3e0049ddbb71ec6e4af5b78976690bee69a9b4455969c7d901006429"
+          },
+          {
+            "path": "prepublish-tag-ref.json",
+            "size_in_bytes": 331,
+            "sha256": "0b7ec0dde42b06d56293e1992329d53ad930472651439ea8d2e7988add525c3a"
+          },
+          {
+            "path": "recovery-promotion.json",
+            "size_in_bytes": 890,
+            "sha256": "4f6c65ae0f19d204f3592cb9138a756c49e08ad4771374f3a5bf8bba56989bf7"
+          },
+          {
+            "path": "rehearsal-jobs.json",
+            "size_in_bytes": 21527,
+            "sha256": "9b0989ec150e9d27e15ff7166054036c229af435ab49f6882486b466bcdf1241"
+          },
+          {
+            "path": "rehearsal-run.json",
+            "size_in_bytes": 12599,
+            "sha256": "001e86d0dba8f7c4ed7111725a6ea3625e8963d43186278d00169e31506ed1ed"
+          },
+          {
+            "path": "source-artifacts.json",
+            "size_in_bytes": 13851,
+            "sha256": "b99ed5eb83f988b6442e1cd918271dd63463568ddaecbc7655cbd7c5e2478979"
+          },
+          {
+            "path": "source-jobs.json",
+            "size_in_bytes": 123981,
+            "sha256": "87eda1b43116d23dba58674b150c2ba71de8cd7f6639d5cff25030b212e35325"
+          },
+          {
+            "path": "source-run.json",
+            "size_in_bytes": 12455,
+            "sha256": "89d2fc112c14dd72fa8e98b87f8fcf4bc843e01e59fec93e4ef41d596d11a348"
+          },
+          {
+            "path": "tag-object.json",
+            "size_in_bytes": 946,
+            "sha256": "8ee88daf3e0049ddbb71ec6e4af5b78976690bee69a9b4455969c7d901006429"
+          },
+          {
+            "path": "tag-ref.json",
+            "size_in_bytes": 331,
+            "sha256": "0b7ec0dde42b06d56293e1992329d53ad930472651439ea8d2e7988add525c3a"
+          },
+          {
+            "path": "type-bridge-core-preflight.json",
+            "size_in_bytes": 1381,
+            "sha256": "78d064e72432dcac7011374d59ea5fbb9e47c37e85d8a2ca5f8386fdac0f5307"
+          },
+          {
+            "path": "type-bridge-preflight.json",
+            "size_in_bytes": 381,
+            "sha256": "da73365b09d9eecf4599ad5082a02c3abea712843fbe9beada1d222cc40b300f"
+          },
+          {
+            "path": "v2.0.2-recovery-manifest.json",
+            "size_in_bytes": 95689,
+            "sha256": "37b54f259a4a409e0a3aec200c456ef1bf4cb34bec92aab76d6b6f42fc0617af"
+          }
+        ]
+      },
+      {
+        "id": 10005318171,
+        "name": "notice-recovery-verification",
+        "size_in_bytes": 28159,
+        "digest": "sha256:05592115838b188b5552b9887dccf13bb633c3acc5858815d2cdd0bc25a95943",
+        "files": [
+          {
+            "path": "recovery-promotion.json",
+            "size_in_bytes": 890,
+            "sha256": "4f6c65ae0f19d204f3592cb9138a756c49e08ad4771374f3a5bf8bba56989bf7"
+          },
+          {
+            "path": "rehearsal-jobs.json",
+            "size_in_bytes": 21527,
+            "sha256": "9b0989ec150e9d27e15ff7166054036c229af435ab49f6882486b466bcdf1241"
+          },
+          {
+            "path": "rehearsal-run.json",
+            "size_in_bytes": 12599,
+            "sha256": "001e86d0dba8f7c4ed7111725a6ea3625e8963d43186278d00169e31506ed1ed"
+          },
+          {
+            "path": "source-artifacts.json",
+            "size_in_bytes": 13851,
+            "sha256": "b99ed5eb83f988b6442e1cd918271dd63463568ddaecbc7655cbd7c5e2478979"
+          },
+          {
+            "path": "source-jobs.json",
+            "size_in_bytes": 123981,
+            "sha256": "87eda1b43116d23dba58674b150c2ba71de8cd7f6639d5cff25030b212e35325"
+          },
+          {
+            "path": "source-run.json",
+            "size_in_bytes": 12455,
+            "sha256": "89d2fc112c14dd72fa8e98b87f8fcf4bc843e01e59fec93e4ef41d596d11a348"
+          },
+          {
+            "path": "tag-object.json",
+            "size_in_bytes": 946,
+            "sha256": "8ee88daf3e0049ddbb71ec6e4af5b78976690bee69a9b4455969c7d901006429"
+          },
+          {
+            "path": "tag-ref.json",
+            "size_in_bytes": 331,
+            "sha256": "0b7ec0dde42b06d56293e1992329d53ad930472651439ea8d2e7988add525c3a"
+          },
+          {
+            "path": "type-bridge-core-preflight.json",
+            "size_in_bytes": 1381,
+            "sha256": "78d064e72432dcac7011374d59ea5fbb9e47c37e85d8a2ca5f8386fdac0f5307"
+          },
+          {
+            "path": "type-bridge-preflight.json",
+            "size_in_bytes": 381,
+            "sha256": "da73365b09d9eecf4599ad5082a02c3abea712843fbe9beada1d222cc40b300f"
+          },
+          {
+            "path": "v2.0.2-recovery-manifest.json",
+            "size_in_bytes": 95689,
+            "sha256": "37b54f259a4a409e0a3aec200c456ef1bf4cb34bec92aab76d6b6f42fc0617af"
+          }
+        ]
+      }
+    ]
+  },
+  "body_sha256": "accfe0e4ec2ba76d1f9f945a07a3d40e19cc9bf326be9d28a0aa33baf11b30c2",
+  "assets": {
+    "server-oci-release.json": {
+      "path": "server-oci-release.json",
+      "size_in_bytes": 949,
+      "sha256": "baf9e28274bea7c965a12e3dc7c51195cc7806c979849717dce15ea3b8ac780d"
+    },
+    "server-oci-release.md": {
+      "path": "server-oci-release.md",
+      "size_in_bytes": 345,
+      "sha256": "993f96b4fa14ffa0e2b36ae1f769344c83e4fcfaaee9f37d9f71eddf1a84eaa8"
+    },
+    "type_bridge_core-2.0.2-cp312-abi3-macosx_10_12_x86_64.whl": {
+      "path": "type_bridge_core-2.0.2-cp312-abi3-macosx_10_12_x86_64.whl",
+      "size_in_bytes": 18112852,
+      "sha256": "310e2616112a09eeee189a4a9fa093c13464f7eea40427945c9fdd0e7d86db55"
+    },
+    "type_bridge_core-2.0.2-cp312-abi3-win_amd64.whl": {
+      "path": "type_bridge_core-2.0.2-cp312-abi3-win_amd64.whl",
+      "size_in_bytes": 17663869,
+      "sha256": "e549d740cc4d01bd40be4d59d9dd84cfef4c6ac4c1951b759e0a3af25694d803"
+    },
+    "type-bridge-node-2.0.2.tgz": {
+      "path": "type-bridge-node-2.0.2.tgz",
+      "size_in_bytes": 70765109,
+      "sha256": "918416960faf894bf4635fa825f6c375cb14affbd2dfe88b301513aaf20703f6"
+    },
+    "type_bridge_core-2.0.2-cp312-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl": {
+      "path": "type_bridge_core-2.0.2-cp312-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "size_in_bytes": 19050321,
+      "sha256": "8f16416adcb9e5b7734775c80aa27367f8b0b560a1a60696d0ba6735f25db9a8"
+    },
+    "type_bridge_core-2.0.2-cp312-abi3-macosx_11_0_arm64.whl": {
+      "path": "type_bridge_core-2.0.2-cp312-abi3-macosx_11_0_arm64.whl",
+      "size_in_bytes": 17315878,
+      "sha256": "977db06d6ca4dd04004061333ff488a33c3c6433c99f3ed32f1e00b1ffb09abd"
+    },
+    "type_bridge_core-2.0.2-cp312-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl": {
+      "path": "type_bridge_core-2.0.2-cp312-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+      "size_in_bytes": 18667153,
+      "sha256": "8ef57c999722a43f62300815d07412c039d5d8a0f2f1c4c448ff7fbd652f9a47"
+    },
+    "type_bridge_core-2.0.2.tar.gz": {
+      "path": "type_bridge_core-2.0.2.tar.gz",
+      "size_in_bytes": 2140606,
+      "sha256": "1550dd265e8db2bd3c98d6af15a01a228794ddb322cfb290c81a55626221d9d0"
+    },
+    "type_bridge-2.0.2-py3-none-any.whl": {
+      "path": "type_bridge-2.0.2-py3-none-any.whl",
+      "size_in_bytes": 320641,
+      "sha256": "32de7653ae89a7a33ecfee26c7390d42025297c310d44f04f1b71608c950cf91"
+    },
+    "type_bridge-2.0.2.tar.gz": {
+      "path": "type_bridge-2.0.2.tar.gz",
+      "size_in_bytes": 255190,
+      "sha256": "4f8da4945c923d7da0171da53aefa27fb9c5d78cd07615dd5795b41444fc9357"
+    },
+    "v2.0.2-recovery-manifest.json": {
+      "path": "v2.0.2-recovery-manifest.json",
+      "size_in_bytes": 95689,
+      "sha256": "37b54f259a4a409e0a3aec200c456ef1bf4cb34bec92aab76d6b6f42fc0617af"
+    },
+    "recovery-promotion.json": {
+      "path": "recovery-promotion.json",
+      "size_in_bytes": 890,
+      "sha256": "4f6c65ae0f19d204f3592cb9138a756c49e08ad4771374f3a5bf8bba56989bf7"
+    }
+  }
+}
