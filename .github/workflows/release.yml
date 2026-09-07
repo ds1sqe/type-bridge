@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       release_channel:
-        description: Validate the 2.0.2 release identity or recover the accepted v2.0.0 tag run
+        description: Validate 2.0.2 or select one separately frozen publisher recovery
         required: true
         type: choice
         default: candidate
@@ -15,6 +15,12 @@ on:
           - candidate
           - stable
           - recovery
+          - notice-recovery
+      notice_verify_run_id:
+        description: Exact same-control successful notice-recovery verify run; required to publish
+        required: false
+        type: string
+        default: ''
       recovery_run_id:
         description: Exact failed v2.0.0 tag run; required only for recovery
         required: false
@@ -52,7 +58,7 @@ jobs:
   # Run tests before releasing
   test:
     name: Test
-    if: github.event_name != 'workflow_dispatch' || inputs.release_channel != 'recovery'
+    if: github.event_name != 'workflow_dispatch' || (inputs.release_channel != 'recovery' && inputs.release_channel != 'notice-recovery')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -361,6 +367,9 @@ jobs:
 
       - name: Build package
         run: uv build
+
+      - name: Validate metadata in the exact publisher image
+        run: bash scripts/ci/check_pypi_publisher_metadata.sh dist
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -2446,7 +2455,7 @@ jobs:
           test "$(jq -r '.object.sha' <<<"$tag_json")" = "$RELEASE_REVISION"
 
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # release/v1
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           skip-existing: true
 
@@ -2560,7 +2569,7 @@ jobs:
           test "$(jq -r '.object.sha' <<<"$tag_json")" = "$RELEASE_REVISION"
 
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # release/v1
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           skip-existing: true
 
@@ -2712,3 +2721,122 @@ jobs:
           generate_release_notes: true
           body_path: ${{ github.event_name == 'push' && 'docs/guide/v2.0.2-notice.md' || 'dist/server-oci-release.md' }}
           files: dist/*
+
+  # This lane promotes original stable-run bytes only. The control commit is
+  # deliberately distinct from the immutable v2.0.2 artifact source and tag.
+  notice-recovery-verify:
+    name: Verify 2.0.2 publisher recovery
+    if: >-
+      github.repository == 'ds1sqe/type-bridge' &&
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/release/2.0.2-notice' &&
+      inputs.release_channel == 'notice-recovery'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Checkout exact recovery controls
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Capture and verify original stable evidence
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RECOVERY_MODE: ${{ inputs.recovery_mode }}
+          VERIFY_RUN_ID: ${{ inputs.notice_verify_run_id }}
+        run: |
+          python scripts/ci/recover_notice_release.py \
+            --output tmp/notice-recovery \
+            --control-sha "$GITHUB_SHA" \
+            --mode "${RECOVERY_MODE:-verify}" \
+            --verify-run "$VERIFY_RUN_ID"
+
+      - name: Validate metadata in the exact publisher image
+        run: bash scripts/ci/check_pypi_publisher_metadata.sh tmp/notice-recovery/dist
+
+      - name: Upload immutable recovery verification evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: notice-recovery-verification
+          path: tmp/notice-recovery/evidence/
+          if-no-files-found: error
+          retention-days: 90
+
+  notice-recovery-publish:
+    name: Recover 2.0.2 Python facade
+    needs: notice-recovery-verify
+    if: >-
+      github.repository == 'ds1sqe/type-bridge' &&
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/release/2.0.2-notice' &&
+      inputs.release_channel == 'notice-recovery' &&
+      inputs.recovery_mode == 'publish' &&
+      inputs.notice_verify_run_id != '' &&
+      needs.notice-recovery-verify.result == 'success'
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Checkout exact recovery controls
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Revalidate source, rehearsal and destinations before mutation
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERIFY_RUN_ID: ${{ inputs.notice_verify_run_id }}
+        run: |
+          python scripts/ci/recover_notice_release.py \
+            --output tmp/notice-recovery \
+            --control-sha "$GITHUB_SHA" \
+            --mode publish \
+            --verify-run "$VERIFY_RUN_ID"
+
+      - name: Validate metadata in the exact publisher image
+        run: bash scripts/ci/check_pypi_publisher_metadata.sh tmp/notice-recovery/dist
+
+      - name: Attest unchanged artifact origin and new publisher controls
+        uses: actions/attest@e59cbc1ad1ac2d59339667419eb8cdde6eb61e3d # v3.2.0
+        with:
+          subject-path: tmp/notice-recovery/dist/*
+          predicate-type: https://github.com/ds1sqe/type-bridge/attestations/release-promotion/v1
+          predicate-path: tmp/notice-recovery/evidence/recovery-promotion.json
+
+      - name: Recheck immutable tag, bytes and public destination
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python scripts/ci/recover_notice_release.py \
+            --output tmp/notice-recovery --control-sha "$GITHUB_SHA" --recheck-only
+
+      - name: Publish unchanged facade with Trusted Publishing
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          packages-dir: tmp/notice-recovery/dist/
+          verify-metadata: true
+          attestations: true
+          skip-existing: true
+
+      - name: Verify published facade hashes
+        run: |
+          python scripts/ci/verify_pypi_release_hashes.py \
+            --project type-bridge --version 2.0.2 \
+            --dist-dir tmp/notice-recovery/payloads/python-dist \
+            --require-existing --attempts 6 --retry-delay-seconds 10
+
+      - name: Upload immutable publisher recovery evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: notice-recovery-publication
+          path: tmp/notice-recovery/evidence/
+          if-no-files-found: error
+          retention-days: 90

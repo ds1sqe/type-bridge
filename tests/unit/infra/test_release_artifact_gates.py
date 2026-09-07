@@ -194,18 +194,34 @@ def assert_stable_only_release_mutations(workflow: str) -> None:
         assert "needs.recovery-preflight.result == 'success'" in block
         assert "inputs.release_channel == 'candidate'" not in block
 
+    notice = job_block(workflow, "notice-recovery-publish")
+    for term in (
+        "github.repository == 'ds1sqe/type-bridge'",
+        "github.event_name == 'workflow_dispatch'",
+        "github.ref == 'refs/heads/release/2.0.2-notice'",
+        "inputs.release_channel == 'notice-recovery'",
+        "inputs.recovery_mode == 'publish'",
+        "inputs.notice_verify_run_id != ''",
+        "needs.notice-recovery-verify.result == 'success'",
+    ):
+        assert term in notice
+    assert needs_line(notice) == "    needs: notice-recovery-verify"
+
     publication_markers = {
         "npm publish": "publish-node-npm",
         "pypa/gh-action-pypi-publish": (
             "publish-core-pypi",
             "publish-python-pypi",
+            "notice-recovery-publish",
         ),
         "softprops/action-gh-release": "github-release",
     }
     for marker, owners in publication_markers.items():
         expected_owners = (owners,) if isinstance(owners, str) else owners
         containing_jobs = tuple(
-            name for name in MUTATING_RELEASE_JOBS if marker in job_block(workflow, name)
+            name
+            for name in (*MUTATING_RELEASE_JOBS, "notice-recovery-publish")
+            if marker in job_block(workflow, name)
         )
         assert containing_jobs == expected_owners
         owned_count = sum(job_block(workflow, name).count(marker) for name in expected_owners)
@@ -587,8 +603,7 @@ def test_release_channels_have_fixed_non_attacker_controlled_identities() -> Non
         "  workflow_dispatch:\n"
         "    inputs:\n"
         "      release_channel:\n"
-        "        description: Validate the 2.0.2 release identity or recover "
-        "the accepted v2.0.0 tag run\n"
+        "        description: Validate 2.0.2 or select one separately frozen publisher recovery\n"
         "        required: true\n"
         "        type: choice\n"
         "        default: candidate\n"
@@ -596,6 +611,12 @@ def test_release_channels_have_fixed_non_attacker_controlled_identities() -> Non
         "          - candidate\n"
         "          - stable\n"
         "          - recovery\n"
+        "          - notice-recovery\n"
+        "      notice_verify_run_id:\n"
+        "        description: Exact same-control successful notice-recovery verify run; required to publish\n"
+        "        required: false\n"
+        "        type: string\n"
+        "        default: ''\n"
         "      recovery_run_id:\n"
         "        description: Exact failed v2.0.0 tag run; required only for recovery\n"
         "        required: false\n"
@@ -660,7 +681,8 @@ def test_recovery_preflight_is_pinned_to_the_failed_exact_tag_run() -> None:
     test_job = job_block(workflow, "test")
 
     assert (
-        "if: github.event_name != 'workflow_dispatch' || inputs.release_channel != 'recovery'"
+        "if: github.event_name != 'workflow_dispatch' || "
+        "(inputs.release_channel != 'recovery' && inputs.release_channel != 'notice-recovery')"
     ) in test_job
     assert "github.event_name == 'workflow_dispatch'" in recovery
     assert "github.ref == 'refs/heads/master'" in recovery
@@ -873,6 +895,26 @@ def test_candidate_guard_gate_rejects_hidden_preflight_publication() -> None:
 
     with pytest.raises(AssertionError):
         assert_stable_only_release_mutations(hostile_workflow)
+
+
+@pytest.mark.parametrize(
+    "term",
+    [
+        "github.repository == 'ds1sqe/type-bridge'",
+        "github.event_name == 'workflow_dispatch'",
+        "github.ref == 'refs/heads/release/2.0.2-notice'",
+        "inputs.release_channel == 'notice-recovery'",
+        "inputs.recovery_mode == 'publish'",
+        "inputs.notice_verify_run_id != ''",
+        "needs.notice-recovery-verify.result == 'success'",
+    ],
+)
+def test_notice_recovery_rejects_missing_publication_guard(term: str) -> None:
+    workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+    block = job_block(workflow, "notice-recovery-publish")
+    hostile = workflow.replace(block, block.replace(term, "true", 1), 1)
+    with pytest.raises(AssertionError):
+        assert_stable_only_release_mutations(hostile)
 
 
 @pytest.mark.parametrize("marker", CARGO_PUBLICATION_MARKERS)

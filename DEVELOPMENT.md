@@ -117,6 +117,21 @@ publication acceptance remains workflow-only. Local source checks do not
 replace those gates. See [Testing](docs/development/testing.md) for suite
 selection and environment variables.
 
+The 2.0.2 facade publisher recovery is separately selected with
+`release_channel=notice-recovery` in `release.yml` on `release/2.0.2-notice`.
+It defaults to `recovery_mode=verify`; publishing requires the exact successful
+same-control verification run in `notice_verify_run_id`. The committed
+`.github/release/v2.0.2-recovery.json` binds the original tag, partial stable
+run, every job/step, archive identity and payload hash. New publisher controls
+do not change the original artifact source. Recovery never rebuilds artifacts
+or republishes Cargo, npm, native-core PyPI or GHCR; it signs an explicit
+promotion predicate and retains PyPI Trusted Publishing and attestations.
+The subsequent GitHub notice/assets must be independently verified before
+making the draft public. The old v2.0.0 recovery remains separately frozen.
+
+Python facade builds also run a network-disabled metadata check in the exact
+digest-verified publisher image before entering cross-registry publication.
+
 ## Documentation system
 
 The site uses MkDocs Material:
