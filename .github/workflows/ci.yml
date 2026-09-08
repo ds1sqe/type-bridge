@@ -309,12 +309,6 @@ jobs:
     timeout-minutes: 45
     permissions:
       contents: read
-    services:
-      typedb:
-        image: typedb/typedb:3.12.3
-        ports:
-          - 1729:1729
-          - 8000:8000
     steps:
       - name: Checkout exact artifact source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
