@@ -2290,6 +2290,57 @@ fn shared_library_exports_the_current_abi() {
     );
 }
 
+fn validate_macho_load_commands(report: &str) -> Result<(), String> {
+    let mut command = "";
+    let mut identities = 0;
+    for line in report.lines().map(str::trim) {
+        if let Some(value) = line.strip_prefix("cmd ") {
+            command = value;
+            if command == "LC_RPATH" {
+                return Err("TypeBridge C shared library embeds LC_RPATH".to_owned());
+            }
+            identities += usize::from(command == "LC_ID_DYLIB");
+        }
+        if let Some(name) = line.strip_prefix("name ")
+            && command != "LC_ID_DYLIB"
+            && !name.starts_with("/usr/lib/")
+            && !name.starts_with("/System/Library/Frameworks/")
+        {
+            return Err(format!("non-platform shared-library dependency: {name}"));
+        }
+    }
+    if identities != 1 {
+        return Err("Mach-O report must contain one dylib identity".to_owned());
+    }
+    Ok(())
+}
+
+#[test]
+fn macho_dependency_audit_distinguishes_identity_from_loads_and_search_paths() {
+    let report = "Load command 0\ncmd LC_ID_DYLIB\nname /build tree/deps/libtype_bridge_c.dylib (offset 24)\n\
+                  Load command 1\ncmd LC_LOAD_DYLIB\nname /usr/lib/libSystem.B.dylib (offset 24)\n";
+    validate_macho_load_commands(report).expect("own install name is not a dependency");
+    for command in [
+        "LC_LOAD_DYLIB",
+        "LC_LOAD_WEAK_DYLIB",
+        "LC_REEXPORT_DYLIB",
+        "LC_LAZY_LOAD_DYLIB",
+        "LC_LOAD_UPWARD_DYLIB",
+    ] {
+        let external = report.replace("LC_LOAD_DYLIB", command).replace(
+            "/usr/lib/libSystem.B.dylib",
+            "/build tree/deps/libtype_bridge_c.dylib",
+        );
+        assert!(
+            validate_macho_load_commands(&external)
+                .expect_err("the same name in a load command is an external dependency")
+                .contains("non-platform")
+        );
+    }
+    assert!(validate_macho_load_commands(&format!("{report}cmd LC_RPATH\n")).is_err());
+    assert!(validate_macho_load_commands("").is_err());
+}
+
 #[test]
 fn shared_library_has_only_platform_dependencies_and_no_embedded_search_path() {
     let Some(library) = native_library_or_skip(
@@ -2340,38 +2391,19 @@ fn shared_library_has_only_platform_dependencies_and_no_embedded_search_path() {
     #[cfg(target_os = "macos")]
     {
         let output = Command::new("otool")
-            .args(["-L"])
+            .args(["-l"])
             .arg(&library)
             .output()
             .expect("otool is required for the macOS shared-library audit");
         assert!(
             output.status.success(),
-            "otool -L failed for {}: {}",
+            "otool -l failed for {}: {}",
             library.display(),
             String::from_utf8_lossy(&output.stderr),
         );
         let report = String::from_utf8(output.stdout).expect("otool output is UTF-8");
-        for dependency in report.lines().skip(1).filter_map(|line| {
-            let path = line.split_whitespace().next()?;
-            (!path.is_empty()).then_some(path)
-        }) {
-            assert!(
-                dependency.starts_with("/usr/lib/")
-                    || dependency.starts_with("/System/Library/Frameworks/"),
-                "TypeBridge C shared library gained a non-platform dependency: {dependency}"
-            );
-        }
-        let output = Command::new("otool")
-            .args(["-l"])
-            .arg(&library)
-            .output()
-            .expect("otool is required for the macOS RPATH audit");
-        assert!(output.status.success(), "otool -l failed");
-        let report = String::from_utf8(output.stdout).expect("otool output is UTF-8");
-        assert!(
-            !report.lines().any(|line| line.trim() == "cmd LC_RPATH"),
-            "TypeBridge C shared library embeds LC_RPATH"
-        );
+        validate_macho_load_commands(&report)
+            .expect("macOS shared-library dependencies are closed");
     }
 
     #[cfg(windows)]
